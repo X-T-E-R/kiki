@@ -7,8 +7,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService,
-  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
+  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService,
+  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager,
   IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
@@ -464,6 +464,151 @@ describe('GUI shared client against an isolated KAP host', () => {
       }));
       expect(lifecycle.get('main')).toBeUndefined();
     } finally { subscription.close(); }
+  });
+
+  it('keeps saved cold read-only entry points off the restore path', async () => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const manager = host.core.accessor.get(ISessionManager);
+    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
+    await manager.close(id);
+    expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+    expect(requests).toHaveLength(0);
+    const expectedRestoreError = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(expectedRestoreError);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(expectedRestoreError);
+    const reads = [
+      { name: 'auto-compact', path: `/api/sessions/${id}/agents/main/auto-compact?observe=true` },
+      { name: 'context-strategy', path: `/api/sessions/${id}/agents/main/context-strategy?observe=true` },
+      { name: 'optional-capabilities', path: `/api/sessions/${id}/optional-capabilities` },
+      { name: 'ssh-hosts', path: `/api/sessions/${id}/ssh/hosts` },
+      { name: 'hooks', path: `/api/sessions/${id}/agents/main/hooks` },
+    ] as const;
+    const results: Array<{ name: string; status: number; body: Record<string, unknown> }> = [];
+    try {
+      for (const read of reads) {
+        const response = await fetch(`${endpoint}${read.path}`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        const text = await response.text();
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(text) as Record<string, unknown>; } catch { body = { raw: text }; }
+        results.push({ name: read.name, status: response.status, body });
+      }
+      try {
+        const data = await client.klient.session(id).agent('main').listModelSwitches();
+        results.push({ name: 'model-switches', status: 200, body: { code: 0, data } });
+      } catch (error) {
+        const code = error !== null && typeof error === 'object' && 'code' in error
+          ? (error as { code?: unknown }).code ?? 50001 : 50001;
+        results.push({ name: 'model-switches', status: 200, body: { code } });
+      }
+      expect({
+        responses: results.map(({ name, status, body }) => ({ name, status, code: body['code'] })),
+        acquireCalls: acquire.mock.calls.length,
+        resumeCalls: resume.mock.calls.length,
+        live: getLiveSessionById(host.core.accessor, id) !== undefined,
+        modelRequests: requests.length,
+      }).toEqual({
+        responses: [
+          { name: 'auto-compact', status: 200, code: 40001 },
+          { name: 'context-strategy', status: 200, code: 0 },
+          { name: 'optional-capabilities', status: 200, code: 0 },
+          { name: 'ssh-hosts', status: 200, code: 0 },
+          { name: 'hooks', status: 200, code: 0 },
+          { name: 'model-switches', status: 200, code: 0 },
+        ],
+        acquireCalls: 0,
+        resumeCalls: 0,
+        live: false,
+        modelRequests: 0,
+      });
+      expect(results[0]?.body).toMatchObject({ msg: 'Model not set' });
+      expect(results[1]?.body).toMatchObject({ data: { strategy: 'auto', source: 'default', shadow: false } });
+      expect(results[2]?.body).toMatchObject({ data: { rows: expect.any(Array) } });
+      expect(results[3]?.body).toMatchObject({ data: { hosts: [] } });
+      expect(results[4]?.body).toMatchObject({ data: { binding: expect.any(Object), rules: expect.any(Array), sources: expect.any(Array) } });
+      expect(results[5]?.body).toMatchObject({ data: [] });
+    } finally {
+      acquire.mockRestore();
+      resume.mockRestore();
+    }
+  });
+
+  it('returns fast SESSION_BUSY for observed reads of a cold bound main without restoring it', async () => {
+    const id = (await client.createSession({
+      metadata: { cwd: join(home, 'workspace') },
+      agent_config: { model: 'first' },
+    })).id;
+    const manager = host.core.accessor.get(ISessionManager);
+    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
+    await manager.close(id);
+    expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+    const expectedRestoreError = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(expectedRestoreError);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(expectedRestoreError);
+    const wireSize = vi.spyOn(host.core.accessor.get(IFileSystemStorageService), 'size').mockResolvedValue(9 * 1024 * 1024);
+    const wireRead = vi.spyOn(host.core.accessor.get(IAppendLogStore), 'read');
+    const paths = [
+      `/api/sessions/${id}/agents/main/auto-compact?observe=true`,
+      `/api/sessions/${id}/agents/main/context-strategy?observe=true`,
+      `/api/sessions/${id}/agents/main/hooks?observe=true`,
+    ];
+    const started = performance.now();
+    const results: Array<{ status: number; body: Record<string, unknown> }> = [];
+    try {
+      for (const path of paths) {
+        const response = await fetch(`${endpoint}${path}`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        results.push({ status: response.status, body: await response.json() as Record<string, unknown> });
+      }
+      expect(results.map(({ status, body }) => ({ status, code: body['code'] }))).toEqual([
+        { status: 200, code: 40901 },
+        { status: 200, code: 40901 },
+        { status: 200, code: 40901 },
+      ]);
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(wireSize).toHaveBeenCalled();
+      expect(wireRead).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      expect(requests).toHaveLength(0);
+    } finally {
+      acquire.mockRestore();
+      resume.mockRestore();
+      wireSize.mockRestore();
+      wireRead.mockRestore();
+    }
+  });
+
+  it.each([false, true])('preserves complete model-switch reads and explicit observe=%s over GUI HTTP after >8MiB', async (observe) => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const manager = host.core.accessor.get(ISessionManager);
+    await manager.close(id);
+    const summary = await host.core.accessor.get(ISessionIndex).get(id);
+    const logs = host.core.accessor.get(IAppendLogStore);
+    const scope = `sessions/${summary!.workspaceId}/${id}/agents/main`;
+    logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(9 * 1024 * 1024) });
+    logs.append(scope, 'wire.jsonl', { type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
+      entry: { input: { operationId: 'cold-switch', model: 'first', mode: 'direct' }, revision: 0,
+        originalBinding: { model: 'second', thinking: '' },
+        receipt: { operationId: 'cold-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'second', toModel: 'first' } } });
+    await logs.flush(scope, 'wire.jsonl');
+    const acquire = vi.spyOn(manager, 'acquire');
+    const resume = vi.spyOn(manager, 'resume');
+    try {
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled GUI queue read'));
+      await expect(client.listAgentModelSwitches(id, 'main', controller.signal, observe)).rejects.toThrow('cancelled GUI queue read');
+      if (observe) {
+        await expect(client.listAgentModelSwitches(id, 'main', undefined, true)).rejects.toMatchObject({
+          code: 40001, message: 'model_switch_queue_preparing (code 40001)', details: { reason: 'model_switch_queue_preparing' },
+        });
+      }
+      const queue = observe ? client.listAgentModelSwitches(id, 'main', undefined, true) : client.listAgentModelSwitches(id, 'main');
+      await expect(queue).resolves.toMatchObject([{ input: { operationId: 'cold-switch' }, queueIndex: 0 }]);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      expect(requests).toHaveLength(0);
+    } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
   it.each(['compaction.started', 'compaction.completed', 'compaction.cancelled'] as const)('watches absent main %s over WS without creating it and attaches on real creation', async (type) => {

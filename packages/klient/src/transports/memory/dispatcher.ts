@@ -476,7 +476,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
             files: root.accessor.get(IHostFileSystem),
           });
           try {
-            return wireClone(await modelSwitchReader.readReady(`${sessionScope}/agents/${scope.agentId}`, options?.signal));
+            const observe = (args[0] as { observe?: boolean } | undefined)?.observe === true;
+            const agentScope = `${sessionScope}/agents/${scope.agentId}`;
+            return wireClone(await (observe ? modelSwitchReader.read(agentScope, options?.signal) : modelSwitchReader.readReady(agentScope, options?.signal)));
           } catch (error) {
             if (error instanceof ModelSwitchQueuePreparingError) {
               throw new RPCError(REQUEST_INVALID, error.message, { reason: 'model_switch_queue_preparing' });
@@ -585,7 +587,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       if (typeof member !== 'function') {
         return wireClone(member);
       }
-      const clonedArgs = args.map(wireClone);
+      const clonedArgs = service === 'agentPromptService' && method === 'listModelSwitches' ? [] : args.map(wireClone);
       if (service === 'mcpManagementService' && method === 'completeServerAuth') {
         clonedArgs[1] = { signal: options?.signal };
       }

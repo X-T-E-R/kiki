@@ -1,7 +1,7 @@
 /** One agent's switch queue, reconciled from snapshots and ordered live events without polling. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { AgentModelSwitchEvent, QueuedModelSwitch } from '../../lib/client';
+import { API_CODES, ApiError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 
 export interface ModelSwitchesHandle {
@@ -77,7 +77,7 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
       sinceRead = [];
       setLoading(true);
       setError(undefined);
-      void generationClient.listAgentModelSwitches(sessionId, agentId, controller.signal).then((list) => {
+      void generationClient.listAgentModelSwitches(sessionId, agentId, controller.signal, true).then((list) => {
         if (disposed || request !== readId) return;
         current = new Map(list.map((entry) => [entry.input.operationId, entry]));
         for (const event of unknownStatuses.values()) {
@@ -102,10 +102,12 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
         reading = false;
         sinceRead = [];
         failed = true;
-        const preparing = error instanceof Error && error.message === 'model_switch_queue_preparing';
-        setLoading(preparing);
-        if (!preparing) setError(error instanceof Error ? error : new Error(String(error)));
-        if (preparing || ++failureCount < 3) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
+        const preparing = error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID &&
+          (error.details as { reason?: unknown } | undefined)?.reason === 'model_switch_queue_preparing';
+        const retrying = ++failureCount < 3;
+        setLoading(preparing && retrying);
+        if (!preparing || !retrying) setError(error instanceof Error ? error : new Error(String(error)));
+        if (retrying) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
       });
     };
     const attach = () => {

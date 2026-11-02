@@ -55,7 +55,11 @@ See the README's Ordered session views section for the recovery contract.
 
 The procedure facade covers services that behave identically on all transports.
 Actions materialize `main` through the shared dispatcher when needed. Reads of
-model-switch queues and MCP capabilities preserve an unstarted main. Ordinary
+model-switch queues and MCP capabilities preserve an unstarted main.
+`agent.listModelSwitches(options?)` waits for the complete cold queue in one call;
+only `observeModelSwitches(options?)` sends `{ observe: true }` to the same procedure
+and returns `model_switch_queue_preparing` after one 8 MiB slice. Preserve both
+methods' transport cancellation and never make ordinary callers poll. Ordinary
 agent event watches validate cold children against their session's saved registry
 and acknowledge attached lifecycle watches without restoring execution. They attach
 the real source on `onDidCreate`, follow agent/session generations, and detach at

@@ -1622,6 +1622,53 @@ describe('automatic lightweight roster', () => {
     controller.close();
   });
 
+  it('accepts disjoint snapshot fields while a root roster page is in flight without reading its prefix twice', async () => {
+    const nested = { ...ref, revision: 'label-v1', kind: 'text' as const, path: ['subagents', 0, 'label'], offset: 4, total: 8 };
+    let finishRoot!: () => void;
+    const gate = new Promise<void>((resolve) => { finishRoot = resolve; });
+    const content = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => {
+      if (requested.kind === 'text') return { ref: requested, value: 'ated', contentRefs: [] };
+      if (requested.offset === 4) await gate;
+      const offset = Math.min(requested.offset + 20, 706);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+    });
+    const { controller, view } = harness(undefined, content);
+    vi.mocked(view.snapshot).mockResolvedValue({ ...initial, subagents: [{ ...children[0]!, label: 'hydr' }, ...children.slice(1, 4)], contentRefs: [ref, nested] });
+    await controller.open();
+    try {
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(1));
+      expect(await controller.loadContentSegment('main', nested)).toBe(true);
+      finishRoot();
+      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
+      expect(content.mock.calls.filter(([input]) => input.ref.kind === 'array' && input.ref.offset === 4)).toHaveLength(1);
+      expect(controller.getState().snapshotSubagents[0]?.label).toBe('hydrated');
+      expect(controller.getState().contentRefs).toEqual([]);
+    } finally { finishRoot(); controller.close(); }
+  });
+
+  it('retains the same-revision roster continuation across repeated shell refreshes during timeline reads', async () => {
+    const content = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => {
+      const offset = Math.min(requested.offset + 20, 706);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+    });
+    const { controller, view, deliver } = harness(undefined, content);
+    vi.mocked(view.snapshot).mockImplementation(async () => ({ ...initial }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot(), 1));
+    try {
+      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
+      const reads = content.mock.calls.length;
+      for (let seq = 2; seq <= 4; seq += 1) {
+        controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 1, epoch: 'e' }, rosterAgentId: 'child-0', generation: 1 });
+        await vi.waitFor(() => expect(view.snapshot).toHaveBeenCalledTimes(seq));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(content).toHaveBeenCalledTimes(reads);
+      expect(controller.getState().contentRefs).toEqual([]);
+      expect(controller.getState().snapshotSubagents).toHaveLength(706);
+    } finally { controller.close(); }
+  });
+
   it('bounds root revision recovery without progress and allows an explicit retry to resume automatically', async () => {
     const { RPCError } = await import('@kiki/klient/session-view');
     let changed = true;

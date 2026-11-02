@@ -140,6 +140,23 @@ describe('facade routing', () => {
       await expect(klient.session('missing-session').resume()).resolves.toBe(false);
     } finally { await klient.close(); }
   });
+  it('keeps complete model-switch reads argument-free and makes bounded observation explicit', async () => {
+    const channel = new FakeChannel();
+    const call = vi.spyOn(channel, 'call');
+    channel.result = [];
+    const klient = createKlientFromChannel(channel);
+    const signal = new AbortController().signal;
+    const scope = { sessionId: 's1', agentId: 'main' };
+    try {
+      const agent = klient.session('s1').agent('main');
+      await agent.listModelSwitches();
+      expect(call).toHaveBeenLastCalledWith(scope, 'agentPromptService', 'listModelSwitches', [], undefined);
+      await agent.listModelSwitches({ signal });
+      expect(call).toHaveBeenLastCalledWith(scope, 'agentPromptService', 'listModelSwitches', [], { signal });
+      await agent.observeModelSwitches({ signal });
+      expect(call).toHaveBeenLastCalledWith(scope, 'agentPromptService', 'listModelSwitches', [{ observe: true }], { signal });
+    } finally { await klient.close(); }
+  });
   it('passes task-board cancellation as transport metadata, not procedure arguments', async () => {
     const channel = new FakeChannel();
     const call = vi.spyOn(channel, 'call');

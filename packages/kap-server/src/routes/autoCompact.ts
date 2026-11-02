@@ -22,6 +22,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
+import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensureMainAgent } from '../transport/mainAgent';
@@ -47,10 +48,24 @@ function missingModelEnvelope(error: unknown, requestId: string): ReturnType<typ
 
 export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
   const read = defineRoute({
-    method: 'GET', path, params, success: { data: autoCompactStatusSchema }, errors,
-    description: 'Read the effective automatic compaction point, source and usable context limit for one agent',
+    method: 'GET', path, params, querystring: z.object({ observe: z.enum(['true', 'false']).optional() }),
+    success: { data: autoCompactStatusSchema }, errors: { ...errors, [ErrorCode.SESSION_BUSY]: {} },
+    description: 'Read the effective automatic compaction point; observe reads never restore a cold agent',
     tags: ['sessions'],
   }, async (req, reply) => {
+    if (req.query.observe === 'true') {
+      const observed = await readAgentObserver(core, req.params.session_id, req.params.agent_id);
+      if (observed === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
+      if (observed.agent === undefined) {
+        const bound = observed.metadata?.model !== undefined;
+        reply.send(errEnvelope(bound ? ErrorCode.SESSION_BUSY : ErrorCode.VALIDATION_FAILED,
+          bound ? 'Agent settings are unavailable while the agent is not active' : req.params.agent_id === MAIN_AGENT_ID ? 'Model not set' : 'Agent is not active in this session', req.id));
+        return;
+      }
+      try { reply.send(okEnvelope(observed.agent.accessor.get(IAgentFullCompactionService).getAutoCompact(), req.id)); }
+      catch (error) { const missing = missingModelEnvelope(error, req.id); if (missing === undefined) throw error; reply.send(missing); }
+      return;
+    }
     await withSessionOperation(core, req.params.session_id, async (session) => {
       if (session === undefined) {
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));

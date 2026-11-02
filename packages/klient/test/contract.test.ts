@@ -263,6 +263,14 @@ describe('MCP timeout contract validation', () => {
 });
 
 describe('prompt contract validation', () => {
+  it('preserves no-argument model-switch reads and validates explicit bounded observation', () => {
+    const input = agentPromptContract.listModelSwitches.input;
+    expect(input.parse([])).toEqual([]);
+    expect(input.parse([{ observe: true }])).toEqual([{ observe: true }]);
+    for (const args of [[{ observe: 'true' }], [{ observe: true, signal: {} }], [true], [{ observe: true }, {}]]) {
+      expect(input.safeParse(args).success).toBe(false);
+    }
+  });
   it('rejects an empty caller-chosen promptId', () => {
     expect(promptPayloadSchema.safeParse({ input: [], promptId: '' }).success).toBe(false);
   });
