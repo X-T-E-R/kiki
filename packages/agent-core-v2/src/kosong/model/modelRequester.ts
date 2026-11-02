@@ -11,7 +11,7 @@ import type {
   ImageUploadInput,
   VideoUploadInput,
 } from '#/kosong/contract/provider';
-import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
+import type { ResponsesRequestTransport, ResponsesTransportSelection } from '#/kosong/contract/responsesTransport';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
@@ -68,6 +68,8 @@ export interface ModelRequestParams {
   readonly rawResponseObserver?: RawResponseObserver;
   readonly requestIdentity?: RequestIdentityWireOptions;
   readonly responsesTransport?: ResponsesRequestTransport;
+  /** Resolves the live agent-owned transport after admission, once per send attempt. A callback returning undefined selects HTTP instead of responsesTransport; omitting the callback preserves the direct transport. */
+  readonly resolveResponsesTransport?: () => ResponsesTransportSelection | undefined;
   readonly attribution?: RequestAttribution;
   readonly retry?: 'never';
 }

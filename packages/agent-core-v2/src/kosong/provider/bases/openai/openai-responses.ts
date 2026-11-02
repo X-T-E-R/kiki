@@ -153,11 +153,35 @@ function transportStatusError(error: unknown): ChatProviderError | undefined {
   });
 }
 
-function transportClosureError(error: unknown): ChatProviderError | undefined {
+const RETRYABLE_WEBSOCKET_CLOSE_CODES = new Set([1000, 1001, 1006, 1011, 1012, 1013, 1014]);
+
+function forwardedClosureError(body: unknown, message: string): ChatProviderError | undefined {
+  const error = asRawObject(body);
+  if (error?.['type'] !== 'websocket_close_error') return undefined;
+  const code = readStringField(error, 'code');
+  const closeCode = code !== undefined && /^[1-4]\d{3}$/.test(code) ? Number(code) : undefined;
+  const retry = closeCode !== undefined && RETRYABLE_WEBSOCKET_CLOSE_CODES.has(closeCode);
+  return attachErrorDetails(retry ? new APIConnectionError(message) : new ChatProviderError(message), {
+    websocketCloseCode: closeCode, retry,
+  });
+}
+
+function transportClosureError(
+  error: unknown,
+  convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
+): ChatProviderError | undefined {
+  if (error instanceof OpenAIAPIError && error.status === undefined) {
+    const closure = forwardedClosureError(error.error, `Error: ${error.message}`);
+    if (closure === undefined) return undefined;
+    const failure = convertErrorHook?.(error) ?? closure;
+    return attachErrorDetails(markProviderEventError(failure, error.code), {
+      ...providerStreamErrorDetails(error.error, error.requestID), errorSource: 'provider_event',
+    });
+  }
   if (!(error instanceof ResponsesWebSocketError) ||
     (error.code !== 'responses_websocket_closed_before_terminal' && error.code !== 'responses_websocket_handshake_closed')) return undefined;
   const closeCode = error.status;
-  const retry = closeCode === undefined || [1000, 1001, 1006, 1011, 1012, 1013, 1014].includes(closeCode);
+  const retry = closeCode === undefined || RETRYABLE_WEBSOCKET_CLOSE_CODES.has(closeCode);
   const message = closeCode === undefined ? error.message : `${error.message} (code ${closeCode})`;
   return attachErrorDetails(retry ? new APIConnectionError(message) : new ChatProviderError(message), {
     nativeCode: error.code, websocketCloseCode: closeCode, retry,
@@ -333,6 +357,8 @@ function errorFromOpenAIResponsesEvent(
   if (hooked !== undefined) {
     return withEventDetails(hooked);
   }
+  const closure = forwardedClosureError(body, fullMessage);
+  if (closure !== undefined) return withEventDetails(closure);
   if (isContextOverflowErrorCode(code)) {
     return withEventDetails(new APIContextOverflowError(400, fullMessage));
   }
@@ -1366,7 +1392,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         !(error instanceof ResponsesWebSocketError) &&
         !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
-      const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error, this._convertErrorHook) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
       attachErrorDetails(failure, { responsesTransport: this._transportDiagnostics() });
       if (this._observedOutput) noteExecutedRequestDelivery(failure);
       if (this._continuationBlocked) attachErrorDetails(failure, { retry: false });
@@ -1569,8 +1595,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       }
 
       const transport = options?.responsesTransport;
-      if (transport !== undefined && this._responsesWebSocket !== undefined &&
-        matchesProviderTarget(`${client.baseURL.replace(/\/$/, '')}/responses`, this._responsesWebSocket.targets)) {
+      const webSocketConfig = options?.responsesWebSocket ?? this._responsesWebSocket;
+      if (transport !== undefined && webSocketConfig !== undefined &&
+        matchesProviderTarget(`${client.baseURL.replace(/\/$/, '')}/responses`, webSocketConfig.targets)) {
         const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
         const headers = finalizeProviderRequestHeaders(mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers), auth);
         let fullInput: readonly unknown[] | undefined;

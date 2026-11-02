@@ -43,6 +43,7 @@ import {
   APIRequestTooLargeError,
   APIStatusError,
   classifyApiError,
+  createAbortError,
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
@@ -52,7 +53,8 @@ import {
 } from '#/kosong/contract/errors';
 import { isContentPart, isVacuousContentPart, isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
 import { readGenerateFailureUsage } from '#/kosong/contract/generate';
-import type { ResponsesRequestTransport, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
+import type { ResponsesTransportSelection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
+import { matchesProviderTarget } from '#/kosong/provider/providerTarget';
 import { safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
@@ -407,22 +409,26 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   }
 
   private ensureResponsesTransport(
-    request: Pick<ResolvedLLMRequest, 'model' | 'source' | 'identity'>,
-  ): ResponsesRequestTransport | undefined {
+    request: Pick<ResolvedLLMRequest, 'model' | 'modelAlias' | 'source' | 'identity'>,
+  ): ResponsesTransportSelection | undefined {
+    if (this._store.isDisposed) throw createAbortError();
     const model = request.model;
-    const config = model.responsesWebSocket;
-    if (request.source?.type !== 'turn' || model.protocol !== 'openai_responses' || config === undefined || config.targets.length === 0) {
+    const current = request.source?.type === 'turn' && model.protocol === 'openai_responses'
+      ? this.modelCatalog.get(request.modelAlias, this.profile.getRecipeModelSettings(request.modelAlias)) : undefined;
+    const config = current?.responsesWebSocket;
+    if (current?.protocol !== 'openai_responses' || config === undefined || config.targets.length === 0 ||
+      (model.baseUrl !== undefined && !matchesProviderTarget(`${model.baseUrl.replace(/\/$/, '')}/responses`, config.targets))) {
       this.closeResponsesTransport();
       return undefined;
     }
-    const key = responsesTransportKey(model, request.identity);
+    const key = responsesTransportKey({ ...model, responsesWebSocket: config }, request.identity);
     if (this.responsesTransport === undefined || this.responsesTransportModel !== model || this.responsesTransportKey !== key) {
       this.closeResponsesTransport();
       this.responsesTransportModel = model;
       this.responsesTransportKey = key;
       this.responsesTransport = new ResponsesWebSocketTransport();
     }
-    return this.responsesTransport;
+    return { transport: this.responsesTransport, config };
   }
 
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined {
@@ -1180,7 +1186,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       ...request,
       params: {
         ...params,
-        responsesTransport: this.ensureResponsesTransport(request),
+        resolveResponsesTransport: () => this.ensureResponsesTransport(request),
       },
     };
   }

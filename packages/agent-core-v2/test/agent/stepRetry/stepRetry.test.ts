@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
 import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 import {
@@ -9,7 +12,7 @@ import {
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
-import { OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import type { StreamedMessage } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
@@ -41,6 +44,7 @@ import { StubConfigService } from '../../kosong/stubs';
 import { stubLoopWithHooks } from '../loop/stubs';
 
 import {
+  appService,
   createTestAgent,
   llmGenerateServices,
   permissionModeServices,
@@ -943,6 +947,81 @@ describe('stepRetry plugin', () => {
     const resumed = await executor.run({ kind: 'prompt', prompt: 'Resume and finish.' }, { signal: new AbortController().signal });
     expect(await resumed.completion).toMatchObject({ summary: 'resumed result' });
     expect(calls).toBe(6);
+  });
+
+  it.each(['before-output', 'partial-tool', 'exhaust', 'partial-off', 'deny', 'cancel'] as const)('handles a forwarded SSE WebSocket 1012 through the native turn: %s', async mode => {
+    const bodies: string[] = [];
+    const controller = new AbortController();
+    const tool = { type: 'function_call', id: 'fc_save', call_id: 'call_save', name: 'SaveWork', arguments: '{}', status: 'completed' };
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(body);
+        const first = bodies.length === 1 || mode === 'exhaust';
+        const events: Record<string, unknown>[] = [];
+        if (first) {
+          if (mode !== 'before-output') events.push({ type: 'response.output_text.delta', delta: 'discarded answer' },
+            { type: 'response.output_item.added', output_index: 0, item: tool });
+          events.push({ type: 'error', error: { type: 'websocket_close_error', code: '1012', message: 'websocket closed before terminal event (code 1012)' } });
+        } else if (bodies.length === 2) events.push({ type: 'response.output_item.added', output_index: 0, item: tool },
+          { type: 'response.completed', response: { id: 'tool_done', status: 'completed', output: [tool] } });
+        else events.push({ type: 'response.completed', response: { id: 'done', status: 'completed', output: [{ type: 'message', role: 'assistant',
+          content: [{ type: 'output_text', text: 'saved once', annotations: [] }] }] } });
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `event: ${String(event['type'])}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+    const provider = new OpenAIResponsesChatProvider({ model: 'fixture', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}/v1` });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider() { return provider; }
+    }
+    ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()), { initialConfig: { retry: {
+      retryPartialResponses: mode !== 'partial-off', policies: [{ match: 'APIConnectionError', retry: mode !== 'deny', backoff: 1 }],
+    }, responses_web_socket: { targets: [] } } });
+    const execute = vi.fn(async () => ({ output: 'fixture saved' }));
+    ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'SaveWork', execute }) });
+    ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
+    const cancel = ctx.get(IEventBus).subscribe(TurnStepRetrying, () => { if (mode === 'cancel') controller.abort(); });
+    try {
+      void ctx.dispatcher.dispatch(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+      ctx.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
+      const result = await ctx.get(IAgentLoopService).run({ turnId: 1, signal: controller.signal });
+      const recovered = mode === 'before-output' || mode === 'partial-tool';
+      const retainsPartial = mode === 'partial-off' || mode === 'deny';
+      const history = ctx.contextData().history;
+      expect(result.type).toBe(recovered ? 'completed' : mode === 'cancel' ? 'cancelled' : 'failed');
+      expect(bodies).toHaveLength(recovered ? 3 : mode === 'exhaust' ? 5 : 1);
+      expect(execute).toHaveBeenCalledTimes(recovered ? 1 : 0);
+      expect(rpcEvents('turn.step.retrying')).toHaveLength(recovered || mode === 'cancel' ? 1 : mode === 'exhaust' ? 4 : 0);
+      if (retainsPartial) {
+        expect(history).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            content: [{ type: 'text', text: 'discarded answer' }],
+            toolCalls: [],
+            partial: true,
+          }),
+        ]));
+        expect(wireLoopEvents('tool.call')).toHaveLength(0);
+      } else {
+        expect(JSON.stringify(history)).not.toContain('discarded answer');
+      }
+      if (recovered) {
+        expect(bodies[1]).toBe(bodies[0]);
+        expect(wireLoopEvents('tool.call')).toHaveLength(1);
+        expect(rpcEvents('response.attempt.discarded')).toHaveLength(mode === 'partial-tool' ? 1 : 0);
+      }
+    } finally {
+      await cancel.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
+    }
   });
 
   it.each(['recover', 'exhaust', 'disabled'] as const)('applies the bounded turn policy to a WebSocket connection-limit event: %s', async mode => {
