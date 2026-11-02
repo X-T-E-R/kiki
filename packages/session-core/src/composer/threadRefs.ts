@@ -13,6 +13,7 @@
 import type { Session, Workspace } from '@kiki/protocol';
 
 import { conversationRefLink } from '../sessions/conversationLinks';
+import { sessionIsExecuting } from '../sessions/sessionList';
 
 /** Session ids are `session_<uuid>` (seat sessions add a `seat_` infix). */
 const SESSION_ID = 'session_[A-Za-z0-9][A-Za-z0-9_-]*';
@@ -133,7 +134,7 @@ export function shortThreadId(sessionId: string): string {
 
 // ---- prompt context block ----
 
-export type ThreadRefStatus = 'running' | 'awaiting_approval' | 'awaiting_answer' | 'idle' | 'archived' | 'unknown';
+export type ThreadRefStatus = 'running' | 'awaiting_approval' | 'awaiting_answer' | 'cleanup_pending' | 'idle' | 'archived' | 'unknown';
 
 /** What the GUI knows about one referenced thread at send time. */
 export interface ThreadRefInfo {
@@ -156,13 +157,15 @@ export interface RoomRefInfo {
   readonly memberCount?: number;
 }
 
-/** Presentation status of a thread record (pending interaction beats busy). */
+/** Presentation status of a thread record, preserving pending interaction and cleanup. */
 export function threadRefStatusOf(session: Session | undefined): ThreadRefStatus {
   if (session === undefined) return 'unknown';
   if (session.archived === true) return 'archived';
   if (session.pending_interaction === 'approval') return 'awaiting_approval';
   if (session.pending_interaction === 'question') return 'awaiting_answer';
-  return session.busy ? 'running' : 'idle';
+  if (session.cleanup_pending === true) return 'cleanup_pending';
+  const executing = sessionIsExecuting(session);
+  return executing === undefined ? 'unknown' : executing ? 'running' : 'idle';
 }
 
 /**

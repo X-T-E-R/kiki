@@ -1525,6 +1525,31 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('killed');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('retains exit-code-zero process cleanup as unconfirmed until TaskStop confirms ownership cleanup', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    const error = new HostProcessError('os.process.kill_failed', 'helper control channel closed', {
+      details: { cleanupComplete: false, phase: 'control', controlClosed: true, pid: 4245 },
+    });
+    const proc = {
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from([]), stderr: Readable.from([]), pid: 4245, exitCode: 0,
+      wait: async () => 0,
+      kill: vi.fn(async () => {}),
+      dispose: vi.fn(async () => {}).mockRejectedValueOnce(error),
+    } as unknown as IHostProcess;
+    const service = ix.get(IAgentTaskService);
+    const workChanged = vi.fn();
+    if (service.onDidChangeWork === undefined) throw new Error('Task work change event is unavailable');
+    disposables.add(service.onDidChangeWork(workChanged));
+    const taskId = service.registerTask(new ProcessTask(proc, 'fixture', 'completed root process'));
+    await vi.waitFor(() => expect(service.getTask(taskId)?.cleanupPending).toBe(true));
+    expect(service.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null, cleanupPending: true, receipt: undefined });
+    expect(service.hasUnfinishedWork()).toBe(true);
+    expect(workChanged).toHaveBeenCalled();
+    expect(await service.stop(taskId)).toMatchObject({ status: 'killed', exitCode: 0, cleanupPending: undefined });
+    expect(proc.dispose).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['force', 'lifecycle', 'timeout'] as const)('retains typed %s cleanup failure and confirms cleanup on a later stop', async (path) => {
     stubTaskConfig({ killGracePeriodMs: 0 });
     const service = ix.get(IAgentTaskService);
@@ -1546,10 +1571,10 @@ describe('AgentTaskService', () => {
       rejectLifecycle(error);
       await vi.waitFor(() => expect(service.getTask(taskId)?.stopReason).toContain('os.process.kill_failed'));
     }
-    expect(service.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null, receipt: undefined });
+    expect(service.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null, receipt: undefined, cleanupPending: true });
     expect(service.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
     expect(service.getTask(taskId)?.stopReason).toContain('"remainingProcessCount":1');
-    expect((await service.stop(taskId))?.status).toBe('killed');
+    expect(await service.stop(taskId)).toMatchObject({ status: 'killed', cleanupPending: undefined });
     expect(forceStop).toHaveBeenCalledTimes(path === 'lifecycle' ? 1 : 2);
   });
 

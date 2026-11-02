@@ -334,6 +334,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 会话读取与 `event.session.work_changed` 将 `executing` 与 `busy` 分开提供。`busy` 包含未完成工作、排队提示词和等待投递的已结束任务结果。`executing` 表示当前本地执行或有限生命周期的进程、媒体任务，不包含这些队列、未投递的终态结果、常驻服务，以及没有活动执行器的 Agent 任务条目。冷会话对本进程报告 `executing: false`。旧版服务端省略该字段，省略表示未知。历史子 Agent 条目的 `status: "running"` 不构成当前正在执行的证据。
 
+会话、任务或 `event.session.work_changed` 中的 `cleanup_pending: true` 表示进程清理待确认。会话保持 `busy`；该任务不计入 `executing`，其他活动轮次或任务仍可能使它为 true。线程摘要使用 `state: "cleanup_pending"`，GUI 优先显示“进程清理待确认”，而非普通运行或空闲状态；待批准或待回答仍有更高优先级。替换其工作前，对同一任务重试 `TaskStop` 以确认清理；根进程退出码 0 本身不足以将任务置为终态。清理确认后移除该标记，恢复正常终态结果和原有操作。旧版服务端省略该标记。
+
 快照的 `subagents` 名册条目包含可选的 `created_at`，以 UTC ISO 时间表示 Agent 不变的创建时刻。新建 Agent 在首次运行前就带有该值，包括仍在排队时；续跑同一 Agent、恢复其作用域、重启服务或切换模型均不会改变它。fork 若创建了新的 Agent 实体，则记录新的创建时间。另一个可选字段 `started_at` 表示该条目所描述的运行开始时间，后续运行可以更新它。
 
 模型、思考强度与执行器字段优先使用 Agent 当前已提交的元数据，当前值缺失时才回退到创建快照。思考强度来源与执行器协议沿用所选数据源；当前绑定本身不证明哪个模型处理了真实请求。

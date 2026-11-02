@@ -18,9 +18,9 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
-export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>;
+export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
 
-export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'main_turn_active'> & {
+export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active'> & {
   readonly sessionId: string;
 };
 
@@ -123,6 +123,12 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
   })) };
 }
 
+export function patchSessionWorkChanged(session: Session, change: SessionWorkChangedPatch): Session {
+  return session.id === change.sessionId
+    ? { ...session, busy: change.busy, executing: change.executing, cleanup_pending: change.cleanup_pending, main_turn_active: change.main_turn_active }
+    : session;
+}
+
 export function mergeSessionWorkChanged(
   old: SessionListData | undefined,
   change: SessionWorkChangedPatch,
@@ -132,9 +138,7 @@ export function mergeSessionWorkChanged(
     ...old,
     pages: old.pages.map((page) => ({
       ...page,
-      items: page.items.map((session) => session.id === change.sessionId
-        ? { ...session, busy: change.busy, executing: change.executing, main_turn_active: change.main_turn_active }
-        : session),
+      items: page.items.map((session) => patchSessionWorkChanged(session, change)),
     })),
   };
 }
@@ -419,15 +423,16 @@ export function groupSessionsByWorkspace<T extends SessionListEntry, W extends P
 
 /** Status buckets the filter chips read (mirrors the sidebar row dot). */
 export function sessionStatusOf(
-  session: Pick<Session, 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>,
-): 'running' | 'needs-me' | 'idle' {
+  session: Pick<Session, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>,
+): 'running' | 'needs-me' | 'cleanup-pending' | 'idle' {
   const pending = session.pending_interaction;
   if (pending === 'approval' || pending === 'question') return 'needs-me';
+  if (session.cleanup_pending === true) return 'cleanup-pending';
   return sessionIsExecuting(session) === true ? 'running' : 'idle';
 }
 
 export interface SessionFilterInput {
-  readonly status: readonly ('running' | 'needs-me' | 'idle')[];
+  readonly status: readonly ('running' | 'needs-me' | 'cleanup-pending' | 'idle')[];
   readonly workspaces: readonly string[];
   readonly archived: 'hide' | 'include' | 'only';
 }

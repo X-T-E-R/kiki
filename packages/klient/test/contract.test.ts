@@ -18,6 +18,7 @@ import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagem
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import {
   activateSkillPayloadSchema,
+  agentTaskInfoSchema,
   agentLoopStatusSchema,
   promptPayloadSchema,
 } from '../src/contract/agent/schemas.js';
@@ -41,6 +42,25 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+import { sessionActivityStateSchema } from '../src/contract/session/activity.js';
+import { globalEvents } from '../src/contract/global/events.js';
+import { threadSummarySchema } from '../src/contract/global/threads.js';
+
+describe('cleanup pending contracts', () => {
+  it('retains structured cleanup on status, tasks, global events and thread summaries', () => {
+    const activity = { busy: true, executing: false, cleanupPending: true, mainTurnActive: false, pendingInteraction: 'none' };
+    expect(sessionActivityStateSchema.parse(activity)).toEqual(activity);
+    const task = { taskId: 'process-fixture', kind: 'process', command: 'fixture', description: 'Process fixture', pid: 42,
+      status: 'running', exitCode: 0, startedAt: 1, endedAt: null, cleanupPending: true };
+    expect(agentTaskInfoSchema.parse(task)).toEqual(task);
+    const event = { sessionId: 'session-fixture', busy: true, executing: false, cleanup_pending: true };
+    expect(globalEvents['session.workChanged'].schema.parse(event)).toEqual(event);
+    for (const state of ['cleanup_pending', 'unknown']) {
+      const summary = { ref: { hostId: 'host-fixture', workspaceId: 'workspace-fixture', sessionId: 'session-fixture' }, createdAt: 1, updatedAt: 2, state };
+      expect(threadSummarySchema.parse(summary)).toEqual(summary);
+    }
+  });
+});
 
 describe('HTTP config facade contract', () => {
   it('carries retry settings and scoped selectors through Klient request and response types', () => {

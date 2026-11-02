@@ -51,6 +51,12 @@ describe('lifeOf', () => {
     expect(lifeOf({ busy: false, executing: true }, NOW)).toBe('working');
   });
 
+  it('shows unconfirmed process cleanup as waiting until cleanup succeeds', () => {
+    expect(lifeOf({ busy: true, executing: false, cleanup_pending: true, last_turn_reason: 'completed' }, NOW)).toBe('waiting');
+    expect(lifeOf({ busy: true, executing: true, cleanup_pending: true }, NOW)).toBe('waiting');
+    expect(lifeOf({ busy: false, executing: false, cleanup_pending: undefined }, NOW)).toBe('idle');
+  });
+
   it('keeps a completed turn "done" only inside the window', () => {
     expect(lifeOf({ busy: false, last_turn_reason: 'completed', updated_at: ago(60_000) }, NOW)).toBe('done');
     expect(lifeOf({ busy: false, last_turn_reason: 'completed', updated_at: ago(DONE_WINDOW_MS + 1) }, NOW)).toBe('idle');

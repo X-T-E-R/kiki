@@ -9,6 +9,7 @@ export interface SessionActivityState {
   readonly busy: boolean;
   /** Current execution, excluding queued work and terminal task receipts awaiting delivery. Absent on older hosts. */
   readonly executing?: boolean;
+  readonly cleanupPending?: boolean;
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: SessionTurnOutcome;

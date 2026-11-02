@@ -16,6 +16,7 @@ import {
   mergeSessionFirstPage,
   mergeSessionActivity,
   mergeSessionWorkChanged,
+  patchSessionWorkChanged,
   pinMetadataPatch,
   readAllSessionPages,
   SESSION_PIN_META_KEY,
@@ -95,10 +96,20 @@ describe('activity recency', () => {
 });
 
 describe('work_changed cache merge', () => {
+  it('updates fetched references outside the session list and preserves unrelated records', () => {
+    const fetched = session('target', '2026-01-01T00:00:00.000Z');
+    const pending = patchSessionWorkChanged(fetched, { sessionId: 'target', busy: true, executing: false, cleanup_pending: true });
+    expect(pending).toMatchObject({ busy: true, executing: false, cleanup_pending: true });
+    expect(patchSessionWorkChanged(pending, { sessionId: 'target', busy: false, executing: false }).cleanup_pending).toBeUndefined();
+    expect(patchSessionWorkChanged(fetched, { sessionId: 'other', busy: true })).toBe(fetched);
+  });
+
   it('updates busy and optional executing on every loaded page without changing other rows', () => {
     const old = data(page(['newer'], true), page(['target', 'other'], false));
-    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: true, executing: false });
-    expect(merged?.pages[1]?.items[0]).toMatchObject({ id: 'target', busy: true, executing: false });
+    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: true, executing: false, cleanup_pending: true });
+    expect(merged?.pages[1]?.items[0]).toMatchObject({ id: 'target', busy: true, executing: false, cleanup_pending: true });
+    const completed = mergeSessionWorkChanged(merged, { sessionId: 'target', busy: false, executing: false });
+    expect(completed?.pages[1]?.items[0]).toMatchObject({ busy: false, executing: false, cleanup_pending: undefined });
     expect(merged?.pages[0]?.items[0]).toEqual(old.pages[0]?.items[0]);
     expect(merged?.pages[1]?.items[1]).toEqual(old.pages[1]?.items[1]);
   });
@@ -381,6 +392,14 @@ describe('sessionStatusOf / filterSessions', () => {
 
   it('reads a pending interaction as needs-me ahead of busy', () => {
     expect([running, waiting, idle].map(sessionStatusOf)).toEqual(['running', 'needs-me', 'idle']);
+  });
+
+  it('filters cleanup separately from ordinary running and idle', () => {
+    const cleanup = { ...settledBusy, cleanup_pending: true };
+    expect(sessionStatusOf(cleanup)).toBe('cleanup-pending');
+    expect(sessionStatusOf({ ...cleanup, pending_interaction: 'question' })).toBe('needs-me');
+    expect(filterSessions([cleanup], { ...none, status: ['running', 'idle'] })).toEqual([]);
+    expect(filterSessions([cleanup], { ...none, status: ['cleanup-pending'] })).toEqual([cleanup]);
   });
 
   it('does not color or filter queued work as currently running', () => {
