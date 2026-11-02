@@ -109,7 +109,8 @@ function parseLegacyCarryoverPrefix(text: string): {
     const anchorLineEnd = anchorNl === -1 ? text.length : anchorNl;
     const anchorLine = text.slice(pos, anchorLineEnd).replace(/\r$/, '');
     const source = parseSourceAnchor(anchorLine);
-    if (source === null) break;
+    // An explicit JSON null is a valid no-anchor selection, distinct from a malformed anchor.
+    if (source === null && anchorLine !== '<!-- kiki-source:null -->') break;
 
     pos = anchorNl === -1 ? text.length : anchorNl + 1;
 

@@ -115,6 +115,7 @@ function replayUsageResponse(capture, query) {
  *   { delay, frame: { type, payload, volatile?, offset? } }  emit a frame
  *   { waitFor: 'approval' | 'question' | 'abort' | 'release' } pause
  *   { commit: Message }                                    journal a message
+ *   { reseed: { presentation? } }                         rebuild durable turns for cold reads
  *   { spam: { count, frame, paceMs? } } emit count copies of frame in dense
  *                                   500-frame chunks (`$I` binds the index;
  *                                   paceMs stretches the storm across chunks)
@@ -1970,6 +1971,17 @@ class FixtureServer {
             continue;
           }
           await new Promise((resolve) => session.waiters.push({ kind: step.waitFor, resolve }));
+          continue;
+        }
+        if (step.reseed !== undefined) {
+          // Durable-message reseed for the next cold read; do not rewrite the
+          // live optimistic echo that the walker is still interacting with.
+          seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
+          if (step.reseed.presentation !== undefined) {
+            const turns = session.transcript.ensure('main').snapshot.items.filter((item) => item.kind === 'turn');
+            const latest = turns.at(-1);
+            if (latest !== undefined) latest.presentation = step.reseed.presentation;
+          }
           continue;
         }
         if (step.commit !== undefined) {

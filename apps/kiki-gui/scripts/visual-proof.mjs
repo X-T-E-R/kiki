@@ -516,18 +516,32 @@ async function selectSession(titleFragment) {
     const viewport = page.viewportSize();
     return box !== null && viewport !== null && box.x + box.width / 2 > 1 && box.x + box.width / 2 < viewport.width - 1 && box.y + box.height / 2 > 1 && box.y + box.height / 2 < viewport.height - 1;
   };
-  // One toggle opens the usual closed drawer; a second covers a stale open
-  // aria state left by the preceding navigation.
-  for (let attempt = 0; narrow && attempt < 2 && !(await rowOnScreen()); attempt += 1) {
-    await menu.click();
-    await page.waitForTimeout(300);
+  // Use only real pointer activation. Geometry, rather than a possibly stale
+  // aria-expanded value, decides whether the drawer needs another toggle.
+  let clicked = false;
+  let lastClickError;
+  for (let attempt = 0; attempt < 5 && !clicked; attempt += 1) {
+    if (attempt > 0) await page.waitForTimeout(350);
+    if (await rowOnScreen()) {
+      try {
+        await rowButton.click({ timeout: 5000 });
+        clicked = true;
+      } catch (error) {
+        lastClickError = error;
+      }
+    } else {
+      if (!narrow) await rowButton.click({ timeout: 5000 });
+      else await menu.click();
+      clicked = !narrow;
+    }
   }
-  if (await rowOnScreen()) {
-    await rowButton.click({ timeout: 5000 }).catch(() => rowButton.evaluate((node) => { node.click(); }));
-  } else {
-    // The route's off-canvas state can outlive two real toggles under load;
-    // activate the row's actual button rather than its inert wrapper.
-    await rowButton.evaluate((node) => { node.click(); });
+  if (!clicked) {
+    const state = await rowButton.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const sidebar = node.closest('aside');
+      return { box: { x: box.x, y: box.y, width: box.width, height: box.height }, sidebarTransform: sidebar === null ? null : getComputedStyle(sidebar).transform };
+    });
+    throw lastClickError ?? new Error(`session row never became visibly clickable: ${JSON.stringify(state)}`);
   }
   // The session view fetches its transcript before the composer can take a
   // prompt; a fixed sleep here raced that mount under load and sent the prompt
@@ -4924,7 +4938,7 @@ async function scenarioSelectionAnnotate() {
   const COMMENT_A = 'Floor batching keeps long sessions cheap';
   const FRAGMENT_B = 'drains parked prompts in order';
   const QUOTE = 'Queue promotion';
-  const NEW_QUOTE = 'Selection annotations received by the fixture.';
+  const NEW_QUOTE = 'so long sessions stay cheap';
   const NEW_COMMENT = 'Added after the successful send';
   const TYPED = `Before ${THREAD} after`;
   const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
@@ -5140,6 +5154,7 @@ async function scenarioSelectionAnnotate() {
   await input.press('Control+Enter');
   await page.waitForFunction(() => document.querySelector('[data-composer-notes-pill]') === null, undefined, { timeout: 10_000 });
   await waitForText('Selection annotations received by the fixture.');
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 10_000 });
   // Select from a settled transcript; this assertion targets post-send item
   // ownership, not whether a live DOM replacement should preserve a text selection.
   await annotate(NEW_QUOTE, NEW_COMMENT);
@@ -5161,15 +5176,18 @@ async function scenarioSelectionAnnotate() {
     throw new Error(`selection presentation order is wrong: ${JSON.stringify(selectionSpans)}`);
   }
   if (selectionSpans.some((span) => span.source === undefined)) throw new Error('a generated selection lost its source anchor');
+  const liveRow = page.locator('[role="log"] [data-block-id]', { hasText: 'Before' })
+    .filter({ has: page.locator('[data-user-context]'), hasNot: page.locator('[data-optimistic-status]') }).last();
+  await liveRow.waitFor({ timeout: 5000 });
+  const liveRowText = await liveRow.innerText();
+  for (const hidden of ['<!-- kiki-source:', '<thread_refs>', 'Comment:']) {
+    if (liveRowText.includes(hidden)) throw new Error(`live user row exposed generated content ${hidden}: ${liveRowText}`);
+  }
   await shot('selection-annotate-new-item-retained');
 
   // Canonical cold replay keeps generated source metadata out of the user message.
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForText('Selection annotations received by the fixture.');
-  const visibleText = await page.locator('[role="log"]').innerText();
-  if (visibleText.includes('<!-- kiki-source:')) throw new Error('cold replay exposed generated source metadata');
-  // A virtualized user row need not stay mounted. Assert the persisted replay
-  // record itself, not a vacuous absence/presence in the currently mounted rows.
   const coldState = await control({ action: 'session', session_id: SID });
   const coldText = (coldState.data?.last_prompt_submission?.content ?? []).find((part) => part.type === 'text');
   const coldSpans = (coldText?.presentation?.spans ?? []).filter((span) => span.kind === 'selection');
@@ -5177,7 +5195,56 @@ async function scenarioSelectionAnnotate() {
   if (coldSpans.map((span) => span.quote).join('|') !== expectedQuotes.join('|') || coldSpans.some((span) => span.source === undefined)) {
     throw new Error(`cold replay lost selection source metadata: ${JSON.stringify(coldSpans)}`);
   }
+
+  // The durable payload is necessary but not sufficient: scroll the real
+  // virtualized transcript until the settled carrying user row is mounted.
+  const scroll = page.locator('[data-transcript-scroll]').first();
+  const coldRow = page.locator('[role="log"] [data-block-id]', { hasText: 'Before' })
+    .filter({ has: page.locator('[data-user-context]'), hasNot: page.locator('[data-optimistic-status]') }).last();
+  for (let attempt = 0; attempt < 6 && (await coldRow.count()) === 0; attempt += 1) {
+    await scroll.evaluate((node, step) => {
+      const max = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.scrollTop = Math.max(0, max - step * Math.max(240, node.clientHeight * 0.7));
+    }, attempt);
+    await page.waitForTimeout(250);
+  }
+  await coldRow.waitFor({ timeout: 5000 });
+  await coldRow.scrollIntoViewIfNeeded();
+  const coldRowText = await coldRow.innerText();
+  if (!coldRowText.includes('Before') || !coldRowText.includes('after')) throw new Error(`cold user row is incomplete: ${coldRowText}`);
+  for (const hidden of ['<!-- kiki-source:', '<thread_refs>', 'Comment:']) {
+    if (coldRowText.includes(hidden)) throw new Error(`cold user row exposed generated content ${hidden}: ${coldRowText}`);
+  }
+  const quoteTitles = await coldRow.locator('[data-quote-chip]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')));
+  if (quoteTitles.join('|') !== [FRAGMENT_B, QUOTE].join('|')) throw new Error(`cold quote chips are out of order: ${JSON.stringify(quoteTitles)}`);
+  const sentNote = coldRow.locator('[data-annotation-bubble]').first();
+  if ((await coldRow.locator('[data-annotation-bubble]').count()) !== 1) throw new Error('cold user row lost its commented selection');
+  await sentNote.click();
+  const sentPanel = page.locator('[data-annotation-bubble-panel]');
+  await sentPanel.waitFor({ timeout: 5000 });
+  if ((await sentPanel.locator('[data-annotation-bubble-quote]').innerText()) !== FRAGMENT_A
+    || (await sentPanel.locator('[data-annotation-bubble-comment]').innerText()) !== COMMENT_A) {
+    throw new Error(`cold comment or quote changed: ${await sentPanel.innerText()}`);
+  }
+  await page.keyboard.press('Escape');
+  await sentPanel.waitFor({ state: 'detached', timeout: 5000 });
   await shot('selection-annotate-cold-replay');
+
+  // Resolve every persisted anchor to its real rendered source block and mark.
+  for (const span of coldSpans) {
+    const source = span.source;
+    if (source?.blockId === undefined) throw new Error(`cold selection has no source block: ${JSON.stringify(span)}`);
+    const sourceBody = page.locator(`[role="log"] [data-source-block-id="${source.blockId}"]`).first();
+    await sourceBody.scrollIntoViewIfNeeded();
+    await sourceBody.waitFor({ timeout: 5000 });
+    if ((await sourceBody.getAttribute('data-source-version')) !== source.version) throw new Error(`source version changed for ${source.blockId}`);
+    const mark = sourceBody.locator('mark[data-annotation-ref]').filter({ hasText: span.quote }).first();
+    await mark.waitFor({ timeout: 5000 });
+    if (!(await mark.isVisible()) || (await sourceBody.innerText()).includes('kiki-source:')) {
+      throw new Error(`source anchor is not cleanly rendered for ${span.quote}`);
+    }
+  }
+  await shot('selection-annotate-cold-sources');
 }
 
 async function scenarioAnnotationBubbles() {

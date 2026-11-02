@@ -103,6 +103,28 @@ describe('parseSelectionCarryovers', () => {
     expect(parsedValid.quotes).toEqual([{ quote: 'hello', source: validSource }]);
     expect(parsedValid.body).toBe('rest of message');
   });
+
+  it('preserves explicit null sources and mixed order in legacy JSON', () => {
+    const firstSource = { blockId: 'source-a', version: 'v1', start: 0, end: 1, text: 'A' };
+    const lastSource = { blockId: 'source-d', version: 'v4', start: 0, end: 1, text: 'D' };
+    const selections = [
+      { quote: 'A', comment: '', source: firstSource },
+      { quote: 'B', comment: 'comment B', source: null },
+      { quote: 'C', comment: '', source: null },
+      { quote: 'D', comment: 'comment D', source: lastSource },
+    ];
+    const carry = selectionCarryoverPresentation(selections, []);
+    const legacy = JSON.parse(JSON.stringify({ text: `${carry.prefix}typed body` })) as { text: string };
+    const parsed = parseSelectionCarryovers(legacy.text);
+    expect(parsed.selections).toEqual(selections);
+    expect(parsed.annotations).toEqual([selections[1], selections[3]]);
+    expect(parsed.quotes).toEqual([
+      { quote: 'A', source: firstSource },
+      { quote: 'C', source: null },
+    ]);
+    expect(parsed.body).toBe('typed body');
+    expect(parsed.body).not.toContain('kiki-source');
+  });
 });
 
 describe('findQuoteRange', () => {

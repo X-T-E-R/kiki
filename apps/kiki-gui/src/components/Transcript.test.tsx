@@ -1274,6 +1274,20 @@ function serializedEditFixture() {
   return { selections, carry, body, first, second, context, text, presentation, content };
 }
 
+function legacyNullSourceEditFixture() {
+  const selections = [
+    { quote: 'A', comment: '', source: { blockId: 'source-a', version: 'v1', start: 0, end: 1, text: 'A' } },
+    { quote: 'B', comment: 'comment B', source: null },
+    { quote: 'C', comment: '', source: null },
+    { quote: 'D', comment: 'comment D', source: { blockId: 'source-d', version: 'v4', start: 0, end: 1, text: 'D' } },
+  ];
+  const carry = selectionCarryoverPresentation(selections, []);
+  const body = 'legacy typed body';
+  const text = carry.prefix + body;
+  const content = JSON.parse(JSON.stringify(buildPromptContent(text, []))) as NonNullable<ReturnType<typeof buildPromptContent>>;
+  return { selections, carry, body, text, content };
+}
+
 function assistantBlock(
   id: string,
   text: string,
@@ -3848,6 +3862,32 @@ describe('message row actions', () => {
     const contextSpan = result.presentation.spans.find((span: { kind: string }) => span.kind === 'context');
     expect(contextSpan.start).toBe(fixture.carry.prefix.length + editedBody.length);
     expect(contextSpan.end).toBe(result.text.length);
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('round-trips valid null sources from legacy historical JSON without exposing raw anchors', async () => {
+    const fixture = legacyNullSourceEditFixture();
+    const sent = fixture.content.find((part) => part.type === 'text')!;
+    if (sent.type !== 'text') throw new Error('missing legacy text');
+    const onEditMessage = vi.fn();
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-legacy-null-round-trip', text: sent.text, userMessageId: 'legacy-null-message' })],
+      { disabled: false, onEditMessage, onRegenerate: () => undefined, onFork: () => undefined },
+    );
+    expect(container.querySelector('[data-block-id="user-legacy-null-round-trip"]')?.textContent).not.toContain('kiki-source');
+    await act(async () => { click(container.querySelector('[data-row-action="edit"]')!); });
+    const editor = container.querySelector('[data-edit-editor]')!;
+    const input = composerInput(editor);
+    expect(input.value).toBe(fixture.body);
+    expect(editor.textContent).not.toContain('kiki-source');
+    const editedBody = 'edited legacy body';
+    await act(async () => { setComposerInputValue(input, editedBody); });
+    await act(async () => { click(container.querySelector('[data-edit-submit]')!); });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    const result = JSON.parse(JSON.stringify({ text: onEditMessage.mock.calls[0]?.[1], presentation: onEditMessage.mock.calls[0]?.[3] }));
+    expect(parseSelectionCarryovers(result.text, result.presentation)).toMatchObject({ selections: fixture.selections, body: editedBody });
+    expect(result.text).toBe(fixture.carry.prefix + editedBody);
+    expect(projectPresentedText(result.text, result.presentation)).toBe(editedBody);
     expect(container.querySelector('[data-edit-editor]')).toBeNull();
   });
 
@@ -8783,6 +8823,45 @@ describe('serialized queue edit consumer', () => {
     if (change === 'retarget') expect(textPart.text).toContain('<thread_ref id="session_new"');
     if (change === 'delete') expect(textPart.text).toBe(prefix + editedBody + fixture.context.replace(`${fixture.first}\n`, ''));
     expect(textPart.presentation?.spans.find((span) => span.kind === 'context')).toEqual({ start: prefix.length + editedBody.length, end: textPart.text.length, kind: 'context' });
+    expect(input.value).toBe('');
+  });
+
+  it('round-trips valid null sources from legacy queued JSON in mixed order', { timeout: 30_000 }, async () => {
+    await startEditFixture();
+    const baseUrl = `http://127.0.0.1:${editFixturePort}`;
+    const reset = await fetch(`${baseUrl}/__control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'queue' }) });
+    expect(reset.ok).toBe(true);
+    const { KikiClient } = await import('../lib/client');
+    const client = new KikiClient({ baseUrl, token: 'kiki-fixture-token' });
+    const sessionId = 'session_fixture_queue';
+    const fixture = legacyNullSourceEditFixture();
+    await client.submitPrompt(sessionId, { prompt_id: 'active-legacy-null', content: [{ type: 'text', text: 'A: hold for legacy queue editing' }] });
+    const queued = await client.submitPrompt(sessionId, { prompt_id: 'queued-legacy-null', content: fixture.content });
+    expect(queued.status).toBe('queued');
+    const session = await client.getSession(sessionId);
+    const { root, container } = makeRoot();
+    await renderSettled(root, <Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId={sessionId} sessions={[session]} onToggleSidebar={() => {}} />} /></Route></Routes>, true, [`/s/${sessionId}`]);
+    await vi.waitFor(() => { expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1'); });
+    await act(async () => { click(container.querySelector('[data-queue-count]')!.closest('button')!); });
+    await vi.waitFor(() => { expect(container.querySelector('[aria-label="Edit queued prompt"]')).not.toBeNull(); });
+    await act(async () => { click(container.querySelector('[aria-label="Edit queued prompt"]')!); });
+    await vi.waitFor(() => { expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')?.disabled).toBe(false); });
+    const input = composerInput(container);
+    expect(input.value).toBe(fixture.body);
+    expect(container.querySelector('[data-composer-card]')?.textContent).not.toContain('kiki-source');
+    await act(async () => { click(container.querySelector('[data-composer-notes-pill]')!); });
+    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => ['A', 'B', 'C', 'D'].includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(['A', 'B', 'C', 'D']);
+    const editedBody = 'edited legacy queue body';
+    await act(async () => { setComposerInputValue(input, editedBody); });
+    await act(async () => { click(container.querySelector('[aria-label="Confirm edit"]')!); });
+    await vi.waitFor(() => { expect(container.querySelector('[aria-label="Confirm edit"]')).toBeNull(); });
+    const prompts = await client.listPrompts(sessionId);
+    const saved = prompts.queued.find((item) => item.prompt_id === 'queued-legacy-null')!;
+    const textPart = saved.content.find((part) => part.type === 'text')!;
+    if (textPart.type !== 'text') throw new Error('missing legacy queued text');
+    expect(parseSelectionCarryovers(textPart.text, textPart.presentation)).toMatchObject({ selections: fixture.selections, body: editedBody });
+    expect(textPart.text).toBe(fixture.carry.prefix + editedBody);
+    expect(projectPresentedText(textPart.text, textPart.presentation)).toBe(editedBody);
     expect(input.value).toBe('');
   });
 });

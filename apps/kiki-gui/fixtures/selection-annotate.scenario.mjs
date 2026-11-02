@@ -38,15 +38,20 @@ export default {
       has_more: false,
     },
   },
-  onPrompt: [
-    turnStart(1),
-    workChanged(true),
-    { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
-    ...streamSteps('assistant.delta', 1, REPLY, { per: 20, delay: 20 }),
-    { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
-    turnEnd(1),
-    commitAssistant('$SID', REPLY),
-    promptDone(),
-    workChanged(false),
-  ],
+  onPrompt: (_text, _sessionId, session) => {
+    const turnId = session.messages.filter((message) => message.role === 'user').length;
+    const submitted = session.lastPromptSubmission?.content.find((part) => part.type === 'text');
+    return [
+      turnStart(turnId),
+      workChanged(true),
+      { frame: { type: 'turn.step.started', payload: { turnId, step: 1 } } },
+      ...streamSteps('assistant.delta', turnId, REPLY, { per: 20, delay: 20 }),
+      { frame: { type: 'turn.step.completed', payload: { turnId, step: 1 } } },
+      turnEnd(turnId),
+      commitAssistant('$SID', REPLY),
+      promptDone(),
+      workChanged(false),
+      { reseed: { presentation: submitted?.presentation } },
+    ];
+  },
 };
