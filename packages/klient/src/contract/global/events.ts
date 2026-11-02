@@ -82,6 +82,7 @@ const sessionWorkChangedSchema = z.object({
   sessionId: z.string(),
   busy: z.boolean(),
   executing: z.boolean().optional(),
+  cleanup_pending: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: z.enum(['none', 'approval', 'question']).optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),

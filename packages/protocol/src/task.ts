@@ -58,5 +58,6 @@ export const taskSchema = z.object({
   exit_code: z.number().int().nullable().optional(),
   /** Engine stop reason for failed/killed runs when one was recorded. */
   stop_reason: z.string().optional(),
+  cleanup_pending: z.boolean().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;

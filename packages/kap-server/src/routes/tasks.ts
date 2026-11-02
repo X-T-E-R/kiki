@@ -403,6 +403,7 @@ function toWireTask(
     created_at: createdIso,
     started_at: createdIso,
     run_in_background: info.detached ?? true,
+    cleanup_pending: info.cleanupPending,
     receipt: info.receipt,
     receipt_verification: info.receiptVerification,
     total_bytes: info.receipt?.bytes,

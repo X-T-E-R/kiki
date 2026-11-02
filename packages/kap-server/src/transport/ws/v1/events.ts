@@ -78,6 +78,7 @@ export interface SessionWorkChangedEvent {
   readonly type: 'event.session.work_changed';
   readonly busy: boolean;
   readonly executing?: boolean;
+  readonly cleanup_pending?: boolean;
   readonly main_turn_active?: boolean;
   readonly pending_interaction?: SessionPendingInteraction;
   readonly last_turn_reason?: 'completed' | 'cancelled' | 'failed';
@@ -185,6 +186,7 @@ export interface TaskInfoBase {
   readonly startedAt: number;
   readonly endedAt: number | null;
   readonly stopReason?: string;
+  readonly cleanupPending?: boolean;
   readonly terminalNotificationSuppressed?: boolean;
   readonly timeoutMs?: number;
 }

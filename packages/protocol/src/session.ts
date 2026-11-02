@@ -161,6 +161,7 @@ export const sessionSchema = z.object({
   busy: z.boolean(),
   /** Current execution, excluding queued work and terminal task receipts awaiting delivery. Absent on older servers. */
   executing: z.boolean().optional(),
+  cleanup_pending: z.boolean().optional(),
   /** Whether the MAIN agent currently owns an active turn. Unlike `busy`,
    *  this excludes background tasks and sub-agent turns. Optional for wire
    *  compatibility with older servers. */

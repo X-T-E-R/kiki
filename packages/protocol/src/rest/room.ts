@@ -52,7 +52,7 @@ export type SearchRoomThreadsInput = z.infer<typeof searchRoomThreadsInputSchema
 export const searchRoomThreadsResultSchema = z.object({
   threads: z.array(z.object({
     ref: z.object({ hostId: z.string(), workspaceId: z.string(), sessionId: z.string() }),
-    title: z.string().optional(), updatedAt: z.number(), createdAt: z.number(), state: z.enum(['cold', 'idle', 'running']),
+    title: z.string().optional(), updatedAt: z.number(), createdAt: z.number(), state: z.enum(['cold', 'idle', 'running', 'cleanup_pending', 'unknown']),
   })),
   nextCursor: z.string().optional(), incomplete: z.literal('scan_budget').optional(),
 });
