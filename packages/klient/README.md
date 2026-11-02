@@ -106,6 +106,16 @@ http │ ipc │ memory
   before attaching it cannot provide this guarantee. This is not a replacement
   for ordered transcript recovery.
 
+`agent.listModelSwitches()` returns the complete tracked queue in one call,
+including for a cold agent, without resuming it. For a bounded UI read, use
+`agent.observeModelSwitches()`: each call scans at most 8 MiB of cold history,
+plus bounded source validation. An unfinished read rejects with `40001` and
+`details.reason: "model_switch_queue_preparing"`; repeat the observation to continue
+from its saved position. Both methods return the same complete queue when ready
+and accept `{ signal }` to cancel the caller's wait without changing operations.
+They share `agentPromptService.listModelSwitches`: ordinary calls send `params: []`,
+while observations explicitly send `params: [{ observe: true }]`.
+
 `session.status()` reads one authoritative session activity snapshot. Pending
 approvals or questions take precedence over `cleanup_pending`, then `running`.
 Running follows `executing`, falling back to `mainTurnActive` on older hosts;

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService,
-  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
+  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager,
   IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
@@ -576,6 +576,39 @@ describe('GUI shared client against an isolated KAP host', () => {
       wireSize.mockRestore();
       wireRead.mockRestore();
     }
+  });
+
+  it.each([false, true])('preserves complete model-switch reads and explicit observe=%s over GUI HTTP after >8MiB', async (observe) => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const manager = host.core.accessor.get(ISessionManager);
+    await manager.close(id);
+    const summary = await host.core.accessor.get(ISessionIndex).get(id);
+    const logs = host.core.accessor.get(IAppendLogStore);
+    const scope = `sessions/${summary!.workspaceId}/${id}/agents/main`;
+    logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(9 * 1024 * 1024) });
+    logs.append(scope, 'wire.jsonl', { type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
+      entry: { input: { operationId: 'cold-switch', model: 'first', mode: 'direct' }, revision: 0,
+        originalBinding: { model: 'second', thinking: '' },
+        receipt: { operationId: 'cold-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'second', toModel: 'first' } } });
+    await logs.flush(scope, 'wire.jsonl');
+    const acquire = vi.spyOn(manager, 'acquire');
+    const resume = vi.spyOn(manager, 'resume');
+    try {
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled GUI queue read'));
+      await expect(client.listAgentModelSwitches(id, 'main', controller.signal, observe)).rejects.toThrow('cancelled GUI queue read');
+      if (observe) {
+        await expect(client.listAgentModelSwitches(id, 'main', undefined, true)).rejects.toMatchObject({
+          code: 40001, message: 'model_switch_queue_preparing (code 40001)', details: { reason: 'model_switch_queue_preparing' },
+        });
+      }
+      const queue = observe ? client.listAgentModelSwitches(id, 'main', undefined, true) : client.listAgentModelSwitches(id, 'main');
+      await expect(queue).resolves.toMatchObject([{ input: { operationId: 'cold-switch' }, queueIndex: 0 }]);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      expect(requests).toHaveLength(0);
+    } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
   it.each(['compaction.started', 'compaction.completed', 'compaction.cancelled'] as const)('watches absent main %s over WS without creating it and attaches on real creation', async (type) => {

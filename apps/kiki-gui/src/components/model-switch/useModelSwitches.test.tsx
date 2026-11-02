@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { KikiClient, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
+import { ApiError, KikiClient, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import { useModelSwitches, type ModelSwitchesHandle } from './useModelSwitches';
 
 const connection = vi.hoisted(() => ({ scopeId: 'scope-a', identity: {}, wsStatus: 'open', list: vi.fn(), subscribe: vi.fn() }));
@@ -20,6 +20,9 @@ function entry(id: string, state: QueuedModelSwitch['receipt']['state'] = 'pendi
   return { input: { operationId: id, model: `model/${id}`, mode: 'direct' }, revision: 0,
     receipt: { operationId: id, agentId: 'child', state, fromModel: 'model/old', toModel: `model/${id}`, mode: 'direct' },
     originalBinding: { model: 'model/old', thinking: '' }, queueIndex };
+}
+function preparingError() {
+  return new ApiError({ code: 40001, msg: 'model_switch_queue_preparing', data: null, details: { reason: 'model_switch_queue_preparing' } });
 }
 let root: Root;
 let node: HTMLDivElement;
@@ -186,8 +189,9 @@ it('carries the second pending operation selected by the hook through the real G
 it('continues cold preparation as loading and only clears an actual read failure after authoritative recovery', async () => {
   vi.useFakeTimers();
   try {
-    connection.list.mockRejectedValueOnce(new Error('model_switch_queue_preparing')).mockResolvedValueOnce([entry('cold')]);
+    connection.list.mockRejectedValueOnce(preparingError()).mockResolvedValueOnce([entry('cold')]);
     await render(); expect(handle.loading).toBe(true); expect(handle.error).toBeUndefined();
+    expect(connection.list).toHaveBeenLastCalledWith('s1', 'child', expect.any(AbortSignal), true);
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(handle.loading).toBe(false); expect(handle.switches[0]?.input.operationId).toBe('cold');
     connection.list.mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce([]);
@@ -199,12 +203,12 @@ it('continues cold preparation as loading and only clears an actual read failure
 it('bounds cold preparation and leaves a recoverable unknown queue without scanning all history', async () => {
   vi.useFakeTimers();
   try {
-    connection.list.mockRejectedValue(new Error('model_switch_queue_preparing'));
+    connection.list.mockRejectedValue(preparingError());
     await render();
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(connection.list).toHaveBeenCalledTimes(3);
     expect(handle.loading).toBe(false);
-    expect(handle.error?.message).toBe('model_switch_queue_preparing');
+    expect(handle.error).toMatchObject({ code: 40001, details: { reason: 'model_switch_queue_preparing' } });
     connection.list.mockResolvedValueOnce([entry('continued')]);
     await act(async () => { handle.refresh(); });
     expect(handle.error).toBeUndefined();

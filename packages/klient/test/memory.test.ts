@@ -7,6 +7,7 @@ import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { Emitter } from '@kiki/agent-core-v2/_base/event';
 import { IInstantiationService, type ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
@@ -82,7 +83,7 @@ describe('memory dispatcher specifics', () => {
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
-  it('continues a bounded cold model-switch read after an unrelated >8MiB wire record', async () => {
+  it.each(['complete', 'observe'] as const)('preserves the %s cold model-switch contract after an unrelated >8MiB wire record', async (mode) => {
     const { homeDir, app } = await makeEngine();
     const klient = createKlient({ scope: app });
     try {
@@ -100,12 +101,43 @@ describe('memory dispatcher specifics', () => {
           originalBinding: { model: 'model/old', thinking: '' },
           receipt: { operationId: 'queued-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'model/old', toModel: 'model/new' } } });
       await logs.flush(scope, 'wire.jsonl');
-      await expect(session.agent('main').listModelSwitches()).rejects.toMatchObject({
-        code: 40001, details: { reason: 'model_switch_queue_preparing' },
-      });
-      await expect(session.agent('main').listModelSwitches()).resolves.toMatchObject([
-        { input: { operationId: 'queued-switch' }, queueIndex: 0 },
-      ]);
+      const agent = session.agent('main');
+      const read = () => mode === 'observe' ? agent.observeModelSwitches() : agent.listModelSwitches();
+      const streams = vi.spyOn(app.accessor.get(IFileSystemStorageService), 'readStream');
+      const sourceRanges = () => streams.mock.calls.filter(([owner, key, range]) => owner === scope && key === 'wire.jsonl' && range !== undefined && range.end - range.start + 1 > 64 * 1024).map(([, , range]) => range!);
+      try {
+        const cancelled = new AbortController();
+        cancelled.abort(new Error('cancelled queue read'));
+        await expect(mode === 'observe' ? agent.observeModelSwitches({ signal: cancelled.signal }) : agent.listModelSwitches({ signal: cancelled.signal })).rejects.toThrow('cancelled queue read');
+        expect(sourceRanges()).toEqual([]);
+        if (mode === 'observe') {
+          await expect(read()).rejects.toMatchObject({ code: 40001, details: { reason: 'model_switch_queue_preparing' } });
+          expect(sourceRanges()).toEqual([{ start: 0, end: 8 * 1024 * 1024 - 1 }]);
+        }
+        await expect(read()).resolves.toMatchObject([
+          { input: { operationId: 'queued-switch' }, queueIndex: 0 },
+        ]);
+        expect(sourceRanges()).toHaveLength(2);
+        expect(sourceRanges()[1]?.start).toBe(8 * 1024 * 1024);
+      } finally { streams.mockRestore(); }
+      if (mode === 'complete') {
+        const interruptedClient = createKlient({ scope: app });
+        const controller = new AbortController();
+        const storage = app.accessor.get(IFileSystemStorageService);
+        const original = storage.readStream.bind(storage);
+        let slices = 0;
+        const interrupted = vi.spyOn(storage, 'readStream').mockImplementation(async function* (owner, key, range, options) {
+          yield* original(owner, key, range, options);
+          if (owner === scope && key === 'wire.jsonl' && range !== undefined && range.end - range.start + 1 > 64 * 1024) {
+            slices++;
+            controller.abort(new Error('cancelled between queue slices'));
+          }
+        });
+        try {
+          await expect(interruptedClient.session(created.id).agent('main').listModelSwitches({ signal: controller.signal })).rejects.toThrow('cancelled between queue slices');
+          expect(slices).toBe(1);
+        } finally { interrupted.mockRestore(); await interruptedClient.close(); }
+      }
       expect(manager.get(created.id)).toBeUndefined();
       expect(resume).not.toHaveBeenCalled();
     } finally {

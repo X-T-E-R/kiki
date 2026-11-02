@@ -1853,9 +1853,10 @@ export class KikiClient {
     return (await this.run(this.klient.session(sessionId).agent(agentId).getModelSwitch(operationId))) ?? null;
   }
 
-  /** Every switch operation this agent still tracks, with queue positions. */
-  listAgentModelSwitches(sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly QueuedModelSwitch[]> {
-    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches({ signal }));
+  /** Every tracked switch with queue positions; observe reads only one cold-history slice. */
+  listAgentModelSwitches(sessionId: string, agentId: string, signal?: AbortSignal, observe = false): Promise<readonly QueuedModelSwitch[]> {
+    const agent = this.klient.session(sessionId).agent(agentId);
+    return this.run(observe ? agent.observeModelSwitches({ signal }) : agent.listModelSwitches({ signal }));
   }
 
   /** Edit a still-pending switch (target model / mode); the revision guards races. */
