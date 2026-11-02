@@ -3,11 +3,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-async function invokeHook(payload, event = 'PreToolUse') {
+async function invokeHook(payload) {
   const hooks = JSON.parse(await readFile('.agents/hooks.json', 'utf8'));
-  const definition = event === 'PostInvocation' ? hooks['kiki-agy-steering-bridge'].PostInvocation[0]
-    : hooks['kiki-agy-permission-bridge']?.PreToolUse[0].hooks[0];
-  if (!definition) throw Object.assign(Error('No owned hook'), { code: 'ENOENT' });
+  const definition = hooks['kiki-agy-steering-bridge']?.PostInvocation[0];
+  if (!definition) throw Object.assign(Error('No owned steering hook'), { code: 'ENOENT' });
   const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', definition.command] : ['-c', definition.command];
   const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
@@ -47,13 +46,60 @@ for await (const line of createInterface({ input: process.stdin })) {
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');
     continue;
   }
+  if (input.message.content === 'native-tools') {
+    const textPath = resolve('native-text.txt');
+    const imagePath = resolve('native-image.bin');
+    const writePath = resolve('native-write.txt');
+    const editPath = resolve('native-edit.txt');
+    const commandPath = resolve('native-command.txt');
+    const searchPath = resolve('native-search.txt');
+    let nativeStep = 0;
+    const tool = async (toolName, parameters, run) => {
+      const stepIndex = turns * 100 + ++nativeStep;
+      const base = { step_type: 'tool', step_index: stepIndex, tool_name: toolName, tool_info: { parameters } };
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+        step_update: { ...base, state: 'ACTIVE' } }) + '\n');
+      try {
+        const output = await run();
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+          step_update: { ...base, state: 'DONE', tool_info: { parameters, output } } }) + '\n');
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+          step_update: { ...base, state: 'ERROR', tool_info: { parameters, error: error instanceof Error ? error.message : String(error) } } }) + '\n');
+      }
+    };
+    await tool('read_file', { Path: textPath }, () => readFile(textPath, 'utf8'));
+    await tool('read_file', { Path: imagePath }, () => readFile(imagePath));
+    await tool('write_file', { Path: writePath, Content: 'native write\n' }, async () => {
+      await writeFile(writePath, 'native write\n'); return 'written';
+    });
+    await tool('edit_file', { Path: editPath, Replace: 'before', With: 'after' }, async () => {
+      const current = await readFile(editPath, 'utf8');
+      await writeFile(editPath, current.replace('before', 'after')); return 'modified';
+    });
+    await tool('run_command', { CommandLine: `${process.execPath} -e native-command`, Cwd: process.cwd() }, async () => {
+      await new Promise((done, reject) => {
+        const child = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(commandPath)}, 'command output\\n')`], { cwd: process.cwd(), stdio: 'ignore' });
+        child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error(`Command exited ${code}`)));
+      });
+      return 'command completed';
+    });
+    await tool('search', { Query: 'needle', Path: searchPath }, async () => {
+      const lines = (await readFile(searchPath, 'utf8')).split(/\r?\n/u);
+      return { matches: lines.flatMap((line, index) => line.includes('needle') ? [{ line: index + 1, text: line }] : []) };
+    });
+    await tool('manage_task', { Action: 'status', TaskId: 'native-fixture-task' }, () => ({ status: 'completed', taskId: 'native-fixture-task' }));
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS',
+      response: 'native-tools-complete', num_turns: turns } }) + '\n');
+    continue;
+  }
   if (input.message.content === 'steer-loop') {
     const tool = { step_type: 'tool', step_index: turns, tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'example' } } };
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'DONE', tool_info: { ...tool.tool_info, output: 'done' } } }) + '\n');
     let injected = [];
     for (let invocationNum = 1; invocationNum <= 200 && injected.length === 0; invocationNum++) {
-      const output = await invokeHook({ conversationId: conversation, invocationNum, initialNumSteps: 1, workspacePaths: [process.cwd()] }, 'PostInvocation');
+      const output = await invokeHook({ conversationId: conversation, invocationNum, initialNumSteps: 1, workspacePaths: [process.cwd()] });
       injected = output.terminationBehavior === 'force_continue' ? output.injectSteps ?? [] : [];
       if (!injected.length) await new Promise(done => setTimeout(done, 25));
     }
@@ -64,49 +110,6 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (input.message.content === 'malformed') { process.stdout.write('not-json\n'); continue; }
   if (input.message.content === 'crash') process.exit(0);
-  if (input.message.content.startsWith('vendor-')) {
-    const write = input.message.content === 'vendor-write';
-    const wide = input.message.content === 'vendor-command-wide';
-    const command = 'echo approved> command-executed.txt';
-    const path = resolve('fixture-report.md');
-    const parameters = write ? { TargetFile: path, CodeContent: 'approved report' } : { CommandLine: command, Cwd: process.cwd() };
-    const name = write ? 'write_to_file' : 'run_command';
-    const resource = write ? `write_file(${path})` : `command(${command})`;
-    const tool = { step_type: 'tool', step_index: turns, tool_name: name, tool_info: { parameters } };
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
-    let result = {};
-    try { result = await invokeHook({ conversationId: conversation, stepIdx: turns, workspacePaths: [process.cwd()], toolCall: { name, args: parameters } }); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    // Independent downstream resource check, not merely the hook's allow decision.
-    // This models the documented override contract; installed CLI consumption is
-    // established separately by the real consumer, not inferred from this fixture.
-    const allowed = result.decision !== 'deny' && (wide || result.decision === 'allow' && result.permissionOverrides?.includes(resource));
-    if (allowed) {
-      if (write) await writeFile(path, parameters.CodeContent);
-      else await new Promise((done, reject) => {
-        const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
-        const argv = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
-        const child = spawn(shell, argv, { stdio: 'ignore' });
-        child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error('Fixture command failed')));
-      });
-    }
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: allowed ? 'DONE' : 'ERROR', tool_info: { parameters, output: allowed ? 'executed' : undefined, error: allowed ? undefined : 'Vendor resource permission denied' } } }) + '\n');
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: allowed ? 'resource-approved' : '', num_turns: turns, denied_actions: allowed ? undefined : [{ action: write ? 'write_file' : 'command' }] } }) + '\n');
-    continue;
-  }
-  if (input.message.content.startsWith('hook-')) {
-    const parameters = { CommandLine: 'Get-ChildItem -Path "C:/example/allowed" | Select-Object Name', Cwd: process.cwd() };
-    const tool = { step_type: 'tool', step_index: turns, tool_name: 'run_command', tool_info: { parameters } };
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
-    const result = await invokeHook({ conversationId: conversation, stepIdx: turns, workspacePaths: [process.cwd()], toolCall: { name: 'run_command', args: parameters } });
-    const allowed = result.decision === 'allow';
-    const omitTerminal = input.message.content === 'hook-no-terminal';
-    if (!omitTerminal) process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
-      step_update: { ...tool, state: allowed ? 'DONE' : 'ERROR', tool_info: { parameters, output: allowed ? 'directory result' : undefined, error: allowed ? undefined : result.reason } } }) + '\n');
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS',
-      response: allowed ? 'hook-approved' : '', num_turns: turns, denied_actions: allowed || omitTerminal ? undefined : [{ action: 'command', display_name: 'RunCommand' }] } }) + '\n');
-    continue;
-  }
   const denied = input.message.content === 'deny';
   const deniedTool = input.message.content === 'deny-tool';
   if (denied || deniedTool) process.stderr.write('headless tool auto-denied\n');

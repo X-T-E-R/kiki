@@ -73,6 +73,7 @@ export type BoundProfile = Omit<AgentProfile, 'systemPrompt' | 'renderSystemProm
   readonly fileSources?: import('#/session/dispatch/profileFile').FrozenProfileFileSources;
   readonly promptBase?: BoundPromptBase;
   readonly promptContextPending?: boolean;
+  readonly permissionModeSource?: 'profile' | 'harness-settings';
 };
 
 export function recoverLegacyPromptFields(profile: BoundProfile | undefined, diagnostics: AgentPromptDiagnostics | undefined, alias: string, resolveId: (id: string) => string | undefined): ResolvedPromptFieldOverrides | undefined {

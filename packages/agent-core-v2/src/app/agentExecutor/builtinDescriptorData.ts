@@ -31,12 +31,13 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     },
     modelBinding: 'argv', modelArgs: ['--model', '{model}'],
     modelConfigCategory: 'model', thoughtConfigCategory: 'thought_level',
+    permission: { via: 'config_option', configId: 'permission-mode', manual: 'manual', auto: 'auto', yolo: 'yolo' },
     controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
     supportsMcp: true, mcpTransports: ['stdio'],
     startupTimeoutMs: 150_000, shutdownGraceMs: 3_000, stdinCloseGraceMs: 5_000,
     installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
-    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.' }],
-    revision: '2026-10-16.1',
+    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. Permission overrides use session-only settings; the official ACP server remains the separate antigravity-acp executor.' }],
+    revision: '2026-11-03.1',
   },
   'grok-acp': {
     label: 'Grok Build',
@@ -57,7 +58,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     diagnostics: [
       { kind: 'env', name: 'XAI_API_KEY', present: 'XAI_API_KEY is present in the host environment.',
         absent: 'Grok reuses the existing CLI login; set XAI_API_KEY only if that is how the vendor CLI is authenticated.' },
-      { kind: 'message', severity: 'info', message: 'Grok runs with --permission-mode default in manual/review, acceptEdits in auto, and bypassPermissions in yolo.' },
+      { kind: 'message', severity: 'info', message: 'Grok follows its own settings unless overridden: --permission-mode default in manual, acceptEdits in auto, and bypassPermissions in yolo. Kiki reviewer mode requires native execution.' },
     ],
     permission: { via: 'argv', flag: '--permission-mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
     revision: '2026-10-16.1',
@@ -99,7 +100,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     diagnostics: [
       { kind: 'path', path: '.codex/auth.json', envHome: 'CODEX_HOME',
         present: 'Codex auth state exists at {path}.', absent: 'Codex auth state was not found at {path}; run the vendor login flow first.', absentSeverity: 'warning' },
-      { kind: 'message', severity: 'info', message: 'Codex uses app-server --listen stdio:// with on-request approvals and no bypass flag.' },
+      { kind: 'message', severity: 'info', message: 'Codex follows its own approval and sandbox settings unless overridden. Explicit Full access uses never approvals and dangerFullAccess for the turn, with the inherited policies saved for restoration.' },
     ],
     permission: { via: 'turn_param', manual: 'on-request', auto: 'on-request', yolo: 'never' },
     revision: '2026-08-31.1',

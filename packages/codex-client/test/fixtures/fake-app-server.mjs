@@ -6,6 +6,9 @@ let initialized = false;
 let threadId = 'thread-1';
 let turnId = 'turn-1';
 let pendingTurn;
+const sandbox = ['readOnly', 'readonly', 'read-only'].includes(mode)
+  ? { type: 'readOnly' }
+  : { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
 
 function send(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -62,7 +65,7 @@ input.on('line', (line) => {
   }
   if (message.method === 'thread/start') {
     threadId = 'thread-new';
-    send({ id: message.id, result: { thread: { id: threadId }, model: message.params.model } });
+    send({ id: message.id, result: { thread: { id: threadId }, model: message.params.model, sandbox } });
     return;
   }
   if (message.method === 'thread/resume') {
@@ -72,7 +75,7 @@ input.on('line', (line) => {
     }
     if (mode === 'resume-crash') process.exit(7);
     threadId = message.params.threadId;
-    send({ id: message.id, result: { thread: { id: threadId }, model: message.params.model } });
+    send({ id: message.id, result: { thread: { id: threadId }, model: message.params.model, sandbox } });
     return;
   }
   if (message.method === 'turn/start') {

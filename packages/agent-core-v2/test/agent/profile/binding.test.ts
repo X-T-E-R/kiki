@@ -4540,3 +4540,35 @@ describe('agentsMdReminder seeding', () => {
     expect(seedInjected).not.toHaveBeenCalled();
   });
 });
+
+describe('external named profile permission defaults', () => {
+  const homeDir = process.cwd();
+  const hostPathClass = process.platform === 'win32' ? 'win32' : 'posix';
+  it.each([
+    { saved: 'yolo', declared: undefined, effective: 'yolo', source: 'harness-settings' },
+    { saved: 'yolo', declared: 'manual', effective: 'manual', source: 'profile' },
+    { saved: undefined, declared: undefined, effective: undefined, source: 'harness-settings' },
+  ] as const)('freezes $effective from $source without converting the named role to an execution selection', async ({ saved, declared, effective, source }) => {
+    const external = normalizeAgentProfile({ name: 'vendor-worker', executor: 'grok-acp', modelAlias: 'vendor-model',
+      permissionMode: declared, systemPrompt: () => 'External worker' });
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    let context = build();
+    try {
+      await context.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { permission_mode: saved } } }, ConfigTarget.Memory);
+      const profile = context.get(IAgentProfileService);
+      await profile.bind({ profile: external.name, delegationPosition: 'sub' });
+      expect(profile.data()).toMatchObject({ execution: undefined, permissionMode: effective,
+        boundProfile: { permissionMode: effective, permissionModeSource: source } });
+      profile.applyBindingSnapshot(profile.data());
+      await context.get(IWireService).flush();
+      await context.dispose();
+      context = build();
+      await context.restorePersisted();
+      expect(context.get(IAgentProfileService).data()).toMatchObject({ execution: undefined, permissionMode: effective,
+        boundProfile: { permissionMode: effective, permissionModeSource: source } });
+    } finally { await context.dispose(); }
+  });
+});

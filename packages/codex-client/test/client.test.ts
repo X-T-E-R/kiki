@@ -11,6 +11,7 @@ type ScriptedFrame = { id?: string; method?: string; params?: unknown };
 
 type ScriptedProcessOptions = {
   readonly modelPage?: (frame: ScriptedFrame, index: number) => unknown;
+  readonly threadResult?: (method: 'thread/start' | 'thread/resume', frame: ScriptedFrame) => unknown;
   readonly highWaterMark?: number;
 };
 
@@ -75,6 +76,10 @@ function scriptedProcess(
             : options.modelPage(frame, ++modelPages);
           if (result !== undefined) stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
         }
+        if ((frame.method === 'thread/start' || frame.method === 'thread/resume') && frame.id !== undefined) {
+          const result = options.threadResult?.(frame.method, frame) ?? { thread: { id: 'thread-1' } };
+          stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
+        }
         newline = input.indexOf('\n');
       }
       callback();
@@ -133,6 +138,23 @@ describe('CodexAppServerClient limits and observers', () => {
     const client = new CodexAppServerClient({ spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture' });
     await client.connect();
     expect(client.status().agentVersion).toBe(expected);
+    await client.shutdown();
+  });
+
+  it.each([
+    ['workspaceWrite', { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }],
+    ['readOnly', { type: 'readOnly' }],
+  ] as const)('reads the official sandbox from thread start and resume responses: %s', async (_name, sandbox) => {
+    const fixture = scriptedProcess(undefined, undefined, false, {
+      threadResult: () => ({ thread: { id: 'thread-1' }, approvalPolicy: 'untrusted', sandbox }),
+    });
+    const client = new CodexAppServerClient(
+      { spawn: async () => fixture.process },
+      { id: 'fixture', command: 'fixture' },
+    );
+    await client.connect();
+    await expect(client.startThread({ model: 'gpt-test' })).resolves.toMatchObject({ sandbox });
+    await expect(client.resumeThread({ threadId: 'thread-1' })).resolves.toMatchObject({ sandbox });
     await client.shutdown();
   });
 

@@ -53,7 +53,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 子 Agent 默认在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录。新子 Agent 也可以用 typed `workDir` 和 `additionalDirs` 指定已经准入的独立 writer 目录；这些目录会经所选 runtime 映射，并成为该子 Agent 工具与外部执行器实际使用的根目录。只在 `prompt` 中提到路径不会把它加入工作区。`resume` 不接受 `workDir` 或 `additionalDirs`，会冻结首次派发时的根目录。需要由整个会话拥有独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
 
-继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
+继承工作区提供的是上下文，不会新建目录沙箱，也不额外添加输入根目录或覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
 继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。子 Agent 必须空闲；需要明确控制下一段上下文时，设置 `context_mode`：
 
@@ -163,9 +163,13 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 
 直连保留配置的启动环境、home 和工作目录，但实际程序必须解析到你预期的 CLI 同一可执行文件及设置来源。ACP adapter 可能启动 SDK 自带 binary 或显式覆盖，而不是 PATH 上的 CLI；不选 profile 不会让两者自动变成同一个程序。仅登录观测未知并不阻止启动。
 
-权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，才应用到引擎。显式 deny 或 ask 规则、有限工具声明与会话已绑定的 worktree 隔离限制仍生效。Kiki 原生可见工具目录不会成为引擎自有工具的白名单。
+权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，通过引擎原生控制应用。具名外部 profile 没有声明模式时，也会继承 harness 的 `permission_mode` 默认值，并随绑定保存这个选择。
 
-只改变权限模式会保留远端对话。清除覆盖后回到剩余的 profile 或 harness 设置；都未设置时，ACP 与 Codex 恢复覆盖前保存的引擎策略，重新打开 Kiki 会话后也能恢复。Adapter 无法应用所选模式或恢复已保存策略时会报错，不会悄悄另建对话。
+引擎原生工具的权限由引擎负责。Kiki 不把这些调用翻译成 Kiki 工具名或文件路径审批，也不会因为缺少这种映射而拒绝未知原生工具。Kiki 可见工具目录不是引擎的白名单。目前这些原生接口无法落实 Kiki 专有的 `review` 模式、有限工具允许列表、`disallowed_tools`、deny 或 ask `permission.rules`、执行限制及已绑定的 worktree 写隔离。带有这些限制的绑定会在发送提示词前报错，并指出不支持的字段；需要这些限制时，使用原生 Kiki 执行器，或配置外部引擎自己的权限。
+
+只改变权限模式会保留远端对话。清除覆盖后回到剩余的 profile 或 harness 设置；都未设置时，ACP 与 Codex 恢复覆盖前保存的引擎策略，重新打开 Kiki 会话后也能恢复。Codex 退出 Full access 时同时恢复审批和沙箱策略。Adapter 无法应用所选模式或恢复已保存策略时会报错，不会悄悄另建对话。
+
+内置 AGY CLI adapter 通过仅本次会话生效的 `--settings` 应用覆盖，不写引擎全局设置：`manual` 使用 `request-review` 和默认 Agent 模式；`auto` 使用 `request-review` 和 AGY auto Agent 模式；Full access 使用 `always-proceed`、`accept-edits`、允许访问工作区外路径、关闭终端沙箱，并传入 `--dangerously-skip-permissions`。AGY 自己的显式 deny 规则仍然生效。空闲时切换模式，只重启 adapter 自己的 CLI 进程，再以 `--conversation` 延续同一原生对话；运行中的轮次须先结束。Adapter 不安装权限 `PreToolUse` hook，独立的 steering hook 和 MCP 启动绑定仍可使用。
 
 通过 `engine:<executor-id>` 启动的 child 在恢复时保留已保存的原生引擎会话合同。原生会话不可用或无法核验时，Kiki 不会静默改开一个新会话，而是按引擎诊断让恢复失败。不同厂商支持的 resume、load 和控制能力并不相同，因此目标能启动不代表支持所有恢复操作。
 
@@ -203,7 +207,7 @@ ACP harness 的工具调用与 Kiki 工具显示在同一条时间线中。harne
 
 子 Agent 的完成回执非阻塞地排回同一个 main agent：它忙碌时等当前轮次结束，空闲时直接唤醒它。获准的 `AgentNotify` 进入真实父 Agent 的邮箱，仍受 `allow_parent_notify` 和配置的通知策略约束。关闭执行器会释放工具桥；已释放的 seat 或被销毁后重新创建的 Agent 无法复用旧连接。
 
-Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 把它映射为持久化审批交互。明确设置 Kiki Full access（YOLO），且没有 deny 或 ask 规则、有限工具声明、执行限制或 worktree 隔离时，Codex 的 `approvalPolicy` 使用 `never`，不强制保留审批回调。其他显式模式或存在这些约束时使用 `on-request`，让 Kiki 应用工具权限检查。Kiki 不会放宽 Codex 沙箱。
+Codex app-server 的审批请求进入 Kiki 持久化审批交互，并保留厂商提供的决定选项。明确选择 Full access（YOLO）时，该轮发送 `approvalPolicy: "never"` 和 `sandboxPolicy: { type: "dangerFullAccess" }`。显式 `manual` 和 `auto` 使用 `on-request` 审批，并保留引擎沙箱；Kiki 专有限制按[外部直连执行](#外部直连执行)所述报错。通过 Kiki MCP 桥的调用仍作为该 Agent 的原生 Kiki 工具执行，沿用其原有授权。
 
 明确设置 YOLO 还会只为附加的 `kiki-harness` MCP server 增加逐 server 工具预批准；其调用仍受 Kiki 原生能力与执行策略约束。父 Agent 继承的 YOLO 模式不会开启上述任一覆盖。清除显式模式时，遵循[上文的权限恢复行为](#外部直连执行)。
 
