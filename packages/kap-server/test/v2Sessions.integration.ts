@@ -37,7 +37,7 @@ interface SessionWireV2 {
     updated_at: number;
     archived: boolean;
   };
-  activity: { status: 'running' | 'approval' | 'question' | 'failed' | 'idle' };
+  activity: { status: 'running' | 'approval' | 'question' | 'cleanup_pending' | 'failed' | 'idle' };
   git?: {
     branch: string | null;
     pull_request: { number: number; state: 'open' | 'closed' | 'merged'; url: string } | null;
@@ -372,6 +372,8 @@ describe('server /api/sessions/query', () => {
 
     const running = await getData('?activity.status=running&activity.status=approval');
     expect(running.items).toEqual([]);
+    const cleanup = await getData('?activity.status=cleanup_pending');
+    expect(cleanup.items).toEqual([]);
 
     const bogus = await getError('?activity.status=bogus');
     expect(bogus.code).toBe(40001);
@@ -935,13 +937,20 @@ describe('mapActivityStatus', () => {
     ).toBe('question');
   });
 
-  it('maps busy / mainTurnActive to running', () => {
-    expect(
-      mapActivityStatus({ busy: true, mainTurnActive: false, pendingInteraction: 'none' }),
-    ).toBe('running');
-    expect(
-      mapActivityStatus({ busy: false, mainTurnActive: true, pendingInteraction: 'none' }),
-    ).toBe('running');
+  it('uses execution rather than unfinished work for running', () => {
+    const facts = { busy: true, mainTurnActive: false, pendingInteraction: 'none' as const };
+    expect(mapActivityStatus(facts)).toBe('idle');
+    expect(mapActivityStatus({ ...facts, executing: true })).toBe('running');
+    expect(mapActivityStatus({ ...facts, mainTurnActive: true })).toBe('running');
+    expect(mapActivityStatus({ ...facts, mainTurnActive: true, executing: false })).toBe('idle');
+  });
+
+  it('prioritizes interaction, then cleanup, then execution', () => {
+    const facts = { busy: true, mainTurnActive: true, executing: true, cleanupPending: true, pendingInteraction: 'none' as const };
+    expect(mapActivityStatus(facts)).toBe('cleanup_pending');
+    expect(mapActivityStatus({ ...facts, pendingInteraction: 'approval' })).toBe('approval');
+    expect(mapActivityStatus({ ...facts, pendingInteraction: 'question' })).toBe('question');
+    expect(mapActivityStatus({ ...facts, cleanupPending: undefined })).toBe('running');
   });
 
   it('maps a failed last turn to failed only when idle', () => {

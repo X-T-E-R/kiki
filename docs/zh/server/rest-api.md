@@ -1011,12 +1011,14 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 
 ### `GET /api/sessions/query`
 
-面向列表页的新一代会话查询，筛选、排序、字段组都在查询参数里：
+面向列表页的新一代会话查询，筛选、排序、字段组都在查询参数里。
+
+`activity.status` 优先显示待审批或待回答，其次是 `cleanup_pending`，再其次是当前执行。`running` 依据 `executing`，旧服务未提供时回退到主 Agent 轮次活动；仅有排队中的未完成工作不会标为运行中。
 
 | 参数 | 说明 |
 | --- | --- |
 | `workspace.id` | 按工作区过滤，可重复 |
-| `activity.status` | 按活动状态过滤：`running` / `approval` / `question` / `failed` / `idle`，可重复 |
+| `activity.status` | 按活动状态过滤：`running` / `approval` / `question` / `cleanup_pending` / `failed` / `idle`，可重复 |
 | `meta.updated_after` | 只看该时间（epoch 毫秒）之后更新过的会话 |
 | `meta.updated_before` | 只看该时间（epoch 毫秒）之前更新过的会话 |
 | `meta.archived` | `true` / `false`（默认）/ `all` |

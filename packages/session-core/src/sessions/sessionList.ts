@@ -20,7 +20,7 @@ export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
 export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
 
-export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active'> & {
+export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason'> & {
   readonly sessionId: string;
 };
 
@@ -125,7 +125,8 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
 
 export function patchSessionWorkChanged(session: Session, change: SessionWorkChangedPatch): Session {
   return session.id === change.sessionId
-    ? { ...session, busy: change.busy, executing: change.executing, cleanup_pending: change.cleanup_pending, main_turn_active: change.main_turn_active }
+    ? { ...session, busy: change.busy, executing: change.executing, cleanup_pending: change.cleanup_pending,
+      main_turn_active: change.main_turn_active, pending_interaction: change.pending_interaction, last_turn_reason: change.last_turn_reason }
     : session;
 }
 

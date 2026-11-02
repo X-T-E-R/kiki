@@ -50,6 +50,33 @@ const result = await runProof({
     } });
     await page.waitForFunction((id) => document.querySelector(`[data-thread-ref-chip="${id}"]`)?.getAttribute('data-thread-ref-status') === 'cleanup_pending', id);
     await shot('thread-cleanup-fetched-reference');
+  } }, { name: 'thread-cleanup-priority', fixture: 'thread-cleanup', run: async ({ page, link, control, shot }) => {
+    const id = 'session_cleanup_fixture';
+    await page.goto(link('/s/session_idle_fixture'));
+    const row = page.locator(`[data-session-row="${id}"]`);
+    await row.waitFor();
+    await page.locator('textarea[data-composer-session="session_idle_fixture"]').fill(`/s/${id} `);
+    const assertStatus = async (rowState, refStatus) => {
+      await page.waitForFunction(({ id, rowState, refStatus }) =>
+        document.querySelector(`[data-session-row="${id}"]`)?.getAttribute('data-session-row-state') === rowState &&
+        document.querySelector(`[data-thread-ref-chip="${id}"]`)?.getAttribute('data-thread-ref-status') === refStatus,
+      { id, rowState, refStatus });
+    };
+    await assertStatus('cleanup-pending', 'cleanup_pending');
+    for (const [pending, rowState, refStatus] of [
+      ['question', 'needs-me', 'awaiting_answer'],
+      ['approval', 'needs-me', 'awaiting_approval'],
+      ['none', 'cleanup-pending', 'cleanup_pending'],
+    ]) {
+      await control({ action: 'emit_event', session_id: id, frame: {
+        type: 'event.session.work_changed', payload: {
+          busy: true, executing: true, main_turn_active: true, cleanup_pending: true,
+          pending_interaction: pending, last_turn_reason: 'completed',
+        },
+      } });
+      await assertStatus(rowState, refStatus);
+    }
+    await shot('thread-cleanup-priority');
   } }],
 });
 if (result.failed.length > 0) process.exitCode = 1;

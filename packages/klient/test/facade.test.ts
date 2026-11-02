@@ -160,7 +160,7 @@ describe('facade routing', () => {
 
   it.each([
     { pendingInteraction: 'none', busy: false, expected: 'idle' },
-    { pendingInteraction: 'none', busy: true, expected: 'running' },
+    { pendingInteraction: 'none', busy: true, expected: 'idle' },
     { pendingInteraction: 'approval', busy: true, expected: 'awaiting_approval' },
     { pendingInteraction: 'question', busy: true, expected: 'awaiting_question' },
     { pendingInteraction: 'approval', busy: false, expected: 'awaiting_approval' },
@@ -176,6 +176,22 @@ describe('facade routing', () => {
     expect(channel.calls).toEqual([
       { scope: { sessionId: 's1' }, service: 'sessionActivityView', method: 'state', args: [] },
     ]);
+  });
+
+  it.each([
+    { executing: true, mainTurnActive: false, cleanupPending: undefined, pendingInteraction: 'none', expected: 'running' },
+    { executing: false, mainTurnActive: true, cleanupPending: undefined, pendingInteraction: 'none', expected: 'idle' },
+    { executing: undefined, mainTurnActive: true, cleanupPending: undefined, pendingInteraction: 'none', expected: 'running' },
+    { executing: true, mainTurnActive: true, cleanupPending: true, pendingInteraction: 'none', expected: 'cleanup_pending' },
+    { executing: true, mainTurnActive: true, cleanupPending: true, pendingInteraction: 'approval', expected: 'awaiting_approval' },
+    { executing: true, mainTurnActive: true, cleanupPending: true, pendingInteraction: 'question', expected: 'awaiting_question' },
+  ])('prioritizes interaction, cleanup and execution for session status: $expected', async ({ expected, ...state }) => {
+    const channel = new FakeChannel();
+    channel.result = { busy: true, ...state };
+    const klient = createKlientFromChannel(channel);
+    try {
+      await expect(klient.session('s1').status()).resolves.toBe(expected);
+    } finally { await klient.close(); }
   });
 
   it('does not report idle when the session activity request fails', async () => {

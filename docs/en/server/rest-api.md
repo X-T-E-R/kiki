@@ -1026,12 +1026,14 @@ Source facts and coverage are persisted in the dedicated Usage SQLite read model
 
 ### `GET /api/sessions/query`
 
-A next-generation session query for list views — filtering, sorting, and field groups all travel in query parameters:
+A next-generation session query for list views — filtering, sorting, and field groups all travel in query parameters.
+
+`activity.status` prioritizes pending approval or question, then `cleanup_pending`, then current execution. `running` follows `executing`, falling back to main-turn activity on older hosts; unfinished queued work alone does not make it running.
 
 | Parameter | Description |
 | --- | --- |
 | `workspace.id` | Filter by workspace; repeatable |
-| `activity.status` | Filter by activity status: `running` / `approval` / `question` / `failed` / `idle`; repeatable |
+| `activity.status` | Filter by activity status: `running` / `approval` / `question` / `cleanup_pending` / `failed` / `idle`; repeatable |
 | `meta.updated_after` | Only sessions updated after this time (epoch milliseconds) |
 | `meta.updated_before` | Only sessions updated before this time (epoch milliseconds) |
 | `meta.archived` | `true` / `false` (default) / `all` |

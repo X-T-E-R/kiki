@@ -114,6 +114,23 @@ describe('work_changed cache merge', () => {
     expect(merged?.pages[1]?.items[1]).toEqual(old.pages[1]?.items[1]);
   });
 
+  it('updates interaction priority and turn outcome together with cleanup for lists and fetched references', () => {
+    const fetched = session('target', '2026-01-01T00:00:00.000Z');
+    const change = { sessionId: 'target', busy: true, executing: true, cleanup_pending: true,
+      pending_interaction: 'approval' as const, last_turn_reason: 'failed' as const };
+    const pending = patchSessionWorkChanged(fetched, change);
+    const listed = mergeSessionWorkChanged(data({ items: [fetched], has_more: false }), change)?.pages[0]?.items[0];
+    expect(listed).toEqual(pending);
+    expect(sessionStatusOf(pending)).toBe('needs-me');
+    expect(pending.last_turn_reason).toBe('failed');
+    const cleanup = patchSessionWorkChanged(pending, { ...change, pending_interaction: 'none' });
+    expect(sessionStatusOf(cleanup)).toBe('cleanup-pending');
+    const done = patchSessionWorkChanged(cleanup, { sessionId: 'target', busy: false, executing: false,
+      pending_interaction: 'none', last_turn_reason: 'completed' });
+    expect(sessionStatusOf(done)).toBe('idle');
+    expect(done.last_turn_reason).toBe('completed');
+  });
+
   it('clears stale execution facts when an old-server change omits them', () => {
     const old = data({ ...page(['target'], false), items: [session('target', '2026-01-01T00:00:00.000Z', { busy: true, executing: true, main_turn_active: true })] });
     const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: false });
