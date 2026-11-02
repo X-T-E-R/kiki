@@ -41,6 +41,7 @@ import { createSettingsEnginesWalker } from './visual-proof-settings-engines.mjs
 import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
 import { createUsageExportWalker } from './visual-proof-usage-export.mjs';
+import { createLiveAgentsAttentionWalker, createLiveAgentsCompactWalker } from './visual-proof-live-agents.mjs';
 import { createPluginImportWalker } from './visual-proof-plugin-import.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
 import { createSteerWalker } from './visual-proof-steer.mjs';
@@ -95,6 +96,8 @@ const MATRIX = {
   // logs the palette of every job instead).
   'tool-groups': ['width'],
   'usage-export': ['theme', 'width'],
+  'live-agents-compact': ['width'],
+  'live-agents-attention': ['width'],
   'plugin-import': ['width'],
   'image-hover-details': ['width'],
 };
@@ -6121,15 +6124,22 @@ async function scenarioExecutionPause() {
     `${WEB_URL}/usage?panel=realtime&server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   const ZETA = 'session_fixture_usage_zeta';
   const executionOf = async () => (await control({ action: 'session', session_id: ZETA })).data?.executionControl;
+  // Two live sessions fold behind the session list's disclosure; unfold it.
+  const unfold = async () => {
+    const toggle = page.locator('[data-execution-sessions-toggle]');
+    await toggle.waitFor({ timeout: 15_000 });
+    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  };
 
   await page.goto(usageUrl(), { waitUntil: 'domcontentloaded' });
+  await unfold();
   const row = page.locator(`[data-execution-control="${ZETA}"]`);
   await row.waitFor({ timeout: 15_000 });
   // Running: the session's own row offers pause; nothing claims restart safety.
   const pauseLabel = dictionaryText(job().view.locale, 'usage.execution.pauseSession');
   const pausedHint = dictionaryText(job().view.locale, 'usage.execution.pausedHint');
   if (!(await row.innerText()).includes(pauseLabel)) throw new Error(`running row lost its pause action: ${await row.innerText()}`);
-  if (await page.locator('[data-execution-paused-panel]').count() !== 0) throw new Error('paused overview rendered before any pause');
+  if (await page.locator('[data-execution-paused]').count() !== 0) throw new Error('paused row rendered before any pause');
   await shot('execution-running');
 
   // Pause through the confirm; the state settles to durably paused.
@@ -6148,6 +6158,7 @@ async function scenarioExecutionPause() {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
   await shot('execution-paused-reloaded');
+  await unfold();
 
   // Narrow: the paused row wraps inside the viewport instead of bleeding.
   await resizeViewport(390);
@@ -6157,7 +6168,7 @@ async function scenarioExecutionPause() {
   await resizeViewport(1440);
 
   // Explicit resume returns the session to running and clears the overview.
-  await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ZETA}"] [data-execution-action]`).click();
   await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
   const resumed = await executionOf();
   if (resumed?.phase !== 'running') throw new Error(`fixture did not resume to running: ${JSON.stringify(resumed)}`);
@@ -6175,13 +6186,13 @@ async function scenarioExecutionPause() {
     await page.locator('[role="alertdialog"] [data-confirm-action="confirm"]').click();
     await page.locator(`[data-execution-paused="${id}"]`).waitFor({ timeout: 15_000 });
   }
-  await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ZETA}"] [data-execution-action]`).click();
   await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
   const etaAfter = await executionOfEta();
   if (etaAfter?.phase !== 'paused') throw new Error(`strict row resume leaked into the other session: ${JSON.stringify(etaAfter)}`);
   await shot('execution-strict-row-resume');
   // Clean up eta so the walker leaves the fixture running.
-  await page.locator(`[data-execution-paused="${ETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ETA}"] [data-execution-action]`).click();
   await page.locator(`[data-execution-paused="${ETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
 
   // Review fix 2: a second pause after a settled one is a NEW operation, not a
@@ -6193,7 +6204,7 @@ async function scenarioExecutionPause() {
     await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
   };
   const resumeOnce = async () => {
-    await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+    await page.locator(`[data-execution-paused="${ZETA}"] [data-execution-action]`).click();
     await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
   };
   await pauseOnce();
@@ -6210,6 +6221,23 @@ async function scenarioExecutionPause() {
   }
   console.log(`[check] two settled pauses minted distinct operation ids`);
   await resumeOnce();
+}
+
+/** Usage → Live session list: names, folding, pause/resume (scripts/visual-proof-live-agents.mjs). */
+function liveAgentsWalkerOptions() {
+  return {
+    page, shot, control, view: job().view,
+    text: (key, params) => dictionaryText(job().view.locale, key, params),
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  };
+}
+
+async function scenarioLiveAgentsCompact() {
+  await createLiveAgentsCompactWalker(liveAgentsWalkerOptions())();
+}
+
+async function scenarioLiveAgentsAttention() {
+  await createLiveAgentsAttentionWalker(liveAgentsWalkerOptions())();
 }
 
 /** Keep the fixture's authoritative theme and the device boot value in step. */
@@ -7421,6 +7449,8 @@ const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
   'execution-pause': { fixture: 'usage-dashboard' },
+  'live-agents-compact': { fixture: 'live-agents-compact' },
+  'live-agents-attention': { fixture: 'live-agents-attention' },
   // Two engines' own facts, read from the one fixture that carries both.
   'codex-claude-engine-facts': { fixture: 'external-main' },
   'workspace-history': { fixture: 'sidebar-organize' },
@@ -7511,6 +7541,8 @@ const BODIES = [
   ['profile-editor', scenarioProfileEditor],
   ['usage-dashboard', scenarioUsageDashboard],
   ['execution-pause', scenarioExecutionPause],
+  ['live-agents-compact', scenarioLiveAgentsCompact],
+  ['live-agents-attention', scenarioLiveAgentsAttention],
   ['workspace-tools', scenarioWorkspaceTools],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],

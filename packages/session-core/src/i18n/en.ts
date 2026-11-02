@@ -10652,6 +10652,7 @@ export const en = {
   'usage.execution.readFailed': 'Could not load the pause state.',
   'usage.execution.staleState': 'The pause state may be out of date.',
   'usage.execution.retryRefresh': 'Retry',
+  'usage.execution.sessionsCount': 'Sessions · {count}',
   'usage.quota.status.partial': 'Partial',
   'usage.quota.status.unknown': 'Unknown',
   'usage.quota.action.login': 'Log in',

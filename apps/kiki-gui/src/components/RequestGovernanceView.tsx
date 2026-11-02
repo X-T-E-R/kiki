@@ -28,7 +28,8 @@ import { useConnection } from '../state/connection';
 import { FeedbackLine, Toggle } from './controls';
 import { InlineEditor } from './InlineEditor';
 import { SettingsSelect } from './settings/SettingsPrimitives';
-import { PausedExecutionsPanel, PauseAllExecutions, SessionExecutionControl } from './usage/ExecutionControls';
+import { useSessionNames } from '../lib/threadTitles';
+import { ExecutionSessionList, PauseAllExecutions, sessionLabelOf, sessionLabelText } from './usage/ExecutionControls';
 import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
@@ -150,16 +151,6 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     return id;
   };
 
-  const agentRowDisplay = (id: string | null): string => {
-    if (agentDimension === 'executor') return executorDisplay(id);
-    if (id === null || id === undefined || id === '' || id === 'unknown') {
-      if (agentDimension === 'model') return t('usage.governance.unknownModelByExecutor');
-      if (agentDimension === 'session') return t('usage.governance.session');
-      return t('usage.governance.unknownExecutor');
-    }
-    return id;
-  };
-
   // Execution pause/resume: one state read per session in the live inventory
   // (deduplicated — the full inventory, not the visible page), merged with the
   // cold-summary discovery so a session paused before a restart still reports
@@ -171,6 +162,26 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     [liveSessionIds, pausedDiscovery.sessionIds],
   );
   const { states: executionStates, readError: executionReadError, refetch: refetchExecutions } = useSessionExecutions(executionSessionIds);
+
+  // Sessions read by name wherever this panel shows one — the session list and
+  // the session cut of the breakdown — from the cached lists plus one
+  // metadata read per unknown id; actions keep the real id.
+  const sessionDimensionIds = agentDimensions
+    .filter((row) => row.dimension === 'session' && row.id !== null && row.id !== '' && row.id !== 'unknown')
+    .map((row) => row.id!);
+  const nameOf = useSessionNames([...new Set([...executionSessionIds, ...sessionDimensionIds])]);
+  const labelOf = (sessionId: string) => sessionLabelOf(sessionId, nameOf(sessionId), t);
+
+  const agentRowDisplay = (id: string | null): string => {
+    if (agentDimension === 'executor') return executorDisplay(id);
+    if (id === null || id === undefined || id === '' || id === 'unknown') {
+      if (agentDimension === 'model') return t('usage.governance.unknownModelByExecutor');
+      if (agentDimension === 'session') return t('usage.governance.session');
+      return t('usage.governance.unknownExecutor');
+    }
+    if (agentDimension === 'session') return sessionLabelText(labelOf(id));
+    return id;
+  };
   // One visible recovery line for either read path that failed: the per-session
   // execution read, or the cold paused-session discovery. 40401 (an older
   // server) stays silent on both.
@@ -270,7 +281,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           help={agentSummary}
           actions={(
             <>
-              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} /> : null}
+              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} /> : null}
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
               <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
               <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
@@ -324,25 +335,15 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             </div>
           </div>
         )}
-        {liveSessionIds.length > 0 ? (
-          <ol data-execution-session-controls className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-            {liveSessionIds.map((sessionId) => (
-              <li key={sessionId} className="flex min-w-0 items-center gap-2">
-                <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint" title={sessionId}>{sessionId}</span>
-                <SessionExecutionControl sessionId={sessionId} state={executionStates[sessionId]} onRetryRead={refetchExecutions} />
-              </li>
-            ))}
-          </ol>
-        ) : null}
+        <ExecutionSessionList liveSessionIds={liveSessionIds} states={executionStates} onRetryRead={refetchExecutions} labelOf={labelOf} />
         {executionVisibleError !== undefined ? (
-          <p role="status" data-execution-stale className="mb-2 text-[12px] text-amber-ink">
+          <p role="status" data-execution-stale className="mt-2 text-[12px] text-amber-ink">
             {t('usage.execution.staleState')}
             <button type="button" data-execution-stale-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={retryExecutionReads}>
               {t('usage.execution.retryRefresh')}
             </button>
           </p>
         ) : null}
-        <PausedExecutionsPanel states={executionStates} onRetryRead={refetchExecutions} />
       </section>
     </div>
   );

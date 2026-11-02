@@ -10557,6 +10557,7 @@ export const zh = {
   'usage.execution.readFailed': '暂停状态读取失败。',
   'usage.execution.staleState': '暂停状态可能已过期。',
   'usage.execution.retryRefresh': '重试',
+  'usage.execution.sessionsCount': '会话 · {count}',
   'usage.quota.status.partial': '部分可用',
   'usage.quota.status.unknown': '未知',
   'usage.quota.action.login': '前往登录',
