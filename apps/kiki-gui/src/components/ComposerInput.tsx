@@ -180,6 +180,16 @@ export function ComposerInput(props: ComposerInputProps) {
       setRangeText: (text, start = view.state.selection.main.from, end = view.state.selection.main.to, mode = 'preserve') => {
         view.dispatch({ changes: { from: start, to: end, insert: text }, selection: mode === 'select' ? { anchor: start, head: start + text.length } : { anchor: mode === 'start' ? start : start + text.length }, userEvent: 'input' });
       },
+      setValueAndCursor: (value, cursor) => {
+        const at = Math.max(0, Math.min(cursor, value.length));
+        externalChange.current = true;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: value },
+          selection: { anchor: at },
+          annotations: Transaction.addToHistory.of(false),
+        });
+        externalChange.current = false;
+      },
       select: () => { view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }); },
     };
     propsRef.current.inputRef.current = handle;

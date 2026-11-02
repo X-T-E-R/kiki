@@ -246,7 +246,7 @@ describe('Composer agent mentions', () => {
     await typeAndSettle(container, '@clau');
     const node = composerInput(container);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
-    await settle(60); // flush the rAF that lands the caret after the inserted token
+    await settle();
     // The overlay carries the candidate label; the raw link stays in the draft.
     expect(node.value).toContain('kiki://agents/claude-code');
     const token = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
@@ -260,7 +260,7 @@ describe('Composer agent mentions', () => {
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await settle(60);
-    const editing = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
+    const editing = container.querySelector<HTMLElement>('.composer-reference[data-ref-kind="agent"]');
     expect(editing).toBeNull();
     expect(node.textContent).toContain('kiki://agents/claude-code');
     // A selection covering the token keeps its replacement chip visible.

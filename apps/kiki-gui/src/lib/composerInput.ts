@@ -11,6 +11,7 @@ export interface ComposerInputHandle {
   focus(options?: FocusOptions): void;
   setSelectionRange(start: number, end: number, direction?: ComposerSelectionDirection): void;
   setRangeText(text: string, start?: number, end?: number, mode?: SelectionMode): void;
+  setValueAndCursor(value: string, cursor: number): void;
   select(): void;
 }
 

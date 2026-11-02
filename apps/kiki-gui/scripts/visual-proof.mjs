@@ -72,6 +72,7 @@ const MATRIX = {
   capabilities: ['theme', 'width'],
   cockpit: ['theme', 'width'],
   'composer-modes': ['theme', 'width'],
+  'composer-caret': ['width'],
   'context-ring': ['width'],
   'subagent-context-meter': ['width'],
   'context-compact': ['theme', 'width'],
@@ -4926,6 +4927,102 @@ async function scenarioAgentMentionsFailure() {
   await shot('agent-mentions-load-failure');
 }
 
+/** composer-caret — native and desktop clipboard paste keep the live insertion point. */
+async function scenarioComposerCaret() {
+  const THREAD = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const openComposerSession = async () => {
+    await selectSession('Harden the upload pipeline');
+    if ((page.viewportSize()?.width ?? 1440) >= 768) return;
+    const drawer = page.locator('#app-sidebar.open');
+    if (await drawer.count() > 0) {
+      await page.keyboard.press('Escape');
+      await drawer.waitFor({ state: 'detached', timeout: 5000 });
+      await page.waitForTimeout(300);
+    }
+  };
+  const copyDraft = async () => {
+    const stale = '__kiki_proof_stale_clipboard__';
+    await page.evaluate((text) => navigator.clipboard.writeText(text), stale);
+    await input.focus();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Control+C');
+    await page.waitForFunction(async (previous) => await navigator.clipboard.readText() !== previous, stale, { timeout: 5000 });
+    return page.evaluate(() => navigator.clipboard.readText());
+  };
+  const pasteAndProbe = async (name, holdFrame = false) => {
+    await input.fill('Before  after');
+    await input.press('Home');
+    for (let index = 0; index < 7; index += 1) await input.press('ArrowRight');
+    await page.evaluate((text) => navigator.clipboard.writeText(text), THREAD);
+    if (holdFrame) {
+      await page.evaluate(() => {
+        if (window.__proofFrameControl === undefined) {
+          const request = window.requestAnimationFrame.bind(window);
+          const cancel = window.cancelAnimationFrame.bind(window);
+          const pending = new Map();
+          let nextId = -1;
+          window.__proofFrameControl = {
+            hold: false,
+            release() {
+              this.hold = false;
+              const callbacks = [...pending.values()];
+              pending.clear();
+              for (const callback of callbacks) request(callback);
+            },
+          };
+          window.requestAnimationFrame = (callback) => {
+            if (!window.__proofFrameControl.hold) return request(callback);
+            const id = nextId--;
+            pending.set(id, callback);
+            return id;
+          };
+          window.cancelAnimationFrame = (id) => {
+            if (!pending.delete(id)) cancel(id);
+          };
+        }
+        window.__proofFrameControl.hold = true;
+      });
+    }
+    await input.press('Control+V');
+    if (holdFrame) await page.waitForTimeout(40);
+    await page.keyboard.type('.');
+    if (holdFrame) await page.evaluate(() => { window.__proofFrameControl.release(); });
+    await input.press('Control+z');
+    await input.press('Control+Shift+z');
+    await page.keyboard.type('?');
+    await input.press('Control+z');
+    await input.press('Control+Shift+z');
+    await page.keyboard.type('!');
+    const chip = page.locator('[data-composer-variant="main"] [data-thread-ref-overlay-token][data-ref-kind="session"]');
+    await chip.waitFor({ timeout: 5000 });
+    if ((await chip.textContent()) !== 'Fix the flaky upload test') throw new Error(`thread title did not resolve: ${await chip.textContent()}`);
+    await shot(`composer-caret-${name}`);
+    const raw = await copyDraft();
+    const expected = `Before ${THREAD}.?! after`;
+    if (raw !== expected) throw new Error(`${name} paste moved the caret: ${JSON.stringify({ expected, actual: raw })}`);
+  };
+
+  await openComposerSession();
+  await pasteAndProbe('browser');
+
+  await page.context().addInitScript(spaceDesktopMock, { fixtureUrl: fixtureUrl(), token: FIXTURE_TOKEN, spaces: [], windowMode: 'switch' });
+  await page.context().addInitScript(() => {
+    const internals = window.__TAURI_INTERNALS__;
+    const original = internals.invoke;
+    internals.invoke = (command, args) => {
+      if (command === 'read_clipboard_file_paths' || command === 'read_plugin_focus') return null;
+      if (command === 'desktop_window_mode') return {};
+      if (command === 'set_unread_count' || command === 'mutate_desktop_update_state') return undefined;
+      return original(command, args);
+    };
+  });
+  await page.goto(`${WEB_URL}/s/session_fixture_tl_current?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await openComposerSession();
+  await pasteAndProbe('desktop', true);
+}
+
 /**
  * selection-annotate — one selection entry immediately creates a sourced item,
  * with an optional comment edited in place. Empty and commented items accumulate
@@ -7448,6 +7545,7 @@ function scenario(name, run, extra = {}) {
 const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
+  'composer-caret': { fixture: 'thread-links' },
   'execution-pause': { fixture: 'usage-dashboard' },
   'live-agents-compact': { fixture: 'live-agents-compact' },
   'live-agents-attention': { fixture: 'live-agents-attention' },
@@ -7498,6 +7596,7 @@ const BODIES = [
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['composer-modes', scenarioComposerModes],
+  ['composer-caret', scenarioComposerCaret],
   ['settings', scenarioSettings],
   ['settings-search', scenarioSettingsSearch],
   ['settings-write', scenarioSettingsWrite],

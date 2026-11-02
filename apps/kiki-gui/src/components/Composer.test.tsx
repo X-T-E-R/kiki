@@ -2512,6 +2512,48 @@ describe('Composer file clipboard policy', () => {
     expect(uploadFile).not.toHaveBeenCalled();
   });
 
+  it('keeps the caret after a desktop link pasted into the middle of a draft', async () => {
+    desktopRuntime.value = true;
+    const { container } = await renderStatefulComposer();
+    const textarea = composerInputOf(container);
+    await typeText(textarea, 'before  after');
+    await placeCaret(textarea, 7);
+    const link = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: [], getData: () => link } });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe(`before ${link} after`);
+    expect(textarea.selectionStart).toBe(7 + link.length);
+    expect(textarea.selectionEnd).toBe(7 + link.length);
+    await flushCaret();
+    expect(textarea.selectionStart).toBe(7 + link.length);
+  });
+
+  it('keeps the caret after replacing a selection with multiple references', async () => {
+    desktopRuntime.value = true;
+    const { container } = await renderStatefulComposer();
+    const textarea = composerInputOf(container);
+    await typeText(textarea, 'before REPLACE after');
+    await placeCaret(textarea, 7, 14);
+    const thread = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const pasted = `${thread} and kiki://agents/claude-code`;
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: [], getData: () => pasted } });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe(`before ${pasted} after`);
+    expect(textarea.selectionStart).toBe(7 + pasted.length);
+    expect(textarea.selectionEnd).toBe(7 + pasted.length);
+    expect(container.querySelectorAll('.composer-reference')).toHaveLength(2);
+  });
+
   it.each(['ssh', 'remote', 'manual'] as const)('inserts original local paths as draft text in a %s workspace without uploading or reading files', async (source) => {
     desktopRuntime.value = true;
     connectionScope.source = source;
