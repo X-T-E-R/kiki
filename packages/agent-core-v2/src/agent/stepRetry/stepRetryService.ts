@@ -16,7 +16,7 @@ import {
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
-import { unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 import {
   IAgentLoopService,
   type LoopErrorContext,
@@ -178,6 +178,9 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
       1,
     );
     if (this.failedAttempts >= maxAttempts) {
+      const details = { retry: false, retry_exhausted: true, retry_attempts: this.failedAttempts, retry_max_attempts: maxAttempts };
+      attachErrorDetails(context.error, details);
+      attachErrorDetails(error, details);
       this.resetAttempts();
       return false;
     }

@@ -797,7 +797,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           onAttemptRetry?.();
           if (interruptionAttempt >= maxAttempts) {
-            const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt };
+            const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
             attachErrorDetails(error, details);
             attachErrorDetails(raw, details);
             this.log.warn('upstream interruption retry exhausted', {

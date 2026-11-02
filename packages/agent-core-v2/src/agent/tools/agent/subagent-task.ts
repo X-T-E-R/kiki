@@ -4,6 +4,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { isAbortError } from '#/_base/utils/abort';
 import { Error2 } from '#/_base/errors/errors';
+import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import { TaskErrors } from '#/agent/task/errors';
 import {
   type AgentTask,
@@ -42,7 +43,7 @@ export type SubagentHandle = {
 export type { SubagentTaskInfo } from '#/agent/task/types';
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return toErrorDisplayMessage(err);
 }
 
 export const EMPTY_AGENT_RECEIPT_REASON =

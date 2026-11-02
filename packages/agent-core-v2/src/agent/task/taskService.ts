@@ -8,6 +8,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import type { MediaTaskInfo } from './types';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
@@ -2329,8 +2330,7 @@ function createForegroundRelease(): ForegroundRelease {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return toErrorDisplayMessage(error);
 }
 
 registerScopedService(

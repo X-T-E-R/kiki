@@ -141,7 +141,7 @@ off = true
 
 连接中断遵循[请求重试策略](./config-files.md#retry)，包括终止事件到达前以 1000、1001、1006、1012 或无错误码关闭的情况。重试会关闭旧连接，再用新连接发送当前完整历史；`previous_response_id` 不能作为被中断响应的续传游标。`websocket_connection_limit_reached` 事件，或带有符合重试条件关闭码的结构化 `websocket_close_error`，也归为连接中断，即使它由网关通过 HTTP 流（SSE）转发。只有错误文案相似时不会因此重试。连接已使用 55 分钟时，Kiki 会在下一次请求前主动换新，不打断正在生成的响应。
 
-原生 Agent 轮次可在重发前撤掉部分文本、思考（含加密思考）和未完成的本地工具调用。安全拒绝、供应商托管工具输出、明确不可重试的错误及取消仍会阻止重发。每次重试都会显示在界面和日志中，最多尝试 5 次（含首发）；配置只能下调这项上限，不能调大。失败和重试日志会记录 Kiki 本地连接的 `transport`（`ws` 或 `sse`）、`webSocketCapabilities`（有无能力声明）、`webSocketCapabilityVersion`（能力版本）和 `webSocketConnectionAgeMs`（连接已用毫秒数）；无法获取的值记为 `null`。重试耗尽后，子任务变为失败，保留原有上下文，可通过 `AgentRun` 的 `resume` 续跑。
+原生 Agent 轮次可在重发前撤掉部分文本、思考（含加密思考）和未完成的本地工具调用。安全拒绝、供应商托管工具输出、明确不可重试的错误及取消仍会阻止重发。每次重试都会显示在界面和日志中，最多尝试 5 次（含首发）；配置只能下调这项上限，不能调大。失败和重试日志会记录 Kiki 本地连接的 `transport`（`ws` 或 `sse`）、`webSocketCapabilities`（有无能力声明）、`webSocketCapabilityVersion`（能力版本）和 `webSocketConnectionAgeMs`（连接已用毫秒数）；无法获取的值记为 `null`。重试额度耗尽后，轮次和任务的最终错误会同时显示总尝试次数、配置上限和原始供应商错误。子任务保留原有上下文，可通过 `AgentRun` 的 `resume` 续跑。
 
 ## `/provider` — 交互式供应商管理
 

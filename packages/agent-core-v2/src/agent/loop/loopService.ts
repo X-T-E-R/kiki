@@ -23,7 +23,7 @@ import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
-import { toErrorMessage } from '#/_base/errors/errorMessage';
+import { toErrorDisplayMessage, toErrorMessage } from '#/_base/errors/errorMessage';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -784,7 +784,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               ? this.lastRequestTraceId
               : this.activeRequestTrace?.traceId;
           if (result !== undefined) {
-            const error = result.type === 'failed' ? toKimiErrorPayload(result.error) : undefined;
+            const error = result.type === 'failed'
+              ? { ...toKimiErrorPayload(result.error), message: toErrorDisplayMessage(result.error) } : undefined;
             const interruptReason =
               result.type === 'completed' ? undefined : interruptReasonFor(result);
             const durationMs = Date.now() - startedAt;
