@@ -41,7 +41,7 @@ export const threadSummarySchema = z.object({
   title: z.string().optional(),
   updatedAt: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
-  state: z.enum(['cold', 'idle', 'running']),
+  state: z.enum(['cold', 'idle', 'running', 'cleanup_pending', 'unknown']),
 });
 
 export const listThreadsInputSchema = z.object({

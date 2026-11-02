@@ -28,14 +28,14 @@ import {
 } from 'react';
 
 import type { Klient, TerminalFacade, TerminalConnectionStatus as WsStatus } from '@kiki/klient';
-import type { MetaResponse } from '@kiki/protocol';
+import type { MetaResponse, Session } from '@kiki/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen';
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
-import { mergeSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
+import { mergeSessionWorkChanged, patchSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
@@ -1040,6 +1040,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const workChanged = klient.events.on('session.workChanged', (change) => {
       queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
         mergeSessionWorkChanged(old, change),
+      );
+      queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+        old === undefined ? old : patchSessionWorkChanged(old, change),
       );
     });
     const offStatus = socket.onStatus((status) => {

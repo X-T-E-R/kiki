@@ -107,8 +107,9 @@ http │ ipc │ memory
   for ordered transcript recovery.
 
 `session.status()` reads one authoritative session activity snapshot. Pending
-approvals or questions take precedence over running work; failed calls reject
-rather than reporting the session as idle.
+approvals or questions take precedence over `cleanup_pending`, then `running`.
+Running follows `executing`, falling back to `mainTurnActive` on older hosts;
+unfinished queued work alone stays idle. Failed reads reject.
 
 ## Pause and resume session execution
 

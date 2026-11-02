@@ -47,6 +47,7 @@ interface AgentWorkFold {
 interface AgentWorkFacts {
   busy: boolean;
   executing: boolean;
+  cleanupPending: boolean;
 }
 
 export const sessionActivityFoldsKey = defineState<Map<string, AgentWorkFold>>(
@@ -72,6 +73,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
   private readonly dirtyAgents = new Map<string, IAgentScopeHandle>();
   private busyAgents = 0;
   private executingAgents = 0;
+  private cleanupPendingAgents = 0;
   private recomputeQueued = false;
   private disposed = false;
 
@@ -206,6 +208,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     const previous = this.workFacts.get(agentId);
     this.busyAgents += Number(next?.busy ?? false) - Number(previous?.busy ?? false);
     this.executingAgents += Number(next?.executing ?? false) - Number(previous?.executing ?? false);
+    this.cleanupPendingAgents += Number(next?.cleanupPending ?? false) - Number(previous?.cleanupPending ?? false);
     if (next === undefined) this.workFacts.delete(agentId);
     else this.workFacts.set(agentId, next);
   }
@@ -230,15 +233,17 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
     const executorActive = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
     const turnExecuting = loop?.persistenceFailure === undefined && (execution === undefined ? fold?.turnActive === true : executorActive);
-    const taskExecuting = tasks?.list(true).some((task) => task.status === 'running' &&
-      task.lifetime !== 'service' && task.kind !== 'agent' && task.kind !== 'question') === true;
-    const executing = turnExecuting || background || taskExecuting ||
-      (loop?.persistenceFailure === undefined && (loop?.state === 'running' || loop?.finalizing === true));
-    const busy = fold?.turnActive === true || activity?.turn !== undefined || background || tasks?.hasUnfinishedWork() === true || goalActive ||
+    const activeTasks = tasks?.list(true) ?? [];
+    const cleanupPending = activeTasks.some((task) => task.cleanupPending === true);
+    const taskExecuting = activeTasks.some((task) => task.status === 'running' && task.cleanupPending !== true &&
+      task.lifetime !== 'service' && task.kind !== 'agent' && task.kind !== 'question');
+    const executing = (loop?.executionPaused !== true && (turnExecuting ||
+      (loop?.persistenceFailure === undefined && (loop?.state === 'running' || loop?.finalizing === true)))) || background || taskExecuting;
+    const busy = cleanupPending || fold?.turnActive === true || activity?.turn !== undefined || background || tasks?.hasUnfinishedWork() === true || goalActive ||
       loop?.state === 'running' || loop?.finalizing === true || loop?.persistenceFailure !== undefined || loop?.hasPendingRequests === true ||
       (loop?.pendingTurnIds?.length ?? 0) > 0 || prompt?.active !== undefined || prompt?.launching !== undefined ||
       (prompt?.pending.length ?? 0) > 0 || prompts?.hasReadyPending?.() === true || executorActive;
-    return { busy, executing };
+    return { busy, executing, cleanupPending };
   }
 
   private recompute(cause: SessionActivityCause): void {
@@ -253,6 +258,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     return {
       busy: this.busyAgents > 0,
       executing: this.executingAgents > 0,
+      cleanupPending: this.cleanupPendingAgents > 0 || undefined,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,
       pendingInteraction: resolvePendingInteraction(this.interactions.listPending()),
       lastTurnReason: this.folds.get(MAIN_AGENT_ID)?.lastTurnReason,
@@ -289,6 +295,7 @@ function activityEquals(a: SessionActivityState, b: SessionActivityState): boole
   return (
     a.busy === b.busy &&
     a.executing === b.executing &&
+    a.cleanupPending === b.cleanupPending &&
     a.mainTurnActive === b.mainTurnActive &&
     a.pendingInteraction === b.pendingInteraction &&
     a.lastTurnReason === b.lastTurnReason

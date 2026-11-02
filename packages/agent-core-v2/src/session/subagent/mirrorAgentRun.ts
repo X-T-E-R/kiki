@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
@@ -314,7 +315,7 @@ function shouldSuppressFailure(options: MirrorAgentRunOptions, error: unknown): 
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return toErrorDisplayMessage(error);
 }
 
 function childContextTokens(

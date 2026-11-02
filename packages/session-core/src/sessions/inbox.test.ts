@@ -61,6 +61,14 @@ describe('inbox model', () => {
     expect(buildInboxModel([later], { s: 11 }).total).toBe(1);
   });
 
+  it('shows unconfirmed process cleanup before execution and unread, after blocking interaction', () => {
+    const cleanup = session({ id: 'cleanup', busy: true, executing: false, cleanup_pending: true });
+    expect(sessionRowState(cleanup, {})).toBe('cleanup-pending');
+    expect(sessionRowState({ ...cleanup, executing: true }, { cleanup: 10 })).toBe('cleanup-pending');
+    expect(sessionRowState({ ...cleanup, pending_interaction: 'approval' }, {})).toBe('needs-me');
+    expect(sessionRowState({ ...cleanup, cleanup_pending: undefined, busy: false }, {})).toBe('unread');
+  });
+
   it('ranks row state: blocked over running over unread over read', () => {
     expect(sessionRowState(session({ id: 'a', pending_interaction: 'approval', busy: true }), {})).toBe('needs-me');
     expect(sessionRowState(session({ id: 'b', busy: true, executing: true }), {})).toBe('running');

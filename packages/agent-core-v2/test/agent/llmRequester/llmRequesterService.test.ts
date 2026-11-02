@@ -1918,7 +1918,7 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     const error = await result;
     expect(calls).toBe(5);
     expect(resolveRetryPolicy(undefined, error).retry).toBe(false);
-    expect(toErrorPayload(error).details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 5 });
+    expect(toErrorPayload(error).details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5 });
     expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(4);
     expect(onAttemptRetry).toHaveBeenCalledTimes(5);
     expect(telemetryRecords.filter(record => record.event === 'api_error')).toEqual(Array.from({ length: calls }, () => ({

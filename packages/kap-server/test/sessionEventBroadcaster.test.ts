@@ -2303,12 +2303,12 @@ describe('SessionEventBroadcaster', () => {
     sessions.set('s1', lc);
     const { target, envelopes } = collectingTarget();
     await bc.subscribe('s1', target);
-    for (const executing of [true, false]) {
-      changes[0]!({ state: { busy: true, executing, mainTurnActive: false, pendingInteraction: 'none' }, cause: 'background' });
+    for (const [executing, cleanupPending] of [[true, undefined], [false, true], [false, undefined]] as const) {
+      changes[0]!({ state: { busy: true, executing, cleanupPending, mainTurnActive: false, pendingInteraction: 'none' }, cause: 'background' });
       await bc.getCursor('s1');
     }
     expect(envelopes.filter((event) => event.type === 'event.session.work_changed').map((event) => event.payload))
-      .toMatchObject([{ busy: true, executing: true }, { busy: true, executing: false }]);
+      .toMatchObject([{ busy: true, executing: true }, { busy: true, executing: false, cleanup_pending: true }, { busy: true, executing: false, cleanup_pending: undefined }]);
   });
 
   it('flips busy from background tasks alone (no turn involved)', async () => {

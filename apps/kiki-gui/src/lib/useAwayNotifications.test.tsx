@@ -29,6 +29,7 @@ let completions: readonly StableCompletion[];
 let focused: boolean;
 let visible: boolean;
 let navigate: ReturnType<typeof useNavigate>;
+let replaceSessions: (rows: Session[]) => void;
 const notify = vi.fn(async (_notification: import('../host').HostNotification) => {});
 const badge = vi.fn(async (_count: number, _homeId?: string, _scopeId?: string, _sessionIds?: readonly string[]) => {});
 const host = { kind: 'browser', notify, setUnreadBadge: badge,
@@ -41,7 +42,8 @@ function Viewed() {
   return <div data-session={id}>{id || 'Home'}</div>;
 }
 function Surface() {
-  const [rows] = useState(sessions);
+  const [rows, setRows] = useState(sessions);
+  replaceSessions = setRows;
   navigate = useNavigate();
   useAwayNotifications({ host, sessions: rows, listSessions: async () => rows, navigate: (target) => { void navigate(target); } });
   return <Viewed />;
@@ -120,5 +122,26 @@ describe('conversation completion and read confirmation', () => {
     completions = [{ session_id: 'b', episode_id: 'after-reopen', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
     expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the native badge unchanged through bulk metadata refreshes, but publishes changed membership', async () => {
+    await mount();
+    badge.mockClear();
+    const refresh = async (revision: number) => {
+      await act(async () => { replaceSessions(sessions.map((session) => ({ ...session, title: `${session.id}-${revision}` }))); });
+    };
+    for (let revision = 0; revision < 20; revision++) await refresh(revision);
+    expect(badge).not.toHaveBeenCalled();
+    await act(async () => { replaceSessions(sessions.map((session) => session.id === 'b' ? { ...session, id: 'c' } : session)); });
+    expect(badge).toHaveBeenCalledExactlyOnceWith(1, 'home-example', 'local', ['c']);
+    await act(async () => { replaceSessions(sessions.filter((session) => session.id === 'a')); });
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
+  });
+
+  it('suppresses the visible conversation completion on a child route, without suppressing other sessions', async () => {
+    await mount('/s/a/agent/child-example');
+    completions = ['a', 'b'].map((session_id) => ({ session_id, episode_id: `finished-${session_id}`, completed_at: Date.now() }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ route: '/s/b' }));
   });
 });

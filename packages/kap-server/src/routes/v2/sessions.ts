@@ -42,6 +42,7 @@ export const v2ActivityStatusSchema = z.enum([
   'running',
   'approval',
   'question',
+  'cleanup_pending',
   'failed',
   'idle',
 ]);
@@ -256,8 +257,8 @@ type V2SessionIdProjection = z.infer<typeof v2SessionIdProjectionSchema>;
 class PageTokenMismatchError extends Error {}
 
 /**
- * Map the core activity facts onto the v2 status enum. A pending interaction
- * outranks an active turn (the turn is parked waiting on it). `failed` is
+ * Map the core activity facts onto the v2 status enum. Pending interaction
+ * outranks cleanup pending, which outranks current execution. `failed` is
  * observable live, and for cold sessions from the persisted outcome
  * (completed/cancelled stay `idle`, matching the live fold).
  */
@@ -267,7 +268,8 @@ export function mapActivityStatus(
 ): V2ActivityStatus {
   if (facts.pendingInteraction === 'approval') return 'approval';
   if (facts.pendingInteraction === 'question') return 'question';
-  if (facts.busy || facts.mainTurnActive) return 'running';
+  if (facts.cleanupPending === true) return 'cleanup_pending';
+  if ((facts.executing ?? facts.mainTurnActive) === true) return 'running';
   if (facts.lastTurnReason === 'failed') return 'failed';
   if (facts.live === false && persistedLastTurnReason === 'failed') return 'failed';
   return 'idle';

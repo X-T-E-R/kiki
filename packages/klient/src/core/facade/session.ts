@@ -111,7 +111,7 @@ export interface SessionOptionalCapabilitiesFacade {
 }
 
 /** Compatibility phase mapped from one authoritative session activity snapshot. */
-export type SessionStatus = 'running' | 'idle' | 'awaiting_approval' | 'awaiting_question';
+export type SessionStatus = 'running' | 'idle' | 'awaiting_approval' | 'awaiting_question' | 'cleanup_pending';
 
 export interface SessionFacade {
   get(): Promise<SessionMeta>;
@@ -194,7 +194,8 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
       const state = await call(scope, 'sessionActivityView', 'state', []) as SessionActivityState;
       if (state.pendingInteraction === 'approval') return 'awaiting_approval';
       if (state.pendingInteraction === 'question') return 'awaiting_question';
-      return state.busy ? 'running' : 'idle';
+      if (state.cleanupPending === true) return 'cleanup_pending';
+      return (state.executing ?? state.mainTurnActive) ? 'running' : 'idle';
     },
     close: () => call({}, 'sessionManager', 'close', [sessionId]) as Promise<void>,
     archive: () => call({}, 'sessionManager', 'archive', [sessionId]) as Promise<void>,

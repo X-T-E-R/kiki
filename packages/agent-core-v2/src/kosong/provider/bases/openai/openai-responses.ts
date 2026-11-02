@@ -148,7 +148,10 @@ function transportStatusError(error: unknown): ChatProviderError | undefined {
   }
   if (!(error instanceof ResponsesWebSocketError)) return undefined;
   if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
-  return attachErrorDetails(new APIStatusError(error.status, error.message), {
+  const failure = isContextOverflowErrorCode(error.code) ? new APIContextOverflowError(error.status, error.message)
+    : isOpenAIInsufficientQuotaCode(error.code) ? new APIProviderQuotaExhaustedError(error.message)
+    : new APIStatusError(error.status, error.message);
+  return attachErrorDetails(markProviderEventError(failure, error.code), {
     errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
   });
 }
@@ -315,7 +318,7 @@ function formatResponsesErrorEvent(
   param: string | null,
 ): string {
   const codeText = code ?? 'unknown';
-  const paramText = param === null ? '' : ` (param: ${param})`;
+  const paramText = param === null || param.trim().length === 0 ? '' : ` (param: ${param})`;
   return `${codeText}: ${message}${paramText}`;
 }
 

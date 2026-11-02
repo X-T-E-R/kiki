@@ -784,7 +784,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const live = this.liveSession(summary.id);
     let state: ThreadSummary['state'] = 'cold';
     if (live !== undefined) {
-      state = live.accessor.get(ISessionActivityView).state().busy ? 'running' : 'idle';
+      const activity = live.accessor.get(ISessionActivityView).state();
+      const executing = activity.executing ?? activity.mainTurnActive;
+      state = activity.cleanupPending === true ? 'cleanup_pending' : executing === undefined ? 'unknown' : executing ? 'running' : 'idle';
     }
     return {
       ref: {

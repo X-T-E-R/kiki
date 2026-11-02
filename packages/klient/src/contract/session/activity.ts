@@ -5,6 +5,7 @@ import type { ServiceContract } from '../types.js';
 export const sessionActivityStateSchema = z.object({
   busy: z.boolean(),
   executing: z.boolean().optional(),
+  cleanupPending: z.boolean().optional(),
   mainTurnActive: z.boolean(),
   pendingInteraction: z.enum(['none', 'approval', 'question']),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),

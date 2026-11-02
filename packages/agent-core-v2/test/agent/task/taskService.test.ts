@@ -3,6 +3,8 @@ import { Readable, type Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
+import { attachErrorDetails } from '#/_base/errors/errors';
+import { APIStatusError } from '#/kosong/contract/errors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
@@ -966,6 +968,28 @@ describe('AgentTaskService', () => {
     expect(loop.hasPendingRequests()).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each(['agent', 'process'] as const)('delivers the exhausted retry count and original failure in a %s task notification', async kind => {
+    const error = attachErrorDetails(new APIStatusError(500, 'generation_failed: Generation failed.'), {
+      retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5,
+    });
+    const svc = ix.get(IAgentTaskService);
+    const task: AgentTask = kind === 'agent'
+      ? new SubagentTask({ agentId: 'fixture-child', profileName: 'example-worker', completion: Promise.reject(error) },
+        'Synthetic work', new AbortController())
+      : { ...fakeProcessTask(), start: async () => { throw error; } };
+    const taskId = svc.registerTask(task);
+    expect(await svc.wait(taskId)).toMatchObject({ status: 'failed',
+      stopReason: 'Retry attempts exhausted (5/5). generation_failed: Generation failed.' });
+    const loop = stubLoop();
+    await waitForCondition(() => loop.hasPendingRequests());
+    const context = ix.get(IAgentContextMemoryService) as StubContextMemory;
+    loop.drainNextBatch(context);
+    await runWillBeginStepHooks(loop);
+    const notification = context.messages.find(message => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+    expect(JSON.stringify(notification?.content)).toContain('Retry attempts exhausted (5/5). generation_failed: Generation failed.');
+    expect(error.message).toBe('generation_failed: Generation failed.');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('records external-main task notifications without enqueueing a model step', async () => {
     ix.stub(ISessionMetadata, {
       read: async () => ({
@@ -1525,6 +1549,31 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('killed');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('retains exit-code-zero process cleanup as unconfirmed until TaskStop confirms ownership cleanup', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    const error = new HostProcessError('os.process.kill_failed', 'helper control channel closed', {
+      details: { cleanupComplete: false, phase: 'control', controlClosed: true, pid: 4245 },
+    });
+    const proc = {
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from([]), stderr: Readable.from([]), pid: 4245, exitCode: 0,
+      wait: async () => 0,
+      kill: vi.fn(async () => {}),
+      dispose: vi.fn(async () => {}).mockRejectedValueOnce(error),
+    } as unknown as IHostProcess;
+    const service = ix.get(IAgentTaskService);
+    const workChanged = vi.fn();
+    if (service.onDidChangeWork === undefined) throw new Error('Task work change event is unavailable');
+    disposables.add(service.onDidChangeWork(workChanged));
+    const taskId = service.registerTask(new ProcessTask(proc, 'fixture', 'completed root process'));
+    await vi.waitFor(() => expect(service.getTask(taskId)?.cleanupPending).toBe(true));
+    expect(service.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null, cleanupPending: true, receipt: undefined });
+    expect(service.hasUnfinishedWork()).toBe(true);
+    expect(workChanged).toHaveBeenCalled();
+    expect(await service.stop(taskId)).toMatchObject({ status: 'killed', exitCode: 0, cleanupPending: undefined });
+    expect(proc.dispose).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['force', 'lifecycle', 'timeout'] as const)('retains typed %s cleanup failure and confirms cleanup on a later stop', async (path) => {
     stubTaskConfig({ killGracePeriodMs: 0 });
     const service = ix.get(IAgentTaskService);
@@ -1546,10 +1595,10 @@ describe('AgentTaskService', () => {
       rejectLifecycle(error);
       await vi.waitFor(() => expect(service.getTask(taskId)?.stopReason).toContain('os.process.kill_failed'));
     }
-    expect(service.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null, receipt: undefined });
+    expect(service.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null, receipt: undefined, cleanupPending: true });
     expect(service.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
     expect(service.getTask(taskId)?.stopReason).toContain('"remainingProcessCount":1');
-    expect((await service.stop(taskId))?.status).toBe('killed');
+    expect(await service.stop(taskId)).toMatchObject({ status: 'killed', cleanupPending: undefined });
     expect(forceStop).toHaveBeenCalledTimes(path === 'lifecycle' ? 1 : 2);
   });
 

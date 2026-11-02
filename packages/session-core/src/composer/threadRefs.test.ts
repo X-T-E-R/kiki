@@ -209,6 +209,28 @@ describe('thread context block', () => {
     expect(threadRefTag(resolved)).toBe(`<thread_ref id="${ID}" host_id="host-&quot;example&amp;" status="unknown"/>`);
   });
 
+  it.each([
+    [{ busy: true, executing: false, main_turn_active: false }, 'idle'],
+    [{ busy: true, executing: true, main_turn_active: false }, 'running'],
+    [{ busy: false, executing: true, main_turn_active: false }, 'running'],
+    [{ busy: true, main_turn_active: true }, 'running'],
+    [{ busy: true, main_turn_active: false }, 'idle'],
+    [{ busy: true }, 'unknown'],
+    [{ busy: true, executing: false, execution_phase: 'paused' }, 'idle'],
+    [{ busy: true, executing: false, cleanup_pending: true }, 'cleanup_pending'],
+    [{ busy: true, executing: true, cleanup_pending: true }, 'cleanup_pending'],
+    [{ busy: true, cleanup_pending: true, pending_interaction: 'approval' }, 'awaiting_approval'],
+    [{ busy: true, cleanup_pending: true, pending_interaction: 'question' }, 'awaiting_answer'],
+    [{ busy: true, executing: true, pending_interaction: 'approval' }, 'awaiting_approval'],
+    [{ busy: true, executing: true, pending_interaction: 'question' }, 'awaiting_answer'],
+    [{ busy: true, executing: true, archived: true }, 'archived'],
+  ] as const)('projects execution facts into reference status: %j', (facts, status) => {
+    const record = { id: ID, workspace_id: 'wd_1', title: 'Example', updated_at: '2026-01-01T00:00:00.000Z', metadata: {}, ...facts } as unknown as Session;
+    const info = threadRefInfoOf(ID, record, undefined);
+    expect(info.status).toBe(status);
+    expect(threadRefTag(info)).toContain(`status="${status}"`);
+  });
+
   it('derives status from the record, pending interaction first', () => {
     const record = {
       id: ID, workspace_id: 'wd_1', title: '', updated_at: '2026-01-01T00:00:00.000Z',

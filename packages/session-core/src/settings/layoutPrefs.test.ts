@@ -53,12 +53,12 @@ describe('readLayoutPreferences', () => {
     ls().setItem('kiki.layout', JSON.stringify({
       groupBy: 'none',
       sortBy: 'created-desc',
-      filters: { status: ['running', 'bogus'], workspaces: ['ws-a', 'ws-a', 3], archived: 'only' },
+      filters: { status: ['running', 'cleanup-pending', 'bogus'], workspaces: ['ws-a', 'ws-a', 3], archived: 'only' },
     }));
     const prefs = readLayoutPreferences();
     expect(prefs.groupBy).toBe('none');
     expect(prefs.sortBy).toBe('created-desc');
-    expect(prefs.filters).toEqual({ status: ['running'], workspaces: ['ws-a'], archived: 'only' });
+    expect(prefs.filters).toEqual({ status: ['running', 'cleanup-pending'], workspaces: ['ws-a'], archived: 'only' });
   });
 
   it('falls back to default filters for a malformed value', () => {
