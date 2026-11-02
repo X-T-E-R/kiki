@@ -41,6 +41,12 @@ describe('toWireSession execution activity', () => {
     expect(wire.executing).toBe(executing);
   });
 
+  it('preserves structured cleanup while the session remains busy and stops counting execution', () => {
+    const facts = { ...coldFacts, live: true, busy: true, executing: false, cleanupPending: true };
+    expect(toWireSession(fields, '/example', facts)).toMatchObject({ busy: true, executing: false, cleanup_pending: true });
+    expect(toWireSession(fields, '/example', { ...facts, busy: false, cleanupPending: undefined }).cleanup_pending).toBeUndefined();
+  });
+
   it('projects the persisted execution phase for cold sessions', () => {
     expect(toWireSession({ ...fields, executionPhase: 'paused' }, '/example', coldFacts).execution_phase).toBe('paused');
     expect(toWireSession(fields, '/example', coldFacts).execution_phase).toBeUndefined();

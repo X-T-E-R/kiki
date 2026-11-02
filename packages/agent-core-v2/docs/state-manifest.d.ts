@@ -532,6 +532,7 @@ export interface SessionStateSnapshot {
   'sessionActivity.current': /* SessionActivityState — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ {
     readonly busy: boolean;
     readonly executing?: boolean;
+    readonly cleanupPending?: boolean;
     readonly mainTurnActive: boolean;
     readonly pendingInteraction: /* SessionPendingInteraction — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ 'approval' | 'question' | 'none';
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -7921,6 +7922,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -7949,6 +7951,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -7976,6 +7979,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -8005,6 +8009,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -8054,6 +8059,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -8082,6 +8088,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -8109,6 +8116,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';
@@ -8138,6 +8146,7 @@ export interface AgentStateSnapshot {
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly stopReason?: string;
+    readonly cleanupPending?: boolean;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
     readonly lifetime?: 'finite' | 'service';

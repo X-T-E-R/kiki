@@ -36,6 +36,7 @@ export const taskSchema = z.object({
   parent_tool_call_id: z.string().optional(),
   source_ref: agentRunSourceSchema.optional(),
   run_in_background: z.boolean(),
+  cleanup_pending: z.boolean().optional(),
   exit_code: z.number().int().nullable().optional(),
   stop_reason: z.string().optional(),
 });

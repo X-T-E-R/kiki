@@ -1647,6 +1647,7 @@ export class SessionEventBroadcaster {
             type: 'event.session.work_changed',
             busy: work.busy,
             executing: work.executing,
+            cleanup_pending: work.cleanupPending,
             main_turn_active: work.mainTurnActive,
             pending_interaction: work.pendingInteraction,
             last_turn_reason: work.lastTurnReason,

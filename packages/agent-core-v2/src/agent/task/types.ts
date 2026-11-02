@@ -41,6 +41,7 @@ export interface AgentTaskInfoBase {
   readonly startedAt: number;
   readonly endedAt: number | null;
   readonly stopReason?: string;
+  readonly cleanupPending?: boolean;
   readonly terminalNotificationSuppressed?: boolean;
   readonly timeoutMs?: number;
   readonly lifetime?: TaskLifetime;

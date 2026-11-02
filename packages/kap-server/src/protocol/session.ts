@@ -79,6 +79,7 @@ export const sessionSchema = z.object({
   own_updated_at: isoDateTimeSchema.optional(),
   busy: z.boolean(),
   executing: z.boolean().optional(),
+  cleanup_pending: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),

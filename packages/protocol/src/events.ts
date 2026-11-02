@@ -404,6 +404,7 @@ export interface TaskInfoBase {
   readonly startedAt: number;
   readonly endedAt: number | null;
   readonly stopReason?: string;
+  readonly cleanupPending?: boolean;
   readonly terminalNotificationSuppressed?: boolean;
   readonly timeoutMs?: number;
   readonly lifetime?: 'finite' | 'service';
@@ -653,6 +654,7 @@ export interface SessionWorkChangedEvent {
   readonly busy: boolean;
   /** Current execution, excluding queued work and terminal task receipts awaiting delivery. */
   readonly executing?: boolean;
+  readonly cleanup_pending?: boolean;
   /** Main-agent turn liveness, excluding background and sub-agent work. */
   readonly main_turn_active?: boolean;
   /** Highest-priority pending interaction for clients without a session subscription. */
@@ -1636,6 +1638,7 @@ export const taskInfoBaseSchema = z.object({
   startedAt: z.number(),
   endedAt: z.number().nullable(),
   stopReason: z.string().optional(),
+  cleanupPending: z.boolean().optional(),
   terminalNotificationSuppressed: z.boolean().optional(),
   timeoutMs: z.number().optional(),
   lifetime: z.enum(['finite', 'service']).optional(),
@@ -1840,6 +1843,7 @@ export const sessionWorkChangedEventSchema = z.object({
   type: z.literal('event.session.work_changed'),
   busy: z.boolean(),
   executing: z.boolean().optional(),
+  cleanup_pending: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),

@@ -15,7 +15,7 @@ export interface ThreadSummary {
   readonly title?: string;
   readonly updatedAt: number;
   readonly createdAt: number;
-  readonly state: 'cold' | 'idle' | 'running';
+  readonly state: 'cold' | 'idle' | 'running' | 'cleanup_pending' | 'unknown';
 }
 
 export interface ThreadCaller {

@@ -336,6 +336,7 @@ const taskInfoBaseFields = {
   startedAt: z.number(),
   endedAt: z.union([z.number(), z.null()]),
   stopReason: z.string().optional(),
+  cleanupPending: z.boolean().optional(),
   terminalNotificationSuppressed: z.boolean().optional(),
   timeoutMs: z.number().optional(),
   receipt: taskReceiptSchema.optional(),

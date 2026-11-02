@@ -23,10 +23,11 @@ export type LifeState = 'working' | 'waiting' | 'done' | 'failed' | 'idle';
 /** How long a completed turn still reads as "just done". */
 export const DONE_WINDOW_MS = 10 * 60_000;
 
-type LifeFacts = Pick<Session, 'busy'> & Partial<Pick<Session, 'executing' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason' | 'updated_at'>>;
+type LifeFacts = Pick<Session, 'busy'> & Partial<Pick<Session, 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason' | 'updated_at'>>;
 
 export function lifeOf(session: LifeFacts, now: number = Date.now()): LifeState {
   if (session.pending_interaction === 'approval' || session.pending_interaction === 'question') return 'waiting';
+  if (session.cleanup_pending === true) return 'waiting';
   if ((session.executing ?? session.main_turn_active) === true) return 'working';
   if (session.last_turn_reason === 'failed' || session.last_turn_reason === 'cancelled') return 'failed';
   if (session.last_turn_reason === 'completed' && session.updated_at !== undefined) {

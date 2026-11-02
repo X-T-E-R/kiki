@@ -754,6 +754,16 @@ describe('Sidebar header controls', () => {
 });
 
 describe('Sidebar session row states', () => {
+  it('shows unconfirmed process cleanup with a visible label and preserves row actions', async () => {
+    const cleanup = { ...session('cleanup'), busy: true, executing: false, cleanup_pending: true, last_turn_reason: 'completed' as const };
+    const { container } = await mount({ sessions: [cleanup], sessionGroups: [{ key: 'today', label: 'Today', items: [cleanup] }] });
+    const row = container.querySelector('[data-session-row="cleanup"]');
+    expect(row?.getAttribute('data-session-row-state')).toBe('cleanup-pending');
+    expect(row?.textContent).toContain('Process cleanup unconfirmed');
+    expect(row?.querySelector('[data-session-status]')?.getAttribute('data-session-status')).toBe('cleanup-pending');
+    expect(row?.querySelectorAll('button').length).toBeGreaterThan(1);
+  });
+
   it('separates blocked, running, unread and caught-up rows', async () => {
     resetSessionSeen();
     const blocked = { ...session('s-blocked'), pending_interaction: 'question' as const, last_seq: 4 };
