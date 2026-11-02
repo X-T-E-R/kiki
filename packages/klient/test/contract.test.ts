@@ -450,6 +450,11 @@ describe('request identity contract validation', () => {
     expect(providerConfigSchema.parse({ requestIdentity: camel })).toEqual({
       requestIdentity: camel,
     });
+    expect(providerConfigSchema.parse({ type: 'openai', enabled: false })).toEqual({
+      type: 'openai',
+      enabled: false,
+    });
+    expect(providerConfigSchema.parse({ type: 'openai' })).not.toHaveProperty('enabled');
     const compression = { minBytes: 0, targets: ['https://b.example.test/v1', 'https://a.example.test/v1'] };
     const socket = { off: true as const };
     expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'zstd', targets: ['https://example.test/v1'] }]).success).toBe(true);

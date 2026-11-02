@@ -28,6 +28,7 @@ export type ModelSource = 'static' | 'discover' | 'oauth-catalog';
 
 export interface ProviderConfig {
   modelSource?: ModelSource;
+  enabled?: boolean;
 
   baseUrl?: string;
   decisionEndpoint?: string;

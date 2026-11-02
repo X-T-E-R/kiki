@@ -108,6 +108,7 @@ const imagePolicyWireSchema = z.object({
 export const modelCatalogItemSchema = z.object({
   id: z.string().min(1),
   provider_id: z.string(),
+  enabled: z.boolean().optional(),
   remote_id: z.string().min(1),
   pricing_model: z.string().trim().min(1).optional(),
   display_name: z.string().min(1).optional(),
@@ -143,6 +144,7 @@ export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
+  enabled: z.boolean().optional(),
   type: z.string().min(1),
   service: z.enum(['chat', 'decision']).optional(),
   decision_protocol: decisionProtocolSchema.optional(),

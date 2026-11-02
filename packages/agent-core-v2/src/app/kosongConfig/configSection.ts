@@ -101,6 +101,7 @@ type _AssertModelUsagePolicy = AssertExact<Equal<z.infer<typeof ModelUsagePolicy
 
 const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
+  enabled: z.boolean().optional(),
 
   baseUrl: z.string().optional(),
   decisionEndpoint: z.string().optional(),

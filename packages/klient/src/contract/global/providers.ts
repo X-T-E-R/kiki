@@ -27,6 +27,7 @@ export const requestIdentityPolicySchema = RequestIdentityPolicySchema;
 
 const providerConfigObjectSchema = z.object({
   modelSource: modelSourceSchema.optional(),
+  enabled: z.boolean().optional(),
 
   baseUrl: z.string().optional(),
   customHeaders: stringRecordSchema.optional(),

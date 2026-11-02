@@ -60,6 +60,7 @@ describe('providers TOML transforms', () => {
     const from = providersFromToml({
       'my-provider': {
         type: 'kimi',
+        enabled: false,
         base_url: 'https://api.moonshot.ai/v1',
         custom_headers: { 'x-a': 'b' },
         default_model: 'kimi-k2',
@@ -73,6 +74,7 @@ describe('providers TOML transforms', () => {
     }) as Record<string, Record<string, unknown>>;
     expect(from['my-provider']).toEqual({
       type: 'kimi',
+      enabled: false,
       baseUrl: 'https://api.moonshot.ai/v1',
       customHeaders: { 'x-a': 'b' },
       defaultModel: 'kimi-k2',
@@ -88,6 +90,7 @@ describe('providers TOML transforms', () => {
     const back = providersToToml(from, undefined) as Record<string, Record<string, unknown>>;
     expect(back['my-provider']).toEqual({
       type: 'kimi',
+      enabled: false,
       base_url: 'https://api.moonshot.ai/v1',
       custom_headers: { 'x-a': 'b' },
       default_model: 'kimi-k2',

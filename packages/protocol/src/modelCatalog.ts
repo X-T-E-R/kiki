@@ -241,6 +241,7 @@ export type ImagePolicyPatch = z.infer<typeof imagePolicyPatchSchema>;
 export const modelCatalogItemSchema = z.object({
   id: z.string().min(1),
   provider_id: z.string(),
+  enabled: z.boolean().optional(),
   remote_id: z.string().min(1),
   pricing_model: z.string().trim().min(1).optional(),
   display_name: z.string().min(1).optional(),
@@ -269,6 +270,7 @@ export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
+  enabled: z.boolean().optional(),
   type: z.string().min(1),
   service: z.enum(['chat', 'decision']).optional(),
   decision_protocol: decisionProtocolSchema.optional(),
@@ -467,6 +469,7 @@ export const modelOverridesSchema = z.record(z.string(), z.unknown());
 export const modelEntitySchema = z.object({
   id: z.string().min(1),
   provider_id: z.string().min(1),
+  enabled: z.boolean().optional(),
   provider_source: modelProviderSourceSchema,
   remote_id: z.string().min(1).optional(),
   pricing_model: z.string().trim().min(1).optional(),
@@ -605,6 +608,7 @@ export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
 export const patchProviderRequestSchema = z
   .object({
     base_revision: z.string().min(1).optional(),
+    enabled: z.boolean().nullable().optional(),
     type: z.string().min(1).optional(),
     api_key: z.string().optional(),
     api_key_env: z.string().trim().min(1).nullable().optional(),
@@ -713,6 +717,7 @@ export const createProviderRequestSchema = z
   .object({
     id: providerIdSchema,
     type: z.string().min(1),
+    enabled: z.boolean().optional(),
     api_key: z.string().optional(),
     api_key_env: z.string().trim().min(1).optional(),
     base_url: z.string().trim().optional(),

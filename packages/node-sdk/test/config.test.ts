@@ -228,6 +228,19 @@ backoff = 15000
     expect(() => parseConfigString('[providers.edge]\ntype="openai"\napi_key_env=" "\n')).toThrow();
   });
 
+  it('round-trips an explicit provider enabled override and preserves omitted default state', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[providers.edge]\ntype="openai"\nenabled=false\nbase_url="https://edge.example.test/v1"\n');
+    expect(config.providers['edge']?.enabled).toBe(false);
+    expect(KimiConfigPatchSchema.parse({ providers: { edge: { enabled: false } } }).providers?.['edge']?.enabled).toBe(false);
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).providers['edge']?.enabled).toBe(false);
+    expect(await readFile(path, 'utf8')).toContain('enabled = false');
+
+    const omitted = parseConfigString('[providers.edge]\ntype="openai"\nbase_url="https://edge.example.test/v1"\n');
+    expect(omitted.providers['edge']?.enabled).toBeUndefined();
+  });
+
   it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('round-trips model protocol %s without changing its provider', async (protocol) => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);

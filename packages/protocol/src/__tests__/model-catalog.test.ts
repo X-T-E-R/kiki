@@ -114,6 +114,32 @@ describe('model catalog schemas', () => {
     expect(providerCatalogItemSchema.parse(provider)).not.toHaveProperty('request_compression');
   });
 
+  it('round-trips optional provider enablement across catalog, entity, and mutation schemas', () => {
+    expect(modelCatalogItemSchema.parse(model).enabled).toBeUndefined();
+    expect(providerCatalogItemSchema.parse(provider).enabled).toBeUndefined();
+
+    const disabledModel = { ...model, enabled: false };
+    const disabledProvider = { ...provider, enabled: false };
+    expect(modelCatalogItemSchema.parse(disabledModel)).toEqual(disabledModel);
+    expect(providerCatalogItemSchema.parse(disabledProvider)).toEqual(disabledProvider);
+
+    const entity = {
+      ...disabledModel,
+      provider_source: 'provider' as const,
+      effective_parameters: {},
+      parameter_sources: {},
+      revision: 'example-revision',
+      issues: [],
+    };
+    expect(modelEntitySchema.parse(entity)).toEqual(entity);
+
+    const created = { id: 'example', type: 'openai', enabled: false };
+    expect(createProviderRequestSchema.parse(created)).toEqual(created);
+    expect(patchProviderRequestSchema.parse({ enabled: false })).toEqual({ enabled: false });
+    expect(patchProviderRequestSchema.parse({ enabled: null })).toEqual({ enabled: null });
+    expect(patchProviderRequestSchema.safeParse({ enabled: 'false' }).success).toBe(false);
+  });
+
   it('round-trips a model catalog item', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);
   });

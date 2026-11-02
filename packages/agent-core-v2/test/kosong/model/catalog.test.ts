@@ -25,6 +25,8 @@ import '#/kosong/provider/providerService';
 import {
   globalDefaultForProvider,
   IModelCatalog,
+  modelCatalogItemSchema,
+  providerCatalogItemSchema,
   type Model,
   modelIdsForProvider,
   toProtocolModel,
@@ -1585,6 +1587,15 @@ const catalogSections: Record<string, unknown> = {
 };
 
 describe('wire projection (pure)', () => {
+  it('accepts optional enabled fields and keeps legacy omission compatible', () => {
+    const model = { id: 'fast', provider_id: 'example', remote_id: 'remote-model', max_context_size: 1024 };
+    const provider = { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' as const };
+    expect(modelCatalogItemSchema.parse(model).enabled).toBeUndefined();
+    expect(providerCatalogItemSchema.parse(provider).enabled).toBeUndefined();
+    expect(modelCatalogItemSchema.parse({ ...model, enabled: false }).enabled).toBe(false);
+    expect(providerCatalogItemSchema.parse({ ...provider, enabled: false }).enabled).toBe(false);
+  });
+
   it('toProtocolModel projects the materialized Model into the snake_case wire shape', async () => {
     const { host, catalog } = createHost(catalogSections);
     try {
