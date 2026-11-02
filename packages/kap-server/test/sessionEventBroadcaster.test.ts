@@ -3646,22 +3646,24 @@ describe('SessionEventBroadcaster', () => {
     });
 
     it.each([
-      ['main', false],
-      ['main', true],
-      ['visible-child', false],
-    ] as const)('KR-LOAD-01 streams independently with both views at delta, blocked=%s superseded=%s', async (blockedAgent, supersede) => {
+      ['main', false, true],
+      ['main', true, true],
+      ['visible-child', false, true],
+      ['main', false, false],
+    ] as const)('KR-LOAD-01 streams independently with both views at delta, blocked=%s superseded=%s receiptTrusted=%s', async (blockedAgent, supersede, blockedReceiptTrusted) => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');
       const child = lc.addAgent('visible-child');
       sessions.set('s1', lc);
-      for (const [agentId, prompts] of Object.entries({ main: ['persisted main first', 'persisted main second'], 'visible-child': ['persisted child'] })) {
+      const persistedPrompts = { main: ['persisted main first', 'persisted main second'], 'visible-child': ['persisted child'] };
+      for (const [agentId, prompts] of Object.entries(persistedPrompts)) {
         const folder = join(dir, 'sessions', 'wd', 's1', 'agents', agentId);
         await mkdir(folder, { recursive: true });
         const wire = prompts.map((text, index) => JSON.stringify({ type: 'context.append_message', time: 1000 + index,
           message: { role: 'user', content: [{ type: 'text', text }], origin: { kind: 'user' } } })).join('\n') + '\n';
         await writeFile(join(folder, 'wire.jsonl'), wire);
         await writeFile(join(folder, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
-          format: 1, epoch: 'verified-load-fixture', state: 'sealed', trusted: true,
+          format: 1, epoch: 'verified-load-fixture', state: 'sealed', trusted: agentId !== blockedAgent || blockedReceiptTrusted,
           wire: { size: Buffer.byteLength(wire), sha256: createHash('sha256').update(wire).digest('hex') },
         }));
       }
@@ -3712,8 +3714,14 @@ describe('SessionEventBroadcaster', () => {
         expect(finished).toBe(false);
         expect(transcriptEnvelopes(envelopes)).toHaveLength(1);
         const first = transcriptEnvelopes(envelopes)[0]!;
+        const fastReset = first.payload as import('@kiki/transcript').TranscriptResetEvent;
         expect(first).toMatchObject({ type: 'transcript.reset', payload: { agent_id: fast.id, grade: 'delta',
-          coverage: { kind: 'unknown', hasMoreOlder: true } } });
+          coverage: { kind: 'unknown', hasMoreOlder: true },
+          snapshot: { toolCallCountKnown: false, hasMoreOlder: true },
+          read: { source: 'live', readiness: 'partial', reason: 'source_unverified' } } });
+        expect(fastReset.snapshot.toolCallCount).toBeUndefined();
+        expect(fastReset.snapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent === 'main' ? 'visible-child' : 'main']);
+        expect(service.forSessionLive('s1')!.getAgent(fast.id)!.snapshot()).toMatchObject({ toolCallCountKnown: true, toolCallCount: 0, hasMoreOlder: false });
         verification = service.verifyTranscriptLiveCoverage('s1', fast.id);
         await vi.waitFor(() => expect(proofRequested).toBe(true));
         expect(proofVerified).toBe(false);
@@ -3733,6 +3741,9 @@ describe('SessionEventBroadcaster', () => {
         await pending;
         await service.whenReady('s1');
         expect(blockedFinished).toBe(true);
+        const blockedSnapshot = service.forSessionLive('s1')!.getAgent(blockedAgent)!.snapshot();
+        expect(blockedSnapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent]);
+        expect(blockedSnapshot.toolCallCountKnown).toBe(blockedReceiptTrusted);
         const mainPrompts = service.forSessionLive('s1')!.getAgent('main')!.snapshot().items
           .filter((item) => item.kind === 'turn').map((item) => item.prompt);
         expect(mainPrompts).toEqual(expect.arrayContaining(['persisted main first', 'persisted main second']));
@@ -3745,10 +3756,22 @@ describe('SessionEventBroadcaster', () => {
           expect(frames.filter((frame) => frame.type === 'transcript.reset').map((frame) =>
             (frame.payload as { agent_id: string }).agent_id).sort()).toEqual(['main', 'visible-child']);
           expect(frames.some((frame) => frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true);
-          const mainReset = frames.find((frame) => frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === 'main')!;
-          expect(mainReset).toMatchObject({ payload: { coverage: { kind: 'unknown', hasMoreOlder: true }, snapshot: {
-            items: expect.arrayContaining([expect.objectContaining({ prompt: 'persisted main first' }), expect.objectContaining({ prompt: 'persisted main second' })]),
-          } } });
+          const blockedReset = frames.find((frame) => frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === blockedAgent)!.payload as import('@kiki/transcript').TranscriptResetEvent;
+          expect(blockedReset.snapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent]);
+          expect(blockedReset.snapshot).toMatchObject({ toolCallCountKnown: blockedReceiptTrusted, hasMoreOlder: !blockedReceiptTrusted });
+          if (blockedReceiptTrusted) {
+            expect(blockedReset.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
+            expect(blockedReset.snapshot.toolCallCount).toBe(0);
+            expect(blockedReset.read).toMatchObject({ source: 'live', readiness: 'ready' });
+            expect(blockedReset.read?.reason).toBeUndefined();
+          } else {
+            expect(blockedReset.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+            expect(blockedReset.snapshot.toolCallCount).toBeUndefined();
+            expect(blockedReset.read).toMatchObject({ source: 'live', readiness: 'partial', reason: 'source_unverified' });
+          }
+          expect(fastReset.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+          expect(fastReset.snapshot).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
+          expect(fastReset.snapshot.toolCallCount).toBeUndefined();
         }
         expect(buffered).toEqual([]);
       } finally {
