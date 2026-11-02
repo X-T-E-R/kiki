@@ -5183,7 +5183,35 @@ async function scenarioSelectionAnnotate() {
   for (const hidden of ['<!-- kiki-source:', '<thread_refs>', 'Comment:']) {
     if (liveRowText.includes(hidden)) throw new Error(`live user row exposed generated content ${hidden}: ${liveRowText}`);
   }
+  const liveQuoteTitles = await liveRow.locator('[data-quote-chip]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')));
+  if (liveQuoteTitles.join('|') !== [FRAGMENT_B, QUOTE].join('|')) throw new Error(`live quote chips are out of order: ${JSON.stringify(liveQuoteTitles)}`);
+  const liveSentNote = liveRow.locator('[data-annotation-bubble]').first();
+  if ((await liveRow.locator('[data-annotation-bubble]').count()) !== 1) throw new Error('live user row lost its commented selection');
+  await liveSentNote.click();
+  const liveSentPanel = page.locator('[data-annotation-bubble-panel]');
+  await liveSentPanel.waitFor({ timeout: 5000 });
+  if ((await liveSentPanel.locator('[data-annotation-bubble-quote]').innerText()) !== FRAGMENT_A
+    || (await liveSentPanel.locator('[data-annotation-bubble-comment]').innerText()) !== COMMENT_A) {
+    throw new Error(`live comment or quote changed: ${await liveSentPanel.innerText()}`);
+  }
+  await shot('selection-annotate-live-comment');
+  await page.keyboard.press('Escape');
+  await liveSentPanel.waitFor({ state: 'detached', timeout: 5000 });
   await shot('selection-annotate-new-item-retained');
+
+  for (const span of selectionSpans) {
+    const source = span.source;
+    if (source?.blockId === undefined) throw new Error(`live selection has no source block: ${JSON.stringify(span)}`);
+    const sourceBody = page.locator(`[role="log"] [data-source-block-id="${source.blockId}"]`).first();
+    await sourceBody.scrollIntoViewIfNeeded();
+    await sourceBody.waitFor({ timeout: 5000 });
+    if ((await sourceBody.getAttribute('data-source-version')) !== source.version) throw new Error(`live source version changed for ${source.blockId}`);
+    const mark = sourceBody.locator('mark[data-annotation-ref]').filter({ hasText: span.quote }).first();
+    await mark.waitFor({ timeout: 5000 });
+    if (!(await mark.isVisible()) || (await sourceBody.innerText()).includes('kiki-source:')) {
+      throw new Error(`live source anchor is not cleanly rendered for ${span.quote}`);
+    }
+  }
 
   // Canonical cold replay keeps generated source metadata out of the user message.
   await page.reload({ waitUntil: 'domcontentloaded' });
