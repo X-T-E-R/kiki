@@ -223,6 +223,8 @@ export class ModelRequesterImpl implements ModelRequester {
           }, requestSignal);
           try {
             requestSignal?.throwIfAborted();
+            const selection = params.resolveResponsesTransport?.();
+            const responsesTransport = params.resolveResponsesTransport === undefined ? params.responsesTransport : selection?.transport;
             params.onRequestAttempt?.();
             requestStartedAt = Date.now();
             return await generate(
@@ -236,7 +238,7 @@ export class ModelRequesterImpl implements ModelRequester {
                   queue.push({ type: 'part', part, responseInstanceId });
                 },
               },
-              { ...options, signal: requestSignal, auth },
+              { ...options, signal: requestSignal, auth, responsesTransport, responsesWebSocket: selection?.config },
             );
           } finally {
             permit?.release();

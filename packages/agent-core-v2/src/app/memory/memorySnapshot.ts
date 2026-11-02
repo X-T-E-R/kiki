@@ -149,7 +149,9 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       if (!this.dirty) return undefined;
       this.dirty = false;
       this.frozen = undefined;
-      return this.get();
+      const previous = this.lastKnown;
+      const text = await this.get();
+      return text === previous ? undefined : text;
     })().finally(() => { this.refreshing = undefined; });
     return this.refreshing;
   }
@@ -303,12 +305,16 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       const view = await store.snapshot(scopes);
       const advice = settings.advisor?.mode === 'off' || (settings.advisor?.source === undefined && settings.advisor?.selector === undefined) ? undefined : this.advice;
       const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice);
-      this.projectionView = { ...view, scopes, workset: { text: snapshot.text, entries: snapshot.entries, uses: snapshot.uses } };
+      const previous = this.projectionView;
+      const semanticText = (text: string) => text.replace(/^<memory-workset generation=[^>]*>/, '<memory-workset>');
+      const unchanged = JSON.stringify(previous?.scopes) === JSON.stringify(scopes) && semanticText(this.lastKnown) === semanticText(snapshot.text);
+      const text = unchanged ? this.lastKnown : snapshot.text;
+      this.projectionView = { ...view, scopes, workset: { text, entries: snapshot.entries, uses: snapshot.uses } };
       this.generation = snapshot.generation;
       this.nextUntil = snapshot.nextUntil;
       this.frozenRelated = snapshot.entries.map((entry) => memoryEntryReference(entry));
-      this.lastKnown = snapshot.text;
-      return snapshot.text;
+      this.lastKnown = text;
+      return text;
     }
     this.projectionView = undefined;
     if (this.agent.agentId !== 'main') return '';

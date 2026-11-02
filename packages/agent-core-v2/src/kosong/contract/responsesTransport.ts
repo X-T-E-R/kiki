@@ -2,6 +2,11 @@ export interface ResponsesWebSocketConfig {
   targets: string[];
 }
 
+export interface ResponsesTransportSelection {
+  readonly transport: ResponsesRequestTransport;
+  readonly config: ResponsesWebSocketConfig;
+}
+
 export interface ResponsesOutputProjection {
   readonly input: readonly unknown[];
   readonly incremental: boolean;

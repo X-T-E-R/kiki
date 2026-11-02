@@ -12,6 +12,8 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { memoryAuthorityUpdate, memorySnapshotDelivery } from '#/app/memory/memoryProjection';
 import { IAgentProfileService, type SystemPromptContext } from './profile';
 
 const snapshotSchema = z.object({ enabled: z.boolean(), revision: z.number().int().positive(),
@@ -59,7 +61,8 @@ export const IDynamicPromptInjection = createDecorator<IDynamicPromptInjection>(
 export class DynamicPromptInjection extends Service implements IDynamicPromptInjection {
   declare readonly _serviceBrand: undefined;
   constructor(@IAgentStateService states: IAgentStateService, @IAgentContextInjectorService injector: IAgentContextInjectorService,
-    @IAgentContextMemoryService context: IAgentContextMemoryService, @IAgentProfileService profile: IAgentProfileService) {
+    @IAgentContextMemoryService context: IAgentContextMemoryService, @IAgentProfileService profile: IAgentProfileService,
+    @IAgentMemorySnapshot memory: IAgentMemorySnapshot) {
     super();
     this._register(injector.register('runtime_snapshot', async ({ lastDisclosure, injectedPositions }) => {
       await profile.reconcileSpaceSnapshot?.();
@@ -76,10 +79,13 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
         completeRevision = item?.previousRevision === undefined || item.previousRevision === completeRevision ? item?.revision : undefined;
       }
       const previous = completeRevision === disclosed?.revision ? disclosed : undefined;
-      if (previous?.revision === snapshot.revision) return undefined;
+      const delivery = memory.projectionView === undefined ? undefined : memorySnapshotDelivery(history, memory.projectionView);
+      const missingMemoryBodies = (delivery?.references.length ?? 0) > 0;
+      if (previous?.revision === snapshot.revision && !missingMemoryBodies) return undefined;
       const sections = snapshot.enabled ? dynamicPromptSections(snapshot.context) : { space: renderSpaceContext(snapshot.context.space) };
       const sectionHashes = Object.fromEntries(Object.entries(sections).map(([name, text]) => [name, promptSectionHash(text)]));
-      const changed = Object.entries(sections).filter(([name]) => previous?.sectionHashes?.[name] !== sectionHashes[name]);
+      const changed = Object.entries(sections).filter(([name]) => previous?.sectionHashes?.[name] !== sectionHashes[name] || name === 'memory' && missingMemoryBodies)
+        .map(([name, text]) => [name, name === 'memory' && delivery !== undefined ? `## Scoped memory — Saved memory / as-of projection\n${delivery.text}` : text] as const);
       if (changed.length === 0) return undefined;
       const scope = previous?.sectionHashes === undefined
         ? snapshot.enabled ? 'Full snapshot; all sections replace earlier values.' : 'Only the Space section replaces earlier values; other sections are unchanged.'
@@ -93,9 +99,16 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
       };
       return { content,
         disclosure: { revision: snapshot.revision, sectionHash: snapshot.hash, sectionHashes, memoryRange,
+          memoryReferences: memoryRange === undefined ? undefined : memory.projectionView?.workset?.entries.map((entry) => ({ scope: entry.scope, id: entry.id, observed_revision: entry.revision })),
+          memoryCompleteReferences: memoryRange === undefined ? undefined : delivery?.references,
           instructions: changed.some(([name]) => name === 'instructions') ? { mode: 'replace', files: snapshot.context.agentsMdFiles ?? [] } : undefined,
           sectionBytes: Object.fromEntries(changed.map(([name, text]) => [name, Buffer.byteLength(text, 'utf8')])),
           previousRevision: previous?.sectionHashes === undefined ? undefined : previous.revision } };
+    }));
+    this._register(injector.register('memory_authority', ({ lastDisclosure }) => {
+      const view = memory.projectionView;
+      if (view === undefined) return undefined;
+      return memoryAuthorityUpdate(context.get(), view, (lastDisclosure as { states?: Readonly<Record<string, string>> } | undefined)?.states);
     }));
   }
 }

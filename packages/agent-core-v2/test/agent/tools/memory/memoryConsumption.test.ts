@@ -156,6 +156,14 @@ function requestText(ctx: TestAgentContext): string {
   const request = ctx.llmCalls.at(-1)!;
   return request.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('\n');
 }
+function currentMemoryState(ctx: TestAgentContext, id: string): Record<string, unknown> | undefined {
+  const message = ctx.get(IAgentContextMemoryService).get().findLast((item) => item.origin?.kind === 'injection' && item.origin.variant === 'memory_authority');
+  const disclosure = message?.origin?.kind === 'injection' ? message.origin.disclosure as { states: Record<string, string> } : undefined;
+  return Object.values(disclosure?.states ?? {}).map((state) => JSON.parse(state) as Record<string, unknown>).find((state) => state['id'] === id);
+}
+function latestWorkset(ctx: TestAgentContext): string {
+  return ctx.llmCalls.at(-1)!.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' && part.text.includes('<memory-workset ') ? [part.text] : [])).at(-1) ?? '';
+}
 
 describe('actual default prompt and legacy Memory contract consumption', () => {
   it('sends the current default system, schema and merged E1/M1 through an actual mock LLM request', async () => {
@@ -353,7 +361,10 @@ describe('canonical Memory actual request working sets', () => {
     const memory = ctx.get(IConfigService).get<ReturnType<typeof MemoryConfigSchema.parse>>(MEMORY_SECTION);
     ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: { ...memory, advisor: { ...memory.advisor, mode: 'off' } } };
     await send();
-    expect(call).toHaveBeenCalledTimes(2); expect(requestText(ctx)).not.toContain(saved.entry.body); expect(requestText(ctx)).not.toContain('use=history');
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(latestWorkset(ctx)).not.toContain(saved.entry.body);
+    expect(latestWorkset(ctx)).not.toContain('use=history');
+    expect(ctx.llmCalls.at(-1)!.history.slice(0, ctx.llmCalls[0]!.history.length)).toEqual(ctx.llmCalls[0]!.history);
     expect(ctx.get(IAgentMemoryAdvisor).status().state).toBe('off');
     subscription.dispose();
   });
@@ -379,8 +390,10 @@ describe('canonical Memory actual request working sets', () => {
     expect(first).toContain(`[${covered.entry.id}]`);
     expect(first).toContain(`[${historical.entry.id}]`);
     const workset = ctx.llmCalls[1]!.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' && part.text.includes('<memory-workset ') ? [part.text] : [])).join('\n');
-    expect(workset).not.toContain(`[${covered.entry.id}]`);
-    expect(workset).not.toContain(covered.entry.body);
+    expect(workset).toContain(`[${covered.entry.id}]`);
+    expect(workset).toContain(covered.entry.body);
+    expect(ctx.llmCalls[1]!.history.slice(0, ctx.llmCalls[0]!.history.length)).toEqual(ctx.llmCalls[0]!.history);
+    expect(JSON.stringify(ctx.llmCalls[1]!.history.filter((message) => message.role === 'tool'))).toContain('memory_content_reused');
     expect(workset).toContain(`[${historical.entry.id}]`);
     expect(workset).toContain(historical.entry.body);
     expect(workset).toContain('use=history');
@@ -417,7 +430,7 @@ describe('canonical Memory actual request working sets', () => {
     expect(call).toHaveBeenCalledTimes(4);
     expect(call.mock.calls[2]![0].query).toContain('Water the garden');
   });
-  it.each(['main', 'child'])('delivers complete relevant guidance to the %s actual request and removes replaced workset bodies', async (agentId) => {
+  it.each(['main', 'child'])('keeps the %s request prefix stable across workset updates and revocation, and purges forgotten bodies', async (agentId) => {
     const store = await canonicalMemory();
     const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
     const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Deployment instructions', body: 'Use exactly 17 workers. Never publish artifacts; isolated smoke tests are the exception.', source: { writer: 'user' }, reason: 'Human guidance' });
@@ -439,12 +452,26 @@ describe('canonical Memory actual request working sets', () => {
     expect(requestText(ctx)).toContain(`[full; revision=${saved.entry.revision}`);
     const changed = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use exactly 9 workers. Never publish artifacts; isolated smoke tests remain the exception.', source: { writer: 'user' }, reason: 'Corrected limit' });
     await send('Continue the deployment instructions');
-    expect(requestText(ctx)).toContain(changed.entry.body);
-    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(latestWorkset(ctx)).toContain(changed.entry.body);
+    expect(latestWorkset(ctx)).not.toContain(saved.entry.body);
+    expect(ctx.llmCalls.at(-1)!.history.slice(0, ctx.llmCalls[0]!.history.length)).toEqual(ctx.llmCalls[0]!.history);
+    expect(currentMemoryState(ctx, saved.entry.id)).toMatchObject({ revision: changed.entry.revision, status: 'active' });
+    const beforeArchive = structuredClone(ctx.llmCalls.at(-1)!.history);
+    const archived = await store.put({ action: 'archive', scope, id: saved.entry.id, expectedRevision: changed.entry.revision, source: { writer: 'user' }, reason: 'Revoke the saved instruction' });
+    await send('Continue the deployment instructions');
+    expect(ctx.llmCalls.at(-1)!.history.slice(0, beforeArchive.length)).toEqual(beforeArchive);
+    expect(currentMemoryState(ctx, saved.entry.id)).toMatchObject({ revision: archived.entry.revision, status: 'archived' });
+    expect(latestWorkset(ctx)).not.toContain(changed.entry.body);
+    const restored = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: archived.entry.revision, type: changed.entry.type, title: changed.entry.title, body: changed.entry.body, source: { writer: 'user' }, reason: 'Explicit restoration intent' });
+    await send('Continue the deployment instructions');
+    expect(currentMemoryState(ctx, saved.entry.id)).toMatchObject({ revision: restored.entry.revision, status: 'active' });
+    expect(latestWorkset(ctx)).toContain(changed.entry.body);
     expect(JSON.stringify(ctx.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
     await store.forget(scope, (await store.previewForget(scope, [saved.entry.id])).targets, `forget-request-${agentId}`);
     await send('Continue the deployment instructions');
     expect(requestText(ctx)).not.toContain(changed.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(currentMemoryState(ctx, saved.entry.id)).toMatchObject({ status: 'unavailable' });
   });
 
   it.each([['main', 'relay'], ['child', 'relay'], ['main', 'summarize']] as const)('removes stale explicit Memory tool payloads from %s requests and restored %s histories', async (agentId, strategy) => {
@@ -467,17 +494,19 @@ describe('canonical Memory actual request working sets', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Continue the authorized task.' });
     await send('Read the deployment instructions');
     const currentTools = ctx.llmCalls.at(-1)!.history.filter((message) => message.role === 'tool');
-    expect(JSON.stringify(currentTools)).toContain(saved.entry.body);
+    expect(JSON.stringify(currentTools)).toContain('memory_content_reused');
     expect(JSON.stringify(ctx.llmCalls.at(-1)!.history).split(saved.entry.body)).toHaveLength(2);
+    const beforeUpdate = structuredClone(ctx.llmCalls.at(-1)!.history);
     const changed = await writer.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use exactly 5 workers. Never publish artifacts; isolated smoke tests remain the exception.', source: { writer: 'user' }, reason: 'Human correction' });
     ctx.mockNextResponse({ type: 'text', text: 'Apply the current instructions.' });
     await send('Continue the deployment instructions');
-    expect(requestText(ctx)).toContain(changed.entry.body);
-    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(latestWorkset(ctx)).toContain(changed.entry.body);
+    expect(latestWorkset(ctx)).not.toContain(saved.entry.body);
+    expect(ctx.llmCalls.at(-1)!.history.slice(0, beforeUpdate.length)).toEqual(beforeUpdate);
     const revised = ctx.llmCalls.at(-1)!.history.filter((message) => message.role === 'tool');
+    expect(revised).toEqual(currentTools);
     expect(revised.map((message) => message.toolCallId)).toEqual(['explicit-search', 'explicit-read', ...(agentId === 'main' ? ['explicit-write'] : [])]);
-    expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).not.toContain(saved.entry.body);
-    expect(JSON.stringify(revised)).toContain('memory_revision_changed');
+    expect(currentMemoryState(ctx, saved.entry.id)).toMatchObject({ revision: changed.entry.revision, status: 'active' });
     expect(JSON.stringify(ctx.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
     const records: WireRecord[] = [];
     for await (const record of ctx.get(IAppendLogStore).read<WireRecord>(ctx.get(IAgentScopeContext).scope(), AGENT_WIRE_RECORD_KEY)) records.push(record);
@@ -636,8 +665,9 @@ describe('canonical Memory actual request working sets', () => {
     await restored.restore(records);
     restored.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
     await prompt(restored, 'Resume the compilation policy');
-    expect(requestText(restored)).toContain(latest.entry.body);
-    expect(requestText(restored)).not.toContain(changed.entry.body);
+    expect(latestWorkset(restored)).toContain(latest.entry.body);
+    expect(latestWorkset(restored)).not.toContain(changed.entry.body);
+    expect(currentMemoryState(restored, saved.entry.id)).toMatchObject({ revision: latest.entry.revision, status: 'active' });
     expect(requestText(restored)).not.toContain(saved.entry.body);
   });
 });

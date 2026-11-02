@@ -6,6 +6,7 @@ import { Stream as OpenAIStream } from 'openai/core/streaming';
 import { describe, expect, it } from 'vitest';
 
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
+import { attachErrorDetails } from '#/errors';
 
 import {
   APIProviderQuotaExhaustedError,
@@ -14,6 +15,7 @@ import {
   ChatProviderError,
   createAbortError,
   isRetryableGenerateError,
+  isRetryableRequestInterruption,
 } from '#/kosong/contract/errors';
 import { safeProviderFailureDetails, safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import type { ProtocolAdapterConfig } from '#/kosong/protocol/protocol';
@@ -518,6 +520,66 @@ describe('OpenAI Responses quota-exhausted conversion', () => {
     expect((caught as APIProviderQuotaExhaustedError).message).toBe('vendor quota exhausted');
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ type: 'error', code: 'vendor_quota_gone' });
+  });
+});
+
+describe('Responses forwarded WebSocket close errors', () => {
+  it.each(['sdk', 'failed'] as const)('preserves a custom error conversion veto for %s', async shape => {
+    const error = { type: 'websocket_close_error', code: '1012', message: 'Service restarting.' };
+    const source = shape === 'sdk'
+      ? OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error })}\n\n`), new AbortController())
+      : streamEvents([{ type: 'response.failed', response: { id: 'failed', status: 'failed', output: [], error } }]);
+    const veto = attachErrorDetails(new ChatProviderError('Custom rejection.'), { retry: false });
+    const seen: unknown[] = [];
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true, value => { seen.push(value); return veto; })).catch((error: unknown) => error);
+    expect(failure).toBe(veto);
+    expect(seen).toHaveLength(1);
+    expect(isRetryableRequestInterruption(failure)).toBe(false);
+    expect(toErrorPayload(failure).details).toMatchObject({ upstreamErrorType: 'websocket_close_error', upstreamErrorCode: '1012', retry: false });
+  });
+
+  it.each(['sdk', 'failed'] as const)('classifies structured upstream close codes from %s without parsing text', async shape => {
+    const error = { type: 'websocket_close_error', code: '1012', message: 'Service restarting.' };
+    const source = shape === 'sdk'
+      ? OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error })}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'x-request-id': 'fixture-request' },
+      }), new AbortController())
+      : streamEvents([{ type: 'response.failed', response: { id: 'failed', status: 'failed', output: [], error } }]);
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true)).catch((error: unknown) => error);
+    expect(toErrorPayload(failure)).toMatchObject({ name: 'APIConnectionError', code: 'provider.connection_error', details: {
+      upstreamErrorType: 'websocket_close_error', upstreamErrorCode: '1012', websocketCloseCode: 1012, retry: true,
+      responsesTransport: { transport: 'sse', webSocketCapabilities: false },
+    } });
+    expect(isRetryableRequestInterruption(failure)).toBe(true);
+    if (shape === 'sdk') expect(toErrorPayload(failure).details).toHaveProperty('requestId', 'fixture-request');
+  });
+
+  it.each(['1002', '1008', 'not-a-code', '1012-extra'])( 'vetoes forwarded permanent or malformed close code %s', async code => {
+    const source = OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error: {
+      type: 'websocket_close_error', code, message: 'websocket closed before terminal event (code 1012)',
+    } })}\n\n`), new AbortController());
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true)).catch((error: unknown) => error);
+    expect(toErrorPayload(failure)).toMatchObject({ code: 'provider.api_error', details: { retry: false } });
+    expect(isRetryableGenerateError(failure)).toBe(false);
+    expect(isRetryableRequestInterruption(failure)).toBe(false);
+  });
+
+  it.each(['invalid_request_error', 'insufficient_quota', 'antigravity_safety', undefined])('keeps a 1012 text/code lookalike with type %s out of interruption replay', async type => {
+    const source = OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error: {
+      type, code: '1012', message: 'websocket closed before terminal event (code 1012)',
+    } })}\n\n`), new AbortController());
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true)).catch((error: unknown) => error);
+    expect(toErrorPayload(failure)).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error' });
+    expect(isRetryableRequestInterruption(failure)).toBe(false);
+  });
+
+  it('preserves HTTP rejection status even when its body describes an upstream close', async () => {
+    const source = { [Symbol.asyncIterator]() { return { async next(): Promise<IteratorResult<never>> {
+      throw new OpenAIAPIError(400, { type: 'websocket_close_error', code: '1012', message: 'Service restarting.' }, undefined, new Headers());
+    } }; } };
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true)).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ name: 'APIStatusError', statusCode: 400 });
+    expect(isRetryableRequestInterruption(failure)).toBe(false);
   });
 });
 

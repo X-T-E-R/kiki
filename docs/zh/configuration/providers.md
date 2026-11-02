@@ -117,7 +117,7 @@ dictionary = true
 
 ## 通过 WebSocket 增量传输 Responses
 
-Responses WebSocket 在你配置之前保持关闭。`[responses_web_socket]` 作用于每个没有单独设置的供应商。供应商表整体替换系统值。供应商写下 `targets` 时，按原顺序替换系统列表，不会追加。不写供应商键则继承。`off = true` 让该供应商保持普通 HTTP，即使系统表列出了目标。没有系统表时，只有写了 `responses_web_socket` 的供应商会打开连接。保存任一张表后，下一次模型请求即生效。空闲连接会立即关闭；正在服务在途请求的连接会保持到该请求完成、失败或被取消，下一次请求再使用新连接。
+Responses WebSocket 在你配置之前保持关闭。`[responses_web_socket]` 作用于每个没有单独设置的供应商。供应商表整体替换系统值。供应商写下 `targets` 时，按原顺序替换系统列表，不会追加。不写供应商键则继承。`off = true` 让该供应商保持普通 HTTP，即使系统表列出了目标。没有系统表时，只有写了 `responses_web_socket` 的供应商会打开连接。保存任一张表后，下一次发送前即生效，包括正在等待请求名额或重试退避的尝试。每次尝试取得名额后，都会检查当前目标和 `off` 设置。空闲连接会立即关闭；已发送的请求会继续到完成、失败或被取消。如果连接在握手期间、请求发送前退役，这次尝试改用普通 HTTP。下一次尝试按当前设置使用新连接或普通 HTTP。
 
 网关在握手中通过 `X-Responses-WebSocket-Capabilities` 声明支持版本 1 时，可明确启用连接内的 Responses 历史复用：
 
@@ -139,7 +139,7 @@ off = true
 
 网关明确报告推理前历史缺失时，Kiki 会发送一次当前完整历史。推理前拒绝上游格式或提示词策略时，可转为完整 HTTP 请求。传输层不会为访问拒绝或部分响应执行这种回退。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
 
-连接中断遵循[请求重试策略](./config-files.md#retry)，包括终止事件到达前以 1000、1001、1006、1012 或无错误码关闭的情况。重试会关闭旧连接，再用新连接发送当前完整历史；`previous_response_id` 不能作为被中断响应的续传游标。`websocket_connection_limit_reached` 事件也归为连接中断，即使它由网关通过 HTTP 流（SSE）转发。连接已使用 55 分钟时，Kiki 会在下一次请求前主动换新，不打断正在生成的响应。
+连接中断遵循[请求重试策略](./config-files.md#retry)，包括终止事件到达前以 1000、1001、1006、1012 或无错误码关闭的情况。重试会关闭旧连接，再用新连接发送当前完整历史；`previous_response_id` 不能作为被中断响应的续传游标。`websocket_connection_limit_reached` 事件，或带有符合重试条件关闭码的结构化 `websocket_close_error`，也归为连接中断，即使它由网关通过 HTTP 流（SSE）转发。只有错误文案相似时不会因此重试。连接已使用 55 分钟时，Kiki 会在下一次请求前主动换新，不打断正在生成的响应。
 
 原生 Agent 轮次可在重发前撤掉部分文本、思考（含加密思考）和未完成的本地工具调用。安全拒绝、供应商托管工具输出、明确不可重试的错误及取消仍会阻止重发。每次重试都会显示在界面和日志中，最多尝试 5 次（含首发）；配置只能下调这项上限，不能调大。失败和重试日志会记录 Kiki 本地连接的 `transport`（`ws` 或 `sse`）、`webSocketCapabilities`（有无能力声明）、`webSocketCapabilityVersion`（能力版本）和 `webSocketConnectionAgeMs`（连接已用毫秒数）；无法获取的值记为 `null`。重试耗尽后，子任务变为失败，保留原有上下文，可通过 `AgentRun` 的 `resume` 续跑。
 
