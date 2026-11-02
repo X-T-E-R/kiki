@@ -205,6 +205,19 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(JSON.stringify(meta)).not.toContain('"pattern"');
   });
 
+  it('authorizes native read_file Path for source and images while preserving path denies', async () => {
+    mode = 'yolo';
+    const context = externalContext();
+    for (const path of ['/workspace/notes.md', '/workspace/screenshot.png']) {
+      const tool = externalToolPermission({ name: 'read_file', input: { Path: path } })!;
+      expect(tool).toMatchObject({ name: 'Read', input: { path } });
+      const display = { kind: 'external_permission' as const, options: [], summary: 'read_file', detail: tool.input };
+      expect(await authorizeExternalTool(context, tool, 1, 'external-call', signal, display)).toBe('allow');
+      rules.push({ decision: 'deny', scope: 'user', pattern: `Read(${path})` });
+      expect(await authorizeExternalTool(context, tool, 1, 'external-call', signal, display)).toBe('deny');
+    }
+  });
+
   it('projects external FetchURL subjects through the real gate without losing URL or generic rules', async () => {
     const input = { url: 'https://DOCS.Example.test.:443/reference?q=one#part' };
     const tool = externalToolPermission({ name: 'FetchURL', input })!;

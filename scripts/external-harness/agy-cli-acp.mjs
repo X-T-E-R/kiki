@@ -51,6 +51,7 @@ export function canonicalTool(name, args, cwd) {
   }
   if (name === 'run_command') return { name: 'Bash', kind: 'execute', input: { command: args.CommandLine, cwd: args.Cwd ?? cwd } };
   if (name === 'view_file') return { name: 'Read', kind: 'read', input: { path: args.AbsolutePath } };
+  if (name === 'read_file') return { name: 'Read', kind: 'read', input: { path: args.Path } };
   if (name === 'write_to_file') return { name: 'Write', kind: 'edit', input: { path: args.TargetFile } };
   if (name === 'replace_file_content' || name === 'multi_replace_file_content') return { name: 'Edit', kind: 'edit', input: { path: args.TargetFile } };
   if (name === 'find_by_name') return { name: 'Glob', kind: 'search', input: { path: args.SearchDirectory, pattern: args.Pattern } };
@@ -66,6 +67,7 @@ export function toolPermissionResources(name, args) {
   if (name === 'run_command') { action = 'command'; target = args.CommandLine; }
   else if (['write_to_file', 'replace_file_content', 'multi_replace_file_content'].includes(name)) { action = 'write_file'; target = args.TargetFile; }
   else if (name === 'view_file') { action = 'read_file'; target = args.AbsolutePath; }
+  else if (name === 'read_file') { action = 'read_file'; target = args.Path; }
   else if (name === 'list_dir') { action = 'read_file'; target = args.DirectoryPath; }
   else if (name === 'find_by_name') { action = 'read_file'; target = args.SearchDirectory; }
   else if (name === 'grep_search') { action = 'read_file'; target = args.SearchPath; }

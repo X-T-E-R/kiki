@@ -445,6 +445,38 @@ void test('official permission hook preserves raw command, cwd and identity; onl
   assert.equal((await b.requestPermission(s, input)).decision, 'deny');
 });
 
+void test('native read_file Path reaches host permission and the per-call vendor resource without changing rejection', async () => {
+  const { canonicalTool, toolPermissionResources } = await import('./agy-cli-acp.mjs');
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'harness-settings' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const s = b.session(id);
+  s.init = { conversation_id: 'fixture-read-file' };
+  let captured;
+  let optionId = 'allow_once';
+  s.active = { client: { request: async (_method, request) => {
+    captured = request;
+    return { outcome: { outcome: 'selected', optionId } };
+  } } };
+  try {
+    for (const path of ['C:/example/source/component.tsx', 'C:/example/media/screenshot.png']) {
+      const args = { Path: path };
+      const input = { conversationId: s.init.conversation_id, stepIdx: 3, toolCall: { name: 'read_file', args } };
+      assert.deepEqual(canonicalTool('read_file', args, cwd), { name: 'Read', kind: 'read', input: { path } });
+      assert.deepEqual(toolPermissionResources('read_file', args), [`read_file(${path})`]);
+      assert.equal((await b.requestPermission(s, input)).decision, 'allow');
+      assert.deepEqual(captured._meta['kiki.tool'], { name: 'Read', input: { path } });
+      assert.deepEqual(captured.toolCall.rawInput, args);
+      optionId = 'reject_once';
+      assert.equal((await b.requestPermission(s, input)).decision, 'deny');
+      optionId = 'kiki.vendor_default';
+      assert.deepEqual(await b.requestPermission(s, input), { decision: 'ask' });
+      optionId = 'allow_once';
+    }
+    assert.deepEqual(toolPermissionResources('read_file', {}), undefined);
+  } finally { s.active = undefined; await b.close(); }
+});
+
 void test('native task reads project exact actions without hiding the native policy identity or host rejection', async () => {
   const { canonicalTool } = await import('./agy-cli-acp.mjs');
   const b = new AgyBridge({ cliPath: process.execPath });

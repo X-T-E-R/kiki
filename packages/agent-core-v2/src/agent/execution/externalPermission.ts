@@ -121,7 +121,7 @@ export function externalToolPermission(value: unknown): ExternalToolPermission |
     list_directory: 'Glob', find_by_name: 'Glob', grep_search: 'Grep' };
   const name = names[tool['name']] ?? tool['name'];
   return { name, input: { ...input, command: input['command'] ?? input['CommandLine'],
-    cwd: input['cwd'] ?? input['Cwd'], path: input['path'] ?? input['file_path'] ?? input['AbsolutePath'] ?? input['TargetFile'] ?? input['DirectoryPath'] } };
+    cwd: input['cwd'] ?? input['Cwd'], path: input['path'] ?? input['file_path'] ?? input['Path'] ?? input['AbsolutePath'] ?? input['TargetFile'] ?? input['DirectoryPath'] } };
 }
 
 export async function authorizeExternalTool(
