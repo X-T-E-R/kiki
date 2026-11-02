@@ -631,6 +631,7 @@ export class ResponsesWebSocketTransport {
   private _resolveRetire: (() => void) | undefined;
   private readonly _nativeOutput = new WeakMap<object, readonly unknown[]>();
   private readonly _expiredSockets = new WeakSet<ResponsesWS>();
+  private readonly _erroredSockets = new WeakSet<ResponsesWS>();
   private _interruptionGeneration = 0;
   private _capabilitiesAdvertised = false;
   private _closedDiagnostics: ResponsesTransportDiagnostics | undefined;
@@ -865,6 +866,10 @@ export class ResponsesWebSocketTransport {
     if (signal?.aborted) throw createAbortError();
 
     const socket = new ResponsesWS(client, { headers, reconnect: null });
+    socket.on('error', () => {
+      this._erroredSockets.add(socket);
+      if (!this._inFlight) this._closeCurrent(socket);
+    });
     socket.on('event', (event) => {
       if (event.type !== 'response.completed') return;
       const payload = getWebSocketEventPayload(event);
@@ -955,7 +960,7 @@ export class ResponsesWebSocketTransport {
       details.execution === 'not_executed' &&
       (code === 'unsupported_upstream_format' || code === 'unsupported_prompt_policy' ||
         (code === 'connection_retiring' && details.retirementNotExecuted));
-    const suffix = details.param === undefined || details.param === null ? '' : ` (param: ${details.param})`;
+    const suffix = details.param === undefined || details.param === null || details.param.trim().length === 0 ? '' : ` (param: ${details.param})`;
     return new ResponsesWebSocketError(`${code}: ${details.message}${suffix}`, code, {
       cause: error,
       safeHttpFallback,
@@ -1009,6 +1014,7 @@ export class ResponsesWebSocketTransport {
         ) {
           retriedStateMiss = true;
           delta = false;
+          this._erroredSockets.delete(connection.socket);
           this._clearBaseline();
           const fullBody = buildResponseCreate(
             fullParams,
@@ -1159,6 +1165,7 @@ export class ResponsesWebSocketTransport {
           ) {
             retriedStateMiss = true;
             delta = false;
+            this._erroredSockets.delete(connection.socket);
             this._clearBaseline();
             const fullBody = buildResponseCreate(
               fullParams,
@@ -1199,7 +1206,7 @@ export class ResponsesWebSocketTransport {
         this._inFlight = false;
         if (this._retired) {
           this.dispose();
-        } else if (!keepConnection || (this._lifetimeExpired && this._socket === connection.socket)) {
+        } else if (!keepConnection || this._erroredSockets.has(connection.socket) || (this._lifetimeExpired && this._socket === connection.socket)) {
           this._closeCurrent(connection.socket);
         }
       }

@@ -138,7 +138,10 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
     }
     awayNotifier.configure({
       isAway: async () => !(await isConversationWindowFocused(host)),
-      isViewingSession: (sessionId) => routeRef.current === `/s/${encodeURIComponent(sessionId)}`,
+      isViewingSession: (sessionId) => {
+        const route = `/s/${encodeURIComponent(sessionId)}`;
+        return routeRef.current === route || routeRef.current.startsWith(`${route}/`);
+      },
       scopeKey,
       notify,
       format,
@@ -195,9 +198,10 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   // Taskbar / dock badge: the same count as the activity entry.
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
   const inbox = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
+  const unreadSessionIds = JSON.stringify(inbox.unread.map((item) => item.sessionId).toSorted());
   useEffect(() => {
-    void host.setUnreadBadge?.(inbox.total, scope.homeId, scopeId, inbox.unread.map((item) => item.sessionId));
-  }, [host, inbox, scope.homeId, scopeId]);
+    void host.setUnreadBadge?.(inbox.total, scope.homeId, scopeId, JSON.parse(unreadSessionIds) as string[]);
+  }, [host, inbox.total, unreadSessionIds, scope.homeId, scopeId]);
 
   // Clicks come back with the route the notification carried. The app shell
   // mounts NavScopeBoundary, which owns the scoped consumer (it verifies the

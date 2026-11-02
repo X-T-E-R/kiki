@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { type AddressInfo } from 'node:net';
 
@@ -10,6 +13,12 @@ import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/k
 import { generate } from '#/kosong/contract/generate';
 import { toErrorPayload } from '#/_base/errors/serialize';
 import { ConfigRegistry } from '#/app/config/configService';
+import {
+  APIContextOverflowError,
+  APIProviderQuotaExhaustedError,
+  APIStatusError,
+  isRetryableGenerateError,
+} from '#/kosong/contract/errors';
 import {
   ProvidersSectionSchema,
   RESPONSES_WEB_SOCKET_SECTION,
@@ -253,6 +262,18 @@ function canonical(input: readonly unknown[], key = 'lineage'): ResponsesWebSock
 }
 
 describe('ResponsesWebSocketTransport', () => {
+  it.each(['idle', 'active', 'cancel', 'terminal', 'retire', 'dispose', 'invalid', 'unconsumed'])('contains SDK error events within the socket lifecycle in a strict Node process: %s', async mode => {
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, [
+      '--unhandled-rejections=strict', '--import', 'tsx',
+      fileURLToPath(new URL('./fixtures/responses-ws-lifecycle.mts', import.meta.url)), mode,
+    ], { cwd: fileURLToPath(new URL('../../../', import.meta.url)), timeout: 10_000 });
+    expect(stdout).toContain('"survived":true');
+    expect(stdout).toContain(`"mode":"${mode}"`);
+    if (mode === 'active') expect(stdout).toContain('"originalFailure":"incomplete_stream"');
+    if (mode === 'cancel') expect(stdout).toContain('"originalFailure":"AbortError"');
+    expect(stderr).toBe('');
+  }, 15_000);
+
   it('waits for capabilities, sends only response.create, and preserves native unknown output items', async () => {
     const signedInput = {
       content: [{ signature: 'opaque-input-signature', text: 'hello', type: 'input_text' }],
@@ -699,6 +720,55 @@ describe('production Responses adapter → generate → canonical history → of
     const transport = new ResponsesWebSocketTransport();
     try {
       await expect(generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport })).rejects.toMatchObject({ statusCode: code === 'authentication_error' ? 401 : 403, message: expect.stringContaining('Synthetic access denied') });
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it.each([
+    { status: 500, eventType: 'server_error', code: 'generation_failed', message: 'Synthetic generation failed', param: '', expectedName: 'APIStatusError', retryable: true },
+    { status: 502, eventType: 'server_error', code: 'incomplete_stream', message: 'Synthetic incomplete stream', param: '   ', expectedName: 'APIStatusError', retryable: true },
+    { status: 401, eventType: 'authentication_error', code: 'authentication_error', message: 'Synthetic authentication denied', param: 'api_key', expectedName: 'APIStatusError', retryable: false },
+    { status: 403, eventType: 'permission_error', code: 'permission_denied', message: 'Synthetic permission denied', param: 'tool_choice', expectedName: 'APIStatusError', retryable: false },
+    { status: 400, eventType: 'invalid_request_error', code: 'context_length_exceeded', message: 'Synthetic context overflow', param: 'messages', expectedName: 'APIContextOverflowError', retryable: false },
+    { status: 429, eventType: 'insufficient_quota', code: 'insufficient_quota', message: 'Synthetic quota exhausted', param: 'model', expectedName: 'APIProviderQuotaExhaustedError', retryable: false },
+  ])('preserves structured WS error metadata and classification: $status $code', async ({ status, eventType, code, message, param, expectedName, retryable }) => {
+    const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
+      type: 'error', status,
+      error: { type: eventType, code, message, param },
+    })));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      if (expectedName === 'APIContextOverflowError') expect(failure).toBeInstanceOf(APIContextOverflowError);
+      else if (expectedName === 'APIProviderQuotaExhaustedError') expect(failure).toBeInstanceOf(APIProviderQuotaExhaustedError);
+      else expect(failure).toBeInstanceOf(APIStatusError);
+      expect((failure as Error).name).toBe(expectedName);
+      expect(failure).toMatchObject({ statusCode: status });
+      expect(toErrorPayload(failure)).toMatchObject({
+        details: { errorSource: 'provider_event', upstreamErrorCode: code, statusCode: status },
+      });
+      const suffix = param.trim() === '' ? '' : ` (param: ${param})`;
+      expect((failure as Error).message).toBe(`${code}: ${message}${suffix}`);
+      expect(isRetryableGenerateError(failure)).toBe(retryable);
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it.each(['unknown', 'executed'] as const)('retains non-fallback execution metadata without deciding retry semantics: %s', async (execution) => {
+    const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
+      type: 'error', status: 500,
+      error: { type: 'server_error', code: 'generation_failed', message: 'Synthetic generation failed', param: '' },
+      execution,
+    })));
+    const transport = new ResponsesWebSocketTransport();
+    const input = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question' }] }];
+    try {
+      await expect(transport.create(client(gateway.baseUrl), { input, model: 'synthetic', stream: true })).rejects.toMatchObject({
+        safeHttpFallback: false,
+        execution,
+      });
       expect(gateway.frames).toHaveLength(1);
       expect(gateway.httpRequests).toHaveLength(0);
     } finally { transport.dispose(); }

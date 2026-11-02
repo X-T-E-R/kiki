@@ -3,6 +3,8 @@ import { Readable, type Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
+import { attachErrorDetails } from '#/_base/errors/errors';
+import { APIStatusError } from '#/kosong/contract/errors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
@@ -964,6 +966,28 @@ describe('AgentTaskService', () => {
     await waitForCondition(() => loop.hasPendingRequests());
 
     expect(loop.hasPendingRequests()).toBe(true);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['agent', 'process'] as const)('delivers the exhausted retry count and original failure in a %s task notification', async kind => {
+    const error = attachErrorDetails(new APIStatusError(500, 'generation_failed: Generation failed.'), {
+      retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5,
+    });
+    const svc = ix.get(IAgentTaskService);
+    const task: AgentTask = kind === 'agent'
+      ? new SubagentTask({ agentId: 'fixture-child', profileName: 'example-worker', completion: Promise.reject(error) },
+        'Synthetic work', new AbortController())
+      : { ...fakeProcessTask(), start: async () => { throw error; } };
+    const taskId = svc.registerTask(task);
+    expect(await svc.wait(taskId)).toMatchObject({ status: 'failed',
+      stopReason: 'Retry attempts exhausted (5/5). generation_failed: Generation failed.' });
+    const loop = stubLoop();
+    await waitForCondition(() => loop.hasPendingRequests());
+    const context = ix.get(IAgentContextMemoryService) as StubContextMemory;
+    loop.drainNextBatch(context);
+    await runWillBeginStepHooks(loop);
+    const notification = context.messages.find(message => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+    expect(JSON.stringify(notification?.content)).toContain('Retry attempts exhausted (5/5). generation_failed: Generation failed.');
+    expect(error.message).toBe('generation_failed: Generation failed.');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('records external-main task notifications without enqueueing a model step', async () => {

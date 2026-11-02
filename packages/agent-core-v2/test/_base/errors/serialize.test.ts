@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import '#/errors';
 
-import { Error2 } from '#/_base/errors/errors';
+import { Error2, attachErrorDetails } from '#/_base/errors/errors';
+import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { APIProviderRateLimitError } from '#/kosong/contract/errors';
 
@@ -75,6 +76,32 @@ describe('toErrorPayload', () => {
     expect(toErrorPayload(new Error('boom')).details).toBeUndefined();
     expect(toErrorPayload(new Error2('internal', 'boom', { details: { op: 'read' } })).details)
       .toEqual({ op: 'read' });
+  });
+});
+
+describe('toErrorDisplayMessage', () => {
+  it('projects exhausted attempts without changing the original error or duplicating a recovered summary', () => {
+    const cause = new Error('upstream failure');
+    const error = attachErrorDetails(new Error2('provider.api_error', 'generation_failed: Generation failed.', {
+      cause, details: { statusCode: 500 },
+    }), { retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5 });
+    const message = 'Retry attempts exhausted (5/5). generation_failed: Generation failed.';
+    expect(toErrorDisplayMessage(error)).toBe(message);
+    expect(error.message).toBe('generation_failed: Generation failed.');
+    expect(error.cause).toBe(cause);
+    const payload = toErrorPayload(error);
+    expect(payload).toMatchObject({ code: 'provider.api_error', details: { statusCode: 500, retry_attempts: 5, retry_max_attempts: 5 } });
+    expect(toErrorDisplayMessage(fromErrorPayload({ ...payload, message }))).toBe(message);
+  });
+
+  it.each([
+    {},
+    { retry: false },
+    { retry_exhausted: true, retry_attempts: 0, retry_max_attempts: 5 },
+    { retry_exhausted: true, retry_attempts: 2, retry_max_attempts: 5 },
+    { retry_exhausted: true, retry_attempts: 5, retry_max_attempts: Number.NaN },
+  ])('keeps ordinary errors and incomplete budgets unchanged: %j', details => {
+    expect(toErrorDisplayMessage(new Error2('provider.auth_error', 'Access denied.', { details }))).toBe('Access denied.');
   });
 });
 

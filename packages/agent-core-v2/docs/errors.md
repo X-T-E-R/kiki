@@ -14,7 +14,7 @@ unified `ErrorCodes` const.
 - `src/_base/errors/errors.ts`: base classes — `Error2`, `ExpectedError`, `ErrorNoTelemetry`, `BugIndicatingError`, `NotImplementedError`, plus the `isError2` guard and `unwrapErrorCause`.
 - `src/_base/errors/codes.ts`: the `ErrorDomain` contract, the `ErrorCode` type (aliased to the protocol's `KimiErrorCode`), the runtime registry (`registerErrorDomain` / `errorInfo` / `isErrorCode`), and the domain-independent `CoreErrors` (`internal`, `not_implemented`).
 - `src/_base/errors/serialize.ts`: `ErrorPayload`, `isCodedError`, `toErrorPayload`, `fromErrorPayload`, `makeErrorPayload`. Reads retryability from the registry via `errorInfo`. The wire-facing names (`KimiErrorPayload`, `toKimiErrorPayload`) mirror the protocol contract and keep their names even though the in-process class is `Error2`.
-- `src/_base/errors/errorMessage.ts`: `toErrorMessage(error, verbose?)` for logs/CLI.
+- `src/_base/errors/errorMessage.ts`: `toErrorMessage(error, verbose?)` for logs/CLI; `toErrorDisplayMessage(error)` adds a validated exhausted-attempt summary for terminal turn errors and task failure strings without changing the original error.
 - `src/_base/errors/unexpectedError.ts`: `onUnexpectedError` / `setUnexpectedErrorHandler` / `safelyCallListener`.
 - `src/<domain>/errors.ts`: each domain's `XxxErrors` descriptor (codes + retryable list + per-code info overrides), self-registered on import.
 - `src/errors.ts`: the **facade** — imports every domain's `errors.ts` (triggering registration), builds the unified `ErrorCodes` const, and re-exports all error primitives. This is the import throw sites use.
@@ -36,6 +36,10 @@ unified `ErrorCodes` const.
 ## Generation retry and thinking-only recovery
 
 `kosong/contract/errors.ts` owns `isRetryableGenerateError(error)`. Step retry passes the original error through this classifier before applying a matching policy. An uncertain delivery mark alone does not forbid a bounded retry; observed output or tool execution, cancellation, an explicit `retry: false`, and non-retryable provider classifications do. A temporary provider error event with no output remains eligible. Translators preserve the error or its `cause`, so recovery does not erase those facts.
+
+Both step retry and retractable interruption retry attach `retry: false`, `retry_exhausted: true`, `retry_attempts`, and `retry_max_attempts` when their eligible attempt budget is consumed. Counts include the first request. Ordinary non-retryable failures and policy vetoes do not acquire exhaustion facts. The terminal turn payload and task notification strings use `toErrorDisplayMessage`; `toErrorPayload` retains the original message, code, cause, and structured details.
+
+The Responses WebSocket adapter keeps an SDK `error` listener for each socket's entire lifetime, including idle time and closing. Active errors still reach the request's stream. Idle errors close that socket; an error queued after a completed response closes it after the response commits. A trusted, not-executed history miss remains eligible for its existing full-history resend.
 
 The loop's thinking-only recovery has a separate one-use budget per turn. A successful response needs `completionAuthority: 'normal'`, non-empty thinking, and no answer, tool call, or partial response. The provider adapters withhold that authority for refusals, grounding, and unobserved terminal states. Grounded thinking without an answer fails explicitly; `readGenerateFailureUsage(error)` preserves its known usage independently of continuation eligibility. The error path instead needs the exact trusted `antigravity_thinking_only` provider event, local `readGenerateFailureFacts(error)`, and thinking actually retained by the loop collector. A machine code alone cannot create history or justify resending the original prompt.
 

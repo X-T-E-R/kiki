@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { WebSocketServer } from 'ws';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
@@ -947,6 +953,80 @@ describe('stepRetry plugin', () => {
     const resumed = await executor.run({ kind: 'prompt', prompt: 'Resume and finish.' }, { signal: new AbortController().signal });
     expect(await resumed.completion).toMatchObject({ summary: 'resumed result' });
     expect(calls).toBe(6);
+  });
+
+  it.each([
+    { code: 'generation_failed', status: 500, mode: 'exhaust' },
+    { code: 'incomplete_stream', status: 502, mode: 'exhaust' },
+    { code: 'incomplete_stream', status: 502, mode: 'partial' },
+    { code: 'generation_failed', status: 500, mode: 'deny' },
+    { code: 'authentication_error', status: 401, mode: 'nonretryable' },
+  ] as const)('preserves the native WS failure and terminal retry facts: $code/$mode', async ({ code, status, mode }) => {
+    const server = createServer();
+    const sockets = new WebSocketServer({ server });
+    const capabilities = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
+    sockets.on('headers', headers => headers.push(`X-Responses-WebSocket-Capabilities: ${capabilities}`));
+    let frames = 0;
+    let httpRequests = 0;
+    server.on('request', (_request, response) => { httpRequests++; response.writeHead(500).end(); });
+    sockets.on('connection', socket => socket.on('message', () => {
+      frames++;
+      if (mode === 'partial') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'retained partial' }));
+      socket.send(JSON.stringify({ type: 'error', status, error: { type: 'server_error', code,
+        message: 'Generation failed. Delivery may be unknown; do not automatically replay.', param: '' } }));
+    }));
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+    const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+    const provider = new OpenAIResponsesChatProvider({ model: 'fixture', baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: { targets: [baseUrl] } });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider() { return provider; }
+    }
+    ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()), { initialConfig: {
+      responsesWebSocket: { targets: [baseUrl] }, retry: { policies: [{ match: '.*', retry: mode !== 'deny', backoff: 1 }] },
+    } });
+    ctx.configure({ provider: { type: 'openai_responses', model: 'fixture', baseUrl, apiKey: 'YOUR_API_KEY' } });
+    try {
+      const controller = new AbortController();
+      const run = await ctx.get(IAgentExecutionService).run({ kind: 'prompt', prompt: 'Continue existing work.' }, { signal: controller.signal });
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new SubagentTask({ agentId: 'fixture-child', profileName: 'example-worker',
+        completion: run.completion.then(result => ({ result: result.summary })) }, 'Synthetic failure', controller), { deferVisibility: true });
+      const failure: unknown = await run.completion.catch((error: unknown) => error);
+      const attempts = mode === 'exhaust' ? 5 : 1;
+      const rawMessage = `${code}: Generation failed. Delivery may be unknown; do not automatically replay.`;
+      const display = mode === 'exhaust' ? `Retry attempts exhausted (5/5). ${rawMessage}` : rawMessage;
+      const expectedCode = status === 401 ? 'provider.auth_error' : 'provider.api_error';
+      expect(failure).toMatchObject({ name: 'APIStatusError', statusCode: status, message: rawMessage });
+      expect(toErrorPayload(failure)).toMatchObject({ code: expectedCode, details: {
+        statusCode: status, upstreamErrorCode: code, errorSource: 'provider_event', responsesTransport: { transport: 'ws' },
+      } });
+      if (mode === 'exhaust') expect(toErrorPayload(failure).details).toMatchObject({
+        retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5,
+      });
+      else expect(toErrorPayload(failure).details).not.toHaveProperty('retry_exhausted');
+      expect(frames).toBe(attempts);
+      expect(httpRequests).toBe(0);
+      expect(rpcEvents('turn.step.retrying')).toHaveLength(attempts - 1);
+      expect(rpcEvents('turn.ended')).toContainEqual(expect.objectContaining({ args: expect.objectContaining({
+        reason: 'failed', error: expect.objectContaining({ code: expectedCode, message: display }),
+      }) }));
+      expect(await tasks.wait(taskId)).toMatchObject({ status: 'failed', stopReason: display });
+      const requester: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: id => ctx.get(id) }, dispose: () => {} };
+      await ctx.get(ISessionMetadata).registerAgent('fixture-child', { type: 'sub', model: 'fixture' });
+      await expect(mirrorAgentRun(requester, { agentId: 'fixture-child', completion: Promise.reject(failure) }, {
+        profileName: 'example-worker', signal: new AbortController().signal, resolveTaskId: () => Promise.resolve(taskId),
+      })).rejects.toBe(failure);
+      expect(rpcEvents('subagent.failed')).toContainEqual(expect.objectContaining({ args: expect.objectContaining({ error: display }) }));
+      expect((await ctx.get(ISessionMetadata).read()).agents?.['fixture-child']?.error).toBe(display);
+      expect(JSON.stringify(ctx.contextData().history).includes('retained partial')).toBe(mode === 'partial');
+    } finally {
+      for (const socket of sockets.clients) socket.terminate();
+      await new Promise<void>(resolve => sockets.close(() => resolve()));
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   it.each(['before-output', 'partial-tool', 'exhaust', 'partial-off', 'deny', 'cancel'] as const)('handles a forwarded SSE WebSocket 1012 through the native turn: %s', async mode => {
