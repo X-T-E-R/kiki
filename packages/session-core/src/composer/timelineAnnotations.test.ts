@@ -80,6 +80,16 @@ describe('parseSelectionCarryovers', () => {
     expect(parsed.body).toBe(text);
   });
 
+  it('projects hidden context at original offsets before parsing a legacy selection prefix', () => {
+    const source = { blockId: 'source', version: 'v1', start: 0, end: 1, text: 'A' };
+    const selections = [{ quote: 'A', comment: '', source }, { quote: 'B', comment: 'comment B', source }, { quote: 'C', comment: '', source }];
+    const carry = selectionCarryoverPresentation(selections, []);
+    const body = 'compare /s/session_reference';
+    const context = '\n\n<thread_refs>\n<thread_ref id="session_reference" host_id="original-host"/>\n</thread_refs>';
+    const message = JSON.parse(JSON.stringify({ text: carry.prefix + body + context, presentation: { spans: [{ start: carry.prefix.length + body.length, end: carry.prefix.length + body.length + context.length, kind: 'context' }] } }));
+    expect(parseSelectionCarryovers(message.text, message.presentation)).toMatchObject({ selections, body });
+  });
+
   it('keeps code block literals and invalid anchors unchanged while parsing valid legacy anchors', () => {
     const invalidText = '> some quote\n\n<!-- kiki-source:invalid -->\n\nuser text';
     const parsedInvalid = parseSelectionCarryovers(invalidText);

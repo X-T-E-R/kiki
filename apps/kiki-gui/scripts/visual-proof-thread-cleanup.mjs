@@ -15,7 +15,7 @@ const result = await runProof({
     assert.equal(await row.getAttribute('data-session-row-state'), 'cleanup-pending');
     assert.ok((await row.innerText()).includes(label));
     assert.equal(await page.locator('[data-session-row="session_running_fixture"]').getAttribute('data-session-row-state'), 'running');
-    const input = page.locator('textarea[data-composer-session="session_idle_fixture"]');
+    const input = page.locator('[data-composer-session="session_idle_fixture"]');
     await input.fill(`/s/${id} `);
     const chip = page.locator(`[data-thread-ref-chip="${id}"]`).first();
     await chip.waitFor();
@@ -55,7 +55,7 @@ const result = await runProof({
     await page.goto(link('/s/session_idle_fixture'));
     const row = page.locator(`[data-session-row="${id}"]`);
     await row.waitFor();
-    await page.locator('textarea[data-composer-session="session_idle_fixture"]').fill(`/s/${id} `);
+    await page.locator('[data-composer-session="session_idle_fixture"]').fill(`/s/${id} `);
     const assertStatus = async (rowState, refStatus) => {
       await page.waitForFunction(({ id, rowState, refStatus }) =>
         document.querySelector(`[data-session-row="${id}"]`)?.getAttribute('data-session-row-state') === rowState &&

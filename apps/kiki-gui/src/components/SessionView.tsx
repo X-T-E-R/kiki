@@ -89,6 +89,7 @@ import {
   buildSkillActivation,
   flushDrafts,
   parseSelectionCarryovers,
+  reconcileEditedThreadRefs,
   readComposerState,
   resolveComposerModelOverrides,
   readDraft,
@@ -2017,6 +2018,7 @@ export function SessionView({
     readonly attachments: readonly ComposerAttachment[];
     readonly savedDraft: string;
     readonly savedAnnotations: readonly SelectionAnnotation[];
+    readonly original: { readonly text: string; readonly presentation?: import('@kiki/transcript').TextPresentation };
   } | null>(null);
   const queueEditRef = useRef(queueEdit);
   queueEditRef.current = queueEdit;
@@ -4375,10 +4377,11 @@ boundExecution,
         attachments: [...initialAttachments, ...pathFileMentions],
         savedDraft: draftRef.current,
         savedAnnotations: draftSelectionsRef.current,
+        original: { text: block?.text ?? item.text, presentation: block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n') },
       };
       queueEditRef.current = edit;
       setQueueEdit(edit);
-      const carryovers = parseSelectionCarryovers(block?.text ?? item.text, block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n'));
+      const carryovers = parseSelectionCarryovers(edit.original.text, edit.original.presentation);
       updateDraft(carryovers.body);
       setAnnotations(carryovers.selections.reduce<readonly SelectionAnnotation[]>(
         (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
@@ -4396,12 +4399,13 @@ boundExecution,
           if (incomplete) {
             const completeAttachments = retainedAttachmentsFromContent(content);
             const previous = initialAttachments;
+            const original = { text: content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), presentation: contentTextPresentation(content, '\n\n') };
             setQueueEdit((current) => current?.owner !== edit.owner ? current : {
-              ...current, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
+              ...current, original, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
             });
             initialAttachments = completeAttachments;
             if (draftRef.current === carryovers.body) {
-              const complete = parseSelectionCarryovers(content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), contentTextPresentation(content, '\n\n'));
+              const complete = parseSelectionCarryovers(original.text, original.presentation);
               updateDraft(complete.body);
             }
           }
@@ -4441,17 +4445,18 @@ boundExecution,
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
       const carry = selectionCarryoverPresentation(annotations, []);
+      const prepared = reconcileEditedThreadRefs(edit.original, { text, presentation: argumentPresentation });
       const presentation: import('@kiki/transcript').TextPresentation = {
         spans: [
           ...carry.presentation.spans,
-          ...(argumentPresentation?.spans ?? []).map((span) => ({
+          ...(prepared.presentation?.spans ?? []).map((span) => ({
             ...span,
             start: span.start + carry.prefix.length,
             end: span.end + carry.prefix.length,
           })),
         ],
       };
-      const content = buildPromptContent(`${carry.prefix}${text}`, editedAttachments, presentation);
+      const content = buildPromptContent(`${carry.prefix}${prepared.text}`, editedAttachments, presentation);
       if (item === undefined) {
         exit();
         return Promise.resolve();

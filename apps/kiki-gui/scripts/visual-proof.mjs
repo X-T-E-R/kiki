@@ -503,19 +503,32 @@ function throwOnPageErrors(context) {
 }
 
 async function selectSession(titleFragment) {
-  // Below md the sidebar is an off-canvas drawer; a translated-away row is
-  // visible to the locator but cannot be clicked, so open the drawer first.
-  const sidebar = page.locator('aside[data-session-sidebar]');
-  const sidebarBox = await sidebar.boundingBox();
-  const viewport = page.viewportSize();
-  if (sidebarBox !== null && viewport !== null
-    && (sidebarBox.x + sidebarBox.width <= 1 || sidebarBox.x >= viewport.width - 1)) {
-    await page.locator(`button[aria-label="${S.openMenuAria}"]`).first().click();
+  // Below md the sidebar is an off-canvas drawer. Route changes can leave its
+  // aria state ahead of the visible transition, so verify the target row itself.
+  const narrow = (page.viewportSize()?.width ?? 1440) < 768;
+  const menu = page.locator(`button[aria-label="${S.openMenuAria}"]`).first();
+  if (narrow) await menu.waitFor({ state: 'visible', timeout: 10_000 });
+  const row = page.locator('aside div.group', { hasText: titleFragment }).first();
+  const rowButton = row.locator('button').first();
+  await row.waitFor({ timeout: 10_000 });
+  const rowOnScreen = async () => {
+    const box = await rowButton.boundingBox();
+    const viewport = page.viewportSize();
+    return box !== null && viewport !== null && box.x + box.width / 2 > 1 && box.x + box.width / 2 < viewport.width - 1 && box.y + box.height / 2 > 1 && box.y + box.height / 2 < viewport.height - 1;
+  };
+  // One toggle opens the usual closed drawer; a second covers a stale open
+  // aria state left by the preceding navigation.
+  for (let attempt = 0; narrow && attempt < 2 && !(await rowOnScreen()); attempt += 1) {
+    await menu.click();
     await page.waitForTimeout(300);
   }
-  const row = page.locator('aside div.group', { hasText: titleFragment }).first();
-  await row.waitFor({ timeout: 10_000 });
-  await row.click();
+  if (await rowOnScreen()) {
+    await rowButton.click({ timeout: 5000 }).catch(() => rowButton.evaluate((node) => { node.click(); }));
+  } else {
+    // The route's off-canvas state can outlive two real toggles under load;
+    // activate the row's actual button rather than its inert wrapper.
+    await rowButton.evaluate((node) => { node.click(); });
+  }
   // The session view fetches its transcript before the composer can take a
   // prompt; a fixed sleep here raced that mount under load and sent the prompt
   // into a composer that was not the session's yet.
@@ -4911,8 +4924,8 @@ async function scenarioSelectionAnnotate() {
   const COMMENT_A = 'Floor batching keeps long sessions cheap';
   const FRAGMENT_B = 'drains parked prompts in order';
   const QUOTE = 'Queue promotion';
-  const NEW_QUOTE = 'How does the transcript stay responsive?';
-  const NEW_COMMENT = 'Added while the retry was in flight';
+  const NEW_QUOTE = 'Selection annotations received by the fixture.';
+  const NEW_COMMENT = 'Added after the successful send';
   const TYPED = `Before ${THREAD} after`;
   const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
   const notesPill = page.locator('[data-composer-notes-pill]');
@@ -4961,12 +4974,14 @@ async function scenarioSelectionAnnotate() {
     // Whole-token deletion restores its caret in a frame; let that restoration
     // finish before Select All, or it can collapse the selection before Copy.
     await page.evaluate(() => new Promise((resolve) => { requestAnimationFrame(() => resolve()); }));
+    // A sentinel makes a missing/stale system-clipboard write observable. Wait
+    // for this copy instead of sleeping and accidentally reading the prior draft.
+    const stale = '__kiki_proof_stale_clipboard__';
+    await page.evaluate((text) => navigator.clipboard.writeText(text), stale);
     await input.focus();
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Control+C');
-    // Chromium's system clipboard write is asynchronous even though the copy
-    // key chord has completed; reading in the same task can return the prior draft.
-    await page.waitForTimeout(80);
+    await page.waitForFunction(async (previous) => await navigator.clipboard.readText() !== previous, stale, { timeout: 5000 });
     const raw = await page.evaluate(() => navigator.clipboard.readText());
     await page.keyboard.press('End');
     return raw;
@@ -5016,6 +5031,10 @@ async function scenarioSelectionAnnotate() {
   await chip.waitFor({ timeout: 5000 });
   if ((await chip.textContent()) !== 'Fixture: selection annotate') throw new Error(`wrong thread label: ${await chip.textContent()}`);
   if (!(await chip.getAttribute('title'))?.includes(THREAD)) throw new Error('thread chip lost its complete raw target');
+  const trayChip = page.locator(`[data-thread-ref-chip="${SID}"]`);
+  await trayChip.waitFor({ timeout: 5000 });
+  const trayRaw = `${await trayChip.getAttribute('href') ?? ''}\n${await trayChip.getAttribute('title') ?? ''}`;
+  if (!trayRaw.includes(SID)) throw new Error(`thread tray chip lost its raw id: ${JSON.stringify(trayRaw)}`);
   const geometry = await page.evaluate(() => {
     const chip = document.querySelector('[data-composer-variant="main"] [data-thread-ref-overlay-token][data-ref-kind="session"]');
     const root = chip.closest('[data-composer-input]');
@@ -5046,7 +5065,8 @@ async function scenarioSelectionAnnotate() {
     throw new Error(`thread label left raw-width space or overflowed: ${JSON.stringify(geometry)}`);
   }
   await shot('selection-thread-reference');
-  if (await rawDraft() !== TYPED) throw new Error('copy did not return the complete raw thread link');
+  const copiedDraft = await rawDraft();
+  if (copiedDraft !== TYPED) throw new Error(`copy did not return the complete raw thread link: ${JSON.stringify(copiedDraft)}`);
 
   // Whole-token Backspace/Delete and undo operate on the raw document.
   await input.fill(THREAD);
@@ -5069,9 +5089,13 @@ async function scenarioSelectionAnnotate() {
   if (await rawDraft() !== TYPED) throw new Error('paste did not preserve the raw draft');
 
   // Navigation restores the full raw draft and the same two selection items.
+  const menu = page.locator(`button[aria-label="${S.openMenuAria}"]`).first();
   if ((page.viewportSize()?.width ?? 1440) < 768) {
-    await page.locator(`button[aria-label="${S.openMenuAria}"]`).first().click();
-    await page.waitForTimeout(300);
+    await menu.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await menu.getAttribute('aria-expanded') !== 'true') {
+      await menu.click();
+      await page.waitForTimeout(300);
+    }
   }
   await page.locator(`text=${S.newSession}`).first().click();
   await page.waitForURL(/\/new/, { timeout: 10_000 });
@@ -5115,8 +5139,10 @@ async function scenarioSelectionAnnotate() {
   // Immediate send clears only its captured items. A newer commented item stays.
   await input.press('Control+Enter');
   await page.waitForFunction(() => document.querySelector('[data-composer-notes-pill]') === null, undefined, { timeout: 10_000 });
-  await annotate(NEW_QUOTE, NEW_COMMENT);
   await waitForText('Selection annotations received by the fixture.');
+  // Select from a settled transcript; this assertion targets post-send item
+  // ownership, not whether a live DOM replacement should preserve a text selection.
+  await annotate(NEW_QUOTE, NEW_COMMENT);
   if ((await notesPill.innerText()).trim() !== S.notesPillOne) throw new Error('successful send cleared an item added afterwards');
   const state = await control({ action: 'session', session_id: SID });
   const content = state.data?.last_prompt_submission?.content ?? [];
@@ -5139,11 +5165,18 @@ async function scenarioSelectionAnnotate() {
 
   // Canonical cold replay keeps generated source metadata out of the user message.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await selectSession('Fixture: selection annotate');
   await waitForText('Selection annotations received by the fixture.');
   const visibleText = await page.locator('[role="log"]').innerText();
   if (visibleText.includes('<!-- kiki-source:')) throw new Error('cold replay exposed generated source metadata');
-  if (!visibleText.includes(COMMENT_A)) throw new Error('cold replay lost the sent annotation');
+  // A virtualized user row need not stay mounted. Assert the persisted replay
+  // record itself, not a vacuous absence/presence in the currently mounted rows.
+  const coldState = await control({ action: 'session', session_id: SID });
+  const coldText = (coldState.data?.last_prompt_submission?.content ?? []).find((part) => part.type === 'text');
+  const coldSpans = (coldText?.presentation?.spans ?? []).filter((span) => span.kind === 'selection');
+  if (coldText === undefined || !coldText.text.includes(`Comment: ${COMMENT_A}`)) throw new Error('cold replay lost the sent annotation');
+  if (coldSpans.map((span) => span.quote).join('|') !== expectedQuotes.join('|') || coldSpans.some((span) => span.source === undefined)) {
+    throw new Error(`cold replay lost selection source metadata: ${JSON.stringify(coldSpans)}`);
+  }
   await shot('selection-annotate-cold-replay');
 }
 

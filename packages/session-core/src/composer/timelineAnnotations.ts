@@ -166,7 +166,7 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
     };
   }
 
-  const legacy = parseLegacyCarryoverPrefix(text);
+  const legacy = parseLegacyCarryoverPrefix(projectPresentedText(text, presentation));
   if (legacy !== null) {
     const quoted = legacy.quotes[0];
     return {
@@ -175,7 +175,7 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
       selections: legacy.selections,
       quote: quoted?.quote ?? null,
       quoteSource: quoted?.source,
-      body: projectPresentedText(legacy.body, presentation),
+      body: legacy.body,
     };
   }
 

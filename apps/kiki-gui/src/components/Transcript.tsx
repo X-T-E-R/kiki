@@ -46,6 +46,7 @@ import {
   sourceTextVersion,
   parseSelectionCarryovers,
   selectionCarryoverPresentation,
+  reconcileEditedThreadRefs,
   buildQuotePrefix,
   type TimelineAnnotation,
   type ComposerAttachment,
@@ -613,13 +614,10 @@ const UserMessage = memo(function UserMessage({
           initialAttachments={initialEditAttachments}
           loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : (signal) => rowActions.loadEditAttachments!(block, signal)}
           onSubmit={async (text, attachments, editedPresentation) => {
-            const prepared = editedPresentation === undefined
+            const prepared = reconcileEditedThreadRefs(block, editedPresentation === undefined
               ? prepareThreadRefContext(text, threadRefDirectory.info)
-              : { text, presentation: editedPresentation };
-            const selections = selectionCarryoverPresentation(
-              carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })),
-              quoteItems,
-            );
+              : { text, presentation: editedPresentation });
+            const selections = selectionCarryoverPresentation(carry.selections, []);
             const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
             await rowActions.onEditMessage(block, selections.prefix + prepared.text, attachments, presentation);
             setEditing(false);

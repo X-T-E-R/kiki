@@ -24,7 +24,7 @@
 import { act, useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, Route, Routes, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
 import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
 import { getReadingSnapshot, saveReadingSnapshot, timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -38,6 +38,8 @@ import {
   readDraft,
   resetAnnotationOverridesForTests,
   selectionCarryoverPresentation,
+  parseSelectionCarryovers,
+  buildPromptContent,
   buildQuotePrefix,
   sourceTextVersion,
   type ComposerAttachment,
@@ -104,6 +106,9 @@ import {
   type TranscriptRowActions,
 } from './Transcript';
 import { messageLinkHref, mergeLoadedAttachments } from './RowActions';
+import { composerInput, setComposerInputValue } from './composerInputTestUtils';
+import { ConversationShell } from './ConversationShell';
+import { SessionRouteView } from './SessionView';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
@@ -234,7 +239,7 @@ function startEditFixture(): Promise<void> {
   })();
   return editFixtureReady;
 }
-async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
+async function renderSettled(root: Root, node: ReactNode, connected = false, initialEntries?: string[]): Promise<void> {
   if (connected) {
     await startEditFixture();
     writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
@@ -247,7 +252,7 @@ async function renderSettled(root: Root, node: ReactNode, connected = false): Pr
   await act(async () => {
     flushSync(() => {
       root.render(
-        <MemoryRouter>
+        <MemoryRouter initialEntries={initialEntries}>
           <I18nProvider>{connected ? <HostProvider host={browserHost}><ConnectionProvider><ConnectedSurface /></ConnectionProvider></HostProvider> : node}</I18nProvider>
         </MemoryRouter>,
       );
@@ -1250,6 +1255,23 @@ function userBlock(
   overrides: Partial<Extract<Block, { kind: 'user' }>> & { id: string; text: string },
 ): Extract<Block, { kind: 'user' }> {
   return { kind: 'user', createdAt: '2026-01-01T00:00:00.000Z', ...overrides };
+}
+
+function serializedEditFixture() {
+  const selections = [
+    { quote: 'A', comment: '', source: { blockId: 'source-a', version: 'v1', start: 0, end: 1, text: 'A' } },
+    { quote: 'B', comment: 'comment B', source: { blockId: 'source-b', version: 'v2', start: 0, end: 1, text: 'B' } },
+    { quote: 'C', comment: '', source: null },
+  ];
+  const carry = selectionCarryoverPresentation(selections, []);
+  const body = 'compare /s/session_first and /s/session_second';
+  const first = '<thread_ref id="session_first" host_id="original-host" workspace_id="original-workspace" title="Original title" status="idle"/>';
+  const second = '<thread_ref id="session_second" host_id="second-host" workspace_id="second-workspace" title="Second title" status="idle"/>';
+  const context = `\n\n<thread_refs>\n${first}\n${second}\nOriginal tool guidance\n</thread_refs>`;
+  const text = carry.prefix + body + context;
+  const presentation = { spans: [...carry.presentation.spans, { start: carry.prefix.length + body.length, end: text.length, kind: 'context' as const }] };
+  const content = JSON.parse(JSON.stringify(buildPromptContent(text, [], presentation))) as NonNullable<ReturnType<typeof buildPromptContent>>;
+  return { selections, carry, body, first, second, context, text, presentation, content };
 }
 
 function assistantBlock(
@@ -2538,7 +2560,7 @@ describe('live and event chrome', () => {
         click(row.querySelector('[data-row-action="edit"]')!);
       });
     });
-    expect(container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')?.value).toBe(raw);
+    expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe(raw);
   });
 
   it('keeps the envelope in the editor when the presentation marks it as the message source', async () => {
@@ -2574,7 +2596,7 @@ describe('live and event chrome', () => {
         click(row.querySelector('[data-row-action="edit"]')!);
       });
     });
-    expect(container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')?.value).toBe(`${envelope}${body}`);
+    expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe(`${envelope}${body}`);
   });
 
   describe('displayUserMessageText', () => {
@@ -3505,17 +3527,15 @@ describe('message row actions', () => {
         click(row.querySelector('[data-row-action="edit"]')!);
       });
     });
-    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
-    expect(textarea?.value).toBe('original text');
+    const input = composerInput(container.querySelector('[data-edit-editor]')!);
+    expect(input.value).toBe('original text');
     // This message has no attachments. The composer is the attachment surface,
     // so the editor does not add a second sentence under the prefilled text.
     expect(container.querySelector('[data-edit-editor]')?.textContent).not.toContain('Keep or change attachments');
     expect(container.querySelector('[data-edit-editor] [data-composer-card]')).not.toBeNull();
     await act(async () => {
       flushSync(() => {
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
-        setter.call(textarea!, 'edited text');
-        textarea!.dispatchEvent(new Event('input', { bubbles: true }));
+        setComposerInputValue(input, 'edited text');
       });
     });
     await act(async () => {
@@ -3591,19 +3611,15 @@ describe('message row actions', () => {
     await act(async () => {
       flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
     });
-    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
-    expect(textarea).not.toBeNull();
-    expect(textarea?.disabled).toBe(false);
+    const input = composerInput(container.querySelector('[data-edit-editor]')!);
+    expect(input).not.toBeNull();
+    expect(input.disabled).toBe(false);
 
     // Typing is immediately available while attachments load
     await act(async () => {
-      flushSync(() => {
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
-        setter.call(textarea!, 'typed while loading');
-        textarea!.dispatchEvent(new Event('input', { bubbles: true }));
-      });
+      flushSync(() => { setComposerInputValue(input, 'typed while loading'); });
     });
-    expect(textarea?.value).toBe('typed while loading');
+    expect(input.value).toBe('typed while loading');
 
     // Cancel is immediately clickable
     const cancel = container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
@@ -3802,6 +3818,39 @@ describe('message row actions', () => {
     expect(mergeLoadedAttachments([second], [loadedFirst, loadedSecond], initial)).toEqual([loadedSecond]);
   });
 
+  it.each(['unchanged', 'prose', 'delete', 'retarget'] as const)('round-trips serialized selections and original thread payload through historical editing: %s', async (change) => {
+    const fixture = serializedEditFixture();
+    const sent = fixture.content.find((part) => part.type === 'text')!;
+    if (sent.type !== 'text') throw new Error('missing sent text');
+    const onEditMessage = vi.fn();
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-round-trip', text: sent.text, presentation: sent.presentation, userMessageId: 'round-trip-message' })],
+      { disabled: false, onEditMessage, onRegenerate: () => undefined, onFork: () => undefined },
+    );
+    await act(async () => { click(container.querySelector('[data-row-action="edit"]')!); });
+    const editor = container.querySelector('[data-edit-editor]')!;
+    const input = composerInput(editor);
+    expect(input.value).toBe(fixture.body);
+    expect(editor.textContent).not.toMatch(/thread_refs|original-host|original-workspace|kiki-source/);
+    const editedBody = change === 'unchanged' ? fixture.body : change === 'prose' ? `edited prose: ${fixture.body}`
+      : change === 'delete' ? 'compare /s/session_second' : 'compare /s/session_new and /s/session_second';
+    if (change !== 'unchanged') await act(async () => { setComposerInputValue(input, editedBody); });
+    await act(async () => { click(container.querySelector('[data-edit-submit]')!); });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    const result = JSON.parse(JSON.stringify({ text: onEditMessage.mock.calls[0]?.[1], presentation: onEditMessage.mock.calls[0]?.[3] }));
+    expect(parseSelectionCarryovers(result.text, result.presentation)).toMatchObject({ selections: fixture.selections, body: editedBody });
+    expect(result.text).toContain(fixture.second);
+    expect(result.text).toContain('Original tool guidance');
+    if (change === 'unchanged' || change === 'prose') expect(result.text).toBe(fixture.carry.prefix + editedBody + fixture.context);
+    else expect(result.text).not.toContain(fixture.first);
+    if (change === 'delete') expect(result.text).toBe(fixture.carry.prefix + editedBody + fixture.context.replace(`${fixture.first}\n`, ''));
+    if (change === 'retarget') expect(result.text).toContain('<thread_ref id="session_new"');
+    const contextSpan = result.presentation.spans.find((span: { kind: string }) => span.kind === 'context');
+    expect(contextSpan.start).toBe(fixture.carry.prefix.length + editedBody.length);
+    expect(contextSpan.end).toBe(result.text.length);
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
   it('copies the typed body and preserves selected carry annotations in the edit metadata', async () => {
     const quote = 'selected fragment';
     const comment = 'keep this selection';
@@ -3830,13 +3879,9 @@ describe('message row actions', () => {
     await act(async () => {
       flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
     });
-    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')!;
-    expect(textarea.value).toBe('original body');
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
-      setter.call(textarea, 'edited body /s/session_example');
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    const input = composerInput(container.querySelector('[data-edit-editor]')!);
+    expect(input.value).toBe('original body');
+    await act(async () => { setComposerInputValue(input, 'edited body /s/session_example'); });
     await act(async () => { click(container.querySelector('[data-edit-submit]')!); });
     expect(onEditMessage).toHaveBeenCalledOnce();
     expect(onEditMessage.mock.calls[0]?.[0]).toMatchObject({ text: originalText });
@@ -4806,20 +4851,17 @@ describe('virtualized transcript scrolling', () => {
 
     await act(async () => { click(row.querySelector('[data-row-action="edit"]')!); });
     await settleVirtualizer();
-    const textarea = row.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
-      setter.call(textarea, 'draft survives virtualization');
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    const input = composerInput(row.querySelector('[data-edit-editor]')!);
+    expect(input.value).toBe('original draft');
+    await act(async () => { setComposerInputValue(input, 'draft survives virtualization'); });
 
     await setTranscriptScroll(scroll, 0);
     await settleVirtualizer();
     expect(container.querySelector('[data-block-id="user-edit-pinned"]')).toBe(row);
     await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
     await settleVirtualizer();
-    expect(row.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')).toBe(textarea);
-    expect(textarea.value).toBe('draft survives virtualization');
+    expect(composerInput(row.querySelector('[data-edit-editor]')!)).toBe(input);
+    expect(input.value).toBe('draft survives virtualization');
   });
 
   it('keeps question selections mounted while scrolling away and back', async () => {
@@ -8689,7 +8731,58 @@ describe('ordinary bounded message reading', () => {
     expect(container.querySelector('[data-block-id="user-m0"] [data-row-action="copy"]')).not.toBeNull();
     const edit = container.querySelector('[data-block-id="user-m0"] [data-row-action="edit"]') as HTMLButtonElement;
     await act(async () => { edit.click(); });
-    expect(container.querySelector('textarea')?.value).toBe('prefixsuffix');
+    expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe('prefixsuffix');
     expect(container.querySelector('[data-block-id="agent-frame-f0"] [data-row-action="copy"]')).not.toBeNull();
+  });
+});
+
+
+describe('serialized queue edit consumer', () => {
+  it.each(['unchanged', 'prose', 'delete', 'retarget', 'selection-delete'] as const)('retains original hidden targets and ordered selection sources: %s', { timeout: 30_000 }, async (change) => {
+    await startEditFixture();
+    const baseUrl = `http://127.0.0.1:${editFixturePort}`;
+    const reset = await fetch(`${baseUrl}/__control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'queue' }) });
+    expect(reset.ok).toBe(true);
+    const { KikiClient } = await import('../lib/client');
+    const client = new KikiClient({ baseUrl, token: 'kiki-fixture-token' });
+    const sessionId = 'session_fixture_queue';
+    const fixture = serializedEditFixture();
+    await client.submitPrompt(sessionId, { prompt_id: 'active-round-trip', content: [{ type: 'text', text: 'A: hold for queue editing' }] });
+    const queued = await client.submitPrompt(sessionId, { prompt_id: 'queued-round-trip', content: fixture.content });
+    expect(queued.status).toBe('queued');
+    const session = await client.getSession(sessionId);
+    const { root, container } = makeRoot();
+    await renderSettled(root, <Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId={sessionId} sessions={[session]} onToggleSidebar={() => {}} />} /></Route></Routes>, true, [`/s/${sessionId}`]);
+    await vi.waitFor(() => { expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1'); });
+    await act(async () => { click(container.querySelector('[data-queue-count]')!.closest('button')!); });
+    await vi.waitFor(() => { expect(container.querySelector('[aria-label="Edit queued prompt"]')).not.toBeNull(); });
+    await act(async () => { click(container.querySelector('[aria-label="Edit queued prompt"]')!); });
+    await vi.waitFor(() => { expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')?.disabled).toBe(false); });
+    const input = composerInput(container);
+    expect(input.value).toBe(fixture.body);
+    expect(container.querySelector('[data-composer-card]')?.textContent).not.toMatch(/thread_refs|original-host|original-workspace|kiki-source/);
+    await act(async () => { click(container.querySelector('[data-composer-notes-pill]')!); });
+    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => ['A', 'B', 'C'].includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(['A', 'B', 'C']);
+    if (change === 'selection-delete') await act(async () => { click(container.querySelectorAll('[data-composer-note-remove]')[1]!); });
+    const editedBody = change === 'unchanged' || change === 'selection-delete' ? fixture.body : change === 'prose' ? `edited prose: ${fixture.body}`
+      : change === 'delete' ? 'compare /s/session_second' : 'compare /s/session_new and /s/session_second';
+    if (editedBody !== fixture.body) await act(async () => { setComposerInputValue(input, editedBody); });
+    await act(async () => { click(container.querySelector('[aria-label="Confirm edit"]')!); });
+    await vi.waitFor(() => { expect(container.querySelector('[aria-label="Confirm edit"]')).toBeNull(); });
+    const prompts = await client.listPrompts(sessionId);
+    const saved = prompts.queued.find((item) => item.prompt_id === 'queued-round-trip')!;
+    const textPart = saved.content.find((part) => part.type === 'text')!;
+    if (textPart.type !== 'text') throw new Error('missing queued text');
+    const expectedSelections = change === 'selection-delete' ? [fixture.selections[0], fixture.selections[2]] : fixture.selections;
+    expect(parseSelectionCarryovers(textPart.text, textPart.presentation)).toMatchObject({ selections: expectedSelections, body: editedBody });
+    expect(textPart.text).toContain(fixture.second);
+    expect(textPart.text).toContain('Original tool guidance');
+    const prefix = change === 'selection-delete' ? selectionCarryoverPresentation(expectedSelections as typeof fixture.selections, []).prefix : fixture.carry.prefix;
+    if (change === 'unchanged' || change === 'prose' || change === 'selection-delete') expect(textPart.text).toBe(prefix + editedBody + fixture.context);
+    else expect(textPart.text).not.toContain(fixture.first);
+    if (change === 'retarget') expect(textPart.text).toContain('<thread_ref id="session_new"');
+    if (change === 'delete') expect(textPart.text).toBe(prefix + editedBody + fixture.context.replace(`${fixture.first}\n`, ''));
+    expect(textPart.presentation?.spans.find((span) => span.kind === 'context')).toEqual({ start: prefix.length + editedBody.length, end: textPart.text.length, kind: 'context' });
+    expect(input.value).toBe('');
   });
 });
