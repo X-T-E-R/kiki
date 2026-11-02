@@ -612,6 +612,24 @@ function user(text: string): Message {
 }
 
 describe('production Responses adapter → generate → canonical history → official SDK', () => {
+  it.each(['retire', 'dispose'] as const)('does not send response.create when %s happens during the handshake', async action => {
+    const transport = new ResponsesWebSocketTransport();
+    let retired: Promise<void> | undefined;
+    const gateway = await createGateway((_body, socket) => { sendCompleted(socket, 'unexpected', 'unexpected generation'); }, () => {
+      if (action === 'retire') retired = transport.retire();
+      else transport.dispose();
+      return capabilities;
+    });
+    try {
+      const pending = generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport });
+      if (action === 'retire') await expect(pending).resolves.toMatchObject({ message: { content: [{ type: 'text', text: 'HTTP fallback' }] } });
+      else await expect(pending).rejects.toBeDefined();
+      expect(gateway.frames).toHaveLength(0);
+      expect(gateway.httpRequests).toHaveLength(action === 'retire' ? 1 : 0);
+      await retired;
+    } finally { transport.dispose(); }
+  });
+
   it('sends text and parallel tool-result deltas while retaining native ids/status and opaque reasoning', async () => {
     const outputs = [
       responseOutput('first answer'),

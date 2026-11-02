@@ -268,6 +268,7 @@ function createService(
     readonly advertisedProfiles?: ReadonlyMap<string, { line: string; signature: string }>;
     readonly sectionChanges?: Emitter<ConfigChangedEvent>;
     readonly catalogReads?: { value: number };
+    readonly transportModel?: { value: Model };
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -484,7 +485,7 @@ function createService(
   ix.stub(IRequestIdentityCatalog, catalog);
   ix.stub(IModelCatalog, {
     _serviceBrand: undefined,
-    get: () => requester.model,
+    get: () => options.transportModel?.value ?? requester.model,
     getRequester: () => {
       if (options.catalogReads !== undefined) options.catalogReads.value += 1;
       return requester;
@@ -523,7 +524,7 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
   const captured: ModelRequestParams[] = [];
   const request = requester.request.bind(requester);
   requester.request = async function* (input, signal, params) {
-    captured.push(params ?? {});
+    captured.push({ ...params, responsesTransport: params?.resolveResponsesTransport?.()?.transport ?? params?.responsesTransport });
     yield* request(input, signal, params);
   };
   return captured;
@@ -594,6 +595,16 @@ describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
 });
 
 describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
+  it('lets the adapter match its default endpoint when a model omits baseUrl', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses', baseUrl: undefined, responsesWebSocket: { targets: ['https://api.openai.com/v1'] },
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined);
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(captured[0]?.responsesTransport).toBeDefined();
+  });
+
   it('shares only the main turn lineage and disposes the transport on helper/rebase boundaries', async () => {
     const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
     Object.assign(requester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
@@ -664,6 +675,97 @@ describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
       sectionChanges.dispose();
       await (service as unknown as { dispose(): void | Promise<void> }).dispose();
       dispose.mockRestore();
+    }
+  });
+
+  it.each(['queue-off', 'queue-on', 'queue-target', 'queue-rotate', 'queue-cancel', 'queue-dispose', 'backoff-off', 'backoff-rotate'] as const)('resolves the current transport only when a native attempt is admitted: %s', async mode => {
+    const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
+    const frames: Record<string, unknown>[] = [];
+    const httpBodies: Record<string, unknown>[] = [];
+    const sockets = new Set<WebSocket>();
+    const terminal = { type: 'response.completed', response: { id: 'fixture_done', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done', annotations: [] }] }] } };
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        httpBodies.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`event: response.completed\ndata: ${JSON.stringify(terminal)}\n\n`);
+      });
+    });
+    const webSockets = new WebSocketServer({ server });
+    webSockets.on('headers', headers => { headers.push(`X-Responses-WebSocket-Capabilities: ${handshake}`); });
+    webSockets.on('connection', socket => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('message', data => {
+        const bytes = Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? Buffer.from(data) : data;
+        frames.push(JSON.parse(bytes.toString('utf8')));
+        if (mode.startsWith('backoff') && frames.length === 2) socket.close(1012, 'fixture restart');
+        else socket.send(JSON.stringify(terminal));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const initialWebSocket = mode === 'queue-on' ? undefined : { targets: [baseUrl] };
+    const model: Model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses', baseUrl,
+      responsesWebSocket: initialWebSocket, authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: initialWebSocket });
+    const queued = createControlledPromise<void>();
+    const admitted = createControlledPromise<void>();
+    let attempts = 0;
+    let active = 0;
+    const release = vi.fn(() => { active--; });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry, {
+      acquire: async () => {
+        attempts++;
+        if (mode.startsWith('queue') && attempts === 2) { queued.resolve(); await admitted; }
+        active++;
+        return { release };
+      },
+    });
+    const sectionChanges = new Emitter<ConfigChangedEvent>();
+    const transportModel = { value: model };
+    const { service } = createService(requester, undefined, { sectionChanges, transportModel,
+      retryConfig: { policies: [{ match: 'APIConnectionError', retry: true, backoff: 1 }] } });
+    const change = (): void => {
+      expect(active).toBe(0);
+      if (mode.endsWith('off')) transportModel.value = { ...model, responsesWebSocket: undefined };
+      if (mode === 'queue-on') transportModel.value = { ...model, responsesWebSocket: { targets: [baseUrl] } };
+      if (mode.endsWith('target')) transportModel.value = { ...model, responsesWebSocket: { targets: ['https://other.example.test'] } };
+      sectionChanges.fire({ domain: 'responsesWebSocket', source: 'set', value: undefined, previousValue: undefined });
+    };
+    const controller = new AbortController();
+    try {
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      expect(active).toBe(0);
+      const retried = vi.fn(() => { if (mode.startsWith('backoff')) change(); });
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 2 }, onAttemptRetry: retried }, undefined, controller.signal);
+      if (mode.startsWith('queue')) {
+        await queued;
+        change();
+        if (mode === 'queue-cancel') controller.abort();
+        if (mode === 'queue-dispose') await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+        admitted.resolve();
+      }
+      const stopped = mode === 'queue-cancel' || mode === 'queue-dispose';
+      if (stopped) await expect(pending).rejects.toBeDefined();
+      else await expect(pending).resolves.toMatchObject({ message: { content: [{ type: 'text', text: 'done' }] } });
+      const sse = mode.endsWith('off') || mode.endsWith('target');
+      expect(httpBodies).toHaveLength(sse || mode === 'queue-on' ? 1 : 0);
+      expect(frames).toHaveLength(stopped || mode === 'queue-on' ? 1 : mode.startsWith('backoff') ? sse ? 2 : 3 : sse ? 1 : 2);
+      expect(retried).toHaveBeenCalledTimes(mode.startsWith('backoff') ? 1 : 0);
+      expect(active).toBe(0);
+      expect(release).toHaveBeenCalledTimes(attempts);
+      if (mode === 'backoff-rotate') expect(frames[2]).not.toHaveProperty('previous_response_id');
+    } finally {
+      admitted.resolve();
+      sectionChanges.dispose();
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      for (const socket of sockets) socket.terminate();
+      await new Promise<void>(resolve => { webSockets.close(() => { resolve(); }); });
+      server.closeAllConnections();
+      await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
     }
   });
 

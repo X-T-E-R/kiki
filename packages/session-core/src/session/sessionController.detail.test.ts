@@ -308,6 +308,41 @@ describe('SessionController transcript detail', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('keeps the %s older gesture attached when its mounted content reader unmounts', async (agentId) => {
+    const source = { kind: 'turn' as const, id: 'shared-tail' };
+    const ref: ContentRef = { source, revision: 'shared-revision', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const step = { kind: 'step' as const, stepId: 's1', turnId: source.id, ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'retained tail' }] };
+    let complete!: (segment: import('@kiki/transcript').ContentSegment) => void;
+    let readSignal: AbortSignal | undefined;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>((_input, options) => {
+      readSignal = options?.signal;
+      return new Promise(resolve => { complete = resolve; });
+    });
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('shared-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, prompt: 'original opening', steps: [step], contentRefs: [ref] }] }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const mounted = controller.beginContentRead(agentId, source, ['steps']);
+    try {
+      await vi.waitFor(() => { expect(content).toHaveBeenCalledOnce(); });
+      const older = controller.loadOlderMessages(agentId);
+      mounted.release();
+      expect(readSignal?.aborted).toBe(false);
+      complete({ ref, start: 0, value: [{ ...step, stepId: 's0', ordinal: 0,
+        frames: [{ ...step.frames[0]!, frameId: 'f0', text: 'earlier content' }] }], contentRefs: [] });
+      expect(await older).toBe(true);
+      expect(state().olderError).toBeUndefined();
+      expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['earlier content', 'retained tail']);
+      expect(state().blocks.some(block => block.kind === 'user' && block.text === 'original opening')).toBe(true);
+      expect(controller.contentRefsFor(agentId, source)).toEqual([]);
+      expect(content).toHaveBeenCalledOnce();
+      expect(view.transcript.page).not.toHaveBeenCalled();
+    } finally { mounted.release(); controller.close(); }
+  });
+
   it.each(['resolve', 'reject'] as const)('detaches a cancelled reverse flight before immediate retry and ignores its late %s', async (late) => {
     const source = { kind: 'turn' as const, id: 'immediate-retry-tail' };
     const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
@@ -1781,6 +1816,217 @@ describe('hidden prefix turn preview', () => {
     return controller.getState().blocks.some((block) => 'text' in block && block.text === textValue || 'text' in block && typeof block.text === 'string' && block.text.includes(textValue));
   }
 
+  it.each([false, true])('recovers an older-page orphan opening with a repeated cursor and has_more=%s', async (hasMore) => {
+    const { controller, deliver, view } = harness(undefined);
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'other' }, steps: [] };
+    const opening: TranscriptTurn = { ...orphan, startedAt: '2025-01-01T00:00:00.000Z', origin: { kind: 'user' }, promptId: 'opening-1', prompt: 'RECOVERED-OLDER-OPENING' };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', items: [orphan], has_more: true, next_cursor: 'turn:t1', tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'unknown', hasMoreOlder: true } })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', items: [opening], has_more: hasMore, next_cursor: 'turn:t1', tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'tail', hasMoreOlder: hasMore } });
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'RECOVERED-OLDER-OPENING')).toBe(false);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'RECOVERED-OLDER-OPENING')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  async function staleOpeningFixture(agentId: string) {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const structure: ContentRef = { source, path: ['steps'], kind: 'array', offset: 1, total: 2, revision: 'loaded-structure' };
+    const prompt: ContentRef = { source, path: ['prompt'], kind: 'text', offset: 23, total: 30, revision: 'opening-text' };
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'other' }, contentRefs: [structure], steps: [{
+      kind: 'step', stepId: 'loaded-step', turnId: 't1', ordinal: 0, state: 'completed',
+      frames: [{ kind: 'text', frameId: 'loaded-body', role: 'assistant', text: 'ALREADY-LOADED-BODY' }],
+    }] };
+    const opening: TranscriptTurn = { ...orphan, startedAt: FIXED_AT, origin: agentId === 'main' ? { kind: 'user' } : { kind: 'other', payload: { kind: 'peer_thread', messageId: 'peer-opening' } },
+      promptId: 'opening-1', prompt: 'RECOVERED-STALE-OPENING', steps: [], contentRefs: [prompt, { ...structure, revision: 'preview-structure' }] };
+    const oldest: TranscriptTurn = { ...opening, turnId: 't0', ordinal: 0, promptId: 'opening-0', prompt: 'OLDEST-OPENING', contentRefs: [] };
+    const { controller, deliver, view } = harness(undefined);
+    const shell = { session_id: 'session_test', agent_id: agentId, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'unknown' as const, hasMoreOlder: true as const } };
+    const stale = { ...shell, items: [], has_more: true,
+      read: { source: 'derived' as const, readiness: 'partial' as const, reason: 'stale_cursor' as const, stale: { reason: 'stale_cursor' as const, retry: 'authoritative' as const } } };
+    const page = vi.mocked(view.transcript.page).mockImplementation(async (input) => {
+      if (input.beforeItem === 'orphan-cursor') return stale;
+      if (input.pageSize === 1) return input.beforeItem === 'opening-cursor'
+        ? { ...shell, items: [opening], has_more: true }
+        : { ...shell, items: [orphan], has_more: true, next_cursor: 'opening-cursor' };
+      if (input.beforeTurn === 't1') return { ...shell, items: [oldest], has_more: false };
+      return { ...shell, items: [orphan], has_more: true, next_cursor: 'orphan-cursor' };
+    });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('stale-opening-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...opening, turnId: 't2', ordinal: 2, prompt: 'NEWER-OPENING', contentRefs: [] }] }), 2, true));
+    return { controller, page, shell, stale, orphan, opening, structure, prompt };
+  }
+
+  it.each(['main', 'child'] as const)('recovers the oldest %s opening before restarting a stale exclusive cursor', async (agentId) => {
+    const { controller, page, structure, prompt } = await staleOpeningFixture(agentId);
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      const bodies = state.blocks.flatMap(block => 'text' in block ? [block.text] : []);
+      expect(bodies.filter(body => body === 'RECOVERED-STALE-OPENING')).toHaveLength(1);
+      expect(bodies).toContain('ALREADY-LOADED-BODY');
+      expect(bodies).toContain('OLDEST-OPENING');
+      expect(controller.contentRefsFor(agentId, structure.source)).toEqual([structure, prompt]);
+      expect(page.mock.calls.map(([input]) => input)).toEqual([
+        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 20 },
+        { agentId, beforeTurn: undefined, beforeItem: 'orphan-cursor', pageSize: 20 },
+        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 1 },
+        { agentId, beforeTurn: undefined, beforeItem: 'opening-cursor', pageSize: 1 },
+        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 20 },
+      ]);
+      expect(state.olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it.each(['error', 'stalled', 'older-error', 'cancelled'] as const)('retains the orphan cursor after %s opening recovery and lets the next gesture retry', async (failure) => {
+    const { controller, page, shell, stale, orphan, opening } = await staleOpeningFixture('main');
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      page.mockResolvedValueOnce(stale);
+      let complete: (() => void) | undefined;
+      let readSignal: AbortSignal | undefined;
+      if (failure === 'error') page.mockRejectedValueOnce(new Error('preview unavailable'));
+      if (failure === 'stalled') {
+        const stalled = { ...shell, items: [orphan], has_more: true, next_cursor: 'stalled-opening' };
+        page.mockResolvedValueOnce(stalled).mockResolvedValueOnce(stalled);
+      }
+      if (failure === 'older-error') page.mockResolvedValueOnce({ ...shell, items: [opening], has_more: true }).mockRejectedValueOnce(new Error('older page unavailable'));
+      if (failure === 'cancelled') page.mockImplementationOnce((_input, options) => new Promise(resolve => {
+        readSignal = options?.signal;
+        complete = () => { resolve({ ...shell, items: [opening], has_more: true }); };
+      }));
+      const abort = new AbortController();
+      const attempt = controller.loadOlderMessages('main', abort.signal);
+      if (failure === 'cancelled') {
+        await vi.waitFor(() => { expect(complete).toBeDefined(); });
+        abort.abort();
+        expect(readSignal?.aborted).toBe(true);
+        complete!();
+      }
+      expect(await attempt).toBe(false);
+      expect(blockText(controller, 'OLDEST-OPENING')).toBe(false);
+      expect(blockText(controller, 'ALREADY-LOADED-BODY')).toBe(true);
+      if (failure !== 'cancelled') expect(controller.getState().olderError).toBeDefined();
+      const calls = page.mock.calls.length;
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(page.mock.calls[calls]?.[0].beforeItem).toBe('orphan-cursor');
+      expect(blockText(controller, 'RECOVERED-STALE-OPENING')).toBe(true);
+      expect(blockText(controller, 'OLDEST-OPENING')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it('refreshes the structure of an older-page turn after its canonical prefix changes', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.inserted));
+    const { controller, deliver, view } = harness(undefined, content);
+    const initial = await previewPage(fixture.client, fixture.maxBytes)({ agentId: 'main', pageSize: 20 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...initial, items: [fixture.client], has_more: true, next_cursor: 'turn:t1' })
+      .mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'OMITTED-PREFIX')).toBe(true);
+      expect(blockText(controller, 'VISIBLE-USER')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('replaces a stale %s step window when canonical frame ordinals move outside it', async (agentId) => {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const frames: TranscriptFrame[] = Array.from({ length: 9 }, (_, index) => ({
+      kind: 'text', frameId: `nested-${index}`, role: 'assistant', text: `NESTED-FRAME-${index}`,
+    }));
+    const turn = (count: number): TranscriptTurn => ({
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'OWNED-OPENING', promptId: 'opening-1',
+      steps: Array.from({ length: count }, (_, ordinal) => ({
+        kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: ordinal === count - 3 ? frames : [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: `CANONICAL-STEP-${ordinal}` }],
+      })),
+    });
+    const canonical = turn(31);
+    const stale = rebindTurnContentRefs(boundedEntity({ ...canonical, steps: canonical.steps.slice(17) }, source, undefined, agentId, 'tail'));
+    const fresh = rebindTurnContentRefs(boundedEntity(canonical, source, undefined, agentId, 'tail'));
+    const oldFrames = stale.contentRefs?.find(ref => ref.path.length === 3);
+    const newFrames = fresh.contentRefs?.find(ref => ref.path.length === 3);
+    expect(oldFrames?.path).toEqual(['steps', 11, 'frames']);
+    expect(newFrames?.path).toEqual(['steps', 28, 'frames']);
+    expect(newFrames?.revision).toBe(oldFrames?.revision);
+    expect(fresh.contentRefs?.find(ref => ref.path.length === 1)).toMatchObject({ offset: 23, total: 31 });
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    const page = { session_id: 'session_test', agent_id: agentId, has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'tail' as const, hasMoreOlder: false }, items: [fresh] };
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...page, items: [stale], has_more: true, next_cursor: 'turn:t1' }).mockResolvedValue(page);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('shifted-child', agentId, 'delta');
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent(agentId, emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      if (oldFrames === undefined) throw new Error('missing stale frames reference');
+      expect(await controller.loadContentSegment(agentId, oldFrames)).toBe(true);
+      expect(controller.contentRefsFor(agentId, source).some(ref => ref.path[1] === 11)).toBe(false);
+      for (let reads = 0; ; reads += 1) {
+        const next = controller.contentRefsFor(agentId, source).find(ref => ref.direction === 'backward');
+        if (next === undefined) break;
+        expect(reads).toBeLessThan(10);
+        expect(await controller.loadContentSegment(agentId, next)).toBe(true);
+      }
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      const bodies = state.blocks.flatMap(block => 'text' in block ? [block.text] : []);
+      expect(bodies).toContain('OWNED-OPENING');
+      expect(bodies).toContain('SIBLING-PAGE');
+      expect(bodies).toContain('CANONICAL-STEP-30');
+      expect(bodies).toContain('CANONICAL-STEP-0');
+      for (let index = 0; index < 9; index += 1) expect(bodies).toContain(`NESTED-FRAME-${index}`);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(content.mock.calls.length).toBeLessThan(8);
+      expect(state.olderError).toBeUndefined();
+      expect(Object.values(state.detailLoads).some(load => load.status === 'error')).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it.each(['steps', 'frames'] as const)('adopts a complete canonical %s preview when its stale continuation disappears', async (field) => {
+    const fixture = hiddenPrefixFixture();
+    const original: TranscriptTurn = field === 'frames' ? fixture.client : { ...fixture.client,
+      steps: Array.from({ length: 12 }, (_, ordinal) => ({ kind: 'step', stepId: `old-${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: [{ kind: 'text', frameId: `old-frame-${ordinal}`, role: 'assistant', text: 'old body '.repeat(300) }] })) };
+    const stale = field === 'frames' ? original : rebindTurnContentRefs(boundedEntity(original, { kind: 'turn', id: 't1' }, undefined, 'main', 'tail'));
+    const canonical: TranscriptTurn = { ...original, contentRefs: undefined, steps: [{ kind: 'step', stepId: stale.steps[0]!.stepId, turnId: 't1',
+      ordinal: stale.steps[0]!.ordinal, state: 'completed', frames: [{ kind: 'text', frameId: 'canonical-complete', role: 'assistant', text: 'COMPLETE-CANONICAL-BODY' }] }] };
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    const first = await previewPage(stale, 12_000)({ agentId: 'main', pageSize: 20 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...first, items: [stale], has_more: true, next_cursor: 'turn:t1' })
+      .mockImplementation(previewPage(canonical, 12_000));
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'COMPLETE-CANONICAL-BODY')).toBe(true);
+      expect(controller.contentRefsFor('main', { kind: 'turn', id: 't1' }).filter(ref => ref.direction === 'backward')).toEqual([]);
+      expect(controller.getState().olderError).toBeUndefined();
+      const reads = content.mock.calls.length;
+      await controller.loadOlderMessages();
+      expect(content).toHaveBeenCalledTimes(reads);
+    } finally { controller.close(); }
+  });
+
   it('reloads one fresh turn preview after a hidden prefix insert and keeps the loaded suffix', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));
@@ -1823,6 +2069,26 @@ describe('hidden prefix turn preview', () => {
       expect(view.transcript.page).toHaveBeenCalledTimes(1);
       expect(view.snapshot).toHaveBeenCalledTimes(1);
       expect(content.mock.calls.slice(calls).some(([input]) => input.ref.revision === fixture.ref.revision)).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('continues past marker-only pages to recover a changed timeline text field', async () => {
+    const turn = (prompt: string): TranscriptTurn => ({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] });
+    const canonical = turn(`CANONICAL ${'n'.repeat(40_000)}`);
+    const stale = boundedEntity(turn(`OLD ${'o'.repeat(40_000)}`), { kind: 'turn', id: 't1' }, undefined, 'main', 'tail');
+    const { controller, deliver, view } = harness(undefined, vi.fn(segmentRead(canonical)));
+    const page = await previewPage(canonical, 32_768)({ agentId: 'main', pageSize: 1 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...page, items: [{ kind: 'marker', markerId: 'intervening', marker: 'message.delivery' }], has_more: true, next_cursor: 'marker:intervening' })
+      .mockImplementation(previewPage(canonical, 32_768));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [stale, { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, steps: [] }] }), 2));
+    try {
+      const ref = controller.contentRefsFor('main', { kind: 'turn', id: 't1' }).find(candidate => candidate.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt ref');
+      expect(await controller.loadContentSegment('main', ref)).toBe(true);
+      expect(blockText(controller, 'CANONICAL')).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:intervening', pageSize: 1 });
     } finally { controller.close(); }
   });
 
@@ -2067,7 +2333,7 @@ describe('hidden prefix turn preview', () => {
       expect(blockText(controller, 'saved 7')).toBe(true);
       expect(await controller.loadContentSegment('main', stale)).toBe(true);
       expect(view.transcript.page).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: 't2', beforeItem: 'marker-boundary', pageSize: 1 });
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker-boundary', pageSize: 1 });
       expect(content.mock.calls[1]?.[0].ref).toMatchObject({ offset: 0, total: 18, direction: 'forward' });
       expect(blockText(controller, 'ORIGINAL-DELIVERY')).toBe(true);
       expect(blockText(controller, 'saved 7')).toBe(true);

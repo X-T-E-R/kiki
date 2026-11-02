@@ -29,7 +29,7 @@ import type { SessionSeenMap } from '../settings/sessionReadState';
 import { pendingKindOf } from './activity';
 import { sessionIsExecuting } from './sessionList';
 
-export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'executing' | 'main_turn_active' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
+export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
 
 /** Why a session is in the inbox. */
 export type InboxReason = 'approval' | 'question' | 'budget' | 'completed' | 'failed' | 'cancelled';
@@ -134,16 +134,17 @@ export function buildInboxModel(
   return { needsYou, unread, total: needsYou.length + unread.length };
 }
 
-/** Sidebar row state: one of four, in precedence order. */
-export type SessionRowState = 'needs-me' | 'running' | 'unread' | 'read';
+/** Sidebar row state, in precedence order. */
+export type SessionRowState = 'needs-me' | 'cleanup-pending' | 'running' | 'unread' | 'read';
 
 /**
- * The visual state of one sidebar row. Blocking beats running (an approval is
- * the thing to act on even while a subagent works), running beats unread, and
+ * The visual state of one sidebar row. Blocking beats unconfirmed process
+ * cleanup, cleanup beats running, running beats unread, and
  * a session with nothing outstanding is plain `read`.
  */
 export function sessionRowState(session: InboxSource, seen: SessionSeenMap): SessionRowState {
   if (pendingKindOf(session) !== 'none') return 'needs-me';
+  if (session.cleanup_pending === true) return 'cleanup-pending';
   if (sessionIsExecuting(session) === true) return 'running';
   return isSessionUnread(session, seen) ? 'unread' : 'read';
 }

@@ -32,7 +32,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentMemorySnapshot, AgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { rankMemoryRecall, selectMemoryRecall } from '#/app/memory/memoryRecall';
 import { renderMemoryWorkingSet, memoryRequestText, memoryTextFits } from '#/app/memory/memoryContext';
-import { memoryHandoffMessages, projectCurrentMemory, withoutMemoryWorkset } from '#/app/memory/memoryProjection';
+import { memoryAuthorityUpdate, memoryHandoffMessages, projectCurrentMemory, withoutMemoryWorkset } from '#/app/memory/memoryProjection';
 import { buildFreshPackage } from '#/agent/modelSwitch/freshPackage';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -1171,6 +1171,43 @@ describe('Memory recall and complete working units', () => {
     expect(selected.text).toContain(wanted.body);
   });
 
+  it('keeps emitted memory snapshots and calls stable when another snapshot or revision arrives', async () => {
+    const entry = (await save('Stable deployment policy', 'Use exactly 9 workers; never publish artifacts.')).entry;
+    const memory = `## Scoped memory — Saved memory / as-of projection\n<memory-workset generation=1>\n${entry.body}\n</memory-workset>`;
+    const snapshot: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { memoryRange: { start: 0, length: memory.length }, memoryReferences: [{ scope: global, id: entry.id, observed_revision: entry.revision }] } }, content: [{ type: 'text', text: memory }] };
+    const messages: ContextMessage[] = [snapshot,
+      { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'stable-write', name: 'MemoryWrite', arguments: JSON.stringify({ action: 'update', id: entry.id, body: entry.body, reason: 'Retain the full condition' }) }] },
+      { role: 'tool', toolCallId: 'stable-write', toolCalls: [], content: [{ type: 'text', text: JSON.stringify({ entry, owner_scope: global }) }] }];
+    const original = structuredClone(messages);
+    const freeze = (value: unknown): void => {
+      if (value === null || typeof value !== 'object') return;
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    };
+    freeze(messages);
+    const view = { generation: '1', scopes: [global], entries: [{ ...entry, scope: global }] };
+    const first = projectCurrentMemory(messages, view);
+    expect(JSON.stringify(first[0])).toContain(entry.body);
+    const authority = memoryAuthorityUpdate(messages, view)!;
+    expect(memoryAuthorityUpdate(messages, view, authority.disclosure.states)).toBeUndefined();
+    const changed = (await update(entry, 'Use exactly 5 workers; never publish artifacts.')).entry;
+    const changedAuthority = memoryAuthorityUpdate(messages, { ...view, entries: [{ ...changed, scope: global }] }, authority.disclosure.states)!;
+    expect(changedAuthority.content).toContain(changed.revision);
+    expect(changedAuthority.content).toContain('Earlier bodies and write arguments are historical observations');
+    expect(changedAuthority.content).not.toContain(entry.body);
+    const after = projectCurrentMemory([...messages, { ...snapshot, content: [{ type: 'text', text: memory.replace(entry.body, changed.body) }] }], { ...view, generation: '2', entries: [{ ...changed, scope: global }] });
+    expect(after.slice(0, first.length)).toEqual(first);
+    expect(messages).toEqual(original);
+    expect(messages[1]!.toolCalls[0]).toEqual(original[1]!.toolCalls[0]);
+    for (const unavailable of [{ ...view, entries: [] }, { ...view, scopes: [workspace], entries: [{ ...entry, scope: workspace }] }]) {
+      expect(JSON.stringify(projectCurrentMemory(messages, unavailable))).not.toContain(entry.body);
+      expect(memoryAuthorityUpdate(messages, unavailable)?.content).toContain('unavailable');
+    }
+    const expired = { ...entry, validity: { until: '2000-01-01T00:00:00Z', check: 'Check the schedule' }, scope: global };
+    expect(memoryAuthorityUpdate(messages, { ...view, entries: [expired] })?.content).toContain('"applicability":"expired"');
+    expect(messages).toEqual(original);
+  });
+
   it('reuses a complete current explicit unit instead of duplicating its body in tools and the automatic workset', async () => {
     const entry = (await save('Deployment instructions', 'Use exactly 9 workers; isolated checks never publish artifacts.')).entry;
     const snapshot = { generation: '1', entries: [{ ...entry, scope: global }] };
@@ -1178,7 +1215,7 @@ describe('Memory recall and complete working units', () => {
     const prefix = '<system-reminder>\n';
     const memory = `## Scoped memory — Saved memory / as-of projection\n${workset.text}`;
     const messages: ContextMessage[] = [
-      { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { memoryRange: { start: prefix.length, length: memory.length } } }, content: [{ type: 'text', text: `${prefix}${memory}\n## Skills\nRead\n</system-reminder>` }] },
+      { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { memoryRange: { start: prefix.length, length: memory.length }, memoryReferences: [{ scope: global, id: entry.id, observed_revision: entry.revision }] } }, content: [{ type: 'text', text: `${prefix}${memory}\n## Skills\nRead\n</system-reminder>` }] },
       { role: 'assistant', toolCalls: [{ type: 'function', id: 'read', name: 'MemoryRead', arguments: '{}' }], content: [] },
       { role: 'tool', toolCallId: 'read', toolCalls: [], content: [{ type: 'text', text: JSON.stringify([{ ...entry, scope: global, complete: true }]) }] },
       { role: 'assistant', toolCalls: [{ type: 'function', id: 'search', name: 'MemorySearch', arguments: '{}' }], content: [] },
@@ -1214,6 +1251,14 @@ describe('Memory recall and complete working units', () => {
     other.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
     try {
       const peer = other.get(ISqliteMemoryStore);
+      const generation = snapshot.projectionView!.generation;
+      await peer.put({ action: 'create', scope: { kind: 'workspace', workspaceId: 'wd_other_0123456789ab' }, type: 'reference', title: 'Other workspace', body: 'Only relevant to the other workspace.', source, reason: 'Independent guidance' });
+      expect(await snapshot.refreshIfDirty()).toBeUndefined();
+      expect(await snapshot.get()).toBe(first);
+      expect(snapshot.projectionView!.generation).not.toBe(generation);
+      const unchanged = await peer.put({ action: 'update', scope: global, id: saved.id, expectedRevision: saved.revision, type: saved.type, title: saved.title, body: saved.body, source, reason: 'No content change' });
+      expect(unchanged.outcome).toBe('unchanged');
+      expect(await snapshot.refreshIfDirty()).toBeUndefined();
       const changed = await peer.put({ action: 'update', scope: global, id: saved.id, expectedRevision: saved.revision, type: saved.type, title: saved.title, body: 'Build with 9 jobs; do not upload; retain the isolated-test exception.', source, reason: 'New instruction' });
       const refreshed = await snapshot.refreshIfDirty();
       expect(refreshed).toContain(changed.entry.body);
@@ -1280,11 +1325,12 @@ describe('Memory recall and complete working units', () => {
     expect(JSON.stringify(current[1])).not.toContain(entry.body);
     expect(JSON.parse(current[1]!.toolCalls[0]!.arguments!)).toEqual(nonBodyInput);
     const changed = (await update(entry, 'Use exactly 5 workers. Never upload output.')).entry;
-    for (const entries of [[{ ...changed, scope: global }], []]) {
-      const invalidated = projectCurrentMemory(messages, { generation: '2', scopes: [global], entries });
-      for (const oldText of [entry.body, entry.title, input.reason, input.basis.note, input.basis.refs[0]!]) expect(JSON.stringify(invalidated.slice(1, 3))).not.toContain(oldText);
-      expect(JSON.parse(invalidated[1]!.toolCalls[0]!.arguments!)).toEqual({ action: input.action, scope: input.scope, memory_content_omitted: true });
-    }
+    const revisedView = { generation: '2', scopes: [global], entries: [{ ...changed, scope: global }] };
+    expect(projectCurrentMemory(messages, revisedView)).toEqual(current);
+    expect(memoryAuthorityUpdate(messages, revisedView)?.content).toContain(changed.revision);
+    const invalidated = projectCurrentMemory(messages, { generation: '3', scopes: [global], entries: [] });
+    for (const oldText of [entry.body, entry.title, input.reason, input.basis.note, input.basis.refs[0]!]) expect(JSON.stringify(invalidated.slice(1, 3))).not.toContain(oldText);
+    expect(JSON.parse(invalidated[1]!.toolCalls[0]!.arguments!)).toEqual({ action: input.action, scope: input.scope, memory_content_omitted: true });
     const failed = [messages[1]!, { ...messages[2]!, isError: true }];
     expect(projectCurrentMemory(failed, { generation: '2', scopes: [global], entries: [] })).toEqual(failed);
     expect(memoryHandoffMessages(failed)).toEqual(failed);
@@ -1322,6 +1368,8 @@ describe('Memory recall and complete working units', () => {
     expect(JSON.stringify(withoutMemoryWorkset(message))).toContain('## Skills');
     const legacy: ContextMessage = { ...message, content: [{ type: 'text', text: `${prefix}${unit.replace('<memory-workset generation=1>old body</memory-workset>', '<memory>legacy body</memory>')}\n</system-reminder>` }] };
     expect(withoutMemoryWorkset(legacy)).toBe(legacy);
+    expect(JSON.stringify(projectCurrentMemory([legacy], { generation: '', scopes: [], entries: [] }))).not.toContain('legacy body');
+    expect(JSON.stringify(legacy)).toContain('legacy body');
   });
 });
 

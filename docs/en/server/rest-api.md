@@ -334,6 +334,8 @@ When the session is not live in this process, the snapshot is read from the save
 
 Session reads and `event.session.work_changed` expose `executing` separately from `busy`. `busy` includes unfinished work, queued prompts and terminal task results awaiting delivery. `executing` reports current local execution or finite process/media work; it excludes those queues, undelivered terminal results, resident services and agent task rows without an active executor. A cold session reports `executing: false` for this process. Older servers omit the field; omission means unknown. A historical subagent row with `status: "running"` is not current execution evidence.
 
+`cleanup_pending: true` on a session, task or `event.session.work_changed` means process cleanup is unconfirmed. The session remains `busy`; that task does not count toward `executing`, though another active turn or task can still make it true. Thread summaries use `state: "cleanup_pending"`, and the GUI shows “Process cleanup unconfirmed” ahead of ordinary running or idle status. Pending approval or question still takes precedence. Retry `TaskStop` for the same task to confirm cleanup before replacing its work; root exit code 0 alone does not make the task terminal. Confirmed cleanup clears the flag and lets the normal terminal result and controls apply. Older servers omit the flag.
+
 Snapshot `subagents` roster rows carry an optional `created_at` UTC ISO timestamp for the agent's immutable creation time. A newly created agent has it before its first run starts, including while queued; resuming the same agent, restoring its scope, restarting the server, or switching its model does not change it. A fork that creates a new agent records a new creation time. The separate optional `started_at` identifies the run described by the row and may change on a later run.
 
 Model, effort and executor fields prefer the current committed agent metadata over its spawn snapshot, with spawn values used only when current values are unavailable. Effort provenance and executor protocol stay with their selected source; a current binding alone does not prove which model served a request.
@@ -1024,12 +1026,14 @@ Source facts and coverage are persisted in the dedicated Usage SQLite read model
 
 ### `GET /api/sessions/query`
 
-A next-generation session query for list views — filtering, sorting, and field groups all travel in query parameters:
+A next-generation session query for list views — filtering, sorting, and field groups all travel in query parameters.
+
+`activity.status` prioritizes pending approval or question, then `cleanup_pending`, then current execution. `running` follows `executing`, falling back to main-turn activity on older hosts; unfinished queued work alone does not make it running.
 
 | Parameter | Description |
 | --- | --- |
 | `workspace.id` | Filter by workspace; repeatable |
-| `activity.status` | Filter by activity status: `running` / `approval` / `question` / `failed` / `idle`; repeatable |
+| `activity.status` | Filter by activity status: `running` / `approval` / `question` / `cleanup_pending` / `failed` / `idle`; repeatable |
 | `meta.updated_after` | Only sessions updated after this time (epoch milliseconds) |
 | `meta.updated_before` | Only sessions updated before this time (epoch milliseconds) |
 | `meta.archived` | `true` / `false` (default) / `all` |

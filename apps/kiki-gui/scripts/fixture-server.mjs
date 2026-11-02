@@ -1697,6 +1697,7 @@ class FixtureServer {
       Object.assign(session.record, {
         busy: partial.payload.busy ?? session.record.busy,
         executing: partial.payload.executing,
+        cleanup_pending: partial.payload.cleanup_pending,
         main_turn_active: partial.payload.main_turn_active,
         pending_interaction: partial.payload.pending_interaction ?? session.record.pending_interaction,
         last_turn_reason: partial.payload.last_turn_reason,

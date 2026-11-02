@@ -189,7 +189,7 @@ function Highlighted({ text, ranges }: { text: string; ranges: readonly MatchRan
  * caught-up row leaves the slot empty.
  */
 function rowLife(session: Session, state: SessionRowState): LifeState {
-  if (state === 'needs-me') return 'waiting';
+  if (state === 'needs-me' || state === 'cleanup-pending') return 'waiting';
   if (state === 'running') return 'working';
   if (state === 'read') return 'idle';
   // Unread: the run's outcome decides the tone; an old finish still reads as
@@ -231,7 +231,7 @@ function foldedGroupLife(nodes: readonly ConversationTreeNode[], seen: SessionSe
     node.children.forEach(visit);
   };
   nodes.forEach(visit);
-  return states.includes('needs-me') ? 'waiting' : states.includes('running') ? 'working' : 'idle';
+  return states.includes('needs-me') || states.includes('cleanup-pending') ? 'waiting' : states.includes('running') ? 'working' : 'idle';
 }
 
 /** The word for an unseen run that did not complete: failed, or stopped. */
@@ -245,6 +245,8 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
   const title =
     state === 'needs-me'
       ? (session.pending_interaction === 'question' ? t('sidebar.status.question') : t('sidebar.status.approval'))
+      : state === 'cleanup-pending'
+        ? t('sidebar.rowState.cleanupPending')
       : state === 'running'
         ? t('sidebar.status.working')
         : life === 'failed'
@@ -1060,7 +1062,7 @@ export function Sidebar({
   const filterChips: { key: string; label: string; clear: () => void }[] = [
     ...filters.status.map((status) => ({
       key: `status:${status}`,
-      label: t(status === 'running' ? 'sidebar.statusRunning' : status === 'needs-me' ? 'sidebar.statusNeedsMe' : 'sidebar.statusIdle'),
+      label: t(status === 'running' ? 'sidebar.statusRunning' : status === 'needs-me' ? 'sidebar.statusNeedsMe' : status === 'cleanup-pending' ? 'sidebar.rowState.cleanupPending' : 'sidebar.statusIdle'),
       clear: () => { toggleStatus(status); },
     })),
     ...filters.workspaces.map((id) => ({
@@ -2030,7 +2032,7 @@ function SessionRow({
   const archived = session.archived === true;
   const pinned = isPinnedSession(session);
   const status = sessionStatusOf(session);
-  // Four states share one row: blocked, running, finished-unseen, caught up.
+  // Row states: blocked, cleanup pending, running, finished-unseen, caught up.
   // Weight and marker carry the difference; the active row still wins on lift.
   const rowState = sessionRowState(session, seen);
   const label = resolveTitle(sessionLabel(session, untitled));
@@ -2066,8 +2068,10 @@ function SessionRow({
     : archiveError !== undefined
       ? { kind: 'archive-error' as const, text: archiveError }
       : undefined;
-  const fact: { kind: 'needs-you' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation' | 'location'; text: string } | undefined = archiveStatus !== undefined
+  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation' | 'location'; text: string } | undefined = archiveStatus !== undefined
     ? archiveStatus
+    : rowState === 'cleanup-pending'
+      ? { kind: 'cleanup-pending', text: t('sidebar.rowState.cleanupPending') }
     : nested
       ? undefined
     : status === 'needs-me'
@@ -3255,6 +3259,7 @@ function SidebarFilterMenu({
   const statuses: readonly { value: SessionStatusFilter; label: string }[] = [
     { value: 'running', label: t('sidebar.statusRunning') },
     { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
+    { value: 'cleanup-pending', label: t('sidebar.rowState.cleanupPending') },
     { value: 'idle', label: t('sidebar.statusIdle') },
   ];
   const head = workspaceOptions.slice(0, MENU_WORKSPACE_ROWS);

@@ -1192,6 +1192,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
     entry.cleanupFailure = error;
+    this.fireWorkChange();
     const diagnostic = error as { code?: unknown; details?: unknown } | null;
     entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
     this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
@@ -2042,6 +2043,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       startedAt: entry.startedAt,
       endedAt: entry.endedAt,
       stopReason: entry.stopReason,
+      cleanupPending: entry.cleanupFailure !== undefined || undefined,
       terminalNotificationSuppressed: entry.terminalNotificationSuppressed,
       timeoutMs: entry.options.timeoutMs,
       lifetime: entry.options.lifetime,

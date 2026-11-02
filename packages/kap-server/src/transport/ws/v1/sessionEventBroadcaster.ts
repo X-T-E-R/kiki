@@ -829,7 +829,7 @@ export class SessionEventBroadcaster {
   ): boolean {
     const redacted = boundedTranscriptSnapshot(redactSnapshotForGrade(grade, transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS })), transcript.agentId);
     const liveVerified = this.opts.transcriptService?.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId) === true;
-    const snapshot = liveVerified ? redacted
+    const snapshot = liveVerified && redacted.toolCallCountKnown !== false ? redacted
       : { ...redacted, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
     const turns = snapshot.items.filter((item) => item.kind === 'turn');
     const hasMoreOlder = snapshot.hasMoreOlder ?? false;
@@ -1647,6 +1647,7 @@ export class SessionEventBroadcaster {
             type: 'event.session.work_changed',
             busy: work.busy,
             executing: work.executing,
+            cleanup_pending: work.cleanupPending,
             main_turn_active: work.mainTurnActive,
             pending_interaction: work.pendingInteraction,
             last_turn_reason: work.lastTurnReason,

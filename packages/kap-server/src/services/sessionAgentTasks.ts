@@ -56,7 +56,7 @@ const storedBaseSchema = z.object({
   status: z.enum(['running', 'completed', 'failed', 'timed_out', 'killed', 'lost']),
   startedAt: z.number().min(0).max(8640000000000000),
   endedAt: z.number().min(0).max(8640000000000000).nullable(),
-  detached: z.boolean().optional(), stopReason: z.string().optional(), ownerAgentId: z.string().optional(),
+  detached: z.boolean().optional(), cleanupPending: z.boolean().optional(), stopReason: z.string().optional(), ownerAgentId: z.string().optional(),
   receipt: z.unknown().optional(), receiptVerification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
 });
 const storedTaskSchema = z.discriminatedUnion('kind', [
@@ -102,6 +102,7 @@ function toSummary(sessionId: string, ownerId: string, source: 'live' | 'persist
     created_at: created, started_at: created,
     completed_at: info.endedAt === null ? undefined : new Date(info.endedAt).toISOString(),
     run_in_background: info.detached ?? true,
+    cleanup_pending: info.cleanupPending,
     command: info.kind === 'process' ? info.command : undefined,
     exit_code: info.kind === 'process' ? info.exitCode : undefined,
     stop_reason: info.stopReason,

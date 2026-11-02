@@ -13,8 +13,8 @@
 
 import { isSessionSortOrder, type SessionSortOrder } from '../sessions/sessionList';
 
-/** Status filter chips: busy, waiting on the user, or neither. */
-export type SessionStatusFilter = 'running' | 'needs-me' | 'idle';
+/** Status filter chips: executing, awaiting input, cleanup unconfirmed, or idle. */
+export type SessionStatusFilter = 'running' | 'needs-me' | 'cleanup-pending' | 'idle';
 /** Archived visibility: hidden (default), included, or archived only. */
 export type SessionArchivedFilter = 'hide' | 'include' | 'only';
 
@@ -113,7 +113,7 @@ function isSortBy(value: unknown): value is SessionSortOrder {
   return isSessionSortOrder(value);
 }
 
-const STATUS_FILTERS: readonly SessionStatusFilter[] = ['running', 'needs-me', 'idle'];
+const STATUS_FILTERS: readonly SessionStatusFilter[] = ['running', 'needs-me', 'cleanup-pending', 'idle'];
 
 /** Tolerant nav read: unknown or duplicated entries drop out, and a malformed
  * value falls back to the default set instead of emptying the nav. */

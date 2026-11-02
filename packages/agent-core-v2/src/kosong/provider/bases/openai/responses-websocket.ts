@@ -610,8 +610,9 @@ export class ResponsesWebSocketError extends Error {
  * A closed socket loses its previous-response baseline. A verified, bounded
  * native prefix remains available for full input on the next version 2 socket,
  * with the same request identity and an exactly matching canonical prefix.
- * Retirement permits HTTP recovery only before any response event, with integer
- * status, nested error.type/code/message, and top-level execution:not_executed.
+ * Local retirement before response.create permits HTTP recovery without sending
+ * a frame. Peer retirement permits HTTP recovery only before any response event,
+ * with integer status, nested error.type/code/message, and top-level execution:not_executed.
  */
 export class ResponsesWebSocketTransport {
   private _socket: ResponsesWS | null = null;
@@ -751,6 +752,12 @@ export class ResponsesWebSocketTransport {
         ? [...rebase.prefix, ...canonical.input.slice(rebase.canonicalPrefix!.length)] : undefined;
       if (fullRebaseInput !== undefined) options.onFullInput?.(fullRebaseInput);
       const connection = await this._ensureConnection(client, headers, connectionKey, options.signal);
+      if (this._disposed) throw createAbortError();
+      if (this._retired) {
+        throw new ResponsesWebSocketError('Responses WebSocket retired before sending the request.', 'responses_websocket_retired', {
+          safeHttpFallback: true, execution: 'not_executed',
+        });
+      }
       const useDelta = this._canUseDelta(canonical, connectionKey, params);
       const baseline = this._baseline;
       if (baseline?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&

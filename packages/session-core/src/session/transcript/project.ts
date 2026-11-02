@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { carryContentHydration, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -2544,6 +2544,7 @@ export function agentTranscriptToBlocks(
   const blocks: Block[] = [];
   const deferredTaskBlocks: Block[] = [];
   const markerBlocks: Block[] = [];
+  const deliveryBlocks = new Set<Block>();
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
@@ -2592,7 +2593,7 @@ export function agentTranscriptToBlocks(
         const text = recordString(payload, 'text');
         const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
-          destination.push(...classifiedTextToBlocks({
+          const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
             createdAt: item.at ?? '',
@@ -2603,7 +2604,9 @@ export function agentTranscriptToBlocks(
               attachmentsById,
               response.agent_id,
             ), presentation),
-          }));
+          });
+          for (const block of delivery) deliveryBlocks.add(block);
+          destination.push(...delivery);
         }
         continue;
       }
@@ -2933,12 +2936,13 @@ export function agentTranscriptToBlocks(
     }
   }
   const deliveredBlocks = blocks.flatMap((block): Block[] => {
+    if (deliveryBlocks.has(block)) return [block];
     if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
     const first = prompts.find((prompt) => prompt.promptId === block.userMessageId && prompt.steeredAt !== undefined);
     if (first === undefined) return [block];
     const batch = prompts.filter((prompt) => prompt.steeredAt === first.steeredAt && prompt.status === 'completed');
     if (batch.length < 2 || batch[0]?.promptId !== first.promptId ||
-      batch.slice(1).some((prompt) => blocks.some((candidate) => candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
+      batch.slice(1).some((prompt) => blocks.some((candidate) => !deliveryBlocks.has(candidate) && candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
     const parts = batch.map((prompt) => promptContentParts(prompt.content));
     const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
     if (combined !== block.text) return [block];
@@ -2951,7 +2955,10 @@ export function agentTranscriptToBlocks(
       };
     });
   });
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(deliveredBlocks, prompts, previous, response.items)];
+  // Page-global delivery echoes yield to canonical rows, including absorbed prompts.
+  const turnBlockIds = new Set(deliveredBlocks.filter((block) => !deliveryBlocks.has(block)).map((block) => block.id));
+  const canonicalDeliveries = deliveredBlocks.filter((block) => !deliveryBlocks.has(block) || !turnBlockIds.has(block.id));
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items)];
   const frameTimes = new Map<string, number>();
   const sourceItems = [...response.items];
   const turns = sourceItems.filter((item): item is Extract<typeof item, { kind: 'turn' }> => item.kind === 'turn');
@@ -2967,31 +2974,62 @@ export function agentTranscriptToBlocks(
   const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
     first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
   const firstAt = timestampMs(firstTurn?.startedAt);
-  for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
-    const at = blockTimelineMs(marker)!;
+  const sourceTimes = new Map<Block, number | undefined>();
+  const sourceTime = (block: Block): number | undefined => {
+    if (!sourceTimes.has(block)) sourceTimes.set(block, 'frameId' in block && block.frameId !== undefined
+      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
+    return sourceTimes.get(block);
+  };
+  const sourceTimestamps = new Set(withTaskBlocks.map(sourceTime).filter((time) => time !== undefined));
+  const nextSourceTurns = new Map<string, string | undefined>();
+  let nextTurnId: string | undefined;
+  for (let index = sourceItems.length - 1; index >= 0; index -= 1) {
+    const item = sourceItems[index]!;
+    if (item.kind === 'turn') nextTurnId = item.turnId;
+    else if (item.kind === 'marker') {
+      nextSourceTurns.set(`agent-marker-${item.markerId}`, nextTurnId);
+      const messageId = typeof item.payload === 'object' && item.payload !== null
+        ? recordString(item.payload as Record<string, unknown>, 'messageId') : undefined;
+      if (messageId !== undefined) nextSourceTurns.set(`user-${messageId}`, nextTurnId);
+    }
+  }
+  const firstBlockByTurn = new Map<string, Block>();
+  const promptIdentities = new Set<string>();
+  for (const block of withTaskBlocks) {
+    const turnId = normalizeTurnId(blockTurnId(block));
+    if (turnId !== undefined && !firstBlockByTurn.has(turnId)) firstBlockByTurn.set(turnId, block);
+    if (block.kind === 'user') for (const id of [block.promptId, block.userMessageId]) {
+      if (id !== undefined) promptIdentities.add(id);
+    }
+  }
+  const firstPosition = (turnId: string | undefined): number => {
+    const first = turnId === undefined ? undefined : firstBlockByTurn.get(normalizeTurnId(turnId)!);
+    return first === undefined ? -1 : withTaskBlocks.indexOf(first);
+  };
+  const projectedIds = new Set(withTaskBlocks.map((block) => block.id));
+  for (const marker of markerBlocks.toSorted((left, right) => sourceTime(left)! - sourceTime(right)!)) {
+    if (deliveryBlocks.has(marker) && projectedIds.has(marker.id)) continue;
+    const at = sourceTime(marker)!;
     const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
-    const ownsLoadedPrompt = promptOwner !== undefined && withTaskBlocks.some((block) => isPromptIdentity(block, promptOwner));
+    const ownsLoadedPrompt = promptOwner !== undefined && promptIdentities.has(promptOwner);
     if (!ownsLoadedPrompt && firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
-    const owner = blockTurnId(marker);
-    const ownerStart = owner === undefined ? -1 : withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), owner));
-    const sourceTime = (block: Block) => 'frameId' in block && block.frameId !== undefined
-      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block);
+    const owner = normalizeTurnId(blockTurnId(marker));
+    const ownerStart = firstPosition(owner);
     const next = withTaskBlocks.findIndex((block, index) => {
       if (ownerStart >= 0 && index < ownerStart) return false;
       const time = sourceTime(block);
       return time !== undefined && time > at;
     });
-    const sourceIndex = sourceItems.findIndex((item) => item.kind === 'marker' &&
-      (`agent-marker-${item.markerId}` === marker.id || (marker.kind === 'user' &&
-        typeof item.payload === 'object' && item.payload !== null &&
-        recordString(item.payload as Record<string, unknown>, 'messageId') === marker.userMessageId)));
-    const nextSourceTurn = sourceIndex < 0 ? undefined : sourceItems.slice(sourceIndex + 1).find((item) => item.kind === 'turn');
-    const structural = nextSourceTurn?.kind === 'turn'
-      ? withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), nextSourceTurn.turnId)) : -1;
-    const tied = withTaskBlocks.some((block) => sourceTime(block) === at);
-    const noClock = !withTaskBlocks.some((block) => sourceTime(block) !== undefined);
-    const insertion = (tied || noClock) && structural >= 0 ? structural : next;
-    withTaskBlocks.splice(insertion < 0 ? withTaskBlocks.length : insertion, 0, marker);
+    const structural = firstPosition(nextSourceTurns.get(marker.id));
+    const insertion = (sourceTimestamps.has(at) || sourceTimestamps.size === 0) && structural >= 0 ? structural : next;
+    const position = insertion < 0 ? withTaskBlocks.length : insertion;
+    withTaskBlocks.splice(position, 0, marker);
+    if (owner !== undefined && (ownerStart < 0 || position <= ownerStart)) firstBlockByTurn.set(owner, marker);
+    if (marker.kind === 'user') for (const id of [marker.promptId, marker.userMessageId]) {
+      if (id !== undefined) promptIdentities.add(id);
+    }
+    sourceTimestamps.add(at);
+    projectedIds.add(marker.id);
   }
   for (const block of deferredTaskBlocks) {
     if (
@@ -3631,6 +3669,7 @@ export function prependOlderTranscriptSnapshot(
 ): AgentTranscriptSnapshot {
   const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
   const insertions = new Map<number, TranscriptItem[]>();
+  const recovered = new Map<number, TranscriptItem>();
   let pending: TranscriptItem[] = [];
   let previousPosition: number | undefined;
   const insert = (position: number) => {
@@ -3645,6 +3684,14 @@ export function prependOlderTranscriptSnapshot(
     const position = positions.get(key);
     if (position === undefined) pending.push(item);
     else {
+      const existing = current.items[position];
+      if (item.kind === 'turn' && existing?.kind === 'turn' && existing.origin.kind === 'other' &&
+          existing.message === undefined && existing.promptId === undefined && existing.startedAt === undefined && item.startedAt !== undefined) {
+        recovered.set(position, carryContentHydration(existing, { ...existing, origin: item.origin, prompt: item.prompt, promptId: item.promptId,
+          message: item.message, delivery: item.delivery, presentation: item.presentation, attachmentIds: item.attachmentIds, startedAt: item.startedAt,
+          contentRefs: [...(existing.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
+            ...(item.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps')] }));
+      }
       insert(position);
       previousPosition = position;
     }
@@ -3668,7 +3715,7 @@ export function prependOlderTranscriptSnapshot(
     }
     insert(position);
   }
-  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], item]);
+  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], recovered.get(index) ?? item]);
   items.push(...insertions.get(current.items.length) ?? []);
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(

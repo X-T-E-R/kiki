@@ -1081,6 +1081,27 @@ describe('ThreadCommunicationService', () => {
     expect(resume).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ busy: true, executing: false, mainTurnActive: false }, 'idle'],
+    [{ busy: true, executing: true, mainTurnActive: false }, 'running'],
+    [{ busy: true, mainTurnActive: true }, 'running'],
+    [{ busy: true, mainTurnActive: false }, 'idle'],
+    [{ busy: true }, 'unknown'],
+    [{ busy: true, executing: false, mainTurnActive: false, cleanupPending: true }, 'cleanup_pending'],
+    [{ busy: true, executing: true, mainTurnActive: true, cleanupPending: true }, 'cleanup_pending'],
+  ] as const)('projects live execution and cleanup facts into thread summaries: %j', async (activity, expected) => {
+    const live: ISessionScopeHandle = {
+      id: 'target', kind: LifecycleScope.Session,
+      accessor: accessor([[ISessionActivityView, { state: () => activity }]]), dispose: () => {},
+    };
+    ix.stub(ISessionManager, 'get', (id: string) => id === 'target' ? live : undefined);
+    const service = ix.get(IThreadCommunicationService);
+    const listed = await service.listThreads();
+    expect(listed.threads.find((thread) => thread.ref.sessionId === 'target')?.state).toBe(expected);
+    expect(listed.threads.find((thread) => thread.ref.sessionId === 'source')?.state).toBe('cold');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
   it('applies global-off before workspace overrides and excludes disabled workspaces', async () => {
     const service = ix.get(IThreadCommunicationService);
     workspaceOverrides.set('workspace-b', false);

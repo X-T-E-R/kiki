@@ -1684,6 +1684,7 @@ export function toWireSession(
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,
     executing: facts.executing,
+    cleanup_pending: facts.cleanupPending,
     main_turn_active: facts.mainTurnActive,
     pending_interaction: facts.pendingInteraction,
     last_turn_reason:
@@ -1712,6 +1713,7 @@ export function toWireSession(
 export interface SessionFacts {
   readonly busy: boolean;
   readonly executing?: boolean;
+  readonly cleanupPending?: boolean;
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';

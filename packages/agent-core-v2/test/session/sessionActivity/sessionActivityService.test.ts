@@ -420,6 +420,17 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     expect(view.state()).toMatchObject({ busy: true, executing: true });
   });
 
+  it('keeps a paused turn busy without reporting execution', () => {
+    const main = lifecycle.addAgent(MAIN_AGENT_ID, new Map<unknown, unknown>([
+      [IAgentExecutionService, { status: () => ({ state: 'running' }) }],
+      [IAgentLoopService, { status: () => ({ state: 'running', executionPaused: true }) }],
+    ]));
+    const { view } = viewWithChanges();
+    main.activity = turnActive(1);
+    main.emitActivity();
+    expect(view.state()).toMatchObject({ busy: true, mainTurnActive: true, executing: false });
+  });
+
   it('counts finite process and media work but not resident services or questions as execution', async () => {
     let kind = 'process';
     let lifetime = 'finite';
@@ -435,6 +446,34 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
       await Promise.resolve();
       expect(view.state()).toMatchObject({ busy: true, executing });
     }
+  });
+
+  it('keeps cleanup pending busy, excludes it from execution, and clears it after confirmed cleanup', () => {
+    const changed = disposables.add(new Emitter<void>());
+    let cleanupPending = false;
+    let running = true;
+    lifecycle.addAgent('completed-child', new Map<unknown, unknown>([
+      [IAgentTaskService, {
+        list: () => running ? [{ kind: 'process', status: 'running', lifetime: 'finite', exitCode: 0, cleanupPending }] : [],
+        hasUnfinishedWork: () => running,
+        onDidChangeWork: changed.event,
+      }],
+      [IAgentLoopService, { status: () => ({ state: 'idle', finalizing: false }) }],
+    ]));
+    const { view, changes } = viewWithChanges();
+    expect(view.state()).toMatchObject({ busy: true, executing: true, cleanupPending: undefined });
+    cleanupPending = true;
+    changed.fire();
+    expect(view.state()).toMatchObject({ busy: true, executing: false, cleanupPending: true, mainTurnActive: false });
+    const other = lifecycle.addAgent('working-child');
+    other.activity = turnActive(1);
+    other.emitActivity();
+    expect(view.state()).toMatchObject({ busy: true, executing: true, cleanupPending: true });
+    lifecycle.removeAgent('working-child');
+    running = false;
+    changed.fire();
+    expect(view.state()).toMatchObject({ busy: false, executing: false, cleanupPending: undefined });
+    expect(changes.at(-1)?.state.cleanupPending).toBeUndefined();
   });
 
   it('keeps the inbox busy through finite result delivery, goal turn gaps and loop finalization, not resident services', async () => {

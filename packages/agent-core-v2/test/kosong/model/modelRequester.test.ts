@@ -726,6 +726,33 @@ describe('ModelRequesterImpl attempt admission', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['off', 'rotate', 'throw', 'cancel'] as const)('resolves live Responses selection after admission and releases it: %s', async mode => {
+    const provider = new FakeChatProvider();
+    const stale: ResponsesRequestTransport = { request: async () => { throw new Error('Stale transport.'); }, commitResponse() {}, close() {} };
+    const fresh: ResponsesRequestTransport = { ...stale };
+    const controller = new AbortController();
+    let admitted = false;
+    const release = vi.fn();
+    const resolveResponsesTransport = vi.fn(() => {
+      expect(admitted).toBe(true);
+      if (mode === 'throw') throw createAbortError();
+      return mode === 'off' ? undefined : { transport: fresh, config: { targets: ['https://example.test'] } };
+    });
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), {
+      acquire: async () => { admitted = true; if (mode === 'cancel') controller.abort(); return { release }; },
+    });
+    const result = collect(requester.request(INPUT, controller.signal, { responsesTransport: stale, resolveResponsesTransport }));
+    if (mode === 'throw' || mode === 'cancel') await expect(result).rejects.toBeDefined();
+    else {
+      await result;
+      expect(provider.calls[0]?.options?.responsesTransport).toBe(mode === 'off' ? undefined : fresh);
+      expect(provider.calls[0]?.options?.responsesWebSocket).toEqual(mode === 'off' ? undefined : { targets: ['https://example.test'] });
+    }
+    expect(resolveResponsesTransport).toHaveBeenCalledTimes(mode === 'cancel' ? 0 : 1);
+    expect(provider.calls).toHaveLength(mode === 'throw' || mode === 'cancel' ? 0 : 1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it('checks cancellation after admission before invoking a provider', async () => {
     const provider = new FakeChatProvider();
     const controller = new AbortController();

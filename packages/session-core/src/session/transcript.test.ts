@@ -698,6 +698,19 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('restores an older-page opening without replacing hydrated body steps or their references', () => {
+    const bodyRef: ContentRef = { source: { kind: 'turn', id: 't1' }, path: ['steps'], kind: 'array', direction: 'backward', offset: 5, total: 6, revision: 'body-current' };
+    const promptRef: ContentRef = { source: { kind: 'turn', id: 't1' }, path: ['prompt'], kind: 'text', offset: 100, total: 200, revision: 'prompt-current' };
+    const body: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'other' },
+      steps: [{ kind: 'step', stepId: 's5', turnId: 't1', ordinal: 5, state: 'completed', frames: [] }], contentRefs: [bodyRef] };
+    const opening: TranscriptTurn = { ...body, state: 'running', steps: [], origin: { kind: 'user' }, prompt: 'opening', promptId: 'opening-1',
+      startedAt: FIXED_AT, attachmentIds: ['opening-image'], contentRefs: [promptRef] };
+    const first = prependOlderTranscriptSnapshot(emptySnapshot({ items: [body] }), { items: [opening], attachments: [], hasMoreOlder: false });
+    expect(first.items[0]).toMatchObject({ state: 'completed', prompt: 'opening', promptId: 'opening-1', startedAt: FIXED_AT, attachmentIds: ['opening-image'], contentRefs: [bodyRef, promptRef] });
+    expect(first.items[0]?.kind === 'turn' && first.items[0].steps).toBe(body.steps);
+    expect(prependOlderTranscriptSnapshot(first, { items: [opening], attachments: [] }).items).toEqual(first.items);
+  });
+
   it('deduplicates repeated older-page entities without crossing turn, marker, and taskref identities', () => {
     const sharedId = 'same-entity-name';
     const turn = { kind: 'turn' as const, turnId: sharedId, ordinal: 2, state: 'completed' as const,
