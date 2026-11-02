@@ -169,7 +169,9 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 
 `hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是独立的只读检查视图。活跃 Agent 返回实际生效的规则、来源状态、诊断和计步值。已有会话中尚未开始的 `main` 返回原生主智能体的默认绑定和零计步值，已配置的规则仍会列出。已关闭的会话按保存的智能体绑定、计步记录和当前规则来源读取，不恢复 Agent，也不执行 hooks。工作区来源无效时，诊断保留该错误，有效的全局规则仍可查看。此接口不保存配置。
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是独立的只读检查视图。活跃 Agent 返回实际生效的规则、来源状态、诊断和计步值。已有会话中尚未开始的 `main` 返回原生主智能体的默认绑定和零计步值，已配置的规则仍会列出。已关闭的会话按保存的智能体绑定、计步记录和当前规则来源读取，不恢复 Agent，也不执行 hooks。加上 `?observe=true` 后，冷 Agent 的日志超过 8 MiB 时直接返回 `40901`（`SESSION_BUSY`），不扫描日志。显式检查时省略 `observe=true`，仍可读取完整的已存计步记录。工作区来源无效时，诊断保留该错误，有效的全局规则仍可查看。此接口不保存配置。
+
+`GET /api/sessions/{session_id}/agents/{agent_id}/auto-compact` 与 `GET /api/sessions/{session_id}/agents/{agent_id}/context-strategy` 也接受 `?observe=true`，此时只读观察不会恢复冷 Agent。已保存且绑定模型、但当前不活跃的 Agent 返回 `40901`，不估算设置值。未绑定模型的 `main` 在自动压缩接口返回 `Model not set`，在上下文策略接口返回全局或默认策略。省略 `observe` 或设为 `false` 时保留普通读取行为。
 
 ### 模型与供应商
 

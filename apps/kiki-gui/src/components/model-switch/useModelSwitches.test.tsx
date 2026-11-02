@@ -196,6 +196,21 @@ it('continues cold preparation as loading and only clears an actual read failure
     expect(handle.error).toBeUndefined(); expect(handle.switches).toEqual([]);
   } finally { vi.useRealTimers(); }
 });
+it('bounds cold preparation and leaves a recoverable unknown queue without scanning all history', async () => {
+  vi.useFakeTimers();
+  try {
+    connection.list.mockRejectedValue(new Error('model_switch_queue_preparing'));
+    await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(connection.list).toHaveBeenCalledTimes(3);
+    expect(handle.loading).toBe(false);
+    expect(handle.error?.message).toBe('model_switch_queue_preparing');
+    connection.list.mockResolvedValueOnce([entry('continued')]);
+    await act(async () => { handle.refresh(); });
+    expect(handle.error).toBeUndefined();
+    expect(handle.switches[0]?.input.operationId).toBe('continued');
+  } finally { vi.useRealTimers(); }
+});
 it('rereads the queue after reconnect and aborts a superseded list without cancelling model operations', async () => {
   const old = deferred<readonly QueuedModelSwitch[]>();
   connection.list.mockReturnValueOnce(old.promise).mockResolvedValueOnce([entry('restored')]);

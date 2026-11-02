@@ -46,7 +46,7 @@ export function useContextStrategy(input: {
   const enabled = sessionId !== undefined;
   const query = useQuery({
     queryKey: contextStrategyQueryKey(sessionId ?? '', agentId),
-    queryFn: () => client.getContextStrategy(sessionId!, agentId),
+    queryFn: () => client.getContextStrategy(sessionId!, agentId, true),
     enabled,
     staleTime: 30_000,
     retry: false,

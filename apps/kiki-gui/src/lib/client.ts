@@ -3361,7 +3361,8 @@ export class KikiClient {
   }
 
   /** Effective automatic-compaction point for one agent of a session. */
-  getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus> {
+  getAutoCompact(sessionId: string, agentId: string, observe = false): Promise<import('@kiki/protocol').AutoCompactStatus> {
+    if (observe) return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/auto-compact`, { query: { observe: 'true' } });
     return this.run(this.rest.sessions.getAutoCompact(sessionId, agentId));
   }
 
@@ -3370,7 +3371,8 @@ export class KikiClient {
    * every rule's source path, event, active flag and cadence state. Powers
    * the agent panel's "Injected rules" section.
    */
-  getAgentHooksInspect(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AgentHooksInspect> {
+  getAgentHooksInspect(sessionId: string, agentId: string, observe = false): Promise<import('@kiki/protocol').AgentHooksInspect> {
+    if (observe) return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/hooks`, { query: { observe: 'true' } });
     return this.run(this.rest.sessions.inspectHooks(sessionId, agentId));
   }
 
@@ -3403,8 +3405,8 @@ export class KikiClient {
     return this.memoryRequest('POST', `/sessions/${encodeURIComponent(sessionId)}/optional-capabilities`, { body });
   }
 
-  getContextStrategy(sessionId: string, agentId: string): Promise<import('@kiki/protocol').ContextStrategyStatus> {
-    return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/context-strategy`);
+  getContextStrategy(sessionId: string, agentId: string, observe = false): Promise<import('@kiki/protocol').ContextStrategyStatus> {
+    return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/context-strategy`, { query: { observe: observe ? 'true' : undefined } });
   }
 
   /**

@@ -1,8 +1,9 @@
-import { ErrorCodes, ISessionOptionalCapabilityService, isError2, isOptionalCapabilityId, type CapabilityChoice } from '@kiki/agent-core-v2';
+import { ErrorCodes, IOptionalCapabilityPolicy, ISessionOptionalCapabilityService, isError2, isOptionalCapabilityId, type CapabilityChoice } from '@kiki/agent-core-v2';
 import { optionalCapabilitySessionRequestSchema, optionalCapabilitySessionResponseSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { withSessionOperation } from '../lib/sessionOperationLease';
+import { readSessionObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
@@ -27,11 +28,14 @@ export function registerOptionalCapabilityRoutes(app: Host, core: Parameters<typ
     description: 'Read this conversation’s optional capability choices',
     tags: ['sessions'],
   }, async (req, reply) => {
-    const result = await withSessionOperation(core, req.params.session_id, async (session) => session?.accessor.get(ISessionOptionalCapabilityService).read());
-    if (result === undefined) {
+    const session = await readSessionObserver(core, req.params.session_id);
+    if (session === undefined) {
       reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Session was not found', req.id));
       return;
     }
+    const result = session.live !== undefined
+      ? await session.live.accessor.get(ISessionOptionalCapabilityService).read()
+      : await core.accessor.get(IOptionalCapabilityPolicy).readSession(req.params.session_id, session.summary.workspaceId, session.metadata?.delivery);
     reply.send(okEnvelope(wire(result), req.id));
   });
   app.get(read.path, read.options, read.handler as never);

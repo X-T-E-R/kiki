@@ -167,6 +167,20 @@ describe('AgentHooksSection', () => {
     await cleanup();
   });
 
+  it('uses the full cold read only for one explicit retry', async () => {
+    mockGetAgentHooksInspect.mockReset().mockRejectedValue(new ApiError({ code: 40901, msg: 'Cold cadence unavailable', data: null }));
+    const { container, render, cleanup } = await renderSection('s-observe', 'main', 'opening');
+    try {
+      expect(mockGetAgentHooksInspect).toHaveBeenLastCalledWith('s-observe', 'main', true);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-agent-hooks-retry]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(mockGetAgentHooksInspect).toHaveBeenLastCalledWith('s-observe', 'main', false);
+      await render('changed');
+      expect(mockGetAgentHooksInspect).toHaveBeenCalledTimes(3);
+      expect(mockGetAgentHooksInspect).toHaveBeenLastCalledWith('s-observe', 'main', true);
+    } finally { await cleanup(); }
+  });
+
   it.each(['state', 'focus', 'visibility'] as const)('retries a failed initial read on %s recovery without polling', async (trigger) => {
     mockGetAgentHooksInspect.mockReset().mockRejectedValue(new ApiError({ code: 40001, msg: 'Agent not found', data: null }));
     const { container, render, cleanup } = await renderSection(`s-${trigger}`, 'main', 'opening');

@@ -82,6 +82,42 @@ describe('memory dispatcher specifics', () => {
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
+  it('continues a bounded cold model-switch read after an unrelated >8MiB wire record', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const session = klient.session(created.id);
+      await session.close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      const summary = await app.accessor.get(ISessionIndex).get(created.id);
+      const logs = app.accessor.get(IAppendLogStore);
+      const scope = `sessions/${summary!.workspaceId}/${created.id}/agents/main`;
+      logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(9 * 1024 * 1024) });
+      logs.append(scope, 'wire.jsonl', { type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
+        entry: { input: { operationId: 'queued-switch', model: 'model/new', mode: 'direct' }, revision: 0,
+          originalBinding: { model: 'model/old', thinking: '' },
+          receipt: { operationId: 'queued-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'model/old', toModel: 'model/new' } } });
+      await logs.flush(scope, 'wire.jsonl');
+      await expect(session.agent('main').listModelSwitches()).rejects.toMatchObject({
+        code: 40001, details: { reason: 'model_switch_queue_preparing' },
+      });
+      await expect(session.agent('main').listModelSwitches()).resolves.toMatchObject([
+        { input: { operationId: 'queued-switch' }, queueIndex: 0 },
+      ]);
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      await app.accessor.get(IThreadCommunicationService).shutdown();
+      await app.accessor.get(IThreadMailboxStore).close();
+      await app.accessor.get(IHomeRuntimeService).close();
+      await app.dispose();
+      await drainQueryStoreDisposals();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
   it('reads cold session metadata and its agent registry without resuming', async () => {
     const { homeDir, app } = await makeEngine();
     const klient = createKlient({ scope: app });

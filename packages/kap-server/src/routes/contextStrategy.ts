@@ -4,6 +4,7 @@ import { contextStrategyStatusSchema, contextStrategyWriteSchema } from '@kiki/p
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
+import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensureMainAgent } from '../transport/mainAgent';
@@ -18,8 +19,19 @@ const path = '/sessions/{session_id}/agents/{agent_id}/context-strategy';
 const errors = { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SESSION_NOT_FOUND]: {} };
 
 export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void {
-  const read = defineRoute({ method: 'GET', path, params, success: { data: contextStrategyStatusSchema }, errors,
-    description: 'Read the effective context-window strategy and its source', tags: ['sessions'] }, async (req, reply) => {
+  const read = defineRoute({ method: 'GET', path, params, querystring: z.object({ observe: z.enum(['true', 'false']).optional() }),
+    success: { data: contextStrategyStatusSchema }, errors: { ...errors, [ErrorCode.SESSION_BUSY]: {} },
+    description: 'Read the effective context-window strategy; observe reads never restore a cold agent', tags: ['sessions'] }, async (req, reply) => {
+    if (req.query.observe === 'true') {
+      const observed = await readAgentObserver(core, req.params.session_id, req.params.agent_id);
+      if (observed === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
+      if (observed.agent !== undefined) { reply.send(okEnvelope(observed.agent.accessor.get(IAgentFullCompactionService).getContextStrategy(), req.id)); return; }
+      if (observed.metadata?.model !== undefined) { reply.send(errEnvelope(ErrorCode.SESSION_BUSY, 'Agent settings are unavailable while the agent is not active', req.id)); return; }
+      if (req.params.agent_id !== MAIN_AGENT_ID) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
+      const config = core.accessor.get(IConfigService).get<LoopControl>('loopControl');
+      reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'auto', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
+      return;
+    }
     await withSessionOperation(core, req.params.session_id, async (session) => {
       if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
       const agent = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);

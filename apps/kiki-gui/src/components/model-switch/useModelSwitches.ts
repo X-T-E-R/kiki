@@ -103,9 +103,10 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
         sinceRead = [];
         failed = true;
         const preparing = error instanceof Error && error.message === 'model_switch_queue_preparing';
-        setLoading(preparing);
-        if (!preparing) setError(error instanceof Error ? error : new Error(String(error)));
-        if (preparing || ++failureCount < 3) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
+        const retrying = ++failureCount < 3;
+        setLoading(preparing && retrying);
+        if (!preparing || !retrying) setError(error instanceof Error ? error : new Error(String(error)));
+        if (retrying) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
       });
     };
     const attach = () => {
