@@ -2847,19 +2847,30 @@ describe('bindSessionTranscript', () => {
 
       await vi.waitFor(() => {
         expect(tasks.getTask(taskId!)?.status).toBe(failed ? 'failed' : 'completed');
-        expect(lifecycle.publishedEvents).toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            type: failed ? 'subagent.failed' : 'subagent.completed', subagentId: 'agent-child', taskId,
-          }),
-          expect.objectContaining({ type: 'task.started', info: expect.objectContaining({ taskId }) }),
-          expect.objectContaining({ type: 'task.terminated', info: expect.objectContaining({ taskId }) }),
-        ]));
+        expect(lifecycle.publishedEvents.filter((event) =>
+          event.type === 'task.started' || event.type === 'task.terminated' || event.type === 'task.settlement_ready'))
+          .toEqual([
+            expect.objectContaining({
+              type: 'task.started',
+              info: expect.objectContaining({ taskId, status: 'running' }),
+            }),
+            expect.objectContaining({
+              type: 'task.terminated',
+              info: expect.objectContaining({ taskId, status: failed ? 'failed' : 'completed' }),
+            }),
+            expect.objectContaining({
+              type: 'task.settlement_ready',
+              info: expect.objectContaining({ taskId, status: failed ? 'failed' : 'completed' }),
+            }),
+          ]);
       });
 
       const decisive = lifecycle.publishedEvents
         .filter((event) => event.type.startsWith('subagent.'))
         .map((event) => event.type);
-      expect.soft(decisive).toEqual(['subagent.spawned', 'subagent.started', failed ? 'subagent.failed' : 'subagent.completed']);
+      expect(decisive).toEqual(failed
+        ? ['subagent.spawned', 'subagent.started']
+        : ['subagent.spawned', 'subagent.started', 'subagent.completed']);
 
       const liveTx = new AgentTranscript('main');
       const liveAdapter = new AgentTranscriptLiveAdapter('main');

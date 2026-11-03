@@ -3933,7 +3933,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(14);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(15);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -3943,7 +3943,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4024,7 +4024,7 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(14);
+        expect(checkpoint?.format).toBe(15);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary?.kind === 'turn' ? boundary.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)]) : []).toEqual([
           ['step-5a', ['before-boundary']],
@@ -4572,6 +4572,46 @@ describe('TranscriptService live integration', () => {
         complete: false,
       });
       service.dropSession('s1');
+    });
+
+    it.each(['rewrite', 'retry'] as const)('retains live completion received while a %s projection is rebuilding', async (mode) => {
+      const home = await seedWireHome();
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'running', activeTurnId: 0 } });
+      let onRead: (() => void) | undefined;
+      let failRead = false;
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        wireRecordReader: async (path, options) => {
+          if (failRead) { failRead = false; throw new Error('fixture read failure'); }
+          const read = await streamWireRecords(path, options);
+          onRead?.();
+          return read;
+        },
+      });
+      try {
+        const store = service.forSessionLive('s1')!;
+        await service.whenReady('s1');
+        const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+        await appendFile(wirePath, `${JSON.stringify({
+          type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'rewrite-step' }, time: 1_500,
+        })}\n`);
+        if (mode === 'retry') {
+          failRead = true;
+          await service.reconcileAfterRewrite('s1');
+          await appendFile(wirePath, `${JSON.stringify({ type: 'fixture.padding' })}\n`);
+        }
+        const complete = vi.fn(() => main.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed', durationMs: 50, time: 2_000 })));
+        onRead = complete;
+        if (mode === 'rewrite') await service.reconcileAfterRewrite('s1');
+        else await service.ensureAgentHistory('s1', 'main');
+        expect(complete).toHaveBeenCalledOnce();
+        expect(store.getAgent('main')?.getTurn('t0')).toMatchObject({ state: 'completed', durationMs: 50 });
+      } finally {
+        service.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
     });
 
     it('marks catch-up incomplete once the bounded journal evicts old batches', async () => {

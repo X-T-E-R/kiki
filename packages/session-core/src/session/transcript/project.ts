@@ -3709,7 +3709,7 @@ export function recoverTranscriptTurn(current: TranscriptTurn, opening: Transcri
     promptId: opening.promptId, message: opening.message, delivery: opening.delivery, presentation: opening.presentation,
     attachmentIds: opening.attachmentIds, startedAt: opening.startedAt,
     stepsPartial: current.stepsPartial === true || opening.stepsPartial === true ? true : undefined,
-    steps: [...steps.values()].toSorted((a, b) => a.ordinal - b.ordinal), contentRefs: refs });
+    steps: opening.steps.length === 0 ? current.steps : [...steps.values()].toSorted((a, b) => a.ordinal - b.ordinal), contentRefs: refs });
 }
 
 export function prependOlderTranscriptSnapshot(
