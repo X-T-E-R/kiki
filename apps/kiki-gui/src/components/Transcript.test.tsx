@@ -7623,6 +7623,41 @@ describe('settled history folds and the unified locate entry', () => {
     expect(container.querySelector<HTMLElement>('[data-block-id="fold-older-tool"]')!.getBoundingClientRect().top).toBeCloseTo(before, 0);
   });
 
+  it.each(['expanded member', 'preceding row'] as const)('keeps the visible %s anchored across a canonical fold rekey without an older-page gesture', async (place) => {
+    const first = turnBlocks(1, 'saved opening');
+    const tail = [...turnBlocks(2, 'newer opening'), ...virtualBlocks(100, 'after-expanded-fold')];
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      const inset = this.dataset['blockId'] === 'th1' ? this.closest('[data-block-id="fold-canonical-tool"]') === null ? 32 : 96 : 0;
+      const top = row === null ? 0 : virtualItemStart(row) + inset - (scroll?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + this.offsetHeight, left: 0, right: 760, width: 760, height: this.offsetHeight, toJSON: () => ({}) };
+    });
+    blockHeights.set('fold-th1', 200);
+    blockHeights.set('fold-canonical-tool', 400);
+    const { root, container } = makeRoot();
+    const onLoadOlder = vi.fn(async () => false);
+    try {
+      await renderSettled(root, virtualTranscript(transcriptState([...first, ...tail]), onLoadOlder));
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 0);
+      await settleVirtualizer();
+      const fold = container.querySelector<HTMLElement>('[data-block-id="fold-th1"]')!;
+      await act(async () => { click(fold.querySelector('[data-activity-toggle]')!); });
+      const reading = () => container.querySelector<HTMLElement>(place === 'expanded member'
+        ? '[data-fold-member][data-block-id="th1"]' : `[data-block-id="${first[0]!.id}"]`)!;
+      await setTranscriptScroll(scroll, virtualItemStart(reading().closest('[data-transcript-virtual-item]')!) + 5);
+      await settleVirtualizer();
+      const before = reading().getBoundingClientRect().top;
+      await renderSettled(root, virtualTranscript(transcriptState([first[0]!, doneTool('canonical-tool', 't1'), ...first.slice(1), ...tail]), onLoadOlder));
+      await settleReadingFrames();
+      expect(container.querySelector('[data-block-id="fold-canonical-tool"] [data-history-fold-open]')).not.toBeNull();
+      expect(reading().getBoundingClientRect().top).toBeCloseTo(before, 0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally { rect.mockRestore(); blockHeights.delete('fold-th1'); blockHeights.delete('fold-canonical-tool'); }
+  });
+
   it('N2 consumer measures a short restored row before accepting its estimated landing', async () => {
     act(() => clearNavHistory());
     const location = { key: 'short-row-return', pathname: '/s/session_test', search: '', hash: '' };
@@ -7800,6 +7835,81 @@ describe('settled history folds and the unified locate entry', () => {
     expect(container.querySelector('[data-block-id="tool2a"]')).toBeNull();
     await act(async () => { click(folds[0]!.querySelector('[data-activity-toggle]')!); });
     expect(container.querySelector('[data-history-fold-members] [data-block-id="tool1a"]')).not.toBeNull();
+  });
+
+  it.each(['tools', 'read-group'] as const)('inherits an expanded %s fold and its reader across canonical prefixes until explicitly collapsed', async (kind) => {
+    writeSettings({ foldSteps: true });
+    try {
+      const { TranscriptDetailProvider } = await import('./transcriptDetail');
+      const { controller } = await openLiveTranscript();
+      const { root, container } = makeRoot();
+      const release = vi.fn();
+      const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation(() => ({ release, retry: vi.fn() }));
+      const tool = (id: string) => doneTool(id, 't1', { name: kind === 'read-group' ? 'Read' : 'Bash' });
+      const first = [userBlock({ id: 'u1', text: 'saved opening', turnId: 't1' }), tool('tail-one'), tool('tail-two'), tool('tail-three'), doneTool('tail-bash', 't1'), { ...assistantBlock('a1', 'saved answer'), turnId: 't1' }];
+      const tail = turnBlocks(2, 'newer opening');
+      const render = (prefix: string[]) => renderSettled(root,
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+          {virtualTranscript(transcriptState([first[0]!, ...prefix.map(tool), ...first.slice(1), ...tail]))}
+        </TranscriptDetailProvider>);
+      try {
+        await render([]);
+        const fold = () => container.querySelector<HTMLElement>('[data-history-fold]')!;
+        const originalKey = fold().closest<HTMLElement>('[data-block-id]')!.dataset['blockId'];
+        await act(async () => { click(fold().querySelector('[data-activity-toggle]')!); });
+        expect(fold().hasAttribute('data-history-fold-open')).toBe(true);
+        expect(begin).toHaveBeenCalledWith('main', { kind: 'turn', id: 't1' }, ['steps']);
+        const readers = begin.mock.calls.length;
+        await render(['canonical-prefix']);
+        expect(fold().closest<HTMLElement>('[data-block-id]')!.dataset['blockId']).not.toBe(originalKey);
+        expect(fold().hasAttribute('data-history-fold-open')).toBe(true);
+        expect(fold().querySelectorAll('[data-fold-member]').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(1);
+        expect(begin).toHaveBeenCalledTimes(readers);
+        expect(release).not.toHaveBeenCalled();
+        await render(['earlier-prefix', 'canonical-prefix']);
+        expect(fold().hasAttribute('data-history-fold-open')).toBe(true);
+        expect(release).not.toHaveBeenCalled();
+        await act(async () => { click(fold().querySelector('[data-activity-toggle]')!); });
+        expect(fold().hasAttribute('data-history-fold-open')).toBe(false);
+        expect(release).toHaveBeenCalledTimes(1);
+        await render(['earliest-prefix', 'earlier-prefix', 'canonical-prefix']);
+        expect(fold().hasAttribute('data-history-fold-open')).toBe(false);
+        expect(begin).toHaveBeenCalledTimes(readers);
+      } finally { begin.mockRestore(); controller.close(); }
+    } finally { writeSettings({ foldSteps: false }); }
+  });
+
+  it('retains one expanded reader across canonical fold splits until every inherited group is collapsed', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const release = vi.fn();
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation(() => ({ release, retry: vi.fn() }));
+    const opening = userBlock({ id: 'u-split', text: 'saved opening', turnId: 't1' });
+    const answer = { ...assistantBlock('a-split', 'saved answer'), turnId: 't1' };
+    const render = (canonical: boolean) => renderSettled(root,
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+        {virtualTranscript(transcriptState([opening, doneTool(canonical ? 'prefix-a' : 'tail-a', 't1'),
+          ...(canonical ? [doneTool('tail-a', 't1'), { ...assistantBlock('middle-split', 'Recovered intervening speech'), turnId: 't1' }, doneTool('prefix-b', 't1')] : []),
+          doneTool('tail-b', 't1'), doneTool('tail-c', 't1'), answer, ...turnBlocks(2, 'newer opening')]))}
+      </TranscriptDetailProvider>);
+    try {
+      await render(false);
+      await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
+      const readers = begin.mock.calls.length;
+      await render(true);
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(2);
+      expect(release).not.toHaveBeenCalled();
+      expect(begin).toHaveBeenCalledTimes(readers);
+      await act(async () => { click(container.querySelector('[data-history-fold-open] [data-activity-toggle]')!); });
+      expect(release).not.toHaveBeenCalled();
+      await act(async () => { click(container.querySelector('[data-history-fold-open] [data-activity-toggle]')!); });
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(0);
+      await render(true);
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(0);
+    } finally { begin.mockRestore(); controller.close(); }
   });
 
   it('continues expanded step structures and releases their readers when collapsed, hidden or unmounted', async () => {

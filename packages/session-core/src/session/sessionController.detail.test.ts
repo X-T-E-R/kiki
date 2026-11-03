@@ -50,7 +50,7 @@ function windowed(overrides: Partial<AgentTranscriptSnapshot> = {}): AgentTransc
   });
 }
 
-function harness(detail: SessionViewFacade['transcript']['detail'], content?: SessionViewFacade['transcript']['content'], entities?: SessionViewFacade['transcript']['entities'], publicationScheduler?: import('./sessionController').PublicationScheduler) {
+function harness(detail: SessionViewFacade['transcript']['detail'], content?: SessionViewFacade['transcript']['content'], entities?: SessionViewFacade['transcript']['entities'], publicationScheduler?: import('./sessionController').PublicationScheduler, connection: SessionTransport = {} as SessionTransport) {
   let signal: ((value: SessionViewSignal) => void) | undefined;
   const view = {
     snapshot: vi.fn(async () => ({ as_of_seq: 1, epoch: 'e', session, in_flight_turn: null }) as unknown as SessionSnapshotResponse),
@@ -61,7 +61,7 @@ function harness(detail: SessionViewFacade['transcript']['detail'], content?: Se
     },
   } as unknown as SessionViewFacade;
   const scheduler = { schedule: (callback: () => void) => { callback(); return 0; }, cancel: () => {} };
-  const controller = new SessionController({} as SessionTransport, view, 'session_test', { scheduler: publicationScheduler ?? scheduler });
+  const controller = new SessionController(connection, view, 'session_test', { scheduler: publicationScheduler ?? scheduler });
   const deliver = (event: Parameters<SessionController['handleTranscript']>[0]) => {
     signal!({ type: 'transcript', event, generation: 1 });
   };
@@ -102,6 +102,53 @@ describe('SessionController transcript detail', () => {
     const settled = await Promise.all(reads);
     expect(settled[4]).toMatchObject({ name: 'AbortError' });
     expect(active).toBe(0);
+  });
+
+  it('dispatches three queued stale older-page recoveries once each and releases failed or cancelled reads', async () => {
+    const connection = {} as SessionTransport;
+    type Page = Awaited<ReturnType<SessionViewFacade['transcript']['page']>>;
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved opening', stepsPartial: true, steps: [] };
+    const response: Page = { session_id: 'session_test', agent_id: 'main', items: [{ ...turn, stepsPartial: undefined }], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    const stale: Page = { ...response, items: [], has_more: true, coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'cold', readiness: 'partial', stale: { reason: 'source_changed', retry: 'authoritative' } } };
+    const scopes = Array.from({ length: 3 }, () => {
+      const scope = harness(undefined, undefined, undefined, undefined, connection);
+      const pending: Array<{ resolve: (page: Page) => void; reject: (error: Error) => void; signal?: AbortSignal }> = [];
+      vi.mocked(scope.view.transcript.page).mockImplementation((_input, options) => new Promise((resolve, reject) => { pending.push({ resolve, reject, signal: options?.signal }); }));
+      return { ...scope, pending, aborter: new AbortController() };
+    });
+    const release: Array<() => void> = [];
+    let recoveries: ReturnType<SessionController['loadOlderHistory']>[] = [];
+    let blockers: Promise<void>[] = [];
+    try {
+      for (const scope of scopes) { await scope.controller.open(); scope.publish(resetEvent('main', emptySnapshot({ items: [turn] }), 2, true)); }
+      recoveries = scopes.map(scope => scope.controller.loadOlderHistory('main', scope.aborter.signal));
+      await vi.waitFor(() => expect(scopes.map(scope => scope.pending.length)).toEqual([1, 1, 1]));
+      blockers = scopes.map(() => readInHistoryLane(connection, () => new Promise<void>(resolve => { release.push(resolve); })));
+      for (const scope of scopes) scope.pending[0]!.resolve(stale);
+      await vi.waitFor(() => expect(release).toHaveLength(3));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      for (const done of release) done();
+      await Promise.all(blockers);
+      await vi.waitFor(() => expect(scopes.map(scope => scope.pending.length)).toEqual([2, 2, 2]));
+      for (const scope of scopes) expect(vi.mocked(scope.view.transcript.page).mock.calls[1]?.[0]).toMatchObject({ beforeTurn: 't0', beforeItem: undefined });
+      scopes[0]!.pending[1]!.resolve(response);
+      scopes[1]!.pending[1]!.reject(new Error('Authoritative read failed'));
+      scopes[2]!.aborter.abort();
+      expect(scopes[2]!.pending[1]!.signal?.aborted).toBe(true);
+      scopes[2]!.pending[1]!.resolve(response);
+      expect((await Promise.all(recoveries)).map(result => result.kind)).toEqual(['exhausted', 'failed', 'cancelled']);
+      expect(scopes[1]!.controller.getState().olderError).toBe('Authoritative read failed');
+      let dispatched = 0;
+      await Promise.all(scopes.map(() => readInHistoryLane(connection, async () => { dispatched += 1; })));
+      expect(dispatched).toBe(3);
+    } finally {
+      for (const scope of scopes) { scope.aborter.abort(); for (const pending of scope.pending) pending.resolve(response); }
+      for (const done of release) done();
+      await Promise.all([...blockers, ...recoveries]);
+      for (const scope of scopes) scope.controller.close();
+    }
   });
 
   it.each(['main', 'child'] as const)('rebinds an orphan %s opening and its structural indices without attaching fresh refs to old suffix positions', async agentId => {
@@ -422,6 +469,77 @@ describe('SessionController transcript detail', () => {
       second.release();
       expect(view.transcript.page).toHaveBeenCalledTimes(2);
     } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('renews an expanded partial %s structure after reset without accepting late reads or losing retry', async (agentId) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt', steps: [] };
+    const canonical: TranscriptTurn = { ...turn, steps: [{ kind: 'step', stepId: 'fresh-step', turnId: 't0', ordinal: 0, state: 'completed',
+      frames: [{ kind: 'text', frameId: 'fresh-frame', role: 'assistant', text: 'Fresh generation body' }] }] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    type Page = Awaited<ReturnType<SessionViewFacade['transcript']['page']>>;
+    const pending: Array<{ resolve: (page: Page) => void; reject: (error: Error) => void; signal?: AbortSignal }> = [];
+    vi.mocked(view.transcript.page).mockImplementation((_input, options) => new Promise((resolve, reject) => { pending.push({ resolve, reject, signal: options?.signal }); }));
+    const response = (item: TranscriptTurn): Page => ({ session_id: 'session_test', agent_id: agentId, items: [item], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('reset-partial-child', agentId, 'delta');
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const current = () => controller['composeAgentSnapshot'](agentId).items[0] as TranscriptTurn;
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true }] }), 2));
+    const lease = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true }] }), 3));
+      expect(pending[0]!.signal?.aborted).toBe(true);
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      if (agentId === 'main') {
+        pending[0]!.resolve(response(turn));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(state().detailLoads['structure:t0']).toEqual({ status: 'loading' });
+        expect(current().stepsPartial).toBe(true);
+      }
+      pending[1]!.reject(new Error('New generation structure failed'));
+      await vi.waitFor(() => expect(state().detailLoads['structure:t0']).toEqual({ status: 'error', message: 'New generation structure failed' }));
+      expect(pending).toHaveLength(2);
+      expect(current().stepsPartial).toBe(true);
+      lease.retry();
+      await vi.waitFor(() => expect(pending).toHaveLength(3));
+      pending[2]!.resolve(response(canonical));
+      await vi.waitFor(() => expect(current().stepsPartial).not.toBe(true));
+      if (agentId === 'child') {
+        pending[0]!.resolve(response(turn));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(current().steps).toEqual(canonical.steps);
+      expect(state().detailLoads['structure:t0']).toBeUndefined();
+      expect([...controller['contentReaders'].values()].every(target => !target.blocked && target.controller === undefined)).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(3);
+    } finally { lease.release(); controller.close(); }
+  });
+
+  it('does not renew a reset partial structure after its expanded reader collapses', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, stepsPartial: true, steps: [] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    let resolvePage!: (page: Awaited<ReturnType<SessionViewFacade['transcript']['page']>>) => void;
+    let signal: AbortSignal | undefined;
+    vi.mocked(view.transcript.page).mockImplementation((_input, options) => new Promise(resolve => { resolvePage = resolve; signal = options?.signal; }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [turn] }), 2));
+    const lease = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(view.transcript.page).toHaveBeenCalledTimes(1));
+      deliver(resetEvent('main', emptySnapshot({ items: [turn] }), 3));
+      lease.release();
+      expect(signal?.aborted).toBe(true);
+      expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
+      resolvePage({ session_id: 'session_test', agent_id: 'main', items: [{ ...turn, stepsPartial: undefined }], has_more: false,
+        coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+      await new Promise(resolve => setTimeout(resolve, 15));
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(controller['contentPumpReads'].size).toBe(0);
+      expect(controller['composeAgentSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
+      expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
+    } finally { lease.release(); controller.close(); }
   });
 
   it('cancels a partial structure refresh on collapse and ignores its late result before retry', async () => {

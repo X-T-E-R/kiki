@@ -327,7 +327,7 @@ export class SessionController {
   private readonly contentControllers = new Map<string, AbortController>();
   private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; includeOlder: boolean; readers: number; blocked: boolean; ref?: ContentRef; controller?: AbortController }>();
   private contentPumpRunning = false;
-  private readonly contentPumpReads = new Set<string>();
+  private readonly contentPumpReads = new Map<string, object>();
   private readonly contentRanges = new Map<string, string>();
   private contentRangeBytes = 0;
   private readonly rangeControllers = new Map<AbortController, string>();
@@ -1806,8 +1806,8 @@ export class SessionController {
       };
       let preparingBatches = 0;
       for (;;) {
-        const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: OLDER_PAGE_TURNS }, { signal }), signal);
-        let page = await read();
+        const read = () => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: OLDER_PAGE_TURNS }, { signal });
+        let page = await this.readPreparedContent(read, signal);
         if (obsolete()) return { kind: 'cancelled', changed: false };
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
         if (page.read?.stale !== undefined) {
@@ -2438,8 +2438,8 @@ export class SessionController {
         released = true;
         target.readers -= 1;
         if (target.readers > 0) return;
+        this.retirePartialStructureRead(key);
         this.contentReaders.delete(key);
-        target.controller?.abort();
         this.accountContentBody(agentId, source);
         if (target.ref !== undefined && ![...this.contentReaders.values()].some((other) => other.agentId === agentId && JSON.stringify(other.source) === JSON.stringify(source) && other.roots.includes(String(target.ref!.path[0])))) this.cancelContentSegment(agentId, target.ref);
       },
@@ -2451,6 +2451,18 @@ export class SessionController {
     for (const target of this.contentReaders.values()) if (target.agentId === agentId && target.source.kind === 'turn' &&
       target.source.id === turnId && target.roots.includes('steps')) target.blocked = false;
     void this.pumpContentReads();
+  }
+
+  private retirePartialStructureRead(key: string): void {
+    const target = this.contentReaders.get(key);
+    if (target?.controller === undefined) return;
+    target.controller.abort();
+    this.snapshotControllers.delete(target.controller);
+    target.controller = undefined;
+    target.ref = undefined;
+    target.blocked = false;
+    this.contentPumpReads.delete(key);
+    if (!this.closed) this.setDetailLoad(target.agentId, `structure:${target.source.id}`, undefined);
   }
 
   private async pumpContentReads(): Promise<void> {
@@ -2474,14 +2486,17 @@ export class SessionController {
         const controller = partial ? new AbortController() : undefined;
         target.controller = controller;
         target.ref = ref;
-        this.contentPumpReads.add(key);
+        const flight = {};
+        this.contentPumpReads.set(key, flight);
         const read = controller === undefined ? this.loadContentSegment(target.agentId, ref!)
           : this.loadPartialTurnStructure(target.agentId, target.source.id, controller);
         void read.then((applied) => {
+          if (this.contentPumpReads.get(key) !== flight) return;
           target.ref = applied ? undefined : ref;
           if (!applied && target.readers > 0) target.blocked = partial ||
             this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref!));
         }).finally(() => {
+          if (this.contentPumpReads.get(key) !== flight) return;
           target.controller = undefined;
           this.contentPumpReads.delete(key);
           if (this.contentReaders.get(key) === target) {
@@ -2551,7 +2566,6 @@ export class SessionController {
       return false;
     } finally {
       this.snapshotControllers.delete(controller);
-      if (controller.signal.aborted && !this.closed) this.setDetailLoad(agentId, key, undefined);
     }
   }
 
@@ -3236,6 +3250,11 @@ export class SessionController {
 
   private bumpHistoryGeneration(agentId: string): void {
     this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
+    for (const [key, target] of this.contentReaders) if (target.agentId === agentId) {
+      this.retirePartialStructureRead(key);
+      target.blocked = false;
+    }
+    void this.pumpContentReads();
     for (const [key, flight] of this.historyPreviewReads) if (flight.agentId === agentId) {
       this.historyPreviewReads.delete(key);
       flight.controller.abort();

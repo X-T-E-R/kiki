@@ -2948,6 +2948,27 @@ export function useStableForest<T extends AgentForest | undefined>(forest: T): T
   return stable as T;
 }
 
+function inheritOpenHistoryFolds(previous: readonly DisplayNode[], current: readonly DisplayNode[], open: ReadonlySet<string>): ReadonlySet<string> {
+  if (open.size === 0) return open;
+  const memberIds = (fold: HistoryFold) => fold.members.flatMap(member => member.kind === 'tool-group'
+    ? [member.id, ...member.members.map(item => item.id)] : [member.id]);
+  const previousByMember = new Map<string, string>();
+  for (const node of previous) if (node.kind === 'history-fold' && open.has(node.id))
+    for (const id of memberIds(node)) previousByMember.set(id, node.id);
+  const currentIds = new Set(current.filter(node => node.kind === 'history-fold').map(node => node.id));
+  let next: Set<string> | undefined;
+  for (const node of current) if (node.kind === 'history-fold') {
+    for (const id of memberIds(node)) {
+      const predecessor = previousByMember.get(id);
+      if (predecessor === undefined || predecessor === node.id) continue;
+      next ??= new Set(open);
+      next.add(node.id);
+      if (!currentIds.has(predecessor)) next.delete(predecessor);
+    }
+  }
+  return next ?? open;
+}
+
 function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
   if (a === b) return true;
   // groupBlocks rebuilds the ToolGroup wrapper per publish while the step
@@ -3103,6 +3124,21 @@ function captureTranscriptAnchor(
     key: typeof rowKey === 'string' ? rowKey : undefined,
     offset: top - (block ?? row).getBoundingClientRect().top,
   };
+}
+
+function MeasuredTranscriptRow({ index, virtualizer, onDetach, children }: {
+  index: number;
+  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  onDetach: (element: HTMLDivElement) => void;
+  children: ReactNode;
+}) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const measure = useCallback((element: HTMLDivElement | null) => {
+    if (element === null && rowRef.current !== null) onDetach(rowRef.current);
+    rowRef.current = element;
+    virtualizer.measureElement(element);
+  }, [onDetach, virtualizer]);
+  return <div ref={measure} data-index={index} data-transcript-virtual-item className="absolute left-0 w-full">{children}</div>;
 }
 
 type TranscriptRowProps = {
@@ -4039,6 +4075,12 @@ export function Transcript({
     () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows }),
     [mergedNodes, liveTurnId, heldRows],
   );
+  const [previousFoldNodes, setPreviousFoldNodes] = useState(processNodes);
+  if (previousFoldNodes !== processNodes) {
+    setPreviousFoldNodes(processNodes);
+    const inherited = inheritOpenHistoryFolds(previousFoldNodes, processNodes, openFolds);
+    if (inherited !== openFolds) setOpenFolds(inherited);
+  }
   // Message view: the same blocks through the delivery projection — speech,
   // your cards, one activity line per stretch, outcomes. Nothing is dropped:
   // every block stays inside a summary's members, except the turn's own reply
@@ -4500,6 +4542,40 @@ export function Transcript({
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
   useLayoutEffect(() => installTranscriptAnchoring(virtualizer), [loaded, loadError, virtualizer]);
+  const rekeyedFoldAnchorRef = useRef<{ blockId: string; offset: number; intent: number; controller: AbortController; started: boolean } | null>(null);
+  const captureRekeyedFold = useCallback((row: HTMLDivElement) => {
+    const scroll = scrollRef.current;
+    if (!visibleRef.current || navRestorePendingRef.current || olderInflightRef.current || scroll === null || !row.isConnected) return;
+    const fold = row.querySelector('[data-history-fold-open]')?.closest<HTMLElement>('[data-block-id]');
+    const oldKey = fold?.dataset['blockId'];
+    if (oldKey === undefined || nodeIndexesRef.current.has(oldKey)
+      || scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD) return;
+    const viewport = scroll.getBoundingClientRect();
+    const firstVisible = [...scroll.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')]
+      .filter(element => element.getBoundingClientRect().bottom > viewport.top)
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0];
+    if (firstVisible !== row) return;
+    const member = [...row.querySelectorAll<HTMLElement>('[data-fold-member], [data-fold-member] [data-block-id]')].find(element => {
+      const id = element.dataset['blockId'];
+      const box = element.getBoundingClientRect();
+      return id !== undefined && locateIndexRef.current.blocks.has(id) && box.bottom > viewport.top && box.top < viewport.bottom;
+    });
+    if (member === undefined) return;
+    rekeyedFoldAnchorRef.current?.controller.abort();
+    rekeyedFoldAnchorRef.current = { blockId: member.dataset['blockId']!, offset: viewport.top - member.getBoundingClientRect().top,
+      intent: readingIntentRef.current, controller: new AbortController(), started: false };
+  }, []);
+  useLayoutEffect(() => {
+    const anchor = rekeyedFoldAnchorRef.current;
+    if (anchor === null || anchor.started) return;
+    anchor.started = true;
+    void settleRestoredAnchor(scrollRef.current, () => {
+      const hit = locateIndexRef.current.blocks.get(anchor.blockId);
+      return hit === undefined ? undefined : { index: hit.index, blockId: anchor.blockId };
+    }, anchor.offset, () => anchor.controller.signal.aborted || readingIntentRef.current !== anchor.intent || !visibleRef.current, virtualizer, 4)
+      .catch(() => undefined).finally(() => { if (rekeyedFoldAnchorRef.current === anchor) rekeyedFoldAnchorRef.current = null; });
+  }, [virtualNodes, virtualizer]);
+  useEffect(() => () => { rekeyedFoldAnchorRef.current?.controller.abort(); }, []);
   /**
    * A click on a row's own disclosure is the reader choosing to read that row,
    * not content arriving at the end. Arm the row so the resize the disclosure
@@ -4510,6 +4586,7 @@ export function Transcript({
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest('[data-activity-toggle], button[aria-expanded]') === null) return;
+    rekeyedFoldAnchorRef.current?.controller.abort();
     noteReaderDisclosure(virtualizer, target);
   }, [virtualizer]);
   // Settle pass: re-read mounted rows once scrolling goes idle. A resize the
@@ -5301,12 +5378,11 @@ export function Transcript({
               turnTailId !== undefined &&
               (nextNode === undefined || displayNodeTurnId(nextNode) !== turnTailId);
             return (
-              <div
+              <MeasuredTranscriptRow
                 key={virtualItem.key}
-                ref={virtualizer.measureElement}
-                data-index={virtualItem.index}
-                data-transcript-virtual-item
-                className="absolute left-0 w-full"
+                virtualizer={virtualizer}
+                index={virtualItem.index}
+                onDetach={captureRekeyedFold}
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
@@ -5401,7 +5477,7 @@ export function Transcript({
                       to be rendered here, after the last row, and that is no
                       longer part of what this cell measures. */}
                 </div>
-              </div>
+              </MeasuredTranscriptRow>
             );
           })}
         </div>

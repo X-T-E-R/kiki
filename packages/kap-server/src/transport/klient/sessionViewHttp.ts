@@ -97,6 +97,7 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
         ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
         : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
     } catch (error) {
+      if (error instanceof CanonicalEntityPreparingError) return reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });
       if (error instanceof TranscriptDetailCursorError) return reply.send({ code: 40001, msg: error.message, data: null, request_id: req.id });
       throw error;
     }
