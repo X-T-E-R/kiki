@@ -239,17 +239,20 @@ describe('SDKRpcClient.listSessionsPage', () => {
         await client.closeSession({ sessionId: created.id });
       }
       const index = client.engineAccessor.get(ISessionIndex);
-      await index.prepare();
+      expect((await index.prepare()).state).toBe('ready');
       // A summary whose workDir can no longer be resolved (unknown workspace,
       // no cwd) is dropped by the mapping; the page must still fill.
-      client.engineAccessor.get(ISessionIndexMirror).record({
+      const mirror = client.engineAccessor.get(ISessionIndexMirror);
+      mirror.record({
         id: 'ses_ghost',
         workspaceId: 'ws_missing',
         createdAt: 1,
         updatedAt: Date.now() + 60_000,
         archived: false,
       });
-      await drainSessionIndexMirror();
+      await mirror.drain();
+      expect(mirror.pending()).toEqual([]);
+      expect((await index.listRecent({ limit: 1 })).items.map((item) => item.id)).toEqual(['ses_ghost']);
 
       const page1 = await client.listSessionsPage({ limit: 2 });
       expect(page1.items).toHaveLength(2);

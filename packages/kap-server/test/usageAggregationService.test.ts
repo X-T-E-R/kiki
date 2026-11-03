@@ -1261,27 +1261,27 @@ describe('UsageAggregationService cache budgets', () => {
         return slice;
       } finally { clock.mockRestore(); }
     });
-    let first: Awaited<ReturnType<typeof query>>;
     try {
-      first = await query(f.service);
+      const first = await query(f.service);
+      framing.mockRestore();
+      expect(abortedAtYield).toBe(true);
+      expect(first.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+      const consumedOffset = Buffer.byteLength(records.slice(0, boundary).map((record) => `${JSON.stringify(record)}\n`).join(''));
+      await (Reflect.get(f.service, 'modelPreparing') as Promise<void> | undefined)?.catch(() => undefined);
+      const source = await f.facts.summary(wireScope);
+      expect(source.totals?.knownUsageRecords).toBe(boundary);
+      expect(source.checkpoint?.offset).toBe(consumedOffset);
+      f.readOffsets.length = 0;
+      f.readRanges.length = 0;
+      const resumed = await query(f.restart());
+      expect(f.readRanges.some((range) => range.start === consumedOffset)).toBe(true);
+      expect(resumed.reliability.complete).toBe(true);
+      expect(resumed.summary).toEqual(baseline.summary);
+      expect(resumed.reliability.usage_coverage).toEqual(baseline.reliability.usage_coverage);
     } finally {
       framing.mockRestore();
       vi.useRealTimers();
     }
-    expect(abortedAtYield).toBe(true);
-    expect(first.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
-    const consumedOffset = Buffer.byteLength(records.slice(0, boundary).map((record) => `${JSON.stringify(record)}\n`).join(''));
-    await (Reflect.get(f.service, 'modelPreparing') as Promise<void> | undefined)?.catch(() => undefined);
-    const source = await f.facts.summary(wireScope);
-    expect(source.totals?.knownUsageRecords).toBe(boundary);
-    expect(source.checkpoint?.offset).toBe(consumedOffset);
-    f.readOffsets.length = 0;
-    f.readRanges.length = 0;
-    const resumed = await query(f.restart());
-    expect(f.readRanges.some((range) => range.start === consumedOffset)).toBe(true);
-    expect(resumed.reliability.complete).toBe(true);
-    expect(resumed.summary).toEqual(baseline.summary);
-    expect(resumed.reliability.usage_coverage).toEqual(baseline.reliability.usage_coverage);
   });
 
   it('throws an external cancellation at the wire yield instead of publishing a deadline checkpoint', async () => {
