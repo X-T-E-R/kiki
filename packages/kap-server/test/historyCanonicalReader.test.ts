@@ -15,7 +15,7 @@ import * as logicalWire from '../src/services/history/logicalWireRead';
 import { CanonicalEntityPreparingError, HistoryCanonicalReader } from '../src/services/history/historyCanonicalReader';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
-import { readSessionViewTranscriptContent, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readSessionViewTranscriptContent, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 vi.mock('../src/services/history/logicalWireRead', { spy: true });
 
@@ -86,6 +86,79 @@ function canonicalWithPositionedTurn(records: readonly Record<string, unknown>[]
 }
 
 describe('source-backed canonical detail', () => {
+  it('coalesces adjacent canonical records while preserving exact per-record replay', async () => {
+    const records = turnRecords(100, 'saved output');
+    records.splice(3, 0, ...Array.from({ length: 512 }, (_, index) => event({ type: 'content.part', turnId: 100,
+      stepUuid: 'step-100', uuid: `paragraph-${index}`, part: { type: 'text', text: `saved paragraph ${index}` } })));
+    const f = await fixture(records);
+    const reads = vi.mocked(logicalWire.readLogicalInto);
+    try {
+      expect((await f.nav.scan('s', 'main'))?.complete).toBe(true);
+      reads.mockClear();
+      expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't100' })).toEqual(canonical(records));
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(Math.ceil(records.length / 128));
+      expect(reads.mock.calls.every(call => call[3] <= (1 << 20))).toBe(true);
+      expect(f.nav.canonicalReadReport()).toMatchObject({ replayRecords: records.length,
+        replayBytes: Buffer.byteLength(records.map(line).join('')) });
+    } finally { await f.close(); }
+  });
+
+  it('never treats a dropped cold-turn suffix as its complete canonical structure', async () => {
+    const records = turnRecords(100, 'saved output');
+    records.splice(3, 0, ...Array.from({ length: 48 }, (_, index) => event({ type: 'content.part', turnId: 100,
+      stepUuid: 'step-100', uuid: `large-paragraph-${index}`, part: { type: 'text', text: `${index}:` + 'x'.repeat(150_000) } })));
+    const f = await fixture(records);
+    const signal = new AbortController().signal;
+    try {
+      await readColdSessionViewBaseline(f.service, 's', 'main', 'delta', signal);
+      for (let i = 0; i < 12; i += 1) {
+        await f.service.readColdPageSnapshot('s', 'main', value => value, signal, true, 1 << 20, true, true, true);
+        if ((await f.service.coldWindowBoundary('s', 'main'))?.start === 0) break;
+      }
+      const boundary = await f.service.coldWindowBoundary('s', 'main');
+      expect(boundary?.start).toBe(0);
+      const exact = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't100' }, signal) as TranscriptTurn;
+      expect(exact?.steps.map(step => step.frames.map(frame => frame.frameId))).toEqual(canonical(records)?.steps.map(step => step.frames.map(frame => frame.frameId)));
+      expect(await f.service.coldWindowBoundary('s', 'main')).toEqual(boundary);
+    } finally { await f.close(); }
+  });
+
+  it('reads an earlier page body without replacing its cold window with the latest tail', async () => {
+    const records = [...Array.from({ length: 100 }, (_, index) => turnRecords(index, 'x'.repeat(100_000))).flat(),
+      ...turnRecords(100, 'earlier page body'), ...Array.from({ length: 10 }, (_, index) => turnRecords(index + 101, 'y'.repeat(200_000))).flat()];
+    const f = await fixture(records);
+    const signal = new AbortController().signal;
+    try {
+      const initial = await readColdSessionViewBaseline(f.service, 's', 'main', 'delta', signal);
+      expect(initial?.snapshot.items).not.toContainEqual(expect.objectContaining({ kind: 'turn', turnId: 't104' }));
+      const snapshot = await f.service.readColdPageSnapshot('s', 'main', value => value, signal, true, 512 << 10, true, true, true);
+      expect(snapshot?.items).toContainEqual(expect.objectContaining({ kind: 'turn', turnId: 't104' }));
+      const boundary = await f.service.coldWindowBoundary('s', 'main');
+      const reads = f.service.memoryReport().coldReads.bytes;
+      expect(await f.service.readProjectedColdTurn('s', 'main', 't104', signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(200_000) }] }] });
+      expect(await f.service.coldWindowBoundary('s', 'main')).toEqual(boundary);
+      expect(f.service.memoryReport().coldReads.bytes).toBe(reads);
+      const page = await readSessionViewTranscriptPage(f.service, 's', { agentId: 'main', beforeTurn: 't105', pageSize: 2, signal });
+      expect(page?.items).toContainEqual(expect.objectContaining({ kind: 'turn', turnId: 't104' }));
+      expect(await f.service.coldWindowBoundary('s', 'main')).toEqual(boundary);
+      expect(f.service.memoryReport().coldReads.bytes).toBe(reads);
+    } finally { await f.close(); }
+  });
+
+  it('keeps an uncached turn preparing until navigation can prove its presence or absence', async () => {
+    const records = [...turnRecords(0, 'original saved body'),
+      ...Array.from({ length: 120 }, (_, index) => turnRecords(index + 1, 'x'.repeat(100_000))).flat()];
+    const f = await fixture(records);
+    const signal = new AbortController().signal;
+    try {
+      await readSessionViewTranscriptPage(f.service, 's', { agentId: 'main' });
+      await expect(f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't0' }, signal)).rejects.toBeInstanceOf(CanonicalEntityPreparingError);
+      const found = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't0' }, signal);
+      expect(found).toMatchObject({ turnId: 't0', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'original saved body' }] }] });
+      expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't999' }, signal)).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
   it('prepares a large history once and replays only the target, then reuses warm and reopened reads', async () => {
     const history = Array.from({ length: 100 }, (_, id) => turnRecords(id, 'unrelated'.repeat(12000))).flat();
     const media = [{ type: 'text', text: '完整输出' }, { type: 'image', image: { url: 'blobref:main:example' } }];

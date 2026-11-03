@@ -276,11 +276,13 @@ export function ContentContinuation({
   label,
   callerAgentId,
   headingPresent = false,
+  autoRead = true,
   className = '',
   presentation,
   renderText,
 }: {
   headingPresent?: boolean;
+  autoRead?: boolean;
   callerAgentId?: string;
   /** The canonical entity this body was rendered from; undefined = no reader. */
   source: ContentBodySource | undefined;
@@ -296,8 +298,10 @@ export function ContentContinuation({
   const controller = useTranscriptController();
   const target = useTranscriptTarget();
   const agentId = callerAgentId ?? target?.agentId;
-  const automatic = controller !== undefined;
-  const retry = useAutomaticContentRead(source, roots, callerAgentId);
+  const identity = JSON.stringify([source, roots, callerAgentId]);
+  const [requested, setRequested] = useState<string>();
+  const automatic = controller !== undefined && (autoRead || requested === identity);
+  const retry = useAutomaticContentRead(automatic ? source : undefined, roots, callerAgentId);
   const ranges = controller !== undefined && agentId !== undefined ? pending.filter((ref) => controller.isContentRange(agentId, ref)) : [];
   const ref = pending.find((candidate) => !ranges.includes(candidate));
   if (ref === undefined && ranges.length === 0) return null;
@@ -312,7 +316,7 @@ export function ContentContinuation({
         : `${label} · ${progress}`}
       error={t('transcript.content.failed')}
       label={label}
-      onRequest={() => { if (automatic) retry(); else request(ref); }}
+      onRequest={() => { if (automatic) retry(); else if (controller !== undefined) setRequested(identity); else request(ref); }}
       original={<ContentOriginalDownload ref={ref} label={label} callerAgentId={callerAgentId} />}
       className={className}
     />}

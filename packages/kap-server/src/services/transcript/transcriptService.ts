@@ -369,6 +369,19 @@ interface ColdWireWindow {
   headerAttachments?: AgentTranscriptSnapshot['attachments'];
 }
 
+function completeColdWindowTurn(window: ColdWireWindow, turnId: string): TranscriptTurn | undefined {
+  const index = window.snapshot.items.findIndex(item => item.kind === 'turn' && item.turnId === turnId);
+  const turn = window.snapshot.items[index];
+  if (turn?.kind !== 'turn' || !window.records.some(({ record }) => record.type === 'turn.prompt' && wireTurnId(record) === turnId)) return undefined;
+  if (window.droppedTail === true && !window.snapshot.items.slice(index + 1).some(item => item.kind === 'turn')) return undefined;
+  return turn;
+}
+
+function partialColdWindowSnapshot(window: ColdWireWindow): AgentTranscriptSnapshot {
+  return { ...window.snapshot, items: window.snapshot.items.map(item => item.kind !== 'turn' || completeColdWindowTurn(window, item.turnId) !== undefined
+    ? item : { ...item, stepsPartial: true }) };
+}
+
 function coldWindowCovers(items: AgentTranscriptSnapshot['items'], beforeTurn: string): boolean {
   const ordered = items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []).sort(compareTurnIds);
   if (ordered.length === 0) return false;
@@ -1928,7 +1941,7 @@ export class TranscriptService {
     if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
       this.forgetColdWindow(wirePath);
       this.retainedColdTurns.delete(wirePath);
-      return window.snapshot;
+      return partialColdWindowSnapshot(window);
     }
     return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, window, project, opened);
   }
@@ -1938,8 +1951,9 @@ export class TranscriptService {
   ): AgentTranscriptSnapshot {
     signal.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
-    this.retainColdTailTurns(wirePath, fingerprint, window.snapshot);
-    const preview = project(window.snapshot);
+    this.retainColdTailTurns(wirePath, fingerprint, { ...window.snapshot,
+      items: window.snapshot.items.filter(item => item.kind !== 'turn' || completeColdWindowTurn(window, item.turnId) !== undefined) });
+    const preview = project({ ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 });
     this.admitColdSnapshotCache(wirePath, fingerprint, preview, true);
     return preview;
   }
@@ -1969,7 +1983,7 @@ export class TranscriptService {
       throw new Error('history_source_changed');
     }
     opened.throwIfAborted();
-    return window?.snapshot;
+    return window === undefined ? undefined : partialColdWindowSnapshot(window);
   }
 
   async coldHistoryTruncated(sessionId: string, agentId: string): Promise<boolean> {
@@ -2357,6 +2371,22 @@ export class TranscriptService {
     return { records, recordStarts, complete: read.complete };
   }
 
+  async readColdWindowTurn(sessionId: string, agentId: string, turnId: string, signal?: AbortSignal): Promise<TranscriptTurn | undefined> {
+    signal?.throwIfAborted();
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return undefined;
+    const window = this.coldWireWindows.get(location.wirePath);
+    if (window === undefined || window.payloadEvicted === true) return undefined;
+    const info = await stat(location.wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined || window.fingerprint !== `${fileIdentity(info)}:${fileFingerprint(info)}`) return undefined;
+    const item = window.snapshot.items.find(candidate => candidate.kind === 'turn' && candidate.turnId === turnId);
+    return item?.kind !== 'turn' ? undefined : completeColdWindowTurn(window, turnId) ?? { ...item, stepsPartial: true };
+  }
+
   async readProjectedColdTurn(sessionId: string, agentId: string, turnId: string, signal?: AbortSignal): Promise<TranscriptTurn | undefined> {
     signal?.throwIfAborted();
     const retained = await this.readRetainedColdTurn(sessionId, agentId, turnId, signal);
@@ -2371,14 +2401,12 @@ export class TranscriptService {
     if (info === undefined) return undefined;
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const opened = signal ?? new AbortController().signal;
-    const turnOf = (window: ColdWireWindow | undefined): TranscriptTurn | undefined => {
-      const item = window?.snapshot.items.find((candidate) => candidate.kind === 'turn' && candidate.turnId === turnId);
-      return item?.kind === 'turn' ? item : undefined;
-    };
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened);
+    const turnOf = (window: ColdWireWindow | undefined): TranscriptTurn | undefined =>
+      window === undefined ? undefined : completeColdWindowTurn(window, turnId);
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, false);
     const found = turnOf(window);
     if (found !== undefined || window === undefined || window.start === 0) return found;
-    return turnOf(await this.extendColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened));
+    return turnOf(await this.extendColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, FIRST_SCREEN_WINDOW_BYTES, false));
   }
 
   async readRetainedColdTurn(sessionId: string, agentId: string, turnId: string, signal?: AbortSignal): Promise<TranscriptTurn | undefined> {
@@ -3118,15 +3146,17 @@ export class TranscriptService {
     const snapshot = this.projectColdRecords(agentId, records, start === 0);
     opened.throwIfAborted();
     this.rememberAnchorSeek(key, { fingerprint, at: seek.at });
-    this.anchorReads.set(snapshot, start === 0 ? 'window' : 'continues');
-    this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
     const openingTurn = opening === undefined ? undefined : wireTurnId(window.records.at(-1)!.record);
     const headers = opening === undefined ? undefined : snapshot.items.flatMap(item => item.kind === 'turn' && item.turnId === openingTurn ? [{ ...item, steps: [] }] : []);
-    this.rememberColdWindow(wirePath, { fingerprint, start, end: readEnd, entire: false, records: window.records,
+    const coldWindow: ColdWireWindow = { fingerprint, start, end: readEnd, entire: false, records: window.records,
       headers, headerAttachments: opening === undefined ? undefined : snapshot.attachments,
-      snapshot, bytes: this.coldWindowBytes(snapshot, window.records), droppedTail: readEnd < fileSize });
+      snapshot, bytes: this.coldWindowBytes(snapshot, window.records), droppedTail: readEnd < fileSize };
+    const preview = partialColdWindowSnapshot(coldWindow);
+    this.anchorReads.set(preview, start === 0 ? 'window' : 'continues');
+    this.rememberAnchorWindow(wirePath, fingerprint, end, preview);
+    this.rememberColdWindow(wirePath, coldWindow);
     this.deleteColdSnapshotCache(wirePath);
-    return snapshot;
+    return preview;
   }
 
   private async anchorOpeningRecords(wirePath: string, fingerprint: string, records: readonly ColdWireRecord[], from: number, fileSize: number,

@@ -306,8 +306,10 @@ export class AgentTranscriptDraft {
     const current = this.#turns.get(header.turnId);
     if (current !== undefined) {
       const { steps, ...currentHeader } = current;
-      if (transcriptValueEquals(currentHeader, header)) return { changed: false, toolCallCountDelta: 0 };
-      this.replaceTurn({ ...header, steps });
+      const next = header.stepsPartial === undefined && current.stepsPartial !== undefined
+        ? { ...header, stepsPartial: current.stepsPartial } : header;
+      if (transcriptValueEquals(currentHeader, next)) return { changed: false, toolCallCountDelta: 0 };
+      this.replaceTurn({ ...next, steps });
       return { changed: true, toolCallCountDelta: 0 };
     }
     this.insertTurn({ ...header, steps: [] });

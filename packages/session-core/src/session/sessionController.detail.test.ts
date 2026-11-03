@@ -18,6 +18,7 @@ import { boundedEntity, ContentChangedError, readContentSegment } from '../../..
 
 import type { SessionTransport } from '../transport';
 import { SessionController } from './sessionController';
+import { readInHistoryLane } from './historyReadLane';
 import type { ShellBlock, UserBlock } from './transcript';
 import { transcriptDetailKey } from './transcript';
 import { emptySnapshot, FIXED_AT, opsEvent, resetEvent } from './__fixtures__/canonicalTranscript';
@@ -79,6 +80,83 @@ function taskDetail(outputTail: string): SessionViewTranscriptDetail {
 }
 
 describe('SessionController transcript detail', () => {
+  it('shares three history slots per connection and removes cancelled waiters before dispatch', async () => {
+    const connection = {};
+    let active = 0;
+    let peak = 0;
+    const finish: (() => void)[] = [];
+    const read = vi.fn(() => new Promise<void>(resolve => {
+      active += 1; peak = Math.max(peak, active);
+      finish.push(() => { active -= 1; resolve(); });
+    }));
+    const aborters = Array.from({ length: 6 }, () => new AbortController());
+    const reads = aborters.map(aborter => readInHistoryLane(connection, read, aborter.signal).catch(error => error));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    aborters[4]!.abort();
+    finish.shift()!();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4));
+    expect(peak).toBe(3);
+    while (finish.length > 0) { finish.shift()!(); await Promise.resolve(); }
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(5));
+    while (finish.length > 0) finish.shift()!();
+    const settled = await Promise.all(reads);
+    expect(settled[4]).toMatchObject({ name: 'AbortError' });
+    expect(active).toBe(0);
+  });
+
+  it.each(['main', 'child'] as const)('rebinds an orphan %s opening and its structural indices without attaching fresh refs to old suffix positions', async agentId => {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const canonical: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+      promptId: 'prompt', prompt: 'Recovered opening', startedAt: FIXED_AT,
+      steps: Array.from({ length: 18 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal,
+        state: 'completed', frames: Array.from({ length: 12 }, (_, frame) => ({ kind: 'text', frameId: `f${ordinal}-${frame}`, role: 'assistant', text: `body ${ordinal}-${frame}` })) })) };
+    const orphan: TranscriptTurn = { ...canonical, origin: { kind: 'other' }, promptId: undefined, prompt: undefined, startedAt: undefined, steps: canonical.steps.slice(10) };
+    const recovered = rebindTurnContentRefs(boundedEntity(canonical, source, 12_000, agentId));
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => readContentSegment(canonical, ref));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: agentId, items: [recovered], has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'tail', hasMoreOlder: false } });
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('orphan-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [orphan], olderCursor: 'opening' }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      const lease = controller.beginContentRead(agentId, source, ['steps']);
+      try { await vi.waitFor(() => expect(controller.contentRefsFor(agentId, source).filter(ref => ref.path[0] === 'steps')).toEqual([])); }
+      finally { lease.release(); }
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      for (const text of ['Recovered opening', 'body 0-0', 'body 17-11']) expect(state.blocks.some(block => 'text' in block && block.text === text)).toBe(true);
+      expect(Object.values(state.detailLoads).some(load => load.status === 'error')).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('restores canonical %s step ordinals before continuing refs from a locally numbered orphan suffix', async agentId => {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const canonical: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'opening', startedAt: FIXED_AT,
+      steps: Array.from({ length: 7 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: Array.from({ length: 24 }, (_, frame) => ({ kind: 'text', frameId: `f${ordinal}-${frame}`, role: 'assistant', text: `saved ${ordinal}-${frame}` })) })) };
+    const orphan: TranscriptTurn = { ...canonical, prompt: undefined, startedAt: undefined, origin: { kind: 'other' },
+      steps: canonical.steps.slice(4).map((step, ordinal) => ({ ...step, ordinal, frames: step.frames.slice(-8) })) };
+    const recovered = rebindTurnContentRefs(boundedEntity(canonical, source, undefined, agentId));
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => readContentSegment(canonical, ref));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: agentId, items: [recovered], has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'tail', hasMoreOlder: false } });
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('local-ordinal-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [orphan], olderCursor: 'opening' }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      const turn = controller['composeAgentSnapshot'](agentId).items.find(item => item.kind === 'turn');
+      expect(turn?.kind === 'turn' ? turn.steps.map(step => [step.stepId, step.ordinal]) : []).toEqual(canonical.steps.map(step => [step.stepId, step.ordinal]));
+      await controller.completeContentRead(agentId, source, ['steps']);
+      const completed = controller['composeAgentSnapshot'](agentId).items.find(item => item.kind === 'turn');
+      expect(completed?.kind === 'turn' ? completed.steps : []).toEqual(canonical.steps);
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      expect(Object.values(state.detailLoads)).not.toContainEqual(expect.objectContaining({ status: 'error' }));
+    } finally { controller.close(); }
+  });
+
   it.each(['main', 'child'] as const)('binds %s todo provenance to adopted notes in both page/live orders (SOL-02)', async (agentId) => {
     const meta = (rev: number) => ({ rev, hash: `notes-${rev}`, writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 });
     const partial = { source: 'derived' as const, readiness: 'partial' as const, reason: 'source_unverified' as const,
@@ -213,6 +291,160 @@ describe('SessionController transcript detail', () => {
       await controller.loadTranscriptEntities(agentId, 'todo');
       expect(state().todoRead).toBeUndefined();
       expect(state().todoNotes).toEqual(notes);
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('completes a partial %s structure only while expanded, including missing frames with no refs', async (agentId) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: Array.from({ length: 3 }, (_, index) =>
+        ({ kind: 'text', frameId: `f${index}`, role: 'assistant', text: `saved body ${index}` })) }] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const response = { session_id: 'session_test', agent_id: agentId, items: [turn], has_more: false, coverage: { kind: 'full' as const, hasMoreOlder: false as const },
+      tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    vi.mocked(view.transcript.page).mockResolvedValue(response);
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('partial-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true, steps: [{ ...turn.steps[0]!, frames: [turn.steps[0]!.frames[2]!] }] }], hasMoreOlder: false }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 15));
+      expect(view.transcript.page).not.toHaveBeenCalled();
+      expect(state().hasMoreHistory).toBe(false);
+      expect(state().blocks.filter(block => block.kind === 'assistant')).toHaveLength(1);
+      const expanded = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.waitFor(() => expect(state().blocks.filter(block => block.kind === 'assistant')).toHaveLength(3));
+      expect(view.transcript.page).toHaveBeenCalledWith({ agentId, beforeTurn: undefined, beforeItem: undefined, pageSize: 1 }, { signal: expect.any(AbortSignal) });
+      expect(controller['composeAgentSnapshot'](agentId).items[0]).not.toHaveProperty('stepsPartial', true);
+      expanded.release();
+      expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['saved body 0', 'saved body 1', 'saved body 2']);
+    } finally { controller.close(); }
+  });
+
+  it('stages every canonical frame before replacing local partial indices and retains hydrated bodies', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed',
+        frames: Array.from({ length: 30 }, (_, frame) => ({ kind: 'text', frameId: `f${ordinal}-${frame}`, role: 'assistant', text: `saved ${ordinal}-${frame} `.repeat(700) })) })) };
+    const source = { kind: 'turn' as const, id: 't0' };
+    const preview = rebindTurnContentRefs(boundedEntity(turn, source, undefined, 'main', 'tail'));
+    const last = preview.steps.at(-1)!;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => {
+      const entity = ref.source.kind === 'frame' ? turn.steps.flatMap(step => step.frames).find(frame => frame.frameId === ref.source.id)! : turn;
+      return readContentSegment(entity, ref);
+    });
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: 'main', items: [preview], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ ...turn, stepsPartial: true, steps: [{ ...last, ordinal: 0 }], contentRefs: undefined }] }), 2));
+    try {
+      const frame = last.frames.at(-1)!;
+      await controller.completeContentRead('main', { kind: 'frame', id: frame.frameId, turnId: 't0', stepId: last.stepId }, ['text']);
+      const loaded = controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+      expect(loaded.steps[0]!.frames.at(-1)).toMatchObject({ text: (turn.steps.at(-1)!.frames.at(-1)! as { text: string }).text, contentRefs: [] });
+      const lease = controller.beginContentRead('main', source, ['steps']);
+      try { await vi.waitFor(() => expect(controller['composeAgentSnapshot']('main').items[0]).not.toHaveProperty('stepsPartial', true)); }
+      finally { lease.release(); }
+      const complete = controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+      expect(complete.steps.map(step => [step.stepId, step.ordinal, step.frames.map(frame => frame.frameId)])).toEqual(turn.steps.map(step => [step.stepId, step.ordinal, step.frames.map(frame => frame.frameId)]));
+      expect(complete.steps.at(-1)!.frames.at(-1)).toMatchObject({ text: (turn.steps.at(-1)!.frames.at(-1)! as { text: string }).text, contentRefs: [] });
+      expect(content.mock.calls.some(([input]) => input.ref.path[0] === 'steps')).toBe(true);
+    } finally { controller.close(); }
+  });
+
+  it('keeps a live completion that arrives while a running canonical structure is staging', async () => {
+    const { completeTranscriptTurnStructure } = await import('./transcript/project');
+    const canonical: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' }, steps: [
+      { kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: [] },
+      { kind: 'step', stepId: 's1', turnId: 't0', ordinal: 1, state: 'running', frames: [{ kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'Read', state: 'running', output: 'old' }] },
+    ] };
+    const live: TranscriptTurn = { ...canonical, state: 'completed', stepsPartial: true, steps: [{ ...canonical.steps[1]!, ordinal: 0,
+      state: 'completed', finishReason: 'stop', endedAt: FIXED_AT,
+      frames: [{ kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'Read', state: 'done', output: 'fresh result' }] }] };
+    const result = completeTranscriptTurnStructure(live, canonical);
+    expect(result.state).toBe('completed');
+    expect(result.steps).toHaveLength(2);
+    expect(result.steps[1]).toMatchObject({ ordinal: 1, state: 'completed', finishReason: 'stop', endedAt: FIXED_AT,
+      frames: [{ state: 'done', output: 'fresh result' }] });
+  });
+
+  it('waits for partial turn structure before completing content for search', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: [{ kind: 'text', frameId: 'f0', role: 'assistant', text: 'Recovered searchable body' }] }] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: 'main', items: [turn], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ ...turn, stepsPartial: true, steps: [] }] }), 2));
+    try {
+      expect(controller.incompleteTurnOrdinals('main')).toEqual(new Set([0]));
+      await controller.completeTurnContent('main', 0);
+      expect(controller.getState().blocks).toContainEqual(expect.objectContaining({ kind: 'assistant', text: 'Recovered searchable body' }));
+      expect(controller.incompleteTurnOrdinals('main')).toEqual(new Set());
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('rejects explicit completion when the partial %s structure fails', async (agentId) => {
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    vi.mocked(view.transcript.page).mockRejectedValue(new Error('Structure read failed'));
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('partial-search-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt', stepsPartial: true, steps: [] }] }), 2));
+    try {
+      await expect(controller.completeTurnContent(agentId, 0)).rejects.toThrow('Structure read failed');
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('evicts closed canonical structures back to their partial preview and reads them again on expansion', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: Array.from({ length: 12 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed',
+        frames: Array.from({ length: 20 }, (_, index) => ({ kind: 'text', frameId: `f${ordinal}-${index}`, role: 'assistant', text: `saved ${ordinal}-${index}` })) })) };
+    const partial = { ...turn, stepsPartial: true, steps: turn.steps.slice(-1) };
+    const tasks = Array.from({ length: 24 }, (_, index) => ({ ...shellTask('abc', false), taskId: `body-${index}`,
+      contentRefs: [{ source: { kind: 'task' as const, id: `body-${index}` }, revision: `r${index}`, path: ['outputTail'], kind: 'text' as const, offset: 3, total: 400_000 }] }));
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => ({ ref, value: 'x'.repeat(ref.total - ref.offset), contentRefs: [] }));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: 'main', items: [turn], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [partial], tasks }), 2));
+    const current = () => controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+    try {
+      const first = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.waitFor(() => expect(current().steps).toHaveLength(12));
+      first.release();
+      for (const task of tasks) await controller.completeContentRead('main', { kind: 'task', id: task.taskId }, ['outputTail']);
+      expect(controller.contentMemoryReport().bodyBytes).toBeLessThanOrEqual(controller.contentMemoryReport().bodyBudget);
+      expect(current()).toMatchObject({ stepsPartial: true, steps: partial.steps, prompt: 'Saved prompt' });
+      expect(current().steps).toHaveLength(1);
+      const second = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.waitFor(() => expect(current().steps).toHaveLength(12));
+      second.release();
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+    } finally { controller.close(); }
+  });
+
+  it('cancels a partial structure refresh on collapse and ignores its late result before retry', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt', steps: [] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const pending: Array<{ resolve: (page: Awaited<ReturnType<SessionViewFacade['transcript']['page']>>) => void; signal?: AbortSignal }> = [];
+    vi.mocked(view.transcript.page).mockImplementation((_input, options) => new Promise(resolve => { pending.push({ resolve, signal: options?.signal }); }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ ...turn, stepsPartial: true }], hasMoreOlder: false }), 2));
+    const response = { session_id: 'session_test', agent_id: 'main', items: [turn], has_more: false, coverage: { kind: 'full' as const, hasMoreOlder: false as const },
+      tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    try {
+      const first = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      first.release();
+      expect(pending[0]!.signal?.aborted).toBe(true);
+      const second = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      pending[0]!.resolve(response);
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      expect(controller['composeAgentSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
+      pending[1]!.resolve(response);
+      await vi.waitFor(() => expect(controller.getState().detailLoads['structure:t0']).toBeUndefined());
+      second.release();
     } finally { controller.close(); }
   });
 
@@ -656,7 +888,7 @@ describe('SessionController transcript detail', () => {
     deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'marker', markerId: 'm1', marker: 'clear' }], hasMoreOlder: true, olderCursor: 'marker:m1' }), 2, true));
     vi.mocked(view.transcript.page).mockResolvedValue({ tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, session_id: 'session_test', agent_id: 'main', items: [{ kind: 'marker', markerId: 'm0', marker: 'clear' }], has_more: false, agents: [], pending_interactions: [], cursor: { seq: 2, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false } });
     await expect(controller.loadOlderMessages()).resolves.toBe(true);
-    expect(view.transcript.page).toHaveBeenCalledWith({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:m1', pageSize: 20 }, { signal: expect.any(AbortSignal) });
+    expect(view.transcript.page).toHaveBeenCalledWith({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:m1', pageSize: 40 }, { signal: expect.any(AbortSignal) });
     expect(controller.getState().loadingOlder).toBe(false);
     controller.close();
   });
@@ -746,7 +978,7 @@ describe('SessionController transcript detail', () => {
     await expect(joined).resolves.toBe(true);
     expect(detail).toHaveBeenCalledTimes(2);
     expect(detail.mock.contexts).toEqual([view.transcript, view.transcript]);
-    expect(detail).toHaveBeenLastCalledWith({ agentId: 'main', kind: 'task', id: 'task-shell' });
+    expect(detail).toHaveBeenLastCalledWith({ agentId: 'main', kind: 'task', id: 'task-shell' }, { signal: expect.any(AbortSignal) });
     expect(controller.getState().detailLoads[key]).toBeUndefined();
     expect(shellOf(controller)).toMatchObject({ output: 'line 1\nline 2\n…tail line', outputDetail: undefined });
     controller.close();
@@ -776,7 +1008,7 @@ describe('SessionController transcript detail', () => {
     deliver(resetEvent('main', emptySnapshot({
       prompts: [{ promptId: 'p-long', status: 'queued', createdAt: FIXED_AT, queuePosition: 0, detailRef: { kind: 'prompt', promptId: 'p-long' } }],
     } as Partial<AgentTranscriptSnapshot>), 2));
-    await vi.waitFor(() => { expect(detail).toHaveBeenCalledWith({ agentId: 'main', kind: 'prompt', id: 'p-long' }); });
+    await vi.waitFor(() => { expect(detail).toHaveBeenCalledWith({ agentId: 'main', kind: 'prompt', id: 'p-long' }, { signal: expect.any(AbortSignal) }); });
     await vi.waitFor(() => {
       const user = controller.getState().blocks.find((block): block is UserBlock => block.kind === 'user');
       expect(user?.text).toContain('a very long queued prompt');
@@ -1125,9 +1357,13 @@ describe('automatic target reading', () => {
     deliver(resetEvent('main', emptySnapshot({ tasks: sources.map((source, index) => ({ ...shellTask('abc', false), taskId: source.id, contentRefs: [refs[index]!] })), items: windowed().items }), 2));
     const leases = sources.map((source) => controller.beginContentRead('main', source, ['outputTail']));
     try {
-      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(4));
-      expect(held.has('bounded-4')).toBe(false);
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(3));
+      expect(held.has('bounded-3')).toBe(false);
       held.get('bounded-0')!();
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(4));
+      expect(held.has('bounded-3')).toBe(true);
+      expect(held.has('bounded-4')).toBe(false);
+      held.get('bounded-1')!();
       await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(5));
       expect(held.has('bounded-4')).toBe(true);
     } finally {
@@ -1923,11 +2159,11 @@ describe('hidden prefix turn preview', () => {
       expect(bodies).toContain('OLDEST-OPENING');
       expect(controller.contentRefsFor(agentId, structure.source)).toEqual([structure, prompt]);
       expect(page.mock.calls.map(([input]) => input)).toEqual([
-        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 20 },
-        { agentId, beforeTurn: undefined, beforeItem: 'orphan-cursor', pageSize: 20 },
+        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 40 },
+        { agentId, beforeTurn: undefined, beforeItem: 'orphan-cursor', pageSize: 40 },
         { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 1 },
         { agentId, beforeTurn: undefined, beforeItem: 'opening-cursor', pageSize: 1 },
-        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 20 },
+        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 40 },
       ]);
       expect(state.olderError).toBeUndefined();
     } finally { controller.close(); }
@@ -1975,7 +2211,7 @@ describe('hidden prefix turn preview', () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));
     const { controller, deliver, view } = harness(undefined, content);
-    const initial = await previewPage(fixture.client, fixture.maxBytes)({ agentId: 'main', pageSize: 20 });
+    const initial = await previewPage(fixture.client, fixture.maxBytes)({ agentId: 'main', pageSize: 40 });
     vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...initial, items: [fixture.client], has_more: true, next_cursor: 'turn:t1' })
       .mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
     await controller.open();
@@ -2056,7 +2292,7 @@ describe('hidden prefix turn preview', () => {
       ordinal: stale.steps[0]!.ordinal, state: 'completed', frames: [{ kind: 'text', frameId: 'canonical-complete', role: 'assistant', text: 'COMPLETE-CANONICAL-BODY' }] }] };
     const content = vi.fn(segmentRead(canonical));
     const { controller, deliver, view } = harness(undefined, content);
-    const first = await previewPage(stale, 12_000)({ agentId: 'main', pageSize: 20 });
+    const first = await previewPage(stale, 12_000)({ agentId: 'main', pageSize: 40 });
     vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...first, items: [stale], has_more: true, next_cursor: 'turn:t1' })
       .mockImplementation(previewPage(canonical, 12_000));
     await controller.open();
@@ -2174,6 +2410,28 @@ describe('hidden prefix turn preview', () => {
       const body = state.blocks.find((block) => 'text' in block && typeof block.text === 'string' && block.text.startsWith('REWRITTEN'));
       expect(body && 'text' in body ? body.text : undefined).toBe(rewritten.prompt);
       expect(state.blocks.some((block) => 'text' in block && typeof block.text === 'string' && block.text.startsWith('ORIGINAL'))).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('ignores a late content conflict after the visible entity has already replaced its reference', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'original '.repeat(6000), steps: [] };
+    const source = { kind: 'turn' as const, id: 't1' };
+    const stale = boundedEntity(turn, source, undefined, 'main', 'tail');
+    let reject!: (error: Error) => void;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [stale] }), 2));
+    try {
+      const ref = controller.contentRefsFor('main', source).find(candidate => candidate.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt ref');
+      const pending = controller.loadContentSegment('main', ref);
+      deliver(opsEvent('main', [{ op: 'turn.upsert', turn: { ...turn, prompt: 'CURRENT COMPLETE BODY', contentRefs: undefined } }], 3));
+      reject(new RPCError(40922, 'Content changed'));
+      expect(await pending).toBe(true);
+      expect(view.transcript.page).not.toHaveBeenCalled();
+      expect(Object.values(controller.getState().detailLoads)).not.toContainEqual(expect.objectContaining({ status: 'error' }));
+      expect(blockText(controller, 'CURRENT COMPLETE BODY')).toBe(true);
     } finally { controller.close(); }
   });
 
@@ -2388,6 +2646,25 @@ describe('hidden prefix turn preview', () => {
       expect(view.snapshot).toHaveBeenCalledTimes(1);
       expect(view.transcript.catchUp).not.toHaveBeenCalled();
       expect(Object.values(controller.getState().detailLoads).some((detail) => detail.status === 'error')).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('continues a structural refresh through preparing pages at the same cursor', async () => {
+    const fixture = hiddenPrefixFixture();
+    const { controller, deliver, view } = harness(undefined, segmentRead(fixture.inserted));
+    const page = await previewPage(fixture.inserted, fixture.maxBytes)({ agentId: 'main' });
+    const preparing = { ...page, items: [], has_more: true, next_cursor: 'preparing-turn', read: { source: 'cold' as const, readiness: 'preparing' as const } };
+    vi.mocked(view.transcript.page).mockResolvedValueOnce(preparing).mockResolvedValueOnce(preparing).mockResolvedValue(page);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(view.transcript.page).mock.calls.slice(1).map(([input]) => input.beforeItem)).toEqual(['preparing-turn', 'preparing-turn']);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(blockText(controller, 'hidden-injection')).toBe(true);
+      expect(blockText(controller, 'OMITTED-PREFIX')).toBe(true);
     } finally { controller.close(); }
   });
 

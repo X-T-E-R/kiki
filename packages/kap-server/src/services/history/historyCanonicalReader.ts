@@ -241,7 +241,7 @@ export class HistoryCanonicalReader {
     if (prepared === undefined) {
       if (signal === undefined) return { status: 'preparing' };
       const entity = await this.readColdEntity(session, agent, source, signal);
-      return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+      return entity === undefined ? { status: 'preparing' } : { status: 'found', entity };
     }
     const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true) :
       await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
@@ -619,7 +619,10 @@ export class HistoryCanonicalReader {
         signal.throwIfAborted();
         const page = input.db.canonicalSources(input.scope, turnId, ordinal, 128);
         if (page.length === 0) break;
-        for (const span of page) {
+        let chunk: Buffer | undefined;
+        let chunkStart = 0;
+        for (let index = 0; index < page.length; index += 1) {
+          const span = page[index]!;
           signal.throwIfAborted();
           const size = span.end - span.start;
           if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
@@ -630,17 +633,28 @@ export class HistoryCanonicalReader {
             sliceBytes = 0;
             sliceRecords = 0;
           }
-          const bytes = Buffer.allocUnsafe(size);
-          let offset = 0;
-          while (offset < size) {
-            signal.throwIfAborted();
-            const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
-            this.replayBytes += readCount;
-            sliceBytes += readCount;
-            totalBytes += readCount;
-            if (readCount === 0) throw new Error('history_source_changed');
-            offset += readCount;
+          if (chunk === undefined || span.start < chunkStart || span.end > chunkStart + chunk.length) {
+            let end = span.end;
+            for (let next = index + 1; next < page.length; next += 1) {
+              const adjacent = page[next]!;
+              if (adjacent.start !== end || adjacent.end <= end || adjacent.end - span.start > (1 << 20) ||
+                  (maxBytes !== undefined && totalBytes + adjacent.end - span.start > maxBytes)) break;
+              end = adjacent.end;
+            }
+            chunk = Buffer.allocUnsafe(end - span.start);
+            chunkStart = span.start;
+            let offset = 0;
+            while (offset < chunk.length) {
+              signal.throwIfAborted();
+              const readCount = await readAddressedBytes(logical, handle, chunk, offset, chunk.length - offset, chunkStart + offset);
+              this.replayBytes += readCount;
+              if (readCount === 0) throw new Error('history_source_changed');
+              offset += readCount;
+            }
           }
+          const bytes = chunk.subarray(span.start - chunkStart, span.end - chunkStart);
+          sliceBytes += size;
+          totalBytes += size;
           if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
           if (span.ordinal !== expectedOrdinal) adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
           const record = JSON.parse(bytes.toString('utf8')) as { type: string; [key: string]: unknown };

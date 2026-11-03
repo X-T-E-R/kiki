@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { carryContentHydration, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -23,6 +23,7 @@ import type {
   TranscriptItem,
   TranscriptPrompt,
   TranscriptTask,
+  TranscriptTurn,
 } from '@kiki/transcript';
 
 import type {
@@ -3596,8 +3597,8 @@ export function projectAgentTranscriptView(
     todoNotesStatus: agentTodo?.notesStatus,
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
-    hasMoreHistory: snapshot.hasMoreOlder === true || snapshot.items.some((item) => item.kind === 'turn' &&
-      item.contentRefs?.some((ref) => ref.direction === 'backward') === true),
+    hasMoreHistory: snapshot.hasMoreOlder === true || firstTurn?.stepsPartial !== true &&
+      firstTurn?.contentRefs?.some((ref) => ref.direction === 'backward') === true,
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
     // A running last turn has no tail yet; never carry the previous turn's.
@@ -3663,6 +3664,54 @@ function transcriptItemId(item: TranscriptItem): string {
   return `taskref:${item.refId}`;
 }
 
+export function completeTranscriptTurnStructure(current: TranscriptTurn, canonical: TranscriptTurn): TranscriptTurn {
+  const retainLive = current.state === 'running' || canonical.state === 'running';
+  const previousSteps = new Map(current.steps.map(step => [step.stepId, step]));
+  const steps = canonical.steps.map(step => {
+    const previous = previousSteps.get(step.stepId);
+    if (previous === undefined) return step;
+    const previousFrames = new Map(previous.frames.map(frame => [frame.frameId, frame]));
+    const frames = step.frames.map(frame => {
+      const saved = previousFrames.get(frame.frameId);
+      if (saved === undefined) return frame;
+      if (retainLive) return saved;
+      let merged = mergeContentPreview(saved, frame);
+      for (const ref of frame.contentRefs ?? []) if (!(saved.contentRefs ?? []).some(candidate =>
+        candidate.path.every((part, index) => ref.path[index] === part) || ref.path.every((part, index) => candidate.path[index] === part)) &&
+        contentPathValue(saved, ref.path) !== undefined) merged = adoptContentPreviewField(merged, saved, ref.path);
+      return merged;
+    });
+    const ids = new Set(frames.map(frame => frame.frameId));
+    const header = retainLive ? { ...step, ...previous, ordinal: step.ordinal } : step;
+    return { ...header, frames: [...frames, ...previous.frames.filter(frame => !ids.has(frame.frameId))] };
+  });
+  const ids = new Set(steps.map(step => step.stepId));
+  return carryContentHydration(current, { ...current, stepsPartial: undefined,
+    steps: [...steps, ...current.steps.filter(step => !ids.has(step.stepId))],
+    contentRefs: (current.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps') });
+}
+
+export function recoverTranscriptTurn(current: TranscriptTurn, opening: TranscriptTurn): TranscriptTurn {
+  const steps = new Map(opening.steps.map(step => [step.stepId, step]));
+  for (const step of current.steps) {
+    const prefix = steps.get(step.stepId);
+    steps.set(step.stepId, prefix === undefined ? step : { ...prefix, ...step, ordinal: prefix.ordinal,
+      frames: [...new Map([...prefix.frames, ...step.frames].map(frame => [frame.frameId, frame])).values()] });
+  }
+  const roots = opening.contentRefs?.filter(ref => ref.path.length === 1 && ref.path[0] === 'steps') ?? [];
+  const reindexed = opening.steps.some((step, index) => current.steps[index]?.stepId !== step.stepId);
+  const refs = reindexed ? [
+    ...roots.map(ref => ({ ...ref, direction: 'forward' as const, offset: 0 })),
+    ...(opening.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps' || ref.path.length > 1),
+  ] : [...(current.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
+    ...(opening.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps')];
+  return carryContentHydration(current, { ...current, origin: opening.origin, prompt: opening.prompt,
+    promptId: opening.promptId, message: opening.message, delivery: opening.delivery, presentation: opening.presentation,
+    attachmentIds: opening.attachmentIds, startedAt: opening.startedAt,
+    stepsPartial: current.stepsPartial === true || opening.stepsPartial === true ? true : undefined,
+    steps: [...steps.values()].toSorted((a, b) => a.ordinal - b.ordinal), contentRefs: refs });
+}
+
 export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
   older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
@@ -3687,10 +3736,7 @@ export function prependOlderTranscriptSnapshot(
       const existing = current.items[position];
       if (item.kind === 'turn' && existing?.kind === 'turn' && existing.origin.kind === 'other' &&
           existing.message === undefined && existing.promptId === undefined && existing.startedAt === undefined && item.startedAt !== undefined) {
-        recovered.set(position, carryContentHydration(existing, { ...existing, origin: item.origin, prompt: item.prompt, promptId: item.promptId,
-          message: item.message, delivery: item.delivery, presentation: item.presentation, attachmentIds: item.attachmentIds, startedAt: item.startedAt,
-          contentRefs: [...(existing.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
-            ...(item.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps')] }));
+        recovered.set(position, recoverTranscriptTurn(existing, item));
       }
       insert(position);
       previousPosition = position;
