@@ -29,6 +29,8 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService, SUBAGENT_RELEASE_GRACE_MS, isReleasable } from '#/session/subagent/subagentService';
@@ -108,7 +110,7 @@ function dispatchFor(ctx: TestAgentContext) {
   const created = new Emitter<IAgentScopeHandle>();
   let removed = false;
   const remove = vi.fn(async () => { removed = true; });
-  ix.stub(IAgentLifecycleService, { onDidCreate: created.event, remove,
+  ix.stub(IAgentLifecycleService, { onWillCreate: Event.None as Event<IAgentScopeHandle>, onDidCreate: created.event, onDidDispose: Event.None as Event<string>, remove,
     get: (id) => id === CHILD ? removed ? undefined : childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
@@ -120,6 +122,10 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(ILogService, ctx.get(ILogService));
   ix.set(IBootstrapService, ctx.get(IBootstrapService));
   ix.set(IFlagService, ctx.get(IFlagService));
+  ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
+  ix.set(ISessionContext, ctx.get(ISessionContext));
+  ix.set(IAppendLogStore, ctx.get(IAppendLogStore));
+  ix.set(IAtomicDocumentStore, ctx.get(IAtomicDocumentStore));
   ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   const dispatch = ix.get(ISessionDispatchService);

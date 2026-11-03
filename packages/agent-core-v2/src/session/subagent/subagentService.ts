@@ -1,5 +1,10 @@
 import { Service } from '#/_base/di/service';
-import { observeAutonomousReceipts } from './autonomousReceipt';
+import { AUTONOMOUS_RECEIPT_POLICY_LABEL, observeAutonomousReceipts, type ReceiptDelivery } from './autonomousReceipt';
+import { readPendingAutonomousReceipts } from './autonomousReceiptRecovery';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { autonomousReceiptsKey } from './autonomousReceiptOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
@@ -56,11 +61,12 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     new Emitter<AgentTaskStopHookContext>(),
   );
   private readonly receiptObservers = this._register(new DisposableMap<string>());
-  private readonly pendingReceipts = new Set<{
+  private readonly pendingReceipts = new Set<ReceiptDelivery & {
     readonly child: IAgentScopeHandle;
     readonly parentId?: string;
-    readonly settled: Promise<void>;
   }>();
+  private recovery: Promise<void> | undefined;
+  private discoveringReceipts = false;
   private readonly pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly retained = new WeakMap<IAgentScopeHandle, number>();
   private stopped = false;
@@ -78,6 +84,10 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     @ILogService private readonly log: ILogService,
     @IBootstrapService bootstrap: IBootstrapService,
     @ISessionStateService private readonly states: ISessionStateService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @ISessionContext private readonly session: ISessionContext,
+    @IAppendLogStore private readonly logs: IAppendLogStore,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
   ) {
     super();
     this._register(states.contributeState(pendingSubagentReceiptsKey));
@@ -89,17 +99,20 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     }));
     this._register(agentLifecycle.onDidCreate((handle) => {
       if (handle.id !== MAIN_AGENT_ID) {
+        for (const prior of this.pendingReceipts) {
+          if (prior.child.id === handle.id && prior.child !== handle) this.pendingReceipts.delete(prior);
+        }
         void this.receiptObservers.set(handle.id, observeAutonomousReceipts(handle, (delivery) => {
           const receipt = {
+            ...delivery,
             child: handle,
             parentId: handle.accessor.get(IAgentScopeContext).parentAgentId,
-            settled: delivery,
           };
           this.pendingReceipts.add(receipt);
-          this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
+          this.publishPendingReceipts();
           void receipt.settled.then(() => {
             this.pendingReceipts.delete(receipt);
-            if (!this.stopped) this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
+            if (!this.stopped) this.publishPendingReceipts();
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
           }, (error: unknown) => {
             if (!this.stopped) this.log.error('autonomous subagent receipt delivery stopped before completion', { agentId: handle.id, error });
@@ -112,7 +125,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
       this._register(agentLifecycle.onWillSealTranscript((event) => {
         void this.receiptObservers.deleteAndDispose(event.handle.id);
         const pending = [...this.pendingReceipts].filter((receipt) => receipt.child === event.handle || receipt.parentId === event.handle.id);
-        event.waitUntil(Promise.all(pending.map((receipt) => receipt.settled)));
+        event.waitUntil(Promise.all(pending.map((receipt) => receipt.drain().catch((error: unknown) => { event.fail(error); }))));
       }));
     }
     if (agentLifecycle.onDidDispose !== undefined) {
@@ -128,6 +141,38 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         this.pendingReleases.clear();
       }),
     );
+  }
+
+  recoverReceipts(): Promise<void> {
+    this.recovery ??= this.restoreReceipts().finally(() => { this.recovery = undefined; });
+    return this.recovery;
+  }
+
+  private publishPendingReceipts(): void {
+    this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size + Number(this.discoveringReceipts));
+  }
+
+  private async restoreReceipts(): Promise<void> {
+    this.discoveringReceipts = true;
+    this.publishPendingReceipts();
+    try {
+      const meta = await this.metadata.read();
+      for (const [agentId, agent] of Object.entries(meta.agents ?? {})) {
+        if (agentId === MAIN_AGENT_ID || agent.parentAgentId === null ||
+          agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' || this.agentLifecycle.get(agentId) !== undefined) continue;
+        const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents);
+        if (Object.keys(pending).length === 0) continue;
+        const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
+        if (this.agentLifecycle.get(parentId) === undefined) {
+          const parent = meta.agents?.[parentId];
+          await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
+        }
+        await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
+      }
+    } finally {
+      this.discoveringReceipts = false;
+      if (!this.stopped) this.publishPendingReceipts();
+    }
   }
 
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle> {

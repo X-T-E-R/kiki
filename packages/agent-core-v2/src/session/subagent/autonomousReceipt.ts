@@ -27,7 +27,16 @@ import { autonomousReceiptsKey, AutonomousReceiptDelivered, type AutonomousRecei
 
 export const AUTONOMOUS_RECEIPT_POLICY_LABEL = 'autonomousReceiptPolicy';
 
-export function observeAutonomousReceipts(child: IAgentScopeHandle, track: (delivery: Promise<void>) => void, signal: AbortSignal): IDisposable {
+export interface ReceiptDelivery {
+  readonly settled: Promise<void>;
+  drain(): Promise<void>;
+}
+
+interface ReceiptDrain {
+  requested: boolean;
+}
+
+export function observeAutonomousReceipts(child: IAgentScopeHandle, track: (delivery: ReceiptDelivery) => void, signal: AbortSignal): IDisposable {
   const subscriptions = new DisposableStore();
   const parentId = child.accessor.get(IAgentScopeContext).parentAgentId;
   if (parentId === undefined) return subscriptions;
@@ -38,9 +47,10 @@ export function observeAutonomousReceipts(child: IAgentScopeHandle, track: (deli
     for (const receipt of Object.values(states.get(autonomousReceiptsKey).pending)) {
       if (pending.has(receipt.turnId)) continue;
       pending.add(receipt.turnId);
-      const delivery = tail.then(() => returnReceipt(child, parentId, receipt, signal));
-      tail = delivery.catch(() => {});
-      track(delivery);
+      const drain = { requested: false };
+      const settled = tail.then(() => returnReceipt(child, parentId, receipt, signal, drain));
+      tail = settled.catch(() => {});
+      track({ settled, drain: () => { drain.requested = true; return settled; } });
     }
   };
   subscriptions.add(child.accessor.get(IEventBus).subscribe(TurnEnded, recover));
@@ -48,7 +58,7 @@ export function observeAutonomousReceipts(child: IAgentScopeHandle, track: (deli
   return subscriptions;
 }
 
-async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt: AutonomousReceipt, signal: AbortSignal): Promise<void> {
+async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt: AutonomousReceipt, signal: AbortSignal, drain: ReceiptDrain): Promise<void> {
   const retry = async <T>(operation: () => Promise<T>): Promise<T> => {
     let attempt = 0;
     for (;;) {
@@ -56,6 +66,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
       try { return await operation(); }
       catch (error) {
         child.accessor.get(ILogService).error('autonomous subagent receipt persistence failed; original receipt retained for recovery', { agentId: child.id, turnId: receipt.turnId, taskId, error });
+        if (drain.requested) throw error;
         await delay([100, 500, 2000, 10000][attempt++] ?? 30_000, undefined, { signal, ref: false });
       }
     }

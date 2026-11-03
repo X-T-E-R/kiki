@@ -18,6 +18,10 @@ import { IFlagService } from '#/app/flag/flag';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionStateService } from '#/session/state/sessionState';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import type { AgentRunHandle } from '#/session/subagent/subagent';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
@@ -136,6 +140,10 @@ describe('SessionSubagentService idle release', () => {
     ix.stub(IBootstrapService, { _serviceBrand: undefined, getEnv: () => undefined } as unknown as IBootstrapService);
     ix.stub(ILogService, { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} } as unknown as ILogService);
     ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
+    ix.stub(ISessionMetadata, {});
+    ix.stub(ISessionContext, {});
+    ix.stub(IAppendLogStore, {});
+    ix.stub(IAtomicDocumentStore, {});
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
   });
 

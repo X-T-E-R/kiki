@@ -285,7 +285,7 @@ describe('autonomous child receipt return', () => {
       expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false });
       const handle = handles.get(closingAgent)!;
       handles.delete(closingAgent);
-      sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); } });
+      sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); }, fail: (error) => { throw error; } });
       expect(drains).toHaveLength(1);
       expect(parent.get(IAgentTaskService).list(false)).toHaveLength(0);
       release.resolve();

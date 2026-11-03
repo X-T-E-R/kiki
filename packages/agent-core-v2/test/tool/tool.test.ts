@@ -422,6 +422,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
     hooks: {
       onWillStartAgentTask: hookSlot(),
     },
+    recoverReceipts: async () => {},
     onDidStopAgentTask: Event.None as KimiEvent<AgentTaskStopHookContext>,
     onWillCreate: Event.None as KimiEvent<IAgentScopeHandle>,
     onDidCreate: Event.None as KimiEvent<IAgentScopeHandle>,

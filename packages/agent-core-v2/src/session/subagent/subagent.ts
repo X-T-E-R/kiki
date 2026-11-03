@@ -56,6 +56,9 @@ export interface ISessionSubagentService {
 
   readonly onDidStopAgentTask: Event<AgentTaskStopHookContext>;
 
+  /** Discover saved autonomous results and restore only their receipt owners without executing child work. */
+  recoverReceipts(): Promise<void>;
+
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle>;
 
   /** Keep the current agent-scope generation resident during admission and preparation without changing execution state. */

@@ -867,7 +867,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (compaction?.promise !== undefined) await collect(() => compaction!.promise.catch(() => undefined), 'cleanup');
       if (promptDrain !== undefined) await collect(() => promptDrain!, 'cleanup');
       if (loop !== undefined) await collect(() => loop!.settled(), 'cleanup');
-      await collect(() => this.onWillSealTranscriptEmitter.fireAsync({ handle }, new AbortController().signal), 'persistence');
+      await collect(() => this.onWillSealTranscriptEmitter.fireAsync({ handle,
+        fail: (error) => { failures.push({ error, domain: 'persistence' }); },
+      }, new AbortController().signal), 'persistence');
       await collect(async () => {
         try {
           await handle.accessor.get(IEventDispatcher).flush();
