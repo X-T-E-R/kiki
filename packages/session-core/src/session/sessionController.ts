@@ -325,7 +325,7 @@ export class SessionController {
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
-  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; includeOlder: boolean; readers: number; blocked: boolean; ref?: ContentRef; controller?: AbortController }>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; paths?: readonly (readonly (string | number)[])[]; includeOlder: boolean; readers: number; blocked: boolean; retryVersion: number; ref?: ContentRef; controller?: AbortController }>();
   private contentPumpRunning = false;
   private readonly contentPumpReads = new Map<string, object>();
   private readonly contentRanges = new Map<string, string>();
@@ -2394,6 +2394,7 @@ export class SessionController {
   }
 
   private accountContentBody(agentId: string, source: ContentSource, base?: ContentWindow): void {
+    if (source.kind === 'snapshot') return;
     const key = JSON.stringify([agentId, source]);
     const previous = this.contentBodies.get(key);
     const entity = this.contentEntity(agentId, source);
@@ -2424,10 +2425,11 @@ export class SessionController {
     this.flushFrames();
   }
 
-  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[], includeOlder = true): { release(): void; retry(): void } {
-    const key = JSON.stringify([agentId, source, roots, includeOlder]);
-    const target = this.contentReaders.get(key) ?? { agentId, source, roots, includeOlder, readers: 0, blocked: false, ref: undefined, controller: undefined };
+  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[], includeOlder = true, paths?: readonly (readonly (string | number)[])[]): { release(): void; retry(): void } {
+    const key = JSON.stringify([agentId, source, roots, includeOlder, paths]);
+    const target = this.contentReaders.get(key) ?? { agentId, source, roots, paths, includeOlder, readers: 0, blocked: false, retryVersion: 0, ref: undefined, controller: undefined };
     target.readers += 1;
+    target.retryVersion += 1;
     target.blocked = false;
     this.contentReaders.set(key, target);
     void this.pumpContentReads();
@@ -2438,31 +2440,32 @@ export class SessionController {
         released = true;
         target.readers -= 1;
         if (target.readers > 0) return;
-        this.retirePartialStructureRead(key);
+        this.retireContentRead(key);
         this.contentReaders.delete(key);
         this.accountContentBody(agentId, source);
         if (target.ref !== undefined && ![...this.contentReaders.values()].some((other) => other.agentId === agentId && JSON.stringify(other.source) === JSON.stringify(source) && other.roots.includes(String(target.ref!.path[0])))) this.cancelContentSegment(agentId, target.ref);
       },
-      retry: () => { target.blocked = false; void this.pumpContentReads(); },
+      retry: () => { if (released) return; target.retryVersion += 1; target.blocked = false; void this.pumpContentReads(); },
     };
   }
 
   retryTurnStructureRead(agentId: string, turnId: string): void {
     for (const target of this.contentReaders.values()) if (target.agentId === agentId && target.source.kind === 'turn' &&
-      target.source.id === turnId && target.roots.includes('steps')) target.blocked = false;
+      target.source.id === turnId && target.roots.includes('steps')) { target.retryVersion += 1; target.blocked = false; }
     void this.pumpContentReads();
   }
 
-  private retirePartialStructureRead(key: string): void {
+  private retireContentRead(key: string): void {
     const target = this.contentReaders.get(key);
-    if (target?.controller === undefined) return;
-    target.controller.abort();
-    this.snapshotControllers.delete(target.controller);
-    target.controller = undefined;
-    target.ref = undefined;
-    target.blocked = false;
+    if (target === undefined) return;
+    if (target.controller !== undefined) {
+      target.controller.abort();
+      this.snapshotControllers.delete(target.controller);
+      target.controller = undefined;
+      if (!this.closed) this.setDetailLoad(target.agentId, `structure:${target.source.id}`, undefined);
+    }
     this.contentPumpReads.delete(key);
-    if (!this.closed) this.setDetailLoad(target.agentId, `structure:${target.source.id}`, undefined);
+    target.blocked = false;
   }
 
   private async pumpContentReads(): Promise<void> {
@@ -2479,6 +2482,7 @@ export class SessionController {
           (entity as TranscriptTurn | undefined)?.stepsPartial === true;
         const ref = partial ? undefined : entity?.contentRefs?.find((candidate) => {
           if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
+            target.paths !== undefined && !target.paths.some(path => path.every((part, index) => candidate.path[index] === part)) ||
             !target.includeOlder && candidate.direction === 'backward') return false;
           return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
         });
@@ -2487,14 +2491,21 @@ export class SessionController {
         target.controller = controller;
         target.ref = ref;
         const flight = {};
+        const retryVersion = target.retryVersion;
         this.contentPumpReads.set(key, flight);
         const read = controller === undefined ? this.loadContentSegment(target.agentId, ref!)
           : this.loadPartialTurnStructure(target.agentId, target.source.id, controller);
         void read.then((applied) => {
           if (this.contentPumpReads.get(key) !== flight) return;
           target.ref = applied ? undefined : ref;
-          if (!applied && target.readers > 0) target.blocked = partial ||
-            this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref!));
+          if (!applied && target.readers > 0 && target.retryVersion === retryVersion) {
+            target.blocked = partial || this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref!));
+            if (target.blocked && ref !== undefined) {
+              const detailKey = `content:${JSON.stringify(ref)}`;
+              const view = target.agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(target.agentId);
+              if (view?.detailLoads[detailKey]?.status !== 'error') this.setDetailLoad(target.agentId, detailKey, { status: 'error', message: 'Content did not advance. Retry to continue.' });
+            }
+          }
         }).finally(() => {
           if (this.contentPumpReads.get(key) !== flight) return;
           target.controller = undefined;
@@ -3251,8 +3262,14 @@ export class SessionController {
   private bumpHistoryGeneration(agentId: string): void {
     this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
     for (const [key, target] of this.contentReaders) if (target.agentId === agentId) {
-      this.retirePartialStructureRead(key);
-      target.blocked = false;
+      this.retireContentRead(key);
+      target.ref = undefined;
+    }
+    for (const [requestKey, controller] of this.contentControllers) if (requestKey.startsWith(`${agentId}/`)) {
+      this.contentControllers.delete(requestKey);
+      this.detailReads.delete(requestKey);
+      controller.abort();
+      this.setDetailLoad(agentId, requestKey.slice(agentId.length + 1), undefined);
     }
     void this.pumpContentReads();
     for (const [key, flight] of this.historyPreviewReads) if (flight.agentId === agentId) {

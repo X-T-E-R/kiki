@@ -4,8 +4,8 @@
  * list is built from. Those refs hang off no rendered body, so their outlet
  * belongs at the end of the reading column, after the last existing row: one
  * quiet summary line, and one row per structure once opened. The controller
- * follows roster array pages automatically; this outlet reports progress or
- * offers recovery. Other fields retain their one-segment action. With no
+ * follows visible snapshot fields and roster array pages automatically; this
+ * outlet reports progress or offers recovery after a failed read. With no
  * visible refs left, the section renders nothing, including on a blank transcript.
  *
  * Labels name what the reader is missing, never a source or a path.
@@ -18,7 +18,7 @@ import type { ContentRef } from '@kiki/transcript';
 import { DisclosureChevron } from './icons';
 import { useI18n } from '../i18n';
 import { ContinuationRow, contentRefProgress } from './ContentContinuation';
-import { useSessionRemainderRefs, type ContentContinuationHandle } from './transcriptDetail';
+import { useAutomaticSessionRead, useSessionRemainderRefs, useTranscriptController, type ContentContinuationHandle } from './transcriptDetail';
 
 /** One structure's unread refs, in the same row shape as a body's continuation. */
 function StructuralRow({
@@ -27,7 +27,9 @@ function StructuralRow({
   refs,
   statusOf,
   onRequest,
+  automatic = false,
 }: {
+  readonly automatic?: boolean;
   readonly kind: string;
   readonly label: string;
   readonly refs: readonly ContentRef[];
@@ -46,7 +48,7 @@ function StructuralRow({
   return (
     <ContinuationRow
       kind={kind}
-      state={statusOf(ref)?.status ?? 'idle'}
+      state={statusOf(ref)?.status === 'error' ? 'error' : automatic ? 'loading' : statusOf(ref)?.status ?? 'idle'}
       progress={refs.length > 1
         ? `${label} · ${progress} · ${tp('transcript.content.morePending', refs.length - 1)}`
         : `${label} · ${progress}`}
@@ -72,6 +74,10 @@ export function SessionRemainder({ className = '', handle }: {
   const [open, setOpen] = useState(false);
   const contextHandle = useSessionRemainderRefs();
   const { pending, statusOf, request } = handle ?? contextHandle;
+  const controller = useTranscriptController();
+  const retry = useAutomaticSessionRead(controller, handle === undefined);
+  const automatic = handle?.automatic ?? controller !== undefined;
+  const requestSession = (ref: ContentRef) => { if (handle === undefined && controller !== undefined) retry(); else request(ref); };
   const sessionRefs = pending.filter((ref) => ref.source.kind === 'snapshot' && ref.path[0] !== 'subagents');
   const rosterRefs = pending.filter((ref) => ref.source.kind === 'roster' || (ref.source.kind === 'snapshot' && ref.path[0] === 'subagents'));
   if (sessionRefs.length === 0 && rosterRefs.length === 0) return null;
@@ -100,7 +106,8 @@ export function SessionRemainder({ className = '', handle }: {
             label={t('transcript.content.remainder.session')}
             refs={sessionRefs}
             statusOf={statusOf}
-            onRequest={request}
+            automatic={automatic}
+            onRequest={requestSession}
           />
           <StructuralRow
             kind="agents"

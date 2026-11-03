@@ -791,6 +791,37 @@ describe('real roster remainder', () => {
   });
 });
 
+it('automatically completes all visible snapshot fields after one real retry and leaves hidden metadata unread', async () => {
+  const source = { kind: 'snapshot' as const, id: '' };
+  const title = boundedRef(source, ['session', 'title'], 'text', 3, 9);
+  const cwd = boundedRef(source, ['session', 'metadata', 'cwd'], 'text', 3, 9);
+  const hidden = boundedRef(source, ['session', 'metadata', 'custom_hidden'], 'text', 3, 9);
+  const read = vi.fn().mockRejectedValueOnce(new Error('Fixture snapshot failure'))
+    .mockImplementation(async ({ ref }: { ref: ContentRef }) => ({ ref, value: ref.offset === 3 ? 'def' : 'ghi', next: ref.offset === 3 ? { ...ref, offset: 6 } : undefined, contentRefs: [] }));
+  const view = { snapshot: async () => ({ session: { id: 'test', title: 'abc', agent_config: { model: '' }, metadata: { cwd: 'abc', custom_hidden: 'abc' } }, as_of_seq: 1, epoch: 'e', in_flight_turn: null, contentRefs: [title, cwd, hidden] }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: callback => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  function SnapshotReading() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="main"><SessionRemainder /></TranscriptDetailProvider>;
+  }
+  try {
+    const container = await render(<SnapshotReading />);
+    await act(async () => { await vi.waitFor(() => expect(controller.getState().detailLoads[contentSegmentKey(title)]?.status).toBe('error')); });
+    await click(container.querySelector('[data-session-remainder-toggle]'));
+    expect(container.querySelector('[data-content-continuation="error"]')).not.toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+    await click(container.querySelector('[data-content-continuation-action]'));
+    await act(async () => { await vi.waitFor(() => expect(controller.getState().contentRefs).toEqual([hidden])); });
+    expect(read).toHaveBeenCalledTimes(5);
+    expect(read.mock.calls.map(([input]) => input.ref.path)).not.toContainEqual(hidden.path);
+    expect(controller.getState().session?.title).toBe('abcdefghi');
+    expect(container.querySelector('[data-session-remainder]')).toBeNull();
+    await act(async () => { roots.pop()!.unmount(); });
+    expect(controller.contentMemoryReport().bodyBytes).toBe(0);
+  } finally { controller.close(); }
+});
+
 it('a real controller-backed open tool automatically finishes both fields without a continuation click', async () => {
   const inputRef = boundedRef(FRAME_SOURCE, ['input', 'prompt'], 'text', 3, 9);
   const outputRef = boundedRef(FRAME_SOURCE, ['output'], 'text', 3, 9);

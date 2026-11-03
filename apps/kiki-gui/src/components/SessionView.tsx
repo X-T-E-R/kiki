@@ -63,6 +63,7 @@ import { WorktreeMark } from './WorktreeMark';
 import {
   contentSegmentKey,
   isSessionRemainderRef,
+  useAutomaticSessionRead,
   TranscriptDetailProvider,
   type ContentContinuationHandle,
 } from './transcriptDetail';
@@ -4905,41 +4906,19 @@ boundExecution,
   // one source, not two copies. A session whose structure the window carried in
   // full reports nothing here and the entry disappears, rather than claiming to
   // have read everything.
+  const retrySessionRead = useAutomaticSessionRead(controller ?? undefined, state.loaded && !state.resyncing);
   const sessionRemainder = useMemo(() => {
     if (controller === null) return undefined;
     const refs = (state.contentRefs ?? []).filter(isSessionRemainderRef);
     if (refs.length === 0) return undefined;
     const loads = state.detailLoads;
-    const loadContent = (ref: ContentRef) => controller.loadContentSegment(MAIN_AGENT_ID, ref);
     return {
+      automatic: true,
       pending: refs,
       statusOf: (ref: ContentRef) => loads[contentSegmentKey(ref)],
-      request: (ref: ContentRef) => { void loadContent(ref); },
+      request: (ref: ContentRef) => { if (ref.source.kind === 'snapshot' && ref.path[0] === 'session') retrySessionRead(); else void controller.loadContentSegment(MAIN_AGENT_ID, ref); },
     } satisfies ContentContinuationHandle;
-  }, [controller, state.contentRefs, state.detailLoads]);
-  // Visible session structure finishes itself the same way the roster does: one
-  // idle remainder ref is read at a time, so the composer's outlet for it stops
-  // being a permanent "not fully read" fixture and disappears once nothing is
-  // left to read. A read that applied nothing parks its ref until a resync or a
-  // new snapshot moves it, so a stuck ref can neither loop the drain nor starve
-  // the refs behind it, and a failed read keeps its error state for the row's
-  // retry.
-  const remainderStalledRef = useRef<ReadonlySet<string>>(new Set());
-  useEffect(() => {
-    if (state.resyncing) {
-      remainderStalledRef.current = new Set();
-      return;
-    }
-    if (controller === null || !state.loaded || sessionRemainder === undefined) return;
-    const refs = sessionRemainder.pending;
-    if (refs.some((ref) => sessionRemainder.statusOf(ref)?.status === 'loading')) return;
-    const next = refs.find((ref) => sessionRemainder.statusOf(ref) === undefined && !remainderStalledRef.current.has(JSON.stringify(ref)));
-    if (next === undefined) return;
-    const key = JSON.stringify(next);
-    void controller.loadContentSegment(MAIN_AGENT_ID, next).then((advanced) => {
-      if (!advanced) remainderStalledRef.current = new Set([...remainderStalledRef.current, key]);
-    });
-  }, [controller, state.loaded, state.resyncing, sessionRemainder]);
+  }, [controller, state.contentRefs, state.detailLoads, retrySessionRead]);
   // A model request parked on a governance permit shows a quiet "Queued" status
   // with an inline detail popover — the rules themselves stay in /usage.
   // The poll mounts only while the line can be visible.

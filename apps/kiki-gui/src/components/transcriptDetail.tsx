@@ -125,6 +125,7 @@ export function contentSegmentKey(ref: ContentRef): string {
 }
 
 export interface ContentContinuationHandle {
+  readonly automatic?: boolean;
   /** Unread refs under this body's path roots, in wire order. */
   readonly pending: readonly ContentRef[];
   readonly statusOf: (ref: ContentRef) => TranscriptDetailStatus | undefined;
@@ -238,6 +239,17 @@ export function useSessionRemainderRefs(): ContentContinuationHandle {
       ref.source.kind === 'roster' || (ref.source.kind === 'snapshot' && showsSnapshotField(ref)));
   }, [api]);
   return useContinuationFor(pending);
+}
+
+export function useAutomaticSessionRead(controller: SessionController | undefined, enabled: boolean): () => void {
+  const lease = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
+  useEffect(() => {
+    if (controller === undefined || !enabled) return;
+    const read = controller.beginContentRead('main', { kind: 'snapshot', id: '' }, ['session'], true, VISIBLE_SNAPSHOT_PATHS);
+    lease.current = read;
+    return () => { read.release(); lease.current = undefined; };
+  }, [controller, enabled]);
+  return useCallback(() => { lease.current?.retry(); }, []);
 }
 
 /** `detailLoads` key of one entity-collection page — the controller's own key. */

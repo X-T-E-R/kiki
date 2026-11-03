@@ -1513,6 +1513,38 @@ describe('automatic target reading', () => {
     }
   });
 
+  it.each(['main', 'child'] as const)('continues the final text segment after a %s reset while the old response is pending', async (agentId) => {
+    const source = { kind: 'task' as const, id: 'task-shell' };
+    const root: ContentRef = { source, revision: 'tail', path: ['outputTail'], kind: 'text', offset: 3, total: 9 };
+    const next = { ...root, offset: 6 };
+    let finishOld!: (segment: import('@kiki/transcript').ContentSegment) => void;
+    let oldSignal: AbortSignal | undefined;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>()
+      .mockResolvedValueOnce({ ref: root, value: 'def', next, contentRefs: [] })
+      .mockImplementationOnce((_input, options) => { oldSignal = options?.signal; return new Promise(resolve => { finishOld = resolve; }); })
+      .mockResolvedValueOnce({ ref: next, value: 'ghi', contentRefs: [] });
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('tail-child', agentId, 'delta');
+    const preview = emptySnapshot({ tasks: [{ ...shellTask('abc', false), contentRefs: [root] }], items: windowed().items });
+    deliver(resetEvent(agentId, preview, 2));
+    const lease = controller.beginContentRead(agentId, source, ['outputTail']);
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(2));
+      deliver(resetEvent(agentId, emptySnapshot({ ...preview, tasks: [{ ...shellTask('abcdef', false), contentRefs: [next] }] }), 3));
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(3));
+      expect(oldSignal?.aborted).toBe(true);
+      await vi.waitFor(() => expect(controller.contentRefsFor(agentId, source)).toEqual([]));
+      expect(state().blocks.find((block): block is ShellBlock => block.kind === 'shell')?.output).toBe('abcdefghi');
+      finishOld({ ref: next, value: 'OLD', contentRefs: [] });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(state().blocks.find((block): block is ShellBlock => block.kind === 'shell')?.output).toBe('abcdefghi');
+      expect(Object.values(state().detailLoads)).not.toContainEqual({ status: 'loading' });
+      expect(content).toHaveBeenCalledTimes(3);
+    } finally { lease.release(); finishOld?.({ ref: next, value: 'OLD', contentRefs: [] }); controller.close(); }
+  });
+
   it('paints the preview first then automatically follows newly discovered child refs; failure resumes with one retry and reopens from cache', async () => {
     const source = { kind: 'task' as const, id: 'task-shell' };
     const root = { source, revision: 'r1', path: ['outputTail'], kind: 'text' as const, offset: 3, total: 9 };
@@ -1558,6 +1590,36 @@ describe('automatic target reading', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(shellOf(controller)?.output).toBe('new target');
     controller.close();
+  });
+
+  it('keeps a retry made at error publication and a reopened reader ahead of the retiring flight', async () => {
+    const source = { kind: 'task' as const, id: 'task-shell' };
+    const ref: ContentRef = { source, revision: 'retry-race', path: ['outputTail'], kind: 'text', offset: 3, total: 9 };
+    const next = { ...ref, offset: 6 };
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>()
+      .mockRejectedValueOnce(new Error('Fixture one failure'))
+      .mockResolvedValueOnce({ ref, value: 'def', next, contentRefs: [] })
+      .mockResolvedValueOnce({ ref: next, value: 'ghi', contentRefs: [] });
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ tasks: [{ ...shellTask('abc', false), contentRefs: [ref] }], items: windowed().items }), 2));
+    const lease = controller.beginContentRead('main', source, ['outputTail']);
+    let retried = false;
+    const unsubscribe = controller.subscribe(() => {
+      if (retried || controller.getState().detailLoads[`content:${JSON.stringify(ref)}`]?.status !== 'error') return;
+      retried = true;
+      lease.retry();
+    });
+    try {
+      await vi.waitFor(() => expect(shellOf(controller)?.output).toBe('abcdefghi'));
+      expect(retried).toBe(true);
+      expect(content).toHaveBeenCalledTimes(3);
+      lease.release();
+      const reopened = controller.beginContentRead('main', source, ['outputTail']);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(content).toHaveBeenCalledTimes(3);
+      reopened.release();
+    } finally { unsubscribe(); lease.release(); controller.close(); }
   });
 
   it('looks up a known call in its real caller without requesting an older history page and copies full selected output', async () => {

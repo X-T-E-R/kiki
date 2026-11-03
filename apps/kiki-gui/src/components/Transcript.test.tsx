@@ -4316,6 +4316,37 @@ describe('user message body sizing', () => {
     }
   });
 
+  it('one user-message retry resumes its automatic reader through the final page without another click', async () => {
+    const { TranscriptDetailProvider, contentSegmentKey } = await import('./transcriptDetail');
+    const { useSyncExternalStore } = await import('react');
+    const source = { kind: 'turn' as const, id: 'retry-user' };
+    const ref: import('@kiki/transcript').ContentRef = { source, path: ['prompt'], revision: 'retry', kind: 'text', offset: 3, total: 9 };
+    const next = { ...ref, offset: 6 };
+    const read = vi.fn().mockRejectedValueOnce(new Error('Fixture failure'))
+      .mockResolvedValueOnce({ ref, value: 'def', next, contentRefs: [] })
+      .mockResolvedValueOnce({ ref: next, value: 'ghi', contentRefs: [] });
+    const view = { snapshot: async () => ({ session: { id: 'test', title: 'Reading' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+    const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: callback => { callback(); return 0; }, cancel() {} } });
+    await controller.open();
+    controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'main', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'abc', steps: [], contentRefs: [ref] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+    function Reading() {
+      const state = useSyncExternalStore(controller.subscribe, controller.getState);
+      return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} loadContent={ref => controller.loadContentSegment('main', ref)} sessionId="test" agentId="main"><Transcript state={state} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} /></TranscriptDetailProvider>;
+    }
+    const { root, container } = makeRoot();
+    try {
+      await renderSettled(root, <Reading />);
+      await act(async () => { await vi.waitFor(() => expect(controller.getState().detailLoads[contentSegmentKey(ref)]?.status).toBe('error')); });
+      expect(container.querySelector('[data-content-continuation="error"]')).not.toBeNull();
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!.click(); });
+      await act(async () => { await vi.waitFor(() => expect(controller.contentRefsFor('main', source)).toEqual([])); });
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(container.querySelector('[data-collapsible-content]')?.textContent).toBe('abcdefghi');
+      expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+    } finally { controller.close(); }
+  });
+
   it('keeps range-backed user text in the canonical range reader rather than an inert ellipsis', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't-range' };
