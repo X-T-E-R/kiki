@@ -1,5 +1,7 @@
 import { Service } from '#/_base/di/service';
 import { observeAutonomousReceipts } from './autonomousReceipt';
+import { autonomousReceiptsKey } from './autonomousReceiptOps';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import {
@@ -80,15 +82,18 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     super();
     this._register(states.contributeState(pendingSubagentReceiptsKey));
     this.releaseGraceMs = resolveReleaseGraceMs((name) => bootstrap.getEnv(name));
+    const receipts = new AbortController();
+    this._register(toDisposable(() => { receipts.abort(); }));
+    this._register(agentLifecycle.onWillCreate((handle) => {
+      if (handle.id !== MAIN_AGENT_ID) handle.accessor.get(IAgentStateService).contributeState(autonomousReceiptsKey);
+    }));
     this._register(agentLifecycle.onDidCreate((handle) => {
       if (handle.id !== MAIN_AGENT_ID) {
         void this.receiptObservers.set(handle.id, observeAutonomousReceipts(handle, (delivery) => {
           const receipt = {
             child: handle,
             parentId: handle.accessor.get(IAgentScopeContext).parentAgentId,
-            settled: delivery.catch((error: unknown) => {
-              this.log.error('autonomous subagent receipt delivery failed', { agentId: handle.id, error });
-            }),
+            settled: delivery,
           };
           this.pendingReceipts.add(receipt);
           this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
@@ -96,8 +101,10 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
             this.pendingReceipts.delete(receipt);
             if (!this.stopped) this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
+          }, (error: unknown) => {
+            if (!this.stopped) this.log.error('autonomous subagent receipt delivery stopped before completion', { agentId: handle.id, error });
           });
-        }));
+        }, receipts.signal));
       }
       if (!this.pendingReleases.has(handle.id)) this.scheduleRelease(handle.id, false);
     }));

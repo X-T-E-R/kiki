@@ -181,12 +181,12 @@ describe('native desktop bridge', () => {
   it('sends and acknowledges notification targets with the same credential-free identity', async () => {
     vi.mocked(isPermissionGranted).mockResolvedValueOnce(true);
     const scope = { homeId: 'home-a', scopeId: 'ssh:example', serverHomeId: 'server-a', connectionRef: 'connection-a', token: 'not-an-identity' };
-    await tauriHost.notify({ title: 'Finished', route: '/s/b', scope, sessionIds: ['b'] });
-    await tauriHost.acknowledgeNotifications('b', scope);
+    await tauriHost.notify({ title: 'Finished', route: '/s/b', scope, sessionIds: ['b'], deliveryId: 'episode-delivery' });
+    await tauriHost.acknowledgeNotifications('b', scope, 'episode-delivery');
     const identity = { homeId: 'home-a', scopeId: 'ssh:example', serverHomeId: 'server-a', connectionRef: 'connection-a' };
     expect(invoke.mock.calls).toEqual([
-      ['send_desktop_notification', { title: 'Finished', body: undefined, route: '/s/b', scope: identity, sessionIds: ['b'] }],
-      ['acknowledge_desktop_notifications', { sessionId: 'b', scope: identity }],
+      ['send_desktop_notification', { title: 'Finished', body: undefined, route: '/s/b', scope: identity, sessionIds: ['b'], deliveryId: 'episode-delivery' }],
+      ['acknowledge_desktop_notifications', { sessionId: 'b', scope: identity, deliveryId: 'episode-delivery' }],
     ]);
   });
 

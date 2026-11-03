@@ -37,6 +37,7 @@ export interface HostNotification {
   readonly scopeId?: string;
   readonly scope?: NavScopeIdentity;
   readonly sessionIds?: readonly string[];
+  readonly deliveryId?: string;
   /** Same tag replaces the previous notification where the platform supports it. */
   readonly tag?: string;
 }
@@ -147,7 +148,7 @@ export interface HostSaveSink {
 interface HostCapabilities {
   readonly connection: HostConnectionAdapter;
   notify?: (options: HostNotification) => Promise<void>;
-  acknowledgeNotifications?: (sessionId: string, scope: NavScopeIdentity) => Promise<void>;
+  acknowledgeNotifications?: (sessionId: string, scope: NavScopeIdentity, deliveryId?: string) => Promise<void>;
   /**
    * Clicks on notifications this app raised, with the `route` they carried.
    * Present where the shell reports clicks back to the page; the returned

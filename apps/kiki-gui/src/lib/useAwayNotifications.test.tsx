@@ -32,7 +32,7 @@ let navigate: ReturnType<typeof useNavigate>;
 let replaceSessions: (rows: Session[]) => void;
 const notify = vi.fn(async (_notification: import('../host').HostNotification) => {});
 const badge = vi.fn(async (_count: number, _homeId?: string, _scopeId?: string, _sessionIds?: readonly string[]) => {});
-const acknowledge = vi.fn(async (_sessionId: string, _scope: unknown) => {});
+const acknowledge = vi.fn(async (_sessionId: string, _scope: unknown, _deliveryId?: string) => {});
 const host = { kind: 'browser', notify, setUnreadBadge: badge, acknowledgeNotifications: acknowledge,
   isWindowVisibleAndFocused: async () => focused } as unknown as HostAdapter;
 
@@ -56,7 +56,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   completions = []; focused = true; visible = true;
   localStorage.clear(); configureSpaceStorage({ homeId: 'home-example' }); resetSessionSeen();
-  awayNotifier.reset(); notify.mockClear(); badge.mockClear(); acknowledge.mockClear();
+  awayNotifier.reset(); notify.mockReset(); badge.mockClear(); acknowledge.mockReset();
   connection.client.notifications.listCompletions.mockImplementation(async () => completions);
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
@@ -115,6 +115,37 @@ describe('conversation completion and read confirmation', () => {
     expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toHaveLength(1);
     await act(async () => { finishSending(); });
     expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toHaveLength(2);
+  });
+
+  it('N052-F2: reconciles a pending delivery read before leaving, without acknowledging another episode or scope', async () => {
+    type Entry = import('../host').HostNotification;
+    const retained = new Map<string, Entry>();
+    let finishSending!: () => void;
+    notify.mockImplementationOnce(async (notification) => {
+      await new Promise<void>((resolve) => { finishSending = resolve; });
+      retained.set(notification.deliveryId!, notification);
+    });
+    acknowledge.mockImplementation(async (id, scope, deliveryId) => {
+      for (const [key, entry] of retained) {
+        if (JSON.stringify(entry.scope) !== JSON.stringify(scope) || (deliveryId !== undefined && key !== deliveryId)) continue;
+        if (entry.sessionIds?.includes(id)) retained.delete(key);
+      }
+    });
+    await mount('/s/a');
+    completions = [{ session_id: 'b', episode_id: 'pending-b', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const sending = notify.mock.calls[0]![0];
+    await act(async () => { await navigate('/s/b'); });
+    expect(sessionSeenSnapshot()).toMatchObject({ b: 10 });
+    await act(async () => { await navigate('/s/a'); });
+    retained.set('new-episode-b', { ...sending, deliveryId: 'new-episode-b' });
+    retained.set('unread-c', { ...sending, sessionIds: ['c'], deliveryId: 'unread-c' });
+    retained.set('other-scope-b', { ...sending, scope: { ...sending.scope!, scopeId: 'ssh:example' }, deliveryId: 'other-scope-b' });
+    await act(async () => { finishSending(); });
+    expect([...retained.keys()]).toEqual(['new-episode-b', 'unread-c', 'other-scope-b']);
+    expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toEqual([
+      ['b', sending.scope], ['b', sending.scope, sending.deliveryId],
+    ]);
   });
 
   it('does not mark an open background conversation read; focus confirms its latest sequence', async () => {

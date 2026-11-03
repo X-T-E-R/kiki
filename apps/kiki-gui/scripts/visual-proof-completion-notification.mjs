@@ -39,7 +39,7 @@ const result = await runProof({
         if (command === 'acknowledge_desktop_notifications') {
           state.acknowledged.push(args);
           state.retained = state.retained.filter((entry) => {
-            if (JSON.stringify(entry.scope) !== JSON.stringify(args.scope)) return true;
+            if (JSON.stringify(entry.scope) !== JSON.stringify(args.scope) || (args.deliveryId !== undefined && entry.deliveryId !== args.deliveryId)) return true;
             entry.sessionIds = entry.sessionIds.filter((id) => id !== args.sessionId);
             return entry.sessionIds.length > 0;
           });

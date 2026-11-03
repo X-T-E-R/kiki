@@ -3,7 +3,7 @@ import { deferred } from '../../deferred';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { Emitter } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
@@ -17,6 +17,8 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import type { AgentRunHandle } from '#/session/subagent/subagent';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
@@ -122,6 +124,7 @@ describe('SessionSubagentService idle release', () => {
     ix.stub(IAgentLifecycleService, {
       _serviceBrand: undefined,
       get: (agentId: string) => agents.get(agentId)?.handle,
+      onWillCreate: Event.None,
       onDidCreate: created.event,
       remove,
     } as unknown as IAgentLifecycleService);
@@ -132,6 +135,7 @@ describe('SessionSubagentService idle release', () => {
     ix.stub(IFlagService, stubFlag(() => flagEnabled));
     ix.stub(IBootstrapService, { _serviceBrand: undefined, getEnv: () => undefined } as unknown as IBootstrapService);
     ix.stub(ILogService, { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} } as unknown as ILogService);
+    ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
   });
 

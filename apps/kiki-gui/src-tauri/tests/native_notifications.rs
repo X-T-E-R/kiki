@@ -3,8 +3,41 @@
 #[path = "../src/desktop_notifications.rs"]
 mod desktop_notifications;
 
-use desktop_notifications::{acknowledge, register_application, show, NotificationScope};
-use std::{sync::mpsc, thread, time::Duration};
+use desktop_notifications::{register_application, NotificationScope};
+use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
+
+fn registry_path() -> PathBuf {
+    PathBuf::from(
+        std::env::var("KIKI_NOTIFICATION_FIXTURE_OUTPUT")
+            .expect("set an isolated fixture output path"),
+    )
+    .with_extension("registry.json")
+}
+
+fn show(
+    application_id: &str,
+    title: &str,
+    body: &str,
+    scope: Option<NotificationScope>,
+    sessions: Vec<String>,
+    activate: impl Fn() + Send + Sync + 'static,
+) -> Result<String, String> {
+    desktop_notifications::show(
+        application_id,
+        &registry_path(),
+        title,
+        body,
+        scope,
+        sessions,
+        None,
+        activate,
+    )
+}
+
+fn acknowledge(session: &str, scope: &NotificationScope) -> Result<(), String> {
+    let application_id = std::env::var("KIKI_NOTIFICATION_FIXTURE_AUMID").unwrap();
+    desktop_notifications::acknowledge(&application_id, &registry_path(), session, scope, None)
+}
 use windows::{core::HSTRING, UI::Notifications::ToastNotificationManager};
 
 fn contains(application_id: &str, tag: &str) -> bool {
@@ -150,4 +183,149 @@ fn isolated_native_notification_retention_and_acknowledgment() {
     if let Err(error) = run {
         std::panic::resume_unwind(error);
     }
+}
+
+#[test]
+#[ignore = "child stage for the isolated cross-process fixture"]
+fn isolated_native_restart_stage() {
+    let stage = std::env::var("KIKI_NOTIFICATION_FIXTURE_STAGE").unwrap();
+    let output = PathBuf::from(std::env::var("KIKI_NOTIFICATION_FIXTURE_OUTPUT").unwrap());
+    let application_id = std::env::var("KIKI_NOTIFICATION_FIXTURE_AUMID").unwrap();
+    assert!(application_id.starts_with("ai.easyagent.kiki.notification-fixture."));
+    assert_eq!(desktop_notifications::retained_count(), 0);
+    if stage == "send" {
+        let scope = NotificationScope {
+            home_id: "restart-fixture-home".into(),
+            scope_id: "local".into(),
+            server_home_id: Some("restart-fixture-server".into()),
+            connection_ref: Some("restart-fixture-connection".into()),
+        };
+        let b = show(
+            &application_id,
+            "Kiki restart fixture B",
+            "Only reading B removes this entry.",
+            Some(scope.clone()),
+            vec!["b".into()],
+            || {},
+        )
+        .unwrap();
+        let c = show(
+            &application_id,
+            "Kiki restart fixture C",
+            "Reading B must keep C.",
+            Some(scope.clone()),
+            vec!["c".into()],
+            || {},
+        )
+        .unwrap();
+        let merged = show(
+            &application_id,
+            "Kiki restart fixture B+C",
+            "Both conversations must be read.",
+            Some(scope.clone()),
+            vec!["b".into(), "c".into()],
+            || {},
+        )
+        .unwrap();
+        for tag in [&b, &c, &merged] {
+            assert!(contains(&application_id, tag));
+        }
+        std::fs::write(
+            &output,
+            serde_json::to_vec(
+                &serde_json::json!({ "scope": scope, "b": b, "c": c, "merged": merged }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    } else {
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        let scope: NotificationScope = serde_json::from_value(saved["scope"].clone()).unwrap();
+        let b = saved["b"].as_str().unwrap();
+        let c = saved["c"].as_str().unwrap();
+        let merged = saved["merged"].as_str().unwrap();
+        if stage == "read-b" {
+            for tag in [b, c, merged] {
+                assert!(
+                    contains(&application_id, tag),
+                    "entry must survive the sender process exiting"
+                );
+            }
+            for other in [
+                NotificationScope {
+                    home_id: "other-home".into(),
+                    ..scope.clone()
+                },
+                NotificationScope {
+                    scope_id: "ssh:example".into(),
+                    ..scope.clone()
+                },
+                NotificationScope {
+                    server_home_id: Some("other-server".into()),
+                    ..scope.clone()
+                },
+                NotificationScope {
+                    connection_ref: Some("other-connection".into()),
+                    ..scope.clone()
+                },
+            ] {
+                acknowledge("b", &other).unwrap();
+                for tag in [b, c, merged] {
+                    assert!(contains(&application_id, tag));
+                }
+            }
+            acknowledge("b", &scope).unwrap();
+            assert!(!contains(&application_id, b));
+            assert!(contains(&application_id, c));
+            assert!(contains(&application_id, merged));
+        } else {
+            assert_eq!(stage, "read-c");
+            assert!(!contains(&application_id, b));
+            assert!(contains(&application_id, c));
+            assert!(contains(&application_id, merged));
+            acknowledge("c", &scope).unwrap();
+            for tag in [b, c, merged] {
+                assert!(!contains(&application_id, tag));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "sends task-owned native toasts and opens three fixture subprocesses; no backend or Kiki home"]
+fn isolated_native_notification_restart_acknowledgment() {
+    let application_id = std::env::var("KIKI_NOTIFICATION_FIXTURE_AUMID").unwrap();
+    assert!(application_id.starts_with("ai.easyagent.kiki.notification-fixture."));
+    register_application(&application_id, "Kiki isolated restart fixture").unwrap();
+    let exe = std::env::current_exe().unwrap();
+    for stage in ["send", "read-b", "read-c"] {
+        let child = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "isolated_native_restart_stage",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KIKI_NOTIFICATION_FIXTURE_STAGE", stage)
+            .output()
+            .unwrap();
+        print!(
+            "stage={stage}\n{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(child.status.success(), "restart stage {stage} failed");
+        if stage == "send" {
+            thread::sleep(Duration::from_secs(12));
+        }
+    }
+    let output = PathBuf::from(std::env::var("KIKI_NOTIFICATION_FIXTURE_OUTPUT").unwrap());
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    receipt["stage"] = "passed".into();
+    receipt["cross_process_exact_ack"] = true.into();
+    receipt["wrong_scope_retained"] = true.into();
+    receipt["merged_partial_ack_survived_restart"] = true.into();
+    std::fs::write(output, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
 }

@@ -40,6 +40,12 @@ import { useThreadTitleResolver } from './threadTitles';
 /** Poll cadence while the document is hidden (the visible app polls on its own). */
 export const HIDDEN_POLL_INTERVAL_MS = 20_000;
 
+const sendingNotifications = new Set<{
+  readonly scopeKey: string;
+  readonly sessionIds: readonly string[];
+  readonly viewed: Set<string>;
+}>();
+
 export interface AwayNotificationsOptions {
   readonly host: HostAdapter;
   readonly sessions: readonly Session[];
@@ -140,7 +146,6 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       awayNotifier.configure(undefined);
       return;
     }
-    let stopped = false;
     const isViewingSession = (sessionId: string) => {
       const route = `/s/${encodeURIComponent(sessionId)}`;
       return routeRef.current === route || routeRef.current.startsWith(`${route}/`);
@@ -150,15 +155,19 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       isViewingSession,
       scopeKey,
       notify: async (notification) => {
-        await notify(notification);
-        if (stopped || !(await isConversationWindowFocused(host)) || stopped) return;
-        for (const id of notification.sessionIds ?? []) {
-          if (isViewingSession(id)) await host.acknowledgeNotifications?.(id, scope);
+        const deliveryId = crypto.randomUUID();
+        const sending = { scopeKey, sessionIds: notification.sessionIds ?? [], viewed: new Set<string>() };
+        sendingNotifications.add(sending);
+        try {
+          await notify({ ...notification, deliveryId });
+          for (const id of sending.viewed) await host.acknowledgeNotifications?.(id, scope, deliveryId);
+        } finally {
+          sendingNotifications.delete(sending);
         }
       },
       format: (notification) => formatRef.current(notification),
     });
-    return () => { stopped = true; awayNotifier.configure(undefined); };
+    return () => { awayNotifier.configure(undefined); };
   }, [host, scope, scopeKey]);
 
   // Diff every list the app (or the hidden poll) observes.
@@ -267,6 +276,10 @@ export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: 
     const confirm = async () => {
       if (await isConversationWindowFocused(host) && !stopped && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
         markSessionSeen(sessionId, lastSeq);
+        const scopeKey = JSON.stringify(scope);
+        for (const sending of sendingNotifications) {
+          if (sending.scopeKey === scopeKey && sending.sessionIds.includes(sessionId)) sending.viewed.add(sessionId);
+        }
         await host.acknowledgeNotifications?.(sessionId, scope);
       }
     };

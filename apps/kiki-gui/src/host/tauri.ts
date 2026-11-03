@@ -177,10 +177,10 @@ export const tauriHost: TauriHostAdapter = {
   async notify(options) {
     if (!(await ensureNotificationPermission())) return;
     await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route,
-      scope: notificationScope(options.scope), sessionIds: options.sessionIds });
+      scope: notificationScope(options.scope), sessionIds: options.sessionIds, deliveryId: options.deliveryId });
   },
-  async acknowledgeNotifications(sessionId, scope) {
-    await invoke('acknowledge_desktop_notifications', { sessionId, scope: notificationScope(scope) });
+  async acknowledgeNotifications(sessionId, scope, deliveryId) {
+    await invoke('acknowledge_desktop_notifications', { sessionId, scope: notificationScope(scope), deliveryId });
   },
   onNotificationClick,
   async setUnreadBadge(count, homeId, scopeId, sessionIds) {

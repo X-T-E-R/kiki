@@ -1,13 +1,15 @@
-import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'pathe';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { ILogService } from '#/_base/log/log';
 import { IEventBus } from '#/app/event/eventBus';
-import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { AgentTaskPersistence } from '#/agent/task/persist';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -17,74 +19,79 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
+import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { mirrorAgentRun, SubagentStarted } from './mirrorAgentRun';
-import { latestAssistantText } from './runAgentTurn';
+import { SubagentCompleted, SubagentStarted } from './mirrorAgentRun';
+import { ISessionSubagentService } from './subagent';
+import { autonomousReceiptsKey, AutonomousReceiptDelivered, type AutonomousReceipt } from './autonomousReceiptOps';
 
 export const AUTONOMOUS_RECEIPT_POLICY_LABEL = 'autonomousReceiptPolicy';
 
-export function observeAutonomousReceipts(
-  child: IAgentScopeHandle,
-  track: (delivery: Promise<void>) => void,
-): IDisposable {
+export function observeAutonomousReceipts(child: IAgentScopeHandle, track: (delivery: Promise<void>) => void, signal: AbortSignal): IDisposable {
   const subscriptions = new DisposableStore();
   const parentId = child.accessor.get(IAgentScopeContext).parentAgentId;
   if (parentId === undefined) return subscriptions;
-  const turns = new Map<number, number>();
-  const events = child.accessor.get(IEventBus);
-  subscriptions.add(events.subscribe(TurnStarted, (event) => {
-    const policy = child.accessor.get(ISessionMetadata).snapshot().agents?.[child.id]?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL];
-    if (event.parentReceiptManaged !== true && policy !== 'local') turns.set(event.turnId, event.time);
-  }));
-  subscriptions.add(events.subscribe(TurnEnded, (event) => {
-    const startedAt = turns.get(event.turnId);
-    turns.delete(event.turnId);
-    if (startedAt === undefined || event.reason !== 'completed') return;
-    const summary = latestAssistantText(child.accessor.get(IAgentContextMemoryService).get()
-      .filter((message) => message.source?.turnId === event.turnId));
-    if (summary.trim().length === 0) return;
-    const usage = child.accessor.get(IAgentUsageService).status().total;
-    track(returnReceipt(child, parentId, startedAt, summary, usage));
-  }));
+  const states = child.accessor.get(IAgentStateService);
+  const pending = new Set<number>();
+  let tail = Promise.resolve();
+  const recover = () => {
+    for (const receipt of Object.values(states.get(autonomousReceiptsKey).pending)) {
+      if (pending.has(receipt.turnId)) continue;
+      pending.add(receipt.turnId);
+      const delivery = tail.then(() => returnReceipt(child, parentId, receipt, signal));
+      tail = delivery.catch(() => {});
+      track(delivery);
+    }
+  };
+  subscriptions.add(child.accessor.get(IEventBus).subscribe(TurnEnded, recover));
+  recover();
   return subscriptions;
 }
 
-async function returnReceipt(
-  child: IAgentScopeHandle,
-  parentId: string,
-  startedAt: number,
-  summary: string,
-  usage: ReturnType<IAgentUsageService['status']>['total'],
-): Promise<void> {
+async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt: AutonomousReceipt, signal: AbortSignal): Promise<void> {
+  const retry = async <T>(operation: () => Promise<T>): Promise<T> => {
+    let attempt = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      try { return await operation(); }
+      catch (error) {
+        child.accessor.get(ILogService).error('autonomous subagent receipt persistence failed; original receipt retained for recovery', { agentId: child.id, turnId: receipt.turnId, taskId, error });
+        await delay([100, 500, 2000, 10000][attempt++] ?? 30_000, undefined, { signal, ref: false });
+      }
+    }
+  };
+  const receiptId = createHash('sha256').update(`${child.id}:${String(receipt.turnId)}`).digest('hex');
+  const taskId = `agent-receipt-${receiptId.slice(0, 56)}-${receiptId.slice(56)}`;
   const metadata = child.accessor.get(ISessionMetadata);
-  const meta = await metadata.read();
+  if (metadata.snapshot().agents?.[child.id]?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local') {
+    const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
+    await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
+    return;
+  }
+  const meta = await retry(() => metadata.read());
   const previous = meta.agents?.[child.id];
   const profile = child.accessor.get(IAgentProfileService).data();
   const profileName = profile.profileName ?? previous?.labels?.['profileName'] ?? 'subagent';
-  const description = previous?.taskId === undefined
+  const description = previous?.taskId === undefined || previous.taskId === taskId
     ? `Continue ${profileName} agent`
     : `Continue ${profileName} agent after ${previous.taskId} (${previous.status ?? 'ended'})`;
   const parent = meta.archived ? undefined : child.accessor.get(IAgentLifecycleService).get(parentId);
   const tasks = parent?.accessor.get(IAgentTaskService);
-  const taskId = tasks?.allocateTaskId?.('agent') ?? `agent-${randomBytes(4).toString('hex')}`;
   const requester = parent ?? child;
-  await metadata.updateAgent(child.id, (current) => ({
-    ...current,
+  const usage = child.accessor.get(IAgentUsageService).status().total;
+  const contextTokens = child.accessor.get(IAgentTokenCountingService)?.statusSize();
+  await retry(() => metadata.updateAgent(child.id, (current) => acknowledgeResumeOutcome({
+    ...current, status: 'completed', taskId, completedAt: receipt.endedAt, resultSummary: receipt.summary, usage, contextTokens, error: undefined,
     labels: { ...current.labels, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
-  }));
-  await requester.accessor.get(IEventDispatcher).dispatch(new SubagentStarted({ subagentId: child.id, taskId }));
-  await mirrorAgentRun(requester, {
-    agentId: child.id,
-    completion: Promise.resolve({ summary, usage }),
-  }, {
-    profileName,
-    signal: new AbortController().signal,
-    deferStarted: true,
-    resolveTaskId: () => taskId,
-  });
+  }, taskId, receipt.endedAt)));
+  const dispatcher = requester.accessor.get(IEventDispatcher);
+  const started = new SubagentStarted({ subagentId: child.id, taskId });
+  await retry(() => dispatcher.dispatchDurably(started));
+  const completed = new SubagentCompleted({ subagentId: child.id, taskId, resultSummary: receipt.summary, usage, contextTokens });
+  await retry(() => dispatcher.dispatchDurably(completed));
   const info = {
     kind: 'agent' as const, status: 'completed' as const,
-    taskId, description, detached: true, startedAt, endedAt: Date.now(), ownerAgentId: parentId,
+    taskId, description, detached: true, startedAt: receipt.startedAt, endedAt: receipt.endedAt, ownerAgentId: parentId,
     goalId: previous?.taskId === undefined ? undefined : tasks?.getTask(previous.taskId)?.goalId,
     agentId: child.id, profile: profileName,
     model: profile.modelAlias,
@@ -93,13 +100,13 @@ async function returnReceipt(
     executorProtocol: profile.executorProtocol,
   };
   if (tasks !== undefined) {
-    await tasks.recordCompletedTask(info, summary);
-    return;
+    await retry(() => tasks.recordCompletedTask(info, receipt.summary));
+  } else {
+    const session = child.accessor.get(ISessionContext);
+    const persistence = new AgentTaskPersistence(join(session.sessionDir, 'agents', parentId), session.scope(`agents/${parentId}`), child.accessor.get(IAtomicDocumentStore), child.accessor.get(IFileSystemStorageService));
+    await retry(() => persistence.commitTerminalTask(info, receipt.summary));
   }
-  const session = child.accessor.get(ISessionContext);
-  const persistence = new AgentTaskPersistence(
-    join(session.sessionDir, 'agents', parentId), session.scope(`agents/${parentId}`),
-    child.accessor.get(IAtomicDocumentStore), child.accessor.get(IFileSystemStorageService),
-  );
-  await persistence.commitTerminalTask(info, summary);
+  const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
+  await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
+  requester.accessor.get(ISessionSubagentService)?.notifyAgentTaskStopped({ agentName: profileName, response: receipt.summary });
 }

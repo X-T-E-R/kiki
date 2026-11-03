@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 120 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 121 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -152,6 +152,7 @@
 //     staleGuard                                      src/features/staleGuard/staleGuardOps.ts
 //     stepRetry.failedAttempts                        src/agent/stepRetry/stepRetryService.ts
 //     stepRetry.lastFailedDriverId                    src/agent/stepRetry/stepRetryService.ts
+//     subagent.autonomousReceipts                     src/session/subagent/autonomousReceiptOps.ts
 //     task                                            src/agent/task/taskOps.ts
 //     task.activeTaskReminderPending                  src/agent/task/taskService.ts
 //     task.deliveredNotificationKeys                  src/agent/task/taskService.ts
@@ -8355,6 +8356,21 @@ export interface AgentStateSnapshot {
     readonly resolved: boolean;
     readonly response?: unknown;
   }>;
+  // src/session/subagent/autonomousReceiptOps.ts
+  // replayable · durable — folds: TurnPrompt, TurnStarted, ContextAppendLoopEvent, ContextAppendMessage, TurnEnded, AutonomousReceiptDelivered
+  'subagent.autonomousReceipts': {
+    pending: Record<string, {
+      turnId: number;
+      startedAt: number;
+      endedAt: number;
+      summary: string;
+    }>;
+    active?: {
+      turnId: number;
+      startedAt: number;
+      summary: string;
+    };
+  };
   // src/session/todo/continuityState.ts
   // replayable · durable — folds: TurnPrompt, TurnSteer, ContextAppendLoopEvent, ContextAppendMessage, ToolsUpdateStore
   'todo.continuityClock': /* ContinuityClock — packages/agent-core-v2/src/session/todo/continuityState.ts */ {

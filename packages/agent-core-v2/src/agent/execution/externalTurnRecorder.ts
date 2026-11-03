@@ -187,6 +187,7 @@ export class ExternalTurnRecorder {
         input: [{ type: 'text', text: prompt }, ...attachments],
         origin,
         promptId,
+        parentReceiptManaged: this.metadata.parentReceiptManaged === true,
       }),
     );
     await this.#dispatcher.dispatch(
