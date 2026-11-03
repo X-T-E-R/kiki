@@ -147,13 +147,13 @@ describe('http transport', () => {
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveOld = resolve; }))
       .mockResolvedValue(jsonResponse(okEnvelope({ generation: 'new' })));
     const channel = new HttpChannel({ endpoint: 'http://127.0.0.1:41001', token: 'old-token', fetch: fetcher });
-    const pending = channel.call({ kind: 'core' }, 'example', 'write', ['one submission']);
+    const pending = channel.call({}, 'example', 'write', ['one submission']);
     const failed = expect(pending).rejects.toMatchObject({ reason: 'transport.connection_changed' });
     channel.rebind({ endpoint: 'http://127.0.0.1:42002', token: 'new-token' });
     expect(fetcher.mock.calls[0]![1].signal.aborted).toBe(true);
     resolveOld(jsonResponse(okEnvelope({ generation: 'old' })));
     await failed;
-    await expect(channel.call({ kind: 'core' }, 'example', 'read', [])).resolves.toEqual({ generation: 'new' });
+    await expect(channel.call({}, 'example', 'read', [])).resolves.toEqual({ generation: 'new' });
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls.map(([url, init]) => [String(url), init.headers.authorization])).toEqual([
       ['http://127.0.0.1:41001/api/klient/call', 'Bearer old-token'],
