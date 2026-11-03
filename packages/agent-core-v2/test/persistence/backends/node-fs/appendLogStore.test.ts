@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'pathe';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -88,6 +92,41 @@ describe('AppendLogStore', () => {
 
   it('reads nothing from an empty log', async () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([]);
+  });
+
+  it('reads an exact file-backed EOF as empty and preserves incremental tails, cancellation and storage failures', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-append-eof-'));
+    const files = new FileStorageService(home);
+    ix.stub(IFileSystemStorageService, files);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const logs = ix.get(IAppendLogStore);
+    const read = async (startOffset: number, endOffset?: number, signal?: AbortSignal) => {
+      const values: Rec[] = [];
+      for await (const value of logs.read<Rec>(SCOPE, KEY, { startOffset, endOffset, signal })) values.push(value);
+      return values;
+    };
+    try {
+      expect(await read(0)).toEqual([]);
+      await files.write(SCOPE, KEY, new Uint8Array());
+      expect(await read(0)).toEqual([]);
+      logs.append(SCOPE, KEY, { n: 1 });
+      await logs.flush(SCOPE, KEY);
+      const end = (await files.size(SCOPE, KEY))!;
+      expect(await read(end)).toEqual([]);
+      expect(await read(end, end)).toEqual([]);
+      logs.append(SCOPE, KEY, { n: 2 });
+      expect(await read(end)).toEqual([{ n: 2 }]);
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(read((await files.size(SCOPE, KEY))!, undefined, aborted.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      const failure = new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'isolated size failure');
+      files.size = async () => { throw failure; };
+      await expect(read(end)).rejects.toBe(failure);
+    } finally {
+      await logs.close();
+      await files.close();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('append + read round-trips records in order', async () => {

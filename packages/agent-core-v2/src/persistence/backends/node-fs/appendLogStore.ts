@@ -236,6 +236,10 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     let lineNumber = 0;
     let position = options?.startOffset ?? 0;
     const end = options?.endOffset ?? (options?.startOffset === undefined ? undefined : await this.storage.size(scope, key));
+    if (end !== undefined && position >= end) {
+      options?.signal?.throwIfAborted();
+      return;
+    }
     const range = end === undefined ? undefined : { start: position, end: end - 1 };
     for await (const chunk of readLogicalBytes(this.storage, scope, key, range, {
       signal: options?.signal,
