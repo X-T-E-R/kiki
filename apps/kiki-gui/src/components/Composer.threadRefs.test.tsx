@@ -51,6 +51,7 @@ function referenced(): Session {
     created_at: '2026-01-01T10:00:00.000Z',
     updated_at: '2026-01-01T11:30:00.000Z',
     busy: true,
+    executing: true,
     pending_interaction: 'none',
     metadata: { cwd: 'C:/src/kiki' },
     agent_config: { model: '' },

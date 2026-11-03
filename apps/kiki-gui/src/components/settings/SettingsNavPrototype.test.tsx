@@ -87,9 +87,9 @@ async function render(node: React.ReactNode, queryClient = new QueryClient({ def
 const noop = () => {};
 
 describe('candidate nav trees', () => {
-  it('taskflow keeps all 27 leaves exactly once, in eight task groups', () => {
+  it('taskflow keeps all 28 leaves exactly once, in eight task groups', () => {
     const { placed, missing, duplicated } = navTreeCoverage(TASKFLOW_NAV_TREE);
-    expect(placed).toHaveLength(27);
+    expect(placed).toHaveLength(28);
     expect(missing).toEqual([]);
     expect(duplicated).toEqual([]);
     const groups = TASKFLOW_NAV_TREE.filter((node) => node.kind === 'group');
@@ -99,7 +99,7 @@ describe('candidate nav trees', () => {
     ]);
     const sectionsOf = (id: string) =>
       (TASKFLOW_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as SettingsNavGroupSpecLike).sections;
-    expect(sectionsOf('models-accounts')).toEqual(['ai', 'identity']);
+    expect(sectionsOf('models-accounts')).toEqual(['ai', 'recipes', 'identity']);
     expect(sectionsOf('rules-alerts')).toEqual(['permissions', 'notifications', 'hooks']);
     expect(sectionsOf('capabilities')).toEqual(['plugins', 'skills', 'mcp', 'search', 'browser-control', 'computer-control']);
     expect(sectionsOf('connection-spaces')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
@@ -107,7 +107,7 @@ describe('candidate nav trees', () => {
 
   it('objects folds identity into the AI page and differs from taskflow by exactly that leaf', () => {
     const { placed, missing, duplicated } = navTreeCoverage(OBJECTS_NAV_TREE);
-    expect(placed).toHaveLength(26);
+    expect(placed).toHaveLength(27);
     expect(missing).toEqual(['identity']);
     expect(duplicated).toEqual([]);
     expect(objectsSectionTarget('identity')).toBe('ai?tab=identity');
@@ -125,7 +125,7 @@ describe('candidate nav trees', () => {
       expect(twin).toMatchObject({ labelKey: node.labelKey, sections: node.sections });
     }
     const accounts = OBJECTS_NAV_TREE.find((node) => node.kind === 'group' && node.id === 'models-accounts');
-    expect(accounts?.kind === 'group' ? accounts.sections : []).toEqual(['ai']);
+    expect(accounts?.kind === 'group' ? accounts.sections : []).toEqual(['ai', 'recipes']);
   });
 
   it('every shipped destination also exists in both candidates', () => {
@@ -161,9 +161,9 @@ describe('candidate nav trees', () => {
     expect(navTreeForMode('purpose')).toBe(PURPOSE_NAV_TREE);
   });
 
-  it('purpose keeps all 27 leaves exactly once in seven purpose groups, identity demoted to last', () => {
+  it('purpose keeps all 28 leaves exactly once in seven purpose groups, identity demoted to last', () => {
     const { placed, missing, duplicated } = navTreeCoverage(PURPOSE_NAV_TREE);
-    expect(placed).toHaveLength(27);
+    expect(placed).toHaveLength(28);
     expect(missing).toEqual([]);
     expect(duplicated).toEqual([]);
     expect(PURPOSE_NAV_TREE.filter((node) => node.kind === 'group').map((group) => group.id)).toEqual([
@@ -171,7 +171,7 @@ describe('candidate nav trees', () => {
     ]);
     const sectionsOf = (id: string) =>
       (PURPOSE_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as SettingsNavGroupSpecLike).sections;
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents', 'identity']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'recipes', 'agents', 'subagents', 'identity']);
     expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
     // Workspaces and spaces deliberately stay in different groups.
     expect(sectionsOf('sessions-work')).toContain('workspaces');

@@ -2109,9 +2109,13 @@ describe('server-v2 /api/sessions', () => {
     });
     expect(got.body.data.usage.total_cost_usd).toBeCloseTo(0.00008295, 12);
     expect(got.body.data.usage.by_model?.['claude-sonnet-4-5']).toBeCloseTo(0.00008295, 12);
+    expect(got.body.data.usage.accounting).toMatchObject({ complete: false, freshness: 'unverified' });
 
-    const { accounting, ...legacyUsage } = got.body.data.usage;
-    expect(accounting).toMatchObject({
+    const legacyUsage = { ...got.body.data.usage };
+    delete legacyUsage.accounting;
+    const settled = await getJson<UsageAccountingSnapshot>(`/api/usage/sessions/${id}/accounting`);
+    expect(settled.body.code).toBe(0);
+    expect(settled.body.data).toMatchObject({
       version: 2,
       subject: { scope: 'session', session_id: id },
       tokens: { input_other: 111, output: 23, input_cache_read: 4, input_cache_creation: 1 },
@@ -2120,9 +2124,14 @@ describe('server-v2 /api/sessions', () => {
       complete: true,
       covered_at: expect.any(Number),
     });
-    expect(accounting?.cost_usd_estimated).toBeCloseTo(0.00008295, 12);
-    expect(accounting?.source_revision).toContain('main:');
-    expect(accounting?.source_revision).toContain('cold-usage-worker:');
+    expect(settled.body.data.cost_usd_estimated).toBeCloseTo(0.00008295, 12);
+    expect(settled.body.data.source_revision).toContain('main:');
+    expect(settled.body.data.source_revision).toContain('cold-usage-worker:');
+    const published = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(published.body.data.usage.accounting).toEqual(settled.body.data);
+    const publishedLegacyUsage = { ...published.body.data.usage };
+    delete publishedLegacyUsage.accounting;
+    expect(publishedLegacyUsage).toEqual(legacyUsage);
     const listed = await getJson<PageWire>('/api/sessions');
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toEqual(legacyUsage);
   });
@@ -2183,10 +2192,9 @@ describe('server-v2 /api/sessions', () => {
     expect(coldUsage?.by_model?.['claude-sonnet-4-5']).toBeGreaterThan(0);
 
     expect(coldUsage?.accounting).toBeUndefined();
-    const snapshot = await getJson<{ session: SessionWire }>(`/api/sessions/${id}/snapshot`);
-    const { accounting, ...legacyUsage } = snapshot.body.data.session.usage;
-    expect(legacyUsage).toEqual(coldUsage);
-    expect(accounting).toMatchObject({
+    const settled = await getJson<UsageAccountingSnapshot>(`/api/usage/sessions/${id}/accounting`);
+    expect(settled.body.code).toBe(0);
+    expect(settled.body.data).toMatchObject({
       version: 2,
       subject: { scope: 'session', session_id: id },
       tokens: { input_other: 15, output: 13, input_cache_read: 13, input_cache_creation: 13 },
@@ -2195,11 +2203,19 @@ describe('server-v2 /api/sessions', () => {
       complete: true,
       covered_at: expect.any(Number),
     });
-    expect(accounting?.cost_usd_estimated).toBeCloseTo(0.0001419, 12);
-    expect(accounting?.source_revision).toContain('main:');
-    expect(accounting?.source_revision).toContain('restart-usage-worker:');
+    expect(settled.body.data.cost_usd_estimated).toBeCloseTo(0.0001419, 12);
+    expect(settled.body.data.source_revision).toContain('main:');
+    expect(settled.body.data.source_revision).toContain('restart-usage-worker:');
+    const snapshot = await getJson<{ session: SessionWire }>(`/api/sessions/${id}/snapshot`);
+    expect(snapshot.body.data.session.usage.accounting).toEqual(settled.body.data);
+    const snapshotLegacyUsage = { ...snapshot.body.data.session.usage };
+    delete snapshotLegacyUsage.accounting;
+    expect(snapshotLegacyUsage).toEqual(coldUsage);
     const browse = await getJson<{ session: SessionWire }>(`/api/klient/session-view/${id}/snapshot`);
-    expect(browse.body.data.session.usage).toEqual(coldUsage);
+    expect(browse.body.data.session.usage.accounting).toBeUndefined();
+    const browseLegacyUsage = { ...browse.body.data.session.usage };
+    delete browseLegacyUsage.accounting;
+    expect(browseLegacyUsage).toEqual(coldUsage);
     const warmListed = await getJson<PageWire>('/api/sessions');
     expect(warmListed.body.data.items.find((item) => item.id === id)?.usage).toEqual(coldUsage);
   });

@@ -702,6 +702,7 @@ describe('CLI options parsing', () => {
         'export',
         'session',
         'storage',
+        'tools',
         'provider',
         'acp',
         'desktop',

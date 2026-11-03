@@ -2314,7 +2314,7 @@ describe('KikiClient compound action generation (F1)', () => {
     try {
       await expect(invoke(client)).rejects.toMatchObject({ name: 'ApiError', reason: 'transport.connection_changed' });
       expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(String(fetcher.mock.calls[0]![0])).toBe('http://127.0.0.1:41001/api/klient/call');
+      expect(fetcher.mock.calls[0]![0]).toBe('http://127.0.0.1:41001/api/klient/call');
       expect(onSessionMutation).not.toHaveBeenCalled();
     } finally { await client.klient.close(); }
   });

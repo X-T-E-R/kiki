@@ -18,6 +18,7 @@ import {
   IEventBus,
   IEventDispatcher,
   IHomeRuntimeService,
+  IInstantiationService,
   ISessionCronService,
   ISessionIndex,
   ISessionManager,
@@ -99,6 +100,8 @@ function writer() {
   };
 }
 
+const noopEvent = () => ({ dispose() {} });
+
 function opts(overrides: Record<string, unknown> = {}) {
   return {
     session: undefined,
@@ -134,6 +137,7 @@ function makeFakeHarness() {
         return { dispose: () => eventListeners.delete(handler) };
       }),
     }],
+    [IInstantiationService, { onWillDispose: noopEvent }],
     [IAgentPromptService, {
       submitAndWait: vi.fn(async () => {
         for (const listener of [...eventListeners]) {
@@ -148,11 +152,14 @@ function makeFakeHarness() {
   ]);
   const agent = fakeScope('main', agentServices);
   const sessionServices = new Map<unknown, unknown>([
+    [IInstantiationService, { onWillDispose: noopEvent }],
     [IAgentLifecycleService, {
       countPendingBackgroundTasks: vi.fn(() => 0),
       drainBackgroundTasks: vi.fn(async () => {}),
       list: vi.fn(() => [agent]),
       get: vi.fn(() => agent),
+      onDidCreate: noopEvent,
+      onDidDispose: noopEvent,
     }],
     [ISessionCronService, { getNextFireTime: vi.fn(() => null) }],
     [ISessionMetadata, { read: vi.fn(async () => ({ id: 'ses_v2', createdAt: 1, updatedAt: 1, archived: false })) }],
@@ -169,6 +176,7 @@ function makeFakeHarness() {
     [IThreadMailboxStore, { close: vi.fn(async () => {}) }],
     [IHomeRuntimeService, { close: vi.fn(async () => {}) }],
     [ISessionManager, {
+      onDidCreateSession: noopEvent,
       create: vi.fn(async () => session), resume: vi.fn(async () => session),
       get: vi.fn(() => session), list: vi.fn(() => [session]), close: vi.fn(async () => {}), delete: vi.fn(async () => {}),
     }],

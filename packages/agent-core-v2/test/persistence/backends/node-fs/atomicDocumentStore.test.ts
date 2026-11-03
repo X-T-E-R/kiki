@@ -49,7 +49,11 @@ describe('JsonAtomicDocumentStore', () => {
     await config.set('session', 'cooperative.json', value, { cooperative: true });
     expect(heartbeat).toBe(true);
     await pending;
-    expect(await storage.read('session', 'cooperative.json')).toEqual(await storage.read('session', 'ordinary.json'));
+    const cooperative = await storage.read('session', 'cooperative.json');
+    const ordinary = await storage.read('session', 'ordinary.json');
+    expect(cooperative).toBeDefined();
+    expect(ordinary).toBeDefined();
+    expect(Buffer.compare(cooperative!, ordinary!)).toBe(0);
     expect(await config.get('session', 'cooperative.json')).toEqual(JSON.parse(JSON.stringify(value)));
   });
 

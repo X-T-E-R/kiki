@@ -78,23 +78,28 @@ describe('task-linked complete Memory worksets', () => {
     expect(changed).not.toContain(unit.body);
     for (const status of ['pending', 'archived', 'superseded'] as const) {
       view = { generation: status, entries: [{ ...corrected, status }] };
-      expect(await snapshot.refreshIfDirty('Please resume that batch')).not.toContain(corrected.body);
+      await snapshot.refreshIfDirty('Please resume that batch');
+      expect(await snapshot.get()).not.toContain(corrected.body);
     }
     view = { generation: 'expired', entries: [{ ...corrected, validity: { until: '2000-01-01T00:00:00Z', check: 'Check the current artifact state.' } }] };
-    expect(await snapshot.refreshIfDirty('Please resume that batch')).not.toContain(corrected.body);
+    await snapshot.refreshIfDirty('Please resume that batch');
+    expect(await snapshot.get()).not.toContain(corrected.body);
     view = { generation: '3', entries: [corrected] };
     snapshot.configurePersona({ id: 'example-persona', shared: [] });
-    expect(await snapshot.refreshIfDirty('Please resume that batch')).not.toContain(corrected.body);
+    await snapshot.refreshIfDirty('Please resume that batch');
+    expect(await snapshot.get()).not.toContain(corrected.body);
     snapshot.configurePersona();
     expect(await snapshot.refreshIfDirty('Please resume that batch')).toContain(corrected.body);
     notes = {};
-    expect(await snapshot.refreshIfDirty('Please resume that batch')).not.toContain(corrected.body);
+    await snapshot.refreshIfDirty('Please resume that batch');
+    expect(await snapshot.get()).not.toContain(corrected.body);
     notes = { evidence: `[${unit.id}]` };
     expect(await snapshot.refreshIfDirty('Please resume that batch')).toContain(corrected.body);
     budget = 0;
     expect(await snapshot.refreshIfDirty('Please resume that batch')).toBe('');
     budget = 2_000;
     enabled = false;
-    expect(await snapshot.refreshIfDirty('Please resume that batch')).not.toContain(corrected.body);
+    await snapshot.refreshIfDirty('Please resume that batch');
+    expect(await snapshot.get()).not.toContain(corrected.body);
   });
 });

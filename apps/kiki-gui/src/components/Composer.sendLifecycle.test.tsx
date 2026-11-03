@@ -244,14 +244,14 @@ function inputOf(container: ParentNode) {
 async function pressEnter(container: ParentNode): Promise<void> {
   const textarea = inputOf(container);
   await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   });
 }
 
 async function pressUndo(container: ParentNode): Promise<void> {
   const textarea = inputOf(container);
   await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
   });
 }
 

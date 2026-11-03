@@ -1274,7 +1274,7 @@ describe('AgentRun tool description', () => {
     );
     expect((properties['effort'] as { description?: string }).description).not.toContain('inherit');
     expect((properties['allow_model_change'] as { description?: string }).description).toContain(
-      'different canonical model',
+      'Mutually exclusive with context_mode',
     );
     expect((properties['resume'] as { description?: string }).description).toContain(
       'Do not pass name, profile, profile_file, or route',

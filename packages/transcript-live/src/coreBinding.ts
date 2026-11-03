@@ -56,6 +56,7 @@ export interface TranscriptBinding extends IDisposable {
   seedPendingInteractions(agentId?: string): void;
   seedRunningTasks(agentId?: string): void;
   seedPrompts(agentId?: string): void;
+  beginReplay(agentId: string): void;
   finishReplay(agentId: string, state?: TranscriptReplayState): void;
   releaseDurableTurns(agentId: string, turnIds: readonly string[], promptIds: readonly string[]): void;
 }
@@ -489,6 +490,10 @@ export function bindSessionTranscript(
     seedPendingInteractions,
     seedRunningTasks,
     seedPrompts,
+    beginReplay: (agentId) => {
+      if (!replayingAgents.has(agentId)) bufferedEvents.set(agentId, []);
+      replayingAgents.add(agentId);
+    },
     finishReplay,
     releaseDurableTurns: (agentId, turnIds, promptIds) => {
       wireAdapters.get(agentId)?.releaseDurableTurns(turnIds);

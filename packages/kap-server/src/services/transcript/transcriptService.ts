@@ -95,7 +95,7 @@ const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
-const TRANSCRIPT_CHECKPOINT_FORMAT = 14;
+const TRANSCRIPT_CHECKPOINT_FORMAT = 15;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
@@ -966,16 +966,10 @@ export class TranscriptService {
     return [initialTurnId, currentTurnId];
   }
 
-  /**
-   * Replay one agent's persisted wire records into its transcript. Everything
-   * is an idempotent upsert (never `reset`), so live ops arriving while the
-   * records are read from disk survive the merge; turn ordinals assigned by
-   * the rebuild are 0-based like the engine's, so future live turns continue
-   * without colliding.
-   */
   private async backfillAgent(sessionId: string, store: TranscriptStore, agentId: string, tailFirst = false): Promise<void> {
     const entryAtStart = this.live.get(sessionId);
     if (entryAtStart?.store !== store) return;
+    entryAtStart.binding.beginReplay(agentId);
     entryAtStart.agentHistory.set(agentId, { status: 'pending' });
     const transcript = store.ensureAgent(agentId);
     this.dispatchToolCallCount(sessionId, transcript, undefined, true);
@@ -2961,11 +2955,15 @@ export class TranscriptService {
     this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
     let snapshot: AgentTranscriptSnapshot | undefined;
+    let replayState: TranscriptReplayState | undefined;
+    entry.binding.beginReplay(agentId);
     try {
       snapshot = await this.readColdSnapshot(
         sessionId,
         agentId,
         () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
+        undefined,
+        (state) => { replayState = state; },
       );
     } catch (error) {
       this.logTranscriptFailure(sessionId, agentId, error);
@@ -2978,6 +2976,7 @@ export class TranscriptService {
       const failureSignature = await this.historyFailureSignature(sessionId, agentId);
       entry.agentHistory.set(agentId, { status: 'failed', failureSignature });
       this.dispatchToolCallCount(sessionId, transcript, undefined, true);
+      entry.binding.finishReplay(agentId);
       return;
     }
     transcript.apply([
@@ -2996,6 +2995,7 @@ export class TranscriptService {
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) this.disposeOpsJournal(entry, journal);
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 });
+    entry.binding.finishReplay(agentId, replayState);
     this.releaseDurableHistory(entry, agentId, snapshot);
   }
 

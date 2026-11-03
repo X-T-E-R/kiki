@@ -832,6 +832,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     ix.stub(ISessionMetadata, metadata);
     ix.stub(ISessionSubagentService, {
       hooks: createHooks(['onWillStartAgentTask']),
+      retain: () => ({ dispose: () => {} }),
       notifyAgentTaskStopped: () => {},
       run: async (_agentId: string, request: AgentRunRequest, options: { signal: AbortSignal }) =>
         target.execution.run(request, { signal: options.signal }),
@@ -1424,6 +1425,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     ix.stub(IAgentLifecycleService, lifecycle);
     ix.stub(ISessionMetadata, metadata);
     ix.stub(ISessionSubagentService, {
+      retain: () => ({ dispose: () => {} }),
       run: async (agentId, _request, options) => {
         await target.execution.hooks.onWillRun.run({ signal: options.signal });
         return {

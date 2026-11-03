@@ -250,12 +250,18 @@ describe('server /api/usage', () => {
     const service = new UsageAggregationService(core, Date.now, {}, sources);
     const changed: Array<string | undefined> = [];
     sources.onDidChange((key) => { changed.push(key); });
-    const readComplete = (output: number) => vi.waitFor(async () => {
-      const response = await service.query({});
+    const readComplete = async (output: number): Promise<UsageResponse> => {
+      let response = await service.query({});
+      for (let attempt = 0; !response.reliability.complete && attempt < 4; attempt += 1) {
+        expect([null, 'deadline']).toContain(response.reliability.incomplete_reason);
+        await Reflect.get(service, 'modelPreparing');
+        response = await service.query({});
+      }
+      if (!response.reliability.complete) expect([null, 'deadline']).toContain(response.reliability.incomplete_reason);
       expect(response.summary.tokens.output, JSON.stringify(changed)).toBe(output);
       expect(response.reliability).toMatchObject({ complete: true, incomplete_sessions: 0, incomplete_reason: null });
       return response;
-    });
+    };
     try {
       expect(sources.ready).toBe(true);
       const cold = await readComplete(160);
@@ -341,15 +347,23 @@ describe('server /api/usage', () => {
   }
 
   async function getData(query = ''): Promise<UsageResponse> {
-    return vi.waitFor(async () => {
+    const service = usageRuntime((server as RunningServer).core).service;
+    const read = async (): Promise<UsageResponse> => {
       const { status, body } = await get(query);
       expect(status).toBe(200);
       expect(body.code).toBe(0);
       expect(typeof body.request_id).toBe('string');
-      const data = usageResponseSchema.parse(body.data);
-      expect(data.reliability).toMatchObject({ complete: true, incomplete_reason: null });
-      return data;
-    });
+      return usageResponseSchema.parse(body.data);
+    };
+    let data = await read();
+    for (let attempt = 0; !data.reliability.complete && attempt < 4; attempt += 1) {
+      expect(data.reliability.incomplete_reason).toBe('deadline');
+      await Reflect.get(service, 'modelPreparing');
+      data = await read();
+    }
+    if (!data.reliability.complete) expect(data.reliability.incomplete_reason).toBe('deadline');
+    expect(data.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    return data;
   }
 
   it('serves native source grouping and repeated profile filters with precise session attribution', async () => {

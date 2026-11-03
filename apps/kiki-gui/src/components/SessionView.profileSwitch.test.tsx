@@ -62,7 +62,9 @@ vi.mock('../state/connection', () => {
     klient: {
       session: () => ({
         agent: () => ({
-          events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) },
+          isCompacting: async () => false,
+          getLoopStatus: async () => ({ state: 'idle' }),
+          events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }), onError: () => ({ dispose: () => {} }) },
         }),
       }),
       rest: { executors: { getModels: getExecutorModels } },
