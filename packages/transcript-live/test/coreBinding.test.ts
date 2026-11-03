@@ -1117,7 +1117,7 @@ describe('bindSessionTranscript', () => {
     },
   );
 
-  it('preserves durable step timestamps when a live completion follows the recorded step end', () => {
+  it.each([false, true])('preserves durable step timestamps when live lifecycle events follow their recorded projection (replay=%s)', (replay) => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -1125,12 +1125,21 @@ describe('bindSessionTranscript', () => {
     onTestFinished(() => binding.dispose());
     const records = [
       { type: 'turn.prompt', turnId: 0, promptId: 'timed', input: [{ type: 'text', text: 'start' }], origin: { kind: 'user' }, time: 1_000 },
-      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'timed-step', time: 1_500 },
       { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'timed-step' }, time: 2_000 },
       { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 0, step: 1, uuid: 'timed-step' }, time: 4_000 },
+      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'timed-step', time: 4_500 },
       { type: 'turn.step.completed', turnId: 0, step: 1, stepId: 'timed-step', time: 5_000 },
     ];
+    if (replay) binding.beginReplay('main');
     for (const record of records) main.bus.emit(ev(record));
+    if (replay) {
+      const cold = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main');
+      const reducer = new TranscriptFactReducer(cold);
+      for (const record of records) reducer.apply(adapter.add(record));
+      store.ensureAgent('main').apply([{ op: 'reset', agentId: 'main', snapshot: cold.snapshot() }]);
+      binding.finishReplay('main', { adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
+    }
     expect(store.getAgent('main')?.getTurn('t0')?.steps[0]).toMatchObject({
       startedAt: new Date(2_000).toISOString(), endedAt: new Date(4_000).toISOString(),
     });

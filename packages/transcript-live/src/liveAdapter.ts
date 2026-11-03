@@ -640,17 +640,19 @@ export class AgentTranscriptLiveAdapter {
     };
   }
 
-  private onStepStarted(event: { turnId: number; step: number; stepId?: string }): TranscriptOperation[] {
+  private onStepStarted(event: { turnId: number; step: number; stepId?: string; time?: number }): TranscriptOperation[] {
     const turnId = `t${event.turnId}`;
     const stepId = event.stepId ?? `${turnId}.${event.step}`;
+    const persisted = this.lookups?.turnDetails?.(turnId)?.steps.find((step) => step.stepId === stepId);
     this.stepOrdinals.set(turnId, event.step);
     this.currentStep = {
       kind: 'step',
       stepId,
       turnId,
       ordinal: event.step,
-      state: 'running',
-      startedAt: nowIso(),
+      state: persisted?.state ?? 'running',
+      startedAt: persisted?.startedAt ?? (event.time === undefined ? nowIso() : epochMsToIso(event.time)),
+      endedAt: persisted?.endedAt,
     };
     this.frameOrdinal = 0;
     this.openText = undefined;
