@@ -2124,6 +2124,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "webview2-com",
+ "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-sys 0.59.0",
 ]

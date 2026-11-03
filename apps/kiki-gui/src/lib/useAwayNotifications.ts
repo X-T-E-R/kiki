@@ -68,6 +68,7 @@ function useFormatter(sessions: readonly Session[], scope: NavScopeIdentity): (n
         route, scope,
         homeId: scope.homeId, scopeId: scope.scopeId,
         tag: `kiki-activity-${scope.homeId}-${scope.scopeId}`,
+        sessionIds: notification.events.map((event) => event.sessionId),
       };
     }
     const { event } = notification;
@@ -78,6 +79,7 @@ function useFormatter(sessions: readonly Session[], scope: NavScopeIdentity): (n
       route, scope,
       homeId: scope.homeId, scopeId: scope.scopeId,
       tag: `kiki-session-${scope.homeId}-${scope.scopeId}-${event.sessionId}`,
+      sessionIds: [event.sessionId],
     };
   }, [t, tp, resolveTitle, scope]);
 }
@@ -91,6 +93,8 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   }), [spaceKey, scopeId, meta.server_home_id, connection.connectionRef]);
   const scopeKey = JSON.stringify(scope);
   const format = useFormatter(sessions, scope);
+  const formatRef = useRef(format);
+  formatRef.current = format;
   const sinceRef = useRef(Date.now());
   const baselineRef = useRef<AttentionBaseline | undefined>(undefined);
   const location = useLocation();
@@ -136,18 +140,26 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       awayNotifier.configure(undefined);
       return;
     }
+    let stopped = false;
+    const isViewingSession = (sessionId: string) => {
+      const route = `/s/${encodeURIComponent(sessionId)}`;
+      return routeRef.current === route || routeRef.current.startsWith(`${route}/`);
+    };
     awayNotifier.configure({
       isAway: async () => !(await isConversationWindowFocused(host)),
-      isViewingSession: (sessionId) => {
-        const route = `/s/${encodeURIComponent(sessionId)}`;
-        return routeRef.current === route || routeRef.current.startsWith(`${route}/`);
-      },
+      isViewingSession,
       scopeKey,
-      notify,
-      format,
+      notify: async (notification) => {
+        await notify(notification);
+        if (stopped || !(await isConversationWindowFocused(host)) || stopped) return;
+        for (const id of notification.sessionIds ?? []) {
+          if (isViewingSession(id)) await host.acknowledgeNotifications?.(id, scope);
+        }
+      },
+      format: (notification) => formatRef.current(notification),
     });
-    return () => { awayNotifier.configure(undefined); };
-  }, [host, format, scopeKey]);
+    return () => { stopped = true; awayNotifier.configure(undefined); };
+  }, [host, scope, scopeKey]);
 
   // Diff every list the app (or the hidden poll) observes.
   const observe = useRef((list: readonly Session[]) => {
@@ -243,19 +255,23 @@ export function readCompletionCheckpoint(raw: string | null): readonly StableCom
 }
 
 export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: number | undefined): void {
-  const { scopeId, spaceKey } = useConnection();
+  const { scopeId, spaceKey, meta, connectionRef } = useConnection();
   const location = useLocation();
   useEffect(() => {
-    if (lastSeq === undefined || location.pathname !== `/s/${encodeURIComponent(sessionId)}`) return;
+    const route = `/s/${encodeURIComponent(sessionId)}`;
+    if (lastSeq === undefined || (location.pathname !== route && !location.pathname.startsWith(`${route}/`))) return;
+    const scope: NavScopeIdentity = { homeId: spaceKey || activeSpace()?.homeId || 'main', scopeId,
+      serverHomeId: meta.server_home_id, connectionRef };
     let stopped = false;
     const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
     const confirm = async () => {
       if (await isConversationWindowFocused(host) && !stopped && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
         markSessionSeen(sessionId, lastSeq);
+        await host.acknowledgeNotifications?.(sessionId, scope);
       }
     };
-    const confirmFromEvent = () => { void confirm(); };
-    void confirm();
+    const confirmFromEvent = () => { void confirm().catch((error: unknown) => { console.warn('Cannot acknowledge viewed conversation notifications', error); }); };
+    confirmFromEvent();
     window.addEventListener('focus', confirmFromEvent);
     document.addEventListener('visibilitychange', confirmFromEvent);
     return () => {
@@ -263,5 +279,5 @@ export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: 
       window.removeEventListener('focus', confirmFromEvent);
       document.removeEventListener('visibilitychange', confirmFromEvent);
     };
-  }, [host, sessionId, lastSeq, location.pathname, scopeId, spaceKey]);
+  }, [host, sessionId, lastSeq, location.pathname, scopeId, spaceKey, meta.server_home_id, connectionRef]);
 }

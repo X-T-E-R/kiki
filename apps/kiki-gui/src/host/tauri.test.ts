@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { isPermissionGranted } from '@tauri-apps/plugin-notification';
 
 import { tauriHost } from './tauri';
 
@@ -175,6 +176,18 @@ describe('native desktop bridge', () => {
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     expect(click).toHaveBeenCalledWith('/activity', 'home-b', undefined);
     unsubscribe();
+  });
+
+  it('sends and acknowledges notification targets with the same credential-free identity', async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValueOnce(true);
+    const scope = { homeId: 'home-a', scopeId: 'ssh:example', serverHomeId: 'server-a', connectionRef: 'connection-a', token: 'not-an-identity' };
+    await tauriHost.notify({ title: 'Finished', route: '/s/b', scope, sessionIds: ['b'] });
+    await tauriHost.acknowledgeNotifications('b', scope);
+    const identity = { homeId: 'home-a', scopeId: 'ssh:example', serverHomeId: 'server-a', connectionRef: 'connection-a' };
+    expect(invoke.mock.calls).toEqual([
+      ['send_desktop_notification', { title: 'Finished', body: undefined, route: '/s/b', scope: identity, sessionIds: ['b'] }],
+      ['acknowledge_desktop_notifications', { sessionId: 'b', scope: identity }],
+    ]);
   });
 
   it('routes external links through the native default-browser command', async () => {

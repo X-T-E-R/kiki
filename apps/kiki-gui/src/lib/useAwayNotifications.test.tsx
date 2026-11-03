@@ -32,12 +32,13 @@ let navigate: ReturnType<typeof useNavigate>;
 let replaceSessions: (rows: Session[]) => void;
 const notify = vi.fn(async (_notification: import('../host').HostNotification) => {});
 const badge = vi.fn(async (_count: number, _homeId?: string, _scopeId?: string, _sessionIds?: readonly string[]) => {});
-const host = { kind: 'browser', notify, setUnreadBadge: badge,
+const acknowledge = vi.fn(async (_sessionId: string, _scope: unknown) => {});
+const host = { kind: 'browser', notify, setUnreadBadge: badge, acknowledgeNotifications: acknowledge,
   isWindowVisibleAndFocused: async () => focused } as unknown as HostAdapter;
 
 function Viewed() {
   const location = useLocation();
-  const id = location.pathname.startsWith('/s/') ? location.pathname.slice(3) : '';
+  const id = /^\/s\/([^/]+)/u.exec(location.pathname)?.[1] ?? '';
   useViewedSession(host, id, id === '' ? undefined : 10);
   return <div data-session={id}>{id || 'Home'}</div>;
 }
@@ -55,7 +56,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   completions = []; focused = true; visible = true;
   localStorage.clear(); configureSpaceStorage({ homeId: 'home-example' }); resetSessionSeen();
-  awayNotifier.reset(); notify.mockClear(); badge.mockClear();
+  awayNotifier.reset(); notify.mockClear(); badge.mockClear(); acknowledge.mockClear();
   connection.client.notifications.listCompletions.mockImplementation(async () => completions);
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
@@ -88,6 +89,32 @@ describe('conversation completion and read confirmation', () => {
     expect(badge.mock.calls.at(-1)?.[0]).toBe(0);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('acknowledges only the viewed conversation in its full scope, including child routes', async () => {
+    await mount('/settings');
+    expect(acknowledge).not.toHaveBeenCalled();
+    await act(async () => { await navigate('/s/b/agent/child-example'); });
+    expect(sessionSeenSnapshot()).toEqual({ b: 10 });
+    expect(acknowledge).toHaveBeenCalledExactlyOnceWith('b', {
+      homeId: 'home-example', scopeId: 'local', serverHomeId: 'server-example', connectionRef: undefined,
+    });
+    focused = false;
+    await act(async () => { await navigate('/s/a'); window.dispatchEvent(new Event('focus')); });
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it('acknowledges a notification that finishes sending after its conversation was opened', async () => {
+    let finishSending!: () => void;
+    notify.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSending = resolve; }));
+    await mount('/s/a');
+    completions = [{ session_id: 'b', episode_id: 'late-send-b', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).toHaveBeenCalledTimes(1);
+    await act(async () => { await navigate('/s/b'); });
+    expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toHaveLength(1);
+    await act(async () => { finishSending(); });
+    expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toHaveLength(2);
   });
 
   it('does not mark an open background conversation read; focus confirms its latest sequence', async () => {

@@ -23,6 +23,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionStateService } from '#/session/state/sessionState';
 
 import { SUBAGENT_RELEASE_IDLE_FLAG } from './flag';
 import {
@@ -31,6 +32,7 @@ import {
   type AgentTaskHooks,
   type AgentTaskStopHookContext,
   ISessionSubagentService,
+  pendingSubagentReceiptsKey,
   type RunAgentOptions,
 } from './subagent';
 
@@ -73,8 +75,10 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     @IFlagService private readonly flags: IFlagService,
     @ILogService private readonly log: ILogService,
     @IBootstrapService bootstrap: IBootstrapService,
+    @ISessionStateService private readonly states: ISessionStateService,
   ) {
     super();
+    this._register(states.contributeState(pendingSubagentReceiptsKey));
     this.releaseGraceMs = resolveReleaseGraceMs((name) => bootstrap.getEnv(name));
     this._register(agentLifecycle.onDidCreate((handle) => {
       if (handle.id !== MAIN_AGENT_ID) {
@@ -87,8 +91,10 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
             }),
           };
           this.pendingReceipts.add(receipt);
+          this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
           void receipt.settled.then(() => {
             this.pendingReceipts.delete(receipt);
+            if (!this.stopped) this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size);
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
           });
         }));

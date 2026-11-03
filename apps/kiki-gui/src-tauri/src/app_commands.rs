@@ -30,6 +30,7 @@ macro_rules! app_commands {
             cancel_desktop_startup,
             show_main_window,
             send_desktop_notification,
+            acknowledge_desktop_notifications,
             write_host_file_text,
             read_clipboard_file_paths,
             reveal_host_path,

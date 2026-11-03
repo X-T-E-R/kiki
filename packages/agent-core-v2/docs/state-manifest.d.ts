@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 120 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 120 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -56,6 +56,7 @@
 //     sessionSkillCatalog.merged         src/session/sessionSkillCatalog/skillCatalogService.ts
 //     sessionToolPolicy.state            src/session/sessionToolPolicy/sessionToolPolicyService.ts
 //     ssh.sessionHosts                   src/agent/ssh/sshConnectionGateService.ts
+//     subagent.pendingReceipts           src/session/subagent/subagent.ts
 //     workspaceContext.additionalDirs    src/session/workspaceContext/workspaceContextService.ts
 //     workspaceContext.workDir           src/session/workspaceContext/workspaceContextService.ts
 //   Agent
@@ -1000,6 +1001,8 @@ export interface SessionStateSnapshot {
   'sessionToolPolicy.state': /* SessionToolPolicyState — packages/agent-core-v2/src/session/sessionToolPolicy/sessionToolPolicyService.ts */ {
     readonly disabledTools: readonly string[];
   };
+  // src/session/subagent/subagent.ts
+  'subagent.pendingReceipts': number;
   // src/session/workspaceContext/workspaceContextService.ts
   'workspaceContext.additionalDirs': string[];
   'workspaceContext.workDir': string;

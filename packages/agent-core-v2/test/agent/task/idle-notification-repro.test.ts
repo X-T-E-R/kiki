@@ -40,6 +40,7 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import { GoalUpdate } from '#/agent/goal/goalOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import {
   agentService,
   sessionService,
@@ -116,6 +117,7 @@ async function receiptPair(maxRunningTasks?: number) {
   handles.set('main', parentHandle);
   handles.set('agent-child', childHandle);
   await metadata.registerAgent('agent-child', { type: 'sub', parentAgentId: 'main', labels: { profileName: 'example-worker' } });
+  created.fire(parentHandle);
   created.fire(childHandle);
   return {
     parent, child, metadata, handles, parentHandle, childHandle, sealing,
@@ -152,6 +154,8 @@ describe('autonomous child receipt return', () => {
       } });
       expect((await prompt.completion).state).toBe('completed');
       await entered;
+      await child.get(IAgentLoopService).settled();
+      expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false });
       const handle = handles.get(closingAgent)!;
       handles.delete(closingAgent);
       sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); } });
@@ -210,6 +214,7 @@ describe('autonomous child receipt return', () => {
       expect(JSON.stringify(notification)).toContain(failedId);
       expect(JSON.stringify(child.contextData())).toContain(bashId);
       expect((await metadata.read()).agents?.['agent-child']).toMatchObject({ status: 'completed', taskId: continued!.taskId });
+      await vi.waitFor(() => expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: false, mainTurnActive: false, lastTurnReason: 'completed' }));
     } finally {
       output.push(null);
       processExit.resolve(0);
@@ -849,7 +854,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await ctx.untilTurnEnd();
         await loop.settled();
         expect(goals.getGoal().goal).toMatchObject({
-          status: 'paused', terminalReason: 'Paused after provider API error: Responses websocket connection limit reached',
+          status: 'paused', terminalReason: 'Paused after provider API error: Retry attempts exhausted (1/1). Responses websocket connection limit reached',
         });
         ctx.mockNextResponse({ type: 'text', text: 'provider recovered' });
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'check current progress' }] });

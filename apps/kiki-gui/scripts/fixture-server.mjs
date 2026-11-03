@@ -5149,6 +5149,9 @@ class FixtureServer {
 
   async handleControl(body, res) {
     switch (body.action) {
+      case 'notification_completions':
+        this.notifications.completions = structuredClone(body.completions);
+        return this.envelope(res, this.notifications.completions);
       case 'recipe_read_fail_next':
         // Refuses the next Recipe reads, so a page's load failure and its retry
         // are walkable on screen.

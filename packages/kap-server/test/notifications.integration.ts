@@ -24,6 +24,13 @@ import { registerNotificationRoutes } from '../src/routes/notifications';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { ISessionStateService } from '@kiki/agent-core-v2/session/state/sessionState';
+import { SessionStateService } from '@kiki/agent-core-v2/session/state/sessionStateService';
+import { SessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivityService';
+import { pendingSubagentReceiptsKey } from '@kiki/agent-core-v2/session/subagent/subagent';
+import { AgentActivityUpdated, type AgentActivityState } from '@kiki/agent-core-v2/agent/activityView/activityView';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 
 vi.mock('@nb-im/core', async (original) => {
   const donor = await original<typeof import('@nb-im/core')>();
@@ -48,6 +55,68 @@ function emitter<T>() {
 describe('notification coordinator', () => {
   let home: string;
   afterEach(async () => { vi.useRealTimers(); if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); });
+
+  it('publishes one final episode through the real activity fold after child receipt and automatic continuation settle', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-notification-receipt-fold-'));
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
+    const states = ix.get(ISessionStateService);
+    states.contributeState(pendingSubagentReceiptsKey);
+    const bus = emitter<AgentActivityUpdated>();
+    const work = emitter<void>();
+    let activity: AgentActivityState = { lifecycle: 'ready', background: [] };
+    let finiteTask = false;
+    let pendingLoop = false;
+    const main = { id: 'main', accessor: { get: (key: unknown) => {
+      if (key === IEventBus) return { subscribe: bus.on };
+      if (key === IAgentActivityView) return { state: () => activity };
+      if (key === IAgentLoopService) return { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: pendingLoop }), settled: async () => {}, onDidChangeWork: work.on };
+      if (key === IAgentTaskService) return { hasUnfinishedWork: () => finiteTask, list: () => [], onDidChangeWork: work.on };
+      return undefined;
+    } } };
+    const noEvents = Event.None as Event<never>;
+    ix.stub(IAgentLifecycleService, { list: () => [main as unknown as IAgentScopeHandle], onDidCreate: noEvents, onDidDispose: noEvents });
+    const interactions = { listPending: () => [], onDidChangePending: noEvents, onDidResolve: noEvents };
+    ix.stub(ISessionInteractionService, interactions);
+    ix.set(ISessionActivityView, new SyncDescriptor(SessionActivityView));
+    const folded = ix.get(ISessionActivityView);
+    const session = { id: 'receipt-fold', accessor: { get: (key: unknown) => {
+      if (key === ISessionActivityView) return folded;
+      if (key === ISessionInteractionService) return interactions;
+      if (key === IInstantiationService) return { onWillDispose: Event.None };
+      throw new Error('unexpected_session_service');
+    } } };
+    const config = { ready: Promise.resolve(), get: () => DEFAULT_NOTIFICATIONS_CONFIG };
+    const core = { accessor: { get: (key: unknown) => {
+      if (key === IConfigService) return config;
+      if (key === ISessionManager) return { list: () => [session] };
+      throw new Error('unexpected_app_service');
+    } } } as unknown as Scope;
+    const service = new NotificationService(core, home, () => false, () => { throw new Error('notification_error'); });
+    try {
+      await service.start();
+      vi.useFakeTimers();
+      const begin = () => { activity = { lifecycle: 'ready', background: [], turn: { turnId: 1, origin: { kind: 'user' }, phase: 'running', step: 0, ending: false, pendingApprovals: [], activeToolCalls: [], since: 0 } }; bus.fire(new AgentActivityUpdated(activity)); };
+      const end = () => { activity = { lifecycle: 'ready', background: [], lastTurn: { turnId: 1, reason: 'completed', at: 0 } }; bus.fire(new AgentActivityUpdated(activity)); };
+      begin(); finiteTask = true; end();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([]);
+      states.set(pendingSubagentReceiptsKey, 1); finiteTask = false;
+      bus.fire(new AgentActivityUpdated(activity));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([]);
+      pendingLoop = true; work.fire(); states.set(pendingSubagentReceiptsKey, 0);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([]);
+      begin(); pendingLoop = false; end();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toHaveLength(1);
+      const completion = service.listCompletions()[0];
+      bus.fire(new AgentActivityUpdated(activity));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([completion]);
+    } finally { vi.useRealTimers(); await service.close(); await ix.dispose(); }
+  });
 
   it('persists switches and completes only after the whole work chain settles', async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-notifications-idle-'));
