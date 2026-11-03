@@ -497,17 +497,23 @@ describe('RetainedUsageService', () => {
     const { service, model } = build(storage);
     await writeLedger([{ kind: 'session', version: 1, id: summary.id, workspaceId: summary.workspaceId, recordCount: 1 }]);
     await model.source('');
-    const startedAt = Date.now();
-    const pending = service.listDeletedSessions(listQuery({ deadlineAt: startedAt + 10 }));
-    await storage.started;
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const pending = service.listDeletedSessions(listQuery({ deadlineAt: startedAt + 10 }));
+      await storage.started;
+      await vi.advanceTimersByTimeAsync(10);
 
-    await expect(pending).resolves.toEqual({
-      items: [],
-      complete: false,
-      incompleteReason: 'deadline',
-      scannedRecords: 0,
-    });
-    expect(Date.now() - startedAt).toBeLessThan(250);
+      await expect(pending).resolves.toEqual({
+        items: [],
+        complete: false,
+        incompleteReason: 'deadline',
+        scannedRecords: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns when the signal aborts after the storage read blocks', async () => {

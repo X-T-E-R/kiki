@@ -433,6 +433,7 @@ describe('SessionExternalDelegationService', () => {
     });
     ix.stub(ISessionSubagentService, {
       _serviceBrand: undefined,
+      retain: () => ({ dispose: () => {} }),
       run: async (agentId, request, opts) => {
         runAgentIds.push(agentId);
         if (request.kind === 'prompt') runPrompts.push(request.prompt);

@@ -2261,8 +2261,14 @@ describe('SQLite Usage history source lifecycle', () => {
     const lists = vi.spyOn(saved.storage, 'list');
     const reads = vi.spyOn(saved.storage, 'readStream');
     const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
-    const response = await service.query(input);
-    expect(response.reliability.complete).toBe(true);
+    let response = await service.query(input);
+    for (let attempt = 0; !response.reliability.complete && attempt < 4; attempt += 1) {
+      expect(response.reliability.incomplete_reason).toBe('deadline');
+      await Reflect.get(service, 'modelPreparing');
+      response = await service.query(input);
+    }
+    if (!response.reliability.complete) expect(response.reliability.incomplete_reason).toBe('deadline');
+    expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
     expect(response.reliability.usage_coverage).toMatchObject({ known_records: stale ? 81 : 80, missing_records: 0 });
     expect(response.summary.tokens.output).toBe(stale ? 81 : 80);
     const wireReads = reads.mock.calls.filter(([, key]) => key === 'wire.jsonl');

@@ -792,6 +792,7 @@ enter_approval_timeout_ms = 60000
 # one [providers."<name>"] table per entry:
 # [providers."<name>"]
   # model_source: "static" | "discover" | "oauth-catalog"
+  # enabled: boolean
   # base_url: string
   # decision_endpoint: string
   # custom_headers: record<string, string>

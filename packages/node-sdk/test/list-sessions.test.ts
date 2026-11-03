@@ -92,6 +92,9 @@ describe('KimiHarness.listSessions', () => {
       await harness.createSession({ id: 'ses_harness_all_a', workDir });
       await harness.createSession({ id: 'ses_harness_all_b', workDir: otherWorkDir });
 
+      const rpc = Reflect.get(harness, 'rpc') as SDKRpcClient;
+      const status = await rpc.engineAccessor.get(ISessionIndex).prepare();
+      expect(status.state).toBe('ready');
       const sessions = await harness.listSessions();
       expect(sessions.map((session) => session.id).toSorted()).toEqual([
         'ses_harness_all_a',

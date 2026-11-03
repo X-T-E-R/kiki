@@ -443,6 +443,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(ISessionMetadata, metadata);
     toolIx.stub(ISessionSubagentService, {
       hooks: createHooks(['onWillStartAgentTask']),
+      retain: () => ({ dispose: () => {} }),
       notifyAgentTaskStopped: () => {},
       run: async (_agentId: string, request: import('#/session/subagent/subagent').AgentRunRequest, options: { signal: AbortSignal }) =>
         harness.execution.run(request, options),
@@ -575,7 +576,7 @@ describe('recoverable ACP broken resume', () => {
       list: () => [handle],
     });
     toolIx.stub(ISessionMetadata, metadata);
-    toolIx.stub(ISessionSubagentService, { hooks: createHooks(['onWillStartAgentTask']), notifyAgentTaskStopped: () => {}, run: async () => { throw new Error('unrecoverable broken must not start'); } });
+    toolIx.stub(ISessionSubagentService, { hooks: createHooks(['onWillStartAgentTask']), retain: () => ({ dispose: () => {} }), notifyAgentTaskStopped: () => {}, run: async () => { throw new Error('unrecoverable broken must not start'); } });
     toolIx.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), list: () => [], listRoutes: () => [], get: () => undefined });
     toolIx.stub(IAgentCollaborationRegistry, { commit: () => {}, release: () => {} });
     toolIx.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });

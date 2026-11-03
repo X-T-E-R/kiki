@@ -429,8 +429,8 @@ describe('BuiltinSkillSource product-skill switch', () => {
   });
 
   it.each([
-    ['en', 'the page opens **Live**', '**Concurrency limits**', 'Request details', '**Quotas:**'],
-    ['zh', '打开的是**实时**', '「并发限制」', '请求详情', '**额度（Quotas）：**'],
+    ['en', 'the page opens **Live**', '**Concurrency limits**', '**By dimension**', '**Quotas:**'],
+    ['zh', '打开的是**实时**', '「并发限制」', '**按维度**', '**额度（Quotas）：**'],
   ])('keeps the %s Usage guide on the history/live/quotas/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details, quotas) => {
     const text = readFileSync(new URL(`../../../../../docs/${locale}/guides/settings.md`, import.meta.url), 'utf8');
     const usage = text.split('## Usage\n')[1]!.split('\n## ')[0]!;

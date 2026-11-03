@@ -849,7 +849,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await ctx.untilTurnEnd();
         await loop.settled();
         expect(goals.getGoal().goal).toMatchObject({
-          status: 'paused', terminalReason: 'Paused after provider API error: Responses websocket connection limit reached',
+          status: 'paused', terminalReason: 'Paused after provider API error: Retry attempts exhausted (1/1). Responses websocket connection limit reached',
         });
         ctx.mockNextResponse({ type: 'text', text: 'provider recovered' });
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'check current progress' }] });

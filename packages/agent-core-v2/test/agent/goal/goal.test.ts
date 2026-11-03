@@ -2121,7 +2121,7 @@ describe('goal pause classification on provider errors', () => {
 
     expect(goal).toMatchObject({
       status: 'paused',
-      terminalReason: 'Paused after provider connection error: socket hang up',
+      terminalReason: 'Paused after provider connection error: Retry attempts exhausted (1/1). socket hang up',
     });
   });
 

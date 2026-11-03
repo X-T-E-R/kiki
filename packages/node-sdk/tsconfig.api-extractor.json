@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@kiki-dsh/im-bridge-core/*": ["../protocol/node_modules/@kiki-dsh/im-bridge-core/dist/*"]
+    }
   },
   "include": [".tmp-api-extractor/dts/**/*.d.ts"]
 }

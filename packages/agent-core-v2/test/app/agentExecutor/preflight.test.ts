@@ -263,7 +263,7 @@ describe('AgentExecutorPreflightService', () => {
       expect.objectContaining({ severity: 'error', message: 'Configured source "kiki-managed" is unavailable.' }),
       expect.objectContaining({
         severity: 'info',
-        message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.',
+        message: 'AGY CLI model ids come from `agy models`. Permission overrides use session-only settings; the official ACP server remains the separate antigravity-acp executor.',
       }),
     ]));
     expect(results.find((result) => result.id === 'antigravity-acp')?.id).toBe('antigravity-acp');
