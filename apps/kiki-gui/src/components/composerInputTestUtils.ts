@@ -104,6 +104,14 @@ function patchInput(input: HTMLElement): ComposerInputElement {
             : { anchor: mode === 'start' ? start : start + text.length };
           view.dispatch({ changes: { from: start, to: end, insert: text }, selection, userEvent: 'input' });
         },
+        setValueAndCursor: (value, cursor) => {
+          const view = viewFor(input);
+          view.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: value },
+            selection: { anchor: Math.max(0, Math.min(cursor, value.length)) },
+            userEvent: 'input',
+          });
+        },
         select: () => {
           const view = viewFor(input);
           view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });

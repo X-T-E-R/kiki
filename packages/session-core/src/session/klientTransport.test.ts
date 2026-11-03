@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RPCError } from '@kiki/klient/session-view';
+import { createRebindableKlient } from '@kiki/klient/http';
 import { createSessionTransport } from './klientTransport';
 import { ApiError, type SessionTransport } from '../transport';
 
@@ -64,5 +65,101 @@ describe('session command runtime admission', () => {
     await expect(invoke(transport)).rejects.toBeInstanceOf(ApiError);
     await expect(invoke(transport)).rejects.toMatchObject({ code: 40901, message: 'session locked (code 40901)' });
     expect(operation).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('session command connection generations (F1)', () => {
+  const envelope = (data: unknown) => Response.json({ code: 0, msg: 'success', data });
+  const old = { endpoint: 'http://127.0.0.1:41001', token: 'old-token' };
+  const replacement = { endpoint: 'http://127.0.0.1:42002', token: 'new-token' };
+
+  it.each(resumeActions)('rejects $command after a successful resume continuation changes connection before dispatch', async ({ command, invoke }) => {
+    let finishResume!: (resumed: boolean) => void;
+    let generation = 0;
+    const mutation = vi.fn(async () => ({ accepted: true }));
+    const transport = createSessionTransport({
+      captureOperation: () => {
+        const started = generation;
+        return () => { if (started !== generation) throw new RPCError(-1, 'Connection changed', undefined, 'transport.connection_changed', undefined, undefined, 'transport'); };
+      },
+      session: () => ({ resume: () => new Promise<boolean>((resolve) => { finishResume = resolve; }), commands: { [command]: mutation } as never }),
+    });
+    const pending = invoke(transport);
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'ApiError', reason: 'transport.connection_changed', source: 'transport' });
+    finishResume(true);
+    generation += 1;
+    await rejected;
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it.each(resumeActions)('fences the production HTTP resume-to-$command microtask gap without dispatching to the replacement', async ({ invoke }) => {
+    const calls: string[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) return envelope({ id: 's1', kind: 'session' });
+      throw new Error('A stale action must not dispatch another request');
+    });
+    const { klient, rebind } = createRebindableKlient({ ...old, fetch: fetcher });
+    const resumed = vi.fn();
+    const transport = createSessionTransport({
+      captureOperation: klient.captureOperation!.bind(klient),
+      session: (id) => {
+        const session = klient.session(id);
+        return { commands: session.commands, resume: () => session.resume().then((result) => {
+          resumed(result);
+          queueMicrotask(() => rebind(replacement));
+          return result;
+        }) };
+      },
+    });
+    try {
+      await expect(invoke(transport)).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+      expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
+      expect(calls).toEqual([`${old.endpoint}/api/klient/call`]);
+    } finally { await klient.close(); }
+  });
+
+  it('permits explicit new actions on both sides of a rebind with each endpoint and bearer paired', async () => {
+    const calls: Array<[string, string | undefined]> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push([String(input), new Headers(init?.headers).get('authorization') ?? undefined]);
+      return String(input).endsWith('/api/klient/call') ? envelope({ id: 's1', kind: 'session' }) : envelope({ cancelled: true });
+    });
+    const { klient, rebind } = createRebindableKlient({ ...old, fetch: fetcher });
+    const transport = createSessionTransport(klient);
+    try {
+      await expect(transport.cancelTask('s1', 'task1')).resolves.toEqual({ cancelled: true });
+      rebind(replacement);
+      await expect(transport.cancelTask('s1', 'task1')).resolves.toEqual({ cancelled: true });
+      expect(calls).toEqual([
+        [`${old.endpoint}/api/klient/call`, 'Bearer old-token'],
+        [`${old.endpoint}/api/sessions/s1/tasks/task1:cancel`, 'Bearer old-token'],
+        [`${replacement.endpoint}/api/klient/call`, 'Bearer new-token'],
+        [`${replacement.endpoint}/api/sessions/s1/tasks/task1:cancel`, 'Bearer new-token'],
+      ]);
+    } finally { await klient.close(); }
+  });
+
+  it('rejects a late completed action result while a fresh-generation action succeeds', async () => {
+    let generation = 0;
+    let finishOld!: (value: { cancelled: boolean }) => void;
+    const mutation = vi.fn().mockImplementationOnce(() => new Promise<{ cancelled: boolean }>((resolve) => { finishOld = resolve; }))
+      .mockResolvedValue({ cancelled: true });
+    const transport = createSessionTransport({
+      captureOperation: () => {
+        const started = generation;
+        return () => { if (started !== generation) throw new RPCError(-1, 'Connection changed', undefined, 'transport.connection_changed'); };
+      },
+      session: () => ({ resume: async () => true, commands: { cancelTask: mutation } as never }),
+    });
+    const pending = transport.cancelTask('s1', 'old-task');
+    const rejected = expect(pending).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+    await Promise.resolve();
+    generation += 1;
+    await expect(transport.cancelTask('s1', 'new-task')).resolves.toEqual({ cancelled: true });
+    finishOld({ cancelled: true });
+    await rejected;
+    expect(mutation.mock.calls.map(([target]) => target)).toEqual(['old-task', 'new-task']);
   });
 });

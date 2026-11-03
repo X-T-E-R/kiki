@@ -22,6 +22,7 @@ import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecyc
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { readPersistedExecutionControl } from '@kiki/agent-core-v2/session/executionControl/readExecutionControl';
+import { PersistedContextRebuildReader } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuildRead';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
 import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -106,6 +107,7 @@ type FileServiceWireTarget = {
 
 export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   let modelSwitchReader: PersistedModelSwitchReader | undefined;
+  let contextRebuildReader: PersistedContextRebuildReader | undefined;
   /** Mirrors kap-server's `resolveScope`, incl. main-agent materialization. */
   async function resolveScope(scope: ScopeRef): Promise<ResolvedScope> {
     if (scope.workspaceId !== undefined) {
@@ -134,6 +136,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   async function restoreKnownAgentForProfileChange(
     scope: ScopeRef,
     options?: CallOptions,
+    pinnedSession?: ScopeLike,
   ): Promise<void> {
     if (
       scope.workspaceId !== undefined ||
@@ -141,7 +144,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       scope.agentId === undefined ||
       scope.agentId === 'main'
     ) return;
-    const session = (await resolveScope({ sessionId: scope.sessionId })).like;
+    const session = pinnedSession ?? (await resolveScope({ sessionId: scope.sessionId })).like;
     const lifecycle = session.accessor.get(IAgentLifecycleService);
     if (lifecycle.get(scope.agentId) !== undefined) return;
     const metadata = await session.accessor.get(ISessionMetadata).read();
@@ -406,6 +409,57 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
+      if (service === 'agentContextRebuildService' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
+        const manager = root.accessor.get(ISessionManager);
+        if (method === 'control') {
+          try {
+            const live = manager.get(scope.sessionId) ?? getLiveSessionById(root.accessor, scope.sessionId);
+            const resident = live?.accessor.get(IAgentLifecycleService).get(scope.agentId);
+            if (resident !== undefined) {
+              const instance = resolveService({ kind: 'agent', like: resident }, service);
+              return wireClone((instance['control'] as () => unknown).call(instance));
+            }
+            const metadata = live === undefined ? undefined : await live.accessor.get(ISessionMetadata).read();
+            const summary = live === undefined ? await root.accessor.get(ISessionIndex).get(scope.sessionId) : undefined;
+            if (live === undefined && summary === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+            const workspaceId = live?.accessor.get(ISessionContext).workspaceId ?? summary!.workspaceId;
+            const saved = metadata ?? await root.accessor.get(IAtomicDocumentStore).get<SessionMeta>(`sessions/${workspaceId}/${scope.sessionId}`, 'state.json');
+            if (saved?.id !== scope.sessionId) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+            if (!/^[a-zA-Z0-9_-]+$/.test(scope.agentId) || (scope.agentId !== 'main' && !Object.hasOwn(saved.agents ?? {}, scope.agentId))) {
+              throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+            }
+            contextRebuildReader ??= new PersistedContextRebuildReader(root.accessor.get(IAppendLogStore), root.accessor.get(IFileSystemStorageService));
+            return wireClone(await contextRebuildReader.read(`sessions/${workspaceId}/${scope.sessionId}/agents/${scope.agentId}`, options?.signal));
+          } catch (error) {
+            throw toRPCError(error);
+          }
+        }
+        if (method === 'rebuild' || method === 'setEnabled') {
+          let lease: Awaited<ReturnType<NonNullable<typeof manager.acquire>>>;
+          let lifetime: IDisposable | undefined;
+          try {
+            lease = await manager.acquire?.(scope.sessionId, 'context-rebuild-action', undefined, options?.signal);
+            const session = manager.acquire === undefined ? await manager.resume(scope.sessionId) : lease?.handle;
+            if (session === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+            const controller = new AbortController();
+            lifetime = session.accessor.get(IInstantiationService).onWillDispose(() => { controller.abort(); });
+            const signal = options?.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, options.signal]);
+            signal.throwIfAborted();
+            await restoreKnownAgentForProfileChange(scope, { signal }, session);
+            const agent = scope.agentId === 'main' ? await ensureMainAgent(session) : session.accessor.get(IAgentLifecycleService).get(scope.agentId);
+            signal.throwIfAborted();
+            if (agent === undefined) throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+            const instance = resolveService({ kind: 'agent', like: agent }, service);
+            const member = instance[method] as (...values: unknown[]) => unknown;
+            return wireClone(await member.apply(instance, method === 'rebuild' ? [signal] : args.map(wireClone)));
+          } catch (error) {
+            throw toRPCError(error);
+          } finally {
+            lifetime?.dispose();
+            await lease?.dispose();
+          }
+        }
+      }
       if (service === 'sessionExecutionControl' && scope.sessionId !== undefined && scope.agentId === undefined && scope.workspaceId === undefined) {
         const live = getLiveSessionById(root.accessor, scope.sessionId);
         if (method === 'read' && live === undefined) {

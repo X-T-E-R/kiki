@@ -25,51 +25,15 @@ export function launchArgs(session) {
   if (session.conversationId) args.push('--conversation', session.conversationId);
   if (session.model !== DEFAULT) args.push('--model', session.model);
   if (session.effort !== DEFAULT && !session.model.startsWith('claude-')) args.push('--effort', session.effort);
-  if (session.hostGate && session.permission?.override?.mode === 'yolo') args.push('--dangerously-skip-permissions');
+  const mode = session.permissionMode ?? DEFAULT;
+  if (mode === 'yolo') args.push('--dangerously-skip-permissions');
+  const settings = mode === 'manual' ? { toolPermission: 'request-review', agentMode: 'default' }
+    : mode === 'auto' ? { toolPermission: 'request-review', agentMode: 'auto' }
+      : mode === 'yolo' ? { toolPermission: 'always-proceed', agentMode: 'accept-edits', allowNonWorkspaceAccess: true, enableTerminalSandbox: false }
+        : undefined;
+  if (settings !== undefined) args.push('--settings', JSON.stringify(settings));
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
   return args;
-}
-
-function readUrlTarget(args) {
-  if (!args || Object.keys(args).some(key => key !== 'Url') || typeof args.Url !== 'string' ||
-    !/^https?:\/\//iu.test(args.Url) || /[\s\\\u0000-\u001F\u007F]/u.test(args.Url)) throw new Error('AGY URL reads require one credential-free HTTP(S) Url');
-  let url;
-  try { url = new URL(args.Url); } catch { throw new Error('AGY URL reads require one credential-free HTTP(S) Url'); }
-  if (!url.hostname || url.username || url.password) throw new Error('AGY URL reads require one credential-free HTTP(S) Url');
-  if (url.hostname.endsWith('.')) url.hostname = url.hostname.slice(0, -1);
-  return url;
-}
-
-export function canonicalTool(name, args, cwd) {
-  if (name === 'read_url_content') return { name: 'FetchURL', nativeName: name, kind: 'fetch', input: { url: readUrlTarget(args).href } };
-  if (name === 'manage_task' && Object.keys(args).every(key => ['Action', 'TaskId', 'Input'].includes(key)) &&
-    ['TaskId', 'Input'].every(key => args[key] === undefined || typeof args[key] === 'string')) {
-    if (args.Action === 'list') return { name: 'TaskList', nativeName: name, kind: 'read', input: args };
-    if (args.Action === 'status' && typeof args.TaskId === 'string' && args.TaskId.length > 0) {
-      return { name: 'TaskOutput', nativeName: name, kind: 'read', input: args };
-    }
-  }
-  if (name === 'run_command') return { name: 'Bash', kind: 'execute', input: { command: args.CommandLine, cwd: args.Cwd ?? cwd } };
-  if (name === 'view_file') return { name: 'Read', kind: 'read', input: { path: args.AbsolutePath } };
-  if (name === 'write_to_file') return { name: 'Write', kind: 'edit', input: { path: args.TargetFile } };
-  if (name === 'replace_file_content' || name === 'multi_replace_file_content') return { name: 'Edit', kind: 'edit', input: { path: args.TargetFile } };
-  if (name === 'find_by_name') return { name: 'Glob', kind: 'search', input: { path: args.SearchDirectory, pattern: args.Pattern } };
-  if (name === 'list_dir') return { name: 'Glob', kind: 'search', input: { path: args.DirectoryPath } };
-  if (name === 'grep_search') return { name: 'Grep', kind: 'search', input: { path: args.SearchPath, pattern: args.Query } };
-  return { name, kind: 'other', input: args };
-}
-
-/** Official PreToolUse resource strings for this call only; never a cached grant. */
-export function toolPermissionResources(name, args) {
-  if (name === 'read_url_content') return [`read_url(${readUrlTarget(args).hostname})`];
-  let action; let target;
-  if (name === 'run_command') { action = 'command'; target = args.CommandLine; }
-  else if (['write_to_file', 'replace_file_content', 'multi_replace_file_content'].includes(name)) { action = 'write_file'; target = args.TargetFile; }
-  else if (name === 'view_file') { action = 'read_file'; target = args.AbsolutePath; }
-  else if (name === 'list_dir') { action = 'read_file'; target = args.DirectoryPath; }
-  else if (name === 'find_by_name') { action = 'read_file'; target = args.SearchDirectory; }
-  else if (name === 'grep_search') { action = 'read_file'; target = args.SearchPath; }
-  return action && typeof target === 'string' && target.length > 0 ? [`${action}(${target})`] : undefined;
 }
 
 export function promptText(blocks) {
@@ -180,6 +144,11 @@ export function configOptions(session) {
   }
   options.push({ id: 'native-agent', name: 'AGY native agent', category: 'native_agent', type: 'select',
     currentValue: DEFAULT, options: [{ value: DEFAULT, name: 'Follow AGY default agent' }] });
+  options.push({ id: 'permission-mode', name: 'AGY permissions', category: 'permission_mode', type: 'select',
+    currentValue: session.permissionMode ?? DEFAULT, options: [
+      { value: DEFAULT, name: 'Follow AGY settings' }, { value: 'manual', name: 'Request review' },
+      { value: 'auto', name: 'AGY auto mode' }, { value: 'yolo', name: 'Full access' },
+    ] });
   return options;
 }
 
@@ -214,53 +183,14 @@ export class AgyBridge {
   }
 
   initialize(version) {
-    return { protocolVersion: version, agentInfo: { name: 'agy-cli-acp', version: '0.1.0' },
+    return { protocolVersion: version, agentInfo: { name: 'agy-cli-acp', version: '0.2.0' },
       agentCapabilities: { loadSession: Boolean(this.auditDir), promptCapabilities: { image: false, audio: false, embeddedContext: false },
         mcpCapabilities: { http: false, sse: false }, sessionCapabilities: { additionalDirectories: {} } },
       authMethods: [], _meta: { steering: { supported: true } } };
   }
 
-  async requestPermission(session, input) {
-    if (!session.hostGate) return { decision: 'ask' };
-    const active = session.active;
-    const reject = reason => ({ decision: 'deny', reason });
-    if (!active || session.broken || typeof active.client.request !== 'function') return reject('Kiki AGY permission gate is unavailable for this turn');
-    if (!input || typeof input.conversationId !== 'string' || !Number.isSafeInteger(input.stepIdx) || input.stepIdx < 0
-      || !input.toolCall || typeof input.toolCall.name !== 'string' || !input.toolCall.args || typeof input.toolCall.args !== 'object') {
-      return reject('Invalid AGY PreToolUse payload');
-    }
-    if (!session.init || input.conversationId !== session.init.conversation_id) return reject('AGY permission conversation identity does not match this session');
-    const id = `agy-${input.conversationId}-${input.stepIdx}`;
-    const name = input.toolCall.name;
-    const args = input.toolCall.args;
-    const { kind, ...permissionTool } = canonicalTool(name, args, session.cwd);
-    await this.audit(session, 'permission_request', { toolCallId: id, name, policyIdentity: session.permission.policyIdentity, override: session.permission.override });
-    const controller = new AbortController();
-    session.permissionRequests.add(controller);
-    let response;
-    try {
-      response = await active.client.request('session/request_permission', {
-        sessionId: session.id,
-        toolCall: { toolCallId: id, title: name, kind, status: 'in_progress', rawInput: args },
-        options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
-          { optionId: 'reject_once', name: 'Reject once', kind: 'reject_once' },
-          { optionId: 'kiki.vendor_default', name: 'Use vendor permissions', kind: 'allow_once' }],
-        _meta: { 'kiki.tool': permissionTool },
-      }, { signal: controller.signal });
-    } finally { session.permissionRequests.delete(controller); }
-    if (session.active !== active || session.broken) return reject('Kiki AGY turn ended while awaiting permission');
-    if (response?.outcome?.outcome === 'selected' && response.outcome.optionId === 'kiki.vendor_default') {
-      await this.audit(session, 'permission_decision', { toolCallId: id, decision: 'vendor_default' });
-      return { decision: 'ask' };
-    }
-    const allow = response?.outcome?.outcome === 'selected' && ['allow_once', 'allow_always'].includes(response.outcome.optionId);
-    const permissionOverrides = allow ? toolPermissionResources(name, args) : undefined;
-    if (allow) (active.hostApproved ??= new Set()).add(id);
-    else (active.hostDenied ??= new Set()).add(id);
-    await this.audit(session, 'permission_decision', { toolCallId: id, decision: allow ? 'allow' : 'deny', permissionOverrides });
-    if (!allow) await this.settleTool(session, active, id, 'failed', 'The current Kiki permission gate rejected or cancelled this action before execution');
-    return allow ? { decision: 'allow', reason: 'Approved by the current Kiki permission gate', permissionOverrides }
-      : reject('The current Kiki permission gate rejected or cancelled this action');
+  async requestPermission() {
+    return { decision: 'ask' };
   }
 
   async newSession(params, id = randomUUID(), event = 'session_new') {
@@ -278,23 +208,15 @@ export class AgyBridge {
     const session = { id, cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
       modelChoices: this.modelChoices,
       mcpServers: structuredClone(mcpServers), mcpPlugin: undefined, mcpBound: new Set(), mcpReady: new Set(),
-      permission: undefined, hostGate: false, permissionIdentity: permissionChannelIdentity(),
-      permissionRequests: new Set(), permissionChannel: undefined, permissionRegistration: undefined,
+      permissionIdentity: permissionChannelIdentity(), permissionChannel: undefined,
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map() };
-    this.permissionSnapshot(session, params._meta?.['kiki.permission']);
     this.sessions.set(session.id, session);
     try {
       await this.recoverDeadOwnedResources(session);
-      if (session.hostGate && session.permission.override && typeof session.permission.requestId === 'string' && session.permission.requestId.length > 0) {
-        await this.syncPermissionHook(session);
-        session.permissionReceipt = { version: 1, sessionId: session.id, openMode: event === 'session_new' ? 'new' : 'load',
-          gate: 'pre-tool-hook', applied: structuredClone(session.permission) };
-      }
       await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false });
-      return { sessionId: session.id, configOptions: configOptions(session), _meta: { 'kiki.permission': session.permissionReceipt } };
+      return { sessionId: session.id, configOptions: configOptions(session) };
     } catch (error) {
       await session.permissionChannel?.close();
-      await session.permissionRegistration?.close();
       await this.closeSteeringHook(session).catch(() => {});
       this.sessions.delete(session.id);
       throw error;
@@ -354,7 +276,7 @@ export class AgyBridge {
       session.conversationId = init.conversationId;
       session.mcpNamespace = mcpBinding?.name;
       session.releaseResume = release;
-      return { configOptions: configOptions(session), _meta: { 'kiki.permission': session.permissionReceipt } };
+      return { configOptions: configOptions(session) };
     } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }
   }
 
@@ -392,6 +314,7 @@ export class AgyBridge {
   setConfig(params) {
     const session = this.session(params.sessionId);
     if (params.configId === 'model') return this.setModel(session, params.value);
+    if (params.configId === 'permission-mode') return this.setPermissionMode(session, params.value);
     if (params.configId === 'native-agent') {
       if (params.value !== DEFAULT) throw Error('AGY adapter supports only the native default agent; other native agents have not been discovered');
       return { configOptions: configOptions(session) };
@@ -404,42 +327,38 @@ export class AgyBridge {
     return { configOptions: configOptions(session) };
   }
 
-  permissionSnapshot(session, permission) {
-    const hostGate = permission?.hostGate === true;
-    if (hostGate && (permission.version !== 1
-      || permission.override !== undefined && (!['manual', 'auto', 'review', 'yolo'].includes(permission.override.mode)
-        || typeof permission.override.source !== 'string' || !permission.override.source)
-      || typeof permission.policyIdentity !== 'string' || !permission.policyIdentity
-      || permission.workspace?.cwd !== session.cwd
-      || JSON.stringify(permission.workspace?.additionalDirectories ?? []) !== JSON.stringify(session.additionalDirectories))) {
-      throw new Error('AGY permission bridge requires a matching frozen Kiki permission context');
+  async setPermissionMode(session, value) {
+    if (![DEFAULT, 'manual', 'auto', 'yolo'].includes(value)) throw Error(`AGY native permission mode ${value} is unsupported; review requires the Kiki native executor`);
+    if (session.permissionMode === value) return { configOptions: configOptions(session) };
+    if (session.active) throw Error('AGY permission mode cannot change during an active turn');
+    if (session.child) {
+      const conversationId = session.init?.conversation_id;
+      if (!conversationId || session.broken) throw Error('AGY permission changes require a confirmed healthy native conversation');
+      session.restarting = true;
+      try {
+        await this.stopProcess(session.child);
+        await session.cleanup;
+        session.conversationId = conversationId;
+        session.child = undefined;
+        session.init = undefined;
+        session.exited = undefined;
+        session.cleanup = undefined;
+        session.permissionChannel = undefined;
+        session.mcpPlugin = undefined;
+        session.mcpBound.clear();
+        session.mcpReady.clear();
+        session.broken = false;
+      } finally { session.restarting = false; }
     }
-    if (session.nativePermissionBypass && (!hostGate || permission?.override?.mode !== 'yolo')) {
-      session.permission = permission === undefined ? undefined : structuredClone(permission);
-      session.hostGate = true;
-      throw new Error('AGY was launched with explicit permission bypass; close this process and load its native conversation before restoring vendor permissions');
-    }
-    session.permission = permission === undefined ? undefined : structuredClone(permission);
-    session.hostGate = hostGate;
+    session.permissionMode = value;
+    await this.audit(session, 'permission_mode_configured', { value, mechanism: 'native-session-settings' });
+    return { configOptions: configOptions(session) };
   }
 
-  /**
-   * A native child cannot receive new environment variables mid-session. Its random
-   * channel identity is fixed at launch; inherited turns return the vendor's empty
-   * default and do not register a project hook. The per-turn hostGate snapshot
-   * controls only the owned project key, preserving the native process and history.
-   */
   async syncPermissionHook(session) {
     session.permissionChannel ??= await openPermissionChannel(input => ['mcp_bootstrap', 'mcp_ready'].includes(input?.type)
       ? this.bindMcpBootstrap(session, input) : input?.type === 'steer_poll' ? this.pollSteering(session, input)
-        : this.requestPermission(session, input), session.permissionIdentity);
-    if (!session.hostGate) {
-      await session.permissionRegistration?.close();
-      session.permissionRegistration = undefined;
-      return;
-    }
-    session.permissionRegistration ??= await registerProjectHook({ cwd: session.cwd, nodePath: process.execPath,
-      handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id });
+        : this.requestPermission(), session.permissionIdentity);
   }
 
   async registerMcpPlugin(session) {
@@ -566,13 +485,11 @@ export class AgyBridge {
       child = this.spawnProcess(this.cliPath, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env });
     } catch (error) {
       await session.permissionChannel?.close();
-      await session.permissionRegistration?.close();
       await this.closeSteeringHook(session).catch(() => {});
       await session.mcpPlugin?.close();
       throw error;
     }
     session.child = child;
-    session.nativePermissionBypass = args.includes('--dangerously-skip-permissions');
     session.exited = new Promise(done => child.once('close', done));
     const decoder = new StringDecoder('utf8');
     let buffer = '';
@@ -628,12 +545,10 @@ export class AgyBridge {
             session.active.reject(error);
             session.active = undefined;
           }
-          for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
           await session.permissionChannel?.close();
-          await session.permissionRegistration?.close();
           await this.closeSteeringHook(session).catch(() => {});
           await session.mcpPlugin?.close();
-          await session.releaseResume?.();
+          if (!session.restarting) await session.releaseResume?.();
         }
       })();
       session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
@@ -702,10 +617,6 @@ export class AgyBridge {
             (active.preToolDenied ??= new Set()).add(id);
             await this.audit(session, 'pre_tool_hook_denied', { toolCallId: id, error: errorText ?? output });
           }
-          if (failed && active.hostApproved?.has(id) && /\bpermissions?\s+(?:check\s+)?(?:denied|failed)\b|\b(?:user|resource)\s+denied\s+permission\b/i.test(errorText ?? output ?? '')) {
-            (active.vendorRejected ??= new Set()).add(id);
-            await this.audit(session, 'vendor_denied_after_host_allow', { toolCallId: id, error: errorText ?? output });
-          }
           await active.client.notify('session/update', { sessionId: session.id,
             update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: failed ? 'failed' : 'completed',
               rawOutput: output, content: typeof output === 'string'
@@ -723,9 +634,6 @@ export class AgyBridge {
     if (result.status === 'SUCCESS' && session.mcpServers.length !== session.mcpReady.size) {
       throw new Error('AGY did not activate and initialize the requested session MCP plugin; preserve native plugin/MCP off settings and review the connection instead of switching agents');
     }
-    for (const toolCallId of active.hostDenied ?? []) {
-      await this.settleTool(session, active, toolCallId, 'failed', 'The current Kiki permission gate rejected or cancelled this action before execution');
-    }
     const unresolved = [...session.toolIds].filter(([, status]) => status === 'pending')
       .map(([toolCallId]) => ({ toolCallId, ...session.toolDetails.get(toolCallId) }));
     const unresolvedMessage = unresolved.length
@@ -736,21 +644,17 @@ export class AgyBridge {
       session.failure = unresolvedMessage;
       await this.audit(session, 'tool_terminal_missing', { conversationId: result.conversation_id, nativeStatus: result.status, tools: unresolved });
     }
-    if (session.denied || result.denied_actions?.length || active.preToolDenied?.size || active.hostDenied?.size) {
+    if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
-      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; ${active.hostDenied?.size
-        ? `Kiki rejected ${[...active.hostDenied].join(', ')} before execution; retain the decision; native SUCCESS does not override it`
-        : active.preToolDenied?.size
-          ? 'a PreToolUse hook rejected a tool before execution; retain the denial; terminal SUCCESS is not evidence that the requested work ran'
-          : active.vendorRejected?.size
-            ? 'the native AGY permission engine rejected a tool after Kiki approved this exact call; retain the denial and restore the vendor approval contract before retrying'
-            : 'the native AGY permission policy did not approve the action'}${unresolvedMessage ? `; ${unresolvedMessage}` : ''}`;
+      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; ${active.preToolDenied?.size
+        ? 'a PreToolUse hook rejected a tool before execution; retain the denial; terminal SUCCESS is not evidence that the requested work ran'
+        : 'the native AGY permission policy did not approve the action'}${unresolvedMessage ? `; ${unresolvedMessage}` : ''}`;
       await this.settlePendingTools(session, active, 'failed', message);
       process.stderr.write(`${message}\n`);
       const error = new Error(message);
       error.code = 'AGY_PERMISSION_DENIED';
-      error.details = { deniedToolCallIds: [...new Set([...(active.hostDenied ?? []), ...(active.preToolDenied ?? [])])], unresolvedTools: unresolved };
+      error.details = { deniedToolCallIds: [...(active.preToolDenied ?? [])], unresolvedTools: unresolved };
       active.reject(error);
     } else if (result.status === 'CANCELED' || result.status === 'INTERRUPTED') {
       await this.settlePendingTools(session, active, 'failed', unresolvedMessage ?? `AGY turn ${result.status.toLowerCase()}`);
@@ -786,7 +690,6 @@ export class AgyBridge {
     });
     promise.catch(() => {});
     try {
-      if (Object.hasOwn(params._meta ?? {}, 'kiki.permission')) this.permissionSnapshot(session, params._meta['kiki.permission']);
       session.preparing = (async () => {
         await this.recoverDeadOwnedResources(session);
         await this.syncPermissionHook(session);
@@ -818,13 +721,11 @@ export class AgyBridge {
     const active = session.active;
     session.active = undefined;
     session.broken = true;
-    for (const controller of session.permissionRequests) controller.abort(new Error('AGY turn cancelled'));
     if (active) await this.settlePendingTools(session, active, 'failed', 'AGY turn cancelled');
     await session.preparing?.catch(() => {});
     await session.permissionChannel?.close();
     await this.stopProcess(session.child);
     await session.cleanup;
-    await session.permissionRegistration?.close();
     await this.closeSteeringHook(session).catch(() => {});
     await session.mcpPlugin?.close();
     await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false });
@@ -834,7 +735,6 @@ export class AgyBridge {
   close() {
     this.closePromise ??= Promise.all([...this.sessions.values()].map(async session => {
       const active = session.active; session.active = undefined; session.broken = true;
-      for (const controller of session.permissionRequests) controller.abort(new Error('ACP connection closed'));
       try {
         if (active) await this.settlePendingTools(session, active, 'failed', 'ACP connection closed');
       } finally {
@@ -847,7 +747,6 @@ export class AgyBridge {
           try { await session.exited; } finally { clearTimeout(timer); }
         }
         await session.cleanup;
-        await session.permissionRegistration?.close();
         await this.closeSteeringHook(session).catch(() => {});
         await session.mcpPlugin?.close();
         await session.releaseResume?.();
@@ -942,7 +841,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
         { adapterCode: error?.code, details: error?.details });
     }
   };
-  const connection = acp.agent({ name: 'agy-cli-acp', version: '0.1.0' })
+  const connection = acp.agent({ name: 'agy-cli-acp', version: '0.2.0' })
     .onRequest('initialize', () => bridge.initialize(acp.PROTOCOL_VERSION))
     .onRequest('session/new', sessionRequest(ctx => bridge.newSession(ctx.params)))
     .onRequest('session/load', sessionRequest(ctx => bridge.loadSession(ctx.params)))
@@ -964,7 +863,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv.includes('--version')) console.log('agy-cli-acp 0.1.0');
+  if (process.argv.includes('--version')) console.log('agy-cli-acp 0.2.0');
   else {
     const args = process.argv.slice(2);
     if (args.length === 2 && args[0] === '--mcp-stdio') {

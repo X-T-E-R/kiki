@@ -1,4 +1,22 @@
-# @moonshot-ai/kimi-code
+# @kiki/cli
+
+## 0.5.1
+
+### Patch Changes
+
+- Load recent conversation text sooner and keep large histories complete while scrolling back, with 40-turn / 512 KiB older-history pages and automatic continuation for expanded partial content.
+- Rebuild an inactive saved conversation's context with current instruction sources while preserving its session ID, permissions, bindings, and history without a model request.
+- Stop the desktop-managed local service from tray Quit, keep it running when the window closes, and retain drafts and reading position across verified same-home reconnects.
+- Save annotations faster in large conversations, support multiple selections with optional comments, and keep the composer caret stable when applying edits.
+- Import saved memory into SQLite automatically, preserve memory controls, and add Memory Advisor destination consent and memory export/import previews.
+- Correct conversation recovery, locally answered questions, message delivery feedback, and task completion wakeups after goal pauses and turn exits.
+- Resume idle subagents with direct, compact, or fresh context modes while preserving the same child and saved task state.
+- Use external engines' native permission controls without duplicate Kiki gates while preserving explicit caller restrictions and Kiki tool authorization.
+- Contain late Responses WebSocket errors and show exhausted retry counts alongside the original failure.
+- Simplify settings navigation and make Usage titles and live-session groups compact while retaining indexed history totals and partial-result progress.
+- Preserve mailbox deduplication during upgrades, release SDK mailbox resources on close, and show recoverable plugin receive diagnostics.
+
+[Release notes and installation](https://github.com/X-T-E-R/kiki/releases/tag/kiki-v0.5.1)
 
 ## 0.4.2
 

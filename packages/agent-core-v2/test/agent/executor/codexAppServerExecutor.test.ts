@@ -73,6 +73,13 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+const DEFAULT_VENDOR_SANDBOX = {
+  type: 'workspaceWrite',
+  writableRoots: [],
+  networkAccess: false,
+  excludeTmpdirEnvVar: false,
+  excludeSlashTmp: false,
+} as const;
 
 interface HarnessOptions {
   readonly models?: readonly string[];
@@ -97,12 +104,20 @@ interface HarnessOptions {
   readonly turnEvents?: readonly NormalizedExecutorEvent[];
   readonly notifications?: readonly CodexNotification[];
   readonly permissionGate?: IAgentPermissionGate['authorize'];
+  readonly permissionRules?: readonly { readonly decision: 'allow' | 'deny'; readonly scope: string; readonly pattern: string }[];
+  readonly toolOverride?: { readonly tools?: readonly string[]; readonly disallowedTools?: readonly string[] };
+  readonly disallowedTools?: readonly string[];
+  readonly worktree?: AgentExecutorContext['worktree'];
+  readonly executionRestriction?: 'research-readonly';
   readonly questionAnswer?: string;
   readonly questionAnswers?: Readonly<Record<string, string>>;
   readonly deferTurnCompletion?: boolean;
   readonly steerResponse?: unknown;
   readonly permissionMode?: { mode: 'manual' | 'auto' | 'yolo' };
   readonly vendorApprovalPolicy?: string | Readonly<Record<string, unknown>>;
+  readonly omitVendorApprovalPolicy?: boolean;
+  readonly vendorSandbox?: Readonly<Record<string, unknown>>;
+  readonly omitVendorSandbox?: boolean;
   readonly failTurnStart?: boolean;
   readonly kikiSubagents?: boolean;
   readonly clientFactory?: ConstructorParameters<typeof CodexAppServerExecutorSession>[1];
@@ -175,12 +190,13 @@ function createHarness(options: HarnessOptions = {}) {
       pendingTurns.delete(turnId);
     }),
   } as unknown as ISessionInteractionService;
+  const approvalRequest = vi.fn(async (_request: Parameters<ISessionApprovalService['request']>[0]) => ({
+    decision: 'approved' as const,
+    selectedOptionId: options.approvalOptionId,
+  }));
   const approval = {
     _serviceBrand: undefined,
-    request: async () => ({
-      decision: 'approved' as const,
-      selectedOptionId: options.approvalOptionId,
-    }),
+    request: approvalRequest,
   } as unknown as ISessionApprovalService;
   const questionRequest = vi.fn(async () =>
     options.questionAnswers ?? (options.questionAnswer === undefined ? null : { '0': options.questionAnswer }));
@@ -236,7 +252,7 @@ function createHarness(options: HarnessOptions = {}) {
     [IAgentStateService, states],
     [IAgentScopeContext, { parentAgentId: undefined }],
     [IAgentPermissionModeService, Object.assign(options.permissionMode ?? { mode: 'manual' }, { setMode: vi.fn() })],
-    [IAgentPermissionRulesService, { rules: [] }],
+    [IAgentPermissionRulesService, { rules: options.permissionRules ?? [] }],
     [IAgentPermissionGate, { authorize: options.permissionGate }],
     [IBootstrapService, { platform: 'linux' }],
     [ISessionContext, { sessionId: 'session-1' }],
@@ -277,7 +293,11 @@ function createHarness(options: HarnessOptions = {}) {
       executorProtocol: 'codex-app-server',
       executorDescriptorRevision: 'r1',
       allowKikiSubagents: options.kikiSubagents,
+      toolOverride: options.toolOverride,
+      disallowedTools: options.disallowedTools,
+      executionRestriction: options.executionRestriction,
     },
+    worktree: options.worktree,
   };
   const priorState = stateValues.get(externalExecutorKey) as Record<string, unknown>;
   if (priorState['sessionRef'] !== undefined) {
@@ -299,6 +319,10 @@ function createHarness(options: HarnessOptions = {}) {
     });
     return true;
   });
+  const vendorApprovalPolicy = options.omitVendorApprovalPolicy === true ? undefined
+    : options.vendorApprovalPolicy ?? 'untrusted';
+  const vendorSandbox = options.omitVendorSandbox === true ? undefined
+    : options.vendorSandbox ?? DEFAULT_VENDOR_SANDBOX;
   const client = {
     status: () => resolveTurnCompletion === undefined
       ? { state: 'ready' as const, agentVersion: options.agentVersion }
@@ -322,7 +346,8 @@ function createHarness(options: HarnessOptions = {}) {
     }),
     startThread: async (params: Readonly<Record<string, unknown>>) => {
       starts.push(params);
-      return { thread: { id: 'thread-new' }, approvalPolicy: options.vendorApprovalPolicy ?? 'untrusted', model: options.actualModel, modelProvider: options.modelProvider };
+      return { thread: { id: 'thread-new' }, approvalPolicy: vendorApprovalPolicy, sandbox: vendorSandbox,
+        model: options.actualModel, modelProvider: options.modelProvider };
     },
     resumeThread: async (params: Readonly<Record<string, unknown>>) => {
       resumes.push(params);
@@ -333,7 +358,8 @@ function createHarness(options: HarnessOptions = {}) {
       }
       return {
         thread: { id: String(params['threadId']) },
-        approvalPolicy: options.vendorApprovalPolicy ?? 'untrusted',
+        approvalPolicy: vendorApprovalPolicy,
+        sandbox: vendorSandbox,
         model: options.actualModel,
         modelProvider: options.modelProvider,
       };
@@ -346,7 +372,7 @@ function createHarness(options: HarnessOptions = {}) {
       prompts.push(params);
       if (options.failTurnStart) throw new Error('turn start failed');
       for (const notification of options.notifications ?? []) notificationHandler?.(notification);
-      if (serverHandler !== undefined && options.approvalOptionId !== undefined) {
+      if (serverHandler !== undefined && options.approvalOptionId !== undefined && options.serverRequest === undefined) {
         await serverHandler(
           {
             id: 41,
@@ -455,6 +481,7 @@ function createHarness(options: HarnessOptions = {}) {
     loopEvents,
     spawns,
     approval,
+    approvalRequest,
     dispatcher,
     usageRecords,
     turnCancel,
@@ -558,55 +585,63 @@ describe('Codex app-server external executor', () => {
     } finally { await session.shutdown(); }
   });
 
-  it('projects Codex fileChange facts to every actual Write path before approval without private metadata', async () => {
-    const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async (context) => {
-      expect(context.toolCall.name).toBe('Write');
-      expect(context.execution.accesses).toEqual([
-        { kind: 'file', operation: 'write', path: 'C:/workspace/allowed.ts', implicitExternal: false },
-        { kind: 'file', operation: 'write', path: 'C:/workspace/blocked.ts', implicitExternal: false },
-      ]);
-      expect(context.execution.matchesRule?.('C:/workspace/blocked.ts', 'any')).toBe(true);
-      expect(context.execution.matchesRule?.('C:/workspace/allowed.ts', 'all')).toBe(false);
-      return { permissionDecision: 'rejected', veto: { isError: true, output: 'Explicit Write deny' } };
-    });
-    const harness = createHarness({ permissionGate, notifications: [{ method: 'item/started', params: {
-      threadId: 'thread-new', turnId: 'turn-1', item: { id: 'file-1', type: 'fileChange', status: 'inProgress',
-        changes: [{ path: 'C:/workspace/allowed.ts', kind: 'add', diff: 'neutral' },
-          { path: 'C:/workspace/blocked.ts', kind: 'update', diff: 'neutral' }] },
-    } }], serverRequest: { method: 'item/fileChange/requestApproval', params: {
-      threadId: 'thread-new', turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
-    } } });
-    Object.assign(harness.context.binding, { permissionMode: 'yolo' });
-    const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
-    await run.completion;
-    expect(permissionGate).toHaveBeenCalledTimes(1);
-    expect(harness.serverResults).toEqual([{ decision: 'decline' }]);
-    await harness.session.shutdown();
-  });
-
-  it.each(['missing facts', 'other item', 'other turn', 'other thread', 'request other thread'] as const)(
-    'does not guess Codex fileChange paths from grantRoot with %s', async (mismatch) => {
-      const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async () => undefined);
-      const harness = createHarness({ permissionGate, notifications: mismatch === 'missing facts' ? [] : [{ method: 'item/started', params: {
-        threadId: mismatch === 'other thread' ? 'thread-other' : 'thread-new',
-        turnId: mismatch === 'other turn' ? 'turn-other' : 'turn-1', item: {
-          id: mismatch === 'other item' ? 'file-other' : 'file-1', type: 'fileChange',
-          changes: [{ path: 'C:/workspace/allowed.ts', kind: 'add', diff: 'neutral' }],
-        },
-      } }], serverRequest: { method: 'item/fileChange/requestApproval', params: {
-        threadId: mismatch === 'request other thread' ? 'thread-other' : 'thread-new',
-        turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
-      } } });
-      Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+  it.each([
+    ['command', 'item/commandExecution/requestApproval', {
+      threadId: 'thread-new', turnId: 'turn-1', itemId: 'command-1', availableDecisions: ['accept', 'decline'],
+    }, 'accept', { decision: 'accept' }],
+    ['file without paths', 'item/fileChange/requestApproval', {
+      threadId: 'thread-new', turnId: 'turn-1', itemId: 'file-1',
+    }, 'accept', { decision: 'accept' }],
+    ['permissions', 'item/permissions/requestApproval', {
+      threadId: 'thread-new', turnId: 'turn-1', itemId: 'permissions-1', permissions: { network: true },
+    }, 'grant-turn', { permissions: { network: true }, scope: 'turn' }],
+  ] as const)('routes native %s approval through the original session approval options without the permission gate', async (_name, method, params, approvalOptionId, result) => {
+    const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async () => undefined);
+    const harness = createHarness({ permissionGate, approvalOptionId, serverRequest: { method, params } });
+    try {
       const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
       await run.completion;
+      expect(harness.approvalRequest).toHaveBeenCalledOnce();
+      expect(harness.approvalRequest.mock.calls[0]?.[0]).toMatchObject({
+        id: 'codex:42',
+        toolCallId: expect.any(String),
+        display: { kind: 'external_permission', detail: params },
+      });
       expect(permissionGate).not.toHaveBeenCalled();
-      expect(harness.serverResults).toEqual([{ error: { code: -32602,
-        message: mismatch === 'request other thread' ? 'File approval belongs to a different thread'
-          : 'File approval has no matching fileChange paths for the active item and turn' } }]);
-      await harness.session.shutdown();
-    },
-  );
+      expect(harness.serverResults).toEqual([result]);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('rejects a native file approval for another thread before requesting Kiki approval', async () => {
+    const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async () => undefined);
+    const harness = createHarness({ permissionGate, serverRequest: { method: 'item/fileChange/requestApproval', params: {
+      threadId: 'thread-other', turnId: 'turn-1', itemId: 'file-1',
+    } } });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.approvalRequest).not.toHaveBeenCalled();
+      expect(permissionGate).not.toHaveBeenCalled();
+      expect(harness.serverResults).toEqual([{ error: { code: -32602, message: 'File approval belongs to a different thread' } }]);
+    } finally { await harness.session.shutdown(); }
+  });
+  it.each([
+    ['tools allowlist', { toolOverride: { tools: ['Read'] } }, 'tools allowlist'],
+    ['deny tools', { disallowedTools: ['Bash'] }, 'disallowed_tools'],
+    ['permission rules', { permissionRules: [{ decision: 'deny', scope: 'user', pattern: 'Bash' }] }, 'permission.rules (user)'],
+    ['worktree', { worktree: { worktreeId: 'wt-test', branch: 'example/test', sourceRoot: 'C:/source', baseRef: 'HEAD' } }, 'Kiki worktree write isolation'],
+  ] as const)('rejects explicit unsupported %s controls before opening a turn', async (_name, options, unsupported) => {
+    const harness = createHarness(options);
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'not sent' }, { signal: new AbortController().signal }))
+        .rejects.toMatchObject({ message: expect.stringContaining(`cannot enforce ${unsupported} on vendor-native tools`), details: { unsupported: [unsupported] } });
+      expect(harness.starts).toEqual([]);
+      expect(harness.resumes).toEqual([]);
+      expect(harness.prompts).toEqual([]);
+      expect(harness.spawns).toEqual([]);
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('sends only explicitly selected Codex controls without injecting sandbox or developer instructions', async () => {
     const harness = createHarness({ modelReasoningEfforts: ['high'] });
     const execution = resolveExecutionBinding({ executor: 'codex-app-server', overrides: {
@@ -1361,24 +1396,51 @@ describe('Codex Kiki MCP approval under YOLO', () => {
   it.each([false, true])('restores sticky vendor approval after clear on the same thread (cold=%s)', async (cold) => {
     const vendorApprovalPolicy = { granular: { sandbox_approval: true, rules: true, skill_approval: false,
       request_permissions: true, mcp_elicitations: false } };
-    const harness = createHarness({ vendorApprovalPolicy });
+    const vendorSandbox = { type: 'readOnly' };
+    const harness = createHarness({ vendorApprovalPolicy, vendorSandbox });
     Object.assign(harness.context.binding, { permissionMode: 'yolo' });
     let session = harness.session;
     try {
       await (await session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal })).completion;
       await session.settled();
-      expect(harness.prompts[0]?.['approvalPolicy']).toBe('never');
-      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({ threadId: 'thread-new', policy: vendorApprovalPolicy });
+      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } });
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({
+        threadId: 'thread-new', policy: vendorApprovalPolicy, sandbox: vendorSandbox,
+      });
       Object.assign(harness.context.binding, { permissionMode: undefined });
       if (cold) { await session.shutdown(); session = harness.createSession(harness.context); }
       await (await session.run({ kind: 'prompt', prompt: 'second' }, { signal: new AbortController().signal })).completion;
       await session.settled();
-      expect(harness.prompts[1]?.['approvalPolicy']).toEqual(vendorApprovalPolicy);
+      expect(harness.prompts[1]).toMatchObject({ approvalPolicy: vendorApprovalPolicy, sandboxPolicy: vendorSandbox });
       expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toBeUndefined();
       expect(harness.starts).toHaveLength(1);
       expect(harness.prompts.map((prompt) => prompt['threadId'])).toEqual(['thread-new', 'thread-new']);
       await (await session.run({ kind: 'prompt', prompt: 'third' }, { signal: new AbortController().signal })).completion;
-      expect(harness.prompts[2]?.['approvalPolicy']).toBeUndefined();
+      expect(harness.prompts[2]).toMatchObject({ approvalPolicy: undefined, sandboxPolicy: undefined });
+    } finally { await session.shutdown(); }
+  });
+
+  it('consumes the opened sandbox when a cold manual override is later raised to YOLO', async () => {
+    const harness = createHarness({ vendorSandbox: DEFAULT_VENDOR_SANDBOX });
+    Object.assign(harness.context.binding, { permissionMode: 'manual' });
+    let session = harness.session;
+    try {
+      await (await session.run({ kind: 'prompt', prompt: 'manual' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'on-request', sandboxPolicy: undefined });
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toMatchObject({
+        threadId: 'thread-new', policy: 'untrusted',
+      });
+      expect((harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore'] as { readonly sandbox?: unknown } | undefined)?.sandbox).toBeUndefined();
+      await session.shutdown();
+      Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+      session = harness.createSession(harness.context);
+      await (await session.run({ kind: 'prompt', prompt: 'yolo' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(harness.prompts[1]).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } });
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({
+        threadId: 'thread-new', policy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX,
+      });
     } finally { await session.shutdown(); }
   });
 
@@ -1398,7 +1460,23 @@ describe('Codex Kiki MCP approval under YOLO', () => {
     Object.assign(harness.context.binding, { permissionMode: 'yolo' });
     try {
       await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('turn start failed');
-      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({ threadId: 'thread-new', policy: 'untrusted' });
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({
+        threadId: 'thread-new', policy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX,
+      });
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it.each([
+    ['approval policy', { omitVendorApprovalPolicy: true }, 'Codex does not expose its inherited approval policy for restoration'],
+    ['sandbox policy', { omitVendorSandbox: true }, 'Codex does not expose its inherited sandbox policy for Full access restoration'],
+  ] as const)('reports an accurate missing %s baseline without opening a turn', async (_name, options, message) => {
+    const harness = createHarness(options);
+    Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'not sent' }, { signal: new AbortController().signal }))
+        .rejects.toThrow(message);
+      expect(harness.starts).toHaveLength(1);
+      expect(harness.prompts).toEqual([]);
     } finally { await harness.session.shutdown(); }
   });
 
@@ -1415,7 +1493,7 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/approval_policy|sandbox_mode|danger-full-access|bypass/);
       expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: undefined });
       expect(harness.prompts[0]).toMatchObject({ approvalPolicy: explicit ? 'never' : undefined,
-        sandboxPolicy: undefined });
+        sandboxPolicy: explicit ? { type: 'dangerFullAccess' } : undefined });
     } finally { await harness.session.shutdown(); }
   });
 
@@ -1426,7 +1504,7 @@ describe('Codex Kiki MCP approval under YOLO', () => {
         await (await harness.session.run({ kind: 'prompt', prompt: 'delegate' }, { signal: new AbortController().signal })).completion;
         expect(approvalFlags(harness.spawns[0]!)).toEqual([]);
         expect(harness.spawns[0]!.join(' ')).toContain('mcp_servers.kiki-harness.command="kiki"');
-        expect(harness.prompts[0]).toMatchObject({ approvalPolicy: undefined });
+        expect(harness.prompts[0]).toMatchObject({ approvalPolicy: undefined, sandboxPolicy: undefined });
       } finally { await harness.session.shutdown(); }
     }
   });
@@ -1476,12 +1554,13 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       expect(harness.spawns).toHaveLength(2);
       expect(approvalFlags(harness.spawns[1]!)).toHaveLength(1);
       expect(harness.resumes.at(-1)).toMatchObject({ threadId: 'thread-new', approvalPolicy: undefined });
-      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'never' });
+      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } });
       mode.mode = 'auto';
       Object.assign(harness.context.binding, { permissionMode: undefined });
       await (await harness.session.run({ kind: 'prompt', prompt: 'four' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
       expect(harness.spawns).toHaveLength(3);
       expect(approvalFlags(harness.spawns[2]!)).toEqual([]);
+      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'untrusted', sandboxPolicy: DEFAULT_VENDOR_SANDBOX });
     } finally { await harness.session.shutdown(); }
   });
 });
@@ -1582,7 +1661,9 @@ function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack') 
         if (frame.id === undefined) continue;
         let result: unknown = {};
         if (frame.method === 'model/list') result = { data: [{ id: 'gpt-test' }], nextCursor: null };
-        if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = { thread: { id: 'thread-1' }, approvalPolicy: 'untrusted' };
+        if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = {
+          thread: { id: 'thread-1' }, approvalPolicy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX,
+        };
         if (frame.method === 'turn/start') {
           if (startOutcome === 'no-ack') continue;
           if (startOutcome === 'reject') {

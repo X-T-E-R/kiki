@@ -141,8 +141,8 @@ export interface AgentFacade {
   appendContext(message: ContextMessage): Promise<void>;
   appendImportedContext(message: ContextMessage): Promise<void>;
   clearContext(): Promise<void>;
-  rebuildContext(): Promise<ContextRebuildResult>;
-  contextRebuildControl(): Promise<ContextRebuildControl>;
+  rebuildContext(options?: CallOptions): Promise<ContextRebuildResult>;
+  contextRebuildControl(options?: CallOptions): Promise<ContextRebuildControl>;
   /** Persists this agent's switch. Enabling does not rebuild immediately. */
   setContextRebuildEnabled(enabled: boolean): Promise<void>;
   undo(count: Parameters<IAgentConversationUndoService['undo']>[0]): Promise<number>;
@@ -290,10 +290,10 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentContextMutationService', 'appendImported', [message]) as Promise<void>,
     clearContext: () =>
       call(scope, 'agentContextMemoryService', 'clear', []) as Promise<void>,
-    rebuildContext: () =>
-      call(scope, 'agentContextRebuildService', 'rebuild', []) as Promise<ContextRebuildResult>,
-    contextRebuildControl: () =>
-      call(scope, 'agentContextRebuildService', 'control', []) as Promise<ContextRebuildControl>,
+    rebuildContext: (options) =>
+      call(scope, 'agentContextRebuildService', 'rebuild', [], options) as Promise<ContextRebuildResult>,
+    contextRebuildControl: (options) =>
+      call(scope, 'agentContextRebuildService', 'control', [], options) as Promise<ContextRebuildControl>,
     setContextRebuildEnabled: (enabled) =>
       call(scope, 'agentContextRebuildService', 'setEnabled', [enabled]) as Promise<void>,
     undo: (count) =>

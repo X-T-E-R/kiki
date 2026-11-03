@@ -23,14 +23,14 @@ The pull-request CI generates an ephemeral updater key and never reads the produ
 
 Changesets target the workspace package `@kiki/cli` for versioning and changelog entries. The `kiki-v*` workflow uses that version to stage `kiki-agent-lite` (CLI/TUI) and `kiki-agent` (CLI/TUI plus desktop); it publishes only those two distributions, not `@kiki/cli`. The root `pnpm publish` script is a separate workspace-package channel using `changeset publish`, including `@kiki/cli`; it does not stage desktop distributions and must not replace the tag workflow.
 
-1. Consume the approved changesets and synchronize the desktop version from the CLI:
+1. Confirm the chosen release version and update the CLI changelog and curated notes. If the version is already set, keep it. To set a different approved version, including a beta, use `pnpm --filter @kiki/gui run desktop:version:set -- <version>` and update the local `kiki-desktop` entry in `apps/kiki-gui/src-tauri/Cargo.lock`. Then check:
 
    ```powershell
-   pnpm version:release
    pnpm --filter @kiki/gui run desktop:version:check
+   pnpm install --frozen-lockfile
    ```
 
-   For a deliberately chosen version, including a beta, use `pnpm --filter @kiki/gui run desktop:version:set -- <version>` and rerun the check. The CLI, GUI, Tauri, Cargo and `system.yaml` versions must match before tagging; the frozen input receipt checks all five.
+   The CLI, GUI, Tauri, Cargo and `system.yaml` versions must match before tagging; the frozen input receipt checks all five. The repository retains historical unconsumed changesets. Use `pnpm version:release` only after reconciling that backlog against published versions and selecting the entries for this release; running it over the whole backlog can bump an already prepared version again. Preserve unknown entries for later reconciliation.
 
 2. Land the version change on the commit to release.
 3. Create and push a tag matching the checked version, for example if it is `0.1.0-beta.1`:

@@ -56,7 +56,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionConstraints, externalPermissionHostGate, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { assertExternalPermissionSupport, externalPermissionMode } from './externalPermission';
 import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
@@ -102,6 +102,7 @@ interface OpenedThread {
   readonly actualModel?: string;
   readonly modelProvider?: string;
   readonly approvalPolicy?: CodexThreadResult['approvalPolicy'];
+  readonly sandbox?: CodexThreadResult['sandbox'];
   readonly handoff?: { readonly text: string; readonly truncated: boolean };
 }
 
@@ -109,7 +110,6 @@ interface PermissionContext {
   readonly turn: MutableExternalTurn;
   readonly recorder: ExternalTurnRecorder;
   readonly signal: AbortSignal;
-  readonly fileChanges: Map<string, { readonly turnId: string; readonly paths: readonly string[] }>;
 }
 
 const HANDOFF_BEGIN = '--- BEGIN KIKI PRIOR TRANSCRIPT HANDOFF ---';
@@ -131,7 +131,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
   #vendorApprovalPolicy: CodexThreadResult['approvalPolicy'];
-  #approvalRestore: { readonly threadId: string; readonly policy: NonNullable<CodexThreadResult['approvalPolicy']> } | undefined;
+  #vendorSandbox: CodexThreadResult['sandbox'];
+  #approvalRestore: { readonly threadId: string; readonly policy: NonNullable<CodexThreadResult['approvalPolicy']>; readonly sandbox?: CodexThreadResult['sandbox'] } | undefined;
   #active: ActiveCodexTurn | undefined;
   #permissionContext: PermissionContext | undefined;
   #settled: Promise<void> = Promise.resolve();
@@ -192,7 +193,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       return clientFactory(processes,
         (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
         (notification) => {
-          this.#observeFileChange(notification);
           const auth = codexAuthObservation(notification);
           if (auth === undefined) return;
           this.#authUpdates = this.#authUpdates.then(() => recordExecutorAuth(launchedContext, cwd, auth));
@@ -240,6 +240,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     options.signal.throwIfAborted();
     await this.hooks.onWillRun.run({ signal: options.signal });
     options.signal.throwIfAborted();
+    assertExternalPermissionSupport(this.context);
 
     const turnId = this.#reserveTurnId();
     const prompt = request.prompt;
@@ -267,14 +268,22 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const priorThreadId = threadIdFromState(prior.sessionRef);
     if (this.#approvalRestore?.threadId !== opened.threadId) this.#approvalRestore = undefined;
     if (priorThreadId === opened.threadId) this.#approvalRestore ??= codexApprovalRestore(prior.sessionRef);
-    if (opened.approvalPolicy !== undefined && this.#approvalRestore === undefined) this.#vendorApprovalPolicy = opened.approvalPolicy;
+    if (this.#approvalRestore === undefined && opened.approvalPolicy !== undefined) this.#vendorApprovalPolicy = opened.approvalPolicy;
+    this.#vendorSandbox = this.#approvalRestore?.sandbox ?? opened.sandbox ?? this.#vendorSandbox;
     const override = this.#approvalPolicy();
+    const fullAccess = externalPermissionMode(this.context) === 'yolo';
     if (override !== undefined && this.#approvalRestore === undefined) {
       if (this.#vendorApprovalPolicy === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID,
         'Codex does not expose its inherited approval policy for restoration');
-      this.#approvalRestore = { threadId: opened.threadId, policy: this.#vendorApprovalPolicy };
+      this.#approvalRestore = { threadId: opened.threadId, policy: this.#vendorApprovalPolicy, sandbox: fullAccess ? this.#vendorSandbox : undefined };
+    }
+    if (fullAccess && this.#approvalRestore?.sandbox === undefined) {
+      if (this.#vendorSandbox === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID,
+        'Codex does not expose its inherited sandbox policy for Full access restoration');
+      this.#approvalRestore = { ...this.#approvalRestore!, sandbox: this.#vendorSandbox };
     }
     const approvalPolicy = override ?? this.#approvalRestore?.policy;
+    const sandboxPolicy = fullAccess ? { type: 'dangerFullAccess' } : this.#approvalRestore?.sandbox;
     let sessionRef = { executorId: this.context.descriptor.id, version: 1,
       ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'],
         kikiPermissionRestore: this.#approvalRestore } };
@@ -345,7 +354,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         return true;
       },
     };
-    this.#permissionContext = { turn, recorder, signal: controller.signal, fileChanges: new Map() };
+    this.#permissionContext = { turn, recorder, signal: controller.signal };
 
     let handle: CodexTurnHandle;
     let deliveryAttempted = false;
@@ -367,12 +376,13 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           : this.context.binding.thinkingEffortExplicit === true && this.context.binding.thinkingLevel !== 'off'
             ? this.context.binding.thinkingLevel : undefined,
         approvalPolicy,
-        sandboxPolicy: undefined,
+        sandboxPolicy,
       }, controller.signal, recorder.record.bind(recorder), () => { deliveryAttempted = true; attempt.possibleDelivery = true; });
       acknowledged = true;
       attempt.possibleDelivery = true;
       if (override === undefined && this.#approvalRestore !== undefined) {
         this.#vendorApprovalPolicy = this.#approvalRestore.policy;
+        this.#vendorSandbox = this.#approvalRestore.sandbox ?? this.#vendorSandbox;
         this.#approvalRestore = undefined;
         sessionRef = { ...sessionRef, ref: { ...sessionRef.ref, kikiPermissionRestore: undefined } };
       }
@@ -598,7 +608,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           mode: 'resume',
           actualModel: resumed.model,
           modelProvider: resumed.modelProvider,
-          approvalPolicy: resumed.approvalPolicy,
+          approvalPolicy: resumed.approvalPolicy, sandbox: resumed.sandbox,
         };
       } catch (error) {
         if (this.context.binding.execution !== undefined || state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
@@ -609,7 +619,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           mode: handoff === undefined ? 'new' : 'handoff',
           actualModel: fresh.model,
           modelProvider: fresh.modelProvider,
-          approvalPolicy: fresh.approvalPolicy,
+          approvalPolicy: fresh.approvalPolicy, sandbox: fresh.sandbox,
           handoff,
         };
       }
@@ -622,7 +632,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         mode: 'handoff',
         actualModel: fresh.model,
         modelProvider: fresh.modelProvider,
-        approvalPolicy: fresh.approvalPolicy,
+        approvalPolicy: fresh.approvalPolicy, sandbox: fresh.sandbox,
         handoff,
       };
     }
@@ -632,7 +642,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       mode: 'new',
       actualModel: fresh.model,
       modelProvider: fresh.modelProvider,
-      approvalPolicy: fresh.approvalPolicy,
+      approvalPolicy: fresh.approvalPolicy, sandbox: fresh.sandbox,
     };
   }
 
@@ -659,7 +669,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   }
 
   #approvalPolicy(): string | undefined {
-    if (externalPermissionConstraints(this.context)) return 'on-request';
     const mode = externalPermissionMode(this.context);
     return mode === undefined ? undefined : mode === 'yolo' ? 'never' : 'on-request';
   }
@@ -775,22 +784,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     await responder.respond({ decision });
   }
 
-  #observeFileChange(notification: CodexNotification): void {
-    const active = this.#permissionContext;
-    const params = notification.params;
-    if (active === undefined || active.signal.aborted || notification.method !== 'item/started' ||
-        !isObject(params) || params['threadId'] !== this.#threadId || typeof params['turnId'] !== 'string') return;
-    const item = params['item'];
-    if (!isObject(item) || item['type'] !== 'fileChange' || typeof item['id'] !== 'string') return;
-    const changes = item['changes'];
-    if (!Array.isArray(changes) || changes.length === 0 ||
-        changes.some((change) => !isObject(change) || typeof change['path'] !== 'string' || change['path'].length === 0)) {
-      active.fileChanges.delete(item['id']);
-      return;
-    }
-    active.fileChanges.set(item['id'], { turnId: params['turnId'], paths: changes.map((change) => change['path'] as string) });
-  }
-
   async #fileApproval(
     request: CodexServerRequest,
     responder: CodexServerRequestResponder,
@@ -806,14 +799,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       label: decisionLabel(decision),
       kind: decisionKind(decision),
     }));
-    const change = active.fileChanges.get(requiredItemId(request));
-    const tool = change !== undefined && change.turnId === request.params['turnId'] ? { name: 'Write', input: { paths: change.paths } }
-      : externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']);
-    if (tool === undefined && externalPermissionHostGate(this.context)) {
-      await responder.respondError(-32602, 'File approval has no matching fileChange paths for the active item and turn');
-      return;
-    }
-    const selected = await this.#approval(request, active, 'File change', decisions, tool);
+    const selected = await this.#approval(request, active, 'File change', decisions);
     await responder.respond({ decision: decisions.find((candidate) => candidate.id === selected)?.raw ?? 'cancel' });
   }
 
@@ -892,33 +878,16 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       readonly label: string;
       readonly kind: string;
     }[],
-    projectedTool?: { readonly name: string; readonly input: Readonly<Record<string, unknown>> },
   ): Promise<string | undefined> {
-    const command = request.params['command'];
-    const tool = projectedTool ?? externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']) ??
-      (typeof command === 'string' ? { name: 'Bash', input: { command, cwd: request.params['cwd'] } }
-        : { name: action, input: request.params });
-    try {
-      const result = await authorizeExternalTool(this.context, tool, active.turn.id,
-        active.recorder.toolCallId(requiredItemId(request)), active.signal,
-        { kind: 'external_permission', summary: action, detail: request.params,
-          options: decisions.map((decision) => ({ id: decision.id, label: decision.label, kind: decision.kind })) });
-      if (result === 'inherit') {
-        const response = await raceInteraction(this.context.agent.accessor.get(ISessionApprovalService).request({
-          id: `codex:${String(request.id)}`, agentId: this.context.agent.id, turnId: active.turn.id,
-          toolCallId: active.recorder.toolCallId(requiredItemId(request)), toolName: action, action,
-          display: { kind: 'external_permission', summary: action, detail: request.params,
-            options: decisions.map((decision) => ({ id: decision.id, label: decision.label, kind: decision.kind })) },
-        }), active.signal);
-        const selected = decisions.find((decision) => decision.id === response?.selectedOptionId);
-        return response === undefined || response.decision === 'cancelled' || selected === undefined ||
-          (response.decision === 'approved') !== selected.kind.startsWith('allow_') ? undefined : selected.id;
-      }
-      return result === 'cancelled' ? undefined
-        : decisions.find((decision) => decision.kind === (result === 'allow' ? 'allow_once' : 'reject_once'))?.id;
-    } catch {
-      return undefined;
-    }
+    const response = await raceInteraction(this.context.agent.accessor.get(ISessionApprovalService).request({
+      id: `codex:${String(request.id)}`, agentId: this.context.agent.id, turnId: active.turn.id,
+      toolCallId: active.recorder.toolCallId(requiredItemId(request)), toolName: action, action,
+      display: { kind: 'external_permission', summary: action, detail: request.params,
+        options: decisions.map((decision) => ({ id: decision.id, label: decision.label, kind: decision.kind })) },
+    }), active.signal);
+    const selected = decisions.find((decision) => decision.id === response?.selectedOptionId);
+    return response === undefined || response.decision === 'cancelled' || selected === undefined ||
+      (response.decision === 'approved') !== selected.kind.startsWith('allow_') ? undefined : selected.id;
   }
 }
 
@@ -1010,7 +979,8 @@ function codexApprovalRestore(ref: { readonly ref: Readonly<Record<string, unkno
   const policy = restore['policy'];
   if (typeof threadId !== 'string' || threadId !== threadIdFromState(ref) ||
       !(typeof policy === 'string' || typeof policy === 'object' && policy !== null && !Array.isArray(policy))) return undefined;
-  return { threadId, policy: policy as NonNullable<CodexThreadResult['approvalPolicy']> };
+  return { threadId, policy: policy as NonNullable<CodexThreadResult['approvalPolicy']>,
+    sandbox: isObject(restore['sandbox']) ? restore['sandbox'] : undefined };
 }
 
 function isResumeProtocolFailure(error: unknown): boolean {

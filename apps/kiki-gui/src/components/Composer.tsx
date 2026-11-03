@@ -728,7 +728,7 @@ export function Composer({
     }
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
-  const { client, connectionId, scopeId, localClient } = useConnection();
+  const { client, connectionId, scopeId, localClient, meta } = useConnection();
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
   const remoteRecords = useRemoteConnections(localClient);
@@ -856,6 +856,15 @@ export function Composer({
   const [mentionQuery, setMentionQuery] = useState('');
   const [contextRebuildConfirm, setContextRebuildConfirm] = useState(false);
   const [contextRebuildBusy, setContextRebuildBusy] = useState(false);
+  const rebuildOwner = useMemo(() => ({}), [scopeId, meta?.server_id, meta?.started_at, sessionId]);
+  const rebuildOwnerRef = useRef<object | undefined>(rebuildOwner);
+  rebuildOwnerRef.current = rebuildOwner;
+  useEffect(() => {
+    rebuildOwnerRef.current = rebuildOwner;
+    setContextRebuildConfirm(false);
+    setContextRebuildBusy(false);
+    return () => { rebuildOwnerRef.current = undefined; };
+  }, [rebuildOwner]);
   // A slash-looking draft that resolved to nothing: send is held until the
   // user confirms plain-text shipping (typo guard) or edits the draft.
   const [slashConfirm, setSlashConfirm] = useState<{
@@ -1460,19 +1469,16 @@ export function Composer({
     });
   };
 
-  /** Write a new draft value and land the caret once the controlled value renders. */
+  /** Write a local edit and its caret in one editor transaction, then mirror the controlled value. */
   const applyTextChange = (nextText: string, cursor: number) => {
     setMenu(null);
-    onChange(nextText);
     lastCursorRef.current = cursor;
-    requestAnimationFrame(() => {
-      const node = textareaRef.current;
-      if (node !== null && !composingRef.current) {
-        const at = Math.min(cursor, node.value.length);
-        node.focus();
-        node.setSelectionRange(at, at);
-      }
-    });
+    const node = textareaRef.current;
+    if (node !== null && !composingRef.current) {
+      node.focus();
+      node.setValueAndCursor(nextText, cursor);
+    }
+    onChange(nextText);
   };
 
   // Outside inserts (the sidebar's "Add to conversation"): the snippet lands
@@ -1620,16 +1626,7 @@ export function Composer({
       if (trigger === null) return;
       const completed = completeSlashTrigger(text, trigger, item.name);
       pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-      onChange(completed.text);
-      lastCursorRef.current = completed.cursor;
-      // Caret to the end of the completed token after the controlled value lands.
-      requestAnimationFrame(() => {
-        const node = textareaRef.current;
-        if (node !== null && !composingRef.current) {
-          node.focus();
-          node.setSelectionRange(completed.cursor, completed.cursor);
-        }
-      });
+      applyTextChange(completed.text, completed.cursor);
       return;
     }
     onChange('');
@@ -1645,8 +1642,7 @@ export function Composer({
     const cursor = node?.selectionStart ?? text.length;
     const next = text.slice(0, trigger.start) + text.slice(cursor);
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-    onChange(next);
-    lastCursorRef.current = trigger.start;
+    applyTextChange(next, trigger.start);
     const currentAttachments = attachmentBaselineRef.current;
     if (!hasMention(currentAttachments, hit.path)) {
       updateAttachments([
@@ -1654,7 +1650,6 @@ export function Composer({
         { kind: 'file', path: hit.path, name: hit.name, isDir: hit.kind === 'directory' },
       ]);
     }
-    node?.focus();
   };
 
   /** Accept the highlighted mention row, whether it is a file hit or an agent. */
@@ -1678,16 +1673,7 @@ export function Composer({
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
     historyIndexRef.current = null;
     const next = replaceMentionTriggerWithAgentRef(text, trigger, cursor, candidate.reference);
-    onChange(next.text);
-    lastCursorRef.current = next.cursor;
-    // Keep the caret after the token so subsequent typing extends the prose.
-    requestAnimationFrame(() => {
-      const node = textareaRef.current;
-      if (node !== null && !composingRef.current) {
-        node.focus();
-        node.setSelectionRange(next.cursor, next.cursor);
-      }
-    });
+    applyTextChange(next.text, next.cursor);
   };
 
   /**
@@ -1701,15 +1687,7 @@ export function Composer({
     const token = `/${item.name} `;
     const next = token + rest;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-    onChange(next);
-    lastCursorRef.current = token.length;
-    requestAnimationFrame(() => {
-      const node = textareaRef.current;
-      if (node !== null && !composingRef.current) {
-        node.focus();
-        node.setSelectionRange(token.length, token.length);
-      }
-    });
+    applyTextChange(next, token.length);
   };
 
   /** ＋ → Mention a file: the same chip the `@` picker adds. */
@@ -2545,12 +2523,14 @@ export function Composer({
     setContextRebuildBusy(true);
     void onRebuildContext()
       .then((result) => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         pushToast({
           tone: 'success',
           text: t(result.changed ? 'profile.rebuildDoneChanged' : 'profile.rebuildDoneUnchanged'),
         });
       })
       .catch((error: unknown) => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         pushToast({
           tone: 'error',
           text: t('profile.rebuildFailed', {
@@ -2559,6 +2539,7 @@ export function Composer({
         });
       })
       .finally(() => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         setContextRebuildBusy(false);
         setContextRebuildConfirm(false);
       });

@@ -3,13 +3,18 @@ import { RPCError, type SessionCommandsFacade } from '@kiki/klient/session-view'
 import { ApiError, type SessionTransport } from '../transport';
 
 export interface SessionCommandClient {
+  captureOperation?(): () => void;
   session(sessionId: string): { readonly commands: SessionCommandsFacade; resume(): Promise<boolean> };
 }
 
 export function createSessionTransport(klient: SessionCommandClient): SessionTransport {
-  const run = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const run = async <T>(operation: (assertCurrent: () => void) => Promise<T>): Promise<T> => {
     try {
-      return await operation();
+      const assertCurrent = klient.captureOperation?.() ?? (() => {});
+      assertCurrent();
+      const result = await operation(assertCurrent);
+      assertCurrent();
+      return result;
     } catch (error) {
       if (error instanceof RPCError) {
         throw new ApiError({
@@ -26,8 +31,10 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     }
   };
   const commands = (id: string) => klient.session(id).commands;
-  const active = <T>(id: string, operation: () => Promise<T>): Promise<T> => run(async () => {
-    if (!await klient.session(id).resume()) throw new RPCError(40401, `session ${id} does not exist`);
+  const active = <T>(id: string, operation: () => Promise<T>): Promise<T> => run(async (assertCurrent) => {
+    const resumed = await klient.session(id).resume();
+    assertCurrent();
+    if (!resumed) throw new RPCError(40401, `session ${id} does not exist`);
     return operation();
   });
   return {

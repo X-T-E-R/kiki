@@ -7,6 +7,7 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebuild';
 import { contextRebuildControlKey } from '#/agent/contextRebuild/contextRebuildOps';
+import { PersistedContextRebuildReader } from '#/agent/contextRebuild/contextRebuildRead';
 import { AgentContextRebuildService } from '#/agent/contextRebuild/contextRebuildService';
 import type { FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
 import { ILogService } from '#/_base/log/log';
@@ -33,6 +34,30 @@ import type { McpSessionCapability } from '#/agent/mcp/mcp';
 import { createTestAgent } from '../../harness';
 
 const REBUILT = ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] as const;
+
+it('bounds retained cold control bytes and invalidates a changed journal generation', async () => {
+  const reads = vi.fn();
+  let generation = 'one';
+  const reader = new PersistedContextRebuildReader({
+    flush: async () => {},
+    generation: async () => generation,
+    read: async function* (scope: string) {
+      reads(scope);
+      yield { type: 'context_rebuild.reported', time: 1, outcome: 'failed', trigger: 'manual', at: '2026-01-01',
+        error: scope + 'x'.repeat(3 << 20), rebuilt: [], unsupported: [] };
+    },
+  } as never, { size: async () => 4 << 20, mtime: async () => 1, read: async () => undefined, pathFor: () => undefined } as never);
+  await reader.read('one');
+  await reader.read('one');
+  expect(reads).toHaveBeenCalledTimes(1);
+  await reader.read('two');
+  await reader.read('three');
+  await reader.read('one');
+  expect(reads.mock.calls.map(([scope]) => scope)).toEqual(['one', 'two', 'three', 'one']);
+  generation = 'two';
+  await reader.read('one');
+  expect(reads).toHaveBeenCalledTimes(5);
+});
 
 describe('AgentContextRebuildService', () => {
   let disposables: DisposableStore;
@@ -229,6 +254,32 @@ describe('AgentContextRebuildService', () => {
       error: 'Context rebuild was cancelled.',
       rebuilt: [],
     });
+  });
+
+  it('stops a disposed rebuild generation before later stages and releases quiescence', async () => {
+    const ctx = disposables.add(createTestAgent());
+    const loop = ctx.get(IAgentLoopService);
+    let release!: () => void;
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const host = createHost(disposables, { loop, sources: async () => {
+      enter();
+      await gate;
+      return { instructionsChanged: true, pluginsChanged: false };
+    } });
+    const rebuilding = host.service.rebuild();
+    const stopped = expect(rebuilding).rejects.toThrow('Context rebuild was cancelled.');
+    await entered;
+    await host.service.dispose();
+    release();
+    await stopped;
+    expect(host.profilesReload).not.toHaveBeenCalled();
+    expect(host.plugins).not.toHaveBeenCalled();
+    expect(host.invalidate).not.toHaveBeenCalled();
+    const quiescence = loop.tryAcquireQuiescence();
+    expect(quiescence).toBeDefined();
+    await quiescence!.dispose();
   });
 
   it('rebuilds an idle loop while preserving a task notification for the next turn', async () => {

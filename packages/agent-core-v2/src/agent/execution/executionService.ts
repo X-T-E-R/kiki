@@ -14,7 +14,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
-import { externalPermissionConstraints, externalPermissionMode } from './externalPermission';
+import { externalPermissionMode } from './externalPermission';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -406,7 +406,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     const worktree = executorId === 'native' ? undefined : (await this.agent.accessor.get(ISessionMetadata).read()).worktree;
     const externalContext = descriptor === undefined ? undefined : { agent: this.agent, binding, descriptor, worktree };
     const modeKey = descriptor?.permission?.via === 'argv' && externalContext !== undefined
-      ? `:permission:${externalPermissionConstraints(externalContext) ? 'manual' : externalPermissionMode(externalContext) ?? 'vendor'}` : '';
+      ? `:permission:${externalPermissionMode(externalContext) ?? 'vendor'}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     await this.disposeBrokenExternalSession();

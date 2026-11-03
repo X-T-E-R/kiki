@@ -42,6 +42,36 @@ export function useThreadTitleResolver(texts: readonly string[], sessions: reado
   );
 }
 
+/** What the cached session lists, or one metadata read, say about a session's name. */
+export interface SessionNameEntry {
+  /** Display title with thread links resolved; undefined when the session has none. */
+  readonly title: string | undefined;
+  /** False until a cached list or the one-shot read carries the session. */
+  readonly known: boolean;
+}
+
+/**
+ * Names for a set of session ids, read from every cached session list with a
+ * single metadata read per id no list carries — never once per poll. Callers
+ * keep the real id as the action target and render their own fallback label.
+ */
+export function useSessionNames(ids: readonly string[]): (sessionId: string) => SessionNameEntry {
+  const client = useOptionalConnection()?.client;
+  const fetchSession = useMemo(() => client === undefined ? undefined : (id: string) => client.getSession(id), [client]);
+  const key = ids.join('\n');
+  const stableIds = useMemo(() => (key === '' ? [] : key.split('\n')), [key]);
+  const directory = useThreadRefDirectory(stableIds, fetchSession);
+  return useCallback((sessionId: string): SessionNameEntry => {
+    const session = directory.lookup(sessionId).session;
+    if (session === undefined) return { title: undefined, known: false };
+    const raw = session.title.trim();
+    return {
+      title: raw === '' ? undefined : resolveThreadTitle(raw, (id) => directory.lookup(id).session?.title),
+      known: true,
+    };
+  }, [directory]);
+}
+
 export function useThreadTitle(text: string): string {
   const resolve = useThreadTitleResolver([text]);
   return resolve(text);

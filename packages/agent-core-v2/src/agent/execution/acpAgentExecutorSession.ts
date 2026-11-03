@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-
 import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
@@ -60,7 +58,7 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionQuestionService } from '#/session/question/question';
 import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionConstraints, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { assertExternalPermissionSupport, externalPermissionMeta, externalPermissionMode } from './externalPermission';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -243,6 +241,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const origin: PromptOrigin = request.kind === 'mailbox'
       ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
       : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
+    assertExternalPermissionSupport(this.context);
     const sessionOptions = await this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession({ ...sessionOptions, onFork: async (sessionRef) => {
       const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
@@ -295,7 +294,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       profileDelivery: priorSessionId === opened.sessionId ? prior.profileDelivery : undefined,
     }));
     await this.#dispatcher.flush();
-    let configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']).catch(async (error: unknown) => {
+    let configured = await this.#configure(opened, options.signal, losses).catch(async (error: unknown) => {
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       throw error;
@@ -424,7 +423,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         prepareSession: async actual => {
           if (actual.sessionId !== configured.sessionId) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP session identity changed before prompt');
           const restored = actual.mode === 'live' ? actual :
-            await this.#configure(actual, controller.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']);
+            await this.#configure(actual, controller.signal, losses);
           const permissionId = this.context.descriptor.permissionModeMapping?.configId ??
             (this.context.descriptor.permission?.via === 'config_option' ? this.context.descriptor.permission.configId : undefined);
           const controlIds = [this.context.descriptor.modelConfigId, this.context.descriptor.thoughtConfigId, permissionId];
@@ -729,7 +728,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
-        'kiki.permission': { ...externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs), requestId: randomUUID() } },
+        'kiki.permission': externalPermissionMeta(this.context) },
       ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, this.#client.status().state === 'broken'),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
@@ -743,7 +742,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     opened: AcpOpenSessionResult,
     signal: AbortSignal,
     losses: Set<ExecutorLossCode>,
-    permission: unknown,
   ): Promise<AcpOpenSessionResult> {
     const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
     if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
@@ -806,7 +804,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (this.#permissionRestore === undefined && opened.mode !== 'new' && sessionIdFromState(prior.sessionRef) === configured.sessionId) {
       this.#permissionRestore = permissionRestoreFromRef(prior.sessionRef);
     }
-    if (externalPermissionMode(this.context) === undefined && !externalPermissionConstraints(this.context)) {
+    if (externalPermissionMode(this.context) === undefined) {
       const restore = this.#permissionRestore;
       if (restore === undefined) return configured;
       const restored = await this.#client.configureSession({ configOptions: restore.config === undefined ? undefined : [restore.config],
@@ -825,8 +823,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
       : undefined);
     const mode = externalPermissionMode(this.context);
-    if (mode !== undefined && declared === undefined && mapping === undefined && appliedHostPermission(opened, permission)) return configured;
-    const vendorMode = externalPermissionConstraints(this.context) || mode === 'review' ? 'manual' : mode ?? 'manual';
+    if (mode === 'review') throw new Error2(ErrorCodes.CONFIG_INVALID, 'Kiki reviewer permission mode requires the native Kiki executor');
+    const vendorMode = mode ?? 'manual';
     if (mapping !== undefined) {
       const permission = permissionConfig(configured.configOptions, mapping, vendorMode);
       this.#permissionRestore ??= { sessionId: configured.sessionId, config: { configId: permission.option.id, value: permission.option.currentValue } };
@@ -960,58 +958,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (active === undefined || context.signal.aborted) return { outcome: 'cancelled' };
     if (request.sessionId !== this.#client.status().sessionId) return { outcome: 'cancelled' };
     const toolCallId = active.recorder.toolCallId(request.toolCall.toolCallId);
-    const rawInput = objectOf(request.toolCall.rawInput);
-    const kinds: Readonly<Record<string, string>> = { read: 'Read', edit: 'Write', delete: 'Write',
-      search: 'Grep', execute: 'Bash' };
-    const tool = externalToolPermission(request._meta?.['kiki.tool']) ?? externalToolPermission({
-      name: kinds[request.toolCall.kind ?? ''] ?? rawInput?.['name'] ?? request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
-      input: { ...rawInput, paths: rawInput?.['paths'] ?? (request.toolCall.locations?.length
-        ? request.toolCall.locations.map((location) => location.path) : undefined) },
-    })!;
-    try {
-      const result = await authorizeExternalTool(this.context, tool, active.turn.id, toolCallId, context.signal,
-        { kind: 'external_permission', summary: request.toolCall.title ?? tool.name, detail: boundedPermissionDetail(request),
-          options: context.options.filter((option) => option.optionId !== 'kiki.vendor_default')
-            .map((option) => ({ id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) });
-      if (result === 'inherit') {
-        const vendorDefault = context.options.find((candidate) => candidate.optionId === 'kiki.vendor_default');
-        if (vendorDefault !== undefined) return { outcome: 'selected', optionId: vendorDefault.optionId };
-        const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
-          agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
-          toolName: request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
-          action: request.toolCall.title ?? 'Run external tool',
-          display: { kind: 'external_permission', summary: request.toolCall.title ?? 'External tool permission',
-            detail: boundedPermissionDetail(request), options: context.options.map((option) => ({
-              id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) },
-        }), context.signal);
-        const selected = context.options.find((option) => option.optionId === response?.selectedOptionId);
-        return response === undefined || response.decision === 'cancelled' || selected === undefined ||
-          (response.decision === 'approved') !== selected.kind.startsWith('allow_')
-          ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: selected.optionId };
-      }
-      const option = context.options.find((candidate) => candidate.optionId !== 'kiki.vendor_default' &&
-        candidate.kind === (result === 'allow' ? 'allow_once' : 'reject_once'));
-      return result === 'cancelled' || option === undefined ? { outcome: 'cancelled' }
-        : { outcome: 'selected', optionId: option.optionId };
-    } catch {
-      return { outcome: 'cancelled' };
-    }
+    const vendorDefault = context.options.find((option) => option.optionId === 'kiki.vendor_default');
+    if (vendorDefault !== undefined) return { outcome: 'selected', optionId: vendorDefault.optionId };
+    const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
+      agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
+      toolName: request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
+      action: request.toolCall.title ?? 'Run external tool',
+      display: { kind: 'external_permission', summary: request.toolCall.title ?? 'External tool permission',
+        detail: boundedPermissionDetail(request), options: context.options.map((option) => ({
+          id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) },
+    }), context.signal);
+    const selected = context.options.find((option) => option.optionId === response?.selectedOptionId);
+    return response === undefined || response.decision === 'cancelled' || selected === undefined ||
+      (response.decision === 'approved') !== selected.kind.startsWith('allow_')
+      ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: selected.optionId };
   }
-}
-
-function appliedHostPermission(opened: AcpOpenSessionResult, expected: unknown): boolean {
-  const current = objectOf(expected);
-  const requested = objectOf(opened.sessionRequestMeta?.['kiki.permission']);
-  const receipt = objectOf(opened.sessionResponseMeta?.['kiki.permission']);
-  if (current?.['hostGate'] !== true || objectOf(current['override']) === undefined ||
-      requested?.['hostGate'] !== true || typeof requested['requestId'] !== 'string' || requested['requestId'].length === 0 ||
-      receipt?.['version'] !== 1 || receipt['sessionId'] !== opened.sessionId || receipt['gate'] !== 'pre-tool-hook' ||
-      !['new', 'load'].includes(String(receipt['openMode'])) ||
-      opened.mode !== 'live' && receipt['openMode'] !== opened.mode ||
-      !isDeepStrictEqual(receipt['applied'], requested)) return false;
-  const { requestId: currentRequestId, ...currentPolicy } = current;
-  const { requestId: appliedRequestId, ...appliedPolicy } = requested;
-  return (opened.mode === 'live' || currentRequestId === appliedRequestId) && isDeepStrictEqual(JSON.parse(JSON.stringify(currentPolicy)), appliedPolicy);
 }
 
 function sessionIdFromState(ref: ExecutorSessionRefEnvelope | undefined): string | undefined {
@@ -1032,10 +993,11 @@ function requiredCommand(context: AgentExecutorContext): string {
 
 export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly string[] {
   const declared = context.descriptor.permission;
-  const mode = externalPermissionConstraints(context) ? 'manual' : externalPermissionMode(context);
+  const mode = externalPermissionMode(context);
+  if (mode === 'review') throw new Error2(ErrorCodes.CONFIG_INVALID, 'Kiki reviewer permission mode requires the native Kiki executor');
   const permissionArgs = [...context.descriptor.launchArgs ?? [],
     ...declared?.via !== 'argv' || declared.flag === undefined || mode === undefined ? []
-      : [declared.flag, declared[mode === 'review' ? 'manual' : mode]]];
+      : [declared.flag, declared[mode]]];
   if (context.descriptor.modelBinding !== 'argv') return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
   const model = context.binding.modelAlias;
   if (model === undefined) return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
@@ -1252,7 +1214,7 @@ function selectValues(option: AcpSessionConfigOption): string[] {
 function permissionConfig(
   options: readonly AcpSessionConfigOption[],
   mapping: AgentExecutorPermissionModeMapping | undefined,
-  mode: IAgentPermissionModeService['mode'],
+  mode: Exclude<IAgentPermissionModeService['mode'], 'review'>,
 ): SelectedConfig {
   if (mapping === undefined) {
     throw new Error2(
@@ -1271,7 +1233,7 @@ function permissionConfig(
     );
   }
   const option = matches[0]!;
-  const value = mapping[mode === 'review' ? 'manual' : mode];
+  const value = mapping[mode];
   if (typeof value === 'boolean') {
     if (option.type !== 'boolean') {
       throw new Error2(

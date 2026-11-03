@@ -7,7 +7,7 @@ export const SOURCE_OWNED_ADAPTER_FILES = Object.freeze([
 
 export const SOURCE_OWNED_ADAPTER_ENTRY = 'agy-cli-acp.mjs';
 
-export const SOURCE_OWNED_ADAPTER_VERSION = '0.4.1';
+export const SOURCE_OWNED_ADAPTER_VERSION = '0.5.1';
 
 export const SOURCE_OWNED_ADAPTER_SUPPORTS_MCP = true;
 

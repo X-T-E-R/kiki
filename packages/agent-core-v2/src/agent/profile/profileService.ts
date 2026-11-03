@@ -1366,7 +1366,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       dispatchDecision: input.dispatchDecision,
       spawnPolicy,
       appliedLease: input.lease,
-      boundProfile: freezeBoundProfile(profile, assembled.promptBase),
+      boundProfile: {
+        ...freezeBoundProfile(profile, assembled.promptBase),
+        permissionMode: profile.permissionMode ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.permission_mode,
+        permissionModeSource: profile.permissionMode !== undefined ? 'profile' : 'harness-settings',
+      },
     }));
     this.personaSnapshot = persona;
     this.memorySnapshot.configurePersona(this.profileState.memoryReadContext ?? memoryPersonaContext(persona));

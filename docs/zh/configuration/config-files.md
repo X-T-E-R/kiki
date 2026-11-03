@@ -143,7 +143,7 @@ kiki_context = []
 allow_kiki_subagents = false
 ```
 
-省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
+省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。具名外部职责 profile 没有声明模式时，也会继承 `defaults.permission_mode`。外部权限支持及会被拒绝的 Kiki 专有限制见[外部直连执行](../customization/agents-and-subagents.md#外部直连执行)。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
 
 每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:agy-cli` 和 `engine:grok-acp`。`AgentRun` 可以把这个名称作为 `profile`，使用引擎自己的配置启动 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。裸引擎目标的模型顺序是：`AgentRun` 显式值 → `[agent_executor_overrides."<id>".defaults].model_alias` → 厂商自己的默认值。模型 ID 不会通过 Kiki 原生的 `[models]` 或 provider 设置解析。
 

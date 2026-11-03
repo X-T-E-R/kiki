@@ -178,6 +178,28 @@ and list summaries may include optional read-only `executionPhase`; cold reads
 and list reads do not activate a cold session, and `executionPhase` is not a
 field for `session.update`.
 
+## Context rebuilding
+
+Call `session(id).agent('main').rebuildContext({ signal? })` after changing prompt
+sources. The shared dispatcher restores a saved inactive session when needed and
+holds an operation lease on that session generation until the rebuild finishes.
+It keeps the conversation, permissions and execution binding, sends no model
+request, and rejects running or queued turns. `setContextRebuildEnabled(enabled)`
+uses the same session admission to persist the automatic-rebuild preference;
+enabling it does not request an immediate rebuild.
+
+`contextRebuildControl({ signal? })` is read-only: it returns resident state or
+folds the saved control events without restoring the session or creating main.
+Cold reads have an 8 MiB wire budget and return `40901` when exceeded. Explicit
+rebuild remains available to restore that session. A missing session returns
+`40404`; index and storage failures retain their own errors.
+
+The signal is transport metadata, not a serialized procedure argument. Cancelling
+a rebuild stops it at the next stage boundary and releases admission after the
+current stage settles; completed stages are not rolled back. Scope disposal stops
+later stages. The result describes completed surfaces and applies to the next
+request; an external executor session is not restarted or sent a new prompt.
+
 ## Ordered session views
 
 The HTTP transport additionally provides `klient.session(id).view`: `snapshot()`,
@@ -467,12 +489,22 @@ The same conformance suite runs against all three transports in this package's
 tests (`test/helpers/conformance.ts` — one test file per transport).
 
 For a local desktop backend replacement, `createRebindableKlient(options)` returns
-`{ klient, rebind }`. The owner must first authenticate the candidate through
+`{ klient, rebind, suspend }`. The owner must first authenticate the candidate through
 native discovery and metadata, verifying the original home, current local space,
 authentication mode, and compatible protocol. Pass the verified endpoint and token
 together to `rebind({ endpoint, token })`; the facade and session-view identities
 stay in place. Outstanding HTTP calls are aborted and late results reject with
 `transport.connection_changed`; calls and submissions are never replayed.
+For a compound action, call `klient.captureOperation?.()` at its start and invoke
+its returned guard after each await, before dispatching another request or
+accepting results and callbacks. The guard rejects a replaced or closed connection
+without cancelling work from a newer action. The shared session transport applies
+this to resume-then-edit, regenerate, steer, approve, answer, dismiss, and cancel.
+Fixed transports without this capability keep their existing behavior.
+On a permanent identity, authentication, or protocol refusal, call `suspend()` to
+abort old calls and park HTTP dispatch and socket reconnection while keeping the
+view. New calls reject with `transport.connection_blocked`. Only a subsequent
+owner-verified `rebind` resumes this binding, even at the same address.
 The existing shared socket restarts with ordered session/transcript checkpoints,
 PTY replay, and ordinary subscription/stream invalidation. A fixed `eventsUrl`
 cannot be rebound. SSH and remote-source selections retain their own identity and

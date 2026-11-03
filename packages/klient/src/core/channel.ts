@@ -83,6 +83,8 @@ export interface KlientChannel {
   readonly terminal?: import('./facade/terminal.js').TerminalFacade;
   readonly sessionView?: SessionViewChannel;
   readonly sessionCommands?: import('../contract/session/commands.js').SessionCommandChannel;
+  /** Capture a logical action's connection identity; invoke before each continuation dispatch. */
+  captureOperation?(): () => void;
   /**
    * Invoke `service.method(...args)` in the given scope; resolves with the raw
    * wire result. `options.timeoutMs` overrides the transport's default per-call

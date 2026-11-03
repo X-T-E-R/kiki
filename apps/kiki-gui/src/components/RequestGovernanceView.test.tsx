@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { RequestGovernanceBadge, RequestGovernanceView } from './RequestGovernanceView';
@@ -16,11 +17,12 @@ const connection = vi.hoisted(() => ({
     setRequestGovernanceRules: vi.fn(),
     listModels: vi.fn().mockResolvedValue({ items: [] }),
     listProviders: vi.fn().mockResolvedValue({ items: [] }),
+    getSession: vi.fn(),
     session: vi.fn(),
     klient: undefined as unknown,
   },
 }));
-vi.mock('../state/connection', () => ({ useConnection: () => connection }));
+vi.mock('../state/connection', () => ({ useConnection: () => connection, useOptionalConnection: () => connection }));
 const mockLiveAgent = vi.fn().mockReturnValue({
   snapshot: {
     domainId: 'this-service',
@@ -61,19 +63,29 @@ const snapshot: RequestGovernanceSnapshot = {
   waiting: [],
 };
 
-function mount(view: 'realtime' | 'limits', withBadge = false) {
+/** Exposes the router path so a test can see where a session name led. */
+function LocationProbe() {
+  const location = useLocation();
+  return <span hidden data-location={location.pathname} />;
+}
+
+function mount(view: 'realtime' | 'limits', withBadge = false, seed?: (queryClient: QueryClient) => void) {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seed?.(queryClient);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   const render = () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <I18nProvider>
-          {withBadge ? <RequestGovernanceBadge /> : null}
-          <RequestGovernanceView view={view} />
-        </I18nProvider>
+        <MemoryRouter initialEntries={['/usage?panel=realtime']}>
+          <I18nProvider>
+            {withBadge ? <RequestGovernanceBadge /> : null}
+            <RequestGovernanceView view={view} />
+            <LocationProbe />
+          </I18nProvider>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
   };
@@ -746,6 +758,7 @@ describe('execution pause/resume', () => {
     connection.wsStatus = 'open';
     connection.client.getRequestGovernance.mockResolvedValue(snapshot);
     connection.client.session.mockReturnValue({ execution: undefined, events: undefined });
+    connection.client.getSession.mockRejectedValue(new Error('not found'));
   });
 
   it('pauses a running session from its own row action and shows the paused overview with an explicit resume', async () => {
@@ -758,7 +771,7 @@ describe('execution pause/resume', () => {
     // Running: the session row offers pause; nothing claims restart safety yet.
     const control = () => container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
     expect(control().textContent).toContain('Pause execution');
-    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+    expect(container.querySelector('[data-execution-paused]')).toBeNull();
 
     await act(async () => { control().querySelector<HTMLButtonElement>('button')!.click(); });
     const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
@@ -770,19 +783,152 @@ describe('execution pause/resume', () => {
 
     // Paused: the overview reports restart safety and waits for the user.
     await settle(render, 1100);
-    const panel = container.querySelector<HTMLElement>('[data-execution-paused-panel]')!;
+    const panel = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
     expect(panel).not.toBeNull();
-    expect(panel.querySelector('[data-execution-paused="session-alpha"]')?.textContent).toContain('safe to restart');
+    expect(panel.textContent).toContain('safe to restart');
 
     // Explicit resume returns the session to running and clears the overview.
-    await act(async () => { panel.querySelector<HTMLButtonElement>('button')!.click(); });
+    await act(async () => { panel.querySelector<HTMLButtonElement>('[data-execution-action="resume"]')!.click(); });
     await settle(render);
     expect(execution.facade.resume).toHaveBeenCalledTimes(1);
     const pauseArgs = execution.facade.pause.mock.calls[0] as unknown as [{ operationId: string }];
     const resumeArgs = execution.facade.resume.mock.calls[0] as unknown as [{ pauseOperationId: string }];
     expect(resumeArgs[0].pauseOperationId).toBe(pauseArgs[0].operationId);
     await settle(render, 1100);
-    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+    expect(container.querySelector('[data-execution-paused]')).toBeNull();
+  });
+
+  it('names sessions from the cached lists, folds several behind one disclosure, and opens a session by name', async () => {
+    vi.useFakeTimers();
+    const TITLED = 'session_3f9e1ab7-0c2d-4e5f-8a9b-1c2d3e4f5a6b';
+    const UNTITLED = 'session_8c1d2e3f-4a5b-4c6d-9e8f-0a1b2c3d4e5f';
+    const UNKNOWN = 'session_d4c3b2a1-9f8e-4d7c-b6a5-0f1e2d3c4b5a';
+    const longTitle = 'Refactor the usage aggregation into pure functions and keep the export path byte-stable';
+    liveAgentsWith([TITLED, UNTITLED, UNKNOWN]);
+    const titled = stubExecution(TITLED, executionState('running'));
+    stubExecution(UNTITLED, executionState('running'));
+    stubExecution(UNKNOWN, executionState('running'));
+    connection.client.getSession.mockRejectedValue(new Error('not found'));
+    const { container, render } = mount('realtime', false, (queryClient) => {
+      queryClient.setQueryData(['sessions', false, undefined], {
+        pages: [{ items: [
+          { id: TITLED, title: longTitle, workspace_id: 'wd_example', updated_at: '2026-01-01T12:00:00Z' },
+          { id: UNTITLED, title: '', workspace_id: 'wd_example', updated_at: '2026-01-01T12:00:00Z' },
+        ], has_more: false }],
+        pageParams: [undefined],
+      });
+    });
+    await settle(render, 1100);
+
+    // Folded by default: one disclosure line, no row and no bare id in view.
+    const list = container.querySelector<HTMLElement>('[data-execution-sessions]')!;
+    const toggle = list.querySelector<HTMLButtonElement>('[data-execution-sessions-toggle]')!;
+    expect(list.getAttribute('data-collapsed')).toBe('true');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('Sessions · 3');
+    const rows = () => [...list.querySelectorAll<HTMLElement>('[data-execution-session]')];
+    expect(rows().every((row) => row.hidden)).toBe(true);
+    for (const id of [TITLED, UNTITLED, UNKNOWN]) expect(container.textContent).not.toContain(id);
+
+    // Names: the cached title, the untitled fallback, the unknown fallback —
+    // the last two keep a short id; every name keeps the full id on hover.
+    const open = (id: string) => container.querySelector<HTMLButtonElement>(`[data-execution-session="${id}"] [data-execution-session-open]`)!;
+    expect(open(TITLED).textContent).toContain(longTitle);
+    expect(open(TITLED).title).toContain(TITLED);
+    expect(open(UNTITLED).textContent).toBe('Untitled session8c1d2e3f');
+    expect(open(UNKNOWN).textContent).toBe('Sessiond4c3b2a1');
+    // The one metadata read per uncached id is not repeated by later polls.
+    await settle(render, 6000);
+    expect(connection.client.getSession.mock.calls.filter(([id]) => id === UNKNOWN)).toHaveLength(1);
+    expect(connection.client.getSession.mock.calls.filter(([id]) => id === TITLED)).toHaveLength(0);
+
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(rows().some((row) => row.hidden)).toBe(false);
+
+    // A row's pause asks first; cancelling sends nothing.
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-execution-session="${TITLED}"] [data-execution-action="pause"]`)!.click(); });
+    const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    const cancel = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Cancel')!;
+    await act(async () => { cancel.click(); });
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(titled.facade.pause).not.toHaveBeenCalled();
+
+    await act(async () => { open(TITLED).click(); });
+    expect(container.querySelector<HTMLElement>('[data-location]')?.getAttribute('data-location')).toBe(`/s/${TITLED}`);
+  });
+
+  it('keeps paused and failed sessions in view while the list is folded, and pause-all still covers the inventory', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta', 'session-gamma']);
+    const alpha = stubExecution('session-alpha', executionState('running'));
+    const beta = stubExecution('session-beta', executionState('paused', { pauseOperationId: 'pause-beta' }));
+    stubExecution('session-gamma', executionState('failed', { error: 'resume lost a participant' }));
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    const row = (id: string) => container.querySelector<HTMLElement>(`[data-execution-session="${id}"]`)!;
+    expect(container.querySelector<HTMLElement>('[data-execution-sessions]')?.getAttribute('data-collapsed')).toBe('true');
+    expect(row('session-alpha').hidden).toBe(true);
+    expect(row('session-beta').hidden).toBe(false);
+    expect(row('session-beta').textContent).toContain('safe to restart');
+    expect(row('session-gamma').hidden).toBe(false);
+    expect(row('session-gamma').textContent).toContain('resume lost a participant');
+
+    await act(async () => { row('session-beta').querySelector<HTMLButtonElement>('[data-execution-action="resume"]')!.click(); });
+    await settle(render);
+    expect(beta.facade.resume).toHaveBeenCalledTimes(1);
+
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-pause-all] button')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    expect(alpha.facade.pause).toHaveBeenCalledTimes(1);
+    // The folded running row surfaces once it is held.
+    await settle(render, 1100);
+    expect(row('session-alpha').hidden).toBe(false);
+    expect(row('session-alpha').textContent).toContain('Paused');
+  });
+
+  it('drops the no-op disclosure and states the paused hint once when every session is paused', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta', 'session-gamma']);
+    for (const id of ['session-alpha', 'session-beta', 'session-gamma']) {
+      stubExecution(id, executionState('paused', { pauseOperationId: `pause-${id}` }));
+    }
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    const list = container.querySelector<HTMLElement>('[data-execution-sessions]')!;
+    expect(list.querySelector('[data-execution-sessions-toggle]')).toBeNull();
+    expect(list.getAttribute('data-collapsed')).toBeNull();
+    expect(list.querySelectorAll('[data-execution-session]:not([hidden])')).toHaveLength(3);
+    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('safe to restart');
+    expect(list.textContent!.split('safe to restart')).toHaveLength(2);
+    expect(list.querySelectorAll('[data-execution-action="resume"]')).toHaveLength(3);
+  });
+
+  it('names the session cut of the agent breakdown instead of showing bare ids', async () => {
+    vi.useFakeTimers();
+    const TITLED = 'session_3f9e1ab7-0c2d-4e5f-8a9b-1c2d3e4f5a6b';
+    const UNKNOWN = 'session_d4c3b2a1-9f8e-4d7c-b6a5-0f1e2d3c4b5a';
+    connection.client.getSession.mockRejectedValue(new Error('not found'));
+    mockLiveAgent.mockReturnValue({
+      snapshot: {
+        domainId: 'this-service', asOf: '2026-01-01T12:00:00Z', mainActive: 2, subActive: 0, independentActive: 0, totalActive: 2, queued: 0,
+        dimensions: [
+          { dimension: 'session', id: TITLED, mainActive: 1, subActive: 0, independentActive: 0, totalActive: 1 },
+          { dimension: 'session', id: UNKNOWN, mainActive: 1, subActive: 0, independentActive: 0, totalActive: 1 },
+        ],
+      },
+      stale: false, loading: false, error: null, refresh: vi.fn(),
+    });
+    const { container, render } = mount('realtime', false, (queryClient) => {
+      queryClient.setQueryData(['sessions'], { items: [{ id: TITLED, title: 'Fixture: protocol audit', workspace_id: 'wd_example', updated_at: '2026-01-01T12:00:00Z' }] });
+    });
+    await settle(render, 1100);
+    const table = container.querySelector<HTMLElement>('[data-governance-agent-dimension="session"]')!;
+    expect(table.querySelector(`[data-governance-agent-row="${TITLED}"]`)?.textContent).toContain('Fixture: protocol audit');
+    expect(table.querySelector(`[data-governance-agent-row="${UNKNOWN}"]`)?.textContent).toContain('Session d4c3b2a1');
+    expect(table.textContent).not.toContain(TITLED);
+    expect(table.textContent).not.toContain(UNKNOWN);
   });
 
   it('drops a second pause click while the first request is in flight', async () => {
@@ -832,7 +978,7 @@ describe('execution pause/resume', () => {
     await settle(render);
     // A failed pause keeps the session running: no paused row, no phase chip,
     // and the action is still the pause offer (the error surfaces via toast).
-    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+    expect(container.querySelector('[data-execution-paused]')).toBeNull();
     expect(container.querySelector('[data-execution-phase]')).toBeNull();
     expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Pause execution');
   });
@@ -848,7 +994,7 @@ describe('execution pause/resume', () => {
     expect(row.textContent).toContain('Retry read');
     // A failed row never resumes implicitly: its recovery re-reads the state.
     const readsBefore = execution.facade.read.mock.calls.length;
-    await act(async () => { row.querySelector<HTMLButtonElement>('button')!.click(); });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-execution-action]')!.click(); });
     await settle(render);
     expect(execution.facade.resume).not.toHaveBeenCalled();
     expect(execution.facade.read.mock.calls.length).toBeGreaterThan(readsBefore);
@@ -863,12 +1009,12 @@ describe('execution pause/resume', () => {
     // The failed retry-read re-reads; the server now reports durably paused,
     // so the row flips to the real resume action.
     execution.state.current = executionState('paused', { pauseOperationId: 'pause-recovered' });
-    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] button')!.click(); });
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] [data-execution-action]')!.click(); });
     await settle(render, 1100);
     const row = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
     expect(row.textContent).toContain('Resume');
     expect(row.textContent).not.toContain('Retry read');
-    await act(async () => { row.querySelector<HTMLButtonElement>('button')!.click(); });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-execution-action]')!.click(); });
     await settle(render);
     expect(execution.facade.resume).toHaveBeenCalledTimes(1);
     const resumeArgs = execution.facade.resume.mock.calls[0] as unknown as [{ pauseOperationId: string }];
@@ -897,7 +1043,7 @@ describe('execution pause/resume', () => {
     const rowB = container.querySelector<HTMLElement>('[data-execution-paused="session-beta"]')!;
     expect(rowA).not.toBeNull();
     expect(rowB).not.toBeNull();
-    await act(async () => { rowA.querySelector<HTMLButtonElement>('button')!.click(); });
+    await act(async () => { rowA.querySelector<HTMLButtonElement>('[data-execution-action]')!.click(); });
     await settle(render);
     // Strictly row A: session-beta's facade was never asked to resume.
     expect(alpha.facade.resume).toHaveBeenCalledTimes(1);
@@ -918,7 +1064,7 @@ describe('execution pause/resume', () => {
     // Resume, then pause again: the second pause must be a NEW operation, not a
     // replay of the settled first receipt.
     await settle(render, 1100);
-    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] button')!.click(); });
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] [data-execution-action]')!.click(); });
     await settle(render, 1100);
     await act(async () => { open().click(); });
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
@@ -981,7 +1127,7 @@ describe('execution pause/resume', () => {
     await act(async () => { container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!.click(); });
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     await settle(render);
-    const control = container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
+    const control = container.querySelector<HTMLElement>('[data-execution-session="session-alpha"]')!;
     expect(control.textContent).toContain('storage locked');
     expect(control.textContent).toContain('Pause execution');
   });

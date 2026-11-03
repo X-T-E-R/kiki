@@ -234,6 +234,28 @@ describe('collectTimelineAnnotations', () => {
     expect(second).toBe(annotationOverrideId(quote, 'same', 'u2', 0));
     expect(first).not.toBe(second);
   });
+
+  it('reads each explicit source text once per sent or draft derivation', () => {
+    let reads = 0;
+    const text = {
+      length: 1,
+      *[Symbol.iterator]() {
+        reads += 1;
+        yield 'x';
+      },
+    } as unknown as string;
+    const source = { blockId: 'a1', version: sourceTextVersion(text), start: 0, end: 1, text: 'x' };
+    expect(reads).toBe(1);
+    const carriers = Array.from({ length: 4 }, (_, index) => presented(`u${index}`, 'user', [{ quote: 'x', comment: `note ${index}`, source }]));
+    const sent = collectTimelineAnnotations([block('a1', 'assistant', text), ...carriers]);
+    expect(sent.get('a1')).toHaveLength(4);
+    expect(reads).toBe(2);
+
+    const drafts = Array.from({ length: 4 }, (_, index) => ({ id: `draft-${index}`, quote: 'x', comment: `note ${index}`, source }));
+    const draftTargets = collectDraftAnnotationTargets([block('a1', 'assistant', text)], drafts);
+    expect(draftTargets.get('a1')).toHaveLength(4);
+    expect(reads).toBe(3);
+  });
 });
 
 describe('collectDraftAnnotationTargets', () => {

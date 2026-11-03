@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ContextRebuildControl as ContextRebuildSnapshot } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
@@ -21,9 +21,17 @@ const CHANGE_KEY = {
 
 export function ContextRebuildControl({ sessionId, agentId }: { sessionId: string; agentId: string }) {
   const { t } = useI18n();
-  const klient = useOptionalConnection()?.klient;
+  const connection = useOptionalConnection();
+  const klient = connection?.klient;
   const readable = klient !== undefined && typeof (klient as { session?: unknown }).session === 'function';
-  const identity = `${sessionId}\0${agentId}`;
+  const identity = `${connection?.scopeId}\0${connection?.meta?.server_id}\0${connection?.meta?.started_at}\0${sessionId}\0${agentId}`;
+  const actionOwner = useMemo(() => ({}), [identity]);
+  const owner = useRef<object | undefined>(actionOwner);
+  owner.current = actionOwner;
+  useEffect(() => {
+    owner.current = actionOwner;
+    return () => { owner.current = undefined; };
+  }, [actionOwner]);
   const [seen, setSeen] = useState(identity);
   const [actionError, setActionError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
@@ -34,11 +42,11 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
     setBusy(false);
   }
   const query = useQuery({
-    queryKey: ['context-rebuild', sessionId, agentId],
+    queryKey: ['context-rebuild', sessionId, agentId, identity],
     enabled: readable,
     retry: false,
     refetchInterval: readable ? 5_000 : false,
-    queryFn: () => klient!.session(sessionId).agent(agentId).contextRebuildControl(),
+    queryFn: ({ signal }) => klient!.session(sessionId).agent(agentId).contextRebuildControl({ signal }),
   });
 
   if (!readable || klient === undefined) return null;
@@ -51,11 +59,14 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
   const run = (work: () => Promise<void>) => {
     setBusy(true);
     setActionError(undefined);
-    void work().then(() => query.refetch(), (failure: unknown) => {
+    void work().then(() => {
+      if (owner.current === actionOwner) return query.refetch();
+    }, (failure: unknown) => {
+      if (owner.current !== actionOwner) return;
       setActionError(messageOf(failure));
       return query.refetch();
     }).finally(() => {
-      setBusy(false);
+      if (owner.current === actionOwner) setBusy(false);
     });
   };
   const loading = (!switched && busy) || (control === undefined && error === undefined);
@@ -82,13 +93,15 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
 }
 
 export function ContextRebuildSources({ sessionId, agentId, open }: { sessionId: string; agentId: string; open: boolean }) {
-  const klient = useOptionalConnection()?.klient;
+  const connection = useOptionalConnection();
+  const klient = connection?.klient;
   const readable = klient !== undefined && typeof (klient as { session?: unknown }).session === 'function';
+  const identity = `${connection?.scopeId}\0${connection?.meta?.server_id}\0${connection?.meta?.started_at}\0${sessionId}\0${agentId}`;
   const query = useQuery({
-    queryKey: ['context-rebuild', sessionId, agentId],
+    queryKey: ['context-rebuild', sessionId, agentId, identity],
     enabled: readable,
     retry: false,
-    queryFn: () => klient!.session(sessionId).agent(agentId).contextRebuildControl(),
+    queryFn: ({ signal }) => klient!.session(sessionId).agent(agentId).contextRebuildControl({ signal }),
   });
   if (!open || !readable || query.data?.outcome === undefined) return null;
   return <SourceReport control={query.data} />;

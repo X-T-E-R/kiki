@@ -809,6 +809,8 @@ function threadResult(value: unknown, method: string): CodexThreadResult {
     model: optionalString(result['model']),
     modelProvider: optionalString(result['modelProvider']),
     cwd: optionalString(result['cwd']),
+    sandbox: typeof result['sandbox'] === 'object' && result['sandbox'] !== null && !Array.isArray(result['sandbox'])
+      ? result['sandbox'] as Readonly<Record<string, unknown>> : undefined,
   };
 }
 

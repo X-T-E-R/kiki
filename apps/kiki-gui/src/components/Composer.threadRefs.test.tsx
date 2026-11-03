@@ -234,6 +234,24 @@ describe('Composer thread links', () => {
     expect(container.querySelector(`[data-thread-ref-chip="${REF_ID}"]`)?.textContent).toContain('Thread 0f8e2a4c');
   });
 
+  it('keeps the caret when a thread title resolves after the link', async () => {
+    let resolveSession!: (session: Session) => void;
+    getSession.mockReturnValue(new Promise<Session>((resolve) => { resolveSession = resolve; }));
+    const link = `/s/${REF_ID}`;
+    const container = await render({ sessionId: 'session_current', initial: `before ${link} after` });
+    const node = composerInput(container);
+    const cursor = 'before '.length + link.length;
+    await act(async () => {
+      node.focus();
+      node.setSelectionRange(cursor, cursor);
+    });
+    await act(async () => { resolveSession(referenced()); });
+    await settle();
+    expect(container.querySelector('.composer-reference')?.textContent).toBe('Fix the flaky upload test');
+    expect(node.selectionStart).toBe(cursor);
+    expect(node.selectionEnd).toBe(cursor);
+  });
+
   it('deletes a link as one token on Backspace', async () => {
     const draft = `a /s/${REF_ID}`;
     const container = await render({ sessionId: 'session_current', initial: draft }, seedLists);

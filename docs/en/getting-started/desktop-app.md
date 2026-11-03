@@ -78,17 +78,13 @@ When SmartScreen appears, check the URL and the hash before you go any further: 
 
 ## Windows, tray, and opening files
 
-On Windows and macOS, closing the window hides it to the tray. On Linux with a tray available, the same close minimizes the window so your window manager can bring it back. **Quit** in the tray menu is how you leave the app. Closing the window asks the same question when no tray is available, or when **Settings → General → Desktop behaviour** is set to **Quit Kiki** instead of **Hide to tray**.
+On Windows and macOS, closing the window hides it to the tray. On Linux with a tray available, the same close minimizes the window so your window manager can bring it back. **Settings → General → Desktop behaviour** offers **Hide to tray** and **Close desktop**. With **Hide to tray**, closing the window only hides or minimizes it; with **Close desktop**, it exits the desktop only. Neither choice stops a backend. When no tray is available, closing the window always exits the desktop and leaves the backend running. Use **Quit** in the tray menu to stop eligible local services and exit the app.
 
-**Quit** offers three buttons:
+The tray **Quit** action stops the identity-verified, desktop-managed local shared services for the spaces this window is connected to, including a shared service started by another Kiki window, and then exits. The impact confirmation offers **Stop services and quit** and **Cancel**. Choosing **Cancel** leaves the desktop open without stopping the service.
 
-- **Stop services and quit** — exit, and stop the desktop-managed local shared services for the spaces this window is connected to.
-- **Close desktop only** — close this desktop without querying or stopping a backend. It leaves a running, starting, unreachable, or identity-changing service alone. Background work, other windows, the CLI, and external clients stay connected to it.
-- **Cancel** — stay in the app.
+Stopping a service disconnects other windows, the CLI, and external clients using that space, and cancels unfinished work. A different build SHA does not by itself block a same-home service when the protocol is compatible; diagnostics report the service's actual build. Services you started yourself, remote or external services, and services for spaces this window is not connected to are not stopped. The tray action never force-stops a process.
 
-**Stop services and quit** stops only identity-verified, desktop-managed services for the connected spaces, including a shared service started by another Kiki window. It shuts them down normally: stopping a service disconnects every other window, CLI, and external client using that space, cancels unfinished work, and waits for that service to close its MCP servers and finish `Bash` cleanup. [Shell](../reference/tools.md#shell) describes which Windows `Bash` processes keep running after a command exits. A service you started yourself keeps running, and so does any space this window is not connected to. Processes that belong to another Kiki service stay with that service, and programs you did not start through Kiki stay as they are.
-
-If the service identity or protocol compatibility cannot be confirmed, or shutdown fails, Kiki records a diagnostic in `logs/desktop-backend.log` and closes the desktop without another confirmation. Nothing is force-stopped. Reopen the desktop to inspect the log and retry the shutdown. **Close desktop only** never waits for these checks.
+If the service identity or protocol compatibility cannot be confirmed, the service state cannot be read, or shutdown fails, Kiki records a diagnostic in `logs/desktop-backend.log` and exits without asking for confirmation again. Reopen the desktop to inspect the diagnostic and retry the shutdown.
 
 Opening a file from the file menu hands it to the app your system associates with that file type. The menu does not launch these types, because starting them would run code outside the app: `.app` and `.command` on macOS, `.desktop` on Linux, and executables and scripts on Windows. A shortcut pointing at one of those is refused too. Other files, including ordinary text files, open normally, and **Reveal in file manager** is unaffected.
 

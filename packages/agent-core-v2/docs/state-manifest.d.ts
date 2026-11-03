@@ -2627,6 +2627,32 @@ export interface AgentStateSnapshot {
         commitResponse: (responseId: string, canonicalOutput: readonly unknown[]) => void;
         close: () => void;
       };
+      readonly resolveResponsesTransport?: () => /* ResponsesTransportSelection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+        readonly transport: /* ResponsesRequestTransport — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+          diagnostics?: () => /* ResponsesTransportDiagnostics — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+            readonly transport: 'ws' | 'sse';
+            readonly webSocketCapabilities: boolean | null;
+            readonly webSocketCapabilityVersion: 2 | 1 | null;
+            readonly webSocketConnectionAgeMs: number | null;
+          };
+          request: (params: Record<string, unknown>, options: {
+            baseUrl: string;
+            apiKey: string;
+            headers: Readonly<Record<string, string>>;
+            signal?: AbortSignal;
+            canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+              readonly input: readonly unknown[];
+              readonly incremental: boolean;
+            } | undefined;
+            onFullInput?: (input: readonly unknown[]) => void;
+          }) => Promise<AsyncIterable<unknown, any, any>>;
+          commitResponse: (responseId: string, canonicalOutput: readonly unknown[]) => void;
+          close: () => void;
+        };
+        readonly config: /* ResponsesWebSocketConfig — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+          targets: string[];
+        };
+      } | undefined;
       readonly attribution?: (/* RequestIdentity — packages/agent-core-v2/src/kosong/model/requestAdmission.ts */ {
         readonly logicalRequestId: string;
         readonly waitBudget: {
@@ -3445,6 +3471,7 @@ export interface AgentStateSnapshot {
     };
     readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
       modelSource?: 'static' | 'discover' | 'oauth-catalog';
+      enabled?: boolean;
       baseUrl?: string;
       decisionEndpoint?: string;
       customHeaders?: Record<string, string>;
@@ -7290,6 +7317,7 @@ export interface AgentStateSnapshot {
         };
       };
       readonly promptContextPending?: boolean;
+      readonly permissionModeSource?: 'profile' | 'harness-settings';
     };
     readonly toolAllowPolicies?: readonly (readonly string[])[];
   };

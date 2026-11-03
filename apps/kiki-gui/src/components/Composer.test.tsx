@@ -23,7 +23,7 @@ import { activateSkillWithConditionalClear, canAbortActiveTurn } from './Session
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   readClipboardFiles: vi.fn(),
-  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a' },
+  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one' },
   selectFilesNative: vi.fn(),
   selectFilePathNative: vi.fn(),
   onFileDrop: vi.fn(),
@@ -111,7 +111,7 @@ vi.mock('../state/connection', () => ({
     connectionId: connectionScope.id,
     connectionSource: connectionScope.source,
     scopeId: connectionScope.source,
-    meta: { server_id: connectionScope.serverId },
+    meta: { server_id: connectionScope.serverId, started_at: connectionScope.startedAt },
     config: { url: connectionScope.url },
     client: {
       listModels,
@@ -181,6 +181,7 @@ beforeEach(() => {
   connectionScope.source = 'desktop';
   connectionScope.url = 'http://127.0.0.1:1234';
   connectionScope.serverId = 'server-a';
+  connectionScope.startedAt = 'generation-one';
   onFileDrop.mockReset().mockImplementation((_callback: (drop: HostFileDrop) => void) => () => {});
   desktopRuntime.value = false;
   vscodeRuntime.value = false;
@@ -1042,6 +1043,32 @@ describe('Composer execution control', () => {
     await settle();
     expect(onRebuildContext).toHaveBeenCalledOnce();
     expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('current sources'))).toBe(true);
+  });
+
+  it('closes a same-session rebuild confirmation on service replacement and ignores the old result', async () => {
+    let finish!: (result: { changed: boolean }) => void;
+    const onRebuildContext = vi.fn(() => new Promise<{ changed: boolean }>(resolve => { finish = resolve; }));
+    const props = { sessionId: 'session-1', execution: NATIVE_AGENT, onChangeExecution: () => {}, onRebuildContext };
+    const rendered = await renderComposer(props);
+    const open = async () => {
+      await openAddMenu(rendered.container);
+      await click(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')!);
+    };
+    await open();
+    expect(rendered.container.querySelector('[role="alertdialog"]')).not.toBeNull();
+    connectionScope.startedAt = 'generation-two';
+    await rendered.rerender(props);
+    expect(rendered.container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(onRebuildContext).not.toHaveBeenCalled();
+    await open();
+    const confirm = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === 'Rebuild context')!;
+    await click(confirm);
+    connectionScope.startedAt = 'generation-three';
+    await rendered.rerender(props);
+    await act(async () => { finish({ changed: true }); });
+    await settle();
+    expect(getToasts().some(toast => toast.text.includes('current sources'))).toBe(false);
+    expect(rendered.container.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it('reports rebuild failures and keeps the execution control openable while busy', async () => {
@@ -2510,6 +2537,48 @@ describe('Composer file clipboard policy', () => {
     await dispatchClipboardPaste(textarea);
     expect(onChange).toHaveBeenCalledWith('draft C:/fixtures/report.txt');
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the caret after a desktop link pasted into the middle of a draft', async () => {
+    desktopRuntime.value = true;
+    const { container } = await renderStatefulComposer();
+    const textarea = composerInputOf(container);
+    await typeText(textarea, 'before  after');
+    await placeCaret(textarea, 7);
+    const link = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: [], getData: () => link } });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe(`before ${link} after`);
+    expect(textarea.selectionStart).toBe(7 + link.length);
+    expect(textarea.selectionEnd).toBe(7 + link.length);
+    await flushCaret();
+    expect(textarea.selectionStart).toBe(7 + link.length);
+  });
+
+  it('keeps the caret after replacing a selection with multiple references', async () => {
+    desktopRuntime.value = true;
+    const { container } = await renderStatefulComposer();
+    const textarea = composerInputOf(container);
+    await typeText(textarea, 'before REPLACE after');
+    await placeCaret(textarea, 7, 14);
+    const thread = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const pasted = `${thread} and kiki://agents/claude-code`;
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: [], getData: () => pasted } });
+    await act(async () => {
+      textarea.dispatchEvent(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe(`before ${pasted} after`);
+    expect(textarea.selectionStart).toBe(7 + pasted.length);
+    expect(textarea.selectionEnd).toBe(7 + pasted.length);
+    expect(container.querySelectorAll('.composer-reference')).toHaveLength(2);
   });
 
   it.each(['ssh', 'remote', 'manual'] as const)('inserts original local paths as draft text in a %s workspace without uploading or reading files', async (source) => {

@@ -1866,6 +1866,9 @@ export function SessionView({
   selectedAgentIdRef.current = selectedAgentId;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  const rebuildOwner = useMemo(() => ({}), [client, scopeId, meta.server_id, meta.started_at, sessionId]);
+  const rebuildOwnerRef = useRef(rebuildOwner);
+  rebuildOwnerRef.current = rebuildOwner;
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
   const firstMessageRef = useRef<FirstSessionMessageRecord | undefined>(readFirstSessionMessage(scopeId, sessionId));
@@ -3092,6 +3095,7 @@ export function SessionView({
   const refetchAgentProfiles = agentProfilesQuery.refetch;
   const handleContextRebuild = useCallback(async () => {
     const result = await client.rebuildContext(sessionId);
+    if (rebuildOwnerRef.current !== rebuildOwner) throw new DOMException('The conversation changed.', 'AbortError');
     // A rebuild changes what the conversation carries — the instructions, the
     // plugins, the skills a plugin brings, and the tools those contribute — so
     // every list that answers from those sources is re-read. Each one re-reads
@@ -3104,7 +3108,7 @@ export function SessionView({
     void queryClient.invalidateQueries({ queryKey: ['session-mcp-capabilities'] });
     void refetchAgentProfiles();
     return result;
-  }, [client, queryClient, refetchAgentProfiles, sessionId]);
+  }, [client, queryClient, rebuildOwner, refetchAgentProfiles, sessionId]);
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
