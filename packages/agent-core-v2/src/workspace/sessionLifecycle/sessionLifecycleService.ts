@@ -270,16 +270,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   override async dispose(): Promise<void> {
+    const sessions = [...this.sessions].reverse();
+    this.sessions.clear();
     for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
     this.checkpointTimers.clear();
     for (const subscription of this.checkpointSubscriptions.values()) await subscription.dispose();
     this.checkpointSubscriptions.clear();
     this.checkpointSaves.clear();
     this.resumePrunes.clear();
-    for (const [sessionId, handle] of [...this.sessions].reverse()) {
-      this.sessions.delete(sessionId);
-      await handle.dispose();
-    }
+    for (const [, handle] of sessions) await handle.dispose();
     await super.dispose();
   }
 
@@ -495,6 +494,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ],
           configureContainer: (container) => {
             sessionContainer = container;
+            container.onWillDispose(() => {
+              if (this.sessions.get(opts.sessionId) !== handle) return;
+              this.sessions.delete(opts.sessionId);
+              this.disposeCheckpointScheduling(opts.sessionId);
+            });
             if (this.hookWorkspace !== undefined) container.provide(ISessionHookWorkspace, this.hookWorkspace);
             container.anchorKernelEntry(
               () => this.releaseSessionLock(opts.sessionId),
