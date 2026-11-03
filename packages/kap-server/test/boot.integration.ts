@@ -360,7 +360,8 @@ describe('server-v2 boot', () => {
       'utf8',
     );
     const prepareGate = deferred<SessionIndexStatus>();
-    const prepare = vi.fn(() => prepareGate.promise);
+    const preparing = deferred<void>();
+    const prepare = vi.fn(() => { preparing.resolve(); return prepareGate.promise; });
     const index = stubSessionIndex(prepare);
     const get = vi.fn(index.get);
 
@@ -383,15 +384,14 @@ describe('server-v2 boot', () => {
       },
     });
 
-    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-    expect(get).not.toHaveBeenCalled();
-    prepareGate.resolve({
-      source: 'read-model',
-      state: 'ready',
-      generation: 1,
-      degradedCount: 0,
-    });
-    server = await starting;
+    try {
+      await withTimeout(Promise.race([preparing.promise, starting]), 10_000);
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(get).not.toHaveBeenCalled();
+    } finally {
+      prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+      server = await starting;
+    }
     expect(get).toHaveBeenCalledWith('session_index_ready');
   });
 

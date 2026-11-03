@@ -1694,6 +1694,7 @@ describe('server-v2 session operation lease', () => {
     if (session === undefined) throw new Error(`session ${sessionId} not found`);
     const agents = session.accessor.get(IAgentLifecycleService);
     if (agents.get('main') === undefined) await agents.create({ agentId: 'main' });
+    await agents.get('main')!.accessor.get(IAgentTaskService).resumeRestoration?.();
   }
 
   function managerOf(): ISessionManager {
@@ -1755,6 +1756,7 @@ describe('server-v2 session operation lease', () => {
     const sessionId = await createSession();
     await ensureMainAgent(sessionId);
     const manager = managerOf();
+    const leases = spyLeases(manager);
     const gate = deferred();
     let reached!: () => void;
     const reachedPromise = new Promise<void>((resolve) => {
@@ -1801,6 +1803,9 @@ describe('server-v2 session operation lease', () => {
     const result = await outcome;
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.session.id).toBe(sessionId);
+    expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+    expect(leases.disposals).toEqual([sessionId]);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
 
     await expect(manager.evictIfIdle!(sessionId)).resolves.toBe(true);
     expect(manager.residencyReport!().pinnedSessions).toBe(0);
@@ -1829,8 +1834,6 @@ describe('server-v2 session operation lease', () => {
   it('releases the session operation when snapshot assembly rejects', async () => {
     const sessionId = await createSession();
     await ensureMainAgent(sessionId);
-    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
-    await main.accessor.get(IAgentTaskService).resumeRestoration?.();
     const manager = managerOf();
     const leases = spyLeases(manager);
     const broadcaster = {

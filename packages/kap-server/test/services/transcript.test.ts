@@ -5226,7 +5226,7 @@ it.each(['cold', 'derived'] as const)('seeks before a long orphan turn in bounde
     const before = service.memoryReport().coldReads.bytes;
     let marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'turn:t1', pageSize: 1 });
     expect(service.memoryReport().coldReads.bytes - before).toBeLessThan(8 << 20);
-    if (marker?.read?.readiness === 'preparing') {
+    for (let attempt = 0; marker?.read?.readiness === 'preparing' && attempt < 6; attempt++) {
       expect(marker).toMatchObject({ items: [], has_more: true, read: { source } });
       expect(JSON.parse(Buffer.from(marker.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t1', source });
       const sliceStart = service.memoryReport().coldReads.bytes;
