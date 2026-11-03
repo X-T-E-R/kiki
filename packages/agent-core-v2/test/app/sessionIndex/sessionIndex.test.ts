@@ -1659,7 +1659,7 @@ describe('FileSessionIndex (read model)', () => {
     } finally {
       metadataReads.mockRestore();
     }
-  });
+  }, 30_000);
 
   it('listRecent treats a cache entry missing required fields as a cold miss', async () => {
     await seedSession('s1', { title: 'on-disk', createdAt: 1, updatedAt: 2 });

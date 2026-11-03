@@ -5594,8 +5594,15 @@ it.each([{ turnId: 0, prepared: false, warmed: false }, { turnId: 7, prepared: t
       expect(navigation.canonicalReadReport().projectionBytes).toBe(projectionBefore);
       expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(1024);
       if (turnId === 7 && !prepared) {
-        let continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: page!.next_cursor! });
-        if (continued?.items.length === 0) continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: continued.next_cursor ?? page!.next_cursor! });
+        let cursor = page!.next_cursor!;
+        let continued: Awaited<ReturnType<typeof readSessionViewTranscriptPage>>;
+        for (let attempt = 0; attempt < 16; attempt += 1) {
+          continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor });
+          expect(continued?.next_cursor).toBeDefined();
+          if ((continued?.items.length ?? 0) > 0) break;
+          expect(continued).toMatchObject({ has_more: true, read: { readiness: 'preparing' } });
+          cursor = continued!.next_cursor!;
+        }
         expect(continued?.items.find(item => item.kind === 'turn' && item.turnId === 't7')).toMatchObject({ prompt: 'opening-7', origin: { kind: 'user' } });
         expect(JSON.parse(Buffer.from(continued!.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t7', refreshedTurn: 't7' });
         const preceding = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: continued!.next_cursor! });

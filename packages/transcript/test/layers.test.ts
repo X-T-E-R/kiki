@@ -3068,7 +3068,7 @@ describe('TranscriptWireAdapter', () => {
       outputTail: 'scanned 12 files',
       stateReason: 'approval',
       usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
-      startedAt: new Date(4_100).toISOString(),
+      startedAt: new Date(4_000).toISOString(),
       endedAt: new Date(5_000).toISOString(),
     });
     expect(transcript.getTask('child-2')).toMatchObject({

@@ -3538,6 +3538,9 @@ describe('SessionEventBroadcaster', () => {
       const main = lc.addAgent('main');
       main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
 
+      await vi.waitFor(() => {
+        expect(transcriptEnvelopes(view.envelopes).map((e) => e.type)).toContain('transcript.ops');
+      });
       const types = transcriptEnvelopes(view.envelopes).map((e) => e.type);
       expect(types).toContain('transcript.reset');
       expect(types).toContain('transcript.ops');
