@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   meta: vi.fn(),
   homes: vi.fn(),
   renewLease: vi.fn(),
+  rebindDesktop: vi.fn(),
   klients: [] as Array<{
     endpoint: string;
     token?: string;
@@ -103,6 +104,7 @@ vi.mock('../lib/client', () => ({
     }
 
     rebindDesktop(config: { url: string; token: string }) {
+      mocks.rebindDesktop(config);
       this.baseUrl = config.url;
       this.klient.endpoint = config.url;
       this.klient.token = config.token;
@@ -260,6 +262,7 @@ beforeEach(() => {
   mocks.homes.mockReset().mockResolvedValue({ items: [] });
   mocks.renewLease.mockReset();
   mocks.renewLease.mockResolvedValue(undefined);
+  mocks.rebindDesktop.mockReset();
   mocks.klients.length = 0;
   mocks.terminalSubscriptions.length = 0;
   mocks.stageListener = undefined;
@@ -1180,7 +1183,7 @@ describe('a closed desktop socket', () => {
   const restartedPort = { url: 'http://127.0.0.1:41557', token: 'local-token' };
   const identity = {
     server_id: 'local', server_version: '0.1.0', server_home_id: 'a9ba1f7e-c97b-4d53-a424-e79c1662c019',
-    current_space_id: 'main', dangerous_bypass_auth: false,
+    current_space_id: 'main', dangerous_bypass_auth: false, started_at: '2026-11-03T00:00:00.000Z',
   };
 
   beforeEach(() => {
@@ -1267,6 +1270,7 @@ describe('a closed desktop socket', () => {
 
   it.each([
     ['server instance', { server_id: 'replacement' }, firstPort],
+    ['service generation', { started_at: '2026-11-03T00:01:00.000Z' }, firstPort],
     ['bearer identity', { server_id: 'replacement' }, { ...firstPort, token: 'replacement-token' }],
     ['random port', { server_id: 'replacement' }, restartedPort],
   ] as const)('preserves the controller, draft and reading surface when the verified %s changes', async (_reason, patch, config) => {
@@ -1291,6 +1295,7 @@ describe('a closed desktop socket', () => {
     expect(container.querySelector('[data-cache-value]')?.textContent).toBe('local');
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(config.url);
     expect(previous).toMatchObject({ endpoint: config.url, token: config.token, closed: false });
+    expect(mocks.rebindDesktop).toHaveBeenCalledWith(config);
   });
 
   it('does not treat the synchronous socket restart inside a verified rebind as a new discovery failure', async () => {

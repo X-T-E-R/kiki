@@ -728,7 +728,7 @@ export function Composer({
     }
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
-  const { client, connectionId, scopeId, localClient } = useConnection();
+  const { client, connectionId, scopeId, localClient, meta } = useConnection();
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
   const remoteRecords = useRemoteConnections(localClient);
@@ -856,6 +856,15 @@ export function Composer({
   const [mentionQuery, setMentionQuery] = useState('');
   const [contextRebuildConfirm, setContextRebuildConfirm] = useState(false);
   const [contextRebuildBusy, setContextRebuildBusy] = useState(false);
+  const rebuildOwner = useMemo(() => ({}), [scopeId, meta?.server_id, meta?.started_at, sessionId]);
+  const rebuildOwnerRef = useRef<object | undefined>(rebuildOwner);
+  rebuildOwnerRef.current = rebuildOwner;
+  useEffect(() => {
+    rebuildOwnerRef.current = rebuildOwner;
+    setContextRebuildConfirm(false);
+    setContextRebuildBusy(false);
+    return () => { rebuildOwnerRef.current = undefined; };
+  }, [rebuildOwner]);
   // A slash-looking draft that resolved to nothing: send is held until the
   // user confirms plain-text shipping (typo guard) or edits the draft.
   const [slashConfirm, setSlashConfirm] = useState<{
@@ -2514,12 +2523,14 @@ export function Composer({
     setContextRebuildBusy(true);
     void onRebuildContext()
       .then((result) => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         pushToast({
           tone: 'success',
           text: t(result.changed ? 'profile.rebuildDoneChanged' : 'profile.rebuildDoneUnchanged'),
         });
       })
       .catch((error: unknown) => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         pushToast({
           tone: 'error',
           text: t('profile.rebuildFailed', {
@@ -2528,6 +2539,7 @@ export function Composer({
         });
       })
       .finally(() => {
+        if (rebuildOwnerRef.current !== rebuildOwner) return;
         setContextRebuildBusy(false);
         setContextRebuildConfirm(false);
       });

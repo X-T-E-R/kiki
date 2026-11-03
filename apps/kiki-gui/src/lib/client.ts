@@ -2970,7 +2970,7 @@ export class KikiClient {
   }
 
   rebuildContext(sessionId: string): Promise<import('@kiki/klient').ContextRebuildResult> {
-    return this.run(this.klient.session(sessionId).agent('main').rebuildContext());
+    return this.runSessionMutation(sessionId, () => this.klient.session(sessionId).agent('main').rebuildContext());
   }
 
   /** Activate a slash skill and start its turn. */

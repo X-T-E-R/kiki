@@ -20,8 +20,9 @@ const session = vi.fn((sessionId: string) => ({
   }),
 }));
 
+const connection = { scopeId: 'local', meta: { server_id: 'fixture-server', started_at: 'generation-one' } };
 vi.mock('../../state/connection', () => ({
-  useOptionalConnection: () => ({ klient: { session } }),
+  useOptionalConnection: () => ({ ...connection, klient: { session } }),
 }));
 
 let root: Root;
@@ -30,6 +31,7 @@ let queryClient: QueryClient;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  connection.meta.started_at = 'generation-one';
   vi.useRealTimers();
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -208,6 +210,24 @@ describe('ContextRebuildControl', () => {
     release({ enabled: false, rebuilt: [], unsupported: [] });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.querySelector('[data-context-rebuild-mark="applied"]')).toBeNull();
+  });
+
+  it('does not refetch or report an old action after the same session changes service generation', async () => {
+    let reject!: (error: Error) => void;
+    rebuild.mockImplementationOnce(() => new Promise<void>((_resolve, fail) => { reject = fail; }));
+    control.mockResolvedValue({ enabled: false, outcome: 'failed', error: 'old failure', rebuilt: [], unsupported: [] });
+    await render();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-rebuild-retry]')!.click(); });
+    expect(rebuild).toHaveBeenCalledOnce();
+    control.mockResolvedValue({ enabled: true, rebuilt: [], unsupported: [] });
+    connection.meta.started_at = 'generation-two';
+    await render();
+    const reads = control.mock.calls.length;
+    await act(async () => { reject(new Error('stale rebuild failure')); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(control).toHaveBeenCalledTimes(reads);
+    expect(container.textContent).not.toContain('stale rebuild failure');
+    expect(container.querySelector('[data-context-rebuild-error]')).toBeNull();
+    expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('does not start another read while the previous one is still running', async () => {

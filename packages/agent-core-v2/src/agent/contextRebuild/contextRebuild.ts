@@ -77,7 +77,7 @@ export interface ContextRebuildControl {
 export interface IAgentContextRebuildService {
   readonly _serviceBrand: undefined;
   /** Re-reads this main agent's frozen sources while the loop is idle. */
-  rebuild(): Promise<ContextRebuildResult>;
+  rebuild(signal?: AbortSignal): Promise<ContextRebuildResult>;
   /** This agent's switch and the latest rebuild report. Other agents keep their own. */
   control(): ContextRebuildControl;
   /**

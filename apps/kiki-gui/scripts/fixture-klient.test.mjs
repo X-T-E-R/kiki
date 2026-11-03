@@ -321,6 +321,11 @@ test('fixture answers the context-rebuild control the prompt drawer reads and wr
     assert.equal((await client.session(sid).agent('main').contextRebuildControl()).enabled, true);
     await client.session(sid).agent('main').setContextRebuildEnabled(false);
     assert.equal((await client.session(sid).agent('main').contextRebuildControl()).enabled, false);
+    await client.session(sid).resume();
+    const rebuilt = await client.session(sid).agent('main').rebuildContext();
+    assert.equal(rebuilt.outcome, 'applied');
+    assert.equal(rebuilt.appliesOn, 'next_request');
+    assert.equal((await client.session(sid).agent('main').contextRebuildControl()).outcome, 'applied');
   } finally { await client.close(); await fixture.stop(); }
 });
 

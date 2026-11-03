@@ -117,8 +117,8 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     await this.dispatcher.dispatch(new ContextRebuildPreferenceChanged({ enabled }));
   }
 
-  rebuild(): Promise<ContextRebuildResult> {
-    return this.exclusive(() => this.execute('quiescence', 'manual', undefined, true));
+  rebuild(signal?: AbortSignal): Promise<ContextRebuildResult> {
+    return this.exclusive(() => this.execute('quiescence', 'manual', signal, true));
   }
 
   private canRebuildAfterClear(): boolean {
@@ -230,6 +230,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       const capabilities = await this.mcp.listMcpSessionCapabilities();
       const afterMcp = JSON.stringify({ capabilities, tools: toolSnapshot() });
       const pluginUsage = await this.pluginUsage?.read();
+      this.throwIfCancelled(signal);
       changes = this.diffChanges({
         completed, skipped, sourceChanges, beforeProfile, beforeContext, beforeFields, beforeSkills, beforeMcp, afterMcp,
       });
@@ -244,6 +245,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       await this.report(trigger, result);
       return result;
     } catch (error) {
+      if (this._store.isDisposed) throw error;
       if (completed.includes('prompt_fields')) this.requester.invalidatePromptSnapshots();
       const outcome = completed.length === 0 ? 'failed' : 'partial';
       let observed = changes;
@@ -367,8 +369,8 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
   }
 
   private throwIfCancelled(signal: AbortSignal | undefined): void {
-    if (signal?.aborted !== true) return;
-    const reason = signal.reason;
+    if (signal?.aborted !== true && !this._store.isDisposed) return;
+    const reason = signal?.reason;
     const message = reason instanceof Error && reason.name !== 'AbortError' && reason.message.length > 0
       ? reason.message
       : 'Context rebuild was cancelled.';

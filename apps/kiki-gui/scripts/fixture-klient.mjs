@@ -819,6 +819,9 @@ export class FixtureKlient {
         return {
           rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
           changed: true,
+          outcome: 'applied',
+          unsupported: [],
+          appliesOn: 'next_request',
           changes: {
             profile: false,
             // The wire spells this one in camel case; the surface list beside it

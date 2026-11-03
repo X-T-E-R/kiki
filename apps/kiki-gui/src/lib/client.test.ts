@@ -2319,6 +2319,30 @@ describe('KikiClient compound action generation (F1)', () => {
     } finally { await client.klient.close(); }
   });
 
+  it('fences a rebuild result after a same-endpoint generation change and accepts a new rebuild', async () => {
+    const onSessionMutation = vi.fn();
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:41001', token: 'local-token', onSessionMutation });
+    const result = { rebuilt: [], changed: false, outcome: 'applied', unsupported: [], appliesOn: 'next_request', readiness: { mcp: [], plugins: { state: 'ready', errors: [] } } } as const;
+    const rebuild = vi.fn()
+      .mockImplementationOnce(() => Promise.resolve(result).then(value => {
+        queueMicrotask(() => client.rebindDesktop({ url: 'http://127.0.0.1:41001', token: 'local-token' }));
+        return value;
+      }))
+      .mockResolvedValue(result);
+    const session = client.klient.session.bind(client.klient);
+    vi.spyOn(client.klient, 'session').mockImplementation(id => {
+      const handle = session(id);
+      return { ...handle, agent: agentId => ({ ...handle.agent(agentId), rebuildContext: rebuild }) };
+    });
+    try {
+      await expect(client.rebuildContext('s1')).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+      expect(onSessionMutation).not.toHaveBeenCalled();
+      await expect(client.rebuildContext('s1')).resolves.toEqual(result);
+      expect(rebuild).toHaveBeenCalledTimes(2);
+      expect(onSessionMutation).toHaveBeenCalledExactlyOnceWith('s1');
+    } finally { await client.klient.close(); }
+  });
+
   it('fences the post-result callback while allowing a newly started action after rebind', async () => {
     const onSessionMutation = vi.fn();
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:41001', token: 'old-token', onSessionMutation });

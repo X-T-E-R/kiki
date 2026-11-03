@@ -478,7 +478,7 @@ function sameDesktopEndpoint(left: ConnectionConfig, right: ConnectionConfig): b
 }
 
 function desktopIdentity(previous: MetaResponse, next: MetaResponse): 'same' | 'changed' | 'unknown' {
-  for (const key of ['server_id', 'server_home_id', 'current_space_id', 'dangerous_bypass_auth'] as const) {
+  for (const key of ['server_id', 'server_home_id', 'current_space_id', 'dangerous_bypass_auth', 'started_at'] as const) {
     if (previous[key] !== undefined && next[key] !== undefined && previous[key] !== next[key]) return 'changed';
   }
   if (!previous.server_id || !next.server_id || !previous.server_home_id || !next.server_home_id ||

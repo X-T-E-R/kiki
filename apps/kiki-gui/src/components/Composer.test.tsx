@@ -23,7 +23,7 @@ import { activateSkillWithConditionalClear, canAbortActiveTurn } from './Session
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   readClipboardFiles: vi.fn(),
-  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a' },
+  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one' },
   selectFilesNative: vi.fn(),
   selectFilePathNative: vi.fn(),
   onFileDrop: vi.fn(),
@@ -111,7 +111,7 @@ vi.mock('../state/connection', () => ({
     connectionId: connectionScope.id,
     connectionSource: connectionScope.source,
     scopeId: connectionScope.source,
-    meta: { server_id: connectionScope.serverId },
+    meta: { server_id: connectionScope.serverId, started_at: connectionScope.startedAt },
     config: { url: connectionScope.url },
     client: {
       listModels,
@@ -181,6 +181,7 @@ beforeEach(() => {
   connectionScope.source = 'desktop';
   connectionScope.url = 'http://127.0.0.1:1234';
   connectionScope.serverId = 'server-a';
+  connectionScope.startedAt = 'generation-one';
   onFileDrop.mockReset().mockImplementation((_callback: (drop: HostFileDrop) => void) => () => {});
   desktopRuntime.value = false;
   vscodeRuntime.value = false;
@@ -1042,6 +1043,32 @@ describe('Composer execution control', () => {
     await settle();
     expect(onRebuildContext).toHaveBeenCalledOnce();
     expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('current sources'))).toBe(true);
+  });
+
+  it('closes a same-session rebuild confirmation on service replacement and ignores the old result', async () => {
+    let finish!: (result: { changed: boolean }) => void;
+    const onRebuildContext = vi.fn(() => new Promise<{ changed: boolean }>(resolve => { finish = resolve; }));
+    const props = { sessionId: 'session-1', execution: NATIVE_AGENT, onChangeExecution: () => {}, onRebuildContext };
+    const rendered = await renderComposer(props);
+    const open = async () => {
+      await openAddMenu(rendered.container);
+      await click(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')!);
+    };
+    await open();
+    expect(rendered.container.querySelector('[role="alertdialog"]')).not.toBeNull();
+    connectionScope.startedAt = 'generation-two';
+    await rendered.rerender(props);
+    expect(rendered.container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(onRebuildContext).not.toHaveBeenCalled();
+    await open();
+    const confirm = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === 'Rebuild context')!;
+    await click(confirm);
+    connectionScope.startedAt = 'generation-three';
+    await rendered.rerender(props);
+    await act(async () => { finish({ changed: true }); });
+    await settle();
+    expect(getToasts().some(toast => toast.text.includes('current sources'))).toBe(false);
+    expect(rendered.container.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it('reports rebuild failures and keeps the execution control openable while busy', async () => {

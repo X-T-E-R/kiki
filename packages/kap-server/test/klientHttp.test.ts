@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,10 @@ import {
   IWorkspaceInstanceManager,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentProfileService,
+  IAgentContextRebuildService,
+  IAgentLLMRequesterService,
+  ISessionContextSourceReloader,
   IAgentUsageService,
   IAgentExecutorRegistry,
   IEventDispatcher,
@@ -20,7 +24,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { SessionIndexBuildingError } from '@kiki/agent-core-v2/app/sessionIndex/errors';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { createKlient } from '@kiki/klient/http';
 import type { SessionViewSignal } from '@kiki/klient/session-view';
 import Fastify from 'fastify';
@@ -321,6 +325,12 @@ describe('klient HTTP host', () => {
         rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       });
       await expect(agent.getContext()).resolves.toEqual(before);
+      const manager = server.core.accessor.get(ISessionManager);
+      await manager.close(created.id);
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(await server.core.accessor.get(ISessionIndex).get(created.id)).toMatchObject({ id: created.id });
+      await expect(agent.rebuildContext()).resolves.toMatchObject({ outcome: 'applied', appliesOn: 'next_request' });
+      await expect(agent.getContext()).resolves.toEqual(before);
 
       const session = await resumeSessionById(server.core.accessor, created.id);
       if (session === undefined) throw new Error('session must be live');
@@ -336,6 +346,140 @@ describe('klient HTTP host', () => {
         await quiescence.dispose();
       }
     } finally {
+      await klient.close();
+    }
+  });
+
+  it('rebuilds the same closed and evicted main from current sources without sending a model request', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const manager = server.core.accessor.get(ISessionManager);
+    const path = join(homeDir, 'rebuild-main.md');
+    const modelId = 'context-route-model';
+    const source = (marker: string) => `---\nname: rebuild-main\ndescription: Context rebuild fixture\nmain: true\ntools: [Read]\n---\n${marker}\n`;
+    let sessionId: string | undefined;
+    try {
+      await writeFile(path, source('SOURCE_ONE'));
+      await klient.global.kosong.addProvider({ id: modelId, model: modelId, protocol: 'openai', baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 32000, auth: { method: 'api-key', apiKey: 'test-key' } });
+      const rest = klient.rest!;
+      const created = await rest.sessions.create({ metadata: { cwd: homeDir }, agent_config: {
+        model: modelId, permission_mode: 'manual', execution: { executor: 'native', profile_file: path },
+      } });
+      sessionId = created.id;
+      const agent = klient.session(created.id).agent('main');
+      const session = manager.get(created.id)!;
+      expect(await agent.contextRebuildControl()).toEqual({ enabled: false, rebuilt: [], unsupported: [] });
+      await agent.getUsage();
+      await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'preserved history' }], toolCalls: [] });
+      const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+      const metadata = session.accessor.get(ISessionMetadata);
+      await metadata.update({ custom: { draft: 'preserved draft', identity: 'fixture-identity' } });
+      const before = await agent.getContext();
+      const binding = main.accessor.get(IAgentProfileService).data();
+      expect(main.accessor.get(IAgentProfileService).getSystemPrompt()).toContain('SOURCE_ONE');
+      for (const [cold, marker] of [['close', 'SOURCE_TWO'], ['evict', 'SOURCE_THREE']] as const) {
+        if (cold === 'close') await manager.close(created.id);
+        else expect(await manager.evictIfIdle!(created.id, { ignoreIdleTtl: true })).toBe(true);
+        expect(manager.get(created.id)).toBeUndefined();
+        await writeFile(path, source(marker));
+        const control = await agent.contextRebuildControl();
+        expect(control.enabled).toBe(false);
+        expect(manager.get(created.id)).toBeUndefined();
+        const rebuilt = await agent.rebuildContext();
+        expect(rebuilt).toMatchObject({ outcome: 'applied', appliesOn: 'next_request' });
+        const restored = manager.get(created.id)!;
+        expect(restored.id).toBe(created.id);
+        expect(restored).not.toBe(session);
+        const restoredMain = restored.accessor.get(IAgentLifecycleService).get('main')!;
+        const profile = restoredMain.accessor.get(IAgentProfileService);
+        expect(profile.data()).toMatchObject({ modelAlias: binding.modelAlias, thinkingLevel: binding.thinkingLevel,
+          executorId: binding.executorId, executionRestriction: binding.executionRestriction, disallowedTools: binding.disallowedTools });
+        expect(await agent.getPermission()).toBe('manual');
+        expect((await restored.accessor.get(ISessionMetadata).read()).custom).toEqual({ draft: 'preserved draft', identity: 'fixture-identity' });
+        const visible = (history: typeof before.history) => history.filter(message => message.origin?.kind !== 'injection');
+        expect(visible((await agent.getContext()).history)).toEqual(visible(before.history));
+        const requester = restoredMain.accessor.get(IAgentLLMRequesterService);
+        const start = vi.spyOn(requester, 'start');
+        const input = await (requester as unknown as {
+          resolveRequest(overrides: { tools: never[] }): Promise<{ systemPrompt: string; modelAlias: string }>;
+        }).resolveRequest({ tools: [] });
+        expect(input.systemPrompt).toContain(marker);
+        expect(input.modelAlias).toBe(modelId);
+        expect(start).not.toHaveBeenCalled();
+        start.mockRestore();
+        expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action'] ?? 0).toBe(0);
+      }
+      await manager.close(created.id);
+      await expect(agent.setContextRebuildEnabled(true)).resolves.toBeUndefined();
+      expect(await agent.contextRebuildControl()).toMatchObject({ enabled: true });
+      await manager.close(created.id);
+      expect(await agent.contextRebuildControl()).toMatchObject({ enabled: true });
+      expect(manager.get(created.id)).toBeUndefined();
+      await expect(klient.session('session_missing_context').agent('main').rebuildContext()).rejects.toMatchObject({ code: 40404 });
+      await expect(klient.session('session_missing_context').agent('main').contextRebuildControl()).rejects.toMatchObject({ code: 40404 });
+      expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action'] ?? 0).toBe(0);
+      const index = server.core.accessor.get(ISessionIndex);
+      const readIndex = vi.spyOn(index, 'get')
+        .mockRejectedValueOnce(new SessionIndexBuildingError())
+        .mockRejectedValueOnce(new StorageError(StorageErrors.codes.STORAGE_LOCKED, 'fixture metadata locked'));
+      try {
+        await expect(klient.session('session_index_error').agent('main').rebuildContext()).rejects.toMatchObject({ code: 40939 });
+        await expect(klient.session('session_storage_error').agent('main').rebuildContext()).rejects.toMatchObject({ code: 40933, reason: 'storage.locked', message: 'fixture metadata locked' });
+        expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action'] ?? 0).toBe(0);
+      } finally { readIndex.mockRestore(); }
+      const storage = server.core.accessor.get(IFileSystemStorageService);
+      const size = storage.size.bind(storage);
+      const oversized = vi.spyOn(storage, 'size').mockImplementation((scope, key) => scope.endsWith(`${created.id}/agents/main`) && key === 'wire.jsonl'
+        ? Promise.resolve(9 << 20) : size(scope, key));
+      try {
+        await expect(agent.contextRebuildControl()).rejects.toMatchObject({ code: 40901 });
+        expect(manager.get(created.id)).toBeUndefined();
+      } finally { oversized.mockRestore(); }
+    } finally {
+      if (sessionId !== undefined) await manager.close(sessionId);
+      await klient.global.kosong.removeProvider(modelId);
+      await klient.close();
+    }
+  });
+
+  it('releases rebuild admission on failure and HTTP cancellation', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const manager = server.core.accessor.get(ISessionManager);
+    const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Rebuild failure fixture' });
+    const agent = klient.session(created.id).agent('main');
+    await agent.getUsage();
+    const session = manager.get(created.id)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const sources = session.accessor.get(ISessionContextSourceReloader);
+    const reload = vi.spyOn(sources, 'reload').mockRejectedValueOnce(new Error('fixture source read failed'));
+    try {
+      await expect(agent.rebuildContext()).rejects.toThrow('fixture source read failed');
+      expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action'] ?? 0).toBe(0);
+      const gate = promiseWithResolvers<void>();
+      const entered = promiseWithResolvers<void>();
+      reload.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; return { instructionsChanged: false, pluginsChanged: false }; });
+      const coreRebuild = main.accessor.get(IAgentContextRebuildService);
+      const execute = coreRebuild.rebuild.bind(coreRebuild);
+      let serverSignal: AbortSignal | undefined;
+      const rebuildingSpy = vi.spyOn(coreRebuild, 'rebuild').mockImplementation(signal => { serverSignal = signal; return execute(signal); });
+      const controller = new AbortController();
+      const rebuilding = agent.rebuildContext({ signal: controller.signal });
+      const cancelled = expect(rebuilding).rejects.toThrow();
+      await entered.promise;
+      expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action']).toBe(1);
+      controller.abort();
+      await cancelled;
+      await vi.waitFor(() => expect(serverSignal?.aborted).toBe(true));
+      gate.resolve();
+      rebuildingSpy.mockRestore();
+      await vi.waitFor(() => expect(manager.residencyReport!().pinsByReason?.['context-rebuild-action'] ?? 0).toBe(0));
+      const quiescence = main.accessor.get(IAgentLoopService).tryAcquireQuiescence();
+      expect(quiescence).toBeDefined();
+      await quiescence!.dispose();
+      expect(await agent.contextRebuildControl()).toMatchObject({ outcome: 'partial', rebuilt: ['instructions'], error: 'Context rebuild was cancelled.' });
+    } finally {
+      reload.mockRestore();
+      await manager.close(created.id);
       await klient.close();
     }
   });
