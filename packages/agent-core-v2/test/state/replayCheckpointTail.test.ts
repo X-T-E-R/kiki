@@ -798,16 +798,17 @@ describe('replay checkpoint tail', () => {
     await first.wire.flush();
     await vi.advanceTimersByTimeAsync(1_000);
     await entered.promise;
-    await (first.dispatcher as unknown as { dispose(): void | Promise<void> }).dispose();
+    const disposing = (first.dispatcher as unknown as { dispose(): void | Promise<void> }).dispose();
     expect(vi.getTimerCount()).toBe(0);
     release.resolve();
+    await disposing;
     await ticks();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(writes).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('runs restore hooks without waiting for the optional checkpoint write', async () => {
+  it('runs restore hooks without waiting for the optional checkpoint and joins its write before disposal', async () => {
     const first = harness();
     await first.wire.seal();
     const entered = deferred();
@@ -833,8 +834,19 @@ describe('replay checkpoint tail', () => {
     expect(first.state.get(promptQueueKey).order).toEqual([]);
     expect(settled).toBe(true);
     expect(restoredHook).toBe(true);
-    release.resolve();
-    await restoring;
+    let disposed = false;
+    const disposing = Promise.resolve((first.dispatcher as unknown as { dispose(): void | Promise<void> }).dispose())
+      .then(() => { disposed = true; });
+    try {
+      await ticks();
+      expect(disposed).toBe(false);
+    } finally {
+      release.resolve();
+      await restoring;
+      await disposing;
+    }
+    expect(await first.docs.get(CHECKPOINT_SCOPE, CHECKPOINT_KEY)).toBeDefined();
+    expect(disposed).toBe(true);
   });
 
   it('checkpoints a long run once the journal grows, then reopens on that snapshot', async () => {
