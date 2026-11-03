@@ -223,3 +223,40 @@ it('folds a large unknown history, names it unknown, and keeps an active unknown
   expect(container.querySelector('[data-agent-id="child"]')).toBeNull();
   expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
 });
+
+it('renders a live worker through cold parent recovery and stale idle metadata, then returns to real idle and completion', async () => {
+  const startedAt = '2026-01-01T00:00:01.000Z';
+  const activeAt = '2026-01-01T00:00:03.000Z';
+  const endedAt = '2026-01-01T00:00:05.000Z';
+  const main = replay('main', [{ op: 'task.upsert', task: { taskId: 'current-dispatch', kind: 'subagent',
+    state: 'running', agentId: 'live-child', name: 'Protocol worker', detached: false, startedAt, outputTail: '' } }]);
+  const child = replay('live-child', [
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' }, startedAt: activeAt } },
+    { op: 'meta.merge', meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, since: Date.parse(activeAt) } } } },
+  ]);
+  const snapshots = new Map([['main', main], ['live-child', child]]);
+  const row = { id: 'live-child', session_id: 'fixture-session', kind: 'subagent' as const,
+    description: 'Protocol worker', label: 'Protocol worker', status: 'running' as const,
+    activity_status: 'idle' as const, status_source: 'runtime' as const, live: true, started_at: startedAt };
+  for (const rows of [[], [row]]) {
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, rows, new Set(['main']));
+    const container = await renderRoster(forest);
+    const worker = container.querySelector('[data-agent-id="live-child"]');
+    expect(worker?.getAttribute('data-roster-bucket')).toBe('running');
+    expect(worker?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('running');
+    expect(worker?.textContent).not.toContain('Idle');
+    expect(worker?.querySelector('.bg-success')).not.toBeNull();
+  }
+  const idleChild = replay('live-child', [{ op: 'meta.merge', meta: { activity: 'idle', agent: { phase: { kind: 'idle' } } } }]);
+  snapshots.set('live-child', idleChild);
+  const idle = await renderRoster(sessionAgentForestFromAgentSnapshots(snapshots, [row], new Set(['main'])));
+  expect(idle.querySelector('[data-agent-id="live-child"]')?.getAttribute('data-roster-bucket')).toBe('idle');
+  expect(idle.querySelector('[data-agent-status]')?.textContent).toBe('Idle');
+  expect(idle.querySelector('.bg-success')).toBeNull();
+  snapshots.set('main', replay('main', [{ op: 'task.upsert', task: { ...main.tasks[0]!, state: 'completed', endedAt } }]));
+  const complete = await renderRoster(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+    status: 'completed', activity_status: 'completed', completed_at: endedAt }]));
+  expect(complete.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('completed');
+  expect(complete.querySelector('[data-agent-id="live-child"]')?.getAttribute('data-roster-bucket')).toBe('ended');
+  expect(complete.querySelector('.bg-success')).toBeNull();
+});

@@ -1869,3 +1869,62 @@ describe('historical metadata roster', () => {
     expect(live.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: '2026-01-01T00:02:00.000Z' });
   });
 });
+
+describe('live agent status during partial history recovery', () => {
+  const startedAt = '2026-01-01T00:00:01.000Z';
+  const activeAt = '2026-01-01T00:00:03.000Z';
+  const endedAt = '2026-01-01T00:00:05.000Z';
+  const parent = snapshot({ tasks: [{ taskId: 'current-dispatch', kind: 'subagent', state: 'running',
+    agentId: 'child', detached: false, startedAt, outputTail: '' }] });
+  const running = snapshot({
+    items: [{ kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' },
+      startedAt: activeAt, steps: [] }],
+    meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, since: Date.parse(activeAt) } } },
+  });
+  const idle = compactSnapshot({ id: 'child', status: 'running', activity_status: 'idle',
+    status_source: 'runtime', live: true, started_at: startedAt, label: 'Protocol worker' });
+
+  it('keeps a live child running when only its parent history is cold and the roster has not arrived', () => {
+    for (const rows of [undefined, []]) {
+      const snapshots = new Map([['main', parent], ['child', running]]);
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, rows, new Set(['main'])).byId['child'])
+        .toMatchObject({ status: 'running', busy: true });
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, rows, new Set(['main', 'child'])).byId['child'])
+        .toMatchObject({ status: 'unknown', busy: false });
+    }
+  });
+
+  it('keeps a newer live phase running over a retained idle roster row until current idle or completion arrives', () => {
+    const snapshots = new Map([['main', parent], ['child', running]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [idle]).byId['child'])
+      .toMatchObject({ status: 'running', busy: true, label: 'Protocol worker' });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...idle, completed_at: endedAt }]).byId['child'])
+      .toMatchObject({ status: 'idle', busy: false });
+    snapshots.set('child', snapshot({ meta: { activity: 'idle', agent: { phase: { kind: 'idle' } } } }));
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [idle]).byId['child'])
+      .toMatchObject({ status: 'idle', busy: false });
+    snapshots.set('main', snapshot({ tasks: [{ ...parent.tasks[0]!, state: 'completed', endedAt }] }));
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...idle,
+      status: 'completed', activity_status: 'completed', completed_at: endedAt }]).byId['child'])
+      .toMatchObject({ status: 'completed', busy: false });
+  });
+
+  it('uses a newer running turn over stale idle meta without promoting a cold child', () => {
+    const snapshots = new Map([['main', parent], ['child', { ...running,
+      meta: { activity: 'idle' as const, agent: { phase: { kind: 'ended' as const, turnId: 1,
+        reason: 'completed' as const, at: Date.parse(startedAt) } } } }]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [idle]).byId['child'])
+      .toMatchObject({ status: 'running', busy: true });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [idle], new Set(['child'])).byId['child'])
+      .toMatchObject({ status: 'idle', busy: false });
+  });
+
+  it('keeps the running task while the child transcript is absent and does not invent idle from an empty shell', () => {
+    for (const child of [undefined, snapshot()]) {
+      const snapshots = new Map([['main', parent]]);
+      if (child !== undefined) snapshots.set('child', child);
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, []).byId['child'])
+        .toMatchObject({ status: 'running', busy: true });
+    }
+  });
+});

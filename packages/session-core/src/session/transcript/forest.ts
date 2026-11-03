@@ -547,6 +547,20 @@ export function sessionAgentForestFromAgentSnapshots(
       byId[agentId] = node;
     }
     const turn = snapshot.items.findLast((item) => item.kind === 'turn');
+    const status = agentStatusFromMeta({ agent_id: agentId, items: snapshot.items, has_more: false, meta: snapshot.meta });
+    const activeLive = coldAgents?.has(agentId) !== true && (status === 'running' || status === 'suspended');
+    if (activeLive && row?.live !== false && (node.status === 'idle' || node.status === 'unknown')) {
+      const phase = meta?.phase;
+      const activeAt = phase !== undefined && 'since' in phase ? phase.since
+        : turn?.kind === 'turn' && turn.state === 'running' ? Date.parse(turn.startedAt ?? '') : NaN;
+      const inactiveAt = Date.parse(row?.completed_at ?? row?.started_at ?? '');
+      if ((status === 'running' || status === 'suspended') && Number.isFinite(activeAt) &&
+          (!Number.isFinite(inactiveAt) || activeAt > inactiveAt)) {
+        node = { ...node, status, busy: true, statusSource: 'runtime', endedAt: undefined };
+        byId[agentId] = node;
+      }
+    }
+    if (activeLive && (node.status === 'running' || node.status === 'suspended' || node.status === 'background')) liveIds.add(agentId);
     if (turn?.kind !== 'turn') continue;
     const outcome = turnOutcomeFromItem(turn);
     if (outcome === undefined) continue;
