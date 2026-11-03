@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
+import Fastify from 'fastify';
+import type { Scope } from '@kiki/agent-core-v2';
+import { AgentTranscript, applyContentSegment, jsonBytes, TRANSCRIPT_COVERAGE_VERSION, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import { sessionViewTranscriptPageInputSchema } from '@kiki/klient';
+import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
+import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { readColdSessionViewBaseline, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
@@ -20,6 +24,27 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('keeps canonical one-turn preparation retryable over HTTP until the complete structure is available', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved opening', stepsPartial: true, steps: [] };
+    const canonical = { ...turn, stepsPartial: undefined, steps: [{ kind: 'step' as const, stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f0', role: 'assistant' as const, text: 'Complete earlier answer' }] }] };
+    const readCanonicalEntity = vi.fn().mockRejectedValueOnce(new CanonicalEntityPreparingError()).mockResolvedValue(canonical);
+    const service = { forSessionLive: () => undefined, readColdPageSnapshot: async () => ({ ...empty(), items: [turn], hasMoreOlder: false }),
+      readCanonicalEntity, readColdRoster: async () => [], reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot } as unknown as TranscriptService;
+    const app = Fastify();
+    app.setErrorHandler((error, _req, reply) => reply.send({ code: 50001, msg: error instanceof Error ? error.message : String(error), data: null }));
+    registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+    const url = `/api/klient/session-view/fixture-session/transcript?agent_id=main&page_size=1&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`;
+    try {
+      const preparing = await app.inject({ method: 'GET', url });
+      expect(preparing.json()).toMatchObject({ code: 40923, msg: 'history_canonical_preparing', data: null });
+      const complete = (await app.inject({ method: 'GET', url })).json();
+      expect(complete).toMatchObject({ code: 0, data: { items: [JSON.parse(JSON.stringify(canonical))] } });
+      expect(complete.data.items[0].stepsPartial).toBeUndefined();
+      expect(readCanonicalEntity).toHaveBeenCalledTimes(2);
+    } finally { await app.close(); }
+  });
+
   it('seeks a requested newer one-turn preview after an older local window has reached source start', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' },
       prompt: `saved ${ordinal}`, startedAt: '2025-01-01T00:00:00.000Z', stepsPartial: true, steps: [] });
