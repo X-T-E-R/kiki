@@ -294,11 +294,10 @@ describe('server /api/usage', () => {
     expect(envelope.code).toBe(0);
     const started = usageRescanStatusSchema.parse(envelope.data);
     expect(started.state).toBe('running');
-    let status = await readStatus();
-    for (let attempt = 0; attempt < 100 && status.state === 'running'; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      status = await readStatus();
-    }
+    const status = await vi.waitUntil(async () => {
+      const current = await readStatus();
+      return current.state === 'running' ? undefined : current;
+    }, { timeout: 10_000, interval: 50 });
     expect(status).toMatchObject({ state: 'completed', total_sessions: 3, scanned_sessions: 3, scanned_records: 5, error: null });
     expect(status.finished_at).not.toBeNull();
     expect((await getData('?include_archived=true')).summary.session_count).toBe(3);
