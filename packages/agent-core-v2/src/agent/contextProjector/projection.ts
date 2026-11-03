@@ -416,7 +416,7 @@ function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly, call?: 
           note: source.note,
         })
       : source.content;
-  const projected = cleanContent(source, content, onAnomaly);
+  const projected = cleanContent(source, source.origin?.kind === 'compaction_summary' ? content.filter(part => part.type === 'text') : content, onAnomaly);
   const im = source.role === 'user' && source.origin?.kind === 'user' ? source.origin.im : undefined;
   if (im !== undefined) {
     projected.splice(skillPrefixCount(source), 0, {

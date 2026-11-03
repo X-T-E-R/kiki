@@ -4664,8 +4664,8 @@ it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images
   await ctx.untilTurnEnd();
   await ctx.get(IAgentLoopService).settled();
   expect(ctx.get(IAgentLoopService).status().lastTurnResult).toBe('completed');
-  const keptUsers = contextStrategy === 'summarize' ? [...images.slice(0, 5), ...images.slice(164, 169)] : [...images.slice(164, 169), ...images.slice(0, 5)];
-  const expected = [...keptUsers, ...images.slice(184)].map(part => part.imageUrl.id).concat('reference');
+  const keptUsers = [...images.slice(0, 5), ...images.slice(164, 169)];
+  const expected = [...keptUsers, ...images.slice(185)].map(part => part.imageUrl.id).concat('reference');
   expect(requests).toHaveLength(contextStrategy === 'summarize' ? 2 : 1);
   expect(imageIds(requests.at(-1)!)).toEqual(expected);
   expect(estimateTokensForMessages(requests.at(-1)!)).toBeLessThan(40_000);
@@ -4709,8 +4709,7 @@ it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images
   expect(compaction.begin({ source: 'manual', strategy: contextStrategy === 'auto' ? 'relay' : 'summarize' })).toBe(true);
   await compaction.compacting!.promise;
   const twice = imageIds(cold.context.get());
-  const secondHistorical = contextStrategy === 'summarize' ? images.slice(1, 5) : images.slice(185);
-  expect([...twice].sort()).toEqual([...images.slice(164, 169), ...secondHistorical].map(part => part.imageUrl.id).concat('reference').sort());
+  expect(twice).toEqual([...images.slice(1, 5), ...images.slice(164, 169)].map(part => part.imageUrl.id).concat('reference'));
   await cold.expectResumeMatches();
   await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after the second compaction.' }] });
   await cold.untilTurnEnd();
