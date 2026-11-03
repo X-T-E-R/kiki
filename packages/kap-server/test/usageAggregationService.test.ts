@@ -2257,7 +2257,7 @@ describe('SQLite Usage history source lifecycle', () => {
     await saved.storage.write(`sessions/workspace/${sessions[0]!.id}/agents/empty`, 'wire.jsonl', new Uint8Array());
     const source = scope('workspace', sessions[0]!.id);
     if (stale) await saved.storage.append(source, 'wire.jsonl', Buffer.from(JSON.stringify(usageRecord(2, 8)) + '\n'));
-    const service = new UsageAggregationService(saved.core, () => 1000);
+    const service = new UsageAggregationService(saved.core, () => 1000, {}, { ready: true, onDidChange: () => ({ dispose() {} }) });
     const lists = vi.spyOn(saved.storage, 'list');
     const reads = vi.spyOn(saved.storage, 'readStream');
     const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
@@ -2271,6 +2271,7 @@ describe('SQLite Usage history source lifecycle', () => {
     expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
     expect(response.reliability.usage_coverage).toMatchObject({ known_records: stale ? 81 : 80, missing_records: 0 });
     expect(response.summary.tokens.output).toBe(stale ? 81 : 80);
+    expect((await service.query(input)).summary).toEqual(response.summary);
     const wireReads = reads.mock.calls.filter(([, key]) => key === 'wire.jsonl');
     expect(wireReads.every(([target]) => target === source)).toBe(true);
     expect(wireReads.length > 0).toBe(stale);

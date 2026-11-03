@@ -200,11 +200,12 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       this.noteJournalGrowth(appendedBytes);
     }) ?? { dispose: () => {} });
     this._register({
-      dispose: () => {
+      dispose: async () => {
         this.disposed = true;
         this.checkpointGeneration += 1;
         if (this.growthCheckpointTimer !== undefined) clearTimeout(this.growthCheckpointTimer);
         this.growthCheckpointTimer = undefined;
+        await Promise.allSettled([this.checkpointSave]);
       },
     });
   }

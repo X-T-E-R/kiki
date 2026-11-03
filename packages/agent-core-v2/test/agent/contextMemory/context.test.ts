@@ -1,4 +1,7 @@
+import type OpenAI from 'openai';
+import { Jimp } from 'jimp';
 import type { Message } from '#/kosong/contract/message';
+import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { estimateTokens, estimateTokensForMessage, estimateTokensForMessages, MEDIA_TOKEN_ESTIMATE } from '#/kosong/contract/tokens';
@@ -991,56 +994,150 @@ describe('Agent context', () => {
       expect(withOverhead.messages).toEqual(withoutOverhead.messages);
     });
 
-    it('reattaches only the newest removed media that fits the handoff budget', () => {
-      const removed = Array.from({ length: 12 }, (_, index) => ({
-        role: 'tool' as const,
-        content: [
-          { type: 'text' as const, text: `result ${String(index)}` },
-          { type: 'image_url' as const, imageUrl: { url: `kimi-file://shot-${String(index)}`, id: `shot-${String(index)}` } },
-        ],
-        toolCalls: [],
-        toolCallId: `call_${String(index)}`,
-      } satisfies ContextMessage));
-      const keptShot = { type: 'image_url' as const, imageUrl: { url: 'kimi-file://kept', id: 'kept' } };
-      const kept = {
-        role: 'user' as const,
-        origin: { kind: 'user' as const },
-        content: [{ type: 'text' as const, text: 'keep this shot' }, keptShot],
-        toolCalls: [],
-      } satisfies ContextMessage;
-      const history = [...removed, kept];
-      const shape = buildContextCompactionShape(history, {
-        summary: 'notes',
-        compactedCount: history.length,
-        tokensBefore: 100,
+    it('keeps both selected ends of one oversized original input in order', () => {
+      const original = userMessage('BEGIN' + 'x'.repeat(200) + 'END', { kind: 'user' });
+      const shape = buildContextCompactionShape([original], { summary: 'summary', compactedCount: 1, tokensBefore: 100, userBudget: { max: 20, head: 5 } });
+      expect(shape.messages.map(textOf)).toEqual([
+        'BEGIN' + 'x'.repeat(15), expect.stringContaining('Some earlier user messages'), 'x'.repeat(57) + 'END', 'summary',
+      ]);
+    });
+
+    it('preserves all pending user images on their own input even beyond the historical limit', () => {
+      const pending = { ...userMessage('Inspect these current images.', { kind: 'user' }), content: [
+        { type: 'text' as const, text: 'Inspect these current images.' },
+        ...Array.from({ length: 12 }, (_, index) => ({ type: 'image_url' as const, imageUrl: { url: `https://example.test/current-${index}.png` } })),
+      ] };
+      const history = [userMessage('Earlier task'), { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Finished.' }], toolCalls: [] }, pending];
+      const shape = buildContextCompactionShape(history, { summary: 'summary', compactedCount: history.length, tokensBefore: 100 });
+      expect(shape.messages.find(message => message.content.some(part => part.type === 'image_url'))).toEqual(pending);
+      expect(shape.messages.find(message => message.origin?.kind === 'compaction_summary')?.content).toHaveLength(1);
+      const second = buildContextCompactionShape(shape.messages, { summary: 'second', compactedCount: shape.messages.length, tokensBefore: shape.tokensAfter });
+      expect(second.messages.find(message => message.content.some(part => part.type === 'image_url'))).toEqual(pending);
+    });
+
+    it('keeps completed user media historical before a second compaction with no new final response', () => {
+      const images = Array.from({ length: 12 }, (_, index) => ({ type: 'image_url' as const, imageUrl: { url: `https://example.test/historical-${index}.png` } }));
+      const history = [
+        { ...userMessage('Original reference images', { kind: 'user' }), content: [{ type: 'text' as const, text: 'Original reference images' }, ...images] },
+        { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Finished the original task.' }], toolCalls: [] },
+        userMessage('Current text-only task', { kind: 'user' }),
+      ];
+      const first = buildContextCompactionShape(history, { summary: 'first', compactedCount: history.length, tokensBefore: 100 });
+      const secondHistory = [...first.messages, ...mediaExchange('new-tool')];
+      const second = buildContextCompactionShape(secondHistory, { summary: 'second', compactedCount: secondHistory.length, tokensBefore: first.tokensAfter });
+      const carried = second.messages.flatMap(message => message.content.filter(part => part.type === 'image_url'));
+      expect(carried).toHaveLength(COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE);
+      expect(carried).not.toContainEqual(images[0]);
+      expect(second.messages.some(message => message.toolCallId === 'call_new-tool')).toBe(false);
+    });
+
+    it('retains the original call when a carried tool image is across the compaction boundary', () => {
+      const exchange = mediaExchange('boundary');
+      const history = [userMessage('Inspect the evidence.'), ...exchange];
+      const shape = buildContextCompactionShape(history, { summary: 'summary', compactedCount: 2, tokensBefore: 100 });
+      expect(ctx.project(shape.messages).find(message => message.role === 'tool' && message.toolCallId === 'call_boundary')?.content).toEqual(exchange[1]?.content);
+      expect(shape.messages.find(message => message.role === 'assistant')?.toolCalls).toEqual(exchange[0]?.toolCalls);
+    });
+
+    it('does not reattach unattributed images from an old handoff, injection, or orphan tool result', () => {
+      const image = { type: 'image_url' as const, imageUrl: { url: 'https://example.test/unattributed.png' } };
+      const latest = userMessage('The current task is text-only.', { kind: 'user' });
+      const history = [
+        { ...createCompactionSummaryMessage('Old handoff'), content: [{ type: 'text' as const, text: 'Old handoff' }, image] },
+        { ...userMessage('Old injection', { kind: 'injection', variant: 'runtime_snapshot' }), content: [image] },
+        { role: 'tool' as const, toolCallId: 'missing', toolCalls: [], content: [image] }, latest,
+      ];
+      const shape = buildContextCompactionShape(history, { summary: 'New handoff', compactedCount: history.length, tokensBefore: 100 });
+      expect(shape.messages.some(message => message.content.includes(image))).toBe(false);
+      expect(shape.messages).toContainEqual(latest);
+      expect(shape.messages.find(message => message.origin?.kind === 'compaction_summary')?.content).toEqual([{ type: 'text', text: 'New handoff' }]);
+    });
+
+    it('keeps historical tool images with their original exchange before the latest text-only request', async () => {
+      const oldImage = { type: 'image_url' as const, imageUrl: { url: await new Jimp({ width: 1, height: 1, color: 0xff0000ff }).getBase64('image/png') } };
+      const currentImage = { type: 'image_url' as const, imageUrl: { url: await new Jimp({ width: 1, height: 1, color: 0x0000ffff }).getBase64('image/png') } };
+      const originalCall = { type: 'function' as const, id: 'read-old', name: 'ReadMediaFile', arguments: '{"path":"old-mock.png"}' };
+      const oldResult: ContextMessage = {
+        role: 'tool', toolCallId: originalCall.id, toolCalls: [],
+        content: [{ type: 'text', text: 'Historical screenshot: old-mock.png' }, oldImage],
+        source: { turnId: 1, step: 1, toolCallId: originalCall.id },
+      };
+      const latest = {
+        ...userMessage('Implement account authorization and retain account IDs.'.padEnd(714, '.')),
+        id: 'latest',
+        origin: { kind: 'peer_thread' as const, source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'latest', acceptedAt: 1 },
+      };
+      for (const message of [
+        userMessage('Inspect the old mock.'),
+        { role: 'assistant' as const, content: [], toolCalls: [originalCall] },
+        oldResult,
+        { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Old inspection completed.' }], toolCalls: [] },
+        latest,
+      ]) context.append(message);
+      context.applyCompaction({ summary: 'Paused product work; latest request concerns accounts.', compactedCount: context.get().length, tokensBefore: 100 });
+      const first = context.get();
+      expect(first.find(message => message.origin?.kind === 'compaction_summary')?.content).toHaveLength(1);
+      expect(first.find(message => message.content.includes(oldImage))).toEqual(oldResult);
+      expect(first.indexOf(first.find(message => message.content.includes(oldImage))!)).toBeLessThan(first.indexOf(latest));
+      expect(ctx.project().find(message => message.content.includes(oldImage))).toMatchObject({ role: 'tool', toolCallId: originalCall.id });
+      expect(ctx.project().find(message => message.toolCalls.some(call => call.id === originalCall.id))?.toolCalls).toEqual([originalCall]);
+      const pending = { ...userMessage('Now inspect this current screenshot.'), content: [{ type: 'text' as const, text: 'Now inspect this current screenshot.' }, currentImage] };
+      context.append(pending);
+      context.applyCompaction({ summary: 'Latest request is the current screenshot.', compactedCount: context.get().length, tokensBefore: 100 });
+      expect(context.get().find(message => message.content.includes(currentImage))).toEqual(pending);
+      expect(context.get()).toContainEqual(latest);
+      expect(textOf(latest)).toHaveLength(714);
+      expect(ctx.project().find(message => message.content.includes(oldImage))).toMatchObject({ role: 'tool', toolCallId: originalCall.id });
+      expect(ctx.project().filter(message => message.role === 'user').some(message => message.content.includes(oldImage))).toBe(false);
+      let payload: { input: { type: string; role?: string; call_id?: string; output?: unknown; content?: unknown }[] } = { input: [] };
+      const provider = new OpenAIResponsesChatProvider({
+        model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: 'https://example.test/v1',
+        clientFactory: () => ({ responses: { create: async (params: typeof payload) => {
+          payload = params;
+          return { async *[Symbol.asyncIterator]() {
+            yield { type: 'response.completed', response: { id: 'example-response', status: 'completed', output: [] } };
+          } };
+        } } }) as unknown as OpenAI,
       });
-      const summary = shape.messages.find((message) => message.origin?.kind === 'compaction_summary');
-      const carried = summary?.content.filter((part) => part.type === 'image_url') ?? [];
-      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE;
-      expect(carried).toHaveLength(keptCount);
-      expect(carried.map((part) => part.type === 'image_url' ? part.imageUrl.id : '')).toEqual(
-        Array.from({ length: keptCount }, (_, index) => `shot-${String(12 - keptCount + index)}`),
-      );
-      expect(shape.messages.some((message) => message.content.includes(keptShot))).toBe(true);
-      expect(summary?.content.includes(keptShot)).toBe(false);
-      const bare = estimateTokensForMessage(createCompactionSummaryMessage('notes'));
-      expect(estimateTokensForMessage(summary!) - bare).toBe(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
-      const elision = shape.messages.find((message) => message.origin?.kind === 'injection' && message.origin.variant === 'compaction_elision');
+      const response = await provider.generate('', [], [...ctx.project()]);
+      for await (const part of response) void part;
+      const oldOutput = payload.input.findIndex(item => item.type === 'function_call_output' && item.call_id === originalCall.id);
+      const latestInput = payload.input.findIndex(item => item.role === 'user' && JSON.stringify(item.content).includes('Implement account authorization'));
+      expect(oldOutput).toBeGreaterThan(0);
+      expect(oldOutput).toBeLessThan(latestInput);
+      expect(payload.input[oldOutput - 1]).toMatchObject({ type: 'function_call', call_id: originalCall.id, name: originalCall.name, arguments: originalCall.arguments });
+      expect(payload.input[latestInput]).toMatchObject({ content: [{ type: 'input_text', text: textOf(latest) }] });
+      expect(payload.input[oldOutput]).toMatchObject({ output: [
+        { type: 'input_text', text: 'Historical screenshot: old-mock.png' },
+        { type: 'input_image', image_url: oldImage.imageUrl.url },
+      ] });
+      expect(payload.input.filter(item => item.role === 'user').some(item => JSON.stringify(item).includes(oldImage.imageUrl.url))).toBe(false);
+      expect(payload.input.filter(item => item.role === 'user').some(item => JSON.stringify(item).includes(currentImage.imageUrl.url))).toBe(true);
+    });
+
+    it('retains the newest historical media exchanges within the shared source-and-media budget', () => {
+      const removed = Array.from({ length: 12 }, (_, index) => mediaExchange(`shot-${index}`)).flat();
+      const keptShot = { type: 'image_url' as const, imageUrl: { url: 'kimi-file://kept', id: 'kept' } };
+      const kept = { ...userMessage('keep this shot'), content: [{ type: 'text' as const, text: 'keep this shot' }, keptShot] };
+      const history = [userMessage('Inspect the earlier screenshots.'), ...removed, kept];
+      const shape = buildContextCompactionShape(history, { summary: 'notes', compactedCount: history.length, tokensBefore: 100 });
+      const summary = shape.messages.find(message => message.origin?.kind === 'compaction_summary');
+      const exchanges = shape.messages.filter(message => message.role === 'assistant' || message.role === 'tool');
+      const carried = exchanges.flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : []));
+      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE - 1;
+      expect(carried).toEqual(Array.from({ length: keptCount }, (_, index) => `shot-${12 - keptCount + index}`));
+      expect(estimateTokensForMessages(exchanges)).toBeLessThanOrEqual(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      expect(estimateTokensForMessages([...mediaExchange('shot-2'), ...exchanges])).toBeGreaterThan(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      expect(shape.messages.find(message => message.content.includes(keptShot))).toEqual(kept);
+      expect(summary?.content).toEqual([{ type: 'text', text: 'notes' }]);
+      const elision = shape.messages.find(message => message.origin?.kind === 'injection' && message.origin.variant === 'compaction_elision');
       expect(textOf(elision!)).toContain('not reattached');
       expect(textOf(elision!)).toContain('files themselves are unchanged');
       expect(textOf(elision!)).not.toContain('Some earlier user messages were omitted');
     });
 
     it('does not accumulate removed media, injections, or user text across a second compaction or cold replay', () => {
-      const removed = Array.from({ length: 12 }, (_, index) => ({
-        role: 'tool' as const,
-        content: [
-          { type: 'text' as const, text: `old result ${String(index)}` },
-          { type: 'image_url' as const, imageUrl: { url: `kimi-file://shot-${String(index)}`, id: `shot-${String(index)}` } },
-        ],
-        toolCalls: [],
-        toolCallId: `call_${String(index)}`,
-      } satisfies ContextMessage));
+      const removed = Array.from({ length: 12 }, (_, index) => mediaExchange(`shot-${index}`)).flat();
       const keptShot = { type: 'image_url' as const, imageUrl: { url: 'kimi-file://kept', id: 'kept' } };
       const kept = {
         role: 'user' as const,
@@ -1060,26 +1157,17 @@ describe('Agent context', () => {
         compactedCount: history.length,
         tokensBefore: 100,
       });
-      const newer = Array.from({ length: 3 }, (_, index) => ({
-        role: 'tool' as const,
-        content: [
-          { type: 'text' as const, text: `new result ${String(index)}` },
-          { type: 'image_url' as const, imageUrl: { url: `kimi-file://new-${String(index)}`, id: `new-${String(index)}` } },
-        ],
-        toolCalls: [],
-        toolCallId: `call_new_${String(index)}`,
-      } satisfies ContextMessage));
+      const newer = Array.from({ length: 3 }, (_, index) => mediaExchange(`new-${index}`)).flat();
       const secondHistory = [...first.messages, ...newer];
       const second = buildContextCompactionShape(secondHistory, {
         summary: 'handoff two',
         compactedCount: secondHistory.length,
         tokensBefore: first.tokensAfter,
       });
-      const carriedIds = (shape: ReturnType<typeof buildContextCompactionShape>) => {
-        const summary = shape.messages.find((message) => message.origin?.kind === 'compaction_summary');
-        return summary?.content.flatMap((part) => part.type === 'image_url' ? [part.imageUrl.id] : []) ?? [];
-      };
-      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE;
+      const carriedIds = (shape: ReturnType<typeof buildContextCompactionShape>) => shape.messages
+        .filter(message => message.role === 'tool')
+        .flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : []));
+      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE - 1;
       expect(carriedIds(first)).toHaveLength(keptCount);
       expect(carriedIds(second)).toHaveLength(keptCount);
       expect(carriedIds(second).slice(-3)).toEqual(['new-0', 'new-1', 'new-2']);
@@ -1090,9 +1178,9 @@ describe('Agent context', () => {
       expect(second.messages.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('runtime snapshot')))).toBe(false);
       expect(second.messages.filter((message) => message.content.includes(keptShot))).toHaveLength(1);
       expect(second.messages.find((message) => message.content.includes(keptShot))?.origin?.kind).toBe('user');
-      const bare = estimateTokensForMessage(createCompactionSummaryMessage('handoff two'));
-      const summary = second.messages.find((message) => message.origin?.kind === 'compaction_summary')!;
-      expect(estimateTokensForMessage(summary) - bare).toBe(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      const exchanges = second.messages.filter(message => message.role === 'assistant' || message.role === 'tool');
+      expect(estimateTokensForMessages(exchanges)).toBeLessThanOrEqual(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      expect(second.messages.find(message => message.origin?.kind === 'compaction_summary')?.content).toHaveLength(1);
       expect(second.tokensAfter).toBeLessThan(first.tokensAfter + 3 * MEDIA_TOKEN_ESTIMATE);
 
       const replayed = applyContextCompactionRecord(history, {
@@ -1104,8 +1192,8 @@ describe('Agent context', () => {
         shapeVersion: 1,
         keptUserMessageCount: 1,
       });
-      const replayedSummary = replayed.find((message) => message.origin?.kind === 'compaction_summary');
-      expect(replayedSummary?.content.filter((part) => part.type === 'image_url')).toHaveLength(keptCount);
+      expect(carriedIds({ ...first, messages: replayed })).toEqual(carriedIds(first));
+      expect(replayed.find(message => message.origin?.kind === 'compaction_summary')?.content).toHaveLength(1);
       expect(replayed.filter((message) => message.content.includes(keptShot))).toHaveLength(1);
 
       const later = {
@@ -1129,28 +1217,50 @@ describe('Agent context', () => {
       { ...createCompactionSummaryMessage('Previous handoff'), content: [{ type: 'text', text: 'Previous handoff' }, ...media('previous', 12)] },
       { role: 'tool', content: media('old-tool', 12), toolCalls: [], toolCallId: 'old' },
       { role: 'user', origin: { kind: 'injection', variant: 'runtime_snapshot' }, content: media('injection', 12), toolCalls: [] },
+      { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'recent', name: 'ReadMediaFile', arguments: '{}' }] },
       { role: 'tool', content: [{ type: 'text', text: 'Recent evidence' }, ...media('tail', 12)], toolCalls: [], toolCallId: 'recent' },
       { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Compare these new images' }, ...media('pending', 2)], toolCalls: [] },
     ];
     const ids = (messages: readonly ContextMessage[]) => messages.flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : [])).sort();
     const before = ids(history);
     const shape = buildContextCompactionShape(history, { summary: 'New handoff', compactedCount: 5, tokensBefore: 100_000 });
-    const expected = [...media('user', 4), ...media('tail', 12).slice(6), ...media('pending', 2)].map(part => part.imageUrl.id).sort();
+    const expected = [...media('user', 4), ...media('tail', 12).slice(7), ...media('pending', 2)].map(part => part.imageUrl.id).sort();
     expect(ids(shape.messages)).toEqual(expected);
-    expect(shape.messages.find(message => message.toolCallId === 'recent')?.content).toHaveLength(7);
+    expect(shape.messages.find(message => message.toolCallId === 'recent')?.content).toHaveLength(6);
     expect(shape.messages.map(textOf).join('\n')).toContain('Keep this instruction');
     expect(ids(history)).toEqual(before);
     const restored = applyContextCompactionRecord(history, { ...shape, shapeVersion: 1 });
     expect(ids(restored)).toEqual(expected);
     const secondHistory = [...restored, { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Finished' }], toolCalls: [] }];
     const second = buildContextCompactionShape(secondHistory, { summary: 'Second handoff', compactedCount: secondHistory.length, tokensBefore: shape.tokensAfter });
-    expect(ids(second.messages)).toHaveLength(10);
+    expect(ids(second.messages)).toHaveLength(9);
     expect(ids(second.messages)).toContain('pending-1');
     expect(ids(second.messages).some(id => id?.startsWith('previous') || id?.startsWith('injection'))).toBe(false);
     expect(ids(applyContextCompactionRecord(secondHistory, { ...second, shapeVersion: 1 }))).toEqual(ids(second.messages));
   });
 
   describe('legacy compaction layout', () => {
+    it('does not project unattributed media already present in a saved context snapshot', () => {
+      context.append(userMessage('Latest text-only request', { kind: 'user' }));
+      context.append({ ...createCompactionSummaryMessage('Saved handoff'), content: [
+        { type: 'text', text: 'Saved handoff' },
+        { type: 'image_url', imageUrl: { url: 'https://example.test/old-unattributed.png' } },
+      ] });
+      expect(ctx.project().map(message => message.content)).toEqual([
+        [{ type: 'text', text: 'Latest text-only request' }], [{ type: 'text', text: 'Saved handoff' }],
+      ]);
+    });
+
+    it('does not revive unowned summary media when replaying a legacy record', () => {
+      const summary = { ...createCompactionSummaryMessage('Legacy handoff'), content: [
+        { type: 'text' as const, text: 'Legacy handoff' },
+        { type: 'image_url' as const, imageUrl: { url: 'https://example.test/old-unowned.png' } },
+      ] };
+      const latest = userMessage('Current text-only task', { kind: 'user' });
+      const restored = applyContextCompactionRecord([userMessage('old'), latest], { summary, count: 1 });
+      expect(restored).toEqual([{ ...summary, content: [{ type: 'text', text: 'Legacy handoff' }] }, latest]);
+    });
+
     it('keeps the verbatim summary followed by the uncompacted tail', () => {
       const history = [userMessage('old'), userMessage('tail')];
       const legacySummary: ContextMessage = {
@@ -1184,6 +1294,14 @@ function userMessage(text: string, origin?: ContextMessage['origin']): ContextMe
     toolCalls: [],
     origin,
   };
+}
+
+function mediaExchange(id: string): ContextMessage[] {
+  const toolCallId = `call_${id}`;
+  return [
+    { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: toolCallId, name: 'ReadMediaFile', arguments: JSON.stringify({ path: `${id}.png` }) }] },
+    { role: 'tool', content: [{ type: 'text', text: `Historical image ${id}` }, { type: 'image_url', imageUrl: { url: `kimi-file://${id}`, id } }], toolCalls: [], toolCallId },
+  ];
 }
 
 function textOf(message: Message): string {

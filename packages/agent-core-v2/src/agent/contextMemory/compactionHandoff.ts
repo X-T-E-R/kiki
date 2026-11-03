@@ -60,6 +60,7 @@ export interface ContextCompactionShape {
   readonly messages: readonly ContextMessage[];
 }
 
+/** Live compaction and replay keep media on its original messages and tool calls in history order, never on the text-only handoff. */
 export function buildContextCompactionShape(
   history: readonly ContextMessage[],
   input: ContextCompactionShapeInput,
@@ -67,10 +68,11 @@ export function buildContextCompactionShape(
 ): ContextCompactionShape {
   if (usesLegacyTailShape(input)) {
     const contextSummary = input.contextSummary ?? input.summary;
-    const messages = [
-      input.legacySummaryMessage ?? createCompactionSummaryMessage(contextSummary),
-      ...history.slice(input.compactedCount),
-    ];
+    const legacy = input.legacySummaryMessage;
+    const summary = legacy?.content.some(isContinuableMediaPart)
+      ? { ...legacy, content: legacy.content.filter(part => !isContinuableMediaPart(part)) }
+      : legacy ?? createCompactionSummaryMessage(contextSummary);
+    const messages = [summary, ...history.slice(input.compactedCount)];
     return {
       summary: input.summary,
       contextSummary,
@@ -88,33 +90,24 @@ export function buildContextCompactionShape(
   const tail = media.messages
     .slice(input.compactedCount)
     .filter((message) => message.origin?.kind !== 'injection');
-  const compactableUserMessages = collectCompactableUserMessages(compactedHistory);
+  const indexedHistory = compactedHistory.map((message, compactionPosition) => ({ ...message, compactionPosition }));
   const selection = selectCompactionUserMessages(
-    compactableUserMessages,
+    collectCompactableUserMessages(indexedHistory),
     input.userBudget?.max ?? COMPACT_USER_MESSAGE_MAX_TOKENS,
     input.userBudget?.head ?? COMPACT_USER_MESSAGE_HEAD_TOKENS,
     estimate.message,
   );
-  const keptUserMessages = [...selection.head, ...selection.tail];
   const contextSummary = input.contextSummary ?? input.summary;
-  const carriedMedia = retainedContinuableMedia(media.messages, input.compactedCount, [...keptUserMessages, ...tail]);
-  const mediaOmitted = media.omitted;
-  const elisionMessage = selection.elided || mediaOmitted > 0
-    ? createCompactionElisionMessage(selection.omittedTokens, mediaOmitted)
+  const elisionMessage = selection.elided || media.omitted > 0
+    ? createCompactionElisionMessage(selection.omittedTokens, media.omitted)
     : undefined;
-  const keptMessages = elisionMessage === undefined
-    ? keptUserMessages
-    : [...selection.head, elisionMessage, ...selection.tail];
-  const summaryMessage = createCompactionSummaryMessage(contextSummary, carriedMedia);
+  const keptMessages = retainCompactionSources(media.messages, input.compactedCount, selection, elisionMessage);
+  const summaryMessage = createCompactionSummaryMessage(contextSummary);
   const messages = [...keptMessages, summaryMessage, ...tail];
-  const carriedMediaTokens = carriedMedia.length === 0
-    ? 0
-    : estimate.message(summaryMessage) - estimate.message(createCompactionSummaryMessage(contextSummary));
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
       (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
-      carriedMediaTokens +
       estimate.messages([...keptMessages, ...tail]);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
@@ -139,10 +132,10 @@ export function buildCompactionSummaryText(summary: string): string {
   return `${COMPACTION_SUMMARY_PREFIX}\n${suffix.length > 0 ? suffix : '(no summary available)'}`;
 }
 
-export function createCompactionSummaryMessage(text: string, media: readonly ContentPart[] = []): ContextMessage {
+export function createCompactionSummaryMessage(text: string): ContextMessage {
   return {
     role: 'user',
-    content: media.length === 0 ? [{ type: 'text', text }] : [{ type: 'text', text }, ...media],
+    content: [{ type: 'text', text }],
     toolCalls: [],
     origin: { kind: 'compaction_summary' },
   };
@@ -154,30 +147,90 @@ export function isContinuableMediaPart(part: ContentPart): boolean {
   return (payload.url?.trim().length ?? 0) > 0 || (payload.id?.trim().length ?? 0) > 0 || (payload.attachment?.fileId?.trim().length ?? 0) > 0;
 }
 
-export function retainedContinuableMedia(
+function retainCompactionSources(
   history: readonly ContextMessage[],
   compactedCount: number,
-  retainedMessages: readonly ContextMessage[] = [],
-): readonly ContentPart[] {
-  const retainedParts = new Set<ContentPart>();
-  for (const message of retainedMessages) {
-    for (const part of message.content) {
-      if (isContinuableMediaPart(part)) retainedParts.add(part);
+  selection: CompactionUserSelection<ContextMessage & { readonly compactionPosition: number }>,
+  elision: ContextMessage | undefined,
+): ContextMessage[] {
+  const retained = new Map<number, { message: ContextMessage; startsTail: boolean }[]>();
+  for (const group of [selection.head, selection.tail]) {
+    for (const selected of group) {
+      const { compactionPosition, ...message } = selected;
+      const original = history[compactionPosition]!;
+      const entries = retained.get(compactionPosition) ?? [];
+      entries.push({
+        message: message.content === original.content ? original : message,
+        startsTail: group === selection.tail && selected === group[0],
+      });
+      retained.set(compactionPosition, entries);
     }
   }
-  const parts: ContentPart[] = [];
-  for (const message of history.slice(0, Math.max(0, compactedCount))) {
-    for (const part of message.content) {
-      if (isContinuableMediaPart(part) && !retainedParts.has(part)) parts.push(part);
+  const callOwners = new Map<string, number>();
+  const retainedCalls = new Map<number, Set<string>>();
+  for (const [index, message] of history.entries()) {
+    if (message.role === 'assistant') for (const call of message.toolCalls) callOwners.set(call.id, index);
+    const media = message.content.filter(isContinuableMediaPart);
+    if (media.length === 0 || message.origin?.kind === 'injection' || isCompactionSummaryMessage(message)) continue;
+    if (index < compactedCount) {
+      if (isRealUserInput(message)) {
+        const entries = retained.get(index);
+        const missing = media.filter(part => !entries?.some(entry => entry.message.content.includes(part)));
+        const last = entries?.at(-1);
+        if (last !== undefined && missing.length > 0) last.message = { ...last.message, content: [...last.message.content, ...missing] };
+        else if (entries === undefined) retained.set(index, [{ message: { ...message, content: media }, startsTail: false }]);
+      } else {
+        retained.set(index, [{ message: message.role === 'assistant' ? { ...message, toolCalls: [] } : message, startsTail: false }]);
+      }
+    }
+    if (message.role !== 'tool' || message.toolCallId === undefined) continue;
+    const owner = callOwners.get(message.toolCallId);
+    if (owner === undefined || owner >= compactedCount) continue;
+    let calls = retainedCalls.get(owner);
+    if (calls === undefined) { calls = new Set(); retainedCalls.set(owner, calls); }
+    calls.add(message.toolCallId);
+  }
+  for (const [index, calls] of retainedCalls) {
+    const assistant = history[index]!;
+    const content = retained.get(index)?.[0]?.message.content ?? [];
+    retained.set(index, [{ message: { ...assistant, content, toolCalls: assistant.toolCalls.filter(call => calls.has(call.id)) }, startsTail: false }]);
+  }
+  const completed = history.findLastIndex(message => message.role === 'assistant' && message.toolCalls.length === 0);
+  if (completed >= 0 && completed < compactedCount && !retained.has(completed) && [...retained.values()].some(entries => entries.some(entry => entry.message.content.some(isContinuableMediaPart)))) {
+    retained.set(completed, [{ message: { ...history[completed]!, content: [] }, startsTail: false }]);
+  }
+  const messages: ContextMessage[] = [];
+  let elisionPending = elision;
+  for (const [, entries] of [...retained].toSorted(([left], [right]) => left - right)) {
+    for (const { message, startsTail } of entries) {
+      if (elisionPending !== undefined && startsTail) {
+        messages.push(elisionPending);
+        elisionPending = undefined;
+      }
+      messages.push(message);
     }
   }
-  return parts;
+  if (elisionPending !== undefined) messages.push(elisionPending);
+  return messages;
 }
 
 function selectCompactionMedia(
   history: readonly ContextMessage[], maxTokens: number, estimate: TokenEstimate,
 ): { messages: readonly ContextMessage[]; omitted: number } {
   const completed = history.findLastIndex(message => message.role === 'assistant' && message.toolCalls.length === 0);
+  const callOwners = new Map<string, ContextMessage>();
+  const envelopes = history.map(message => {
+    if (message.role === 'assistant') for (const call of message.toolCalls) callOwners.set(call.id, message);
+    if (!message.content.some(isContinuableMediaPart) || isRealUserInput(message)) return 0;
+    if (message.origin?.kind === 'injection' || isCompactionSummaryMessage(message)) return undefined;
+    const content = message.content.filter(part => !isContinuableMediaPart(part));
+    if (message.role !== 'tool') return estimate.message({ ...message, content, toolCalls: [] });
+    const owner = message.toolCallId === undefined ? undefined : callOwners.get(message.toolCallId);
+    if (owner === undefined) return undefined;
+    return estimate.message({ ...message, content }) + estimate.message({
+      ...owner, content: [], toolCalls: owner.toolCalls.filter(call => call.id === message.toolCallId),
+    });
+  });
   const selected = new Map<number, Set<number>>();
   let remaining = maxTokens;
   let omitted = 0;
@@ -189,7 +242,9 @@ function selectCompactionMedia(
       for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex--) {
         const part = message.content[partIndex]!;
         if (!isContinuableMediaPart(part)) continue;
-        const cost = mediaPartTokens(part, estimate);
+        const envelope = envelopes[index];
+        if (envelope === undefined) { omitted++; continue; }
+        const cost = mediaPartTokens(part, estimate) + (selected.has(index) ? 0 : envelope);
         if (!currentInput && cost > remaining) { omitted++; continue; }
         if (!currentInput) remaining -= cost;
         let parts = selected.get(index);
@@ -231,7 +286,8 @@ export function limitCarriedMedia(
 }
 
 function mediaPartTokens(part: ContentPart, estimate: TokenEstimate): number {
-  return Math.max(0, estimate.message(createCompactionSummaryMessage('', [part])) - estimate.message(createCompactionSummaryMessage('')));
+  const empty = createCompactionSummaryMessage('');
+  return Math.max(0, estimate.message({ ...empty, content: [...empty.content, part] }) - estimate.message(empty));
 }
 
 export function createCompactionElisionMessage(omittedTokens: number, mediaOmitted = 0): ContextMessage {
