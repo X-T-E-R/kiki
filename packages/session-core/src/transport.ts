@@ -390,6 +390,7 @@ export type AgentTranscriptFrame =
 export interface AgentTranscriptTurn {
   readonly kind: 'turn';
   readonly turnId: string;
+  readonly stepsPartial?: boolean;
   readonly prompt?: string;
   readonly startedAt?: string;
   readonly endedAt?: string;

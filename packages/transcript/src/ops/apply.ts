@@ -291,7 +291,7 @@ function reconcileItems(
     let candidate = item;
     if (item.kind === 'turn' && existing?.kind === 'turn') {
       const retained = mergeContentPreview(existing, liveWatermark && coverage.kind === 'unknown' && grade === 'turn'
-        ? { ...item, steps: existing.steps } : item);
+        ? { ...item, steps: existing.steps, stepsPartial: existing.stepsPartial } : item);
       candidate = carryContentHydration(retained, { ...retained, steps: retained.steps.map((step) => {
         const previous = existing.steps.find((entry) => entry.stepId === step.stepId);
         return previous === undefined ? step : { ...step, frames: step.frames.map((frame) => {
@@ -410,7 +410,9 @@ function replaceAt<T>(items: readonly T[], index: number, value: T): T[] {
 function applyTurnUpsert(state: AgentState, header: TurnHeader): ApplyResult {
   const located = findTurn(state.items, header.turnId);
   if (located !== undefined) {
-    const incoming = mergeContentPreview(located.turn, turnHeaderToTurn(header, located.turn.steps));
+    const next = header.stepsPartial === undefined && located.turn.stepsPartial !== undefined
+      ? { ...header, stepsPartial: located.turn.stepsPartial } : header;
+    const incoming = mergeContentPreview(located.turn, turnHeaderToTurn(next, located.turn.steps));
     if (transcriptValueEquals(located.turn, incoming)) return { state, changed: false };
     return { state: { ...state, items: replaceAt(state.items, located.index, incoming) }, changed: true };
   }

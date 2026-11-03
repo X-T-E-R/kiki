@@ -2085,6 +2085,8 @@ describe('SessionController transcript authority', () => {
     client.getAgentTranscript.mockResolvedValue({ agent_id: 'main', items: [older], has_more: false });
     await controller.loadOlderMessages();
     expect(controller.historyPreviewPending('main', 'older')).toBe(true);
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'preparing-preview',
+      read: { source: 'cold', readiness: 'preparing' } });
     const release = controller.retainHistoryPreview('main', 'older');
     try {
       await waitFor(() => !controller.historyPreviewPending('main', 'older'));
@@ -2092,7 +2094,9 @@ describe('SessionController transcript authority', () => {
       expect(controller.contentRefsFor('main', ref.source)).toEqual([ref]);
       expect(controller.getState().blocks.find((block) => block.kind === 'user' && block.turnId === 'older')).toMatchObject({ text: older.prompt });
       expect(client.getAgentTranscript).toHaveBeenNthCalledWith(2, 'session_test', 'main',
-        { beforeItem: 'page-newest', beforeTurn: undefined, pageSize: 20 });
+        { beforeItem: 'page-newest', beforeTurn: undefined, pageSize: 40 });
+      expect(client.getAgentTranscript).toHaveBeenNthCalledWith(3, 'session_test', 'main',
+        { beforeItem: 'preparing-preview', beforeTurn: undefined, pageSize: 40 });
     } finally { release(); }
     expect(controller.historyPreviewPending('main', 'older')).toBe(true);
     expect(controller.getState().hasMoreHistory).toBe(false);
@@ -2524,8 +2528,8 @@ describe('SessionController transcript authority', () => {
       await waitFor(() => !controller.getState().hasMoreHistory);
       expect(historyTexts(controller)).toEqual([...turns, historyTurn(1100)].map((turn) => turn.prompt));
       expect(controller.getState()).toMatchObject({ historyCoverageKind: 'full', loadingOlder: false, olderError: undefined });
-      expect(client.getAgentTranscript).toHaveBeenCalledTimes(54);
-      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: '1080', pageSize: 20 });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(27);
+      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: '1080', pageSize: 40 });
     } finally { controller.close(); }
   });
 

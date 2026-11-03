@@ -269,6 +269,7 @@ export const transcriptTurnSchema = z.object({
   presentation: textPresentationSchema.optional(),
   attachmentIds: z.array(z.string()).readonly().optional(),
   steps: z.array(transcriptStepSchema),
+  stepsPartial: z.boolean().optional(),
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
   usage: transcriptUsageSchema.optional(),

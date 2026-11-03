@@ -5066,6 +5066,80 @@ describe('virtualized transcript scrolling', () => {
     }
   });
 
+  it('freezes the measured anchor when a page changes content without replacing the first row key', async () => {
+    let inset = 62.59375;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      if (scroll === null) return original.call(this);
+      const top = row === null ? 0 : virtualItemStart(row) - scroll.scrollTop + (this.hasAttribute('data-block-id') ? inset : 0);
+      const height = row === null ? scroll.clientHeight : row.offsetHeight;
+      return { x: 0, y: top, top, bottom: top + height, left: 0, right: 760, width: 760, height, toJSON: () => ({}) };
+    });
+    try {
+      const current = virtualBlocks(100, 'same-first');
+      const state = { ...transcriptState(current), hasMoreHistory: true };
+      const pending = pendingVoid();
+      const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
+      const { root, container } = makeRoot();
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 120);
+      await settleVirtualizer();
+      const top = scroll.getBoundingClientRect().top;
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')];
+      const row = rows.find(row => row.getBoundingClientRect().top <= top && row.getBoundingClientRect().bottom > top)
+        ?? rows.filter(row => row.getBoundingClientRect().top >= top).toSorted((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0]!;
+      const key = row.querySelector<HTMLElement>('[data-block-id]')!.dataset['blockId'];
+      const selected = () => [...container.querySelectorAll<HTMLElement>('[data-block-id]')].find(block => block.dataset['blockId'] === key)!;
+      const before = selected().getBoundingClientRect().top;
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      inset = 18;
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [current[0]!, ...virtualBlocks(20, 'within-turn'), ...current.slice(1)] }, onLoadOlder));
+      await settleVirtualizer();
+      await act(async () => { pending.resolve(); });
+      await settleReadingFrames();
+      expect(selected().getBoundingClientRect().top).toBeCloseTo(before, 0);
+    } finally { rect.mockRestore(); }
+  });
+
+  it('starts one finite prefetch before the reader reaches the loaded edge', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, scroll.clientHeight);
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('refills an undersized prepend only once without another gesture', async () => {
+    let resolveFlight!: (loaded: boolean) => void;
+    const onLoadOlder = vi.fn().mockImplementationOnce(() => new Promise<boolean>(resolve => { resolveFlight = resolve; }))
+      .mockResolvedValue(true);
+    const current = virtualBlocks(100, 'small-page');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(1, 'tiny-prefix'), ...current] }, onLoadOlder));
+    await act(async () => { resolveFlight(true); });
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');
@@ -7523,6 +7597,32 @@ describe('settled history folds and the unified locate entry', () => {
     ];
   };
 
+  it('retains the visible fold by member identity when an older prefix changes its row key', async () => {
+    const first = turnBlocks(1, 'saved opening');
+    const tail = [...turnBlocks(2, 'newer opening'), ...virtualBlocks(100, 'after-fold')];
+    const state = { ...transcriptState([...first, ...tail]), hasMoreHistory: true };
+    const pending = pendingVoid();
+    const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
+    blockHeights.set('fold-th1', 200);
+    blockHeights.set('fold-older-tool', 200);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    const fold = container.querySelector<HTMLElement>('[data-block-id="fold-th1"]')!;
+    await setTranscriptScroll(scroll, virtualItemStart(fold.closest('[data-transcript-virtual-item]')!) + 5);
+    await settleVirtualizer();
+    const before = fold.getBoundingClientRect().top;
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    await renderSettled(root, virtualTranscript({ ...state, hasMoreHistory: false,
+      blocks: [first[0]!, doneTool('older-tool', 't1'), ...first.slice(1), ...tail] }, onLoadOlder));
+    await act(async () => { pending.resolve(); });
+    await settleReadingFrames();
+    expect(container.querySelector<HTMLElement>('[data-block-id="fold-older-tool"]')!.getBoundingClientRect().top).toBeCloseTo(before, 0);
+  });
+
   it('N2 consumer measures a short restored row before accepting its estimated landing', async () => {
     act(() => clearNavHistory());
     const location = { key: 'short-row-return', pathname: '/s/session_test', search: '', hash: '' };
@@ -7700,6 +7800,49 @@ describe('settled history folds and the unified locate entry', () => {
     expect(container.querySelector('[data-block-id="tool2a"]')).toBeNull();
     await act(async () => { click(folds[0]!.querySelector('[data-activity-toggle]')!); });
     expect(container.querySelector('[data-history-fold-members] [data-block-id="tool1a"]')).not.toBeNull();
+  });
+
+  it('continues expanded step structures and releases their readers when collapsed, hidden or unmounted', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation((_agent, source, roots) => {
+      const release = vi.fn();
+      if (roots?.length === 1 && roots[0] === 'steps') releases.set(source.id, release);
+      return { release, retry: () => {} };
+    });
+    const refs = vi.spyOn(controller, 'contentRefsFor').mockImplementation((_agent, source) => source.kind === 'turn' ? [{ source,
+      path: ['steps'], kind: 'array', revision: 'partial-window', offset: 8, total: 100 }] : []);
+    const state = transcriptState([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
+    const render = (visible = true) => renderSettled(root,
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+        <Transcript state={state} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+      </TranscriptDetailProvider>);
+    try {
+      await render();
+      expect(releases.size).toBe(0);
+      const toggle = () => container.querySelector('[data-history-fold] [data-activity-toggle]')!;
+      await act(async () => { click(toggle()); });
+      expect(begin).toHaveBeenCalledWith('main', { kind: 'turn', id: 't1' }, ['steps']);
+      const first = releases.get('t1')!;
+      await render();
+      expect(releases.get('t1')).toBe(first);
+      await act(async () => { click(toggle()); });
+      expect(first).toHaveBeenCalledTimes(1);
+      await act(async () => { click(toggle()); });
+      const second = releases.get('t1')!;
+      await render(false);
+      expect(second).toHaveBeenCalledTimes(1);
+      await render();
+      const third = releases.get('t1')!;
+      await act(async () => { root.render(null); });
+      expect(third).toHaveBeenCalledTimes(1);
+    } finally {
+      refs.mockRestore();
+      begin.mockRestore();
+      controller.close();
+    }
   });
 
   it('locates a block inside a fold and in older, unloaded history; reports what is missing', async () => {

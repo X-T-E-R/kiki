@@ -85,6 +85,7 @@ import {
   type MediaRun,
   type NoticeBlock,
   type SubagentEnding,
+  type SessionController,
   type SessionViewState,
   type ShellBlock,
   type SkillBlock,
@@ -1344,14 +1345,23 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
  * outlet. The row names the turn it belongs to, never an array index it would
  * have to guess.
  */
-function TurnStepsContinuation({ turnId }: { turnId: string }) {
+function TurnStepsContinuation({ turnId, state }: { turnId: string; state: SessionViewState }) {
   const { t } = useI18n();
+  const controller = useTranscriptController();
+  const target = useTranscriptTarget();
   const source = useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]);
   const continuation = useContentContinuation(source, TURN_STEP_ROOTS);
-  if (continuation.pending.length === 0) return null;
+  const [requestedTurn, setRequestedTurn] = useState<string>();
+  const retry = useAutomaticContentRead(requestedTurn === turnId ? source : undefined, TURN_STEP_ROOTS);
+  const partial = controller !== undefined && target !== undefined && controller.turnStructurePending(target.agentId, turnId);
+  if (!partial && continuation.pending.length === 0) return null;
+  const status = state.detailLoads[`structure:${turnId}`];
   return (
     <div data-transcript-lane="agent" className={AGENT_LANE}>
-      <ContentContinuation source={source} roots={TURN_STEP_ROOTS} label={t('transcript.content.steps')} />
+      {partial ? <button type="button" className="min-h-7 text-[12px] text-ink-soft" disabled={status?.status === 'loading'}
+        onClick={() => { if (requestedTurn === turnId) retry(); else setRequestedTurn(turnId); }}>
+        {status?.status === 'loading' ? t('transcript.content.loading') : status?.status === 'error' ? t('transcript.detail.retry') : t('transcript.content.more')}
+      </button> : <ContentContinuation source={source} roots={TURN_STEP_ROOTS} autoRead={false} label={t('transcript.content.steps')} />}
     </div>
   );
 }
@@ -2986,6 +2996,7 @@ const EMPTY_HELD: ReadonlySet<string> = new Set();
 const EMPTY_PROMOTED: ReadonlySet<string> = new Set();
 const EMPTY_TURN_IDS: readonly string[] = [];
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
+const olderPrefetchDistance = (height: number) => Math.min(1600, height * 1.5);
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 /** Row-offset tolerance for "the reader is still at that locate target". */
 const TRANSCRIPT_ANCHOR_SLACK_PX = 24;
@@ -3346,20 +3357,31 @@ function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; tur
   const controller = useTranscriptController();
   const { t } = useI18n();
   useEffect(() => controller?.retainHistoryPreview(agentId, turnId), [controller, agentId, turnId]);
-  if (!controller?.historyPreviewPending(agentId, turnId)) return null;
-  const status = state.detailLoads[`history:${turnId}`];
+  const structure = state.detailLoads[`structure:${turnId}`];
+  if (controller === undefined || !controller.historyPreviewPending(agentId, turnId) && structure === undefined) return null;
+  const status = structure ?? state.detailLoads[`history:${turnId}`];
   return <div role="status" data-history-preview className="flex items-center gap-2 text-[12px] text-ink-faint">
-    {status?.status === 'error' ? <><span>{status.message}</span><button type="button" onClick={() => { void controller.loadHistoryPreview(agentId, turnId); }}>{t('transcript.retryEarlier')}</button></>
+    {status?.status === 'error' ? <><span>{status.message}</span><button type="button" onClick={() => {
+      if (structure === undefined) void controller.loadHistoryPreview(agentId, turnId);
+      else controller.retryTurnStructureRead(agentId, turnId);
+    }}>{t('transcript.retryEarlier')}</button></>
       : <><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />{t('transcript.loadingEarlier')}</>}
   </div>;
 }
 
-function TopEdge({ state, onLoadOlder }: {
+function TopEdge({ state, onLoadOlder, reserveFeedback = false }: {
   state: SessionViewState;
   onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
+  reserveFeedback?: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  if (reserveFeedback && (state.loadingOlder || state.olderError !== undefined)) return (
+    <button type="button" disabled aria-hidden="true" data-history-edge-placeholder
+      className="invisible mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-medium">
+      {t('transcript.loadEarlier')}
+    </button>
+  );
   // Unverified coverage says one thing: the top of what loaded cannot be
   // vouched for as the beginning. While older pages remain there is nothing
   // to warn about yet (the reader just loads them); it replaces the
@@ -4038,6 +4060,20 @@ export function Transcript({
     [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  const expandedStructureReads = useRef(new Map<string, ReturnType<SessionController['beginContentRead']>>());
+  const expandedTurns = JSON.stringify([...new Set(groupedNodes.flatMap(node => node.kind === 'history-fold' && openFolds.has(node.id)
+    ? node.members.flatMap(member => { const turn = displayNodeTurnId(member); return turn === undefined ? [] : [turn]; }) : []))].toSorted());
+  useEffect(() => {
+    const reads = expandedStructureReads.current;
+    return () => { for (const lease of reads.values()) lease.release(); reads.clear(); };
+  }, [controller, agentId, state.sessionId]);
+  useEffect(() => {
+    const reads = expandedStructureReads.current;
+    const wanted = new Set<string>(visible && controller !== undefined ? JSON.parse(expandedTurns) as string[] : []);
+    for (const [turnId, lease] of reads) if (!wanted.has(turnId)) { lease.release(); reads.delete(turnId); }
+    if (controller !== undefined) for (const turnId of wanted) if (!reads.has(turnId))
+      reads.set(turnId, controller.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']));
+  }, [controller, agentId, state.sessionId, visible, expandedTurns]);
   // The reply the message view promotes is what the reader was told, so the
   // process view must not label that same block "internal prose". Only a
   // message-delivering session's process view asks, and only completed turns
@@ -4255,10 +4291,20 @@ export function Transcript({
     const instance = virtualizerRef.current;
     const intent = readingIntentRef.current;
     const firstKey = instance?.options.getItemKey(0);
+    const beforeBlocks = stateRef.current.blocks;
     let anchor = instance === null ? undefined : captureTranscriptAnchor(instance, true);
+    const foldMember = (key: string | undefined) => {
+      for (const [id, hit] of locateIndexRef.current.blocks) if (hit.foldId === key) return id;
+      return undefined;
+    };
+    let member = anchor?.key === undefined ? undefined : foldMember(anchor.key);
     const scroll = scrollRef.current;
     const capture = () => {
-      if (instance !== null && readingIntentRef.current === intent && instance.options.getItemKey(0) === firstKey) anchor = captureTranscriptAnchor(instance, true);
+      if (instance !== null && readingIntentRef.current === intent && stateRef.current.blocks === beforeBlocks && instance.options.getItemKey(0) === firstKey) {
+        const next = captureTranscriptAnchor(instance, true);
+        if (next.key !== anchor?.key) member = next.key === undefined ? undefined : foldMember(next.key);
+        anchor = next;
+      }
     };
     scroll?.addEventListener('scroll', capture, { passive: true });
     let frame: number;
@@ -4282,8 +4328,9 @@ export function Transcript({
       const key = anchor.key;
       try {
         await settleRestoredAnchor(scrollRef.current, () => {
-          const index = nodeIndexesRef.current.get(key);
-          return index === undefined ? undefined : { index, blockId: key };
+          const index = nodeIndexesRef.current.get(key) ?? (member === undefined ? undefined : locateIndexRef.current.blocks.get(member)?.index);
+          const currentKey = index === undefined ? undefined : instance.options.getItemKey(index);
+          return index === undefined || typeof currentKey !== 'string' ? undefined : { index, blockId: currentKey };
         }, anchor.offset, () => signal.aborted || (olderRequestRef.current !== null && olderRequestRef.current.signal !== signal) || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
       } catch {
         return loaded;
@@ -4297,8 +4344,20 @@ export function Transcript({
     olderInflightRef.current = true;
     const request = new AbortController();
     olderRequestRef.current = request;
-    try { return await loadOlderAtReadingAnchor(request.signal); }
-    finally {
+    const intent = readingIntentRef.current;
+    const before = stateRef.current.blocks;
+    try {
+      const loaded = await loadOlderAtReadingAnchor(request.signal);
+      const scroll = scrollRef.current;
+      const current = stateRef.current;
+      if (loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current &&
+          current.blocks !== before && current.hasMoreHistory && current.olderError === undefined && scroll !== null &&
+          scroll.scrollTop < olderPrefetchDistance(scroll.clientHeight)) {
+        olderInflightRef.current = true;
+        await loadOlderAtReadingAnchor(request.signal);
+      }
+      return loaded;
+    } finally {
       if (olderRequestRef.current === request) {
         olderRequestRef.current = null;
         olderInflightRef.current = false;
@@ -4334,7 +4393,7 @@ export function Transcript({
       }
       if (olderInflightRef.current || state.loadingOlder ||
           (!state.hasMoreHistory && state.olderError === undefined) ||
-          element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
+          element.scrollTop > olderPrefetchDistance(element.clientHeight)) return;
       void requestOlderAtReadingAnchor();
     };
     const onWheel = (event: WheelEvent) => {
@@ -5250,7 +5309,7 @@ export function Transcript({
                 className="absolute left-0 w-full"
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first && !state.loadingOlder && state.olderError === undefined ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
+                  {first ? <TopEdge state={state} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
                   {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>
@@ -5303,7 +5362,7 @@ export function Transcript({
                       />
                     </div>
                   )}
-                  {isTurnTail && turnTailId !== undefined ? <TurnStepsContinuation turnId={turnTailId} /> : null}
+                  {isTurnTail && turnTailId !== undefined ? <TurnStepsContinuation turnId={turnTailId} state={state} /> : null}
                   {last && view === 'message' && presence !== undefined ? (
                     <div className={AGENT_LANE}>
                       <PresenceLine

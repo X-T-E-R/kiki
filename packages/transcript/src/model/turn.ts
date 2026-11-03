@@ -99,6 +99,7 @@ export interface TranscriptTurn extends ContentWindow {
   /** Attachments carried by the turn-opening input (entities in `attachments`). */
   readonly attachmentIds?: readonly AttachmentId[];
   readonly steps: TranscriptStep[];
+  readonly stepsPartial?: boolean;
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly usage?: TranscriptUsage;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentTranscript } from '#/store/agentTranscript';
+import { AgentTranscriptDraft } from '#/store/agentTranscriptDraft';
+import { agentTranscriptSnapshotSchema } from '#/contract/schema';
 import { TranscriptStore } from '#/store/transcriptStore';
 import { appendAtOffset } from '#/ops/apply';
 import type {
@@ -56,6 +58,20 @@ function toolFrame(state: ToolCallFrame['state'], output?: unknown): TranscriptO
 }
 
 describe('AgentTranscript', () => {
+  it.each(['store', 'draft'] as const)('retains partial structure through %s metadata updates and clears it on a complete snapshot', kind => {
+    const tx = kind === 'store' ? new AgentTranscript('main') : new AgentTranscriptDraft('main');
+    tx.apply([{ ...turn1, turn: { ...turn1.turn, stepsPartial: true } }, { ...turn1, turn: { ...turn1.turn, state: 'completed' } }]);
+    const partial = agentTranscriptSnapshotSchema.parse(JSON.parse(JSON.stringify(kind === 'store' ? tx.snapshot() : tx.checkpoint())));
+    expect(partial.items[0]).toHaveProperty('stepsPartial', true);
+    tx.apply([{ op: 'reset', agentId: 'main', grade: 'turn', coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: { epoch: 'epoch', seq: 3 } } },
+      snapshot: { ...partial, items: [{ ...turn1.turn, steps: [] }] } }]);
+    expect((kind === 'store' ? tx.snapshot() : tx.checkpoint()).items[0]).toHaveProperty('stepsPartial', true);
+    tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: { ...partial, items: [{ ...turn1.turn, steps: [] }] } }]);
+    expect((kind === 'store' ? tx.snapshot() : tx.checkpoint()).items[0]).not.toHaveProperty('stepsPartial', true);
+  });
+
   it('applies turn/step/frame and keeps a self-consistent snapshot', () => {
     const tx = new AgentTranscript('main');
     tx.apply(toolFrame('running'));

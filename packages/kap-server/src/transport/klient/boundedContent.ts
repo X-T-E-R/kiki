@@ -341,7 +341,7 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
       let values: unknown[] = [];
       let reverseRefs: ContentRef[] = [];
       offset = ref.offset;
-      while (offset > 0 && values.length < 20) {
+      while (offset > 0 && values.length < (structure && pageBytes > CONTENT_PAGE_BYTES ? 256 : 20)) {
         const index = offset - 1;
         const child = projectAt(selected[index], [...ref.path, index], ref.source, entity, ENTITY_BYTES, agentId, 'tail');
         const nextValues = [child.value, ...values];
@@ -358,7 +358,7 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
       const values: unknown[] = [];
       offset = ref.offset;
       if (offset >= ref.total) throw new ContentChangedError();
-      while (offset < ref.total && values.length < 20) {
+      while (offset < ref.total && values.length < (structure && pageBytes > CONTENT_PAGE_BYTES ? 256 : 20)) {
         const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
         if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
         values.push(child.value);

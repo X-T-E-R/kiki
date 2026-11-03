@@ -20,6 +20,67 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('seeks a requested newer one-turn preview after an older local window has reached source start', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' },
+      prompt: `saved ${ordinal}`, startedAt: '2025-01-01T00:00:00.000Z', stepsPartial: true, steps: [] });
+    const anchored = vi.fn(async () => ({ ...empty(), items: [turn(1), turn(2)], hasMoreOlder: true }));
+    const service = { forSessionLive: () => undefined, readColdPageSnapshot: async () => ({ ...empty(), items: [turn(0)], hasMoreOlder: false }),
+      readAnchoredColdSnapshot: anchored, anchorReadState: () => 'continues', readCanonicalEntity: async (_session: string, _agent: string, source: { id: string }) => ({ ...turn(Number(source.id.slice(1))), stepsPartial: undefined }),
+      readColdRoster: async () => [], coldWindowReachedStart: async () => false, reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    expect(anchored).toHaveBeenCalledWith('fixture-session', 'main', 't2', expect.any(AbortSignal));
+    expect(page?.items).toContainEqual(expect.objectContaining({ turnId: 't1', prompt: 'saved 1' }));
+  });
+
+  it('reads a fresh cold-window structure ref before a stale retained canonical preview', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: Array.from({ length: 20 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed', frames: [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: `saved paragraph ${ordinal}` }] })) };
+    const preview = boundedEntity(turn, { kind: 'turn', id: 't0' }, undefined, 'main', 'tail');
+    const ref = preview.contentRefs!.find(ref => ref.path.length === 1)!;
+    const stale = vi.fn(async () => ({ ...turn, steps: turn.steps.slice(10) }));
+    const service = { forSessionLive: () => undefined, readColdWindowTurn: async () => turn, readCanonicalEntity: stale } as unknown as TranscriptService;
+    const segment = await readSessionViewTranscriptContent(service, 'fixture-session', { agentId: 'main', ref });
+    expect(segment?.value).toHaveLength(12);
+    expect(applyContentSegment(preview, segment!).steps).toEqual(turn.steps);
+    expect(stale).not.toHaveBeenCalled();
+  });
+
+  it('keeps captured older coverage after a concurrent reader replaces the retained cold window', async () => {
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), hasMoreOlder: true, items: [{ kind: 'turn', turnId: 't20', ordinal: 20, state: 'completed', origin: { kind: 'user' }, prompt: 'saved body', steps: [] }] };
+    const service = { forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(snapshot),
+      coldHistoryTruncated: async () => false, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main' });
+    expect(page?.has_more).toBe(true);
+    expect(page?.next_cursor).toBeDefined();
+  });
+
+  it('returns a substantial older reading page without changing one-turn preview limits', async () => {
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), items: Array.from({ length: 40 }, (_, ordinal) => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, prompt: 'reading body '.repeat(600), steps: [] })) };
+    const service = { forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(snapshot),
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeTurn: 't40', pageSize: 40 });
+    expect(page?.items).toHaveLength(40);
+    expect(jsonBytes(page)).toBeGreaterThan(256 << 10);
+    expect(jsonBytes(page)).toBeLessThan(512 << 10);
+    expect(page?.items.filter(item => item.kind === 'turn').map(item => item.prompt)).toEqual(snapshot.items.filter(item => item.kind === 'turn').map(item => item.prompt));
+  });
+
+  it('loads up to 256 earlier structure entries within one bounded reading segment', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: Array.from({ length: 300 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed', frames: [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: `saved paragraph ${ordinal}` }] })) };
+    const preview = boundedEntity(turn, { kind: 'turn', id: 't0' }, undefined, 'main', 'tail');
+    const ref = preview.contentRefs!.find(ref => ref.path.length === 1)!;
+    const service = canonicalService({ ...empty(), items: [turn] });
+    const segment = await readSessionViewTranscriptContent(service, 'fixture-session', { agentId: 'main', ref });
+    expect(segment?.value).toHaveLength(256);
+    expect(segment?.start).toBe(36);
+    expect(segment?.next?.offset).toBe(36);
+    expect(jsonBytes(segment)).toBeLessThan(512 << 10);
+    const next = applyContentSegment(preview, segment!);
+    expect(next.steps.map(step => step.stepId)).toEqual(turn.steps.slice(36).map(step => step.stepId));
+  });
+
   it('returns an unverified live page without waiting for the whole-wire proof', async () => {
     const transcript = new AgentTranscript('main');
     transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { ...empty(), items: [
@@ -98,6 +159,30 @@ describe('bounded session-view canonical reads', () => {
     expect(page?.items).toEqual([turn(6), turn(7)]);
     expect(extensions).toBe(1);
     expect(seeks).toEqual([]);
+  });
+
+  it.each([true, false])('defers a recovered partial structure until the explicit one-turn read with has_more=%s', async (hasMore) => {
+    const full: TranscriptTurn = { kind: 'turn', turnId: 't8', ordinal: 8, state: 'completed', origin: { kind: 'user' },
+      prompt: 'saved opening', startedAt: '2025-01-01T00:00:00.000Z', steps: Array.from({ length: 52 }, (_, ordinal) => ({ kind: 'step',
+        stepId: `s${ordinal}`, turnId: 't8', ordinal, state: 'completed', frames: [] })) };
+    const opening = { ...full, stepsPartial: true, steps: full.steps.slice(0, 4) };
+    const canonical = vi.fn(async () => full);
+    const service = { forSessionLive: () => undefined, readCanonicalEntity: canonical,
+      readColdPageSnapshot: async () => ({ ...empty(), items: [opening], hasMoreOlder: hasMore }),
+      coldWindowReachedStart: async () => !hasMore, coldHistoryTruncated: async () => hasMore, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t8',
+      beforeTurn: 't8', orphanTurn: 't8' })).toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor, pageSize: 40 });
+    expect(canonical).not.toHaveBeenCalled();
+    expect(page?.items).toContainEqual(expect.objectContaining({ stepsPartial: true, steps: opening.steps }));
+    expect(page?.has_more).toBe(hasMore);
+    const expanded = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor, pageSize: 1 });
+    const turn = expanded?.items.find((item): item is TranscriptTurn => item.kind === 'turn');
+    expect(canonical).toHaveBeenCalledTimes(1);
+    expect(turn?.stepsPartial).toBeUndefined();
+    expect(turn?.contentRefs).toContainEqual(expect.objectContaining({ path: ['steps'], total: 52 }));
+    expect(expanded?.has_more).toBe(hasMore);
   });
 
   it('repairs a consumed orphan through canonical seek and continues through every earlier prompt to EOF', async () => {
@@ -232,6 +317,34 @@ describe('bounded session-view canonical reads', () => {
     const stale = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
     expect(stale).toMatchObject({ items: [], has_more: true, read: { reason: 'stale_cursor', stale: { retry: 'authoritative' } } });
     expect(stale?.next_cursor).toBeUndefined();
+  });
+
+  it('yields an expensive orphan extension after committed progress and resumes at the same boundary', async () => {
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't8', ordinal: 8, state: 'completed', origin: { kind: 'other' }, steps: [] };
+    const recovered: TranscriptTurn = { ...orphan, origin: { kind: 'user' }, prompt: 'saved opening', startedAt: '2026-01-01T00:00:00.000Z' };
+    let elapsed = 0;
+    let start = 10_000;
+    let extensions = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({ start, end: 20_000, fingerprint: 'same-source' }),
+      readColdPageSnapshot: async (_session: string, _agent: string, project: (value: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal: AbortSignal, extend: boolean) => {
+        if (extend) { extensions += 1; start -= 1000; elapsed += 300; }
+        return project({ ...empty(), items: [extensions >= 2 ? recovered : orphan], hasMoreOlder: true });
+      },
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_session: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t8', beforeTurn: 't8', orphanTurn: 't8' })).toString('base64url');
+    try {
+      const pending = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor, pageSize: 40 });
+      expect(extensions).toBe(1);
+      expect(pending).toMatchObject({ items: [], has_more: true, read: { readiness: 'preparing' } });
+      const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: pending?.next_cursor, pageSize: 40 });
+      expect(extensions).toBe(2);
+      expect(page?.items).toContainEqual(recovered);
+      expect(start).toBe(8000);
+    } finally { clock.mockRestore(); }
   });
 
   it('retains an orphan opening across a preparing marker cursor and delivers it before advancing', async () => {
@@ -413,7 +526,7 @@ describe('bounded session-view canonical reads', () => {
   it('advances beforeTurn only from the final bounded page and inherits it through marker-only pages', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turn(0), turn(1),
-      ...Array.from({ length: 90 }, (_, index) => ({ kind: 'marker' as const, markerId: `older-${index}`, marker: 'skill' as const, payload: { text: 'recorded body'.repeat(200) } })), turn(2)] };
+      ...Array.from({ length: 1500 }, (_, index) => ({ kind: 'marker' as const, markerId: `older-${index}`, marker: 'skill' as const, payload: { text: 'recorded body'.repeat(200) } })), turn(2)] };
     const service = { forSessionLive: () => undefined,
       readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(snapshot),
       readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
@@ -638,7 +751,7 @@ describe('bounded session-view canonical reads', () => {
     expect(() => readContentSegment(canonical, staleRef)).toThrow('Content changed');
     const windowPreview = position === 'before-item' ? boundedEntity(stale, { kind: 'turn', id: 't1' }, undefined, 'main', 'head') : echoed;
     const source: AgentTranscriptSnapshot = {
-      ...empty(), hasMoreOlder: true, items: position === 'latest' ? [turnFor('t0', 0), windowPreview] : [turnFor('t0', 0), windowPreview, turnFor('t2', 2, [])],
+      ...empty(), hasMoreOlder: false, items: position === 'latest' ? [turnFor('t0', 0), windowPreview] : [turnFor('t0', 0), windowPreview, turnFor('t2', 2, [])],
     };
     const cold = {
       forSessionLive: () => undefined,
