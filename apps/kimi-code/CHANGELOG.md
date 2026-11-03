@@ -5,7 +5,9 @@
 ### Patch Changes
 
 - Load recent conversation text sooner and keep large histories complete while scrolling back, with 40-turn / 512 KiB older-history pages and automatic continuation for expanded partial content.
+- Keep active subagents marked as working while older history loads.
 - Rebuild an inactive saved conversation's context with current instruction sources while preserving its session ID, permissions, bindings, and history without a model request.
+- Keep retained media attached to its original message after context rebuilding and compaction.
 - Stop the desktop-managed local service from tray Quit, keep it running when the window closes, and retain drafts and reading position across verified same-home reconnects.
 - Save annotations faster in large conversations, support multiple selections with optional comments, and keep the composer caret stable when applying edits.
 - Import saved memory into SQLite automatically, preserve memory controls, and add Memory Advisor destination consent and memory export/import previews.
