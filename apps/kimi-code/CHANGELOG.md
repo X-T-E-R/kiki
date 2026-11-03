@@ -15,7 +15,7 @@
 - Resume idle subagents with direct, compact, or fresh context modes while preserving the same child and saved task state.
 - Use external engines' native permission controls without duplicate Kiki gates while preserving explicit caller restrictions and Kiki tool authorization.
 - Contain late Responses WebSocket errors and show exhausted retry counts alongside the original failure.
-- Simplify settings navigation and make Usage titles and live-session groups compact while retaining indexed history totals and partial-result progress.
+- Simplify settings navigation, keep keyboard focus on selected detail tabs and fields, and make Usage titles and live-session groups compact while retaining indexed history totals and partial-result progress.
 - Preserve mailbox deduplication during upgrades, release SDK mailbox resources on close, and show recoverable plugin receive diagnostics.
 
 [Release notes and installation](https://github.com/X-T-E-R/kiki/releases/tag/kiki-v0.5.1)

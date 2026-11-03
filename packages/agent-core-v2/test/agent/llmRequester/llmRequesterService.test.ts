@@ -503,7 +503,6 @@ function createService(
   });
   ix.stub(IAgentScopeContext, { agentId, scope: () => `agents/${agentId}` });
   registerTestEventDispatcher(ix);
-  ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
   ix.stub(IAppendLogStore, { append: () => {}, flush: async () => {} });
 

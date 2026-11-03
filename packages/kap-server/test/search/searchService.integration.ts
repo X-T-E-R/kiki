@@ -817,7 +817,8 @@ describe('GlobalSearchService', () => {
         for (const table of ['sessions', 'files', 'docs', 'docs_terms', 'docs_tri']) {
           expect((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
         }
-        expect((await service.status()).indexer).toMatchObject({ pendingSessions: 0, totalSessions: 1 });
+        await expect.poll(async () => (await service.status()).indexer, { timeout: 10_000 })
+          .toMatchObject({ indexedSessions: 1, pendingSessions: 0, totalSessions: 1 });
       } finally { db.close(); }
     });
 

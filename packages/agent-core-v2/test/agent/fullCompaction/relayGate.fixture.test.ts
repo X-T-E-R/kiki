@@ -70,6 +70,9 @@ function compactionShape(messages: readonly ContextMessage[]) {
     role: message.role,
     origin: message.origin?.kind,
     content: message.content,
+    toolCalls: message.toolCalls,
+    toolCallId: message.toolCallId,
+    source: message.source,
   }));
 }
 
@@ -246,12 +249,23 @@ describe('relay gate fixtures', () => {
     expect(first).toMatchObject({ strategy: 'relay' });
     expect(first.reasonCodes).not.toContain('non_text_result');
     expect(ctx.llmCalls).toHaveLength(0);
+    const expectMediaOwnership = (messages: readonly ContextMessage[]) => {
+      const user = messages.find((message) => message.content.includes(userImage));
+      const tool = messages.find((message) => message.content.includes(toolImage));
+      const call = messages.find((message) => message.toolCalls.some((entry) => entry.id === 'call_media'));
+      const recent = messages.find((message) => message.content.some((part) => part.type === 'text' && part.text === 'recent user two'));
+      expect(user).toEqual(before.find((message) => message.content.includes(userImage)));
+      expect(tool).toEqual(before.find((message) => message.toolCallId === 'call_media'));
+      expect(tool).toMatchObject({ role: 'tool', toolCallId: 'call_media' });
+      expect(call?.toolCalls).toEqual(before.find((message) => message.toolCalls.some((entry) => entry.id === 'call_media'))?.toolCalls);
+      expect(messages.filter((message) => message.role === 'tool')).toEqual([tool]);
+      expect(messages.indexOf(user!)).toBeLessThan(messages.indexOf(call!));
+      expect(messages.indexOf(call!)).toBeLessThan(messages.indexOf(tool!));
+      expect(messages.indexOf(tool!)).toBeLessThan(messages.indexOf(recent!));
+      expect(messages.find((message) => message.origin?.kind === 'compaction_summary')?.content.every((part) => part.type === 'text')).toBe(true);
+    };
     const live = ctx.context.get();
-    const summary = live.find((message) => message.origin?.kind === 'compaction_summary');
-    expect(live.some((message) => message.role === 'tool')).toBe(false);
-    expect(summary?.content.includes(userImage)).toBe(false);
-    expect(summary?.content.includes(audio)).toBe(false);
-    expect(summary?.content.includes(toolImage)).toBe(true);
+    expectMediaOwnership(live);
     expect(partCount(live, userImage)).toBe(1);
     expect(partCount(live, audio)).toBe(1);
     expect(partCount(live, toolImage)).toBe(1);
@@ -269,10 +283,8 @@ describe('relay gate fixtures', () => {
     expect(second.reasonCodes).not.toContain('non_text_result');
     expect(ctx.llmCalls).toHaveLength(0);
     const again = ctx.context.get();
-    const nextSummary = again.find((message) => message.origin?.kind === 'compaction_summary');
     expect(again.filter((message) => message.origin?.kind === 'compaction_summary')).toHaveLength(1);
-    expect(nextSummary?.content.includes(toolImage)).toBe(true);
-    expect(nextSummary?.content.includes(userImage)).toBe(false);
+    expectMediaOwnership(again);
     expect(partCount(again, userImage)).toBe(1);
     expect(partCount(again, audio)).toBe(1);
     expect(partCount(again, toolImage)).toBe(1);

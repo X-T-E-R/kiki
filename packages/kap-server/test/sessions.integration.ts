@@ -1201,16 +1201,10 @@ describe('server-v2 /api/sessions', () => {
     if (pendingAppend) vi.spyOn(AgentLifecycleService.prototype, 'create').mockImplementation(async function (this: AgentLifecycleService, options) {
       const subscription = this.onWillCreate((agent) => {
         const wire = agent.accessor.get(IWireService);
-        const flush = wire.flush.bind(wire);
         const dispose = agent.dispose.bind(agent);
-        let disposed = false;
         vi.spyOn(agent, 'dispose').mockImplementation(async () => {
+          markCleanup();
           await dispose();
-          disposed = true;
-        });
-        vi.spyOn(wire, 'flush').mockImplementation(async () => {
-          if (disposed) markCleanup();
-          await flush();
         });
         const profile = agent.accessor.get(IAgentProfileService);
         const bind = profile.bind.bind(profile);
@@ -1225,10 +1219,11 @@ describe('server-v2 /api/sessions', () => {
         subscription.dispose();
       }
     });
+    let creationReturned = false;
     const creating = postJson<null>('/api/sessions', {
       metadata: { cwd: home as string },
       agent_config: { profile: 'inactive-tools' },
-    });
+    }).then((result) => { creationReturned = true; return result; });
     let created: Awaited<typeof creating>;
     try {
       if (pendingAppend) {
@@ -1238,6 +1233,7 @@ describe('server-v2 /api/sessions', () => {
         expect(announcements).toEqual([]);
         expect(sessionDirs).toHaveLength(1);
         await expect(stat(sessionDirs[0]!)).resolves.toBeDefined();
+        expect(creationReturned).toBe(false);
       }
     } finally {
       releaseAppend();

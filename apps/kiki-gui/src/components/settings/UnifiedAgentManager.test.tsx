@@ -120,7 +120,22 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container);
   root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); vi.unstubAllGlobals(); });
+function holdAnimationFrames() {
+  let nextId = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = ++nextId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  return () => {
+    const pending = [...frames.values()];
+    frames.clear();
+    for (const frame of pending) frame(0);
+  };
+}
 async function render() {
   await act(async () => root.render(<MemoryRouter initialEntries={['/settings/agents']}><QueryClientProvider client={queries}><I18nProvider>
     <RouterProbe /><UnifiedAgentManager />
@@ -465,14 +480,17 @@ describe('profile editor detail', () => {
   });
 
   it('keeps the compaction point under Advanced and clears it with null', async () => {
+    const flushFrames = holdAnimationFrames();
     const pinned = { ...main, auto_compact: 650_000 };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [pinned, sub, explore], complete: true });
     client.updateNamedAgentProfile.mockResolvedValue({ ...pinned, auto_compact: undefined });
     await render();
     await open('agent');
+    await openTab('advanced');
     const input = sheet().querySelector<HTMLInputElement>('[data-profile-section="advanced"] [data-profile-auto-compact] input')!;
     expect(input.value).toBe('650k');
-    await act(async () => { input.focus(); });
+    await act(async () => { input.focus(); flushFrames(); });
+    expect(document.activeElement).toBe(input);
     await typeIn(input, '');
     await act(async () => { input.blur(); });
     await save();
@@ -556,12 +574,16 @@ describe('profile editor detail', () => {
   });
 
   it('splits the sheet into question tabs, moves by arrow keys, marks unsaved tabs and locks the file tab', async () => {
+    const flushFrames = holdAnimationFrames();
     await render();
     await open('agent');
     const tabs = [...sheet().querySelectorAll<HTMLButtonElement>('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual(['Who it is', 'How it runs', 'Who it dispatches', 'Tools', 'Advanced', 'File']);
     expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(false);
-    await act(async () => { tabs[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    await act(async () => {
+      tabs[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      flushFrames();
+    });
     expect(sheet().querySelector('[data-profile-tab="run"]')?.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(sheet().querySelector('[data-profile-tab="run"]'));
     expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(true);

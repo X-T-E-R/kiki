@@ -41,7 +41,7 @@ const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueue
   abort: vi.fn(),
   getExecutorModels: vi.fn(),
   switchAgentModel: vi.fn(),
-  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined, switches: [] as import('../lib/client').QueuedModelSwitch[] },
+  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined, switches: [] as import('../lib/client').QueuedModelSwitch[], beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn() },
 }));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -129,6 +129,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     close() { this.sender.close(); }
     getForest() { return actual.buildAgentForest([], []); }
     retainHistoryRead() { return () => {}; }
+    beginContentRead = fixture.beginRead;
     async sendPrompt(input: unknown) {
       const result = await sendPrompt(input);
       await this.sender.sendPrompt(input as Parameters<typeof this.sender.sendPrompt>[0]);
@@ -234,7 +235,7 @@ async function mount() {
     if (container.querySelector('#composer-profile-select') !== null) break;
     await settle();
   }
-  return { container };
+  return { container, root };
 }
 
 /** The composer and its panels are queried through the whole mounted tree. */
@@ -299,6 +300,9 @@ beforeEach(() => {
   steerQueued.mockReset().mockResolvedValue(undefined);
   sendPromptNow.mockReset().mockResolvedValue({ outcome: 'sent' });
   abort.mockReset().mockResolvedValue(undefined);
+  fixture.beginRead.mockReset().mockImplementation(() => ({ release: fixture.releaseRead, retry: fixture.retryRead }));
+  fixture.releaseRead.mockClear();
+  fixture.retryRead.mockClear();
   fixture.switches = [];
   switchAgentModel.mockReset().mockImplementation(async (_sessionId: string, _agentId: string, input: import('../lib/client').ModelSwitchInput) => {
     const receipt = { operationId: input.operationId, agentId: 'main', state: 'pending' as const,
@@ -337,7 +341,8 @@ beforeEach(() => {
 
 describe('switching profile while a turn is running', () => {
   it('keeps the chip browsable mid-run, applies the pick at once, and the undo toast restores the prior controls', async () => {
-    const { container } = await mount();
+    const { container, root } = await mount();
+    expect(fixture.beginRead).toHaveBeenCalledExactlyOnceWith('main', { kind: 'snapshot', id: '' }, ['session'], true, expect.arrayContaining([['session', 'title'], ['session', 'metadata', 'cwd']]));
     await click(profileTrigger(container));
     await settle();
     expect(profileRow(container, 'reviewer')).toBeDefined();
@@ -357,6 +362,10 @@ describe('switching profile while a turn is running', () => {
     await act(async () => { await toast!.undo!.run(); });
     await settle();
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
+
+    await act(async () => { root.unmount(); });
+    roots.splice(roots.indexOf(root), 1);
+    expect(fixture.releaseRead).toHaveBeenCalledTimes(1);
   });
 
   it('re-picking the live profile after an applied switch drops the pending controls', async () => {
