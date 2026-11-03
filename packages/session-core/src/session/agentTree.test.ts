@@ -1879,7 +1879,7 @@ describe('live agent status during partial history recovery', () => {
   const running = snapshot({
     items: [{ kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' },
       startedAt: activeAt, steps: [] }],
-    meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, since: Date.parse(activeAt) } } },
+    meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, step: 1, stepId: 't2.1', since: Date.parse(activeAt) } } },
   });
   const idle = compactSnapshot({ id: 'child', status: 'running', activity_status: 'idle',
     status_source: 'runtime', live: true, started_at: startedAt, label: 'Protocol worker' });

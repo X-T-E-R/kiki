@@ -232,7 +232,7 @@ it('renders a live worker through cold parent recovery and stale idle metadata, 
     state: 'running', agentId: 'live-child', name: 'Protocol worker', detached: false, startedAt, outputTail: '' } }]);
   const child = replay('live-child', [
     { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' }, startedAt: activeAt } },
-    { op: 'meta.merge', meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, since: Date.parse(activeAt) } } } },
+    { op: 'meta.merge', meta: { activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, step: 1, stepId: 't2.1', since: Date.parse(activeAt) } } } },
   ]);
   const snapshots = new Map([['main', main], ['live-child', child]]);
   const row = { id: 'live-child', session_id: 'fixture-session', kind: 'subagent' as const,
