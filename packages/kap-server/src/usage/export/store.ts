@@ -115,12 +115,14 @@ export class UsageExportStore {
     this.projectionLane = flight.then(() => {}, () => {});
     return flight;
   }
-  async updateWithMetadataAsync(id: string, change: Partial<UsageExportDestination>, metadata: Readonly<Record<string, string>>): Promise<UsageExportDestination> {
+  async updateWithMetadataAsync(id: string, change: Partial<UsageExportDestination>, metadata: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<UsageExportDestination> {
     const destinationStamp = this.projectionStamp(this.get(id));
     return this.withProjection(async () => {
+      signal?.throwIfAborted();
       if (destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed');
       const plan = await this.projectionPlan(id, undefined, { ...this.get(id), ...change });
       return this.transaction(() => {
+        signal?.throwIfAborted();
         this.assertProjection(id, plan); const next = this.update(id, change);
         for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
         this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); return next;

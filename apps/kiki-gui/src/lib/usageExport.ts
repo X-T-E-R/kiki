@@ -44,7 +44,8 @@ export function usageExportApi(klient: Klient): UsageExportApi | undefined {
 export type UsageExportEntry = { readonly destination: UsageExportDestination; readonly queue: UsageExportQueue };
 
 export const EXPORT_KINDS: readonly UsageExportTarget['kind'][] = ['vibe', 'webhook', 'script'];
-export const EXPORT_SCHEDULES = [0, 5, 15, 30, 60] as const;
+export const EXPORT_SCHEDULES = [0, 5, 15, 30, 60, 120] as const;
+export const DEFAULT_EXPORT_SCHEDULE = 120;
 
 const KIND_KEY: Record<UsageExportTarget['kind'], I18nKey> = {
   vibe: 'usage.export.kind.vibe',

@@ -291,7 +291,15 @@ Network 目标先用 `target --input <file>` 登记 `{label,endpoint,target}`，
 
 将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。命令无需实验开关即可使用；未配置或已禁用的目的端不发送任何数据。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
 
-先保存草稿、查看准确范围和字段，再一次性批准这个目的端：
+要复用已有 Vibe 配置，而不把密钥复制进参数或另一个文件，可运行：
+
+```sh
+kiki usage-export --home /path/to/home connect-vibe --config /path/to/vibe-config.json --agree
+```
+
+文件须包含 `apiUrl`（HTTPS 源站地址）和 `apiKey`。Kiki 在内存中读取密钥，优先存入系统钥匙串，不可用时回退到受文件权限保护的私有文件；输出只有目的端和状态字段。这次明确同意会启用每 120 分钟上传，默认从当前 UTC 半小时开始。加 `--id <draft>` 可更新已有 Vibe 目的端并保留范围；用 `--start-at 2026-01-01T00:00:00Z` 可指定绝对 UTC 半小时起点。命令不调用 `sync`，但启用后的后台调度器可在后端存活时立即发送。迁移旧 collector 时，仍使用下方独立的 `handoff` 流程。
+
+其他目的端可用 `save --input` 传入 `{ draft, secret?, auto_upload? }`：`true` 明确同意并启用本次提交的目的端和范围，`false` 保存为停用。省略则保持原有草稿保存行为，包括缩小范围或只改周期时保留已有同意。仍可使用预览后启用的路径：
 
 ```sh
 kiki usage-export --home /path/to/home save --input destination.json
@@ -317,7 +325,7 @@ Webhook 草稿示例：
 }
 ```
 
-时间使用 Unix 毫秒，桶按绝对 UTC 半小时划分。周期可选 `0`（手动）、`5`、`15`、`30`、`60` 分钟，附带抖动；只在后端存活时运行，不保活、不调用模型。临时/私密会话的用量默认排除，须明确选择。官方 `kiki.usage.bucket.v1` 只发送已知模型标识、四项互斥 token 数、质量和本地 USD 估价；未知价格为 `null`，未知本地别名使用目的端专属的不透明标识。不包含提示词、回复、推理、工具参数、附件、标题、工作区路径、profile 或真实主机名。接收端仍能观察 IP 地址和使用时段。
+时间使用 Unix 毫秒，桶按绝对 UTC 半小时划分。周期可选 `0`（手动）、`5`、`15`、`30`、`60`、`120` 分钟，附带抖动；只在后端存活时运行，不保活、不调用模型。临时/私密会话的用量默认排除，须明确选择。官方 `kiki.usage.bucket.v1` 只发送已知模型标识、四项互斥 token 数、质量和本地 USD 估价；未知价格为 `null`，未知本地别名使用目的端专属的不透明标识。不包含提示词、回复、推理、工具参数、附件、标题、工作区路径、profile 或真实主机名。接收端仍能观察 IP 地址和使用时段。
 
 需要鉴权时，使用 `authentication: "bearer"` 或 `"hmac"`，并在 `draft` 旁添加 `secret`：`{ "value": "YOUR_SECRET", "storage": "keyring" }`。Keyring 失败会明确报错，不静默改存文件。要明确选择私有文件，设 `storage: "private-file"` 和 `acknowledge_file_storage: true`；文件系统权限保护它，但并未静态加密。所有 `--input` 都接受 `-` 从标准输入读入。保护凭证文件，不把 secret 放进终端参数或发给模型。Bearer 要求 HTTPS，不跟随重定向。本地开发 HTTP 须提供准确匹配 host、IP、port、protocol 的 `private_grant`，不是批准整个内网。
 

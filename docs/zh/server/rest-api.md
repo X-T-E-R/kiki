@@ -137,18 +137,25 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 | `POST /api/oauth/logout` | 登出托管供应商 |
 | `GET /api/oauth/usage` | 查询套餐用量与限额 |
 | `GET /api/oauth/userinfo` | 查询账号资料 |
+| `POST /api/usage-export/destinations` | 保存目的端草稿；可用 `auto_upload` 明确启用或停用 |
+| `GET /api/usage-export/destinations/{id}/preview` | 可选地预览载荷 |
+| `POST /api/usage-export/destinations/{id}/enable` | 保留的预览后明确启用流程 |
 | `POST /api/usage-export/destinations/{id}/auth/begin` | 为某个目的地发起 VibeCafe 登录 |
 | `POST /api/usage-export/auth/{id}/poll` | 轮询该次登录 |
 | `POST /api/usage-export/auth/{id}/cancel` | 取消该次登录 |
 | `POST /api/usage-export/destinations/{id}/disable` | 暂停该目的地，不退出登录 |
 
-官方 `vibecafe.ai` 目的地登录时，向 `POST /api/usage-export/destinations/{id}/auth/begin` 发送 `{}` 即可。省略 `storage` 默认为 `auto`：Kiki 将批准后的凭据保存到系统密钥链，密钥链写入失败时自动改存受文件权限保护的私有文件；文件并未静态加密。无需填写地址、client id 或密钥，服务地址固定为 `https://vibecafe.ai`。已有显式 `keyring` 请求仍只使用密钥链；显式 `private-file` 请求仍须提供 `acknowledge_file_storage: true`。Webhook 和脚本的凭据存储选择不变。
+`POST /api/usage-export/destinations` 接受 `{ draft, secret?, auto_upload? }`。`auto_upload: true` 表示明确同意随请求提交的当前目的端和范围，并启用自动上传；`false` 保存为停用；省略则沿用原有 draft 合同。新表单默认开启自动上传，周期为 120 分钟。走这条保存路径时，预览是可选的。之后的日常同步，以及同一目的端只改周期，都复用这次同意。扩大范围、更换目的端，或换成无法证明仍是同一身份的凭据，需要本次明确提交 `auto_upload: true`。编辑已有 `disabled` 目的端不会自动重启，除非请求明确启用。仍保留预览和 `enable` 接口，供使用指纹绑定同意的客户端调用。
+
+`POST /api/usage-export/destinations/{id}/auth/begin` 的 `auto_upload?` 只作用于这次登录流程。传 `true` 会把 VibeCafe 登录成功与当前 draft 的明确同意、启用合并；传 `false` 只登录，不启用；省略则沿用原有登录流程合同。登录失败、拒绝或过期都不会启用自动上传。官方 `vibecafe.ai` 目的地发送 `{}` 时保持只登录行为。省略 `storage` 默认为 `auto`：Kiki 将批准后的凭据保存到系统密钥链，密钥链写入失败时自动改存受文件权限保护的私有文件；文件并未静态加密。无需填写地址、client id 或密钥，服务地址固定为 `https://vibecafe.ai`。已有显式 `keyring` 请求仍只使用密钥链；显式 `private-file` 请求仍须提供 `acknowledge_file_storage: true`。Webhook 和脚本的凭据存储选择不变。
 
 返回包含 `flow_id`、`state`、`user_code`、`verification_uri`、`expires_at` 和 `poll_after_ms`。按返回间隔用 `POST /api/usage-export/auth/{id}/poll` 轮询，或用 `POST /api/usage-export/auth/{id}/cancel` 取消。流程从 `pending` 变成 `connected`、`cancelled`、`denied`、`expired` 或 `error`。自动保存的两种后端都失败时，返回 `error` 和 `error_category: "vibe-auth-storage-failed"`；恢复服务器凭据目录或密钥链的访问权限后，重新发起登录。
 
-`connected` 表示凭据已保存，不代表已启用外送。目的地回到 `draft`，保持 `enabled: false`，清除外送授权；预览内容后再启用。`credential_storage` 返回实际使用的 `keyring` 或 `private-file`，重启后仍按该落点读取。自定义地址目的地使用手动凭据，在那里发起设备登录会返回 `vibe-auth-official-only`。
+`connected` 表示凭据已保存。若这次登录传了 `auto_upload: true`，连接成功也会完成当前 draft 的启用；传 `false` 或省略不会新增同意或启用。登录失败、拒绝或过期都不会启用。`credential_storage` 返回实际使用的 `keyring` 或 `private-file`，重启后仍按该落点读取。自定义地址目的地使用手动凭据，在那里发起设备登录会返回 `vibe-auth-official-only`。
 
 `POST /api/usage-export/destinations/{id}/disable` 暂停已经登录的目的地。它把 `enabled` 设为 `false`，`state` 设为 `"disabled"`，`next_at` 设为 `null`，并停掉正在进行的一次外送。已保存的账号和 `credential_storage` 保留，队列也保留。页面继续显示该账号。**暂停**，以及官方 vibecafe.ai 目的地上的**停用同步**，都调用它。删除已存凭据是另一次移除操作。
+
+要导入已有 Vibe 配置且不暴露密钥，本地所有者可使用 [`connect-vibe` 命令](../reference/command.md#kiki-usage-export)。
 
 #### 供应商与外部服务剩余额度
 

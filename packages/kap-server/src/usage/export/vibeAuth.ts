@@ -21,7 +21,7 @@ interface Flow {
 export class VibeCafeDeviceAuth {
   private readonly flows = new Map<string, Flow>();
   private closed = false;
-  constructor(private readonly get: (id: string) => UsageExportDestination, private readonly save: (input: UsageExportSave, automaticStorage: boolean) => Promise<UsageExportDestination>, private readonly send: VibeAuthRequest = requestVibeAuth, private readonly now: () => number = Date.now) {}
+  constructor(private readonly get: (id: string) => UsageExportDestination, private readonly save: (input: UsageExportSave, automaticStorage: boolean, signal: AbortSignal) => Promise<UsageExportDestination>, private readonly send: VibeAuthRequest = requestVibeAuth, private readonly now: () => number = Date.now) {}
   async begin(id: string, input: UsageExportVibeAuthInput): Promise<UsageExportVibeAuth> {
     if (this.closed) throw new Error('vibe-auth-unavailable');
     const parsed = usageExportVibeAuthInputSchema.parse(input);
@@ -73,7 +73,8 @@ export class VibeCafeDeviceAuth {
         const destination = this.get(flow.snapshot.destination_id);
         if (JSON.stringify(destination) !== flow.original) return this.finish(flow, 'error', 'vibe-auth-destination-changed');
         flow.committing = true;
-        await this.save({ draft: { id: destination.id, label: destination.label, target: destination.target, scope: destination.scope, schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] }, secret: { value: result.apiKey, storage: flow.input.storage === 'private-file' ? 'private-file' : 'keyring', acknowledge_file_storage: flow.input.acknowledge_file_storage } }, flow.input.storage === 'auto');
+        await this.save({ draft: { id: destination.id, label: destination.label, target: destination.target, scope: destination.scope, schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] }, secret: { value: result.apiKey, storage: flow.input.storage === 'private-file' ? 'private-file' : 'keyring', acknowledge_file_storage: flow.input.acknowledge_file_storage }, auto_upload: flow.input.auto_upload }, flow.input.storage === 'auto', flow.controller.signal);
+        if (flow.controller.signal.aborted) return this.view(flow);
         return this.finish(flow, 'connected');
       }
       if (result.error === 'authorization_pending') { flow.snapshot.error_category = null; return this.view(flow); }
@@ -82,19 +83,25 @@ export class VibeCafeDeviceAuth {
       if (result.error === 'expired_token') return this.finish(flow, 'expired');
       return this.finish(flow, 'error', 'vibe-auth-invalid-response');
     } catch (error) {
+      if (flow.controller.signal.aborted) return this.view(flow);
       const category = error instanceof Error && ['keyring-unavailable', 'identity-change-requires-new-destination', 'private-file-storage-requires-consent'].includes(error.message) ? error.message : flow.committing ? 'vibe-auth-storage-failed' : 'vibe-auth-invalid-response';
       return this.finish(flow, 'error', category);
     } finally { flow.committing = false; }
   }
   async cancel(flowId: string): Promise<UsageExportVibeAuth> {
     const flow = this.require(flowId);
-    if (flow.committing && flow.flight !== undefined) return flow.flight;
     if (flow.snapshot.state === 'pending') { flow.controller.abort(); this.finish(flow, 'cancelled'); }
+    if (flow.committing && flow.flight !== undefined) return flow.flight;
     return this.view(flow);
+  }
+  cancelDestination(id: string): void {
+    for (const flow of this.flows.values()) if (flow.snapshot.destination_id === id && flow.snapshot.state === 'pending') {
+      flow.controller.abort(); this.finish(flow, 'cancelled');
+    }
   }
   async close(): Promise<void> {
     this.closed = true;
-    for (const flow of this.flows.values()) if (!flow.committing) { flow.controller.abort(); this.finish(flow, 'cancelled'); }
+    for (const flow of this.flows.values()) if (flow.snapshot.state === 'pending') { flow.controller.abort(); this.finish(flow, 'cancelled'); }
     const flights = [...this.flows.values()]
       .map((flow) => flow.flight)
       .filter((flight): flight is Promise<UsageExportVibeAuth> => flight !== undefined);

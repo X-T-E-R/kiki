@@ -159,6 +159,7 @@ export function resetUsageExport(server, data) {
   server.usageExportHandoffs = new Map();
   server.usageExportTested = new Map();
   server.usageExportDestinations = new Map();
+  server.usageExportAuth = new Map();
   for (const seed of server.usageExport?.destinations ?? []) {
     const { queue_pending, quarantined, ...destination } = seed;
     server.usageExportDestinations.set(destination.id, { ...destination, target: { ...destination.target } });
@@ -202,6 +203,23 @@ export function handleUsageExport(server, res, path, method, body) {
     envelope(destination);
     return true;
   }
+  const auth = /^\/usage-export\/auth\/([^/]+)\/(poll|cancel)$/.exec(path);
+  if (auth !== null && method === 'POST' && server.usageExportEnabled) {
+    const flow = server.usageExportAuth.get(auth[1]);
+    if (flow === undefined) { envelope(null, 'vibe-auth-flow-not-found'); return true; }
+    if (flow.snapshot.state === 'pending') {
+      if (auth[2] === 'cancel') flow.snapshot.state = 'cancelled';
+      else {
+        const destination = server.usageExportDestinations.get(flow.snapshot.destination_id);
+        if (JSON.stringify(destination) !== flow.original) { flow.snapshot.state = 'error'; flow.snapshot.error_category = 'vibe-auth-destination-changed'; }
+        else {
+          saveDraft(server, { draft: { id: destination.id, label: destination.label, target: destination.target, scope: destination.scope, schedule_minutes: destination.schedule_minutes }, secret: { value: 'vbu_SYNTHETIC_FIXTURE_KEY', storage: 'auto' }, auto_upload: flow.autoUpload });
+          flow.snapshot.state = 'connected';
+        }
+      }
+    }
+    envelope({ ...flow.snapshot, poll_after_ms: flow.snapshot.state === 'pending' ? 250 : 0 }); return true;
+  }
   const match = /^\/usage-export\/destinations\/([^/]+)(?:\/(.+))?$/.exec(path);
   if (match === null || !server.usageExportEnabled) return false;
   const id = decodeURIComponent(match[1]);
@@ -209,6 +227,12 @@ export function handleUsageExport(server, res, path, method, body) {
   const destination = server.usageExportDestinations.get(id);
   if (destination === undefined && action !== 'export') { envelope(null, 'destination-not-found'); return true; }
   switch (`${method} ${action}`) {
+    case 'POST auth/begin': {
+      if (destination.target.kind !== 'vibe' || destination.enabled) { envelope(null, 'vibe-auth-disable-first'); return true; }
+      const snapshot = { flow_id: randomUUID(), destination_id: id, state: 'pending', user_code: 'ABCD-EFGH', verification_uri: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expires_at: Date.now() + 900_000, poll_after_ms: 250, error_category: null };
+      server.usageExportAuth.set(snapshot.flow_id, { snapshot, original: JSON.stringify(destination), autoUpload: body?.auto_upload });
+      envelope(snapshot); return true;
+    }
     case 'GET ': {
       if (action === 'handoff') { envelope(server.usageExportHandoffs.get(id) ?? null); return true; }
       if (action === 'export') {
@@ -237,6 +261,7 @@ export function handleUsageExport(server, res, path, method, body) {
       return true;
     }
     case 'POST disable': {
+      for (const flow of server.usageExportAuth.values()) if (flow.snapshot.destination_id === id && flow.snapshot.state === 'pending') flow.snapshot.state = 'cancelled';
       const next = { ...destination, enabled: false, state: 'disabled', next_at: null };
       server.usageExportDestinations.set(id, next);
       envelope(next);
@@ -388,7 +413,7 @@ function saveDraft(server, body) {
   const previous = draft.id === undefined ? undefined : server.usageExportDestinations.get(draft.id);
   const secret = body?.secret?.value;
   const storage = body?.secret?.storage ?? previous?.credential_storage ?? 'none';
-  const account = HASH(`${draft.target.kind}:${secret ?? 'anonymous'}:${draft.target.endpoint ?? draft.target.command ?? ''}`);
+  const account = secret === undefined && previous !== undefined ? previous.account_fingerprint : HASH(`${draft.target.kind}:${secret ?? 'anonymous'}:${draft.target.endpoint ?? draft.target.command ?? ''}`);
   if (previous !== undefined && previous.account_fingerprint !== account) {
     const queue = queueOf(server, previous.id);
     if (queue.pending + queue.inflight + queue.quarantined > 0 || previous.last_success_at !== null) throw fail('identity-change-requires-new-destination');
@@ -409,16 +434,21 @@ function saveDraft(server, body) {
     target: draft.target,
     account_fingerprint: account,
     scope: { start_at: draft.scope.start_at, end_at: draft.scope.end_at ?? null, include_ephemeral: draft.scope.include_ephemeral === true, excluded_workspace_ids: draft.scope.excluded_workspace_ids ?? [] },
-    schedule_minutes: draft.schedule_minutes ?? 30,
+    schedule_minutes: draft.schedule_minutes ?? 120,
     stream_id: stream,
     enabled: keepConsent ? previous.enabled : false,
     consent_fingerprint: keepConsent ? fingerprintOf(server, { ...previous, scope: { ...previous.scope, ...draft.scope } }) : null,
-    credential_storage: storage,
-    state: keepConsent ? (previous.enabled ? 'ready' : 'disabled') : 'draft',
+    credential_storage: storage === 'auto' ? 'keyring' : storage,
+    state: keepConsent ? previous.state : 'draft',
     next_at: keepConsent ? previous.next_at : null,
     last_success_at: previous?.last_success_at ?? null,
-    error_category: null,
+    error_category: keepConsent ? previous.error_category : null,
   };
+  if (body.auto_upload === true) {
+    next.enabled = true; next.consent_fingerprint = fingerprintOf(server, next); next.state = 'ready'; next.next_at = Date.now();
+  } else if (body.auto_upload === false) {
+    next.enabled = false; next.state = 'disabled'; next.next_at = null;
+  }
   server.usageExportDestinations.set(id, next);
   return next;
 }

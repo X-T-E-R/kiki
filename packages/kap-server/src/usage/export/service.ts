@@ -37,10 +37,7 @@ export class UsageExportService {
     this.vibeAuth = new VibeCafeDeviceAuth((id) => {
       if (!this.store.writer) throw new Error('export-writer-unavailable');
       return this.store.get(id);
-    }, async (input, automaticStorage) => {
-      const destination = await this.saveDraftWithStorage(input, automaticStorage);
-      return this.store.update(destination.id, { enabled: false, consent_fingerprint: null, state: 'draft', next_at: null });
-    }, options.vibeAuthRequest, this.now);
+    }, (input, automaticStorage, signal) => this.saveDraftWithStorage(input, automaticStorage, signal), options.vibeAuthRequest, this.now);
     for (const adapter of adapters) this.registerAdapter(adapter);
   }
   registerAdapter(adapter: UsageExportAdapter): void {
@@ -55,30 +52,42 @@ export class UsageExportService {
     return digest({ policy: 'kiki.usage.bucket.v1', target, account: destination.account_fingerprint, scope: destination.scope, stream: destination.stream_id, adapter: this.adapters.get(destination.target.kind)?.mappingVersion ?? 'unavailable' });
   }
   async saveDraft(input: UsageExportSave): Promise<UsageExportDestination> { return this.saveDraftWithStorage(input, false); }
-  private async saveDraftWithStorage(input: UsageExportSave, automaticStorage: boolean): Promise<UsageExportDestination> {
+  private async saveDraftWithStorage(input: UsageExportSave, automaticStorage: boolean, authSignal?: AbortSignal): Promise<UsageExportDestination> {
     if (!this.store.writer) throw new Error('export-writer-unavailable');
-    const { draft, secret } = usageExportSaveSchema.parse(input); validateExportTarget(draft.target);
+    const { draft, secret, auto_upload } = usageExportSaveSchema.parse(input); validateExportTarget(draft.target);
     const id = draft.id ?? randomUUID(); const previous = draft.id === undefined ? undefined : this.store.get(id);
-    const handoff = previous === undefined ? null : this.handoff(id);
-    if (handoff !== null && (draft.scope.start_at < (handoff.previous_cutoff_at ?? handoff.cutoff_at) || (handoff.phase === 'rollback-prepared' && (draft.scope.end_at === null || draft.scope.end_at > handoff.cutoff_at)))) throw new Error('handoff-scope-crosses-cutoff');
-    const storage = secret?.storage ?? previous?.credential_storage ?? 'none';
-    const currentSecret = secret?.value ?? (previous === undefined ? undefined : await this.secrets.read(id, storage));
-    const accountFingerprint = opaqueId(this.store.installationKey(), draft.target.kind === 'script' ? `script\0${draft.target.command}` : `unverified-credential\0${currentSecret ?? 'anonymous'}`);
-    const next: UsageExportDestination = { id, label: draft.label, target: draft.target, account_fingerprint: accountFingerprint, scope: draft.scope, schedule_minutes: draft.schedule_minutes, stream_id: previous?.stream_id ?? randomBytes(24).toString('hex'), enabled: false, consent_fingerprint: null, credential_storage: storage, state: 'draft', next_at: null, last_success_at: previous?.last_success_at ?? null, error_category: null };
-    const sameIdentity = previous !== undefined && previous.account_fingerprint === accountFingerprint && previous.target.kind === next.target.kind && (previous.target.kind === 'script' || next.target.kind === 'script' || previous.target.endpoint === next.target.endpoint);
-    if (previous !== undefined && !sameIdentity && (this.store.queue(id).pending + this.store.queue(id).inflight + this.store.queue(id).quarantined > 0 || previous.last_success_at !== null)) throw new Error('identity-change-requires-new-destination');
-    const shrunk = previous !== undefined && scopeWithin(next.scope, previous.scope);
-    if (previous !== undefined && sameIdentity && previous.consent_fingerprint !== null && shrunk && consentTargetEqual(previous, next)) {
-      next.consent_fingerprint = this.fingerprint(next); next.enabled = previous.enabled; next.state = previous.enabled ? 'ready' : 'disabled'; next.next_at = previous.next_at;
-    }
-    this.controllers.get(id)?.abort();
-    if (secret !== undefined) {
-      next.credential_storage = await this.secrets.save(id, secret.value, automaticStorage ? 'auto' : secret.storage, secret.acknowledge_file_storage);
-      const obsoleteStorage = next.credential_storage === 'keyring' ? 'private-file' : previous?.credential_storage === 'keyring' || automaticStorage ? 'keyring' : this.store.meta(`credential-cleanup:${id}`) ?? '';
-      this.store.saveWithMetadata(next, { [`credential-cleanup:${id}`]: obsoleteStorage });
-    } else this.store.save(next);
-    await this.cleanupCredential(id).catch(() => {});
-    if (next.enabled) await this.store.refreshDestinationAsync(id); this.scheduleTimer(); return next;
+    if (auto_upload === false && authSignal === undefined) this.disablePendingActivation(id);
+    const controller = new AbortController(); const activationKey = `activate:${id}:${randomUUID()}`;
+    this.controllers.set(activationKey, controller);
+    const signal = authSignal === undefined ? controller.signal : AbortSignal.any([controller.signal, authSignal]);
+    try {
+      const handoff = previous === undefined ? null : this.handoff(id);
+      if (auto_upload === true && handoff?.phase === 'prepared') throw new Error('handoff-use-arm');
+      if (auto_upload === true && !this.adapters.has(draft.target.kind)) throw new Error('adapter-unavailable');
+      if (handoff !== null && (draft.scope.start_at < (handoff.previous_cutoff_at ?? handoff.cutoff_at) || (handoff.phase === 'rollback-prepared' && (draft.scope.end_at === null || draft.scope.end_at > handoff.cutoff_at)))) throw new Error('handoff-scope-crosses-cutoff');
+      const storage = secret?.storage === 'auto' ? previous?.credential_storage ?? 'none' : secret?.storage ?? previous?.credential_storage ?? 'none';
+      const currentSecret = secret?.value ?? (previous === undefined ? undefined : await this.secrets.read(id, storage));
+      const accountFingerprint = opaqueId(this.store.installationKey(), draft.target.kind === 'script' ? `script\0${draft.target.command}` : `unverified-credential\0${currentSecret ?? 'anonymous'}`);
+      const next: UsageExportDestination = { id, label: draft.label, target: draft.target, account_fingerprint: accountFingerprint, scope: draft.scope, schedule_minutes: draft.schedule_minutes, stream_id: previous?.stream_id ?? randomBytes(24).toString('hex'), enabled: false, consent_fingerprint: null, credential_storage: storage, state: 'draft', next_at: null, last_success_at: previous?.last_success_at ?? null, error_category: null };
+      const sameIdentity = previous !== undefined && previous.account_fingerprint === accountFingerprint && previous.target.kind === next.target.kind && (previous.target.kind === 'script' || next.target.kind === 'script' || previous.target.endpoint === next.target.endpoint);
+      if (previous !== undefined && !sameIdentity && (this.store.queue(id).pending + this.store.queue(id).inflight + this.store.queue(id).quarantined > 0 || previous.last_success_at !== null)) throw new Error('identity-change-requires-new-destination');
+      const shrunk = previous !== undefined && scopeWithin(next.scope, previous.scope);
+      if (previous !== undefined && sameIdentity && previous.consent_fingerprint === this.fingerprint(previous) && shrunk && consentTargetEqual(previous, next)) {
+        next.consent_fingerprint = this.fingerprint(next); next.enabled = previous.enabled; next.state = previous.state; next.error_category = previous.error_category; next.next_at = previous.next_at;
+        if (next.enabled && previous.state === 'ready' && previous.schedule_minutes !== next.schedule_minutes) next.next_at = next.schedule_minutes === 0 ? null : this.now() + next.schedule_minutes * 60_000;
+      }
+      this.controllers.get(id)?.abort();
+      if (secret !== undefined) next.credential_storage = await this.secrets.save(id, secret.value, automaticStorage ? 'auto' : secret.storage, secret.acknowledge_file_storage);
+      if (auto_upload === false || signal.aborted) { next.enabled = false; next.state = 'disabled'; next.next_at = null; }
+      if (secret !== undefined) {
+        const obsoleteStorage = next.credential_storage === 'keyring' ? 'private-file' : previous?.credential_storage === 'keyring' || automaticStorage || secret.storage === 'auto' ? 'keyring' : this.store.meta(`credential-cleanup:${id}`) ?? '';
+        this.store.saveWithMetadata(next, { [`credential-cleanup:${id}`]: obsoleteStorage });
+      } else this.store.save(next);
+      await this.cleanupCredential(id).catch(() => {});
+      if (signal.aborted) return this.store.get(id);
+      if (auto_upload === true && !next.enabled) return await this.enable(id, { preview_fingerprint: this.fingerprint(next), acknowledge: true }, signal);
+      if (next.enabled) await this.store.refreshDestinationAsync(id); this.scheduleTimer(); return next;
+    } finally { this.controllers.delete(activationKey); }
   }
   private async cleanupCredential(id: string): Promise<void> {
     const storage = this.store.meta(`credential-cleanup:${id}`);
@@ -99,17 +108,24 @@ export class UsageExportService {
     if (destination.target.kind !== 'script' && destination.target.private_grant !== undefined) disclosures.push('You are authorizing only the configured endpoint and exact private IP/port/protocol, not all private networks.');
     return usageExportPreviewSchema.parse({ destination, preview_fingerprint: this.fingerprint(destination), items: preview.items, total_buckets: preview.total, source_complete: this.store.meta('scan-complete') === 'true' && !this.store.meta('scan-error'), invalid_records: this.store.invalidRecords(), disclosures });
   }
-  async enable(id: string, input: UsageExportConsent): Promise<UsageExportDestination> {
+  async enable(id: string, input: UsageExportConsent, parentSignal?: AbortSignal): Promise<UsageExportDestination> {
     const consent = usageExportConsentSchema.parse(input); const destination = this.store.get(id);
     if (this.handoff(id)?.phase === 'prepared') throw new Error('handoff-use-arm');
     if (this.fingerprint(destination) !== consent.preview_fingerprint) throw new Error('consent-preview-changed');
     if (!this.adapters.has(destination.target.kind)) throw new Error('adapter-unavailable');
+    const controller = new AbortController(); const key = `activate:${id}:${randomUUID()}`; this.controllers.set(key, controller);
+    const signal = parentSignal === undefined ? controller.signal : AbortSignal.any([controller.signal, parentSignal]);
     try {
-      const next = await this.store.updateWithMetadataAsync(id, { enabled: true, consent_fingerprint: consent.preview_fingerprint, state: 'ready', error_category: null, next_at: this.now() }, {});
+      const next = await this.store.updateWithMetadataAsync(id, { enabled: true, consent_fingerprint: consent.preview_fingerprint, state: 'ready', error_category: null, next_at: this.now() }, {}, signal);
       this.scheduleTimer(); return next;
     } catch (error) { if (error instanceof Error && error.message === 'export-queue-full') this.store.update(id, { state: 'queue-full', error_category: 'queue-full' }); throw error; }
+    finally { this.controllers.delete(key); }
   }
-  disable(id: string): UsageExportDestination { this.controllers.get(id)?.abort(); const next = this.store.update(id, { enabled: false, state: 'disabled', next_at: null }); this.scheduleTimer(); return next; }
+  private disablePendingActivation(id: string): void {
+    this.vibeAuth.cancelDestination(id);
+    for (const [key, controller] of this.controllers) if (key.startsWith(`activate:${id}:`)) controller.abort();
+  }
+  disable(id: string): UsageExportDestination { this.disablePendingActivation(id); this.controllers.get(id)?.abort(); const next = this.store.update(id, { enabled: false, state: 'disabled', next_at: null }); this.scheduleTimer(); return next; }
   async testProtocol(id: string): Promise<{ outcome: UsageExportAdapterResult['outcome']; error_category: string | null }> {
     if (this.closing) throw new Error('export-closing');
     const flight = this.runProtocolTest(id); this.protocolFlights.add(flight);
@@ -165,7 +181,7 @@ export class UsageExportService {
   }
   async syncNow(id: string): Promise<UsageExportStatus> { await this.scan(); await this.deliver(id, true); return this.status(); }
   async backfill(id: string, scope: UsageExportScope): Promise<UsageExportPreview> {
-    const destination = this.store.get(id); await this.saveDraft({ draft: { id, label: destination.label, target: destination.target, scope: usageExportScopeSchema.parse(scope), schedule_minutes: destination.schedule_minutes as 0 | 5 | 15 | 30 | 60 } }); return this.preview(id);
+    const destination = this.store.get(id); await this.saveDraft({ draft: { id, label: destination.label, target: destination.target, scope: usageExportScopeSchema.parse(scope), schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] } }); return this.preview(id);
   }
   diagnostics(): UsageExportStatus { return this.status(); }
   exportLocal(id: string): { schema_version: 'kiki.usage.local-export.v1'; items: UsageExportItem[] } { return { schema_version: 'kiki.usage.local-export.v1', items: this.store.exportQueue(id) }; }
@@ -354,7 +370,7 @@ export class UsageExportService {
 function safeCategory(result: UsageExportAdapterResult): string | null { return result.errorCategory === undefined ? null : USAGE_EXPORT_ERROR_CATEGORIES.includes(result.errorCategory) ? result.errorCategory : 'generic'; }
 function consentTargetEqual(a: UsageExportDestination, b: UsageExportDestination): boolean {
   if (a.target.kind === 'script' && b.target.kind === 'script') return a.target.command === b.target.command;
-  if (a.target.kind === 'webhook' && b.target.kind === 'webhook') return a.target.endpoint === b.target.endpoint && a.target.authentication === b.target.authentication && digest(a.target.private_grant) === digest(b.target.private_grant);
+  if (a.target.kind === 'webhook' && b.target.kind === 'webhook') return a.target.endpoint === b.target.endpoint && a.target.authentication === b.target.authentication && digest(a.target.private_grant ?? null) === digest(b.target.private_grant ?? null);
   return digest(a.target) === digest(b.target);
 }
 function scopeWithin(next: UsageExportScope, previous: UsageExportScope): boolean { return next.start_at >= previous.start_at && (previous.end_at === null || (next.end_at !== null && next.end_at <= previous.end_at)) && (!next.include_ephemeral || previous.include_ephemeral) && previous.excluded_workspace_ids.every((id) => next.excluded_workspace_ids.includes(id)); }

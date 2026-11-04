@@ -291,7 +291,15 @@ The [thread tools](./tools.md#collaboration-tools) use these policies and preser
 
 Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. The command is available without an experimental switch; an unconfigured or disabled destination sends nothing. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
 
-Save a draft, inspect its exact range and fields, then approve that destination once:
+To reuse an existing Vibe config without copying its key into arguments or another file, run:
+
+```sh
+kiki usage-export --home /path/to/home connect-vibe --config /path/to/vibe-config.json --agree
+```
+
+The file must contain `apiUrl` (an HTTPS origin) and `apiKey`. Kiki reads the key into memory and stores it in the system keyring, falling back to a permission-protected private file. Output contains only destination and status fields. This explicitly enables upload every 120 minutes, starting at the current UTC half-hour. Add `--id <draft>` to update an existing Vibe destination while preserving its scope, or `--start-at 2026-01-01T00:00:00Z` to select an absolute UTC half-hour start. The command does not call `sync`, but the enabled background scheduler may send immediately while the backend is alive. For collector migration, retain the separate `handoff` flow below.
+
+For other destinations, `save --input` accepts `{ draft, secret?, auto_upload? }`: `true` explicitly agrees to and enables the submitted destination and scope; `false` saves it disabled. Omit the field to keep the existing draft-only behavior, including existing consent for a narrower scope or an interval-only edit. The preview-and-enable path remains available:
 
 ```sh
 kiki usage-export --home /path/to/home save --input destination.json
@@ -317,7 +325,7 @@ A Webhook draft looks like this:
 }
 ```
 
-Times are Unix milliseconds; buckets are absolute UTC half-hours. Schedules are `0` (manual), `5`, `15`, `30`, or `60` minutes, with jitter. They run only while the backend is alive and do not keep it alive or invoke a model. Ephemeral/private-session usage is excluded unless explicitly selected. Known model identifiers, four mutually exclusive token counts, quality, and a local USD estimate are sent through `kiki.usage.bucket.v1`; unknown prices remain `null` and unknown local aliases use destination-specific opaque identifiers. Prompts, replies, reasoning, tool arguments, attachments, titles, workspace paths, profiles, and real hostnames are not part of the official payload. The receiver can still observe your IP address and usage timing.
+Times are Unix milliseconds; buckets are absolute UTC half-hours. Schedules are `0` (manual), `5`, `15`, `30`, `60`, or `120` minutes, with jitter. They run only while the backend is alive and do not keep it alive or invoke a model. Ephemeral/private-session usage is excluded unless explicitly selected. Known model identifiers, four mutually exclusive token counts, quality, and a local USD estimate are sent through `kiki.usage.bucket.v1`; unknown prices remain `null` and unknown local aliases use destination-specific opaque identifiers. Prompts, replies, reasoning, tool arguments, attachments, titles, workspace paths, profiles, and real hostnames are not part of the official payload. The receiver can still observe your IP address and usage timing.
 
 Use `authentication: "bearer"` or `"hmac"` with a `secret` object beside `draft`: `{ "value": "YOUR_SECRET", "storage": "keyring" }`. Keyring failure is reported, not silently replaced with a file. To choose a private file explicitly, use `storage: "private-file"` and `acknowledge_file_storage: true`; filesystem permissions protect it, but it is not encrypted at rest. Every `--input` accepts `-` for stdin. Keep credential files private; never put secrets in command-line arguments or send them to a model. Bearer authentication requires HTTPS. Redirects are not followed. Local development HTTP requires an exact `private_grant` matching the host, IP, port, and protocol, not a blanket private-network approval.
 
