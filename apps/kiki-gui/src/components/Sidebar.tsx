@@ -1602,6 +1602,9 @@ export function Sidebar({
           const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
           const shown = collapsed ? [] : group.nodes.slice(0, limit);
           const hidden = collapsed ? 0 : group.nodes.length - shown.length;
+          // Only a real workspace bucket names the location in its header;
+          // Pinned and Ungrouped are organizational buckets, not places.
+          const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
           const renderRow = (node: ConversationTreeNode, nested: boolean) => {
             const item = node.item;
             if (item.kind === 'room') {
@@ -1615,7 +1618,7 @@ export function Sidebar({
                     item={item}
                     active={location.pathname === item.href}
                     menuOpen={menu?.item.key === item.key}
-                    showLocation={groupBy !== 'workspace'}
+                    showLocation={!groupNamesWorkspace}
                     showPin={groupBy === 'none'}
                     location={roomLocation}
                     onOpen={() => { void navigate(item.href); }}
@@ -1644,7 +1647,7 @@ export function Sidebar({
                   elapsedFor={activity.elapsedFor}
                   relation={node.relation}
                   nested={nested}
-                  showLocation={groupBy !== 'workspace'}
+                  showLocation={!groupNamesWorkspace}
                   showPin={groupBy === 'none'}
                   parentTitle={node.relation === undefined
                     ? undefined
@@ -1681,11 +1684,7 @@ export function Sidebar({
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
           if (collapsible) {
             const workspace = workspaceOptions.find((entry) => entry.id === group.key);
-            const workspaceTarget = workspace !== undefined
-              && group.key !== 'pinned'
-              && group.key !== WORKSPACE_UNGROUPED_KEY
-              ? workspace
-              : undefined;
+            const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
             return (
               <div
                 key={group.key}

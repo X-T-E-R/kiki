@@ -4,6 +4,9 @@ import { streamSteps, textOf } from './helpers.mjs';
 const REPLY = 'Understood — continuing without a selection.';
 const replyStart = questionCard.onPrompt.findIndex((step) => step.frame?.type === 'assistant.delta');
 const replyEnd = questionCard.onPrompt.findLastIndex((step) => step.frame?.type === 'assistant.delta');
+const questionCallId = questionCard.onPrompt.find((step) => (
+  step.frame?.type === 'tool.call.started' && step.frame.payload?.name === 'AskUserQuestion'
+))?.frame.payload.toolCallId;
 
 export default {
   ...questionCard,
@@ -13,7 +16,7 @@ export default {
     if (step.commit?.role === 'assistant') {
       return [{ ...step, commit: { ...step.commit, content: textOf(REPLY) } }];
     }
-    if (step.frame?.type !== 'tool.result') return [step];
+    if (step.frame?.type !== 'tool.result' || step.frame.payload?.toolCallId !== questionCallId) return [step];
     return [{
       ...step,
       frame: {

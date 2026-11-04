@@ -2727,6 +2727,38 @@ describe('Sidebar room rows', () => {
     expect(row?.querySelector('button')?.getAttribute('aria-current')).toBe('page');
   });
 
+  it('shares the named-workspace location rule with session rows', async () => {
+    const pinned = { ...session('pinned'), metadata: { cwd: 'C:/work/pinned', [SESSION_PIN_META_KEY]: true } as Session['metadata'] };
+    const named = { ...session('named'), metadata: { cwd: 'C:/work/named' } as Session['metadata'] };
+    const child = { ...session('child'), metadata: { cwd: 'C:/work/named', created_by_session_id: 'named' } as Session['metadata'] };
+    const ungrouped = { ...session('ungrouped'), workspace_id: 'missing', metadata: { cwd: 'C:/orphan/session' } as Session['metadata'] };
+    const pinnedRoom = roomSummary({ id: 'pinned-room', pinned: true });
+    const namedRoom = roomSummary({ id: 'named-room' });
+    const ungroupedRoom = roomSummary({ id: 'ungrouped-room', workspace: 'C:/orphan/room' });
+    const { container } = await mount({
+      sessions: [pinned, named, child, ungrouped],
+      rooms: [pinnedRoom, namedRoom, ungroupedRoom],
+      groupBy: 'workspace',
+      workspaceOptions: [workspace('ws_test', 'app')],
+      sessionGroups: [
+        { key: 'pinned', label: 'Pinned', items: [pinned, roomItem(pinnedRoom)] },
+        { key: 'ws_test', label: 'app', items: [named, child, roomItem(namedRoom)] },
+        { key: WORKSPACE_UNGROUPED_KEY, label: 'Ungrouped', items: [ungrouped, roomItem(ungroupedRoom)] },
+      ],
+    });
+    const sessionLocation = (group: string, id: string) => container.querySelector(`[data-session-group-block="${group}"] [data-session-row="${id}"] [data-session-location]`);
+    const roomLocation = (group: string, id: string) => container.querySelector(`[data-session-group-block="${group}"] [data-room-row="${id}"] [data-room-location]`);
+    expect(sessionLocation('pinned', 'pinned')?.textContent).toBe('…/work/pinned');
+    expect(roomLocation('pinned', 'pinned-room')?.textContent).toBe('app');
+    expect(sessionLocation(WORKSPACE_UNGROUPED_KEY, 'ungrouped')?.textContent).toBe('…/orphan/session');
+    expect(roomLocation(WORKSPACE_UNGROUPED_KEY, 'ungrouped-room')?.textContent).toBe('…/orphan/room');
+    expect(sessionLocation('ws_test', 'named')).toBeNull();
+    expect(roomLocation('ws_test', 'named-room')).toBeNull();
+    const nested = container.querySelector('[data-session-group-block="ws_test"] [data-session-node="thread"] [data-session-row="child"]');
+    expect(nested).not.toBeNull();
+    expect(nested?.querySelector('[data-session-location]')).toBeNull();
+  });
+
   it('carries the thread row states: unread, needs you (approval and budget)', async () => {
     const unread = roomSummary({ id: 'room_unread', lastSeq: 3 });
     const approval = roomSummary({ id: 'room_approval', needsYou: true, pendingInteraction: 'approval' });

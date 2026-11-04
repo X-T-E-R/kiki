@@ -3728,8 +3728,14 @@ async function scenarioSidebarWorkspaceActivity() {
   await pickViewOption('[data-group-by="workspace"]');
   await closeViewMenu();
   await page.locator('[data-session-group="wd_fixture_000000000000"]').waitFor({ timeout: 10_000 });
-  if (await row.locator('[data-session-location]').count() !== 0) throw new Error('workspace group repeats the path in every row');
-  if (await row.locator('[data-session-live]').count() !== 1) throw new Error('workspace group dropped live activity');
+  await page.locator('[data-session-group="pinned"]').waitFor({ timeout: 10_000 });
+  await assertWorkspaceRow('sidebar pinned workspace and live activity');
+  const namedRow = page.locator('[data-session-group-block="wd_fixture_000000000000"] [data-session-row="session_fixture_tl_current"]');
+  if (await namedRow.locator('[data-session-location]').count() !== 0) throw new Error('named workspace group repeats the path');
+  const ungroupedLocation = page.locator('[data-session-group-block="__none"] [data-session-row="session_7c1d9e02-5a44-4b0e-9f7d-3e2a1b0c9d8e"] [data-session-location]');
+  await ungroupedLocation.waitFor({ timeout: 10_000 });
+  if ((await ungroupedLocation.textContent()) !== '…/fixture/orphan') throw new Error('ungrouped bucket dropped its workspace path');
+  if (await row.locator('[data-session-live]').count() !== 1) throw new Error('pinned bucket dropped live activity');
   await shot('sidebar-workspace-activity-grouped');
   await pickViewOption('[data-group-by="time"]');
   await closeViewMenu();
@@ -7728,7 +7734,7 @@ const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
   'composer-caret': { fixture: 'thread-links' },
-  'sidebar-workspace-activity': { fixture: 'thread-links' },
+  'sidebar-workspace-activity': { fixture: 'sidebar-workspace-groups' },
   'question-reconnect': { fixture: 'question-card' },
   'question-dismiss': { fixture: 'question-dismiss' },
   'execution-pause': { fixture: 'usage-dashboard' },
