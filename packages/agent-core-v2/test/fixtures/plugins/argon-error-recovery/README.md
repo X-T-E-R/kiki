@@ -31,10 +31,10 @@ The plugin returns the object above only when all four conditions match. The `re
 
 | 代码 / Code | 处理 / Handling |
 | --- | --- |
-| `thinking_only` (`antigravity_thinking_only`) | 原生一次续接 / One native continuation |
-| `empty_response` (`antigravity_empty_response`) | 原生重试 / Native retry |
-| `max_tokens` (`antigravity_max_tokens`) | 用户明确决定继续或调整输出预算 / The user must explicitly choose whether to continue or adjust the output budget |
-| `stream_read_error` (`antigravity_stream_read_error`) | 由原生网络恢复；结果未知时不新发 / Native network recovery; do not send a new request when the result is unknown |
+| `thinking_only` (`antigravity_thinking_only`) | 符合原生条件时续接一次；本插件不接管 / One continuation when native conditions permit; this plugin does not intervene |
+| `empty_response` (`antigravity_empty_response`) | 交给原生重试策略；已保留输出时不保证重试，本插件不接续 / Leave to native retry policy; retained output can prevent retry, and this plugin does not continue |
+| `max_tokens` (`antigravity_max_tokens`) | 不自动接续；检查部分回答，再决定是否继续或调整输出预算 / No automatic continuation; inspect the partial answer before choosing to continue or adjust the output budget |
+| `stream_read_error` (`antigravity_stream_read_error`) | 交给原生请求恢复；上游结构化错误不等同于已分类的网络中断，本插件不接续 / Leave to native request recovery; a structured upstream error is not itself a classified network interruption, and this plugin does not continue |
 | `safety`, `malformed_function_call`, `malformed_response`, `upstream_terminal_error` | 不自动恢复，检查上游与请求 / No automatic recovery; inspect the upstream and request |
 | 凭据、配额、计费、取消 / Credentials, quota, billing, cancellation | 不恢复 / No recovery |
 
