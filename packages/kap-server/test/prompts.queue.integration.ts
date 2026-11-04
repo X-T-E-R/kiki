@@ -1,6 +1,9 @@
+import { AgentTaskPersistence } from '@kiki/agent-core-v2/agent/task/persist';
+import { TaskSettlementReady } from '@kiki/agent-core-v2/agent/task/taskOps';
 import { solidPng } from './helpers/png';
 import {
   IAgentTitlePromptSource,
+  IAgentTaskService,
   IAgentLoopService,
   IAgentContextMemoryService,
   IAgentLifecycleService,
@@ -9,6 +12,7 @@ import {
   IAgentProfileService,
   IAgentPromptService,
   IEventDispatcher,
+  IEventBus,
   PromptEnqueued,
   PromptAccepted,
   promptRetryFor,
@@ -489,9 +493,43 @@ describe('server-v2 /api prompts', () => {
     } finally { await client.klient.close(); }
   });
 
-  it('reconstructs an accepted compact receipt by source slots after image captions and file notices expand the content', async () => {
+  it.each(['completed', 'cancelled'] as const)('reconstructs an accepted compact receipt by source slots after image captions and file notices expand the content (%s)', async (outcome) => {
     const id = await createSession(fixture.home as string);
-    const child = await createHeldChild(id);
+    const boundary = promiseGate<void>();
+    const child = await createHeldChild(id, boundary.promise);
+    const requester = vi.spyOn(child.accessor.get(IAgentLLMRequesterService), 'start').mockReturnValue({
+      trace: { traceId: 'fixture-compact-receipt' },
+      result: Promise.resolve({
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], toolCalls: [] },
+        usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+        providerFinishReason: 'completed',
+      }),
+    });
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const tasks = main.accessor.get(IAgentTaskService);
+    const mainWire = main.accessor.get(IWireService);
+    const seal = vi.spyOn(mainWire, 'sealTranscriptEpoch');
+    const settlements: Array<{ taskId: string; status: string }> = [];
+    const subscription = main.accessor.get(IEventBus).subscribe(TaskSettlementReady, ({ info }) => {
+      if (info.kind === 'agent' && info.agentId === child.id) settlements.push(info);
+    });
+    const exitEntered = promiseGate<{ pending: ReturnType<IAgentTaskService['stopAllOnExit']> }>();
+    const stopAll = tasks.stopAllOnExit.bind(tasks);
+    const stopSpy = vi.spyOn(tasks, 'stopAllOnExit').mockImplementation((reason) => {
+      const pending = stopAll(reason);
+      exitEntered.resolve({ pending });
+      return pending;
+    });
+    const entered = promiseGate<void>(), release = promiseGate<void>();
+    const commit = AgentTaskPersistence.prototype.commitTerminalTask;
+    const commitSpy = vi.spyOn(AgentTaskPersistence.prototype, 'commitTerminalTask').mockImplementation(async function (this: AgentTaskPersistence, ...args) {
+      const receipt = await commit.apply(this, args);
+      if (args[0].kind === 'agent' && args[0].agentId === child.id) {
+        entered.resolve();
+        await release.promise;
+      }
+      return receipt;
+    });
     const image = await uploadFile(solidPng(3600, 1800), 'image/png', 'big.png');
     const file = await uploadFile(Buffer.from('file contents'), 'text/plain', 'notes.txt');
     const prompt = child.accessor.get(IAgentPromptService);
@@ -504,6 +542,7 @@ describe('server-v2 /api prompts', () => {
       if (new URL(url).pathname.endsWith('/prompts')) receipts.push((await response.clone().json()).data);
       return response;
     } });
+    let closing: Promise<void> | undefined;
     try {
       const payload: import('@kiki/protocol').PromptSubmission = {
         agent_id: child.id, prompt_id: 'mixed-media-receipt', content: [
@@ -527,12 +566,32 @@ describe('server-v2 /api prompts', () => {
       expect(accepted.content[4]).toEqual({ type: 'text', text: 'after' });
       expect(await client.session(id).commands.submit(payload)).toEqual(accepted);
       expect(enqueue).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(prompt.list().active?.id).toBe(accepted.prompt_id));
-      prompt.abort(accepted.prompt_id);
+      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(accepted.prompt_id); });
+      if (outcome === 'completed') boundary.resolve();
+      else prompt.abort(accepted.prompt_id);
       await child.accessor.get(IAgentLoopService).settled();
-      await closeSessionById(fixture.server!.core.accessor, id);
+      await entered.promise;
+      const task = tasks.list(false).find(info => info.kind === 'agent' && info.agentId === child.id)!;
+      expect(task.status).toBe(outcome === 'completed' ? 'completed' : 'failed');
+      closing = closeSessionById(fixture.server!.core.accessor, id);
+      const { pending } = await exitEntered.promise;
+      const exited = await Promise.race([pending.then(() => true), new Promise<false>((resolve) => { setImmediate(() => { resolve(false); }); })]);
+      expect(exited).toBe(false);
+      expect(seal).not.toHaveBeenCalled();
+      release.resolve();
+      await closing;
+      expect(settlements).toEqual([expect.objectContaining({ taskId: task.taskId, status: task.status })]);
+      expect(seal).toHaveBeenCalledOnce();
+      expect(() => { mainWire.appendRecord({ type: 'turn.prompt', turnId: 100 }); }).toThrow('Transcript epoch has been sealed');
+      expect(requester).toHaveBeenCalledTimes(outcome === 'completed' ? 1 : 0);
       expect(await client.session(id).commands.submit(payload)).toEqual(accepted);
-    } finally { await client.close(); }
+    } finally {
+      release.resolve();
+      await closing;
+      commitSpy.mockRestore(); stopSpy.mockRestore(); seal.mockRestore(); requester.mockRestore();
+      await subscription.dispose();
+      await client.close();
+    }
   });
 
   it('replays one accepted native child prompt after losing the HTTP response and rejects a changed payload', async () => {

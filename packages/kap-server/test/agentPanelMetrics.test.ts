@@ -831,16 +831,37 @@ describe('persisted agent panel metrics provenance', () => {
 
 describe('persisted agent panel metrics cache scope', () => {
   it('persists only usage projection records, never historical tool bodies', async () => {
+    const entered = deferred(), gate = deferred(), finished = deferred();
     const fixture = persistedFixture([
       { type: 'context.append_loop_event', event: { type: 'tool.result', output: 'example tool body'.repeat(8192) } } as unknown as WireRecord,
       record('model', usage(2, 3), true),
-    ]);
-    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'source-bytes', { complete: true }))['main'];
-    expect(metrics).toMatchObject({ totalTokens: 5, usagePartial: false });
-    expect(fixture.projectionText()).not.toContain('example tool body');
-    expect(fixture.projectionText()).toContain('inputOther');
-    expect(fixture.log.info).toHaveBeenCalledWith('agent panel usage projection read',
-      expect.objectContaining({ agents_count: 1, partial: false }));
+    ], undefined, { beforeRead: async () => { entered.resolve(); await gate.promise; } });
+    const service = usageRuntime(fixture.core).service;
+    const read = service.readAgentUsage.bind(service);
+    const observed = vi.spyOn(service, 'readAgentUsage').mockImplementationOnce(async (...args) => {
+      try { return await read(...args); } finally { finished.resolve(); }
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = persisted(fixture.core, pricing({ model: 1 }), 'source-bytes', { complete: true });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(650);
+      expect((await pending)['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageComplete: false });
+      const completing = persisted(fixture.core, pricing({ model: 1 }), 'source-bytes');
+      gate.resolve();
+      const metrics = (await completing)['main'];
+      expect(metrics).toMatchObject({ totalTokens: 5, usagePartial: false, usageComplete: true });
+      expect(fixture.reads()).toBe(1);
+      expect(fixture.projectionText()).not.toContain('example tool body');
+      expect(fixture.projectionText()).toContain('inputOther');
+      expect(fixture.log.info).toHaveBeenCalledWith('agent panel usage projection read',
+        expect.objectContaining({ agents_count: 1, partial: false }));
+    } finally {
+      gate.resolve();
+      await finished.promise;
+      observed.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('lets unrelated event-loop work run during a complete scan without losing usage', async () => {

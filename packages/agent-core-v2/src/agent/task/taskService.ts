@@ -286,6 +286,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   readonly onDidChangeWork = this._onDidChangeWork.event;
 
   private readonly tasks = new Map<string, ManagedTask>();
+  private readonly pendingSettlements = new Set<Promise<boolean>>();
   private readonly localTaskIds = new Set<string>();
   private readonly cachedOutputs = new Map<string, BufferedTaskOutput>();
   private outputCacheTrim: Promise<void> | undefined;
@@ -1218,7 +1219,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     await this.suppressAllTerminalNotifications();
     if (this.keepAliveOnExit()) return [];
     const stopping = this.list(true).filter(info => !this.hasPausedExecution(info)).map(info => this.stop(info.taskId, reason));
-    return (await Promise.all(stopping)).filter((info): info is AgentTaskInfo => info !== undefined);
+    const stopped = await Promise.all(stopping);
+    await Promise.all(this.pendingSettlements);
+    const notifications = [...this.tasks.values()].map(entry => entry.notificationPromise).filter(pending => pending !== undefined);
+    await Promise.all(notifications);
+    return stopped.filter((info): info is AgentTaskInfo => info !== undefined);
   }
 
   private hasPausedExecution(info: AgentTaskInfo): boolean {
@@ -1645,7 +1650,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
   }
 
-  private async settleTask(
+  private settleTask(entry: ManagedTask, settlement: AgentTaskSettlement): Promise<boolean> {
+    const pending = this.finishSettlement(entry, settlement);
+    this.pendingSettlements.add(pending);
+    const settled = (): void => { this.pendingSettlements.delete(pending); };
+    void pending.then(settled, settled);
+    return pending;
+  }
+
+  private async finishSettlement(
     entry: ManagedTask,
     settlement: AgentTaskSettlement,
   ): Promise<boolean> {
