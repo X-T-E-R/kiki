@@ -375,12 +375,14 @@ Kiki ships six identities. Built-in identities are read-only; **Duplicate and ed
 
 | Identity | preset / identity ID | What it sends |
 | --- | --- | --- |
-| Kimi Code | `kimi_code` / `kimi_code` | Kiki's native client: adds `X-Msh-*` device headers on a Kimi provider |
+| Kimi Code | `kimi_code` / `kimi_code` | Kiki's native client: a stable cache identity per agent session, plus `X-Msh-*` device headers on a Kimi provider |
 | Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent and `originator`, OpenAI Responses only |
 | Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent, `x-app`, and `X-Stainless-*`, Anthropic Messages only |
 | Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent and `x-grok-*` session and turn headers, on Chat Completions, Responses, or Messages |
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent, `x-opencode-client: cli`, and the dynamic `x-opencode-session` and `x-opencode-request` |
 | None | `none` / `none` | Sends no Kiki-chosen identity fields: the User-Agent, the reserved identity headers, and the `X-Msh-*` device headers are removed. Fields a provider's authentication protocol requires still go out — OAuth tokens, account headers, the Grok client-version marker — because those belong to the protocol rather than to identity |
+
+Kimi Code defaults to `lineage.session_scope = "agent_session"`. It sends that agent-session identity in Responses `prompt_cache_key` and Messages `metadata.user_id`. Different sessions and different agents within one session get different values; the same agent keeps its value across retries, later turns, resume, and context compaction. This default also applies when selecting `preset = "kimi_code"` or `profile = "kimi_code"` explicitly.
 
 ### OpenCode
 
@@ -409,6 +411,18 @@ Later layers override earlier ones (global → provider → model). With no laye
 [providers.my-gateway.request_identity]
 preset = "opencode_compatible"
 ```
+
+To keep Kimi Code's previous shared identity across all agents in a session, select `shared_session` explicitly. This continues to send the original Kiki session ID as the cache identity:
+
+```toml
+[providers.my-gateway.request_identity]
+profile = "kimi_code"
+
+[providers.my-gateway.request_identity.overrides.lineage]
+session_scope = "shared_session"
+```
+
+Valid `config.toml` edits [reload automatically](./config-files.md#applying-configuration-changes). Request identity is frozen for a turn when its first model request is prepared; changes apply from the next turn, without restarting Kiki.
 
 ### Client versions
 

@@ -375,12 +375,14 @@ Kiki 内置六种身份。内置身份只读，用「复制并编辑」得到的
 
 | 身份 | preset / 身份 ID | 请求特征 |
 | --- | --- | --- |
-| Kimi Code | `kimi_code` / `kimi_code` | Kiki 原生客户端：在 Kimi 提供商上附带 `X-Msh-*` 设备头 |
+| Kimi Code | `kimi_code` / `kimi_code` | Kiki 原生客户端：每个 Agent 会话使用稳定的缓存身份，在 Kimi 提供商上另附带 `X-Msh-*` 设备头 |
 | Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent 与 `originator`，仅 OpenAI Responses |
 | Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent、`x-app` 及 `X-Stainless-*`，仅 Anthropic Messages |
 | Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent 与 `x-grok-*` 会话、轮次请求头，可用于 Chat Completions、Responses 或 Messages |
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent、`x-opencode-client: cli`，以及动态的 `x-opencode-session`、`x-opencode-request` |
 | 无 | `none` / `none` | 不发送 Kiki 自选的身份字段：User-Agent、保留身份请求头与 `X-Msh-*` 设备头都会被移除。供应商认证协议要求的字段仍会发出——OAuth token、账号请求头、Grok 客户端版本标记——因为那些属于协议本身，不属于身份 |
+
+Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 会话身份写入 Responses 的 `prompt_cache_key` 和 Messages 的 `metadata.user_id`。不同会话、同一会话内的不同 Agent 使用不同值；同一个 Agent 在重试、后续轮次、续跑和上下文压缩后保持原值。显式选择 `preset = "kimi_code"` 或 `profile = "kimi_code"` 时也使用这一默认值。
 
 ### OpenCode
 
@@ -409,6 +411,18 @@ GUI 的 **设置 → 模型与提供商 → 身份** 是集中页面：左列列
 [providers.my-gateway.request_identity]
 preset = "opencode_compatible"
 ```
+
+如果需要保留 Kimi Code 原先在同一会话所有 Agent 间共享身份的行为，可显式选择 `shared_session`。此时仍使用原始 Kiki 会话 ID 作为缓存身份：
+
+```toml
+[providers.my-gateway.request_identity]
+profile = "kimi_code"
+
+[providers.my-gateway.request_identity.overrides.lineage]
+session_scope = "shared_session"
+```
+
+有效的 `config.toml` 修改会[自动热载](./config-files.md#配置修改如何生效)。每个轮次准备第一次模型请求时会冻结该轮的请求身份；修改从下一轮生效，无需重启 Kiki。
 
 ### 客户端版本
 

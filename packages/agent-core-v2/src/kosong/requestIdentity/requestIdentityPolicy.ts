@@ -403,7 +403,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
   kimi_code: {
     lineage: {
       format: 'kimi_code',
-      sessionScope: 'shared_session',
+      sessionScope: 'agent_session',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',

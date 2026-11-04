@@ -164,6 +164,24 @@ describe('RequestIdentityCatalog profiles', () => {
 });
 
 describe('RequestIdentityCatalog preview', () => {
+  it.each(['openai_responses', 'anthropic'] as const)('uses the Kimi agent-session default in built-in and copied profile previews on %s', async (protocol) => {
+    const { catalog } = createCatalog();
+    const field = protocol === 'anthropic' ? 'metadata.user_id' : 'prompt_cache_key';
+    const copy = await catalog.duplicateProfile('kimi_code');
+    expect(catalog.resolveLayers().lineage.sessionScope).toBe('agent_session');
+    for (const profile of ['kimi_code', copy.id]) {
+      expect(catalog.resolveLayers({ profile }).lineage.sessionScope).toBe('agent_session');
+      const preview = await catalog.preview({ profile, protocol, model: 'example-model' });
+      expect(preview.error).toBeUndefined();
+      expect(preview.params[field]).toBe('00000000-0000-4000-8000-000000000004');
+    }
+    const draft = { ...draftOf(copy), overrides: { lineage: { session_scope: 'shared_session' as const } } };
+    expect((await catalog.preview({ draft, protocol, model: 'example-model' })).params[field])
+      .toBe('00000000-0000-4000-8000-000000000002');
+    expect((await catalog.preview({ profile: 'none', protocol, model: 'example-model' })).params).toEqual({});
+    await catalog.dispose();
+  });
+
   it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('renders the OpenCode service identity over %s', async (protocol) => {
     const { catalog } = createCatalog();
     const preview = await catalog.preview({ profile: 'opencode', protocol, model: 'example-model' });

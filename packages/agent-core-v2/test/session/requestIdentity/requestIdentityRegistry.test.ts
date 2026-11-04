@@ -165,6 +165,42 @@ describe('request identity registry', () => {
     expect(attached.threadId).toBe(first.threadId);
   });
 
+  it.each([false, true])('keeps Kimi agent-session IDs stable without turn storage when installation identity=%s', async (installationIdentity) => {
+    const store: RegistryStore = {};
+    const registry = createRegistry(store);
+    const snapshot = (identities: IRequestIdentityRegistry, agentId: string, turnKey = 'turn:0', compactionWindow = 0) =>
+      identities.snapshot({
+        agentId, turnKey, compactionWindow, logicalIdKind: 'uuidv4',
+        dimensions: {
+          installationIdentity,
+          sharedSessionIdentity: false,
+          agentSessionIdentity: true,
+          threadIdentity: false,
+          logicalRequestIdentity: false,
+          turnIndex: false,
+          turnState: false,
+        },
+      });
+    const main = await snapshot(registry, 'main');
+    const child = await snapshot(registry, 'agent-0');
+    const sibling = await snapshot(registry, 'agent-1');
+    const otherSession = await snapshot(createRegistry({}, { sessionId: 'session-other' }), 'agent-0');
+    const keys = [main, child, sibling, otherSession].map((entry) => entry.agentSessionId);
+    for (const key of keys) expect(key).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(new Set(keys).size).toBe(4);
+    const retry = await snapshot(registry, 'agent-0');
+    const next = await snapshot(registry, 'agent-0', 'turn:1');
+    const compacted = await snapshot(registry, 'agent-0', 'turn:1', 1);
+    const resumed = await snapshot(createRegistry(store), 'agent-0', 'turn:1', 1);
+    for (const entry of [retry, next, compacted, resumed]) {
+      expect(entry.agentSessionId).toBe(child.agentSessionId);
+      expect(entry.logicalId).toBeUndefined();
+      expect(entry.turnIndex).toBeUndefined();
+    }
+    expect(store.reads).toBeUndefined();
+    expect(store.writes).toBeUndefined();
+  });
+
   it('performs no identity or document allocation when every dimension is disabled', async () => {
     const store: RegistryStore = {};
     const snapshot = await createRegistry(store).snapshot({

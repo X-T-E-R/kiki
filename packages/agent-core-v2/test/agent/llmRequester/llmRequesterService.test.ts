@@ -472,17 +472,14 @@ function createService(
   ix.stub(ILogService, log);
   ix.stub(ITelemetryService, telemetry);
   const identityDocs = new Map<string, unknown>(Object.entries(options.identityCatalogDocument === undefined ? {} : { 'request-identity-catalog.json': options.identityCatalogDocument }));
-  const catalog = new RequestIdentityCatalog(
-    ix.get(IBootstrapService),
-    {
-      get: async (_scope: string, key: string) => structuredClone(identityDocs.get(key)),
-      set: async (_scope: string, key: string, value: unknown) => {
-        identityDocs.set(key, structuredClone(value));
-      },
-    } as never,
-    ix.get(IConfigService),
-  );
-  ix.stub(IRequestIdentityCatalog, catalog);
+  ix.stub(IAtomicDocumentStore, {
+    get: async <T>(_scope: string, key: string) => structuredClone(identityDocs.get(key)) as T | undefined,
+    set: async (_scope: string, key: string, value: unknown) => {
+      identityDocs.set(key, structuredClone(value));
+    },
+  });
+  ix.set(IRequestIdentityCatalog, new SyncDescriptor(RequestIdentityCatalog));
+  const catalog = ix.get(IRequestIdentityCatalog);
   ix.stub(IModelCatalog, {
     _serviceBrand: undefined,
     get: () => options.transportModel?.value ?? requester.model,
@@ -529,15 +526,15 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
   return captured;
 }
 
-function createRequestIdentityRegistry(): RequestIdentityRegistry {
-  const ix = new TestInstantiationService();
+function createRequestIdentityRegistry(sessionId = 'session-test'): IRequestIdentityRegistry {
+  const ix = disposables.add(new TestInstantiationService());
   ix.stub(ISessionContext, {
-    sessionId: 'session-test',
-    scope: (key?: string) => `sessions/session-test/${key ?? ''}`,
+    sessionId,
+    scope: (key?: string) => `sessions/${sessionId}/${key ?? ''}`,
   });
   ix.stub(ISessionMetadata, {
     read: async () => ({
-      id: 'session-test',
+      id: sessionId,
       createdAt: 1_700_000_000_000,
       updatedAt: 1_700_000_000_000,
       archived: false,
@@ -554,7 +551,8 @@ function createRequestIdentityRegistry(): RequestIdentityRegistry {
       stored = structuredClone(value);
     },
   });
-  return ix.createInstance(RequestIdentityRegistry);
+  ix.set(IRequestIdentityRegistry, new SyncDescriptor(RequestIdentityRegistry));
+  return ix.get(IRequestIdentityRegistry);
 }
 
 describe('Agent context projection without a Memory consumer', () => {
@@ -1117,6 +1115,86 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
 });
 
 describe('AgentLLMRequesterService request attribution headers', () => {
+  it.each([
+    { protocol: 'anthropic', Provider: AnthropicChatProvider, field: 'metadata.user_id' },
+    { protocol: 'openai_responses', Provider: OpenAIResponsesChatProvider, field: 'prompt_cache_key' },
+  ] as const)('sends stable, agent-separated Kimi $field through the real $protocol SDK', async ({ protocol, Provider, field }) => {
+    const sent: Array<{ key: string | undefined; headers: Headers }> = [];
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { prompt_cache_key?: string; metadata?: { user_id?: string } };
+      sent.push({ key: field === 'metadata.user_id' ? body.metadata?.user_id : body.prompt_cache_key, headers: request.headers });
+      if (sent.length === 1) {
+        return new Response(JSON.stringify({ error: { type: 'request_too_large', message: 'Request Entity Too Large' } }), {
+          status: 413, headers: { 'content-type': 'application/json' },
+        });
+      }
+      const frames = protocol === 'anthropic' ? [
+        { type: 'message_start', message: { id: 'msg_fixture', usage: { input_tokens: 7, output_tokens: 0 } } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'ok' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+        { type: 'message_stop' },
+      ] : [{ type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [
+        { type: 'message', id: 'msg_fixture', role: 'assistant', content: [{ type: 'output_text', text: 'ok', annotations: [] }] },
+      ], usage: { input_tokens: 7, output_tokens: 1 } } }];
+      return new Response(frames.map(frame => `${protocol === 'anthropic' ? `event: ${(frame as { type: string }).type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''),
+        { headers: { 'content-type': 'text/event-stream' } });
+    });
+    try {
+      const model = { ...createRequester({ value: 0 }, null).model, protocol, providerType: 'kimi',
+        authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+      const provider = new Provider({ model: model.name, baseUrl: model.baseUrl, apiKey: 'YOUR_API_KEY' });
+      const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+      const registry = createRequestIdentityRegistry();
+      const makeService = (agentId: string, sessionId = 'session-test', identities = registry,
+        globalRequestIdentity?: { value: RequestIdentityPolicy | undefined }) => createService(requester, undefined, {
+        agentId, sessionId, identityRegistry: identities, globalRequestIdentity,
+      });
+      const main = makeService('main');
+      const request = async (service: IAgentLLMRequesterService, turnId = 1, step = 1) => {
+        await service.request({ source: { type: 'turn', turnId, step } });
+        return sent.at(-1)?.key;
+      };
+      const mainKey = await request(main.service);
+      expect(sent).toHaveLength(2);
+      expect(mainKey).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(sent[0]?.key).toBe(mainKey);
+      const child = makeService('agent-0');
+      const childKey = await request(child.service);
+      const siblingKey = await request(makeService('agent-1').service);
+      const otherSessionKey = await request(makeService('agent-0', 'session-other', createRequestIdentityRegistry('session-other')).service);
+      expect(new Set([mainKey, childKey, siblingKey, otherSessionKey]).size).toBe(4);
+      expect(await request(child.service, 1, 2)).toBe(childKey);
+      expect(await request(child.service, 2)).toBe(childKey);
+      const compacted: ContextMessage = { role: 'assistant', content: [{ type: 'text', text: 'Summary' }], toolCalls: [],
+        origin: { kind: 'compaction_summary' } };
+      await child.service.request({ source: { type: 'operation', requestKind: 'full_compaction' }, messages: [compacted, ...history] });
+      expect(sent.at(-1)?.key).toBe(childKey);
+      const resumed = makeService('agent-0', 'session-test', createRequestIdentityRegistry());
+      await resumed.service.request({ source: { type: 'turn', turnId: 3, step: 1 }, messages: [compacted, ...history] });
+      expect(sent.at(-1)?.key).toBe(childKey);
+      expect(child.identityCatalog.observations()[0]).toMatchObject({ profile: 'kimi_code', cache_key: childKey });
+      for (const entry of sent) {
+        expect(entry.headers.get('x-msh-device-id')).toBe('00000000-0000-4000-8000-000000000009');
+        expect(entry.headers.has('x-kiki-agent-id')).toBe(false);
+      }
+      const globalRequestIdentity: { value: RequestIdentityPolicy | undefined } = {
+        value: { profile: 'kimi_code', overrides: { lineage: { sessionScope: 'shared_session' } } },
+      };
+      const shared = makeService('agent-0', 'session-test', registry, globalRequestIdentity);
+      expect(await request(shared.service)).toBe('session-test');
+      expect(await request(makeService('agent-1', 'session-test', registry, globalRequestIdentity).service)).toBe('session-test');
+      globalRequestIdentity.value = { profile: 'none' };
+      expect(await request(shared.service, 1, 2)).toBe('session-test');
+      expect(await request(shared.service, 2)).toBeUndefined();
+      expect(sent.at(-1)?.headers.has('user-agent')).toBe(false);
+      expect(sent.at(-1)?.headers.has('x-msh-device-id')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('projects a complete Codex-compatible Responses identity', async () => {
     const identityDimensions: RequestIdentityDimensions[] = [];
     const requester = createRequester({ value: 0 }, null, [], undefined, {
@@ -1630,12 +1708,12 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       }
       expect(captured[0]?.headers).not.toHaveProperty('x-kiki-session-id');
       expect(captured[0]?.headers).not.toHaveProperty('x-kiki-agent-id');
-      expect(captured[0]?.cacheKey).toBe('session-main');
-      expect(identitySnapshotCalls.value).toBe(0);
+      expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000003');
+      expect(identitySnapshotCalls.value).toBe(1);
     }
   });
 
-  it('allocates only installation identity when Kimi host device identity is unavailable', async () => {
+  it('allocates installation and agent-session identity when Kimi host device identity is unavailable', async () => {
     const requester = createRequester({ value: 0 }, null, [], undefined, { providerType: 'kimi' });
     const captured = captureRequestParams(requester);
     const identityDimensions: RequestIdentityDimensions[] = [];
@@ -1653,7 +1731,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     expect(identityDimensions).toEqual([{
       installationIdentity: true,
       sharedSessionIdentity: false,
-      agentSessionIdentity: false,
+      agentSessionIdentity: true,
       threadIdentity: false,
       logicalRequestIdentity: false,
       turnIndex: false,
@@ -1684,7 +1762,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       parentAgentId: 'main',
       labels: { parentAgentId: 'main', workItem: 'review' },
     });
-    expect(captured[0]?.cacheKey).toBe('canonical-session');
+    expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000003');
     expect(captured[0]?.headers?.['X-Msh-Device-Id']).not.toBe('canonical-session');
     expect(captured[0]?.headers?.['X-Msh-Device-Id']).not.toBe('canonical-agent');
   });

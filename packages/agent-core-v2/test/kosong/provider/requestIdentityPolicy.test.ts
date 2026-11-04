@@ -60,7 +60,7 @@ describe('request identity policy', () => {
     ['claude_code_compatible', 'claude_code', 'shared_session', 'claude_code'],
     ['grok_build_compatible', 'grok_build', 'agent_session', 'grok_build'],
     ['opencode_compatible', 'opencode', 'agent_session', 'opencode'],
-    ['kimi_code', 'kimi_code', 'shared_session', 'kimi_code'],
+    ['kimi_code', 'kimi_code', 'agent_session', 'kimi_code'],
     ['none', 'none', 'none', 'none'],
   ] as const)('expands %s into complete orthogonal axes', (preset, format, scope, userAgent) => {
     const resolved = resolveAuthoredRequestIdentity({ preset });
@@ -308,15 +308,31 @@ describe('request identity policy', () => {
     expect(kimi.headers?.['X-Msh-Device-Model']).toBeTruthy();
     expect(kimi.headers?.['X-Msh-Os-Version']).toBeTruthy();
     expect(Object.keys(kimi.headers ?? {}).some((key) => key.startsWith('x-kiki-'))).toBe(false);
-    expect(kimi.cacheKey).toBe('raw-session');
+    expect(kimi.cacheKey).toBe(SNAPSHOT.agentSessionId);
 
     const compatible = project(
       { preset: 'kimi_code' },
       { hostRequestHeaders: { 'User-Agent': 'kimi-code-cli/1.0.0' } },
     );
     expect(compatible.headers).toEqual({ 'User-Agent': 'kimi-code-cli/1.0.0' });
-    expect(compatible.cacheKey).toBe('raw-session');
+    expect(compatible.cacheKey).toBe(SNAPSHOT.agentSessionId);
   });
+
+  it.each(['openai_responses', 'anthropic'] as const)(
+    'uses the same Kimi agent-session default for omitted, preset and profile policies on %s',
+    (protocol) => {
+      const policy = resolveRequestIdentityLayers();
+      expect(policy.lineage.sessionScope).toBe('agent_session');
+      expect(resolveAuthoredRequestIdentity({ preset: 'kimi_code' })).toEqual(policy);
+      expect(resolveAuthoredRequestIdentity({ profile: 'kimi_code' })).toEqual(policy);
+      expect(project({ profile: 'kimi_code' }, { protocol }).cacheKey).toBe(SNAPSHOT.agentSessionId);
+      expect(project({
+        profile: 'kimi_code',
+        overrides: { lineage: { sessionScope: 'shared_session' } },
+      }, { protocol }).cacheKey).toBe('raw-session');
+      expect(project({ profile: 'none' }, { protocol }).cacheKey).toBeUndefined();
+    },
+  );
 
   it('round-trips snake-case public policy fields', () => {
     const authored = {
