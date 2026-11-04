@@ -1968,10 +1968,10 @@ export function Sidebar({
 }
 
 /**
- * One session row = status slot + title + trailing time, then at most one
- * quiet fact on a second line (root rows only). Nested rows are a single
- * indented line. Weight is reserved for state (unread / needs you / active),
- * never for hierarchy.
+ * One session row = status slot + title + trailing time, then one quiet
+ * second line for stable workspace identity beside the current state (root
+ * rows only). Nested rows are a single indented line. Weight is reserved for
+ * state (unread / needs you / active), never for hierarchy.
  */
 function SessionRow({
   session,
@@ -2037,10 +2037,9 @@ function SessionRow({
   const rowState = sessionRowState(session, seen);
   const label = resolveTitle(sessionLabel(session, untitled));
   const elapsed = activity === undefined ? undefined : elapsedFor(activity);
-  // The second line holds one fact, the first that exists (nested rows have
-  // none: their position already says where they came from):
-  //   1. what the session waits for        2. countable live progress
-  //   3. where it came from (not nested)   4. where it lives (not in a workspace group)
+  // Live progress changes; the workspace stays on the same second line so a
+  // running row never becomes anonymous. Nested rows keep their single-line
+  // relation, and workspace groups already name the location in their header.
   const liveFacts = activity === undefined || status !== 'running'
     ? []
     : [
@@ -2055,7 +2054,7 @@ function SessionRow({
     : undefined;
   // A worktree session lives in its source repository; the checkout path is Kiki's own.
   const locationPath = session.worktree?.source_root ?? session.metadata.cwd;
-  const location = showLocation && locationPath !== '' ? shortCwd(locationPath) : undefined;
+  const location = !nested && showLocation && locationPath !== '' ? shortCwd(locationPath) : undefined;
   // An unseen run that did not complete says so in words, so failure never
   // rests on the mark's colour alone.
   const failedUnseen = rowState === 'unread' && lifeOf(session) === 'failed';
@@ -2068,7 +2067,7 @@ function SessionRow({
     : archiveError !== undefined
       ? { kind: 'archive-error' as const, text: archiveError }
       : undefined;
-  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation' | 'location'; text: string } | undefined = archiveStatus !== undefined
+  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation'; text: string } | undefined = archiveStatus !== undefined
     ? archiveStatus
     : rowState === 'cleanup-pending'
       ? { kind: 'cleanup-pending', text: t('sidebar.rowState.cleanupPending') }
@@ -2082,13 +2081,9 @@ function SessionRow({
         ? { kind: 'live', text: liveFacts.join(' · ') }
         : relationNote !== undefined
           ? { kind: 'relation', text: relationNote }
-          : location !== undefined
-            ? { kind: 'location', text: location }
-            : undefined;
-  // Which client drives an externally driven session. It sits in the title
-  // row rather than the fact line below: it names the row permanently, while
-  // that line belongs to whatever needs attention right now, and a location
-  // path is the right thing to drop before a source.
+          : undefined;
+  // Which client drives an externally driven session. Origin, workspace and
+  // current state stay beside one another with independent truncation.
   const externalSource = readExternalClientMark(session.metadata)?.clientName;
   // Nested rows carry the relation in their accessible name and tooltip,
   // since on screen it is only the indent (plus the branch glyph).
@@ -2176,7 +2171,7 @@ function SessionRow({
               <RelativeTime at={session.own_updated_at ?? session.updated_at} />
             </span>
           </span>
-          {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 || externalSource !== undefined ? (
+          {location !== undefined || fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 || externalSource !== undefined ? (
             <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
               {/* The source tag leads this line: which client drove the work is
                   a fact about the row, while everything after it is about right
@@ -2189,9 +2184,15 @@ function SessionRow({
                   <span className="max-w-[9rem] truncate">{t('st.xs.source')} · {externalSource}</span>
                 </span>
               ) : null}
-              {fact === undefined || externalSource === undefined ? null : <span aria-hidden>·</span>}
+              {(location === undefined && fact === undefined) || externalSource === undefined ? null : <span aria-hidden>·</span>}
+              {location === undefined ? null : (
+                <span data-session-location className="min-w-0 flex-1 truncate" title={locationPath}>{location}</span>
+              )}
+              {location === undefined || fact === undefined ? null : <span aria-hidden>·</span>}
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
                 <span data-session-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
+              ) : fact.kind === 'cleanup-pending' ? (
+                <span data-session-cleanup-pending className="min-w-0 truncate text-ink-soft">{fact.text}</span>
               ) : fact.kind === 'failed' ? (
                 <span
                   data-session-failed
@@ -2200,7 +2201,7 @@ function SessionRow({
                   {fact.text}
                 </span>
               ) : fact.kind === 'live' ? (
-                <span data-session-live className="min-w-0 truncate text-ink-soft tabular-nums">{fact.text}</span>
+                <span data-session-live className="shrink-0 whitespace-nowrap text-ink-soft tabular-nums">{fact.text}</span>
               ) : fact.kind === 'archiving' ? (
                 // The one place a row says what it is waiting for, in the same
                 // quiet second line as every other row fact.
@@ -2215,12 +2216,10 @@ function SessionRow({
               ) : fact.kind === 'relation' ? (
                 // Could not nest (the creator is filtered out or not loaded).
                 <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
-              ) : (
-                <span data-session-location className="min-w-0 truncate" title={locationPath}>{fact.text}</span>
-              )}
-              <WorktreeMark worktree={session.worktree} className={fact === undefined ? 'max-w-full' : 'max-w-[55%] shrink-0'} />
+              ) : null}
+              <WorktreeMark worktree={session.worktree} className={fact === undefined && location === undefined ? 'max-w-full' : 'max-w-[40%] shrink-0'} />
               {backgroundTasks.length > 0 ? <BackgroundTasksMark tasks={backgroundTasks} /> : null}
-              {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+              {archived ? <span className="shrink-0">{fact === undefined && location === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
             </span>
           ) : null}
         </span>

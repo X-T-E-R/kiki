@@ -81,7 +81,7 @@ export default {
         user_message_id: 'um_fx_tl_active',
         status: 'running',
         content: [{ type: 'text', text: 'Collect the merged PRs for the release notes.' }],
-        created_at: ts(5),
+        created_at: new Date(Date.now() - 12_013_000).toISOString(),
       },
       queued_prompts: [
         {

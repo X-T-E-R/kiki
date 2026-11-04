@@ -5076,7 +5076,7 @@ class FixtureServer {
     if (tail === '/questions') {
       return this.envelope(res, { items: session.pendingQuestions });
     }
-    const questionMatch = /^\/questions\/([^/]+)(:dismiss)?$/.exec(tail);
+    const questionMatch = /^\/questions\/([^/]+?)(:dismiss)?$/.exec(tail);
     if (questionMatch !== null && body !== undefined) {
       const question = session.pendingQuestions.find((q) => q.question_id === questionMatch[1]);
       if (question === undefined) return this.envelope(res, { resolved: false }, 40902, 'question.already_resolved');

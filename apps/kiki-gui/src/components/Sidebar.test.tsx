@@ -796,6 +796,54 @@ describe('Sidebar session row states', () => {
     expect(mixed.container.querySelector('[data-session-row="s-both"]')?.getAttribute('data-session-row-state'))
       .toBe('needs-me');
   });
+
+  it('keeps workspace identity beside live timing, queue depth and pending questions', async () => {
+    listPrompts.mockResolvedValue({
+      active: { created_at: new Date(Date.now() - 224_000).toISOString(), content: 'Run the checks' },
+      queued: [{ id: 'queued-1' }, { id: 'queued-2' }],
+    });
+    listTasks.mockResolvedValue({ items: [] });
+    const running = {
+      ...session('s-running-path'),
+      busy: true,
+      executing: true,
+      main_turn_active: true,
+      metadata: { cwd: 'C:/workshop/apps/kiki-gui' },
+    };
+    const worktree = {
+      ...session('s-running-worktree'),
+      busy: true,
+      executing: true,
+      main_turn_active: true,
+      metadata: { cwd: 'C:/workshop/.kiki/worktrees/checkout' },
+      worktree: { worktree_id: 'wt_1', branch: 'fix/workspace', source_root: 'D:/source/kiki', base_ref: 'refs/heads/main' },
+    };
+    const blocked = {
+      ...session('s-question-path'),
+      pending_interaction: 'question' as const,
+      metadata: { cwd: '/srv/easy-agent/apps/gui' },
+    };
+    const items = [running, worktree, blocked];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
+    for (let index = 0; index < 4; index += 1) await settle();
+
+    const runningRow = container.querySelector('[data-session-row="s-running-path"]');
+    const location = runningRow?.querySelector('[data-session-location]');
+    const live = runningRow?.querySelector('[data-session-live]');
+    expect(location?.textContent).toBe('…/apps/kiki-gui');
+    expect(location?.getAttribute('title')).toBe('C:/workshop/apps/kiki-gui');
+    expect(live?.textContent).toContain('+2 queued');
+    expect(live?.textContent).toMatch(/\d:\d{2}/);
+    expect(location?.parentElement).toBe(live?.parentElement);
+
+    const worktreeLocation = container.querySelector('[data-session-row="s-running-worktree"] [data-session-location]');
+    expect(worktreeLocation?.textContent).toBe('…/source/kiki');
+    expect(worktreeLocation?.getAttribute('title')).toBe('D:/source/kiki');
+    expect(container.querySelector('[data-session-row="s-question-path"] [data-session-location]')?.textContent)
+      .toBe('…/apps/gui');
+    expect(container.querySelector('[data-session-row="s-question-path"] [data-session-needs-you]')?.textContent)
+      .toBe('Awaiting answer');
+  });
 });
 
 describe('Sidebar archive feedback', () => {

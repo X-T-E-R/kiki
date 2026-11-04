@@ -81,6 +81,9 @@ const MATRIX = {
   'native-ssh': ['theme', 'width'],
   'profile-editor': ['theme', 'width'],
   'question-card': ['width'],
+  'question-reconnect': ['width'],
+  'question-dismiss': ['width'],
+  'sidebar-workspace-activity': ['width'],
   'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
   'settings-engines': ['theme', 'width'],
@@ -181,6 +184,9 @@ const SOURCES = {
   approved: { key: 'ia.resolution.approved' },
   kikiAsks: { key: 'ia.kikiAsks' },
   submit: { key: 'ia.submit' },
+  dismissQuestion: { key: 'ia.dismiss' },
+  questionDismissed: { key: 'ia.question.dismissed' },
+  toolQuestionDismissed: { key: 'tc.sem.ask.dismissed' },
   settings: { key: 'sidebar.settings' },
   tabProviders: { key: 'st.ai.tab.providers' },
   capabilities: { key: 'rail.capabilities.title' },
@@ -582,13 +588,14 @@ async function resizeViewport(width) {
 }
 
 async function sendPrompt(text, mode = 'send-now') {
-  await page.fill('textarea', text);
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input], textarea[data-composer]').first();
+  await input.fill(text);
   if (mode === 'queue') {
     // This button is the ordinary send path when idle and the queue path while
     // busy; unlike Ctrl+Enter it never steers into the running turn.
     await page.locator('button[data-send-ready]').click();
   } else {
-    await page.press('textarea', 'Control+Enter');
+    await input.press('Control+Enter');
   }
   console.log(`[flow] sent: ${text}`);
 }
@@ -1375,6 +1382,80 @@ async function scenarioQuestionCard() {
   await shot('question-card-expanded');
   await page.locator('[data-question-history] [data-activity-toggle]').click();
   if (await page.locator('[data-question-details]').count() !== 0) throw new Error('Question details did not collapse');
+}
+
+async function scenarioQuestionReconnect() {
+  const SID = 'session_fixture_question';
+  await selectSession('Fixture: question card');
+  await sendPrompt('Ask me the fixture questions.');
+  await assertTrayVisible('question reconnect pending');
+
+  const subscribed = (await control({ action: 'ws_log' })).data.inbound.filter((frame) => frame.type === 'subscribe').length;
+  await control({ action: 'drop_ws' });
+  await page.waitForFunction(async ({ fixtureUrl, subscribed }) => {
+    const response = await fetch(`${fixtureUrl}/__control`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'ws_log' }),
+    });
+    const body = await response.json();
+    return body.data.inbound.filter((frame) => frame.type === 'subscribe').length > subscribed;
+  }, { fixtureUrl: fixtureUrl(), subscribed }, { timeout: 15_000 });
+  await assertTrayVisible('question reconnect recovered');
+  await shot('question-reconnect-pending');
+
+  await selectSession('Fixture: idle other');
+  if (await page.locator('[data-needs-you-tray]').count() !== 0) throw new Error('the old question followed the user into another session');
+  await selectSession('Fixture: question card');
+  await assertTrayVisible('question reconnect returned');
+  await shot('question-reconnect-returned');
+
+  await page.click('text=Both (Recommended)');
+  await page.click('text=Typecheck');
+  await page.click('text=Visual proof');
+  await page.click(`button:has-text("${S.submit}")`);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 });
+  await page.locator('[data-needs-you-tray]').waitFor({ state: 'detached', timeout: 10_000 });
+  await control({ action: 'resync', session_id: SID });
+  await page.waitForTimeout(600);
+  if (await page.locator('[data-needs-you-tray]').count() !== 0) throw new Error('answered question returned after transcript reset');
+  await shot('question-reconnect-settled');
+}
+
+async function scenarioQuestionDismiss() {
+  const SID = 'session_fixture_question';
+  const dismissRequests = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().includes(':dismiss')) dismissRequests.push(request.url());
+  });
+  await selectSession('Fixture: question card');
+  await sendPrompt('Ask me the fixture questions.');
+  await assertTrayVisible('question dismiss pending');
+  const dismissalResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().includes('/questions/') && response.url().includes(':dismiss'),
+  { timeout: 10_000 });
+  await page.getByRole('button', { name: S.dismissQuestion, exact: true }).click();
+  const dismissal = await dismissalResponse;
+  const dismissalBody = await dismissal.json();
+  if (dismissal.status() !== 200 || dismissalBody.code !== 40909 || dismissalBody.data?.dismissed !== true) {
+    throw new Error(`question dismiss did not settle through the ordinary route: ${dismissal.status()} ${JSON.stringify(dismissalBody)}`);
+  }
+  if (dismissRequests.length !== 1) throw new Error(`question dismiss sent ${dismissRequests.length} requests instead of one`);
+  await page.locator('[data-needs-you-tray]').waitFor({ state: 'detached', timeout: 10_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 10_000 });
+  await page.locator('[data-history-fold] > div > [data-activity-toggle]').click();
+  const history = page.locator('[data-question-history="dismissed"]');
+  await history.waitFor({ timeout: 10_000 });
+  if (!(await history.textContent())?.includes(S.questionDismissed)) {
+    throw new Error(`dismissed question kept the wrong history state: ${await history.textContent()}`);
+  }
+  const toolState = page.locator('[data-tool-semantic="AskUserQuestion"] [data-tool-state]');
+  if ((await toolState.textContent()) !== S.toolQuestionDismissed) {
+    throw new Error(`dismissed question kept the wrong tool state: ${await toolState.textContent()}`);
+  }
+  await shot('question-dismissed');
+  await control({ action: 'resync', session_id: SID });
+  await page.waitForTimeout(600);
+  if (await page.locator('[data-needs-you-tray]').count() !== 0) throw new Error('dismissed question returned after transcript reset');
+  await page.locator('[data-question-history="dismissed"]').waitFor({ timeout: 10_000 });
 }
 
 async function scenarioBusyRail() {
@@ -3585,6 +3666,74 @@ async function scenarioSidebarOrganize() {
   await shot('sidebar-filter-chips');
   await page.click('[data-sidebar-filters-clear-all]');
   await page.waitForSelector('[data-sidebar-filter-chip]', { state: 'detached', timeout: 5000 });
+}
+
+async function scenarioSidebarWorkspaceActivity() {
+  const sessionId = 'session_fixture_tl_queued';
+  const row = page.locator(`[data-session-row="${sessionId}"]`);
+  if ((page.viewportSize()?.width ?? 1440) < 768) {
+    const menu = page.locator(`button[aria-label="${S.openMenuAria}"]`).first();
+    await menu.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await menu.getAttribute('aria-expanded') !== 'true') await menu.click();
+  }
+  await row.waitFor({ timeout: 15_000 });
+  const location = row.locator('[data-session-location]');
+  const live = row.locator('[data-session-live]');
+  await location.waitFor({ timeout: 10_000 });
+  await page.waitForFunction((id) => {
+    const text = document.querySelector(`[data-session-row="${id}"] [data-session-live]`)?.textContent ?? '';
+    return /\d:\d{2}/.test(text) && text.includes('·') && text.includes('1');
+  }, sessionId, { timeout: 10_000 });
+
+  const assertWorkspaceRow = async (label) => {
+    if ((await location.textContent()) !== '…/fixture/workshop') throw new Error(`${label}: short workspace path missing`);
+    if (await location.getAttribute('title') !== 'C:/fixture/workshop') throw new Error(`${label}: full workspace tooltip missing`);
+    const geometry = await row.evaluate((node) => {
+      const path = node.querySelector('[data-session-location]');
+      const activity = node.querySelector('[data-session-live]');
+      const line = path.parentElement;
+      const pathBox = path.getBoundingClientRect();
+      const activityBox = activity.getBoundingClientRect();
+      return {
+        lineHeight: line.getBoundingClientRect().height,
+        overflow: node.scrollWidth - node.clientWidth,
+        separated: pathBox.right <= activityBox.left + 1,
+        truncation: getComputedStyle(path).textOverflow,
+        truncated: path.scrollWidth > path.clientWidth,
+      };
+    });
+    console.log(`[check] ${label}: ${JSON.stringify(geometry)}`);
+    if (geometry.lineHeight > 20 || geometry.overflow > 1 || !geometry.separated || geometry.truncation !== 'ellipsis') {
+      throw new Error(`${label}: workspace and live facts do not share one compact line`);
+    }
+    if ((await row.textContent())?.includes(sessionId) === true) throw new Error(`${label}: bare session id leaked into the row`);
+  };
+
+  await assertWorkspaceRow('sidebar workspace and live activity');
+  await shot('sidebar-workspace-activity');
+
+  const pointRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET' && url.pathname === `/api/sessions/${sessionId}`;
+  }, { timeout: 10_000 });
+  await control({
+    action: 'emit_event',
+    session_id: sessionId,
+    frame: { type: 'session.meta.updated', payload: { sessionId, agentId: 'main', patch: { lastPrompt: 'Refresh without dropping cwd' } } },
+  });
+  await pointRead;
+  await assertWorkspaceRow('sidebar workspace after meta point read');
+  await shot('sidebar-workspace-activity-meta');
+
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
+  await page.locator('[data-session-group="wd_fixture_000000000000"]').waitFor({ timeout: 10_000 });
+  if (await row.locator('[data-session-location]').count() !== 0) throw new Error('workspace group repeats the path in every row');
+  if (await row.locator('[data-session-live]').count() !== 1) throw new Error('workspace group dropped live activity');
+  await shot('sidebar-workspace-activity-grouped');
+  await pickViewOption('[data-group-by="time"]');
+  await closeViewMenu();
+  await location.waitFor({ timeout: 10_000 });
 }
 
 async function scenarioResponsive() {
@@ -7579,6 +7728,9 @@ const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
   'composer-caret': { fixture: 'thread-links' },
+  'sidebar-workspace-activity': { fixture: 'thread-links' },
+  'question-reconnect': { fixture: 'question-card' },
+  'question-dismiss': { fixture: 'question-dismiss' },
   'execution-pause': { fixture: 'usage-dashboard' },
   'live-agents-compact': { fixture: 'live-agents-compact' },
   'live-agents-attention': { fixture: 'live-agents-attention' },
@@ -7604,6 +7756,8 @@ const BODIES = [
   ['goal-queue', scenarioGoalQueue],
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],
+  ['question-reconnect', scenarioQuestionReconnect],
+  ['question-dismiss', scenarioQuestionDismiss],
   ['busy-rail', scenarioBusyRail],
   ['notes-rail', scenarioNotesRail],
   ['burst', scenarioBurst],
@@ -7622,6 +7776,7 @@ const BODIES = [
   ['resync-hold', scenarioResyncHold],
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
+  ['sidebar-workspace-activity', scenarioSidebarWorkspaceActivity],
   ['workspace-history', scenarioWorkspaceHistory],
   ['empty-states', scenarioEmptyStates],
   ['new-no-workspace', scenarioNewNoWorkspace],

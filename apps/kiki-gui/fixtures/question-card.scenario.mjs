@@ -14,6 +14,7 @@ import {
 } from './helpers.mjs';
 
 const SID = 'session_fixture_question';
+const OTHER_SID = 'session_fixture_question_idle';
 const CALL = fid('call');
 const QUESTIONS = [
   {
@@ -36,8 +37,11 @@ const QUESTIONS = [
 ];
 
 export default {
-  sessions: [sessionRecord(SID, { title: 'Fixture: question card' })],
-  snapshots: { [SID]: { messages: [] } },
+  sessions: [
+    sessionRecord(SID, { title: 'Fixture: question card' }),
+    sessionRecord(OTHER_SID, { title: 'Fixture: idle other' }),
+  ],
+  snapshots: { [SID]: { messages: [] }, [OTHER_SID]: { messages: [] } },
   // The composer's frozen profile-domain read: without a seeded profile the
   // unseeded default leaves the model domain "unknown" and send disabled.
   agentPanel: {

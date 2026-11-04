@@ -259,7 +259,7 @@ function withTimeout(promise, ms, label) {
 
 /** The app shell renders the sidebar on every route; the composer follows. */
 const SHELL_READY = '[data-session-sidebar]';
-const COMPOSER_READY = 'textarea:not([disabled])';
+const COMPOSER_READY = '[data-composer-input]:not([aria-disabled="true"]), textarea:not([disabled])';
 
 /**
  * Wait until the fixture server has seen the app's websocket handshake. The
