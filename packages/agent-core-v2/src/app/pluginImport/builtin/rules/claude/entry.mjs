@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { open, realpath, readdir, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { prefixUtf16 } from '../files.mjs';
 import { activeConversation } from './native-selection.mjs';
 
 const definition = { schemaVersion: 1, id: 'claude-code', label: 'Claude Code', formatVersion: 'claude-jsonl-v1' };
@@ -61,7 +62,7 @@ function convert(raw, ordinal) {
     for (let part = 0, offset = 0; offset < value.length || part === 0; part++) {
       let end = Math.min(value.length, offset + 48 * 1024);
       if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1])) end--;
-      records.push({ id, part, role, text: value.slice(offset, end), timestamp: typeof raw.timestamp === 'string' ? raw.timestamp.slice(0, 100) : undefined, ...extra });
+      records.push({ id, part, role, text: value.slice(offset, end), timestamp: typeof raw.timestamp === 'string' ? prefixUtf16(raw.timestamp, 100) : undefined, ...extra });
       offset = end;
     }
   };
@@ -71,14 +72,14 @@ function convert(raw, ordinal) {
     for (const block of value) {
       if (block?.type === 'text') add(role, block.text);
       else if (block?.type === 'thinking') add(role, block.thinking);
-      else if (block?.type === 'tool_use' || block?.type === 'server_tool_use') add('tool_call', block.input, { toolName: String(block.name ?? '').slice(0, 200), toolCallId: String(block.id ?? '').slice(0, 200) });
+      else if (block?.type === 'tool_use' || block?.type === 'server_tool_use') add('tool_call', block.input, { toolName: prefixUtf16(String(block.name ?? ''), 200), toolCallId: prefixUtf16(String(block.id ?? ''), 200) });
       else if (block?.type === 'tool_result' || block?.type === 'server_tool_result') {
-        add('tool', typeof block.content === 'string' ? block.content : '', { toolCallId: String(block.tool_use_id ?? '').slice(0, 200) });
+        add('tool', typeof block.content === 'string' ? block.content : '', { toolCallId: prefixUtf16(String(block.tool_use_id ?? ''), 200) });
         if (Array.isArray(block.content)) content(block.content, 'tool');
       } else if (['image', 'document', 'input_image'].includes(block?.type)) {
         losses.push(loss('attachment_not_imported', 'Referenced or embedded attachment is not copied; text history remains available'));
         add('metadata', `[${block.type}: attachment not imported]`);
-      } else { losses.push(loss('unknown_block', `Unknown Claude content block: ${String(block?.type).slice(0, 100)}`)); add('metadata', block); }
+      } else { losses.push(loss('unknown_block', `Unknown Claude content block: ${prefixUtf16(String(block?.type), 100)}`)); add('metadata', block); }
     }
   };
   if (raw.type === 'user' || raw.type === 'assistant') {
@@ -87,7 +88,7 @@ function convert(raw, ordinal) {
     if (raw.message?.usage) add('metadata', { externalUsage: raw.message.usage });
   } else if (raw.type === 'summary') add('system', raw.summary);
   else if (['custom-title', 'ai-title', 'system', 'file-history-snapshot', 'queue-operation', 'progress'].includes(raw.type)) add(raw.type === 'system' ? 'system' : 'metadata', raw);
-  else { losses.push(loss('unknown_record', `Unknown Claude record: ${String(raw.type).slice(0, 100)}`)); add('metadata', raw); }
+  else { losses.push(loss('unknown_record', `Unknown Claude record: ${prefixUtf16(String(raw.type), 100)}`)); add('metadata', raw); }
   return { records, losses };
 }
 async function discover({ home, cursor }, { signal }) {
@@ -185,8 +186,8 @@ async function probeBase({ home, externalId }, { signal }) {
     try {
       const raw = JSON.parse(line.text);
       if (['user', 'assistant', 'summary', 'custom-title'].includes(raw.type)) recognized = true;
-      if (raw.type === 'custom-title') title = String(raw.customTitle ?? title).slice(0, 500);
-      if (count === 0 && raw.type === 'user' && typeof raw.message?.content === 'string') title = raw.message.content.slice(0, 160);
+      if (raw.type === 'custom-title') title = prefixUtf16(String(raw.customTitle ?? title), 500);
+      if (count === 0 && raw.type === 'user' && typeof raw.message?.content === 'string') title = prefixUtf16(raw.message.content, 160);
     } catch { losses.push(loss('bad_jsonl_sample', 'Invalid JSONL row in preview sample; full import counts are reported separately')); }
     if (++count >= 64) break;
   }

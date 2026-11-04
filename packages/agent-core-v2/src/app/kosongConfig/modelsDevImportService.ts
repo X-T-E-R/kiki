@@ -9,6 +9,7 @@ import {
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -308,7 +309,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function truncateUpstreamMessage(err: unknown, limit = 300): string {
   const text = err instanceof Error ? err.message : String(err);
-  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+  return text.length > limit ? `${sliceUtf16(text, 0, limit)}…` : text;
 }
 
 registerScopedService(

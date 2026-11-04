@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
   DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS,
@@ -28,10 +29,11 @@ export class ToolOutputAccumulator {
   }
 
   write(text: string): void {
+    const remainingRetention = DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS - this.totalCharsValue;
     this.totalCharsValue += text.length;
-    if (this.retainedChars >= DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS) return;
-    const remainingRetention = DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS - this.retainedChars;
-    const kept = text.length <= remainingRetention ? text : text.slice(0, remainingRetention);
+    if (remainingRetention <= 0) return;
+    let kept = sliceUtf16(text, 0, remainingRetention);
+    if (kept.length === remainingRetention) kept = kept.replace(/[\uD800-\uDBFF]$/, '');
     this.buffer.push(kept);
     this.retainedChars += kept.length;
   }

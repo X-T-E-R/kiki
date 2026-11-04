@@ -1,5 +1,6 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { capabilityDeltaParts, capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { SELECT_TOOLS_TOOL_NAME } from './toolSelect';
 
@@ -124,5 +125,5 @@ function firstDescriptionSentence(description: string): string {
   const normalized = description.trim().replaceAll(/\s+/gu, ' ');
   const sentence = normalized.match(/^.*?[.!?。！？]/u)?.[0]?.trim() ?? normalized;
   if (sentence.length <= 100) return sentence;
-  return `${sentence.slice(0, 99).trimEnd()}…`;
+  return `${sliceUtf16(sentence, 0, 99).trimEnd()}…`;
 }

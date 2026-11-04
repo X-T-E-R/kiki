@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { fileAdapter, readInput, jsonLines, recordBuilder } from './files.mjs';
+import { fileAdapter, prefixUtf16, readInput, jsonLines, recordBuilder } from './files.mjs';
 
 export const definition = { schemaVersion: 1, id: 'grok', label: 'Grok Build', formatVersion: 'grok-acp-v1' };
 export function projectGrok({ summary, updates }, signal) {
@@ -30,7 +30,7 @@ export function projectGrok({ summary, updates }, signal) {
       else throw new Error('Grok message update is malformed');
     } else if (kind === 'tool_call' || kind === 'tool_call_update') {
       if (typeof update.toolCallId !== 'string' || !update.toolCallId) throw new Error('Grok tool update is missing its call id');
-      const extra = { toolName: String(update.title ?? '').slice(0, 200), toolCallId: update.toolCallId.slice(0, 200) };
+      const extra = { toolName: prefixUtf16(String(update.title ?? ''), 200), toolCallId: prefixUtf16(update.toolCallId, 200) };
       if (kind === 'tool_call') builder.add('tool_call', update.rawInput ?? {}, extra);
       else if (['completed', 'failed'].includes(update.status)) {
         const blocks = Array.isArray(update.content) ? update.content : [];

@@ -133,6 +133,18 @@ describe('formatter — limits', () => {
     expect(text).toMatch(/huge="?y{300,}…/);
   });
 
+  it('preserves complete surrogate pairs in character and byte-capped diagnostics', () => {
+    const msg = `${'m'.repeat(MSG_MAX_CHARS - 2)}🛰tail`;
+    const value = `${'v'.repeat(CTX_VALUE_MAX_CHARS - 2)}🛰tail`;
+    const stackPrefix = 's'.repeat(STACK_MAX_BYTES - Buffer.byteLength(' …truncated') - 3);
+    const { text } = formatEntry(baseEntry({ msg, ctx: { value },
+      error: { message: 'failure', stack: `${stackPrefix}🛰${'s'.repeat(100)}` } }));
+    expect(text.isWellFormed()).toBe(true);
+    expect(text).toContain(`${'m'.repeat(MSG_MAX_CHARS - 2)}…`);
+    expect(text).toContain(`value=${'v'.repeat(CTX_VALUE_MAX_CHARS - 2)}…`);
+    expect(text).toContain(`${stackPrefix} …truncated`);
+  });
+
   it('byte-slices the rendered head when entry exceeds ENTRY_MAX_BYTES', () => {
     const ctx: Record<string, unknown> = {};
     for (let i = 0; i < 1000; i++) ctx[`k${i}`] = 'v'.repeat(50);

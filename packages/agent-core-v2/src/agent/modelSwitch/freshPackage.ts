@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { createCompactionSummaryMessage } from '#/agent/contextMemory/compactionHandoff';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { historyPointer, type RelayInput } from '#/agent/fullCompaction/relayPackage';
@@ -55,10 +56,10 @@ export function buildFreshPackage(input: FreshPackageInput): readonly ContextMes
     let high = block.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      if (input.estimateMessages(messages([...selected, block.slice(0, mid) + suffix])) <= input.maxTokens) low = mid;
+      if (input.estimateMessages(messages([...selected, sliceUtf16(block, 0, mid) + suffix])) <= input.maxTokens) low = mid;
       else high = mid - 1;
     }
-    if (low > 0) selected.push(block.slice(0, low) + suffix);
+    if (low > 0) selected.push(sliceUtf16(block, 0, low) + suffix);
   }
   return messages(selected);
 }

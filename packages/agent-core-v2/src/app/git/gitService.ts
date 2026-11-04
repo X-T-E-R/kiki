@@ -2,6 +2,7 @@ import type { FsDiffResponse, FsGitStatusResponse, FsPullRequest } from './git';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ErrorCodes, Error2 } from '#/errors';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IRuntimeResolver, IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
@@ -115,7 +116,7 @@ export class GitService implements IGitService {
     const truncated = diffStdout.length > DIFF_MAX_BYTES;
     return {
       path: relPath,
-      diff: truncated ? diffStdout.slice(0, DIFF_MAX_BYTES) : diffStdout,
+      diff: truncated ? sliceUtf16(diffStdout, 0, DIFF_MAX_BYTES) : diffStdout,
       truncated,
     };
   }

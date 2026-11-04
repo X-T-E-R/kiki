@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 
@@ -66,7 +67,7 @@ function webbridgeResult(data: Record<string, unknown>): MCPToolResult {
 
 function webbridgeFailureText(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Kimi WebBridge request failed';
-  return message.replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  return sliceUtf16(message.replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim(), 0, 240);
 }
 
 function assertWebbridgeAvailable(status: Awaited<ReturnType<typeof readWebbridgeStatus>>): asserts status is NonNullable<typeof status> {

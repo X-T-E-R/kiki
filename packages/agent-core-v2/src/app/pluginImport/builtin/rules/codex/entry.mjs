@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { open, realpath, readdir, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { prefixUtf16 } from '../files.mjs';
 import { codexConversationIndex, portableCodexRecord } from './native-selection.mjs';
 
 const definition = { schemaVersion: 1, id: 'codex', label: 'Codex', formatVersion: 'codex-rollout-jsonl-v1' };
@@ -57,7 +58,7 @@ function convert(raw, ordinal) {
     for (let part = 0, offset = 0; offset < value.length || part === 0; part++) {
       let end = Math.min(value.length, offset + 48 * 1024);
       if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1])) end--;
-      records.push({ id, part, role, text: value.slice(offset, end), timestamp: typeof raw.timestamp === 'string' ? raw.timestamp.slice(0, 100) : undefined, ...extra });
+      records.push({ id, part, role, text: value.slice(offset, end), timestamp: typeof raw.timestamp === 'string' ? prefixUtf16(raw.timestamp, 100) : undefined, ...extra });
       offset = end;
     }
   };
@@ -69,15 +70,15 @@ function convert(raw, ordinal) {
       else if (['input_image', 'image', 'document'].includes(block?.type)) {
         losses.push(loss('attachment_not_imported', 'Referenced or embedded attachment is not copied; text history remains available'));
         add('metadata', `[${block.type}: attachment not imported]`);
-      } else { losses.push(loss('unknown_block', `Unknown Codex content block: ${String(block?.type).slice(0, 100)}`)); add('metadata', block); }
+      } else { losses.push(loss('unknown_block', `Unknown Codex content block: ${prefixUtf16(String(block?.type), 100)}`)); add('metadata', block); }
     }
   };
   if (raw.type === 'response_item') {
     if (payload.type === 'message' && ['user', 'assistant', 'system', 'developer'].includes(payload.role)) content(payload.content, payload.role === 'developer' ? 'system' : payload.role);
-    else if (['function_call', 'custom_tool_call'].includes(payload.type)) add('tool_call', payload.arguments ?? payload.input, { toolName: String(payload.name ?? '').slice(0, 200), toolCallId: String(payload.call_id ?? '').slice(0, 200) });
-    else if (['function_call_output', 'custom_tool_call_output'].includes(payload.type)) add('tool', payload.output, { toolCallId: String(payload.call_id ?? '').slice(0, 200) });
+    else if (['function_call', 'custom_tool_call'].includes(payload.type)) add('tool_call', payload.arguments ?? payload.input, { toolName: prefixUtf16(String(payload.name ?? ''), 200), toolCallId: prefixUtf16(String(payload.call_id ?? ''), 200) });
+    else if (['function_call_output', 'custom_tool_call_output'].includes(payload.type)) add('tool', payload.output, { toolCallId: prefixUtf16(String(payload.call_id ?? ''), 200) });
     else if (payload.type === 'reasoning') { content(payload.summary ?? payload.content ?? [], 'assistant'); if (payload.encrypted_content) losses.push(loss('encrypted_reasoning', 'Encrypted reasoning cannot be decoded')); }
-    else { losses.push(loss('unknown_response', `Unknown Codex response item: ${String(payload.type).slice(0, 100)}`)); add('metadata', payload); }
+    else { losses.push(loss('unknown_response', `Unknown Codex response item: ${prefixUtf16(String(payload.type), 100)}`)); add('metadata', payload); }
   } else if (raw.type === 'event_msg') {
     if (['user_message', 'agent_message', 'agent_reasoning'].includes(payload.type)) add(payload.type === 'user_message' ? 'user' : 'assistant', payload.message ?? payload.text);
     else add('metadata', payload);
@@ -85,7 +86,7 @@ function convert(raw, ordinal) {
   else if (raw.type === 'session_meta' || raw.type === 'turn_context') {
     add('metadata', payload);
     if (payload.history_base || payload.forked_from_id || payload.parent_thread_id) losses.push(loss('inherited_history_not_loaded', 'Parent thread history is not loaded automatically; selected file is archived as stored'));
-  } else { losses.push(loss('unknown_record', `Unknown Codex record: ${String(raw.type).slice(0, 100)}`)); add('metadata', raw); }
+  } else { losses.push(loss('unknown_record', `Unknown Codex record: ${prefixUtf16(String(raw.type), 100)}`)); add('metadata', raw); }
   return { records, losses };
 }
 async function discover({ home, cursor }, { signal }) {
@@ -183,7 +184,7 @@ async function probeBase({ home, externalId }, { signal }) {
     try {
       const raw = JSON.parse(line.text);
       if (['session_meta', 'response_item', 'event_msg'].includes(raw.type)) recognized = true;
-      if (raw.payload?.type === 'thread_name_updated') title = String(raw.payload.thread_name ?? raw.payload.threadName ?? title).slice(0, 500);
+      if (raw.payload?.type === 'thread_name_updated') title = prefixUtf16(String(raw.payload.thread_name ?? raw.payload.threadName ?? title), 500);
     } catch { losses.push(loss('bad_jsonl_sample', 'Invalid JSONL row in preview sample; full import counts are reported separately')); }
     if (++count >= 64) break;
   }

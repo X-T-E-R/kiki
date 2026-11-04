@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { basename, dirname } from 'pathe';
 import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage';
@@ -73,7 +74,7 @@ function truncateLine(line: string, maxLength: number): string {
   if (line.length <= maxLength) return line;
   const marker = '...';
   const target = Math.max(maxLength, marker.length);
-  return line.slice(0, target - marker.length) + marker;
+  return sliceUtf16(line, 0, target - marker.length) + marker;
 }
 
 function stripTrailingLf(line: string): string {

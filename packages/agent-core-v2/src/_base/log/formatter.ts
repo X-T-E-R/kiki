@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { LogContext, LogEntry, LogEntryError } from './log';
 
 export const MSG_MAX_CHARS = 200;
@@ -81,7 +82,7 @@ export interface FormattedEntry {
 }
 
 function truncate(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max - 1) + ELLIPSIS;
+  return value.length <= max ? value : sliceUtf16(value, 0, max - 1) + ELLIPSIS;
 }
 
 function serializeValue(raw: unknown): string {
@@ -131,7 +132,7 @@ function clipBytes(text: string, maxBytes: number): string {
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     if (
-      Buffer.byteLength(text.slice(0, mid), 'utf-8') <=
+      Buffer.byteLength(sliceUtf16(text, 0, mid), 'utf-8') <=
       maxBytes - Buffer.byteLength(TRUNCATED_TAIL, 'utf-8')
     ) {
       lo = mid;
@@ -139,7 +140,7 @@ function clipBytes(text: string, maxBytes: number): string {
       hi = mid - 1;
     }
   }
-  return text.slice(0, lo) + TRUNCATED_TAIL;
+  return sliceUtf16(text, 0, lo) + TRUNCATED_TAIL;
 }
 
 function clipStack(stack: string): string {

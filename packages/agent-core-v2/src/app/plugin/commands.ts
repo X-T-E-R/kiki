@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parseFrontmatter } from '#/_base/text/frontmatter';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 import type { PluginCommandDef } from './types';
 
@@ -66,7 +67,7 @@ function descriptionFromBody(body: string): string {
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   if (firstLine === undefined) return 'No description provided.';
-  return firstLine.length > 240 ? `${firstLine.slice(0, 239)}…` : firstLine;
+  return firstLine.length > 240 ? `${sliceUtf16(firstLine, 0, 239)}…` : firstLine;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

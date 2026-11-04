@@ -159,6 +159,48 @@ describe('ToolResultTruncationService', () => {
     await expect(readFile(renderedOutputPath(rendered), 'utf8')).resolves.toBe(retained);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('backs up the retained spill boundary and reports the actual preserved length', async () => {
+    const retained = 'x'.repeat(9_999_999);
+    const full = `${retained}🛰tail`;
+    const result = await truncation.truncateForModel({
+      toolName: 'Lookup', toolCallId: 'call_unicode_retention', result: { output: full },
+    });
+
+    expect(result.output.isWellFormed()).toBe(true);
+    expect(result.output).toContain(`the first ${retained.length} characters (of ${full.length})`);
+    const saved = await readFile(renderedOutputPath(result.output), 'utf8');
+    expect(saved).toBe(retained);
+    expect(saved.isWellFormed()).toBe(true);
+    expect(saved.length).toBeLessThanOrEqual(10_000_000);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('keeps head and tail previews well formed and reports the adjusted coordinates', async () => {
+    const full = `${'x'.repeat(4_095)}🛰\n${bulk('y', 600)}🛰${'z'.repeat(1_023)}`;
+    const result = await truncation.truncateForModel({
+      toolName: 'Lookup', toolCallId: 'call_unicode_previews', result: { output: full },
+    });
+
+    expect(result.output.isWellFormed()).toBe(true);
+    expect(result.output.length).toBeLessThanOrEqual(50_000);
+    expect(result.output).toContain(`[preview: chars [0, 4095)]\n${'x'.repeat(4_095)}`);
+    expect(result.output).toContain(`[preview: chars [${full.length - 1_023}, ${full.length})]\n${'z'.repeat(1_023)}`);
+    await expect(readFile(renderedOutputPath(result.output), 'utf8')).resolves.toBe(full);
+  });
+
+  it.each(['', '\n', '\r\n'])('keeps shaped lines and their terminators within the cap (%j)', async (ending) => {
+    const suffix = `[...truncated]${ending}`;
+    const prefix = 'x'.repeat(2_000 - suffix.length - 1);
+    const full = `${prefix}🛰${'y'.repeat(60_000)}${ending}`;
+    const result = await truncation.truncateForModel({
+      toolName: 'Grep', toolCallId: 'call_unicode_line', result: { output: full },
+    });
+
+    expect(result.output.isWellFormed()).toBe(true);
+    expect(result.output.startsWith(`${prefix}${suffix}`)).toBe(true);
+    expect(`${prefix}${suffix}`.length).toBeLessThanOrEqual(2_000);
+    await expect(readFile(renderedOutputPath(result.output), 'utf8')).resolves.toBe(full);
+  });
+
   it('reuses a pre-spilled output path instead of writing a new file', async () => {
     const existing = join(homeDir, 'task-log.txt');
     await writeFile(existing, 'full log', 'utf8');
@@ -488,12 +530,13 @@ describe('ToolResultTruncationService', () => {
     const longLine = await failing.truncateForModel<ExecutableToolResult>({
       toolName: 'Lookup',
       toolCallId: 'call_fail_long_line',
-      result: { output: 'x'.repeat(60_000) },
+      result: { output: `${'x'.repeat(4_095)}🛰${'y'.repeat(60_000)}🛰${'z'.repeat(1_023)}` },
     });
     expect(longLine.truncated).toBe(true);
     const renderedLongLine = longLine.output;
     expect(typeof renderedLongLine).toBe('string');
     if (typeof renderedLongLine !== 'string') throw new Error('expected string output');
+    expect(renderedLongLine.isWellFormed()).toBe(true);
     expect(renderedLongLine).not.toContain('output_path:');
     expect(renderedLongLine).toContain('could not be saved to a file');
     expect(renderedLongLine.length).toBeLessThan(10_000);

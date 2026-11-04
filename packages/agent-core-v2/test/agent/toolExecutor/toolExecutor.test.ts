@@ -35,7 +35,7 @@ import {
   ToolResultEvent,
 } from '#/agent/toolExecutor/toolExecutorEvents';
 import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
-import { classifyToolArgsJson, parseToolCallArguments } from '#/tool/tool-args-parse';
+import { classifyToolArgsJson, formatToolArgsTruncationRejection, parseToolCallArguments } from '#/tool/tool-args-parse';
 import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import { ToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncationService';
 import { makeAgentScopeContext, IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -1603,6 +1603,14 @@ describe('onWillExecuteTool', () => {
 });
 
 describe('parseToolCallArguments', () => {
+  it('keeps rejected argument previews well formed and counts the actual omission', () => {
+    const prefix = 'x'.repeat(2_047);
+    const raw = `${prefix}🛰tail`;
+    const text = formatToolArgsTruncationRejection('Write', raw, { kind: 'value-truncated', offset: raw.length }, true);
+    expect(text.isWellFormed()).toBe(true);
+    expect(text).toContain(`${prefix}\n… [6 chars omitted]`);
+  });
+
   it('treats null or empty arguments as an empty object', () => {
     expect(parseToolCallArguments(null)).toEqual({ data: {}, parseFailed: false });
     expect(parseToolCallArguments('')).toEqual({ data: {}, parseFailed: false });

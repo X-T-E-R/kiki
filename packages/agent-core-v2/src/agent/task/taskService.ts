@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { createControlledPromise } from '@antfu/utils';
 import { join } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
@@ -928,7 +929,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async readOutput(taskId: string, tail?: number): Promise<string> {
     const output = (await this.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER)).preview;
     if (tail === undefined) return output;
-    return output.slice(-Math.max(0, Math.trunc(tail)));
+    return sliceUtf16(output, -Math.max(0, Math.trunc(tail)));
   }
 
   async suppressTerminalNotification(taskId: string): Promise<void> {

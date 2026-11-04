@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 
 import type { ILogger } from '#/_base/log/log';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -88,7 +89,7 @@ export async function collectGitContext(
   if (logRaw) {
     const logLines = logRaw.split('\n').filter((line) => line.trim().length > 0);
     if (logLines.length > 0) {
-      const body = logLines.map((line) => `  ${line.slice(0, MAX_COMMIT_LINE_LENGTH)}`).join('\n');
+      const body = logLines.map((line) => `  ${sliceUtf16(line, 0, MAX_COMMIT_LINE_LENGTH)}`).join('\n');
       sections.push(`Recent commits:\n${body}`);
     }
   }

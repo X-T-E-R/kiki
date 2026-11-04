@@ -2,6 +2,7 @@ import path from 'pathe';
 
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { SkillErrors } from './errors';
 import type { SkillDefinition, SkillMetadata, SkillSource } from './types';
@@ -162,7 +163,7 @@ function descriptionFromBody(body: string): string {
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   if (firstLine === undefined) return 'No description provided.';
-  return firstLine.length > 240 ? `${firstLine.slice(0, 239)}…` : firstLine;
+  return firstLine.length > 240 ? `${sliceUtf16(firstLine, 0, 239)}…` : firstLine;
 }
 
 function nonEmptyString(value: unknown): string | undefined {

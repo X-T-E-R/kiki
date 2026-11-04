@@ -1,4 +1,4 @@
-import { fileAdapter, readInput, recordBuilder } from './files.mjs';
+import { fileAdapter, prefixUtf16, readInput, recordBuilder } from './files.mjs';
 
 export const definition = { schemaVersion: 1, id: 'opencode', label: 'OpenCode export', formatVersion: 'opencode-export-v1' };
 export function transformShareData(data) {
@@ -41,7 +41,7 @@ export function projectOpenCode(data, signal) {
         else if (typeof part.text === 'string') builder.add(info.role, info.summary ? `[Imported historical compaction summary]\n${part.text}` : part.text);
         else builder.loss('unknown_content', 'Malformed OpenCode text is omitted');
       } else if (part.type === 'tool') {
-        const extra = { toolName: String(part.tool ?? '').slice(0, 200), toolCallId: String(part.callID ?? '').slice(0, 200) };
+        const extra = { toolName: prefixUtf16(String(part.tool ?? ''), 200), toolCallId: prefixUtf16(String(part.callID ?? ''), 200) };
         builder.add('tool_call', part.state?.input ?? {}, extra);
         if (['completed', 'error'].includes(part.state?.status)) builder.add('tool', part.state.output ?? part.state.error ?? '', extra);
         else builder.loss('unfinished_tool_update_not_imported', 'OpenCode unfinished tool state is not resumed');

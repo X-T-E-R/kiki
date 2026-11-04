@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -274,7 +275,7 @@ export class PluginImportService extends Service implements IPluginImportService
       const current = await this.docs.get<ImportJob>(NAMESPACE, this.key('jobs', job.id));
       job = current ?? job;
       const completed = await this.committedJob(job, true);
-      await this.saveJob(completed ?? { ...job, status: signal.aborted ? 'interrupted' : 'failed', error: String(error).slice(0, 2000) });
+      await this.saveJob(completed ?? { ...job, status: signal.aborted ? 'interrupted' : 'failed', error: sliceUtf16(String(error), 0, 2000) });
     }
   }
   private async nativeReceipt(input: Pick<ImportJob, 'selection' | 'sourceHome' | 'revision' | 'destination'>): Promise<ImportJob | undefined> {
@@ -314,7 +315,7 @@ export class PluginImportService extends Service implements IPluginImportService
         const message = nativeMessage(pending);
         if (message) {
           memory.append(message); messages++;
-          if (message.role === 'user') lastPrompt = pending.text.slice(-500);
+          if (message.role === 'user') lastPrompt = sliceUtf16(pending.text, -500);
         }
       };
       for (let page = 0; page < job.pages; page++) {

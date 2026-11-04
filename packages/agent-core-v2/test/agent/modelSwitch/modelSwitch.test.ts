@@ -18,6 +18,7 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { testAgent, agentServices, type TestAgentContext } from '../../harness';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { AgentModelSwitchService } from '#/agent/modelSwitch/modelSwitchService';
+import { buildFreshPackage } from '#/agent/modelSwitch/freshPackage';
 import { AgentModelSwitch, modelSwitchContinuityKey } from '#/agent/modelSwitch/modelSwitchOps';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -466,6 +467,36 @@ describe('model switch engine', () => {
     expect(text).toContain('step_id:"t2.0"');
     expect(text.match(/This context starts from existing task state/g)).toHaveLength(1);
     expect(ctx.llmCalls).toHaveLength(0);
+  });
+
+  it('keeps continuity references well formed at the saved-input cap', async () => {
+    const ctx = await createHost();
+    const prefix = 'x'.repeat(11_999);
+    ctx.get(IAgentContextMemoryService).append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: `${prefix}🛰tail` }],
+      origin: { kind: 'user' } });
+    const latest = ctx.get(IAgentStateService).get(modelSwitchContinuityKey).latestHumanInput;
+    expect(latest?.text).toBe(prefix);
+    expect(latest?.text.isWellFormed()).toBe(true);
+    expect(latest?.text.length).toBeLessThanOrEqual(12_000);
+    expect(latest?.truncated).toBe(true);
+  });
+
+  it('keeps token-fitting previews and every estimated candidate well formed', () => {
+    const seed = { history: [], compactCount: 0, sessionId: 'session', agentId: 'main', epoch: 0, todos: [],
+      estimateText: (text: string) => text.length, maxTokens: Number.MAX_SAFE_INTEGER,
+      estimateMessages: (messages: readonly ContextMessage[]) => {
+        const text = body(messages);
+        expect(text.isWellFormed()).toBe(true);
+        return text.length;
+      } };
+    const baseLength = body(buildFreshPackage(seed)).length;
+    const prefix = 'state-value: '.repeat(20);
+    const suffix = '\n[Preview only; retrieve the full value from the source service or history above.]';
+    const maxTokens = baseLength + 2 + prefix.length + 1 + suffix.length;
+    const text = body(buildFreshPackage({ ...seed, stateViews: [`${prefix}🛰${'z'.repeat(1_000)}`], maxTokens }));
+    expect(text).toContain(`${prefix}${suffix}`);
+    expect(text.isWellFormed()).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(maxTokens);
   });
 
   it('fits a bounded state preview to the target window and leaves full source notes unchanged', async () => {

@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
 import { memoryHandoffMessages, renderMemoryHandoffReferences } from '#/app/memory/memoryProjection';
 import { originalHumanText } from '#/session/todo/continuityState';
@@ -109,8 +110,8 @@ export function renderUserInputSinceNotes(input: RelayInput): { text: string; co
   let fits = true;
   for (const message of users) {
     const full = originalHumanText(message)!.trim();
-    const excerpt = full.slice(0, 600);
-    const pointer = historyPointer(input, sourceOf(message), excerpt.slice(0, 60));
+    const excerpt = sliceUtf16(full, 0, 600);
+    const pointer = historyPointer(input, sourceOf(message), sliceUtf16(excerpt, 0, 60));
     const turn = message.source?.turnId === undefined ? 'unknown' : `t${message.source.turnId}`;
     const line = `- ${turn} (${message.origin?.kind ?? 'user'}): ${excerpt}${full.length > 600 ? '…' : ''} · ${pointer}`;
     const cost = input.estimateText(line);
@@ -157,7 +158,8 @@ export function renderPendingHandoffReviews(input: RelayInput): string {
       const candidate = block.split(/^## [^\r\n]+/m)[0]?.trim();
       if (candidate && candidate !== '(none)') candidates.add(candidate);
     }
-    const pointer = historyPointer(input, sourceOf(message), text.split('\n').find((line) => line.trim() && !line.startsWith('The conversation so far'))?.slice(0, 120));
+    const query = text.split('\n').find((line) => line.trim() && !line.startsWith('The conversation so far'));
+    const pointer = historyPointer(input, sourceOf(message), query === undefined ? undefined : sliceUtf16(query, 0, 120));
     if (pointer) pointers.add(`- ${pointer}`);
   }
   if (summaries.length === 0) return '';
@@ -168,7 +170,7 @@ export function renderPendingHandoffReviews(input: RelayInput): string {
 export function renderLinkedBoardCards(input: RelayInput): string {
   const cards = input.linkedBoardCards?.slice(0, 5) ?? [];
   if (cards.length === 0) return '';
-  return `## Linked board cards\n${cards.map((card) => `- ${card.id}: ${card.title.replaceAll(/\s+/g, ' ').slice(0, 1_000)} (${card.status})`).join('\n')}\nUse BoardRead for details. Card status is independent of TodoList and agent runs.`;
+  return `## Linked board cards\n${cards.map((card) => `- ${card.id}: ${sliceUtf16(card.title.replaceAll(/\s+/g, ' '), 0, 1_000)} (${card.status})`).join('\n')}\nUse BoardRead for details. Card status is independent of TodoList and agent runs.`;
 }
 
 export function renderPendingReceipts(input: RelayInput): string {
@@ -188,8 +190,8 @@ export function renderPendingReceipts(input: RelayInput): string {
       : origin.kind === 'room_message' ? `room ${origin.roomId} (${origin.messageId})` : origin.kind;
     const query = origin.kind === 'task' ? origin.taskId : origin.kind === 'cron_job' ? origin.jobId : id;
     const full = textOf(message);
-    const short = full.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 200) ?? '';
-    const fullBody = full.slice(0, 6_000);
+    const short = sliceUtf16(full.split(/\r?\n/).find((line) => line.trim())?.trim() ?? '', 0, 200);
+    const fullBody = sliceUtf16(full, 0, 6_000);
     const pointer = historyPointer(input, sourceOf(message), query);
     const line = `- ${id}: ${fullBody}\n  ${pointer}`;
     if (input.estimateText(line) <= Math.min(1_500, budget)) {
@@ -217,8 +219,8 @@ export function renderRelay(input: RelayInput): string {
       const result = after.find((candidate) => candidate.role === 'tool' && candidate.toolCallId === call.id);
       const source = sourceOf(result ?? message, call.id);
       const resultBody = result === undefined ? '' : textOf(result).trim();
-      const searchable = resultBody.replaceAll(/\s+/g, ' ').trim().slice(0, 180);
-      const carried = hasRelayCoordinate(source) ? resultBody.slice(0, 240) : resultBody.slice(0, 4_000);
+      const searchable = sliceUtf16(resultBody.replaceAll(/\s+/g, ' ').trim(), 0, 180);
+      const carried = sliceUtf16(resultBody, 0, hasRelayCoordinate(source) ? 240 : 4_000);
       const excerpt = carried.length === 0 ? '' : `: ${carried}${resultBody.length > carried.length ? '…' : ''}`;
       const pointer = hasRelayCoordinate(source)
         ? historyPointer(input, source)
@@ -234,7 +236,7 @@ export function renderRelay(input: RelayInput): string {
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
     renderStandingDirectives(input),
     input.todos.length > 0 ? renderTodoList(input.todos, '## TODO List') : '',
-    lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer ? `\n${conclusionPointer}` : ''}` : '',
+    lastAssistant ? `## Last conclusion\n${sliceUtf16(textOf(lastAssistant), -6_000)}${conclusionPointer ? `\n${conclusionPointer}` : ''}` : '',
     evidence.length > 0 ? `## Evidence since notes\n${evidence.join('\n')}` : '',
     renderPendingReceipts(input),
     renderLinkedBoardCards(input),

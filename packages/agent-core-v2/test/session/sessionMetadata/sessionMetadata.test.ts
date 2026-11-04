@@ -301,6 +301,21 @@ describe('SessionMetadata', () => {
     if (outcomes.ok) expect(outcomes.outcomes.get('task-1')).toMatchObject({ status: 'completed', finalOutput: receipt.slice(0, 2048) });
   });
 
+  it('keeps persisted outcome previews well formed while restoring the full receipt', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const prefix = 'x'.repeat(2_047);
+    const receipt = `${prefix}🛰tail`;
+    await meta.registerAgent('child', { taskId: 'unicode-task', status: 'completed', resultSummary: receipt, error: receipt });
+    const raw = await ix.get(IAtomicDocumentStore).get<{ agents: Record<string, { resultSummary: string; error: string }> }>(META_SCOPE, 'state.json');
+    const preview = raw!.agents['child']!;
+    expect(preview.resultSummary).toBe(prefix);
+    expect(preview.error).toBe(prefix);
+    expect(preview.resultSummary.isWellFormed()).toBe(true);
+    expect(preview.error.isWellFormed()).toBe(true);
+    expect(preview.resultSummary.length).toBeLessThanOrEqual(2_048);
+    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toBe(receipt);
+  });
+
   it('preserves the committed outcome when a sidecar write fails', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.registerAgent('child', { taskId: 'old-task', status: 'completed', resultSummary: 'old receipt' });

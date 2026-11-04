@@ -288,6 +288,22 @@ describe('history tools', () => {
     expect(wrong.result.isError).toBe(true);
   });
 
+  it('pages supplementary characters without splitting pairs or dropping source text', async () => {
+    const text = `${'x'.repeat(2_999)}${'🛰️'.repeat(2_100)}`;
+    const tool = new HistoryReadTool(archive(text), session, workspaces, sessions, caller);
+    const chunks: string[] = [];
+    let page = await run(tool, { turn: 2 });
+    while (true) {
+      const chunk = page.data.text as string;
+      expect(chunk.isWellFormed()).toBe(true);
+      expect(chunk.length).toBeLessThanOrEqual(3_000);
+      chunks.push(chunk);
+      if (page.data.next_cursor === undefined) break;
+      page = await run(tool, { turn: 2, cursor: page.data.next_cursor });
+    }
+    expect(chunks.join('')).toBe(text);
+  });
+
   it('approves a known foreign session without workspace_id and does not read before that approval', async () => {
     const source = archive();
     const reader = new HistoryReadTool(source, session, workspaces, sessions, caller);

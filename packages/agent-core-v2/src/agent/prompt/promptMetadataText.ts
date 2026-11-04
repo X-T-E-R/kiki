@@ -1,5 +1,6 @@
 import type { ContentPart } from '#/kosong/contract/message';
 import { matchSingleMediaPathTag } from '#/agent/media/mediaRef';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 const MAX_TITLE_LENGTH = 200;
 const MAX_LAST_PROMPT_LENGTH = 4000;
@@ -54,7 +55,7 @@ function removeMarkedCompressionText(text: string, presentation: unknown): strin
 }
 
 export function titleFromPromptMetadataText(text: string): string {
-  return text.slice(0, MAX_TITLE_LENGTH);
+  return sliceUtf16(text, 0, MAX_TITLE_LENGTH);
 }
 
 export function promptMetadataTextFromContentParts(
@@ -86,7 +87,7 @@ export function promptMetadataTextFromText(text: string): string | undefined {
     .trim();
 
   if (sanitized.length === 0) return undefined;
-  return sanitized.slice(0, MAX_LAST_PROMPT_LENGTH);
+  return sliceUtf16(sanitized, 0, MAX_LAST_PROMPT_LENGTH);
 }
 
 function promptPartText(part: ContentPart): string | undefined {
