@@ -5181,7 +5181,20 @@ it.each([
     }
     const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source, anchor: marker ? 'marker:message-delivery:reprojected-delivery' : 'turn:t1', seekTurn: 't1', beforeTurn: 't1', orphanTurn: 't1' })).toString('base64url');
     const before = service.memoryReport().coldReads.bytes;
-    const recovered = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor, pageSize: 20 });
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => { elapsed += 251; return elapsed; });
+    let recovered: Awaited<ReturnType<typeof readSessionViewTranscriptPage>>;
+    try { recovered = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor, pageSize: 20 }); }
+    finally { clock.mockRestore(); }
+    if (!marker) expect(recovered).toMatchObject({ items: [], has_more: true, read: { source, readiness: 'preparing' } });
+    for (let attempt = 0; recovered?.read?.readiness === 'preparing' && attempt < 6; attempt++) {
+      expect(recovered).toMatchObject({ items: [], has_more: true, read: { source } });
+      expect(recovered.next_cursor).toBeDefined();
+      expect(JSON.parse(Buffer.from(recovered.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ source, anchor: 'turn:t1', seekTurn: 't1', beforeTurn: 't1', orphanTurn: 't1' });
+      const sliceStart = service.memoryReport().coldReads.bytes;
+      recovered = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: recovered.next_cursor, pageSize: 20 });
+      expect(service.memoryReport().coldReads.bytes - sliceStart).toBeLessThan(8 << 20);
+    }
     expect(forwardSeek).not.toHaveBeenCalled();
     expect(recovered?.items).toContainEqual(expect.objectContaining({ kind: 'turn', turnId: 't1', origin: expect.objectContaining({ kind: delivered ? 'other' : 'task' }), message: expect.any(Object), startedAt: new Date(2000).toISOString() }));
     const task = recovered?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't1');

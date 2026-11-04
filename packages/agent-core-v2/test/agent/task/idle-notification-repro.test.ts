@@ -218,20 +218,28 @@ describe('autonomous child receipt return', () => {
 
   it('N052-F1: restores a pending autonomous receipt from the original child wire without running the child', async () => {
     const original = await receiptPair();
-    let recovered = false;
+    const failed = createControlledPromise<void>();
+    const recovered = createControlledPromise<void>();
+    let attempts = 0;
     const update = original.metadata.updateAgent.bind(original.metadata);
     const blocked = vi.spyOn(original.metadata, 'updateAgent').mockImplementation(async (id, change) => {
-      if (id === 'agent-child' && change(original.metadata.snapshot().agents![id]!).labels?.[COLLABORATION_LATEST_TASK_LABEL] !== undefined && !recovered) {
-        throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+      if (id === 'agent-child' && change(original.metadata.snapshot().agents![id]!).labels?.[COLLABORATION_LATEST_TASK_LABEL] !== undefined) {
+        if (attempts++ === 0) {
+          failed.resolve();
+          throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+        }
+        await recovered;
       }
       return update(id, change);
     });
     try {
       original.child.mockNextResponse({ type: 'text', text: 'Restored original child receipt.' });
       original.parent.mockNextResponse({ type: 'text', text: 'Handled original fixture cleanup.' });
+      const originalTurn = original.parent.untilTurnEnd();
       const prompt = await original.child.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Produce a durable result.' }], toolCalls: [] } });
       await prompt.completion;
-      await vi.waitFor(() => expect(original.parent.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1));
+      await failed;
+      expect(original.parent.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
       const wire = await original.child.persistedWireRecords();
       for (const parentReceiptManaged of [undefined, true]) {
         const excluded = await receiptPair();
@@ -245,18 +253,25 @@ describe('autonomous child receipt return', () => {
         await restored.child.restore(wire);
         expect(Object.values(restored.child.get(IAgentStateService).get(autonomousReceiptsKey).pending)).toEqual([expect.objectContaining({ summary: 'Restored original child receipt.' })]);
         restored.parent.mockNextResponse({ type: 'text', text: 'Handled restored original receipt.' });
+        const restoredTurn = restored.parent.untilTurnEnd();
         restored.created.fire(restored.childHandle);
-        await vi.waitFor(() => expect(notifiedCount(restored.parent)).toBe(1));
+        await restoredTurn;
         await restored.parent.get(IAgentLoopService).settled();
+        expect(notifiedCount(restored.parent)).toBe(1);
         expect(restored.child.llmCalls).toHaveLength(0);
         expect(restored.parent.get(IAgentTaskService).list(false)).toHaveLength(1);
         expect(restored.child.get(IAgentStateService).get(autonomousReceiptsKey).pending).toEqual({});
-        recovered = true;
-        await vi.waitFor(() => expect(notifiedCount(original.parent)).toBe(1));
+        expect(notifiedCount(original.parent)).toBe(0);
+        recovered.resolve();
+        await originalTurn;
         await original.parent.get(IAgentLoopService).settled();
+        expect(notifiedCount(original.parent)).toBe(1);
+        expect(notifiedCount(restored.parent)).toBe(1);
+        expect(original.child.llmCalls).toHaveLength(1);
+        expect(original.parent.get(IAgentTaskService).list(false)).toHaveLength(1);
         expect(restored.parent.get(IAgentTaskService).list(false)[0]?.taskId).toBe(original.parent.get(IAgentTaskService).list(false)[0]?.taskId);
       } finally { await restored.dispose(); }
-    } finally { recovered = true; blocked.mockRestore(); await original.dispose(); }
+    } finally { recovered.resolve(); blocked.mockRestore(); await original.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['main', 'agent-child'])('joins accepted receipt delivery before sealing %s', async (closingAgent) => {
