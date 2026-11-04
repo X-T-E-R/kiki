@@ -3,7 +3,7 @@ import { Compartment, EditorState, StateEffect, StateField, Transaction } from '
 import { Decoration, EditorView, WidgetType, keymap, placeholder, type DecorationSet } from '@codemirror/view';
 import { insertNewline, standardKeymap } from '@codemirror/commands';
 import { findAgentRefs, findConversationRefs } from '@kiki/session-core/composer';
-import { registerComposerInput, type ComposerInputHandle } from '../lib/composerInput';
+import { normalizeComposerText, registerComposerInput, type ComposerInputHandle } from '../lib/composerInput';
 
 export interface ComposerReferenceLabel {
   readonly raw: string;
@@ -173,22 +173,31 @@ export function ComposerInput(props: ComposerInputProps) {
       get disabled() { return view.state.readOnly; },
       focus: (options) => { view.contentDOM.focus(options); },
       setSelectionRange: (start, end, direction) => {
-        const from = Math.min(start, view.state.doc.length);
-        const to = Math.min(end, view.state.doc.length);
+        const from = Math.max(0, Math.min(start, view.state.doc.length));
+        const to = Math.max(0, Math.min(end, view.state.doc.length));
         view.dispatch({ selection: direction === 'backward' ? { anchor: to, head: from } : { anchor: from, head: to } });
       },
       setRangeText: (text, start = view.state.selection.main.from, end = view.state.selection.main.to, mode = 'preserve') => {
-        view.dispatch({ changes: { from: start, to: end, insert: text }, selection: mode === 'select' ? { anchor: start, head: start + text.length } : { anchor: mode === 'start' ? start : start + text.length }, userEvent: 'input' });
+        const inserted = view.state.toText(text);
+        const cursor = start + inserted.length;
+        const selection = mode === 'select'
+          ? { anchor: start, head: cursor }
+          : { anchor: mode === 'start' ? start : cursor };
+        view.dispatch({ changes: { from: start, to: end, insert: inserted }, selection, userEvent: 'input' });
       },
       setValueAndCursor: (value, cursor) => {
-        const at = Math.max(0, Math.min(cursor, value.length));
+        const rawAt = Math.max(0, Math.min(cursor, value.length));
+        const at = view.state.toText(value.slice(0, rawAt)).length;
         externalChange.current = true;
-        view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: value },
-          selection: { anchor: at },
-          annotations: Transaction.addToHistory.of(false),
-        });
-        externalChange.current = false;
+        try {
+          view.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: normalizeComposerText(value) },
+            selection: { anchor: at },
+            annotations: Transaction.addToHistory.of(false),
+          });
+        } finally {
+          externalChange.current = false;
+        }
       },
       select: () => { view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }); },
     };
@@ -204,10 +213,14 @@ export function ComposerInput(props: ComposerInputProps) {
 
   useLayoutEffect(() => {
     const view = viewRef.current;
-    if (view === null || view.composing || view.state.sliceDoc() === props.value) return;
+    const value = normalizeComposerText(props.value);
+    if (view === null || view.composing || view.state.sliceDoc() === value) return;
     externalChange.current = true;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.value }, annotations: Transaction.addToHistory.of(false) });
-    externalChange.current = false;
+    try {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) });
+    } finally {
+      externalChange.current = false;
+    }
   }, [props.value]);
 
   useLayoutEffect(() => {

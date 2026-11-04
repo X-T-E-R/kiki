@@ -115,7 +115,7 @@ import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { ComposerInput } from './ComposerInput';
-import type { ComposerInputHandle } from '../lib/composerInput';
+import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
 import { Icon } from './icons';
 import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
@@ -746,7 +746,7 @@ export function Composer({
   // Phone contract: the IME's Enter is the newline key (sending belongs to
   // the button), and the input text stays ≥16px so iOS never zooms on focus.
   const coarsePointer = useCoarsePointer();
-  const text = value;
+  const text = normalizeComposerText(value);
   const textareaRef = useRef<ComposerInputHandle>(null);
   const composingRef = useRef(false);
   // Custom right-click menu for the input (cut / copy / paste / select all).
@@ -1472,13 +1472,15 @@ export function Composer({
   /** Write a local edit and its caret in one editor transaction, then mirror the controlled value. */
   const applyTextChange = (nextText: string, cursor: number) => {
     setMenu(null);
-    lastCursorRef.current = cursor;
+    const nextValue = normalizeComposerText(nextText);
+    const nextCursor = normalizeComposerText(nextText.slice(0, Math.max(0, Math.min(cursor, nextText.length)))).length;
+    lastCursorRef.current = nextCursor;
     const node = textareaRef.current;
     if (node !== null && !composingRef.current) {
       node.focus();
-      node.setValueAndCursor(nextText, cursor);
+      node.setValueAndCursor(nextValue, nextCursor);
     }
-    onChange(nextText);
+    onChange(nextValue);
   };
 
   // Outside inserts (the sidebar's "Add to conversation"): the snippet lands

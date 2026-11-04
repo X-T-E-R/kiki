@@ -5004,8 +5004,40 @@ async function scenarioComposerCaret() {
     if (raw !== expected) throw new Error(`${name} paste moved the caret: ${JSON.stringify({ expected, actual: raw })}`);
   };
 
+  const pasteCrLfAndCompose = async (name) => {
+    await input.fill('Before\nafter');
+    await input.press('Control+End');
+    await page.evaluate(() => {
+      window.__proofCompositionEvents = [];
+      const composer = document.querySelector('[data-composer-variant="main"] [data-composer-input]');
+      for (const type of ['compositionstart', 'compositionend']) {
+        composer.addEventListener(type, () => { window.__proofCompositionEvents.push(type); });
+      }
+    });
+    await page.evaluate((text) => navigator.clipboard.writeText(text), `clip\r\n${THREAD}`);
+    await input.press('Control+V');
+    const chip = page.locator('[data-composer-variant="main"] [data-thread-ref-overlay-token][data-ref-kind="session"]');
+    await chip.waitFor({ timeout: 5000 });
+    await page.keyboard.type('.');
+
+    const cdp = await page.context().newCDPSession(job().page);
+    await cdp.send('Input.imeSetComposition', { text: '中', selectionStart: 1, selectionEnd: 1 });
+    await cdp.send('Input.insertText', { text: '中' });
+    await page.keyboard.type('文');
+    await cdp.detach();
+    const compositionEvents = await page.evaluate(() => window.__proofCompositionEvents);
+    if (!compositionEvents.includes('compositionstart') || !compositionEvents.includes('compositionend')) {
+      throw new Error(`${name} IME did not complete a composition: ${JSON.stringify(compositionEvents)}`);
+    }
+    await shot(`composer-caret-${name}-crlf-ime`);
+    const raw = await copyDraft();
+    const expected = `Before\nafterclip\n${THREAD}.中文`;
+    if (raw !== expected) throw new Error(`${name} CRLF/IME input broke the live caret: ${JSON.stringify({ expected, actual: raw })}`);
+  };
+
   await openComposerSession();
   await pasteAndProbe('browser');
+  await pasteCrLfAndCompose('browser');
 
   await page.context().addInitScript(spaceDesktopMock, { fixtureUrl: fixtureUrl(), token: FIXTURE_TOKEN, spaces: [], windowMode: 'switch' });
   await page.context().addInitScript(() => {
@@ -5021,6 +5053,7 @@ async function scenarioComposerCaret() {
   await page.goto(`${WEB_URL}/s/session_fixture_tl_current?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await openComposerSession();
   await pasteAndProbe('desktop', true);
+  await pasteCrLfAndCompose('desktop');
 }
 
 /**

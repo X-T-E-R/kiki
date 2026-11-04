@@ -17,6 +17,7 @@ import { I18nProvider } from '../i18n';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { PERMISSION_MODES } from '../lib/permissionModes';
+import { composerInputOf as registeredComposerInputOf } from '../lib/composerInput';
 import { Composer } from './Composer';
 import { composerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
@@ -2537,6 +2538,77 @@ describe('Composer file clipboard policy', () => {
     await dispatchClipboardPaste(textarea);
     expect(onChange).toHaveBeenCalledWith('draft C:/fixtures/report.txt');
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('normalizes CRLF document offsets for direct value and range edits', async () => {
+    const { container } = await renderComposer({ value: 'a\nb' });
+    const textarea = composerInputOf(container);
+    const handle = registeredComposerInputOf(textarea);
+    if (handle === null || handle instanceof HTMLTextAreaElement) throw new Error('registered CodeMirror handle missing');
+
+    expect(() => handle.setValueAndCursor('a\r\nb', 4)).not.toThrow();
+    expect(handle.value).toBe('a\nb');
+    expect(handle.selectionStart).toBe(3);
+    expect(handle.selectionEnd).toBe(3);
+
+    handle.setSelectionRange(-1, 99, 'backward');
+    expect(handle.selectionStart).toBe(0);
+    expect(handle.selectionEnd).toBe(3);
+    expect(handle.selectionDirection).toBe('backward');
+    expect(() => handle.setRangeText('x\r\ny', 0, 3, 'select')).not.toThrow();
+    expect(handle.value).toBe('x\ny');
+    expect(handle.selectionStart).toBe(0);
+    expect(handle.selectionEnd).toBe(3);
+    expect(handle.selectionDirection).toBe('forward');
+  });
+
+  it('keeps a CRLF paste and subsequent input at the live caret', async () => {
+    desktopRuntime.value = true;
+    const { container } = await renderStatefulComposer();
+    const textarea = composerInputOf(container);
+    await typeText(textarea, 'before\nafter');
+    await placeCaret(textarea, textarea.value.length);
+
+    await dispatchClipboardPaste(textarea, [], 'clip\r\nend');
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toBeUndefined();
+    expect(textarea.value).toBe('before\nafterclip\nend');
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+    expect(textarea.selectionEnd).toBe(textarea.value.length);
+
+    const handle = registeredComposerInputOf(textarea);
+    if (handle === null || handle instanceof HTMLTextAreaElement) throw new Error('registered CodeMirror handle missing');
+    await act(async () => { handle.setRangeText('!'); });
+    expect(textarea.value).toBe('before\nafterclip\nend!');
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+
+    await typeText(textarea, 'before\nafter');
+    await placeCaret(textarea, 7);
+    await dispatchClipboardPaste(textarea, [], 'clip\r\nend');
+    expect(textarea.value).toBe('before\nclip\nendafter');
+    expect(textarea.selectionStart).toBe(15);
+    await act(async () => { handle.setRangeText('!'); });
+    expect(textarea.value).toBe('before\nclip\nend!after');
+    expect(textarea.selectionStart).toBe(16);
+  });
+
+  it('pastes into an asynchronously restored CRLF draft without losing the suffix or caret', async () => {
+    desktopRuntime.value = true;
+    const onChange = vi.fn();
+    const { container, rerender } = await renderComposer({ value: '', onChange });
+    await rerender({ value: 'before\r\nafter', onChange });
+    const textarea = composerInputOf(container);
+    const handle = registeredComposerInputOf(textarea);
+    if (handle === null || handle instanceof HTMLTextAreaElement) throw new Error('registered CodeMirror handle missing');
+    expect(handle.value).toBe('before\nafter');
+    await placeCaret(textarea, textarea.value.length);
+
+    const thread = '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    await dispatchClipboardPaste(textarea, [], `\r\n${thread}`);
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toBeUndefined();
+    expect(textarea.value).toBe(`before\nafter\n${thread}`);
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+    expect(onChange).toHaveBeenLastCalledWith(`before\nafter\n${thread}`);
+    expect(container.querySelectorAll('.composer-reference')).toHaveLength(1);
   });
 
   it('keeps the caret after a desktop link pasted into the middle of a draft', async () => {

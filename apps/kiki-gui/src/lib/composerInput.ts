@@ -1,5 +1,10 @@
 export type ComposerSelectionDirection = 'forward' | 'backward' | 'none';
 
+/** Match CodeMirror's default document coordinates at the controlled-text boundary. */
+export function normalizeComposerText(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
 /** The composer's raw-document editing seam, independent of its rendered labels. */
 export interface ComposerInputHandle {
   readonly element: HTMLElement;

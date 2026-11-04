@@ -99,16 +99,19 @@ function patchInput(input: HTMLElement): ComposerInputElement {
         },
         setRangeText: (text, start = viewFor(input).state.selection.main.from, end = viewFor(input).state.selection.main.to, mode = 'preserve') => {
           const view = viewFor(input);
+          const inserted = view.state.toText(text);
+          const cursor = start + inserted.length;
           const selection = mode === 'select'
-            ? { anchor: start, head: start + text.length }
-            : { anchor: mode === 'start' ? start : start + text.length };
-          view.dispatch({ changes: { from: start, to: end, insert: text }, selection, userEvent: 'input' });
+            ? { anchor: start, head: cursor }
+            : { anchor: mode === 'start' ? start : cursor };
+          view.dispatch({ changes: { from: start, to: end, insert: inserted }, selection, userEvent: 'input' });
         },
         setValueAndCursor: (value, cursor) => {
           const view = viewFor(input);
+          const rawAt = Math.max(0, Math.min(cursor, value.length));
           view.dispatch({
-            changes: { from: 0, to: view.state.doc.length, insert: value },
-            selection: { anchor: Math.max(0, Math.min(cursor, value.length)) },
+            changes: { from: 0, to: view.state.doc.length, insert: view.state.toText(value) },
+            selection: { anchor: view.state.toText(value.slice(0, rawAt)).length },
             userEvent: 'input',
           });
         },
@@ -134,13 +137,12 @@ export function composerInput(container: ParentNode): ComposerInputElement {
 export function setComposerInputValue(input: ComposerInputElement, value: string): void {
   const view = viewFor(input);
   const current = view.state.doc.length === 0 ? '' : view.state.sliceDoc();
-  const next = String(value);
-  const end = next.length;
+  const next = view.state.toText(String(value));
   const spec: TransactionSpec = {
-    selection: { anchor: end, head: end },
+    selection: { anchor: next.length, head: next.length },
     annotations: Transaction.userEvent.of('input'),
   };
-  if (current !== next) spec.changes = { from: 0, to: view.state.doc.length, insert: next };
+  if (current !== next.toString()) spec.changes = { from: 0, to: view.state.doc.length, insert: next };
   view.dispatch(spec);
 }
 
