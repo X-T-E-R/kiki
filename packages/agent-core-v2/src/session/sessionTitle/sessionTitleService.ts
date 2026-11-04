@@ -112,10 +112,10 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     if (!this.flags.enabled(AUTO_SESSION_TITLE_FLAG_ID) || resolveSessionTitleModelAlias(this.config) === undefined) return;
     const main = this.agentLifecycle.get(MAIN_AGENT_ID);
     if (main === undefined) return;
-    const input = composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source);
     this.automatic = this.automatic.then(async () => {
       if (!resolveSessionTitleTriggers(this.config).includes(trigger)) return;
-      const text = await input;
+      if ((await this.metadata.read()).titleKind === 'custom') return;
+      const text = await composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source);
       if (text !== undefined) await this.generateAndApply(text, false, source);
     }).catch((error) => {
       this.log.warn(`automatic session title generation failed: ${errorMessage(error)}`);

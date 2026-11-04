@@ -337,11 +337,32 @@ describe('SessionTitleService', () => {
   it('does not treat restored conversation history as a new first turn', async () => {
     nextTurnId = 4; created.fire(main); submitted(); start(4); complete(4); await flush(); expect(titleRequests).toHaveLength(0);
   });
-  it('does not request automatic titles for a manually named session', async () => {
+  it('does not read title excerpts or request automatic titles for a manually named session', async () => {
+    const source = ix.get(IAgentTitlePromptSource);
+    const prompts = vi.spyOn(source, 'firstUserPrompts');
+    const turn = vi.spyOn(source, 'firstTurnExcerpt');
+    const digest = vi.spyOn(source, 'digestExcerpt');
     triggers = ['first_user_message', 'first_turn_completed', 'context_compacted']; await metadata.setTitle('my name');
     submitted(); start(); complete(); digestExcerpt = { recentUsers: [], summary: 'summary' };
     ix.get(IEventBus).publish(new ContextApplyCompaction({ summary: 'summary', compactedCount: 2 }));
     await flush(); expect(titleRequests).toHaveLength(0); expect(metadata.meta.title).toBe('my name');
+    expect(prompts).not.toHaveBeenCalled();
+    expect(turn).not.toHaveBeenCalled();
+    expect(digest).not.toHaveBeenCalled();
+  });
+  it('skips a queued automatic excerpt after the user manually renames the session', async () => {
+    const turn = vi.spyOn(ix.get(IAgentTitlePromptSource), 'firstTurnExcerpt');
+    let release!: () => void;
+    beforeReply = () => new Promise(resolve => { release = resolve; });
+    triggers = ['first_user_message', 'first_turn_completed'];
+    submitted(); await vi.waitFor(() => expect(titleRequests).toHaveLength(1));
+    start(); complete();
+    await metadata.setTitle('my name');
+    release(); await flush();
+    expect(turn).not.toHaveBeenCalled();
+    expect(titleRequests).toHaveLength(1);
+    expect(metadata.meta.title).toBe('my name');
+    expect(published).toHaveLength(0);
   });
   it('never overwrites a manual rename during an automatic request', async () => {
     let release!: () => void; beforeReply = () => new Promise((resolve) => { release = resolve; });
