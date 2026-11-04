@@ -51,6 +51,7 @@ import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
 import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
 import {
   saveSubagentProfileToolSettings,
@@ -1686,14 +1687,16 @@ describe('GET /api/agents', () => {
       expect((await read()).metrics?.['main']).toMatchObject({ inputTokens: 15, totalTokens: 20, totalCostUsd: null });
       usage.record('unpriced-fixture-model', { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 }, undefined, { usageKnown: false });
       const sourceRead = vi.spyOn(server.core.accessor.get(IFileSystemStorageService), 'readStream');
-      const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
-      expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
-      expect(narrow.profile).toBeUndefined();
-      expect(narrow.prompt).toBeUndefined();
-      expect(narrow.tools).toBeUndefined();
-      expect(narrow.targets).toEqual([]);
-      expect(sourceRead).not.toHaveBeenCalled();
-      sourceRead.mockRestore();
+      const settleUsage = vi.spyOn(usageRuntime(server.core).service, 'readAgentUsage');
+      const materialize = vi.spyOn(lifecycle, 'create');
+      for (let request = 0; request < 2; request++) {
+        const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
+        expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
+        expect(narrow.profile).toBeUndefined();
+        expect(narrow.prompt).toBeUndefined();
+        expect(narrow.tools).toBeUndefined();
+        expect(narrow.targets).toEqual([]);
+      }
       const plan = agent.accessor.get(IAgentPlanService);
       await plan.enter();
       const launch = vi.spyOn(dispatch, 'launch');
@@ -1739,6 +1742,9 @@ describe('GET /api/agents', () => {
       expect(launch).not.toHaveBeenCalled();
       expect(registerReader).not.toHaveBeenCalled();
       expect(executable).not.toHaveBeenCalled();
+      expect(materialize).not.toHaveBeenCalled();
+      expect(settleUsage).not.toHaveBeenCalled();
+      expect(sourceRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
       expect(lifecycle.list()).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
