@@ -57,6 +57,7 @@ import { ISessionDeliveryService, resolveCreateDeliveryMode } from '#/session/de
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import {
   sessionEphemeralMcpServersSeed,
@@ -628,6 +629,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (agents.get(MAIN_AGENT_ID) === undefined) {
         await phase('main_agent_create', () => agents.create({ agentId: MAIN_AGENT_ID }));
       }
+      await phase('autonomous_receipt_recovery', () => handle.accessor.get(ISessionSubagentService).recoverReceipts());
       await phase('session_announce', () => this.announceCreated({ sessionId, handle, source: 'resume' }));
     } catch (error) {
       this.sessions.delete(sessionId);

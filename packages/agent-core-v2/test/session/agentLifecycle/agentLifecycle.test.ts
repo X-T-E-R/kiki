@@ -7,7 +7,6 @@ import { Error2, ErrorCodes } from '#/errors';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
-import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { IWireService } from '#/wire/wire';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -68,7 +67,7 @@ import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { McpOAuthService } from '#/mcpCore/oauth/service';
 import { createMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
-import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionSubagentService, pendingSubagentReceiptsKey } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
 import '#/agent/mcp/mcpService';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -93,7 +92,7 @@ import { IFlagService } from '#/app/flag/flag';
 import '#/app/event/eventBusService';
 import { IEventBus } from '#/app/event/eventBus';
 import { TurnStepCompleted } from '#/agent/loop/turnEvents';
-import { TurnEnded } from '#/agent/loop/turnOps';
+import { TurnEnded, TurnPrompt } from '#/agent/loop/turnOps';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { ILogService } from '#/_base/log/log';
@@ -101,14 +100,14 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
-import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
-import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
-import { createWireMetadataRecord, type WireRecord } from '#/wire/record';
+import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL, COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
+import { AGENT_WIRE_RECORD_KEY, createWireMetadataRecord, type WireRecord } from '#/wire/record';
 import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -145,6 +144,18 @@ import {
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { stubFlag } from '../../app/flag/stubs';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
+import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
+import { ISessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycle';
+import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { _util } from '#/_base/di/instantiation';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { SessionActivityView } from '#/session/sessionActivity/sessionActivityService';
+import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
+import { AutonomousReceiptDelivered } from '#/session/subagent/autonomousReceiptOps';
+import { readPendingAutonomousReceipts } from '#/session/subagent/autonomousReceiptRecovery';
+import { AgentTaskPersistence } from '#/agent/task/persist';
 
 const noopLog = {
   _serviceBrand: undefined,
@@ -614,6 +625,184 @@ describe('AgentLifecycleService', () => {
     overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
     vi.restoreAllMocks();
   });
+
+  it('N052-F1: discovers receipt tails incrementally and invalidates the derived cursor on canonical rewrite', async () => {
+    ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+    ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const logs = ix.get(IAppendLogStore);
+    const docs = ix.get(IAtomicDocumentStore);
+    const scope = ix.get(ISessionContext).scope('agents/receipt-cursor');
+    const records: WireRecord[] = [createWireMetadataRecord(),
+      new TurnPrompt({ turnId: 7, input: [], origin: { kind: 'user' }, parentReceiptManaged: false }, 10).serialize(),
+      new ContextAppendMessage({ message: { role: 'assistant', content: [{ type: 'text', text: 'Original cursor receipt.' }], toolCalls: [], source: { turnId: 7 } } }, 11).serialize(),
+      new TurnEnded({ turnId: 7, reason: 'completed' }, 12).serialize(),
+    ];
+    for (const record of records) logs.append(scope, AGENT_WIRE_RECORD_KEY, record);
+    const read = vi.spyOn(logs, 'read');
+    try {
+      const original = await readPendingAutonomousReceipts(scope, logs, docs);
+      expect(original['7']?.summary).toBe('Original cursor receipt.');
+      const checkpoint = await docs.get<{ through: number }>(scope, 'autonomous-receipts-v1');
+      expect(checkpoint!.through).toBeGreaterThan(0);
+      expect(await readPendingAutonomousReceipts(scope, logs, docs)).toEqual(original);
+      expect(read.mock.calls.at(-1)?.[2]?.startOffset).toBe(checkpoint!.through);
+      logs.append(scope, AGENT_WIRE_RECORD_KEY, new AutonomousReceiptDelivered({ turnId: 7 }, 13).serialize());
+      expect(await readPendingAutonomousReceipts(scope, logs, docs)).toEqual({});
+      expect(read.mock.calls.at(-1)?.[2]?.startOffset).toBe(checkpoint!.through);
+      await logs.rewrite(scope, AGENT_WIRE_RECORD_KEY, records);
+      expect(await readPendingAutonomousReceipts(scope, logs, docs)).toEqual(original);
+      expect(read.mock.calls.at(-1)?.[2]?.startOffset).toBe(0);
+    } finally { await logs.close(); }
+  });
+
+  it.each(['cold-resume', 'cold-nested', 'persistent-close', 'short-close'] as const)('N052-F1/F5: ordinary resume and close retain the original child receipt (%s)', async (scenario) => {
+    const parentId = scenario === 'cold-nested' ? 'receipt-parent' : 'main';
+    const root = resolve('.tmp/notification-receipt-lifecycle');
+    await mkdir(root, { recursive: true });
+    const home = await mkdtemp(`${root}/isolated-`);
+    const controllers: TestInstantiationService[] = [];
+    let unavailable = true;
+    let releaseWrite: () => void = () => {};
+    let faultEntered: () => void = () => {};
+    const entered = new Promise<void>((resolve) => { faultEntered = resolve; });
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const delivered: Array<{ taskId: string; output: string }> = [];
+    const executionRuns: ReturnType<typeof vi.spyOn>[] = [];
+    const install = () => {
+      ix.stub(IFileSystemStorageService, new FileStorageService(home));
+      ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+      ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      ix.stub(ISessionIndexMirror, { record: () => {} });
+      ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+      ix.stub(IAgentUsageService, { onDidRecord: Event.None, status: () => ({ total: undefined, byModel: {} }) } as unknown as IAgentUsageService);
+      ix.stub(IAgentTokenCountingService, { statusSize: () => 0 });
+      ix.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', background: [], lastTurn: { turnId: 1, reason: 'completed', at: 0 } }) });
+      ix.stub(ISessionInteractionService, { cancelPendingForTurn: () => {}, listPending: () => [], onDidChangePending: Event.None as ISessionInteractionService['onDidChangePending'] });
+      class ReceiptPromptService {
+        declare readonly _serviceBrand: undefined;
+        drain = promptDrain;
+        list = () => ({ active: undefined, pending: [] });
+      }
+      overrideScopedService<Partial<IAgentPromptService>>(LifecycleScope.Agent, IAgentPromptService, ReceiptPromptService, ScopeActivation.OnDemand);
+      ix.stub(IAgentPromptService, { drain: promptDrain, list: () => ({ pending: [] }) } as unknown as IAgentPromptService);
+      const metadata = ix.get(ISessionMetadata);
+      const update = metadata.updateAgent.bind(metadata);
+      vi.spyOn(metadata, 'updateAgent').mockImplementation(async (id, change) => {
+        const current = metadata.snapshot().agents?.[id];
+        if (id === 'receipt-child' && current !== undefined && change(current).labels?.[COLLABORATION_LATEST_TASK_LABEL]?.startsWith('agent-receipt-')) {
+          if (unavailable) {
+            faultEntered();
+            if (scenario === 'short-close') await writeGate;
+            else throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated persistent ENOSPC');
+          }
+        }
+        await update(id, change);
+      });
+      const context = ix.get(ISessionContext);
+      const persistence = new AgentTaskPersistence(resolve(home, 'parent-tasks'), context.scope(`agents/${parentId}`), ix.get(IAtomicDocumentStore), ix.get(IFileSystemStorageService));
+      ix.stub(IAgentTaskService, {
+        stopAllOnExit, list: () => [], hasUnfinishedWork: () => false,
+        recordCompletedTask: async (...[info, output]: Parameters<IAgentTaskService['recordCompletedTask']>) => {
+          expect(info.ownerAgentId).toBe(parentId);
+          await persistence.commitTerminalTask(info, output);
+          delivered.push({ taskId: info.taskId, output });
+        },
+      } as unknown as IAgentTaskService);
+      executionRuns.push(vi.spyOn(ix.get(IAgentExecutionService), 'run'));
+      ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
+      ix.get(ISessionSubagentService);
+      ix.set(ISessionActivityView, new SyncDescriptor(SessionActivityView));
+      const controllerIx = new TestInstantiationService();
+      controllers.push(controllerIx);
+      for (const { id } of _util.getServiceDependencies(SessionLifecycleService as unknown as _util.DI_TARGET_OBJ)) controllerIx.stub(id, {});
+      controllerIx.stub(IWorkspaceContext, { workspaceId: 'ws_test', cwd: '/fixture' });
+      controllerIx.stub(ISessionIndex, { get: async () => ({ id: context.sessionId, workspaceId: 'ws_test', cwd: '/fixture', createdAt: 0, updatedAt: 0, archived: false }) });
+      controllerIx.stub(ILogService, noopLog);
+      controllerIx.stub(ITelemetryService, ix.get(ITelemetryService));
+      controllerIx.stub(IAppendLogStore, ix.get(IAppendLogStore));
+      controllerIx.set(ISessionLifecycleService, new SyncDescriptor(SessionLifecycleService, [{}]));
+      const controller = controllerIx.get(ISessionLifecycleService);
+      const owner = controller as unknown as { materializeSession(): Promise<ISessionScopeHandle>; sessions: Map<string, ISessionScopeHandle> };
+      const session = { kind: 'session', id: context.sessionId, accessor: ix, dispose: vi.fn(async () => {}) } as unknown as ISessionScopeHandle;
+      vi.spyOn(owner, 'materializeSession').mockImplementation(async () => { owner.sessions.set(session.id, session); return session; });
+      return { controller, metadata, context, persistence, session };
+    };
+    let runtime = install();
+    try {
+      if (parentId !== 'main') await runtime.metadata.registerAgent(parentId, { type: 'sub', parentAgentId: 'main' });
+      await runtime.metadata.registerAgent('receipt-child', { type: 'sub', parentAgentId: parentId, labels: { profileName: 'example-worker' } });
+      const scope = runtime.context.scope('agents/receipt-child');
+      const records: WireRecord[] = [createWireMetadataRecord(),
+        new TurnPrompt({ turnId: 7, input: [], origin: { kind: 'user' }, parentReceiptManaged: false }, 10).serialize(),
+        { type: 'context.append_message', time: 11, message: { role: 'assistant', content: [{ type: 'text', text: 'Original durable child output.' }], toolCalls: [], source: { turnId: 7 } } },
+        new TurnEnded({ turnId: 7, reason: 'completed' }, 12).serialize(),
+      ];
+      for (const record of records) ix.get(IAppendLogStore).append(scope, AGENT_WIRE_RECORD_KEY, record);
+      for (const [agentId, managed] of [['managed-child', true], ['legacy-child', undefined], ['local-child', false]] as const) {
+        await runtime.metadata.registerAgent(agentId, { type: 'sub', parentAgentId: 'main', labels: agentId === 'local-child' ? { autonomousReceiptPolicy: 'local' } : undefined });
+        for (const record of records) ix.get(IAppendLogStore).append(runtime.context.scope(`agents/${agentId}`), AGENT_WIRE_RECORD_KEY, record.type === 'turn.prompt' ? { ...record, parentReceiptManaged: managed } : record);
+      }
+      await ix.get(IAppendLogStore).flush();
+      expect(await runtime.persistence.listTasks()).toEqual([]);
+      await runtime.controller.resume(runtime.session.id);
+      await entered;
+      expect(ix.get(IAgentLifecycleService).list().map((agent) => agent.id)).toEqual(parentId === 'main' ? ['main', 'receipt-child'] : ['main', parentId, 'receipt-child']);
+      expect(runtime.metadata.snapshot().agents?.['receipt-child']?.parentAgentId).toBe(parentId);
+      expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
+      expect(ix.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false });
+      expect(delivered).toEqual([]);
+      const expectedId = createHash('sha256').update('receipt-child:7').digest('hex');
+      const taskId = `agent-receipt-${expectedId.slice(0, 56)}-${expectedId.slice(56)}`;
+      if (scenario === 'persistent-close') {
+        await expect(runtime.controller.close(runtime.session.id)).rejects.toMatchObject({ code: 'storage.disk_full' });
+        expect(ix.get(IAgentLifecycleService).list()).toEqual([]);
+        expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
+        expect(delivered).toEqual([]);
+        expect((await readPendingAutonomousReceipts(scope, ix.get(IAppendLogStore), ix.get(IAtomicDocumentStore)))['7']?.summary).toBe('Original durable child output.');
+        unavailable = false;
+        await runtime.controller.close(runtime.session.id);
+        await ix.get(IAppendLogStore).close();
+        await ix.get(IFileSystemStorageService).close();
+        await disposables.dispose();
+        createTestHost();
+        runtime = install();
+        await runtime.controller.resume(runtime.session.id);
+      } else if (scenario === 'short-close') {
+        let closed = false;
+        const closing = runtime.controller.close(runtime.session.id).then(() => { closed = true; });
+        await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
+        expect(closed).toBe(false);
+        unavailable = false;
+        releaseWrite();
+        await closing;
+        expect(closed).toBe(true);
+      } else {
+        unavailable = false;
+      }
+      await vi.waitFor(() => { expect(delivered).toEqual([{ taskId, output: 'Original durable child output.' }]); });
+      expect((await runtime.persistence.readTask(taskId))?.status).toBe('completed');
+      expect(executionRuns.every((run) => run.mock.calls.length === 0)).toBe(true);
+      await runtime.controller.close(runtime.session.id);
+      await ix.get(IAppendLogStore).close();
+      await ix.get(IFileSystemStorageService).close();
+      await disposables.dispose();
+      createTestHost();
+      runtime = install();
+      await runtime.controller.resume(runtime.session.id);
+      expect(ix.get(IAgentLifecycleService).list().map((agent) => agent.id)).toEqual(['main']);
+      expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(0);
+      expect(delivered).toEqual([{ taskId, output: 'Original durable child output.' }]);
+      await runtime.controller.close(runtime.session.id);
+    } finally {
+      unavailable = false; releaseWrite();
+      for (const agent of ix.get(IAgentLifecycleService).list()) await ix.get(IAgentLifecycleService).remove(agent.id);
+      await ix.get(IAppendLogStore).close();
+      await ix.get(IFileSystemStorageService).close();
+      for (const controller of controllers) await controller.dispose();
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it.each([
     { imageIn: true, expected: true },

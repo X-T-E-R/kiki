@@ -59,11 +59,14 @@ export class AwayNotifier {
   private rate: AttentionRateState = EMPTY_ATTENTION_RATE;
   private deps: AwayNotifierDeps | undefined;
   private scopeKey: string | undefined;
+  private scopeGeneration = 0;
 
   configure(deps: AwayNotifierDeps | undefined): void {
+    if (deps === undefined) this.scopeGeneration += 1;
     if (deps !== undefined && deps.scopeKey !== this.scopeKey) {
       this.rate = EMPTY_ATTENTION_RATE;
       this.scopeKey = deps.scopeKey;
+      this.scopeGeneration += 1;
     }
     this.deps = deps;
   }
@@ -78,6 +81,7 @@ export class AwayNotifier {
     const prefs = (deps.prefs ?? readAwayNotificationPrefs)();
     const wanted = prefs.enabled ? events.filter((event) => prefs.kinds[event.kind]) : [];
     if (wanted.length === 0) return undefined;
+    const generation = this.scopeGeneration;
     let away: boolean;
     try {
       away = await deps.isAway();
@@ -85,12 +89,13 @@ export class AwayNotifier {
       away = false;
     }
     const current = this.deps;
-    if (current === undefined || current.scopeKey !== deps.scopeKey) return undefined;
-    const deliverable = wanted.filter((event) => away ||
+    if (current === undefined || generation !== this.scopeGeneration) return undefined;
+    const currentPrefs = (current.prefs ?? readAwayNotificationPrefs)();
+    const deliverable = wanted.filter((event) => currentPrefs.enabled && currentPrefs.kinds[event.kind]).filter((event) => away ||
       (event.kind === 'completed' && current.isViewingSession !== undefined && !current.isViewingSession(event.sessionId)));
     if (deliverable.length === 0) return undefined;
     const now = (current.now ?? Date.now)();
-    const plan = planAttentionNotifications(deliverable, prefs, this.rate, now);
+    const plan = planAttentionNotifications(deliverable, currentPrefs, this.rate, now);
     this.rate = plan.state;
     if (plan.notification === undefined) return undefined;
     try {
@@ -105,6 +110,8 @@ export class AwayNotifier {
   reset(): void {
     this.rate = EMPTY_ATTENTION_RATE;
     this.deps = undefined;
+    this.scopeKey = undefined;
+    this.scopeGeneration += 1;
   }
 }
 

@@ -563,11 +563,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async recordCompletedTask(info: AgentTaskInfo & { readonly status: 'completed' }, finalOutput: string): Promise<void> {
     const terminal = { ...info, detached: true,
       terminalNotificationSuppressed: info.terminalNotificationSuppressed || this.exitSuppressionArmed || undefined };
-    const receipt = await this.persistence.commitTerminalTask(terminal, finalOutput);
-    const committed = { ...terminal, receipt, receiptVerification: 'verified' as const };
+    const existing = this.ghosts.get(info.taskId) ?? await this.persistence.readTask(info.taskId);
+    const committed = existing?.status === 'completed' && existing.receiptVerification === 'verified'
+      ? existing : { ...terminal, receipt: await this.persistence.commitTerminalTask(terminal, finalOutput), receiptVerification: 'verified' as const };
     this.ghosts.set(info.taskId, committed);
     this.localTaskIds.add(info.taskId);
-    this.recordTaskTerminated(committed, Buffer.from(finalOutput, 'utf-8').subarray(-TERMINAL_OUTPUT_TAIL_BYTES).toString('utf-8'));
+    if (this.states.get(taskKey).get(info.taskId)?.status !== 'completed') {
+      this.recordTaskTerminated(committed, Buffer.from(finalOutput, 'utf-8').subarray(-TERMINAL_OUTPUT_TAIL_BYTES).toString('utf-8'));
+    }
     try {
       await this.dispatcher.flush();
       await this.notifyAgentTask(committed);
@@ -1738,7 +1741,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
     if (generation !== this.notificationUndoGeneration || context === undefined) return;
-    const externalMain = await this.isExternalClientMain();
+    let externalMain: boolean;
+    try { externalMain = await this.isExternalClientMain(); }
+    catch (error) { this.scheduledNotificationKeys.delete(notificationKey(context.origin)); throw error; }
     if (generation !== this.notificationUndoGeneration) return;
     const key = notificationKey(context.origin);
     if (this.deliveredNotificationKeys.has(key) || this.isTerminalNotificationSuppressed(info.taskId)) {

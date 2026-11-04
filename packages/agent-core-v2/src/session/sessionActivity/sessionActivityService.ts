@@ -27,6 +27,7 @@ import type { TurnEndReason } from '#/agent/loop/turnEvents';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionInteractionService, type Interaction } from '#/session/interaction/interaction';
 import { ISessionStateService } from '#/session/state/sessionState';
+import { pendingSubagentReceiptsKey } from '#/session/subagent/subagent';
 
 import {
   ISessionActivityView,
@@ -96,6 +97,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     );
     this._register(this.agents.onDidDispose((agentId) => this.detachAgent(agentId)));
     this._register(this.interactions.onDidChangePending(() => this.recompute('interaction')));
+    this._register(this.states.onDidChange(pendingSubagentReceiptsKey)(() => this.recompute('background')));
     this._register(
       toDisposable(async () => {
         this.disposed = true;
@@ -256,7 +258,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
 
   private aggregate(): SessionActivityState {
     return {
-      busy: this.busyAgents > 0,
+      busy: this.busyAgents > 0 || (this.states.has(pendingSubagentReceiptsKey) && this.states.get(pendingSubagentReceiptsKey) > 0),
       executing: this.executingAgents > 0,
       cleanupPending: this.cleanupPendingAgents > 0 || undefined,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,

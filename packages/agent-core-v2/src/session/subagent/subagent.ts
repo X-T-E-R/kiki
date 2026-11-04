@@ -5,6 +5,9 @@ import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentP
 import type { Turn } from '#/agent/loop/loop';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import type { Hooks } from '#/hooks';
+import { defineState } from '#/state/state';
+
+export const pendingSubagentReceiptsKey = defineState('subagent.pendingReceipts', () => 0);
 
 /** External prompts carry unmaterialized logical inputs in `contextMessages`; executors record them after preparing any history handoff and before provider delivery. */
 export type AgentRunRequest =
@@ -52,6 +55,9 @@ export interface ISessionSubagentService {
   readonly hooks: Hooks<AgentTaskHooks>;
 
   readonly onDidStopAgentTask: Event<AgentTaskStopHookContext>;
+
+  /** Discover saved autonomous results and restore only their receipt owners without executing child work. */
+  recoverReceipts(): Promise<void>;
 
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle>;
 

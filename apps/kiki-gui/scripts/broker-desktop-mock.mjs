@@ -52,6 +52,7 @@ export function brokerDesktopMock({ aUrl, aOwner, homeName }) {
     // The tray badge; the walk never reads it, but the shell calls it on every
     // session-list change and must not log an error for that.
     set_unread_count: () => undefined,
+    acknowledge_desktop_notifications: () => undefined,
     'plugin:event|listen': () => nextCallback++,
     'plugin:event|unlisten': () => undefined,
     'plugin:notification|is_permission_granted': () => true,

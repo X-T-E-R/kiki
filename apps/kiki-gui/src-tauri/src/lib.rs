@@ -1366,7 +1366,7 @@ impl SpaceBackendManager {
             if mode == WindowMode::Switch && newly_pending > 0 && read_main_desktop_prefs(&main_home_for(Path::new(&space.path)).unwrap_or_else(|_| PathBuf::from(&space.path))).notifications {
                 let _ = show_native_notification(app.clone(), format!("Kiki · {}", space.name),
                     Some(format!("{newly_pending} session(s) need your input")),
-                    Some("/activity".to_string()), Some(id.clone()), None);
+                    Some("/activity".to_string()), Some(id.clone()), None, Vec::new(), None);
             }
         }
         true
@@ -2122,14 +2122,8 @@ fn take_navigation_intent() -> Option<serde_json::Value> {
     PENDING_NAVIGATION_INTENT.lock().ok()?.take()
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NotificationScope {
-    home_id: String,
-    scope_id: String,
-    server_home_id: Option<String>,
-    connection_ref: Option<String>,
-}
+mod desktop_notifications;
+use desktop_notifications::NotificationScope;
 
 #[tauri::command]
 fn ack_navigation_intent(navigation_id: String) {
@@ -2174,17 +2168,22 @@ fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str
     let _ = app.emit_to("main", "kiki://notification-click", intent);
 }
 
-fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>) -> Result<(), String> {
+#[cfg(windows)]
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>, session_ids: Vec<String>, delivery_id: Option<String>) -> Result<(), String> {
+    let application_id = app.config().identifier.clone();
+    let registry = app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("notification-registry.json");
+    desktop_notifications::register_application(&application_id, "Kiki")?;
+    let click_scope = scope.clone();
+    desktop_notifications::show(&application_id, &registry, &title, body.as_deref().unwrap_or(""), scope, session_ids, delivery_id, move || {
+        if let Some(route) = &route { deliver_notification_click(&app, route, home_id.as_deref(), click_scope.as_ref()); }
+    }).map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>, _session_ids: Vec<String>, _delivery_id: Option<String>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
     if route.is_some() { notification.action("open", "Open Kiki"); }
-    #[cfg(windows)]
-    if let Ok(exe) = env::current_exe() {
-        let directory = exe.parent().map(|path| path.to_string_lossy().replace('\\', "/"));
-        if !directory.as_deref().is_some_and(|path| path.ends_with("/target/debug") || path.ends_with("/target/release")) {
-            notification.app_id(&app.config().identifier);
-        }
-    }
     #[cfg(target_os = "macos")]
     {
         let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &app.config().identifier });
@@ -2213,10 +2212,23 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 }
 
 #[tauri::command]
-async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, scope: Option<NotificationScope>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
+async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, scope: Option<NotificationScope>, session_ids: Option<Vec<String>>, delivery_id: Option<String>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
     let home_id = scope.as_ref().map(|value| value.home_id.clone()).or_else(|| manager.active_space().ok().map(|space| space.home_id));
-    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, home_id, scope))
+    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, home_id, scope, session_ids.unwrap_or_default(), delivery_id))
         .await.map_err(|error| format!("Notification task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn acknowledge_desktop_notifications(app: AppHandle, session_id: String, scope: NotificationScope, delivery_id: Option<String>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let application_id = app.config().identifier.clone();
+        let registry = app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("notification-registry.json");
+        tauri::async_runtime::spawn_blocking(move || desktop_notifications::acknowledge(&application_id, &registry, &session_id, &scope, delivery_id.as_deref()))
+            .await.map_err(|error| format!("Notification acknowledgment failed: {error}"))?
+    }
+    #[cfg(not(windows))]
+    { let _ = (app, session_id, scope, delivery_id); Ok(()) }
 }
 
 #[tauri::command]

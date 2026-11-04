@@ -47,6 +47,7 @@
     "allow-cancel-desktop-startup",
     "allow-show-main-window",
     "allow-send-desktop-notification",
+    "allow-acknowledge-desktop-notifications",
     "allow-write-host-file-text",
     "allow-read-clipboard-file-paths",
     "allow-reveal-host-path",

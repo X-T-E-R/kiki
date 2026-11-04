@@ -55,6 +55,7 @@ export function resetNotifications(server) {
     credentials: new Map(Object.entries(seed.credentials ?? {})),
     providers: structuredClone(seed.providers ?? NOTIFICATION_PROVIDERS),
     deliveries: structuredClone(seed.deliveries ?? []),
+    completions: structuredClone(seed.completions ?? []),
     checks: structuredClone(seed.checks ?? {}),
     tests: structuredClone(seed.tests ?? {}),
     counter: 0,
@@ -95,6 +96,7 @@ export function handleNotifications(server, res, path, query, method, body) {
   const id = match === null ? undefined : decodeURIComponent(match[2]);
   if (id !== undefined && !identifier.test(id)) return invalid(server, res);
 
+  if (path === '/notifications/completions' && method === 'GET') return ok(store.completions);
   if (path === '/notifications/settings' && method === 'GET') return ok(publicSettings(store));
   if (path === '/notifications/settings' && method === 'PUT') {
     if (typeof body?.enabled !== 'boolean') return invalid(server, res);

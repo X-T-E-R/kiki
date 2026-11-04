@@ -9,11 +9,14 @@ import { Emitter, Event } from '#/_base/event';
 import { IAgentLifecycleService, type AgentWillSealTranscriptEvent } from '#/session/agentLifecycle/agentLifecycle';
 import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
+import { ISessionSubagentService, pendingSubagentReceiptsKey, type AgentRunRequest } from '#/session/subagent/subagent';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { autonomousReceiptsKey } from '#/session/subagent/autonomousReceiptOps';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { AgentTaskPersistence } from '#/agent/task/persist';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -40,6 +43,7 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import { GoalUpdate } from '#/agent/goal/goalOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import {
   agentService,
   sessionService,
@@ -72,6 +76,7 @@ function notifiedCount(ctx: TestAgentContext): number {
 }
 
 async function receiptPair(maxRunningTasks?: number) {
+  const creating = new Emitter<IAgentScopeHandle>();
   const created = new Emitter<IAgentScopeHandle>();
   const sealing = new Emitter<AgentWillSealTranscriptEvent>();
   const handles = new Map<string, IAgentScopeHandle>();
@@ -84,7 +89,7 @@ async function receiptPair(maxRunningTasks?: number) {
   });
   const parent = createTestAgent(mailbox, sessionService(IAgentLifecycleService, {
     _serviceBrand: undefined,
-    onWillCreate: Event.None as Event<IAgentScopeHandle>,
+    onWillCreate: creating.event,
     onDidCreate: created.event,
     onDidDispose: Event.None as Event<string>,
     onWillSealTranscript: sealing.event,
@@ -116,10 +121,14 @@ async function receiptPair(maxRunningTasks?: number) {
   handles.set('main', parentHandle);
   handles.set('agent-child', childHandle);
   await metadata.registerAgent('agent-child', { type: 'sub', parentAgentId: 'main', labels: { profileName: 'example-worker' } });
+  creating.fire(parentHandle);
+  creating.fire(childHandle);
+  created.fire(parentHandle);
   created.fire(childHandle);
   return {
-    parent, child, metadata, handles, parentHandle, childHandle, sealing,
+    parent, child, metadata, handles, parentHandle, childHandle, sealing, created,
     dispose: async () => {
+      creating.dispose();
       created.dispose();
       sealing.dispose();
       handles.clear();
@@ -130,6 +139,126 @@ async function receiptPair(maxRunningTasks?: number) {
 }
 
 describe('autonomous child receipt return', () => {
+  it.each(['metadata', 'task receipt', 'notification admission'] as const)('N052-F1: retains the original receipt through %s ENOSPC and resumes its one delivery', async (fault) => {
+    const { parent, child, metadata, dispose } = await receiptPair();
+    let recovered = false;
+    let failures = 0;
+    const taskIds = new Set<string>();
+    const update = metadata.updateAgent.bind(metadata);
+    const documents = parent.get(IAtomicDocumentStore);
+    const set = documents.set.bind(documents);
+    const metadataFault = vi.spyOn(metadata, 'updateAgent').mockImplementation(async (id, change) => {
+      const next = change(metadata.snapshot().agents![id]!);
+      const taskId = next.labels?.[COLLABORATION_LATEST_TASK_LABEL];
+      if (id === 'agent-child' && taskId !== undefined) {
+        taskIds.add(taskId);
+        if (fault === 'metadata' && !recovered) {
+          failures++;
+          throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+        }
+      }
+      return update(id, change);
+    });
+    const receiptFault = vi.spyOn(documents, 'set').mockImplementation(async (scope, key, value, options) => {
+      if (scope.endsWith('agents/main/tasks') && key.startsWith('agent-receipt-')) {
+        taskIds.add(key.slice(0, -5));
+        if (fault === 'task receipt' && !recovered) {
+          failures++;
+          throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+        }
+      }
+      return set(scope, key, value, options);
+    });
+    const read = metadata.read.bind(metadata);
+    const admissionFault = vi.spyOn(metadata, 'read').mockImplementation(async () => {
+      if (fault === 'notification admission' && !recovered && parent.get(IAgentTaskService).list(false).some((task) => task.taskId.startsWith('agent-receipt-'))) {
+        failures++;
+        throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+      }
+      return read();
+    });
+    try {
+      parent.mockNextResponse({ type: 'text', text: 'Main turn finished while child work continues.' });
+      const first = await parent.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Initial parent turn.' }], toolCalls: [] } });
+      await first.completion;
+      child.mockNextResponse({ type: 'text', text: 'Final receipt survives the storage failure.' });
+      parent.mockNextResponse({ type: 'text', text: 'Automatically handled the recovered receipt.' });
+      const prompt = await child.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Complete the isolated review.' }], toolCalls: [], origin: { kind: 'system_trigger', name: 'example-wakeup' } } });
+      expect((await prompt.completion).state).toBe('completed');
+      await vi.waitFor(() => expect(failures).toBeGreaterThanOrEqual(2));
+      expect(parent.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
+      expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false, lastTurnReason: 'completed' });
+      expect(parent.get(IAgentTaskService).list(false)).toHaveLength(fault === 'notification admission' ? 1 : 0);
+      expect(notifiedCount(parent)).toBe(0);
+      expect(child.llmCalls).toHaveLength(1);
+      expect(Object.values(child.get(IAgentStateService).get(autonomousReceiptsKey).pending)).toEqual([expect.objectContaining({ summary: 'Final receipt survives the storage failure.' })]);
+      recovered = true;
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(1));
+      await parent.get(IAgentLoopService).settled();
+      await vi.waitFor(() => expect(parent.get(ISessionActivityView).state().busy).toBe(false));
+      const tasks = parent.get(IAgentTaskService);
+      const [task] = tasks.list(false);
+      expect(taskIds.size).toBe(1);
+      expect(task).toMatchObject({ taskId: [...taskIds][0], status: 'completed', receiptVerification: 'verified' });
+      expect(await tasks.readOutput(task!.taskId)).toBe('Final receipt survives the storage failure.');
+      await tasks.recordCompletedTask({ ...task!, status: 'completed' }, 'Final receipt survives the storage failure.');
+      await parent.get(IAgentLoopService).settled();
+      expect(notifiedCount(parent)).toBe(1);
+      expect(parent.context.get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === task!.taskId)).toHaveLength(1);
+      expect((await parent.persistedWireRecords()).filter((event) => event.type === 'task.terminated' && (event['info'] as { taskId?: string } | undefined)?.taskId === task!.taskId)).toHaveLength(1);
+      expect(child.get(IAgentStateService).get(autonomousReceiptsKey).pending).toEqual({});
+      expect(child.llmCalls).toHaveLength(1);
+      expect(parent.llmCalls).toHaveLength(2);
+    } finally {
+      recovered = true;
+      metadataFault.mockRestore(); receiptFault.mockRestore(); admissionFault.mockRestore();
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('N052-F1: restores a pending autonomous receipt from the original child wire without running the child', async () => {
+    const original = await receiptPair();
+    let recovered = false;
+    const update = original.metadata.updateAgent.bind(original.metadata);
+    const blocked = vi.spyOn(original.metadata, 'updateAgent').mockImplementation(async (id, change) => {
+      if (id === 'agent-child' && change(original.metadata.snapshot().agents![id]!).labels?.[COLLABORATION_LATEST_TASK_LABEL] !== undefined && !recovered) {
+        throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'isolated ENOSPC');
+      }
+      return update(id, change);
+    });
+    try {
+      original.child.mockNextResponse({ type: 'text', text: 'Restored original child receipt.' });
+      original.parent.mockNextResponse({ type: 'text', text: 'Handled original fixture cleanup.' });
+      const prompt = await original.child.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Produce a durable result.' }], toolCalls: [] } });
+      await prompt.completion;
+      await vi.waitFor(() => expect(original.parent.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1));
+      const wire = await original.child.persistedWireRecords();
+      for (const parentReceiptManaged of [undefined, true]) {
+        const excluded = await receiptPair();
+        try {
+          await excluded.child.restore(wire.map((record) => record.type === 'turn.prompt' ? { ...record, parentReceiptManaged } : record));
+          expect(excluded.child.get(IAgentStateService).get(autonomousReceiptsKey).pending).toEqual({});
+        } finally { await excluded.dispose(); }
+      }
+      const restored = await receiptPair();
+      try {
+        await restored.child.restore(wire);
+        expect(Object.values(restored.child.get(IAgentStateService).get(autonomousReceiptsKey).pending)).toEqual([expect.objectContaining({ summary: 'Restored original child receipt.' })]);
+        restored.parent.mockNextResponse({ type: 'text', text: 'Handled restored original receipt.' });
+        restored.created.fire(restored.childHandle);
+        await vi.waitFor(() => expect(notifiedCount(restored.parent)).toBe(1));
+        await restored.parent.get(IAgentLoopService).settled();
+        expect(restored.child.llmCalls).toHaveLength(0);
+        expect(restored.parent.get(IAgentTaskService).list(false)).toHaveLength(1);
+        expect(restored.child.get(IAgentStateService).get(autonomousReceiptsKey).pending).toEqual({});
+        recovered = true;
+        await vi.waitFor(() => expect(notifiedCount(original.parent)).toBe(1));
+        await original.parent.get(IAgentLoopService).settled();
+        expect(restored.parent.get(IAgentTaskService).list(false)[0]?.taskId).toBe(original.parent.get(IAgentTaskService).list(false)[0]?.taskId);
+      } finally { await restored.dispose(); }
+    } finally { recovered = true; blocked.mockRestore(); await original.dispose(); }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it.each(['main', 'agent-child'])('joins accepted receipt delivery before sealing %s', async (closingAgent) => {
     const { parent, child, metadata, handles, sealing, dispose } = await receiptPair();
     const entered = createControlledPromise<void>();
@@ -152,9 +281,11 @@ describe('autonomous child receipt return', () => {
       } });
       expect((await prompt.completion).state).toBe('completed');
       await entered;
+      await child.get(IAgentLoopService).settled();
+      expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false });
       const handle = handles.get(closingAgent)!;
       handles.delete(closingAgent);
-      sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); } });
+      sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); }, fail: (error) => { throw error; } });
       expect(drains).toHaveLength(1);
       expect(parent.get(IAgentTaskService).list(false)).toHaveLength(0);
       release.resolve();
@@ -210,6 +341,7 @@ describe('autonomous child receipt return', () => {
       expect(JSON.stringify(notification)).toContain(failedId);
       expect(JSON.stringify(child.contextData())).toContain(bashId);
       expect((await metadata.read()).agents?.['agent-child']).toMatchObject({ status: 'completed', taskId: continued!.taskId });
+      await vi.waitFor(() => expect(parent.get(ISessionActivityView).state()).toMatchObject({ busy: false, mainTurnActive: false, lastTurnReason: 'completed' }));
     } finally {
       output.push(null);
       processExit.resolve(0);

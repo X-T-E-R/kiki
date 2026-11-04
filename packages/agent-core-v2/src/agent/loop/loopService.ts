@@ -714,6 +714,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         input: job.seed.input,
         origin,
         managed: true,
+        parentReceiptManaged: job.seed.parentReceiptManaged === true,
       }),
     );
     job.turn.state = 'running';

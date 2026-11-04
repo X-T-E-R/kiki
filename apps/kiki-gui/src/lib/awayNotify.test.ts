@@ -117,6 +117,27 @@ describe('AwayNotifier', () => {
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
+  it('drops a late focus result after leaving and returning to the same scope, or disabling notifications', async () => {
+    let resolve!: (value: boolean) => void;
+    const configure = (scopeKey: string) => notifier.configure({
+      isAway: () => new Promise<boolean>((done) => { resolve = done; }), scopeKey, notify,
+      format: (plan) => ({ title: plan.type }), prefs: () => prefs,
+    });
+    configure('home-a');
+    const old = notifier.report([event('b', 'completed')]);
+    configure('home-b'); configure('home-a'); resolve(true);
+    await old;
+    expect(notify).not.toHaveBeenCalled();
+    const detached = notifier.report([event('b', 'completed')]);
+    notifier.configure(undefined); configure('home-a'); resolve(true);
+    await detached;
+    expect(notify).not.toHaveBeenCalled();
+    const disabled = notifier.report([event('b', 'completed')]);
+    prefs = { ...ALL_ON, enabled: false }; resolve(true);
+    await disabled;
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it('survives a host that rejects the notification', async () => {
     notify.mockRejectedValueOnce(new Error('denied'));
     await expect(notifier.report([event('a', 'failed')])).resolves.toMatchObject({ type: 'single' });

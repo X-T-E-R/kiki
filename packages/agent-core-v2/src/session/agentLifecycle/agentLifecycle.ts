@@ -66,6 +66,8 @@ export interface AgentCleanupReceipt {
 
 export interface AgentWillSealTranscriptEvent extends IWaitUntil {
   readonly handle: IAgentScopeHandle;
+  /** Records a persistence failure for the removal caller while cleanup continues. */
+  fail(error: unknown): void;
 }
 
 export interface IAgentLifecycleService {
