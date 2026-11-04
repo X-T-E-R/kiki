@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService,
   IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager,
@@ -59,6 +59,12 @@ class ClosePhaseWatch {
   private readonly entries: Array<ClosePhase & { started: number; ended?: number }> = [];
   private readonly stack: Array<{ phase: string }> = [];
   private readonly restores: Array<() => void> = [];
+  private readonly progress = new Set<() => void>();
+
+  onProgress(listener: () => void): () => void {
+    this.progress.add(listener);
+    return () => { this.progress.delete(listener); };
+  }
 
   track<T>(phase: string, run: () => T): T {
     const started = Date.now();
@@ -66,6 +72,7 @@ class ClosePhaseWatch {
     const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, startedAfterMs: started - this.started, started };
     this.entries.push(entry);
     this.stack.push(token);
+    for (const listener of this.progress) listener();
     const finish = (state: 'done' | 'failed', error?: unknown): void => {
       entry.state = state;
       entry.ended = Date.now();
@@ -73,6 +80,7 @@ class ClosePhaseWatch {
       if (error !== undefined) entry.error = closePhaseText(error).slice(0, 180);
       const index = this.stack.lastIndexOf(token);
       if (index >= 0) this.stack.splice(index, 1);
+      for (const listener of this.progress) listener();
     };
     try {
       const result = run();
@@ -210,51 +218,44 @@ function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
   }
 }
 
+class NaturalCloseTimeout extends Error {
+  constructor(readonly cleanup: Promise<void>, reason: 'stalled' | 'deadline', detail: unknown) {
+    super(`Host did not close naturally (${reason}): ${JSON.stringify(detail)}`);
+  }
+}
+
 async function awaitNaturalClose(input: {
   close: () => Promise<unknown>;
   install: () => ClosePhaseWatch;
   restoreSpy: () => void;
-  onTimeout: () => void;
   detail: (phases: ClosePhaseWatch) => unknown;
 }): Promise<void> {
   let phases: ClosePhaseWatch | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  let closing: Promise<boolean> | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let unsubscribe: (() => void) | undefined;
   try {
     const installed = input.install();
     phases = installed;
-    let closeError: unknown;
-    closing = new Promise<boolean>((resolve) => {
-      try {
-        void Promise.resolve(input.close()).then(
-          () => { resolve(true); },
-          (error: unknown) => { closeError = error; resolve(false); },
-        );
-      } catch (error) {
-        closeError = error;
-        resolve(false);
-      }
+    const closing = Promise.resolve().then(input.close).then(() => undefined);
+    void closing.catch(() => undefined);
+    const expired = new Promise<never>((_resolve, reject) => {
+      const fail = (reason: 'stalled' | 'deadline') => { reject(new NaturalCloseTimeout(closing, reason, input.detail(installed))); };
+      const progress = () => {
+        if (idleTimer !== undefined) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { fail('stalled'); }, 2000);
+      };
+      unsubscribe = installed.onProgress(progress);
+      progress();
+      deadline = setTimeout(() => { fail('deadline'); }, 10_000);
     });
-    const naturallyClosed = await Promise.race([
-      closing,
-      new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false); }, 2000); }),
-    ]);
-    if (closeError instanceof Error) throw closeError;
-    if (closeError !== undefined) throw new Error('close failed', { cause: closeError });
-    if (!naturallyClosed) {
-      timedOut = true;
-      throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify(input.detail(installed))}`);
-    }
+    await Promise.race([closing, expired]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) input.onTimeout();
-    try {
-      await closing;
-    } finally {
-      phases?.restore();
-      input.restoreSpy();
-    }
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (deadline !== undefined) clearTimeout(deadline);
+    unsubscribe?.();
+    phases?.restore();
+    input.restoreSpy();
   }
 }
 
@@ -327,17 +328,17 @@ describe('close phase watch', () => {
       app: { close() { return undefined; }, server },
       core: { dispose() { return undefined; }, accessor: { get }, instantiation: {} },
     };
+    const reason = new Error('close failed');
     try {
       await expect(awaitNaturalClose({
         close: () => {
           wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite;
-          return Promise.reject(new Error('close failed'));
+          return Promise.reject(reason);
         },
         install: () => watchHostClose(host),
         restoreSpy: () => { spy.mockRestore(); },
-        onTimeout: () => server.closeAllConnections(),
         detail: () => ({}),
-      })).rejects.toThrow('close failed');
+      })).rejects.toBe(reason);
       expect(wrappedDuringClose).toBe(true);
       expect(gets).toBe(0);
       expect(SqliteSearchHost.prototype.close).toBe(originals.sqlite);
@@ -347,6 +348,82 @@ describe('close phase watch', () => {
       if (SqliteSearchHost.prototype.close !== originals.sqlite) SqliteSearchHost.prototype.close = originals.sqlite;
       if (server.close !== originalServerClose) spy.mockRestore();
     }
+  });
+  it('allows continuing natural cleanup phases without spending one global timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const watch = new ClosePhaseWatch();
+    const steps = { web: () => new Promise<void>((resolve) => { setTimeout(resolve, 1200); }),
+      checkpoint: () => new Promise<void>((resolve) => { setTimeout(resolve, 1200); }) };
+    watch.watch(steps, 'web', 'webAccess.close');
+    watch.watch(steps, 'checkpoint', 'session.checkpoints');
+    const closing = awaitNaturalClose({
+      close: async () => { await steps.web(); await steps.checkpoint(); },
+      install: () => watch, restoreSpy: () => {}, detail: () => watch.snapshot(),
+    });
+    const outcome = closing.then(() => undefined, error => error as unknown);
+    try {
+      await vi.advanceTimersByTimeAsync(2400);
+      expect(await outcome).toBeUndefined();
+      expect(watch.snapshot()).toMatchObject({ pending: null, phases: [
+        { phase: 'webAccess.close', state: 'done', elapsedMs: 1200 },
+        { phase: 'session.checkpoints', state: 'done', elapsedMs: 1200 },
+      ] });
+    } finally { watch.restore(); vi.useRealTimers(); }
+  });
+  it.each(['resolve', 'reject'])('reports a stalled phase before unfinished cleanup settles with %s', async (settlement) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reason = new Error('late close failure');
+    const steps = { checkpoint: async () => { await gate; if (settlement === 'reject') throw reason; } };
+    const original = steps.checkpoint;
+    const watch = new ClosePhaseWatch();
+    watch.watch(steps, 'checkpoint', 'session.checkpoints');
+    const restored = vi.fn();
+    let cleaned = false;
+    const closing = awaitNaturalClose({ close: async () => { await steps.checkpoint(); cleaned = true; },
+      install: () => watch, restoreSpy: restored, detail: () => watch.snapshot() });
+    const outcome = closing.then(() => undefined, error => error as unknown);
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(watch.snapshot().pending).toBe('session.checkpoints');
+      await vi.advanceTimersByTimeAsync(1000);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(NaturalCloseTimeout);
+      expect((error as Error).message).toContain('(stalled)');
+      expect(watch.snapshot().elapsedMs).toBe(2000);
+      expect(cleaned).toBe(false);
+      expect(steps.checkpoint).toBe(original);
+      expect(restored).toHaveBeenCalledOnce();
+      release();
+      if (settlement === 'reject') await expect((error as NaturalCloseTimeout).cleanup).rejects.toBe(reason);
+      else await (error as NaturalCloseTimeout).cleanup;
+      expect(cleaned).toBe(settlement === 'resolve');
+    } finally { release(); await gate; watch.restore(); vi.useRealTimers(); }
+  });
+
+  it('reports the ten-second absolute deadline despite continuing real phase progress', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const watch = new ClosePhaseWatch();
+    const restored = vi.fn();
+    let cleaned = false;
+    const closing = awaitNaturalClose({ close: async () => {
+      for (let index = 0; index < 12; index++) await watch.track(`checkpoint-${index}`, () => new Promise<void>((resolve) => { setTimeout(resolve, 1000); }));
+      cleaned = true;
+    }, install: () => watch, restoreSpy: restored, detail: () => watch.snapshot() });
+    const outcome = closing.then(() => undefined, error => error as unknown);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(NaturalCloseTimeout);
+      expect((error as Error).message).toContain('(deadline)');
+      expect(watch.snapshot().elapsedMs).toBe(10_000);
+      expect(cleaned).toBe(false);
+      expect(restored).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2000);
+      await (error as NaturalCloseTimeout).cleanup;
+      expect(cleaned).toBe(true);
+    } finally { await vi.runAllTimersAsync(); watch.restore(); vi.useRealTimers(); }
   });
 });
 
@@ -416,30 +493,49 @@ describe('GUI shared client against an isolated KAP host', () => {
     client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
   });
 
-  afterEach(async () => {
+  const pendingCleanup = new Set<Promise<void>>();
+  const cleanupFailures: unknown[] = [];
+  afterAll(async () => {
+    await vi.waitFor(() => { if (pendingCleanup.size > 0) throw new Error(`${pendingCleanup.size} natural host closes remain pending`); }, { timeout: 10_000 });
+    if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, 'Natural host cleanup failed');
+  });
+
+  afterEach(async ({ task }) => {
     await client?.klient.close();
     for (const response of held) response.destroy();
     held.clear();
     provider.closeAllConnections();
     const initialResponses = responseFacts.map((read) => read());
     const serverClose = vi.spyOn(host.app.server, 'close');
+    let phases: ClosePhaseWatch | undefined;
+    let unfinished: Promise<void> | undefined;
     try {
       await awaitNaturalClose({
         close: () => host.close(),
-        install: () => watchHostClose(host),
+        install: () => { phases = watchHostClose(host); return phases; },
         restoreSpy: () => { serverClose.mockRestore(); },
-        onTimeout: () => { host.app.server.closeAllConnections(); },
         detail: (phases) => ({
           initialResponses, serverCloseCalled: serverClose.mock.calls.length,
           responses: responseFacts.map((read) => read()), ...phases.snapshot(),
         }),
       });
+      process.stdout.write(`${JSON.stringify({ naturalCloseProof: { test: task.name, ...phases?.snapshot() } })}\n`);
+    } catch (error) {
+      if (error instanceof NaturalCloseTimeout) unfinished = error.cleanup;
+      throw error;
     } finally {
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error) reject(error);
         else resolve();
       }));
-      if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      const retiredHome = home;
+      const remove = () => rm(retiredHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      if (unfinished === undefined) await remove();
+      else {
+        const cleanup = (async () => { try { await unfinished; } finally { await remove(); } })().catch(error => { cleanupFailures.push(error); });
+        pendingCleanup.add(cleanup);
+        void cleanup.finally(() => { pendingCleanup.delete(cleanup); });
+      }
     }
   });
 

@@ -32,6 +32,7 @@ const catalog: IModelCatalog = {
   inspect: unavailable, ping: unavailable, findByName: () => [], listModels: async () => [],
   listProviders: async () => [], getProvider: unavailable, setDefaultModel: unavailable,
 };
+process.send?.({ type: 'phase', phase: 'server.start', pid: process.pid });
 const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
   homeDir: home, logLevel: 'silent', seeds: [[IModelCatalog, catalog], [IAuthSummaryService, {
     _serviceBrand: undefined, summarize: async () => [], ensureReady: async () => {},
@@ -39,6 +40,7 @@ const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.
 process.send?.({ type: 'ready', port: server.port, token: server.localOwnerToken, pid: process.pid });
 process.on('message', (message: { type: string; sessionId?: string; sequence?: number }) => {
   void (async () => {
+    process.send?.({ type: 'phase', phase: message.type, pid: process.pid });
     if (message.type === 'prepare') {
       const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;
       const main = await ensureMainAgent(session);

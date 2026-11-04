@@ -34,6 +34,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { usageRuntime } from '../src/usage/usageRuntime';
 
 const ZERO_USAGE: TokenUsage = {
   inputOther: 0,
@@ -636,26 +637,66 @@ describe('persisted agent panel metrics provenance', () => {
       record('known-model', usage(2, 3), true),
       record('known-model', usage(4, 5), true),
     ]);
-    const capped = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
-      settle: true, complete: true,
-      limits: { maxRecords: 1 },
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const capped = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
+        settle: true, complete: true,
+        limits: { maxRecords: 1 },
+      });
+      expect(capped['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageSource: 'persisted' });
+      const readsAfterCapped = fixture.reads();
+      expect(readsAfterCapped).toBe(1);
+      const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
+      expect(header['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageComplete: false, usageSource: 'persisted' });
+      expect(fixture.reads()).toBe(readsAfterCapped);
+      const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
+        settle: true, complete: true,
+        limits: { maxRecords: 1 },
+      });
+      expect(again['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
+      const completedReads = fixture.reads();
+      expect(completedReads).toBe(2);
+      const completeHeader = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
+      expect(completeHeader['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
+      expect(fixture.reads()).toBe(completedReads);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('serves only committed totals when the settle slice expires before prefix publication', async () => {
+    const fixture = persistedFixture([record('known-model', usage(2, 3), true), record('known-model', usage(4, 5), true)]);
+    const gate = deferred(), entered = deferred();
+    const facts = fixture.core.accessor.get(IUsageFactStore);
+    const commit = facts.commit.bind(facts);
+    const stalled = vi.spyOn(facts, 'commit').mockImplementationOnce(async (...args) => { entered.resolve(); await gate.promise; return commit(...args); });
+    const service = usageRuntime(fixture.core).service;
+    const read = service.readAgentUsage.bind(service);
+    const finished = deferred();
+    const observed = vi.spyOn(service, 'readAgentUsage').mockImplementationOnce(async (...args) => {
+      try { return await read(...args); } finally { finished.resolve(); }
     });
-    expect(capped['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageSource: 'persisted' });
-    const readsAfterCapped = fixture.reads();
-    expect(readsAfterCapped).toBe(1);
-    const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
-    expect(header['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageComplete: false, usageSource: 'persisted' });
-    expect(fixture.reads()).toBe(readsAfterCapped);
-    const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
-      settle: true, complete: true,
-      limits: { maxRecords: 1 },
-    });
-    expect(again['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
-    const completedReads = fixture.reads();
-    expect(completedReads).toBe(2);
-    const completeHeader = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
-    expect(completeHeader['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
-    expect(fixture.reads()).toBe(completedReads);
+    const options = { settle: true, complete: true, limits: { maxRecords: 1 } } as const;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = persisted(fixture.core, pricing({ 'known-model': 2 }), 'slow-prefix', options);
+      await entered.promise;
+      vi.advanceTimersByTime(650);
+      expect((await pending)['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageComplete: false });
+      expect((await persisted(fixture.core, pricing({ 'known-model': 2 }), 'slow-prefix', { settle: false }))['main']).toMatchObject({ totalTokens: null, usagePartial: true });
+      expect(fixture.reads()).toBe(1);
+      gate.resolve();
+      await finished.promise;
+      const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'slow-prefix', { settle: false });
+      expect(header['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageComplete: false });
+      expect(fixture.reads()).toBe(1);
+      const complete = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'slow-prefix', options);
+      expect(complete['main']).toMatchObject({ totalTokens: 14, usagePartial: false, usageComplete: true });
+      expect(fixture.reads()).toBe(2);
+    } finally {
+      gate.resolve();
+      await finished.promise;
+      stalled.mockRestore(); observed.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('projects explicitly known zero usage and zero cost as complete', async () => {
