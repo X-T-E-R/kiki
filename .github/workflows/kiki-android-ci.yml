@@ -1,0 +1,80 @@
+name: Kiki Android CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kiki-android-ci.yml'
+      - '.github/workflows/kiki-android-signing-check.yml'
+      - '.github/workflows/kiki-desktop-release.yml'
+      - 'apps/kiki-gui/mobile/**'
+      - 'apps/kiki-gui/package.json'
+      - 'apps/kiki-gui/scripts/desktop-version.mjs'
+      - 'apps/kiki-gui/scripts/verify-updater-signature.mjs'
+      - 'apps/kimi-code/scripts/native/**'
+      - '.nvmrc'
+  push:
+    branches: ['**']
+    paths:
+      - '.github/workflows/kiki-android-ci.yml'
+      - '.github/workflows/kiki-android-signing-check.yml'
+      - '.github/workflows/kiki-desktop-release.yml'
+      - 'apps/kiki-gui/mobile/**'
+      - 'apps/kiki-gui/package.json'
+      - 'apps/kiki-gui/scripts/desktop-version.mjs'
+      - 'apps/kiki-gui/scripts/verify-updater-signature.mjs'
+      - 'apps/kimi-code/scripts/native/**'
+      - '.nvmrc'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kiki-android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-apk:
+    name: Build installable debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KIKI_SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/kiki-gui/mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
+      - name: Install locked shell dependencies
+        working-directory: apps/kiki-gui/mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test Android packaging and launcher contracts
+        working-directory: apps/kiki-gui/mobile
+        run: npm test
+      - name: Build debug APK from source
+        working-directory: apps/kiki-gui/mobile
+        run: npm run android:debug
+      - name: Verify and stage APK, checksum and source receipt
+        run: |
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs stage \
+            --variant debug --apk apps/kiki-gui/mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+            --output "$RUNNER_TEMP/kiki-android-debug"
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs verify \
+            --variant debug --directory "$RUNNER_TEMP/kiki-android-debug"
+          cat "$RUNNER_TEMP/kiki-android-debug/android-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload verified debug APK (not a product release)
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-android-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kiki-android-debug/
+          if-no-files-found: error
+          retention-days: 14

@@ -107,6 +107,9 @@ jobs:
         shell: bash
         env:
           KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
+          KIKI_ANDROID_SIGNING_CERT_SHA256: ${{ vars.KIKI_ANDROID_SIGNING_CERT_SHA256 }}
+          KIKI_VERSION: ${{ needs.validate.outputs.version }}
+          KIKI_CHANNEL: ${{ needs.validate.outputs.channel }}
           KIKI_TAG: ${{ needs.validate.outputs.tag }}
           KIKI_SOURCE_SHA: ${{ needs.validate.outputs.source-sha }}
           KIKI_WORKFLOW_CODE_SHA: ${{ github.workflow_sha }}
@@ -142,6 +145,8 @@ jobs:
             --run-id "$GITHUB_RUN_ID" \
             --producer-attempt "$GITHUB_RUN_ATTEMPT" \
             --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
+          export KIKI_PREPARE_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs freeze --input-dir "$input"
           {
             echo "source-sha=$source_sha"
             echo "producer-attempt=$GITHUB_RUN_ATTEMPT"
@@ -175,6 +180,76 @@ jobs:
     permissions:
       contents: read
 
+  android:
+    name: Signed Android release APK
+    environment: release
+    needs: [validate, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KIKI_TAG: ${{ needs.validate.outputs.tag }}
+      KIKI_VERSION: ${{ needs.validate.outputs.version }}
+      KIKI_CHANNEL: ${{ needs.validate.outputs.channel }}
+      KIKI_SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      KIKI_PREPARE_ARTIFACT_ID: ${{ needs.prepare.outputs.artifact-id }}
+      KIKI_PREPARE_ATTEMPT: ${{ needs.prepare.outputs.producer-attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/kiki-gui/mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
+      - name: Download immutable release input
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact-id }}
+          path: ${{ runner.temp }}/kiki-release-input
+      - name: Install locked shell dependencies
+        working-directory: apps/kiki-gui/mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test Android packaging and launcher contracts
+        working-directory: apps/kiki-gui/mobile
+        run: npm test
+      - name: Materialize persistent signing identity
+        env:
+          KIKI_ANDROID_KEYSTORE_BASE64: ${{ secrets.KIKI_ANDROID_KEYSTORE_BASE64 }}
+          KIKI_ANDROID_STORE_PASSWORD: ${{ secrets.KIKI_ANDROID_STORE_PASSWORD }}
+          KIKI_ANDROID_KEY_ALIAS: ${{ secrets.KIKI_ANDROID_KEY_ALIAS }}
+          KIKI_ANDROID_KEY_PASSWORD: ${{ secrets.KIKI_ANDROID_KEY_PASSWORD }}
+        run: node apps/kiki-gui/mobile/scripts/android-artifact.mjs signing --input-dir "$RUNNER_TEMP/kiki-release-input"
+      - name: Build and verify release APK from frozen source
+        env:
+          KIKI_ANDROID_STORE_PASSWORD: ${{ secrets.KIKI_ANDROID_STORE_PASSWORD }}
+          KIKI_ANDROID_KEY_ALIAS: ${{ secrets.KIKI_ANDROID_KEY_ALIAS }}
+          KIKI_ANDROID_KEY_PASSWORD: ${{ secrets.KIKI_ANDROID_KEY_PASSWORD }}
+        run: |
+          npm --prefix apps/kiki-gui/mobile run android:release
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs stage \
+            --variant release --apk apps/kiki-gui/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            --input-dir "$RUNNER_TEMP/kiki-release-input" --output "$RUNNER_TEMP/kiki-android-release"
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs verify \
+            --variant release --directory "$RUNNER_TEMP/kiki-android-release" --input-dir "$RUNNER_TEMP/kiki-release-input"
+      - name: Remove materialized keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kiki-android-release.keystore"
+      - name: Upload exact verified Android release candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-release-android-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kiki-android-release/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish GitHub Release
     environment: release
@@ -182,6 +257,7 @@ jobs:
       - validate
       - prepare
       - cli-native
+      - android
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -213,6 +289,15 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org/
 
+      - name: Setup Android verification tools
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android verification SDK
+        run: sdkmanager 'build-tools;36.1.0'
+
       - name: Install signing tool
         run: pnpm install --frozen-lockfile
 
@@ -243,6 +328,20 @@ jobs:
             --run-id "$GITHUB_RUN_ID" \
             --current-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-output "$GITHUB_OUTPUT"
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs select --api-json "$api"
+
+      - name: Download selected Android release candidate
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.target-artifacts.outputs.artifact-id }}
+          path: android-candidate
+
+      - name: Verify exact Android release candidate
+        env:
+          KIKI_ANDROID_PRODUCER_ATTEMPT: ${{ steps.target-artifacts.outputs.producer-attempt }}
+        run: |
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs verify --variant release \
+            --directory android-candidate --input-dir "$RUNNER_TEMP/kiki-release-input"
 
       - name: Download selected target release candidates
         uses: actions/download-artifact@v8
@@ -310,7 +409,7 @@ jobs:
             args+=(--notes-file "$notes_file")
             echo "Using release notes from $notes_file"
           else
-            args+=(--generate-notes --notes "Desktop: Windows x64 NSIS (includes CLI), Linux x64 AppImage/deb, macOS Apple Silicon/Intel dmg (unsigned, not notarized). CLI: platform-named standalone Linux/macOS executables and .sha256 checksums; no archives. npm: kiki-agent (desktop + CLI) or kiki-agent-lite (CLI only), Node.js 24.22.1+ on the 24 line or 26.12.1+. On macOS, see the installation guide for first-open and CLI linking: https://x-t-e-r.github.io/kiki/en/getting-started/installation")
+            args+=(--generate-notes --notes "Desktop: Windows x64 NSIS (includes CLI), Linux x64 AppImage/deb, macOS Apple Silicon/Intel dmg (unsigned, not notarized). CLI: platform-named standalone Linux/macOS executables and .sha256 checksums; no archives. Android: signed APK for Android 7.0+, adjacent .sha256 and android-receipt.json. npm: kiki-agent (desktop + CLI) or kiki-agent-lite (CLI only), Node.js 24.22.1+ on the 24 line or 26.12.1+. On macOS, see the installation guide for first-open and CLI linking: https://x-t-e-r.github.io/kiki/en/getting-started/installation")
             echo "No curated notes at $notes_file; generating notes from commits with installation details."
           fi
           if [ "$KIKI_CHANNEL" = 'beta' ]; then
@@ -408,7 +507,7 @@ jobs:
             'apps/kiki-gui/THIRD_PARTY_NOTICES.md'
           )
           shopt -s nullglob
-          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-*; do
+          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
             assets+=("$asset")
           done
           shopt -u nullglob
@@ -475,7 +574,7 @@ jobs:
           # Compare every desktop bundle, CLI executable, and adjacent checksum
           # with the exact bytes validated before the draft was created.
           shopt -s nullglob
-          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-*; do
+          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
             name="$(basename "$asset")"
             if [ ! -f "$download/$name" ] || ! cmp -s "$asset" "$download/$name"; then
               echo "Draft asset is missing or differs: $name" >&2

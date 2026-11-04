@@ -1,18 +1,50 @@
 apply plugin: 'com.android.application'
 
-// The shell ships with the GUI it opens: one version, read from the GUI package.
-def guiVersion = new groovy.json.JsonSlurper().parse(file('../../../package.json')).version as String
-def versionParts = guiVersion.tokenize('.-').take(3).collect { it.isInteger() ? it.toInteger() : 0 }
+// The APK and its verifier use the same GUI version and Android versionCode mapping.
+def versionJson = providers.exec {
+    commandLine 'node', file('../../scripts/android-version.mjs').absolutePath
+}.standardOutput.asText.get()
+def productVersion = new groovy.json.JsonSlurper().parseText(versionJson)
+def releaseSigning = [
+    KIKI_ANDROID_KEYSTORE_FILE: System.getenv('KIKI_ANDROID_KEYSTORE_FILE'),
+    KIKI_ANDROID_STORE_PASSWORD: System.getenv('KIKI_ANDROID_STORE_PASSWORD'),
+    KIKI_ANDROID_KEY_ALIAS: System.getenv('KIKI_ANDROID_KEY_ALIAS'),
+    KIKI_ANDROID_KEY_PASSWORD: System.getenv('KIKI_ANDROID_KEY_PASSWORD')
+]
+def missingSigning = releaseSigning.findAll { key, value -> !value }.keySet()
+
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }) {
+        if (!missingSigning.isEmpty()) {
+            throw new GradleException("Persistent Android release signing inputs are required: ${missingSigning.join(', ')}")
+        }
+        if (!file(releaseSigning.KIKI_ANDROID_KEYSTORE_FILE).isFile()) {
+            throw new GradleException('KIKI_ANDROID_KEYSTORE_FILE must point to the persistent release keystore')
+        }
+    }
+}
 
 android {
     namespace = "ai.easyagent.kiki"
     compileSdk = rootProject.ext.compileSdkVersion
+    buildToolsVersion = '36.1.0'
+    signingConfigs {
+        release {
+            if (missingSigning.isEmpty()) {
+                storeFile file(releaseSigning.KIKI_ANDROID_KEYSTORE_FILE)
+                storeType 'PKCS12'
+                storePassword releaseSigning.KIKI_ANDROID_STORE_PASSWORD
+                keyAlias releaseSigning.KIKI_ANDROID_KEY_ALIAS
+                keyPassword releaseSigning.KIKI_ANDROID_KEY_PASSWORD
+            }
+        }
+    }
     defaultConfig {
         applicationId "ai.easyagent.kiki"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode versionParts[0] * 1000000 + versionParts[1] * 1000 + versionParts[2]
-        versionName guiVersion
+        versionCode productVersion.versionCode as Integer
+        versionName productVersion.versionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -22,6 +54,7 @@ android {
     }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

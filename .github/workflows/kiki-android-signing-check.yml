@@ -1,0 +1,67 @@
+name: Kiki Android signing check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-apk:
+    name: Verify persistent Android signing (no publication)
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KIKI_SOURCE_SHA: ${{ github.sha }}
+      KIKI_ANDROID_SIGNING_CERT_SHA256: ${{ vars.KIKI_ANDROID_SIGNING_CERT_SHA256 }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/kiki-gui/mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
+      - name: Install locked shell dependencies
+        working-directory: apps/kiki-gui/mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test Android packaging and launcher contracts
+        working-directory: apps/kiki-gui/mobile
+        run: npm test
+      - name: Materialize persistent signing identity
+        env:
+          KIKI_ANDROID_KEYSTORE_BASE64: ${{ secrets.KIKI_ANDROID_KEYSTORE_BASE64 }}
+          KIKI_ANDROID_STORE_PASSWORD: ${{ secrets.KIKI_ANDROID_STORE_PASSWORD }}
+          KIKI_ANDROID_KEY_ALIAS: ${{ secrets.KIKI_ANDROID_KEY_ALIAS }}
+          KIKI_ANDROID_KEY_PASSWORD: ${{ secrets.KIKI_ANDROID_KEY_PASSWORD }}
+        run: node apps/kiki-gui/mobile/scripts/android-artifact.mjs signing --variant release-check
+      - name: Build and verify signed APK
+        env:
+          KIKI_ANDROID_STORE_PASSWORD: ${{ secrets.KIKI_ANDROID_STORE_PASSWORD }}
+          KIKI_ANDROID_KEY_ALIAS: ${{ secrets.KIKI_ANDROID_KEY_ALIAS }}
+          KIKI_ANDROID_KEY_PASSWORD: ${{ secrets.KIKI_ANDROID_KEY_PASSWORD }}
+        run: |
+          npm --prefix apps/kiki-gui/mobile run android:release
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs stage \
+            --variant release-check --apk apps/kiki-gui/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            --output "$RUNNER_TEMP/kiki-android-signing-check"
+          node apps/kiki-gui/mobile/scripts/android-artifact.mjs verify \
+            --variant release-check --directory "$RUNNER_TEMP/kiki-android-signing-check"
+          cat "$RUNNER_TEMP/kiki-android-signing-check/android-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove materialized keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kiki-android-release.keystore"
+      - name: Upload verified signed APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-android-signing-check-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kiki-android-signing-check/
+          if-no-files-found: error
+          retention-days: 7

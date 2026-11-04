@@ -40,6 +40,18 @@ sudo ln -s /Applications/Kiki.app/Contents/MacOS/kiki-server /usr/local/bin/kiki
 
 Windows 的 SmartScreen 提示与更新细节见 [Kiki 桌面版](./desktop-app.md)。
 
+## 安装 Android 应用
+
+Android 应用连接电脑上的 Kiki，打开那台服务器提供的 GUI。需要 Android 7.0 或更高版本；Kiki 服务器仍在电脑上运行。
+
+1. 在 [Releases 页面](https://github.com/X-T-E-R/kiki/releases)选择含 `Kiki_<version>_android-release.apk` 的产品版本，下载 APK、同名 `.sha256` 文件及 `android-receipt.json`。来源记录包含源码提交、GUI 版本和签名证书指纹。没有 APK 资产的旧版本不提供 Android 下载。
+2. 按[上面的方法](#安装桌面版)核对 APK 哈希，然后在手机上打开 APK。Android 提示时，允许当前浏览器或文件管理器安装应用。
+3. 在电脑上开启 [Web 访问](../server/local-server.md#在浏览器里使用-kiki)并生成进入链接，粘贴到应用的 **服务器地址或访问链接** 中。使用期间，电脑需保持运行，且手机能够连接到它。
+
+要测试分支或 PR，登录 GitHub，打开一次成功的 [Kiki Android CI 运行](https://github.com/X-T-E-R/kiki/actions/workflows/kiki-android-ci.yml)，从 **Artifacts** 下载 `kiki-android-debug-<run>-<attempt>`。解压后打开其中以 `android-debug.apk` 结尾的文件；同一压缩包内还有校验和与来源记录。这些 APK 使用 debug 证书，不同运行的证书可能不同。只有证书相同，Android 才允许覆盖安装；否则需先卸载，这会清除应用保存的服务器地址与登录 cookie。从 debug 切换到正式签名包，也需先卸载。
+
+更新正式签名包时，打开由同一持久证书签名的新版 Release APK，Android 会保留应用的服务器地址与登录状态。卸载可在 Android 设置中移除 Kiki；会话仍保存在电脑上。iOS 已有源码支持，目前没有分发已签名应用或 App Store 版本。
+
 ## 安装 CLI
 
 只需终端时，在 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 的 `kiki-v<version>` 版本中按平台下载独立可执行文件。Windows 不单独分发 CLI 文件，Windows 上的 `kiki` 由桌面安装包提供。

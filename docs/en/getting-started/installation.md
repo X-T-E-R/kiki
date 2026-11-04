@@ -40,6 +40,18 @@ sudo ln -s /Applications/Kiki.app/Contents/MacOS/kiki-server /usr/local/bin/kiki
 
 For the Windows SmartScreen prompt and updater details, see [Kiki desktop](./desktop-app.md).
 
+## Install the Android app
+
+The Android app connects to Kiki on your computer and opens that server's GUI. It needs Android 7.0 or later; it does not run the Kiki server on your phone.
+
+1. On the [Releases page](https://github.com/X-T-E-R/kiki/releases), choose a product release that includes `Kiki_<version>_android-release.apk`. Download the APK, its `.sha256` companion, and `android-receipt.json`. The receipt records the source commit, GUI version, and signing certificate fingerprint. Older releases without an APK have no Android download.
+2. Check the APK hash as described [above](#install-the-desktop-app), then open the APK on your phone. Allow installation from that browser or file manager when Android asks.
+3. On your computer, enable [Web access](../server/local-server.md#use-kiki-in-a-browser) and generate an entry link. Paste the link into the app's **Server address or entry link** field. Keep the computer running and reachable from the phone.
+
+For a branch or PR test build, sign in to GitHub, open a successful [Kiki Android CI run](https://github.com/X-T-E-R/kiki/actions/workflows/kiki-android-ci.yml), and download `kiki-android-debug-<run>-<attempt>` from **Artifacts**. Extract it before opening the `android-debug.apk` file; the same archive contains its checksum and source receipt. These APKs use a debug certificate that may differ between runs. Android can replace an installed copy only when its certificate matches; otherwise uninstall it first, which clears the app's saved server and sign-in cookies. Switching from debug to a signed release also requires uninstalling first.
+
+To update a signed release, open a newer release APK signed with the same persistent certificate. Android retains the app's saved server and sign-in state. To uninstall, remove Kiki in Android Settings; your conversations remain on the computer. iOS has source support but no distributed signed app or App Store release.
+
 ## Install the CLI
 
 For a terminal-only install, pick the standalone executable for your platform from a `kiki-v<version>` tag on [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). Windows has no standalone CLI file; the desktop installer provides `kiki` there.
