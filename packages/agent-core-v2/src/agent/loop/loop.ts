@@ -58,6 +58,8 @@ export interface LoopErrorContext {
   readonly stepId?: string;
   readonly signal: AbortSignal;
   readonly error: unknown;
+  /** True only when the active model request failed before tool execution. */
+  readonly requestFailed?: boolean;
   readonly failedDriver?: StepRequest;
   retry(request: StepRequest, options?: StepEnqueueOptions): Step;
 }
@@ -71,6 +73,8 @@ export interface LoopErrorHandler {
 export interface LoopErrorHandlerRegistrationOptions {
   readonly before?: string;
   readonly after?: string;
+  /** Fallback handlers run only after the selected native handler declines recovery. Ordering targets stay in the same phase. */
+  readonly phase?: 'fallback';
 }
 
 export interface LoopRunOptions {

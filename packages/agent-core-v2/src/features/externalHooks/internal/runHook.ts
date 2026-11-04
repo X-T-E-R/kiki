@@ -41,6 +41,10 @@ const HookSpecificOutputSchema = z.strictObject({
   message: OptionalStringSchema,
   permissionDecision: z.enum(['allow', 'deny']).optional(),
   permissionDecisionReason: z.string().optional(),
+  recovery: z.strictObject({
+    action: z.literal('continue'),
+    userMessage: z.string().refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 8192),
+  }).optional(),
 });
 const HookJsonOutputSchema = z.strictObject({
   message: OptionalStringSchema,
@@ -153,13 +157,16 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
     });
   }
 
-  return allowResult({
-    message: structured.kind === 'structured' ? structured.message : undefined,
-    stdout,
-    stderr,
-    exitCode,
-    structuredOutput: structured.kind === 'structured' ? true : undefined,
-  });
+  return {
+    ...allowResult({
+      message: structured.kind === 'structured' ? structured.message : undefined,
+      stdout,
+      stderr,
+      exitCode,
+      structuredOutput: structured.kind === 'structured' ? true : undefined,
+    }),
+    recovery: structured.kind === 'structured' ? structured.recovery : undefined,
+  };
 }
 
 type StructuredOutputResult =
@@ -170,6 +177,7 @@ type StructuredOutputResult =
       readonly action?: 'block';
       readonly reason?: string;
       readonly message?: string;
+      readonly recovery?: HookResult['recovery'];
     };
 
 function structuredOutput(stdout: string): StructuredOutputResult {
@@ -192,6 +200,7 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   const result = {
     kind: 'structured' as const,
     message: message ?? hookSpecificOutput?.message,
+    recovery: hookSpecificOutput?.recovery,
   };
   if (hookSpecificOutput?.permissionDecision !== 'deny') {
     return result;

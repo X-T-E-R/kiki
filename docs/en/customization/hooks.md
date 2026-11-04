@@ -185,8 +185,42 @@ You can also return a JSON object via stdout to block:
 ```
 
 ::: info Which events can block?
-Only `PreToolUse`, `Stop` and `UserPromptSubmit` have return values that affect the main flow. Every other event is observation-only — it fires and the main flow continues whatever the script returns.
+`PreToolUse`, `Stop` and `UserPromptSubmit` can block their pending operation. `StopFailure` can request a [continuation after a model failure](#continuing-after-a-model-failure); a failed hook leaves the original model error unchanged. Other events are observation-only.
 :::
+
+### Continuing after a model failure
+
+A legacy `StopFailure` script can ask the native agent loop to continue after a model request fails. Native retry and recovery run first; the hook cannot extend an exhausted native retry budget. External executors do not use this recovery path.
+
+Alongside the base event fields, the script receives:
+
+| Field | Meaning |
+| --- | --- |
+| `error_type`, `error_message`, `error_code` | Error name, text, and Kiki error code |
+| `error_details`, `error` | Error details and the full structured error, including its cause chain |
+| `upstream_error_code` | Structured upstream error identifier, when available; do not infer it from message text |
+| `turn_id`, `step` | Current turn and step; `step` may be absent for a turn-end observation |
+| `recoverable` | Whether the host permits continuation for this failure |
+| `recovery_attempts`, `max_recovery_attempts` | Continuations already used in this turn and the host limit of `2`; present when the loop asks for recovery |
+
+When `recoverable` is `true` and the structured error matches a case your script handles, exit with `0` and write:
+
+```json
+{
+  "hookSpecificOutput": {
+    "recovery": {
+      "action": "continue",
+      "userMessage": "Continue from the preserved answer."
+    }
+  }
+}
+```
+
+`userMessage` must contain non-whitespace text and fit within 8 KiB of UTF-8. Kiki appends it as a user message with a hook origin and starts the next step in the same turn. Partial assistant output and completed tool results stay in context; this action does not replay the failed request or previous tool calls. There is no `retry` action.
+
+The host permits at most two hook continuations per turn, even when a successful tool step occurs between failures. Cancellation, credentials, billing, quota, safety filtering, context overflow, ambiguous request delivery, and errors explicitly marked non-retryable cannot be recovered this way. Scripts should use narrower, exact error-code matches rather than continuing every permitted failure.
+
+Without a continuation request, the original failure ends the turn normally. The same happens if a hook fails, times out, returns invalid output, or requests a different message from another matching hook. A synchronous `StopFailure` invocation is not repeated as a turn-end notification for the same failure; later failures can trigger it again. Return values on observation-only invocations (`recoverable = false`) do not change the outcome.
 
 ## Event reference
 
@@ -207,7 +241,7 @@ Only `PreToolUse`, `Stop` and `UserPromptSubmit` have return values that affect 
 | `SubagentStart` | Sub-agent name | — | Triggered before a sub-agent starts running |
 | `SubagentStop` | Sub-agent name | — | Triggered after a sub-agent completes successfully (observation only) |
 | `TaskStarted` | Task kind (`agent`, `process`, or `question`) | — | Triggered when a background task starts; the payload includes `task_id`, `description`, and `detached` (observation only) |
-| `StopFailure` | Error type | — | Triggered after the current turn fails due to an error (observation only) |
+| `StopFailure` | Error type | — | Observes a failure; a native model-request failure can request a [bounded continuation](#continuing-after-a-model-failure) before the turn ends |
 | `Interrupt` | Empty string | — | Triggered when the user interrupts the current turn (e.g. pressing Esc); not fired for timeouts or other programmatic aborts. `Stop` does not fire on interrupts, so this event fires instead. The payload includes a `reason` field (observation only) |
 | `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |

@@ -12,7 +12,7 @@ import {
   type FullCompactionTask,
 } from '#/agent/fullCompaction/fullCompaction';
 import type { CompactionResult } from '#/agent/fullCompaction/types';
-import { IAgentLoopService, type AfterStepContext } from '#/agent/loop/loop';
+import { IAgentLoopService, type AfterStepContext, type LoopErrorContext } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
@@ -44,6 +44,7 @@ import {
   triggerBlockingResults,
 } from '../app/externalHooksRunner';
 import type { HookMatcherValue } from '../internal/types';
+import { failureHookInput, permitsFailureContinuation, MAX_FAILURE_RECOVERIES_PER_TURN } from '../internal/failureRecovery';
 import {
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
@@ -104,6 +105,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private sessionTitle: string | undefined;
+  private failureTurnId: number | undefined;
+  private failureRecoveries = 0;
+  private observedFailureTurnId: number | undefined;
 
   private withSessionFacts(inputData: Record<string, unknown>): Record<string, unknown> {
     return { sessionTitle: this.sessionTitle, ...inputData };
@@ -236,6 +240,11 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private registerLoopHooks(loop: IAgentLoopService): void {
+    this._register(loop.registerLoopErrorHandler({
+      id: 'externalHooks.failureRecovery',
+      match: () => true,
+      handle: (ctx) => this.runStopFailure(ctx),
+    }, { phase: 'fallback' }));
     this._register(
       loop.hooks.onDidFinishStep.register('externalHooks', async (ctx, next) => {
         await next();
@@ -391,25 +400,68 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
   private notifyTurnEnded(event: TurnEnded): void {
     this.stopHookContinuationUsed = false;
-    if (event.reason === 'failed' && event.error !== undefined) {
-      this.notifyStopFailure(event.error, new AbortController().signal);
+    if (event.reason === 'failed' && event.error !== undefined && this.observedFailureTurnId !== event.turnId) {
+      const payload = toKimiErrorPayload(event.error);
+      this.fireAndForget('StopFailure', {
+        ...failureHookInput(payload),
+        turnId: event.turnId,
+        recoverable: false,
+      }, payload.name);
     }
     if (event.reason === 'cancelled') {
       this.fireAndForget('Interrupt', { turnId: event.turnId, reason: 'cancelled' });
     }
+    this.failureTurnId = undefined;
+    this.failureRecoveries = 0;
+    this.observedFailureTurnId = undefined;
   }
 
-  private notifyStopFailure(error: unknown, signal: AbortSignal): void {
-    const payload = toKimiErrorPayload(error);
-    this.fireAndForget(
-      'StopFailure',
-      {
-        errorType: payload.name,
-        errorMessage: payload.message,
-      },
-      payload.name,
-      signal,
-    );
+  private async runStopFailure(ctx: LoopErrorContext): Promise<boolean> {
+    const signal = ctx.currentStep === undefined ? ctx.signal : AbortSignal.any([ctx.signal, ctx.currentStep.signal]);
+    signal.throwIfAborted();
+    if (this.failureTurnId !== ctx.turnId) {
+      this.failureTurnId = ctx.turnId;
+      this.failureRecoveries = 0;
+    }
+    this.observedFailureTurnId = ctx.turnId;
+    const payload = toKimiErrorPayload(ctx.error);
+    const recoverable = ctx.requestFailed === true && permitsFailureContinuation(payload) &&
+      this.failureRecoveries < MAX_FAILURE_RECOVERIES_PER_TURN;
+    let results;
+    try {
+      results = await this.runner.trigger('StopFailure', {
+        matcherValue: payload.name,
+        signal,
+        sessionId: this.sessionContext.sessionId,
+        additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+        inputData: this.withSessionFacts({
+          ...failureHookInput(payload),
+          turnId: ctx.turnId,
+          step: ctx.step,
+          recoverable,
+          recoveryAttempts: this.failureRecoveries,
+          maxRecoveryAttempts: MAX_FAILURE_RECOVERIES_PER_TURN,
+        }),
+      }, 'block');
+    } catch {
+      signal.throwIfAborted();
+      return false;
+    }
+    signal.throwIfAborted();
+    if (!recoverable || results.some((result) => result.action === 'block')) return false;
+    const recoveries = results.flatMap((result) => result.recovery === undefined ? [] : [result.recovery]);
+    const recovery = recoveries[0];
+    if (recovery === undefined || recoveries.some((entry) => entry.userMessage !== recovery.userMessage)) return false;
+    this.failureRecoveries += 1;
+    this.observedFailureTurnId = undefined;
+    this.context.appendObservable({
+      role: 'user',
+      content: [{ type: 'text', text: recovery.userMessage }],
+      toolCalls: [],
+      origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
+    });
+    ctx.retry(new ContinuationStepRequest({ kind: 'failure_recovery_hook', admission: 'activeTurnOnly' }), { at: 'head' });
+    return true;
   }
 
   private async runStop(ctx: AfterStepContext): Promise<string | undefined> {

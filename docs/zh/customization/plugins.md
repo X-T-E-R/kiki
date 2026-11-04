@@ -688,6 +688,8 @@ plugin hooks 与全局 hooks 机制相同——事件列表、stdin JSON 载荷�
 
 安装 plugin 不会运行它的 hooks，它们在启用期间匹配到事件时才触发。
 
+模型恢复插件可以声明 `StopFailure`，返回带 `userMessage` 的显式 `continue` 请求。[失败接续协议](./hooks.md#模型失败后继续)定义了结构化错误字段、原生恢复优先级和每轮次数限制。legacy `Stop` 阻断则用于让正常完成的模型响应继续，不负责恢复模型失败。这两种动作都不能批准工具调用。
+
 ## 会话历史导入
 
 Kiki 可以把另一个工具的文字对话导入为**可以接着聊的 Kiki 会话**，或只读归档。Claude Code、Codex、Pi、Grok Build、OpenCode 导出文件以及你自己的 JSON／脚本都不需要安装、信任或启用 plugin。导入在 Kiki 服务端运行，不需要模型，也不会改动来源文件。

@@ -185,8 +185,42 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 ```
 
 ::: info 哪些事件可以阻断？
-只有 `PreToolUse`、`Stop` 和 `UserPromptSubmit` 的返回值会影响主流程。其余都是观察型事件，触发后不管脚本返回什么都不改变主流程。
+`PreToolUse`、`Stop` 和 `UserPromptSubmit` 可以阻断待执行的操作。`StopFailure` 可以请求[在模型失败后继续](#模型失败后继续)；hook 自身失败时保留原模型错误。其余事件只供观察。
 :::
+
+### 模型失败后继续
+
+模型请求失败后，legacy `StopFailure` 脚本可以请求原生 Agent loop 继续执行。原生重试与恢复优先，hook 不能延长已经耗尽的原生重试预算。外部执行器不使用这条恢复路径。
+
+除基础事件字段外，脚本还会收到：
+
+| 字段 | 含义 |
+| --- | --- |
+| `error_type`、`error_message`、`error_code` | 错误名称、文字和 Kiki 错误码 |
+| `error_details`、`error` | 错误详情及包含原因链的完整结构化错误 |
+| `upstream_error_code` | 上游结构化错误标识，有值时才提供；不要从错误文字猜码 |
+| `turn_id`、`step` | 当前轮次和步骤；轮次结束时的观察通知可能没有 `step` |
+| `recoverable` | 宿主是否允许对本次失败继续执行 |
+| `recovery_attempts`、`max_recovery_attempts` | 本轮已用的 hook 接续次数和宿主上限 `2`；loop 请求恢复时提供 |
+
+只有 `recoverable` 为 `true`，且结构化错误命中脚本处理的情形时，才以退出码 `0` 输出：
+
+```json
+{
+  "hookSpecificOutput": {
+    "recovery": {
+      "action": "continue",
+      "userMessage": "从保留的回答继续。"
+    }
+  }
+}
+```
+
+`userMessage` 必须包含非空白文字，UTF-8 编码不超过 8 KiB。Kiki 将它追加为带 hook 来源标记的 user 消息，在同一轮开始下一步。部分 Assistant 输出和已完成的工具结果留在上下文中；这个动作不会重放失败请求或此前的工具调用。不支持 `retry` 动作。
+
+每轮最多允许两次 hook 接续，中间成功执行工具也不重置计数。取消、凭据、计费、配额、安全过滤、上下文溢出、请求是否已执行不明，以及明确标为不可重试的错误，都不能这样恢复。脚本应进一步精确匹配自己处理的错误码，不要对所有允许接续的失败都继续。
+
+没有接续请求时，原错误照常结束本轮。hook 失败、超时、输出非法，或多个命中 hook 请求的消息不同，也保留原错误。同一次失败已经同步调用 `StopFailure` 后，不会在轮次结束时重复通知；后续不同失败仍可再次触发。纯观察调用（`recoverable = false`）的返回值不改变结果。
 
 ## 事件一览
 
@@ -207,7 +241,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 | `SubagentStart` | subagent 名称 | — | subagent 开始运行前触发 |
 | `SubagentStop` | subagent 名称 | — | subagent 成功完成后触发（观察用） |
 | `TaskStarted` | 任务类型（`agent`、`process` 或 `question`） | — | 后台任务启动时触发；payload 含 `task_id`、`description` 和 `detached`（观察用） |
-| `StopFailure` | 错误类型 | — | 本轮因错误失败后触发（观察用） |
+| `StopFailure` | 错误类型 | — | 观察失败；原生模型请求失败时，可在本轮结束前请求[有限次数的接续](#模型失败后继续) |
 | `Interrupt` | 空字符串 | — | 用户中断本轮时触发（例如按下 Esc）；超时或其他程序性中断不会触发。中断时 `Stop` 不会触发，由本事件替代。payload 含 `reason` 字段（观察用） |
 | `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |

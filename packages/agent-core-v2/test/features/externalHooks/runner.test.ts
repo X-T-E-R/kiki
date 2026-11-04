@@ -36,6 +36,24 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBe(true);
   });
 
+  it('parses an explicit failure continuation without treating it as a Stop block', async () => {
+    const recovery = { action: 'continue', userMessage: '继续' };
+    const result = await runHook(hostProcess, nodeCommand(`process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: ${JSON.stringify(recovery)} } }));`), {}, { timeout: 5 });
+    expect(result).toMatchObject({ action: 'allow', structuredOutput: true, recovery });
+  });
+
+  it.each([
+    { action: 'retry', userMessage: '继续' },
+    { action: 'continue', userMessage: '' },
+    { action: 'continue', userMessage: '   ' },
+    { action: 'continue', userMessage: '界'.repeat(2731) },
+    { action: 'continue', userMessage: '继续', maxAttempts: 100 },
+  ])('rejects invalid failure recovery output %#', async (recovery) => {
+    const result = await runHook(hostProcess, nodeCommand(`process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: ${JSON.stringify(recovery)} } }));`), {}, { timeout: 5 });
+    expect(result.action).toBe('block');
+    expect(result.recovery).toBeUndefined();
+  });
+
   it('distinguishes ordinary JSON from an empty structured hook output', async () => {
     const emptyObject = await runHook(
       hostProcess,

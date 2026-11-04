@@ -687,6 +687,8 @@ Plugin hooks work like global ones — [Hooks](./hooks.md) has the event list, t
 
 Installing a plugin does not run its hooks; they fire when a matching event occurs while it is enabled.
 
+A model-recovery plugin can declare `StopFailure` and return an explicit `continue` request with a `userMessage`. The [failure-continuation contract](./hooks.md#continuing-after-a-model-failure) defines the structured error fields, native-recovery priority, and per-turn limits. A legacy `Stop` block instead continues a model response that finished normally; it does not recover model failures. Neither action approves tool calls.
+
 ## Session history import
 
 Kiki can import another tool's text conversation as a **Kiki session you keep working in**, or as a read-only archive. Claude Code, Codex, Pi, Grok Build, OpenCode exports and your own JSON or script need no plugin, no trust and no activation. The import runs on the Kiki server without a model and never modifies the source files.

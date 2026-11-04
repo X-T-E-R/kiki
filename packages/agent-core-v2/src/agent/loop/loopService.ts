@@ -142,6 +142,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly standaloneStepQueue = new StepRequestQueue();
   private readonly pendingAssignments = new Map<StepRequest, ReturnType<typeof createControlledPromise<import('./loop').StepAssignment>>>();
   private readonly errorHandlers: LoopErrorHandler[] = [];
+  private readonly fallbackErrorHandlers: LoopErrorHandler[] = [];
   private readonly pendingTurns: TurnJob[] = [];
   private readonly heldAdmissions: HeldAdmission[] = [];
   private activeTurnJob: TurnJob | undefined;
@@ -930,16 +931,17 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       throw new BugIndicatingError('Loop error handler registration cannot specify both before and after');
     }
     this.deleteErrorHandler(handler.id);
+    const handlers = options.phase === 'fallback' ? this.fallbackErrorHandlers : this.errorHandlers;
     const target = options.before ?? options.after;
     if (target === undefined) {
-      this.errorHandlers.push(handler);
+      handlers.push(handler);
     } else {
-      const targetIndex = this.errorHandlers.findIndex((entry) => entry.id === target);
+      const targetIndex = handlers.findIndex((entry) => entry.id === target);
       if (targetIndex < 0) {
         throw new BugIndicatingError(`Loop error handler target "${target}" is not registered`);
       }
       const insertAt = options.before !== undefined ? targetIndex : targetIndex + 1;
-      this.errorHandlers.splice(insertAt, 0, handler);
+      handlers.splice(insertAt, 0, handler);
     }
     return toDisposable(() => {
       this.deleteErrorHandler(handler.id);
@@ -947,10 +949,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private deleteErrorHandler(id: string): boolean {
-    const index = this.errorHandlers.findIndex((entry) => entry.id === id);
-    if (index < 0) return false;
-    this.errorHandlers.splice(index, 1);
-    return true;
+    for (const handlers of [this.errorHandlers, this.fallbackErrorHandlers]) {
+      const index = handlers.findIndex((entry) => entry.id === id);
+      if (index < 0) continue;
+      handlers.splice(index, 1);
+      return true;
+    }
+    return false;
   }
 
   async run(options: LoopRunOptions): Promise<LoopRunResult> {
@@ -1005,6 +1010,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private beginLoopStep(runtime: LoopRuntime): BeginStepResult {
     runtime.current = undefined;
+    runtime.requestFailure = undefined;
     runtime.thinkingOnlySnapshotActive = false;
     runtime.turnSignal.throwIfAborted();
     if (!runtime.queue.hasPendingRequests()) {
@@ -1122,6 +1128,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       stepId: current?.uuid,
       signal: runtime.turnSignal,
       error,
+      requestFailed: runtime.requestFailure !== undefined && runtime.requestFailure.error === error,
       failedDriver: current?.batch.driver,
       retry: (request, options) => {
         if (runtime.job !== undefined) return this.enqueueStep(runtime.job, request, options);
@@ -1136,17 +1143,20 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         };
       },
     };
-    const handler = this.errorHandlers.find((entry) => entry.match(context));
-    if (handler === undefined) return undefined;
-    try {
-      if (await handler.handle(context)) {
-        runtime.current = undefined;
-        return { type: 'continue' };
+    const primary = this.errorHandlers.find((entry) => entry.match(context));
+    const handlers = primary === undefined ? this.fallbackErrorHandlers : [primary, ...this.fallbackErrorHandlers];
+    for (const handler of handlers) {
+      if (handler !== primary && !handler.match(context)) continue;
+      try {
+        if (await handler.handle(context)) {
+          runtime.current = undefined;
+          return { type: 'continue' };
+        }
+      } catch (handlerError) {
+        return this.handleLoopCancellation(runtime, handlerError) ?? this.failLoopStep(runtime, handlerError);
       }
-      return undefined;
-    } catch (handlerError) {
-      return this.handleLoopCancellation(runtime, handlerError) ?? this.failLoopStep(runtime, handlerError);
     }
+    return undefined;
   }
 
   private failLoopStep(runtime: LoopRuntime, error: unknown): LoopErrorDisposition {
@@ -1207,7 +1217,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onStarted: ((step: number) => void) | undefined,
     steerSignal: AbortSignal | undefined,
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
-    continuationBudget: Pick<LoopRuntime, 'thinkingOnlyContinuations' | 'thinkingOnlySnapshotActive'>,
+    continuationBudget: Pick<LoopRuntime, 'thinkingOnlyContinuations' | 'thinkingOnlySnapshotActive' | 'requestFailure'>,
     thinkingOnlyFollowup: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
@@ -1241,6 +1251,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         response = await request.result;
         signal.throwIfAborted();
       } catch (error) {
+        continuationBudget.requestFailure = { error };
         const retained = this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
         if (retained.hasOutput) noteExecutedRequestDelivery(error);
         const facts = readGenerateFailureFacts(error);
@@ -2056,6 +2067,7 @@ interface LoopRuntime {
   steps: number;
   thinkingOnlyContinuations: number;
   thinkingOnlySnapshotActive: boolean;
+  requestFailure?: { readonly error: unknown };
   lastStopReason: FinishReason | undefined;
   current: StepRuntime | undefined;
 }
