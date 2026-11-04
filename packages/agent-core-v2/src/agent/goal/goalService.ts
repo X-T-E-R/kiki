@@ -7,6 +7,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptCompleted, promptLaunchingKey } from '#/agent/prompt/promptService';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
@@ -1456,7 +1457,7 @@ function normalizeCompletionCriterion(value: string | undefined): string | undef
   const trimmed = value?.trim();
   if (!trimmed?.length) return undefined;
   return trimmed.length > MAX_GOAL_COMPLETION_CRITERION_LENGTH
-    ? trimmed.slice(0, MAX_GOAL_COMPLETION_CRITERION_LENGTH)
+    ? sliceUtf16(trimmed, 0, MAX_GOAL_COMPLETION_CRITERION_LENGTH)
     : trimmed;
 }
 

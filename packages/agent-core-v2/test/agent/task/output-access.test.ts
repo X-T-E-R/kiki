@@ -440,6 +440,17 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('readOutput advances a tail boundary past an orphaned low surrogate', async () => {
+    const taskId = registerProcess(manager, immediateProcess(0, 'prefix🛰tail'), 'echo', 'demo');
+    await waitForOutput(manager, taskId, 'tail');
+
+    const tail = await manager.readOutput(taskId, 5);
+    expect(tail).toBe('tail');
+    expect(tail.isWellFormed()).toBe(true);
+    expect(tail.length).toBeLessThanOrEqual(5);
+    await manager.wait(taskId);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('readOutput respects tail length', async () => {
     const taskId = registerProcess(
       manager,

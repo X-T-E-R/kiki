@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { abortable } from '#/_base/utils/abort';
 import { Emitter, type Event } from '#/_base/event';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -1362,7 +1363,7 @@ function invalid(message: string): never {
 
 function optionalDisplayName(value: string | undefined): string {
   const text = value?.trim();
-  return text === undefined || text.length === 0 ? 'User' : text.slice(0, 200);
+  return text === undefined || text.length === 0 ? 'User' : sliceUtf16(text, 0, 200);
 }
 
 function normalizeAttachments(attachments: readonly RoomAttachment[] | undefined): readonly RoomAttachment[] | undefined {

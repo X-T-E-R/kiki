@@ -2,6 +2,7 @@ import {
   classifyToolArgsJson,
   type JsonTailClassification,
 } from '#/tool/json-tail';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 export type { JsonTailClassification, JsonTailKind } from '#/tool/json-tail';
 export { classifyToolArgsJson } from '#/tool/json-tail';
@@ -86,8 +87,9 @@ export function formatToolArgsTruncationRejection(
 
 function formatRawArgsPreview(raw: string): string {
   if (raw.length <= RAW_ARGS_PREVIEW_LIMIT) return raw;
-  const omitted = raw.length - RAW_ARGS_PREVIEW_LIMIT;
-  return `${raw.slice(0, RAW_ARGS_PREVIEW_LIMIT)}\n… [${String(omitted)} chars omitted]`;
+  const preview = sliceUtf16(raw, 0, RAW_ARGS_PREVIEW_LIMIT);
+  const omitted = raw.length - preview.length;
+  return `${preview}\n… [${String(omitted)} chars omitted]`;
 }
 
 function toTruncation(

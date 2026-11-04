@@ -32,6 +32,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IModelService } from '#/kosong/model/model';
 import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { IWireService } from '#/wire/wire';
@@ -1320,7 +1321,7 @@ export class SessionExternalDelegationService
           sourceTaskName: dispatch.taskName ?? dispatch.agentId,
           targetAgentId: MAIN_AGENT_ID,
           targetTaskName: 'root',
-          content: `Kiki delegation ${dispatchId} ${status}.\n${(dispatch.result ?? dispatch.error ?? '').slice(0, 8192)}\nUse kiki_result for the complete receipt.`,
+          content: `Kiki delegation ${dispatchId} ${status}.\n${sliceUtf16(dispatch.result ?? dispatch.error ?? '', 0, 8192)}\nUse kiki_result for the complete receipt.`,
           idempotencyKey: `harness-completion:${dispatchId}`,
           idleWake: 'parent',
         });

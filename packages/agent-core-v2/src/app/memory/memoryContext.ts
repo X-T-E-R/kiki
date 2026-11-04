@@ -1,4 +1,5 @@
 import { estimateTokens } from '#/kosong/contract/tokens';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { memoryApplicability, type MemoryEntry, type MemoryStoreSnapshot } from './memoryStore';
 import type { MemoryScope } from './memoryScopes';
@@ -38,7 +39,7 @@ export function memoryRequestText(messages: readonly ContextMessage[]): string |
   const message = messages.findLast((item) => item.role === 'user' && eligibleOrigin(item.origin));
   if (message === undefined) return undefined;
   const text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n').trim();
-  return text.length > 8_192 ? `${text.slice(0, 4_096)}\n${text.slice(-4_096)}` : text;
+  return text.length > 8_192 ? `${sliceUtf16(text, 0, 4_096)}\n${sliceUtf16(text, -4_096)}` : text;
 }
 function renderUnit(entry: MemoryRecallEntry, use?: MemoryAdviceUse): string {
   const result = memoryResult(entry, entry.scope);

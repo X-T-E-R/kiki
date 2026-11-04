@@ -378,6 +378,32 @@ describe('native source conversation selection', () => {
     await expect(parseNative(target, 'kiki-history', 'claude-code', [{ ...record, parentUuid: 'u' }])).rejects.toThrow('ancestry cycle');
     await expect(parseNative(target, 'kiki-history', 'claude-code', [{ ...record, parentUuid: null }, { ...record, parentUuid: null }])).rejects.toThrow('duplicate record UUID');
   });
+  it.each(['claude-code', 'codex'])('keeps capped %s import metadata well formed', async (sourceId) => {
+    const target = host();
+    const input = path.join(root, 'unicode-source'); await mkdir(input);
+    const label = `${'x'.repeat(199)}🛰tail`;
+    const title = `${'t'.repeat(499)}🛰tail`;
+    const timestamp = `${'d'.repeat(99)}🛰tail`;
+    const data = sourceId === 'claude-code'
+      ? [{ type: 'assistant', timestamp, message: { content: [{ type: 'tool_use', name: label, id: label, input: {} }] } },
+        { type: 'custom-title', customTitle: title }]
+      : [{ type: 'response_item', timestamp, payload: { type: 'function_call', name: label, call_id: label, arguments: '{}' } },
+        { type: 'event_msg', payload: { type: 'thread_name_updated', thread_name: title } }];
+    await writeFile(path.join(input, 'history.jsonl'), data.map((row) => JSON.stringify(row)).join('\n'));
+    const runner = target.app.accessor.get(IPluginHostService);
+    const selection = { home: input, externalId: 'history.jsonl' };
+    const signal = AbortSignal.timeout(10_000);
+    const probe = importProbeSchema.parse(await runner.requestSource('kiki-history', sourceId, 'probe', selection, signal));
+    const page = importParsePageSchema.parse(await runner.requestSource('kiki-history', sourceId, 'parse', { ...selection, revision: probe.revision }, signal));
+    expect(probe.title).toBe('t'.repeat(499));
+    expect(probe.title?.isWellFormed()).toBe(true);
+    const call = page.records.find((record) => record.role === 'tool_call')!;
+    expect(call.toolName).toBe('x'.repeat(199));
+    expect(call.toolCallId).toBe('x'.repeat(199));
+    expect(call.timestamp).toBe('d'.repeat(99));
+    for (const value of [call.toolName, call.toolCallId, call.timestamp]) expect(value?.isWellFormed()).toBe(true);
+  });
+
   it('projects Pi active branches, Grok ACP sessions and OpenCode exports with explicit losses in one installed rule pack', async () => {
     const target = host();
     const input = path.join(root, 'rules'); await mkdir(input);

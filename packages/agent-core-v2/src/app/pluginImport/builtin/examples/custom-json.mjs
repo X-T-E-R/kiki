@@ -2,6 +2,12 @@ import { readFile, realpath, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+function prefixUtf16(text, maxLength) {
+  let end = Math.min(text.length, maxLength);
+  if (end > 0 && end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+  return text.slice(0, end);
+}
+
 async function snapshot({ home, externalId }, { signal }) {
   if (!path.isAbsolute(home)) throw new Error('Choose an absolute source directory');
   const root = await realpath(home); const file = await realpath(path.resolve(root, externalId));
@@ -23,7 +29,7 @@ async function snapshot({ home, externalId }, { signal }) {
     }
   }
   return { records, revision: createHash('sha256').update(bytes).digest('hex'), totalBytes: bytes.length,
-    sourceHome: process.platform === 'win32' ? root.toLowerCase() : root, title: String(data.title ?? path.basename(file)).slice(0, 500),
+    sourceHome: process.platform === 'win32' ? root.toLowerCase() : root, title: prefixUtf16(String(data.title ?? path.basename(file)), 500),
     losses: omitted ? [{ code: 'custom_message_not_imported', count: omitted, detail: 'Example accepts recognized roles with string text/content only' }] : [] };
 }
 export async function discover({ home, cursor }, { signal }) {

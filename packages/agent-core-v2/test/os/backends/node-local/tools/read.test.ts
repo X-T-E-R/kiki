@@ -732,6 +732,24 @@ describe('ReadTool', () => {
     expect(result.output).toContain('...');
   });
 
+  it.each([MAX_LINE_LENGTH - 5, MAX_LINE_LENGTH - 4, MAX_LINE_LENGTH - 3])(
+    'preserves complete surrogate pairs when the long-line prefix has %i code units',
+    async (prefixLength) => {
+      const prefix = 'x'.repeat(prefixLength);
+      const line = `${prefix}${'🛰️'.repeat(20)}`;
+      const result = await execute(toolWithContent(line), { path: '/tmp/unicode.txt' });
+      const output = toolContentString(result);
+      const renderedLine = output.split('\n')[0]!.split('\t')[1]!;
+
+      expect(output.isWellFormed()).toBe(true);
+      expect(renderedLine.length).toBeLessThanOrEqual(MAX_LINE_LENGTH);
+      expect(renderedLine.endsWith('...')).toBe(true);
+      expect(line.startsWith(renderedLine.slice(0, -3))).toBe(true);
+      expect(result.note).toContain('Lines [1] were truncated');
+      if (prefixLength === MAX_LINE_LENGTH - 4) expect(renderedLine).toBe(`${prefix}...`);
+    },
+  );
+
   it('checks the byte cap before adding the next rendered line', async () => {
     const line = 'x'.repeat(MAX_LINE_LENGTH);
     const content = Array.from({ length: 80 }, () => line).join('\n');

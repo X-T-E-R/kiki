@@ -114,6 +114,17 @@ describe('applyPromptMetadataUpdate', () => {
     expect(readMeta().titleKind).toBe('replaceable');
   });
 
+  it.each([200, 4000])('keeps metadata well formed at the %i-code-unit cap', async (cap) => {
+    const { target, readMeta } = createTarget();
+    const prefix = '文'.repeat(cap - 1);
+    const text = promptMetadataTextFromContentParts([{ type: 'text', text: `${prefix}🛰tail` }]);
+    await applyPromptMetadataUpdate(target, text);
+    const value = cap === 200 ? readMeta().title : readMeta().lastPrompt;
+    expect(value).toBe(prefix);
+    expect(value?.isWellFormed()).toBe(true);
+    expect(value?.length).toBeLessThanOrEqual(cap);
+  });
+
   it('updates metadata for slash activations', async () => {
     const { target, readMeta } = createTarget();
 

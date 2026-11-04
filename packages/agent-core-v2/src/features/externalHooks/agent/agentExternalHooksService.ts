@@ -1,6 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { defineState } from '#/state/state';
 import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -335,7 +336,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         toolInput: isPlainRecord(ctx.args) ? ctx.args : {},
         toolCallId: ctx.toolCall.id,
         error: isError ? toKimiErrorPayload(output) : undefined,
-        toolOutput: isError ? undefined : output.slice(0, 2000),
+        toolOutput: isError ? undefined : sliceUtf16(output, 0, 2000),
       },
       ctx.toolCall.name,
       ctx.signal,

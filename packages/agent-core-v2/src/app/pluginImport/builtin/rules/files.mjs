@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 export const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
+export function prefixUtf16(text, maxLength) {
+  let end = Math.min(text.length, maxLength);
+  if (end > 0 && end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+  return text.slice(0, end);
+}
 export async function readInput(home, externalId, signal) {
   if (!path.isAbsolute(home)) throw new Error('Choose an absolute source directory');
   const root = await realpath(home);
@@ -95,7 +100,7 @@ export function fileAdapter(definition, accepts, load, project) {
     async probe(args, context) {
       const snapshot = await inspect(args, context, true);
       return { revision: snapshot.revision, sourceHome: snapshot.sourceHome, totalBytes: snapshot.totalBytes,
-        title: String(snapshot.title ?? path.basename(args.externalId)).slice(0, 500), formatVersion: definition.formatVersion,
+        title: prefixUtf16(String(snapshot.title ?? path.basename(args.externalId)), 500), formatVersion: definition.formatVersion,
         status: snapshot.records.some((record) => record.role !== 'metadata') ? 'partial' : 'unsupported', losses: snapshot.losses };
     },
     async parse(args, context) {

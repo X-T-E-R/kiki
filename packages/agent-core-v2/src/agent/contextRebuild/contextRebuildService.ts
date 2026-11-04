@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
@@ -373,10 +374,10 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       outcome: result.outcome,
       trigger,
       at: new Date().toISOString(),
-      ...(error === undefined ? {} : { error: error.slice(0, 500) }),
+      ...(error === undefined ? {} : { error: sliceUtf16(error, 0, 500) }),
       ...(result.changes === undefined ? {} : { changes: result.changes }),
       rebuilt: [...result.rebuilt],
-      unsupported: result.unsupported.map((item) => ({ surface: item.surface, reason: item.reason.slice(0, 300) })),
+      unsupported: result.unsupported.map((item) => ({ surface: item.surface, reason: sliceUtf16(item.reason, 0, 300) })),
     }));
   }
 

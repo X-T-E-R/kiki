@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, normalize, relative } from 'pathe';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
@@ -635,8 +636,8 @@ export class ManagedAdapterService implements IManagedAdapterService {
         stream.once('end', resolve);
         stream.once('error', reject);
       });
-    const stdoutDone = drain(child.stdout, (chunk) => { stdout = (stdout + chunk.toString()).slice(-8192); });
-    const stderrDone = drain(child.stderr, (chunk) => { stderr = (stderr + chunk.toString()).slice(-8192); });
+    const stdoutDone = drain(child.stdout, (chunk) => { stdout = sliceUtf16(stdout + chunk.toString(), -8192); });
+    const stderrDone = drain(child.stderr, (chunk) => { stderr = sliceUtf16(stderr + chunk.toString(), -8192); });
     let timer: NodeJS.Timeout | undefined;
     try {
       const code = await Promise.race([
@@ -645,7 +646,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
           timer = setTimeout(() => reject(new Error('Managed adapter npm operation timed out')), INSTALL_TIMEOUT_MS);
         }),
       ]);
-      if (code !== 0) throw new Error(`npm exited with code ${code}: ${stderr.slice(-2048)}`);
+      if (code !== 0) throw new Error(`npm exited with code ${code}: ${sliceUtf16(stderr, -2048)}`);
       return stdout;
     } catch (error) {
       await child.kill().catch(() => undefined);

@@ -1,7 +1,8 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    "lib": ["ES2023", "ES2024.String"]
   },
   "include": ["src", "test"]
 }

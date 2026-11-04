@@ -1,6 +1,7 @@
 import type { PublicError, SearchInput, SearchRunSyncEnvelope } from '@nb-corp/nb-search';
 import { parseNativeSearchInput, nativeSearchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
@@ -33,7 +34,7 @@ export class WebSearchTool implements IWebSearchTool {
       const subject = input.action === 'run' ? (Array.isArray(input.query) ? input.query.join('\n') : input.query) : `${input.action} ${input.job_id}`;
       return {
         accesses: ToolAccesses.none(),
-        description: `Search: ${subject.slice(0, 80)}`,
+        description: `Search: ${sliceUtf16(subject, 0, 80)}`,
         display: { kind: 'search', query: subject },
         approvalRule: literalRulePattern(this.name, subject),
         matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, subject),

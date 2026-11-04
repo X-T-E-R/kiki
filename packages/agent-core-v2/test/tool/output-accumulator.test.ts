@@ -96,6 +96,27 @@ describe('ToolOutputAccumulator', () => {
     expect(result.spill).toEqual({ totalChars: 10_000_005 });
   });
 
+  it.each([false, true])('keeps the retained prefix well formed across chunk boundaries (split: %s)', (split) => {
+    const builder = new ToolOutputAccumulator();
+    const prefix = 'x'.repeat(9_999_999);
+    builder.write(prefix);
+    if (split) {
+      builder.write('\uD83D');
+      builder.write('\uDEF0tail');
+    } else {
+      builder.write('🛰tail');
+    }
+    builder.write('later');
+
+    const result = builder.ok();
+    expect(result.output).toBe(prefix);
+    expect(result.output.isWellFormed()).toBe(true);
+    expect(builder.nChars).toBeLessThanOrEqual(10_000_000);
+    expect(builder.nChars).toBe(prefix.length);
+    expect(builder.totalChars).toBe(prefix.length + '🛰taillater'.length);
+    expect(result.spill?.totalChars).toBe(builder.totalChars);
+  });
+
   it('attaches spill on error results as well when retention was capped', () => {
     const builder = new ToolOutputAccumulator();
 

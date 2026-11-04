@@ -1,6 +1,7 @@
 import { canonicalFetchUrl, type FetchDocument, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
 import { parseNativeFetchInput, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
@@ -53,7 +54,7 @@ export class FetchURLTool implements IFetchURLTool {
       const subject = input.action !== 'run' ? `${input.action} ${input.job_id}` : input.source.kind === 'url' ? input.source.url : path ?? input.source.kind;
       return {
         accesses: path === undefined ? ToolAccesses.none() : ToolAccesses.readFile(path),
-        description: `Fetch: ${subject.slice(0, 100)}`,
+        description: `Fetch: ${sliceUtf16(subject, 0, 100)}`,
         display: path === undefined ? { kind: 'url_fetch', url: subject } : { kind: 'file_io', operation: 'read', path },
         approvalRule: literalRulePattern(this.name, subject),
         matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, subject),

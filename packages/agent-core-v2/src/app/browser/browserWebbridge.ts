@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { MCPToolDefinition } from '#/mcpCore/types';
 
 import type { BrowserCaller, BrowserTab } from './browser';
@@ -64,7 +65,7 @@ class WebbridgeUnconfirmedError extends Error {
 
 class WebbridgeRejectedError extends Error {
   constructor(action: string, detailSource: unknown) {
-    const detail = typeof detailSource === 'string' ? detailSource.replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
+    const detail = typeof detailSource === 'string' ? sliceUtf16(detailSource.replace(/https?:\/\/\S+/gi, '').trim(), 0, 180) : '';
     super(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
     this.name = 'WebbridgeRejectedError';
   }

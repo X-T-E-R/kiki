@@ -1,4 +1,5 @@
 import { Error2, attachErrorDetails, readAttachedErrorDetails, type Error2Options } from '#/_base/errors/errors';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { FinishReason } from './provider';
 
 export const CONFIG_INVALID_ERROR_CODE = 'config.invalid';
@@ -508,12 +509,12 @@ const STATUS_ERROR_JSON_SECRET = new RegExp(
 
 function truncateStatusErrorSnippet(text: string): string {
   if (text.length <= STATUS_ERROR_BODY_SNIPPET_MAX_CHARS) return text;
-  return `${text.slice(0, STATUS_ERROR_BODY_SNIPPET_MAX_CHARS)}...`;
+  return `${sliceUtf16(text, 0, STATUS_ERROR_BODY_SNIPPET_MAX_CHARS)}...`;
 }
 
 function truncateStatusErrorMessage(text: string): string {
   if (text.length <= STATUS_ERROR_MESSAGE_MAX_CHARS) return text;
-  return `${text.slice(0, STATUS_ERROR_MESSAGE_MAX_CHARS - 3)}...`;
+  return `${sliceUtf16(text, 0, STATUS_ERROR_MESSAGE_MAX_CHARS - 3)}...`;
 }
 
 function isSensitiveStatusErrorKey(key: string): boolean {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
@@ -904,7 +905,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (response === undefined || response.decision === 'cancelled') {
       return { outcome: 'keep_planning', feedback: '' };
     }
-    const feedback = response.feedback?.trim().slice(0, 16_384) ?? '';
+    const feedback = sliceUtf16(response.feedback?.trim() ?? '', 0, 16_384);
     if (response.decision === 'approved') return { outcome: 'approved', feedback };
     if (response.selectedLabel === 'Reject and Exit') return { outcome: 'abandoned', feedback };
     if (feedback.length > 0) await this.context.agent.accessor.get(IAgentCollaborationMessagingService).send({
@@ -1331,10 +1332,10 @@ function truncateUtf8(value: string, maxBytes: number): string {
   let high = value.length;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    if (encoder.encode(value.slice(0, mid)).byteLength <= maxBytes) low = mid;
+    if (encoder.encode(sliceUtf16(value, 0, mid)).byteLength <= maxBytes) low = mid;
     else high = mid - 1;
   }
-  return value.slice(0, low);
+  return sliceUtf16(value, 0, low);
 }
 
 async function raceApproval<T>(

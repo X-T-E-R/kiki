@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
@@ -150,7 +151,7 @@ Archive is a state change: provide the target and reason, not a replacement body
     if (input.action === 'create' ? input.id !== undefined || input.expected_revision !== undefined : input.id === undefined) return failure(new MemoryDomainError('invalid_input', 'Invalid action target', 'Omit id and expected_revision for create; provide id for existing targets.'));
     if (input.action !== 'create' && !input.expected_revision) return failure(new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.'));
     if (input.action !== 'archive' && input.covered_by !== undefined) return failure(new MemoryDomainError('invalid_input', 'covered_by is only accepted for archive', 'Remove covered_by from this action.'));
-    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId, toolCallId, signal }) => {
+    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${sliceUtf16(input.title ?? input.id ?? '', 0, 70)}`, execute: async ({ turnId, toolCallId, signal }) => {
       if (this.session.ephemeral === true || !available(this.capabilities, this.session, this.instantiation)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
       try {
         const persona = this.memorySnapshot.getPersona();

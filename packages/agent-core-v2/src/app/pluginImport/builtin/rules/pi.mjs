@@ -1,4 +1,4 @@
-import { fileAdapter, readInput, jsonLines, recordBuilder, textBlocks } from './files.mjs';
+import { fileAdapter, prefixUtf16, readInput, jsonLines, recordBuilder, textBlocks } from './files.mjs';
 
 export const definition = { schemaVersion: 1, id: 'pi', label: 'Pi', formatVersion: 'pi-jsonl-v3' };
 export function projectPi(records, signal) {
@@ -33,14 +33,14 @@ export function projectPi(records, signal) {
     const message = entry.message;
     if (!message || !['user', 'assistant', 'toolResult'].includes(message.role)) { builder.loss('pi_message_not_imported', 'Unsupported Pi message roles are omitted'); continue; }
     if (message.role === 'toolResult') {
-      textBlocks(builder, message.content, 'tool', { toolName: String(message.toolName ?? '').slice(0, 200), toolCallId: String(message.toolCallId ?? '').slice(0, 200) });
+      textBlocks(builder, message.content, 'tool', { toolName: prefixUtf16(String(message.toolName ?? ''), 200), toolCallId: prefixUtf16(String(message.toolCallId ?? ''), 200) });
       if (message.details !== undefined) builder.loss('tool_details_not_imported', 'Pi tool result details are omitted');
       continue;
     }
     if (typeof message.content === 'string') { builder.add(message.role, message.content); continue; }
     if (!Array.isArray(message.content)) { builder.loss('unknown_content', 'Pi message content is not text or blocks'); continue; }
     for (const block of message.content) {
-      if (block?.type === 'toolCall') builder.add('tool_call', block.arguments, { toolName: String(block.name ?? '').slice(0, 200), toolCallId: String(block.id ?? '').slice(0, 200) });
+      if (block?.type === 'toolCall') builder.add('tool_call', block.arguments, { toolName: prefixUtf16(String(block.name ?? ''), 200), toolCallId: prefixUtf16(String(block.id ?? ''), 200) });
       else textBlocks(builder, [block], message.role);
     }
   }

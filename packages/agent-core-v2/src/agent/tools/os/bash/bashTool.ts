@@ -13,6 +13,7 @@ import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeW
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
   ToolAccesses,
@@ -143,7 +144,7 @@ export class BashTool implements IBashTool {
       return { isError: true, output: error instanceof Error ? error.message : String(error) };
     }
     const shellContext = { runtimeId: runtime.identity.runtimeId, cwd, pathClass: runtime.environment.pathClass };
-    const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
+    const preview = args.command.length > 50 ? `${sliceUtf16(args.command, 0, 50)}…` : args.command;
     return {
       accesses: runtime.environment.shellName === 'bash' && isConcurrencySafeBash(args.command)
         ? ToolAccesses.readAll() : ToolAccesses.all(),
@@ -457,7 +458,7 @@ function formatTimeoutLabel(timeoutMs: number): string {
 function foregroundDescription(args: BashInput): string {
   const explicit = args.description?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
-  const preview = args.command.length > 60 ? `${args.command.slice(0, 60)}…` : args.command;
+  const preview = args.command.length > 60 ? `${sliceUtf16(args.command, 0, 60)}…` : args.command;
   return `Bash: ${preview}`;
 }
 

@@ -1,3 +1,5 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
+
 /**
  * Read-only adaptation of Codeg's Apache-2.0 Claude/Codex JSONL interpreters:
  * src-tauri/src/parsers/{claude,codex}.rs. Preserve vendor identity, title
@@ -73,7 +75,7 @@ function plainText(value: unknown): string {
 }
 function clip(value: string, warnings: Set<string>): string {
   if (value.length > MAX_BLOCK_CHARS) warnings.add('content_truncated');
-  return value.slice(0, MAX_BLOCK_CHARS);
+  return sliceUtf16(value, 0, MAX_BLOCK_CHARS);
 }
 function messageText(message: LocalSessionMessage): string {
   return message.blocks.filter((block) => block.kind === 'text').map((block) => block.text ?? '').join('\n');
@@ -169,7 +171,9 @@ export function parseLocalSession(engine: LocalSessionEngine, input: string): Pa
     return true;
   }).map(({ channel: _channel, ordinal: _ordinal, ...message }) => message);
   const prompts = visible.filter((message) => message.role === 'user').map(messageText).filter(Boolean);
-  return { externalId, cwd, title: (title ?? generatedTitle ?? prompts[0])?.slice(0, 160),
-    createdAt, updatedAt, lastPrompt: prompts.at(-1)?.slice(0, 500), parentId,
+  const selectedTitle = title ?? generatedTitle ?? prompts[0];
+  const lastPrompt = prompts.at(-1);
+  return { externalId, cwd, title: selectedTitle === undefined ? undefined : sliceUtf16(selectedTitle, 0, 160),
+    createdAt, updatedAt, lastPrompt: lastPrompt === undefined ? undefined : sliceUtf16(lastPrompt, 0, 500), parentId,
     messages: visible, warnings: [...warnings] };
 }

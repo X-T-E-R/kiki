@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
@@ -58,7 +59,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
     const retainedText =
       rawText.length <= DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS
         ? rawText
-        : rawText.slice(0, DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS);
+        : sliceUtf16(rawText, 0, DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS);
     const totalChars = spill?.totalChars ?? rawText.length;
     const suffix = spill?.suffix ?? '';
 
@@ -210,7 +211,7 @@ function shapeStringPerLine(
       const lineBreak = /[\r\n]+$/.exec(line)?.[0] ?? '';
       const suffix = TRUNCATION_MARKER + lineBreak;
       const effectiveMaxLength = Math.max(maxLineChars, suffix.length);
-      line = line.slice(0, effectiveMaxLength - suffix.length) + suffix;
+      line = sliceUtf16(line, 0, effectiveMaxLength - suffix.length) + suffix;
       truncated = true;
     }
     out.push(line);
@@ -333,9 +334,9 @@ function renderUnpersistedToolResult(
 }
 
 function appendPreviewLines(lines: string[], previewText: string): void {
-  const head = previewText.slice(0, TOOL_RESULT_PREVIEW_HEAD_CHARS);
-  const tailStart = Math.max(head.length, previewText.length - TOOL_RESULT_PREVIEW_TAIL_CHARS);
-  const tail = previewText.slice(tailStart);
+  const head = sliceUtf16(previewText, 0, TOOL_RESULT_PREVIEW_HEAD_CHARS);
+  const tail = sliceUtf16(previewText, Math.max(head.length, previewText.length - TOOL_RESULT_PREVIEW_TAIL_CHARS));
+  const tailStart = previewText.length - tail.length;
   lines.push('', `[preview: chars [0, ${String(head.length)})]`, head);
   if (tail !== '') {
     if (tailStart > head.length) {

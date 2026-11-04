@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import type { ILogger } from '#/_base/log/log';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
 
@@ -89,7 +90,7 @@ export function buildReviewerInput(
       .filter((part) => part.type === 'text')
       .map((part) => redact(part.text))
       .join('\n'))
-    .map((text, index, all) => text.slice(0, index === all.length - 1 ? 600 : 200));
+    .map((text, index, all) => sliceUtf16(text, 0, index === all.length - 1 ? 600 : 200));
   const args = context.args as Record<string, unknown> | null;
   const accesses = context.execution.accesses?.filter((item) => item.kind === 'file') ?? [];
   const contents = context.toolCall.name === 'Write' && typeof args?.['content'] === 'string'
@@ -98,7 +99,7 @@ export function buildReviewerInput(
       ? { old: contentSummary(args['old_string']), replacement: contentSummary(args['new_string']) }
       : undefined;
   const action = context.toolCall.name === 'Bash' && typeof args?.['command'] === 'string'
-    ? { tool: 'Bash', command: redact(args['command'].slice(0, 1600)) }
+    ? { tool: 'Bash', command: redact(sliceUtf16(args['command'], 0, 1600)) }
     : { tool: context.toolCall.name, targets: accesses.map((item) => ({
       path: item.path,
       operation: item.operation,
@@ -116,7 +117,7 @@ export function buildReviewerInput(
   while (input.length > 1800 && messages.length > 0) {
     const excess = input.length - 1800;
     if (messages.length > 1) messages.shift();
-    else messages[0] = messages[0]!.slice(0, Math.max(0, messages[0]!.length - excess));
+    else messages[0] = sliceUtf16(messages[0]!, 0, Math.max(0, messages[0]!.length - excess));
     if (messages.length === 1 && messages[0]!.length === 0) messages.shift();
     input = serialize();
   }

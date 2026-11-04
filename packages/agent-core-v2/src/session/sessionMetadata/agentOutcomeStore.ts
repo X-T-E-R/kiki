@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { AgentMeta, SessionMeta } from './sessionMetadata';
 
 const PREVIEW_LENGTH = 2048;
@@ -81,8 +82,9 @@ export class AgentOutcomeDocuments {
         }
         this.receipts.set(id, { resultSummary: agent.resultSummary, error: agent.error, ref });
       }
-      const saved: StoredAgentMeta = { ...agent, resultSummary: agent.resultSummary?.slice(0, PREVIEW_LENGTH),
-        error: agent.error?.slice(0, PREVIEW_LENGTH), outcomeRef: ref };
+      const saved: StoredAgentMeta = { ...agent,
+        resultSummary: agent.resultSummary === undefined ? undefined : sliceUtf16(agent.resultSummary, 0, PREVIEW_LENGTH),
+        error: agent.error === undefined ? undefined : sliceUtf16(agent.error, 0, PREVIEW_LENGTH), outcomeRef: ref };
       agents[id] = saved;
       this.projections.set(agent, saved);
     }

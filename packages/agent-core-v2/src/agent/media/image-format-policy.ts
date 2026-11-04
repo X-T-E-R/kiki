@@ -1,3 +1,4 @@
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { providerImagePolicy } from '#/kosong/provider/providerImagePolicy';
 
 import { IMAGE_MIME_BY_SUFFIX, sniffMediaFromMagic } from './file-type';
@@ -194,7 +195,7 @@ export function buildUnsupportedImageNotice(
 }
 
 export function buildMalformedImageNotice(url: string): string {
-  const shown = url.length > 80 ? `${url.slice(0, 80)}…` : url;
+  const shown = url.length > 80 ? `${sliceUtf16(url, 0, 80)}…` : url;
   return (
     `[Image omitted: "${shown}" is not a valid data URL (its header or payload ` +
     'could not be parsed). Re-encode the image as PNG or JPEG and try again.]'

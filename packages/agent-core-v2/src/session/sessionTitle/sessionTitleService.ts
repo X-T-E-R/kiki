@@ -4,6 +4,7 @@ import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { ILogService } from '#/_base/log/log';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptSubmitted } from '#/agent/prompt/promptService';
 import { promptMetadataTextFromText } from '#/agent/prompt/promptMetadataText';
@@ -211,7 +212,7 @@ function normalizeGeneratedTitle(raw: string): string {
   const title = firstLine.replaceAll(/\s+/g, ' ').trim().replace(/^(?:title|标题)\s*[:：]\s*/i, '');
   const quoted = [['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’'], ['`', '`']]
     .some(([open, close]) => title.startsWith(open!) && title.endsWith(close!) && title.length >= 2);
-  return (quoted ? title.slice(1, -1).trim() : title).slice(0, MAX_GENERATED_TITLE_LENGTH);
+  return sliceUtf16(quoted ? title.slice(1, -1).trim() : title, 0, MAX_GENERATED_TITLE_LENGTH);
 }
 
 function titleSection(label: string, text: string | undefined, budget: number): string | undefined {

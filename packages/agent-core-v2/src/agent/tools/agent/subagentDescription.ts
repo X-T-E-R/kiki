@@ -1,4 +1,5 @@
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 export { buildProfileDescriptions } from '#/session/dispatch/profileCatalogProjection';
 
@@ -21,7 +22,7 @@ export function compactRouteDescriptions(routes: readonly AgentProfileRouteCatal
 function firstSentence(text: string): string {
   const sentence = text.replaceAll(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0]!;
   if (sentence.length <= 180) return sentence;
-  const prefix = sentence.slice(0, 179);
+  const prefix = sliceUtf16(sentence, 0, 179);
   const boundary = prefix.lastIndexOf(' ');
   return `${boundary > 0 ? prefix.slice(0, boundary) : prefix}…`;
 }

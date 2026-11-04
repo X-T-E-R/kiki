@@ -1,5 +1,6 @@
 import type { MemoryAdvisorConfig, MemoryAdvisorStatus } from '@kiki/protocol';
 import { estimateTokens } from '#/kosong/contract/tokens';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import type { RequestAttribution } from '#/kosong/model/requestAdmission';
 import type { Model } from '#/kosong/model/catalog';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -64,7 +65,7 @@ export async function runMemoryAdvice(input: {
     text: JSON.stringify({
       type: entry.type,
       title: entry.title,
-      excerpt: entry.body.slice(0, config.candidate_chars),
+      excerpt: sliceUtf16(entry.body, 0, config.candidate_chars),
       applicability: memoryApplicability(entry),
       validity: entry.validity,
     }),

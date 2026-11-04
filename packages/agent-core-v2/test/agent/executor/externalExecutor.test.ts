@@ -2691,6 +2691,16 @@ describe('ACP external executor', () => {
     ]));
   });
 
+  it('keeps a byte-capped handoff well formed when the boundary falls inside a surrogate pair', () => {
+    const prefix = `User: ${'x'.repeat(32 * 1024 - 9)}`;
+    const handoff = buildHandoff([{ role: 'user', toolCalls: [],
+      content: [{ type: 'text', text: `${prefix.slice(6)}🛰tail` }] }]);
+    expect(handoff.truncated).toBe(true);
+    expect(handoff.text).toBe(prefix);
+    expect(handoff.text.isWellFormed()).toBe(true);
+    expect(Buffer.byteLength(handoff.text, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
   it('retains the handoff but not the profile preamble when resume falls back to a new override session', async () => {
     const harness = createHarness({
       mode: 'new',

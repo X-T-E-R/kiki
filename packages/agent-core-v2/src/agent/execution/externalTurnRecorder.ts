@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
 import { redactCtx } from '#/_base/log/formatter';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { redactMemorySecrets } from '#/app/memory/memorySafety';
 
 import {
@@ -320,7 +321,7 @@ export class ExternalTurnRecorder {
         return;
       case 'session.info':
         if (this.agent.id === 'main' && event.title?.trim()) {
-          await this.agent.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(event.title.trim().slice(0, 100));
+          await this.agent.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(sliceUtf16(event.title.trim(), 0, 100));
         }
         await this.#runtimeUpdate(
           'session',
@@ -340,7 +341,7 @@ export class ExternalTurnRecorder {
       case 'unknown':
         this.losses.add('unknown_update_dropped');
         await this.#runtimeUpdate('unknown', {
-          updateType: event.updateType.slice(0, 256), method: event.method,
+          updateType: sliceUtf16(event.updateType, 0, 256), method: event.method,
           payload: diagnosticPayload(event.payload),
         });
     }
@@ -1259,7 +1260,7 @@ function boundedUnknown(value: unknown): unknown {
     const json = JSON.stringify(value);
     if (json === undefined) return Object.prototype.toString.call(value);
     if (Buffer.byteLength(json, 'utf8') <= MAX_BOUNDED_JSON_BYTES) return JSON.parse(json) as unknown;
-    return { truncated: true, preview: json.slice(0, MAX_BOUNDED_JSON_BYTES) };
+    return { truncated: true, preview: sliceUtf16(json, 0, MAX_BOUNDED_JSON_BYTES) };
   } catch {
     return Object.prototype.toString.call(value);
   }
@@ -1304,7 +1305,7 @@ function stringifyOutput(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
     const json = JSON.stringify(value);
-    return json === undefined ? Object.prototype.toString.call(value) : json.slice(0, MAX_BOUNDED_JSON_BYTES);
+    return json === undefined ? Object.prototype.toString.call(value) : sliceUtf16(json, 0, MAX_BOUNDED_JSON_BYTES);
   } catch {
     return Object.prototype.toString.call(value);
   }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sliceUtf16 } from '#/_base/text/utf16';
 import { defineState } from '#/state/state';
 import type { ContextMessageSource } from '#/agent/contextMemory/types';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
@@ -43,7 +44,7 @@ export const modelSwitchContinuityKey = defineState('modelSwitch.continuity', ()
     const legacyHumanText = message.role === 'user' && message.origin === undefined
       ? message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') : undefined;
     const text = originalHumanText(message) ?? legacyHumanText;
-    const reference = (body: string): ModelSwitchInputReference => ({ text: body.slice(0, 12_000), messageId: message.id, source: message.source, truncated: body.length > 12_000 });
+    const reference = (body: string): ModelSwitchInputReference => ({ text: sliceUtf16(body, 0, 12_000), messageId: message.id, source: message.source, truncated: body.length > 12_000 });
     if (text?.trim()) s.latestHumanInput = reference(text);
     if (s.taskDescription === undefined && message.role === 'user' && message.origin?.kind === 'system_trigger' && message.origin.name === 'subagent') {
       s.taskDescription = reference(message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n'));

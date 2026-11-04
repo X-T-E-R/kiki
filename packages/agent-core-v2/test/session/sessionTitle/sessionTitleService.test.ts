@@ -505,6 +505,14 @@ describe('SessionTitleService', () => {
     expectClippedSection(sections.get('initial_user_3'), prompts[2]!, 2200);
     expect(titleRequests[0]!.params.maxCompletionTokens).toBeUndefined();
   });
+  it('keeps generated titles well formed at the character cap', async () => {
+    const prefix = '文'.repeat(199);
+    modelRequesters.set('title-model', stubTitleRequester(`${prefix}🛰tail`));
+    const title = await ix.get(ISessionTitleService).generateTitle();
+    expect(title).toBe(prefix);
+    expect(title?.isWellFormed()).toBe(true);
+    expect(title?.length).toBeLessThanOrEqual(200);
+  });
   it('first_turn remains strict and bounds each user/reply segment', async () => {
     turnExcerpt = { user: '只有问题' }; await expect(ix.get(ISessionTitleService).generateTitle({ source: 'first_turn' })).resolves.toBeUndefined();
     const user = '问'.repeat(5000); const assistant = '答'.repeat(2500);

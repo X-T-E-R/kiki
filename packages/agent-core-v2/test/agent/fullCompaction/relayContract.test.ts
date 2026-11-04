@@ -81,6 +81,25 @@ describe('relay-v1 zero-model contract', () => {
     expect(text).not.toContain('x'.repeat(20_000));
   });
 
+  it('keeps prompt, evidence, receipt and conclusion excerpts well formed', () => {
+    const atBoundary = (cap: number) => `${'x'.repeat(cap - 1)}🛰${'z'.repeat(8_000)}`;
+    const calls = { ...assistant, toolCalls: [{ id: 'unicode-read', type: 'function' as const, name: 'Read', arguments: '{}' }] };
+    const history: ContextMessage[] = [
+      user(atBoundary(600)),
+      calls,
+      { role: 'tool', toolCallId: 'unicode-read', toolCalls: [], content: [{ type: 'text', text: atBoundary(4_000) }] },
+      user(atBoundary(200), { kind: 'task', taskId: 'unicode-task', status: 'completed', notificationId: 'unicode-receipt' }),
+      { role: 'assistant', toolCalls: [], content: [{ type: 'text', text: `prefix🛰${'c'.repeat(5_999)}` }] },
+    ];
+    const text = renderRelay({ ...input, history, compactCount: history.length, meta: undefined,
+      linkedBoardCards: [{ id: 'card', title: atBoundary(1_000), status: 'active' }] });
+    expect(text.isWellFormed()).toBe(true);
+    expect(text).toContain('## User input since notes');
+    expect(text).toContain('## Evidence since notes');
+    expect(text).toContain('unicode-task');
+    expect(text).toContain(`## Last conclusion\n${'c'.repeat(5_999)}`);
+  });
+
   it('uses a supplied durable ref without deriving one from a turn or array position', () => {
     const message: ContextMessage = {
       ...assistant,
