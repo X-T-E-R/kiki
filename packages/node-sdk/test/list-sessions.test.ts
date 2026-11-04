@@ -17,9 +17,12 @@ import {
   SQLITE_QUERY_STORE_SUBDIR,
   IThreadMailboxStore,
   IHomeRuntimeService,
+  ILogService,
   ISessionIndex,
   ISessionIndexMirror,
 } from '@kiki/agent-core-v2';
+import { FileSessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndexService';
+import { SessionIndexProjector } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndexProjector';
 
 import { createKimiHarness, SDKRpcClient } from '#/index';
 import type { KimiError } from '#/index';
@@ -89,12 +92,13 @@ describe('KimiHarness.listSessions', () => {
     });
 
     try {
+      expect(await harness.listSessions()).toEqual([]);
       await harness.createSession({ id: 'ses_harness_all_a', workDir });
       await harness.createSession({ id: 'ses_harness_all_b', workDir: otherWorkDir });
 
       const rpc = Reflect.get(harness, 'rpc') as SDKRpcClient;
       const status = await rpc.engineAccessor.get(ISessionIndex).prepare();
-      expect(status.state).toBe('ready');
+      expect(status.state, JSON.stringify(status)).toBe('ready');
       const sessions = await harness.listSessions();
       expect(sessions.map((session) => session.id).toSorted()).toEqual([
         'ses_harness_all_a',
@@ -102,6 +106,61 @@ describe('KimiHarness.listSessions', () => {
       ]);
     } finally {
       await harness.close();
+    }
+  });
+
+  it('recovers the complete listing after both startup projection attempts meet real session mutations', async () => {
+    const homeDir = await makeTempDir();
+    const workDirs = [await makeTempDir(), await makeTempDir()];
+    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const released = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const originalScan = SessionIndexProjector.prototype.scan;
+    let scans = 0;
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'scan').mockImplementation(async function (this: SessionIndexProjector, options) {
+      const result = await originalScan.call(this, options);
+      const attempt = scans++;
+      entered[attempt]?.resolve();
+      await released[attempt]?.promise;
+      return result;
+    });
+    const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
+    const rpc = Reflect.get(harness, 'rpc') as SDKRpcClient;
+    const index = rpc.engineAccessor.get(ISessionIndex);
+    const mirror = rpc.engineAccessor.get(ISessionIndexMirror);
+    const warning = vi.spyOn(rpc.engineAccessor.get(ILogService), 'warn');
+    const epochs: Array<{ before: number; after: number }> = [];
+    let preparing: ReturnType<typeof index.prepare> | undefined;
+    try {
+      await entered[0]!.promise;
+      preparing = index.prepare();
+      for (const attempt of [0, 1]) {
+        await entered[attempt]!.promise;
+        const before = mirror.epoch();
+        await harness.createSession({ id: `ses_harness_churn_${attempt}`, workDir: workDirs[attempt]! });
+        epochs.push({ before, after: mirror.epoch() });
+        released[attempt]!.resolve();
+      }
+      const status = await preparing;
+      expect(status).toMatchObject({ state: 'degraded', reason: 'projection failed', degradedCount: 1, generation: undefined });
+      expect(scans).toBe(2);
+      expect(epochs).toEqual([{ before: 0, after: 1 }, { before: 1, after: 2 }]);
+      expect(warning).toHaveBeenCalledWith('session index read model degraded; list/count fail closed until rebuilt', {
+        reason: 'projection failed', error: 'session index reconciliation is incomplete', degradedCount: 1,
+      });
+      expect(await index.get('ses_harness_churn_0')).toMatchObject({ id: 'ses_harness_churn_0' });
+      expect(await index.get('ses_harness_churn_1')).toMatchObject({ id: 'ses_harness_churn_1' });
+      await (index as FileSessionIndex).reprojectNow();
+      const recovered = await index.prepare();
+      expect(recovered.state, JSON.stringify(recovered)).toBe('ready');
+      expect(scans).toBe(3);
+      expect((await harness.listSessions()).map(session => session.id).toSorted()).toEqual(['ses_harness_churn_0', 'ses_harness_churn_1']);
+      process.stdout.write(`${JSON.stringify({ sessionIndexStartupProof: { status, recovered, scans, epochs } })}\n`);
+    } finally {
+      for (const gate of released) gate.resolve();
+      await preparing;
+      scan.mockRestore(); warning.mockRestore();
+      try { await harness.close(); } finally { vi.useRealTimers(); }
     }
   });
 
