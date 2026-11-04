@@ -58,7 +58,7 @@ function fixture(t) {
   return { ...options, apk, output: join(root, 'output'), variant: 'release', inspect };
 }
 
-test('Android derives the existing code mapping and exact versionName from the unified GUI version', () => {
+await test('Android derives the existing code mapping and exact versionName from the unified GUI version', () => {
   assert.deepEqual(androidVersion('0.5.1'), { versionName: '0.5.1', versionCode: 5001 });
   assert.deepEqual(VERSION, { versionName: '1.2.3-beta.2', versionCode: 1002003 });
   for (const version of ['1.2', '1.2.3-other', '1.1000.0', '1.0.1000', '2101.0.0', '0.0.0']) {
@@ -66,7 +66,7 @@ test('Android derives the existing code mapping and exact versionName from the u
   }
 });
 
-test('missing signing credentials and invalid fingerprints fail with precise public input names', () => {
+await test('missing signing credentials and invalid fingerprints fail with precise public input names', () => {
   assert.throws(() => requireSigningSecrets({}), /KIKI_ANDROID_KEYSTORE_BASE64.*KIKI_ANDROID_STORE_PASSWORD.*KIKI_ANDROID_KEY_ALIAS.*KIKI_ANDROID_KEY_PASSWORD/);
   const env = { KIKI_ANDROID_KEYSTORE_BASE64: 'Zml4dHVyZQ==', KIKI_ANDROID_STORE_PASSWORD: 'fixture',
     KIKI_ANDROID_KEY_ALIAS: '1', KIKI_ANDROID_KEY_PASSWORD: 'fixture' };
@@ -76,7 +76,7 @@ test('missing signing credentials and invalid fingerprints fail with precise pub
   assert.throws(() => certificateFingerprint(''), /KIKI_ANDROID_SIGNING_CERT_SHA256/);
 });
 
-test('real-tool report contract checks inherited launcher icon, signature, package, versions, SDK and resources', () => {
+await test('real-tool report contract checks inherited launcher icon, signature, package, versions, SDK and resources', () => {
   assert.equal(parseApkReports(reports(), { variant: 'release', version: VERSION, certificateSha256: CERT }).certificateSha256, CERT);
   assert.equal(parseApkReports(reports('debug'), { variant: 'debug', version: VERSION }).debuggable, true);
   const mutations = [
@@ -98,7 +98,7 @@ test('real-tool report contract checks inherited launcher icon, signature, packa
   }
 });
 
-test('release APK receipt binds the frozen prepare, npm lock, source and exact producer attempt', t => {
+await test('release APK receipt binds the frozen prepare, npm lock, source and exact producer attempt', t => {
   const options = fixture(t);
   const receipt = stageAndroidArtifact(options);
   assert.equal(receipt.prepare.artifactId, '9001');
@@ -113,7 +113,7 @@ test('release APK receipt binds the frozen prepare, npm lock, source and exact p
   assert.throws(() => verifyAndroidArtifact(verify), /checksum/);
 });
 
-test('tampered APK and wrong version/source/lock are rejected before publication', t => {
+await test('tampered APK and wrong version/source/lock are rejected before publication', t => {
   const options = fixture(t);
   const receipt = stageAndroidArtifact(options);
   write(join(options.output, receipt.apk.name), 'APK changed');
@@ -122,7 +122,7 @@ test('tampered APK and wrong version/source/lock are rejected before publication
   assert.throws(() => verifyAndroidInput(options), /frozen Android input/);
 });
 
-test('release cannot stage without the prepare input or with a mismatched GUI version', t => {
+await test('release cannot stage without the prepare input or with a mismatched GUI version', t => {
   const options = fixture(t);
   rmSync(join(options.inputDir, INPUT_NAME));
   assert.throws(() => stageAndroidArtifact(options), /ENOENT/);
@@ -133,7 +133,7 @@ test('release cannot stage without the prepare input or with a mismatched GUI ve
   assert.equal(existsSync(options.output), false);
 });
 
-test('debug and signed checks are distinct artifacts and never product release inputs', t => {
+await test('debug and signed checks are distinct artifacts and never product release inputs', t => {
   const options = fixture(t);
   const debug = stageAndroidArtifact({ ...options, variant: 'debug' });
   assert.equal(debug.tag, null);
@@ -149,7 +149,7 @@ test('debug and signed checks are distinct artifacts and never product release i
   assert.throws(() => stageAndroidArtifact({ ...options, variant: 'release-check', certificateSha256: 'cd'.repeat(32), output: join(options.root, 'bad-check') }), /release certificate/);
 });
 
-test('reruns reuse the latest available Android candidate only within the same run', () => {
+await test('reruns reuse the latest available Android candidate only within the same run', () => {
   const artifact = (id, attempt) => ({ id, name: `kiki-release-android-84-${attempt}`, expired: false });
   const select = artifacts => selectAndroidArtifact({ artifacts, runId: '84', currentAttempt: '3' });
   assert.deepEqual(select([artifact(100, 1), artifact(200, 2), { ...artifact(300, 3), name: 'kiki-release-android-83-3' }]), { id: 200, attempt: 2 });
@@ -159,7 +159,7 @@ test('reruns reuse the latest available Android candidate only within the same r
   assert.throws(() => select([{ ...artifact(100, 1), expired: true }]), /unavailable/);
 });
 
-test('Android SDK setup overrides retired tools defaults and retains the required platform and build-tools', () => {
+await test('Android SDK setup overrides retired tools defaults and retains the required platform and build-tools', () => {
   const root = resolve(import.meta.dirname, '../../../..');
   for (const [name, setupCount] of [['kiki-android-ci.yml', 1], ['kiki-android-signing-check.yml', 1], ['kiki-desktop-release.yml', 2]]) {
     const workflow = readFileSync(join(root, '.github/workflows', name), 'utf8');
@@ -173,7 +173,7 @@ test('Android SDK setup overrides retired tools defaults and retains the require
   }
 });
 
-test('workflows keep unsigned CI, protected manual signing and immutable tag publication separate', () => {
+await test('workflows keep unsigned CI, protected manual signing and immutable tag publication separate', () => {
   const root = resolve(import.meta.dirname, '../../../..');
   const ci = readFileSync(join(root, '.github/workflows/kiki-android-ci.yml'), 'utf8');
   const check = readFileSync(join(root, '.github/workflows/kiki-android-signing-check.yml'), 'utf8');

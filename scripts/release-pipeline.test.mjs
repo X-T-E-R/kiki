@@ -742,11 +742,13 @@ void test('release artifact selection executes real gh pagination and aggregates
     { id: 102, name: `kiki-release-target-${runId}-linux-arm64-2`, expired: false },
     { id: 103, name: `kiki-release-target-${runId}-darwin-x64-2`, expired: false },
     { id: 104, name: `kiki-release-target-${runId}-darwin-arm64-2`, expired: false },
+    { id: 401, name: `kiki-release-android-${runId}-2`, expired: false },
   ];
   const secondPage = [
     { id: 205, name: `kiki-release-target-${runId}-win32-x64-2`, expired: false },
     { id: 206, name: `kiki-release-target-${runId}-win32-arm64-2`, expired: false },
     { id: 307, name: `kiki-release-target-${runId}-linux-x64-3`, expired: false },
+    { id: 402, name: `kiki-release-android-${runId}-3`, expired: false },
   ];
   const requests = [];
   server = createServer((request, response) => {
@@ -771,7 +773,10 @@ void test('release artifact selection executes real gh pagination and aggregates
   const port = server.address().port;
   const endpoint = `http://127.0.0.1:${port}/repos/example/kiki/actions/runs/${runId}/artifacts?per_page=100`;
   const endpointScript = sourceScript.replace(endpointMatch[0], endpointMatch[0].replace(endpointMatch[2], endpoint));
-  const script = withAbsoluteReceiptSource(endpointScript);
+  const androidInvocation = 'node apps/kiki-gui/mobile/scripts/android-artifact.mjs';
+  assert.ok(endpointScript.includes(`${androidInvocation} select`), 'publisher must select its Android candidate from the same API response');
+  const script = withAbsoluteReceiptSource(endpointScript).replace(androidInvocation,
+    `node ${shellQuote(join(root, 'apps/kiki-gui/mobile/scripts/android-artifact.mjs'))}`);
   const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
   const ghEnv = {
     ...process.env,
@@ -799,7 +804,7 @@ void test('release artifact selection executes real gh pagination and aggregates
   assert.deepEqual(api, { artifacts: [...firstPage, ...secondPage] });
   assert.equal(
     await readFile(githubOutput, 'utf8'),
-    'artifact-ids=307,102,103,104,205,206\n',
+    'artifact-ids=307,102,103,104,205,206\nartifact-id=402\nproducer-attempt=3\n',
   );
 });
 
