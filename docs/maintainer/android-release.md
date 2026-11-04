@@ -27,7 +27,9 @@ Keep one backed-up PKCS12 release keystore for upgrades. Configure these four **
 
 Set the **repository variable** `KIKI_ANDROID_SIGNING_CERT_SHA256` to the corresponding public certificate's SHA-256 fingerprint (64 hex digits; colons are accepted). Protect the `release` environment's branch access and approvals. Recover the existing keystore and credentials from their secure backups when needed; generating a replacement identity breaks upgrades for existing installations.
 
-The signing step materializes the keystore only under `RUNNER_TEMP`. Gradle reads its path and the other three values from the environment, uses `storeType 'PKCS12'`, and rejects release tasks when inputs are missing. The verifier requires the expected certificate, a non-debuggable package, the exact version and application ID, API 24 minimum/API 36 target, and the packaged launcher/icon/shortcut resources. The keystore is removed by an `always()` step. A missing input, wrong certificate, version mismatch, invalid APK signature, or build failure stops artifact upload; there is no debug-signing substitute.
+The signing step materializes the keystore only under `RUNNER_TEMP`. Gradle reads its path and the other three values from the environment, uses `storeType 'PKCS12'`, and rejects release tasks when inputs are missing. The keystore is removed by an `always()` step.
+
+The verifier requires the expected certificate, a non-debuggable package, the exact version and application ID, API 24 minimum/API 36 target, and the packaged launcher assets. It follows the compiled manifest's icon and `MainActivity` shortcut resource IDs through the APK resource table to the actual ZIP entries, including optimized release paths. The shortcut must remain enabled, use the launcher icon and a nonempty label, and target `MainActivity` with `ai.easyagent.kiki.CHANGE_SERVER`. A missing referenced resource, wrong certificate, version mismatch, invalid APK signature, or build failure stops artifact upload; there is no debug-signing substitute.
 
 ## Verify on GitHub Actions without publishing
 

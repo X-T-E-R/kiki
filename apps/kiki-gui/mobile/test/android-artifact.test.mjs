@@ -20,12 +20,52 @@ const EXPECTED = {
   tag: 'kiki-v1.2.3-beta.2', version: '1.2.3-beta.2', channel: 'beta',
 };
 function reports(variant = 'release') {
+  const icon = variant === 'debug' ? 'res/mipmap-anydpi-v26/ic_launcher.xml' : 'res/BW.xml';
+  const shortcut = variant === 'debug' ? 'res/xml/shortcuts.xml' : 'res/Eq.xml';
+  const xmlTrees = { [shortcut]: `N: android=http://schemas.android.com/apk/res/android
+  E: shortcuts (line=2)
+    E: shortcut (line=7)
+      A: android:icon(0x01010002)=@0x7f0c0000
+      A: android:enabled(0x0101000e)=(type 0x12)0xffffffff
+      A: android:shortcutId(0x01010528)="change_server" (Raw: "change_server")
+      A: android:shortcutShortLabel(0x01010529)=@0x7f0d0024
+      E: intent (line=11)
+        A: android:targetPackage(0x01010021)="ai.easyagent.kiki" (Raw: "ai.easyagent.kiki")
+        A: android:action(0x0101002d)="ai.easyagent.kiki.CHANGE_SERVER" (Raw: "ai.easyagent.kiki.CHANGE_SERVER")
+        A: android:targetClass(0x0101002f)="ai.easyagent.kiki.MainActivity" (Raw: "ai.easyagent.kiki.MainActivity")
+` };
   return {
     badging: `package: name='ai.easyagent.kiki' versionCode='1002003' versionName='1.2.3-beta.2'\n` +
-      `sdkVersion:'24'\ntargetSdkVersion:'36'\napplication: label='Kiki' icon='res/mipmap-anydpi-v26/ic_launcher.xml'\n` +
+      `sdkVersion:'24'\ntargetSdkVersion:'36'\napplication: label='Kiki' icon='${icon}'\n` +
       `launchable-activity: name='ai.easyagent.kiki.MainActivity' label='Kiki' icon=''\n${variant === 'debug' ? 'application-debuggable\n' : ''}`,
     signing: `Signer #1 certificate DN: CN=Example release\nSigner #1 certificate SHA-256 digest: ${CERT}\n`,
-    files: [...LAUNCHER_FILES, 'res/mipmap-anydpi-v26/ic_launcher.xml'].join('\n'),
+    files: [...LAUNCHER_FILES, icon, 'res/fallback.png', shortcut].join('\n'),
+    manifest: `N: android=http://schemas.android.com/apk/res/android
+  E: manifest (line=2)
+    E: application (line=23)
+      A: android:icon(0x01010002)=@0x7f0c0000
+      E: activity (line=33)
+        A: android:name(0x01010003)="ai.easyagent.kiki.MainActivity" (Raw: "ai.easyagent.kiki.MainActivity")
+        E: meta-data (line=47)
+          A: android:name(0x01010003)="android.app.shortcuts" (Raw: "android.app.shortcuts")
+          A: android:resource(0x01010025)=@0x7f100003
+`,
+    resources: `      config mdpi:
+        resource 0x7f0c0000 ai.easyagent.kiki:mipmap/ic_launcher: t=0x03 d=0x00000100 (s=0x0008 r=0x00)
+          (string8) "res/fallback.png"
+      config anydpi-v26:
+        resource 0x7f0c0000 ai.easyagent.kiki:mipmap/ic_launcher: t=0x03 d=0x00000101 (s=0x0008 r=0x00)
+          (string8) "${icon}"
+      config (default):
+        resource 0x7f100003 ai.easyagent.kiki:xml/shortcuts: t=0x03 d=0x00000102 (s=0x0008 r=0x00)
+          (string8) "${shortcut}"
+        resource 0x7f0d0024 ai.easyagent.kiki:string/change_server: t=0x03 d=0x00000103 (s=0x0008 r=0x00)
+          (string8) "Change server"
+      config zh:
+        resource 0x7f0d0024 ai.easyagent.kiki:string/change_server: t=0x03 d=0x00000104 (s=0x0008 r=0x00)
+          (string16) "更换服务器"
+`,
+    xmlTrees, readXml: path => xmlTrees[path] ?? '',
   };
 }
 const inspect = (_, options) => parseApkReports(reports(options.variant), options);
@@ -95,6 +135,38 @@ await test('real-tool report contract checks inherited launcher icon, signature,
     const r = reports();
     mutate(r);
     assert.throws(() => parseApkReports(r, { variant: 'release', version: VERSION, certificateSha256: CERT }), error);
+  }
+});
+
+await test('compiled launcher references accept optimized release paths and reject missing or broken shortcut resources', () => {
+  const options = { variant: 'release', version: VERSION, certificateSha256: CERT };
+  const crlf = reports();
+  crlf.manifest = crlf.manifest.replaceAll('\n', '\r\n');
+  crlf.resources = crlf.resources.replaceAll('\n', '\r\n');
+  crlf.xmlTrees['res/Eq.xml'] = crlf.xmlTrees['res/Eq.xml'].replaceAll('\n', '\r\n');
+  assert.equal(parseApkReports(crlf, options).applicationId, 'ai.easyagent.kiki');
+  const mutations = [
+    [r => { r.manifest = r.manifest.replaceAll('android.app.shortcuts', 'example.missing'); }, /shortcut metadata/],
+    [r => { r.manifest = r.manifest.replace('E: activity ', 'E: provider '); }, /shortcut metadata/],
+    [r => { r.manifest = r.manifest.replace('@0x7f100003', '@0x7f100002'); }, /shortcut resource/],
+    [r => { r.resources = r.resources.replace('resource 0x7f100003', 'resource 0x7f100002'); }, /shortcut resource/],
+    [r => { r.files = r.files.replace('res/Eq.xml', 'res/xml/shortcuts.xml'); }, /resource is missing: res\/Eq.xml/],
+    [r => { r.files = r.files.replace('res/fallback.png', ''); }, /resource is missing: res\/fallback.png/],
+    [r => { r.xmlTrees['res/Eq.xml'] = ''; }, /change_server launcher shortcut is missing/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replaceAll('change_server', 'missing'); }, /change_server/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replace('0xffffffff', '0x0'); }, /shortcut enabled/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replace('@0x7f0c0000', '@0x7f0c0001'); }, /shortcut icon/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replace('@0x7f0d0024', '@0x7f0c0000'); }, /shortcut label resource/],
+    [r => { r.resources = r.resources.replace('"Change server"', '""'); }, /shortcut label resource/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replaceAll('CHANGE_SERVER', 'MISSING'); }, /shortcut action/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replace('targetPackage(0x01010021)="ai.easyagent.kiki"', 'targetPackage(0x01010021)="example.other"'); }, /shortcut targetPackage/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replaceAll('MainActivity', 'MissingActivity'); }, /shortcut targetClass/],
+    [r => { r.xmlTrees['res/Eq.xml'] = r.xmlTrees['res/Eq.xml'].replace('E: intent ', 'E: extra '); }, /shortcut intent count/],
+  ];
+  for (const [mutate, error] of mutations) {
+    const r = reports();
+    mutate(r);
+    assert.throws(() => parseApkReports(r, options), error);
   }
 });
 

@@ -14,7 +14,7 @@ export const RECEIPT_NAME = 'android-receipt.json';
 export const LAUNCHER_FILES = [
   'assets/public/index.html', 'assets/public/launcher.js', 'assets/public/launcher.css',
   'assets/public/target.js', 'assets/public/fonts/newsreader-latin-opsz-normal.woff2',
-  'assets/capacitor.config.json', 'res/xml/shortcuts.xml',
+  'assets/capacitor.config.json',
 ];
 
 function equal(actual, expected, label) {
@@ -76,7 +76,77 @@ export function verifyAndroidInput(options) {
   return { ...actual, prepare: { ...actual.prepare, artifactId: positive(options.prepareArtifactId, 'prepare artifact ID') } };
 }
 
-export function parseApkReports({ badging, signing, files }, { variant, version, certificateSha256 }) {
+/** @typedef {{ name: string, attributes: Record<string, string>, children: CompiledXmlNode[] }} CompiledXmlNode */
+
+/** @param {string} report */
+function compiledXml(report) {
+  /** @type {CompiledXmlNode} */
+  const root = { name: '', attributes: {}, children: [] };
+  const stack = [{ indent: -1, node: root }];
+  for (const line of report.split(/\r?\n/)) {
+    const element = /^(\s*)E: ([\w-]+) /.exec(line);
+    if (element) {
+      while (stack.at(-1).indent >= element[1].length) stack.pop();
+      const node = { name: element[2], attributes: {}, children: [] };
+      stack.at(-1).node.children.push(node);
+      stack.push({ indent: element[1].length, node });
+    } else {
+      const attribute = /^\s+A: android:(\w+)\(0x[\da-f]+\)=(.*)$/i.exec(line);
+      if (attribute) stack.at(-1).node.attributes[attribute[1]] = /^"([^"]*)"/.exec(attribute[2])?.[1] ?? attribute[2];
+    }
+  }
+  return root.children;
+}
+
+function launcherResources({ manifest, resources, files }) {
+  const application = compiledXml(manifest)[0]?.children.find(node => node.name === 'application');
+  const activity = application?.children.find(node => node.name === 'activity' && node.attributes.name === 'ai.easyagent.kiki.MainActivity');
+  const shortcut = activity?.children.find(node => node.name === 'meta-data' && node.attributes.name === 'android.app.shortcuts');
+  if (!shortcut) throw new Error('APK launcher shortcut metadata is missing from MainActivity');
+  /** @type {Map<string, { kind: string, value: string }[]>} */
+  const values = new Map();
+  // AGP may shorten ZIP paths in release APKs; resource IDs remain the runtime contract.
+  for (const match of resources.matchAll(/^ +resource (0x[\da-f]+) \S+:([\w]+)\/[^:]+: t=0x03[^\r\n]*\r?\n +\(string(?:8|16)\) "([^\r\n]*)"$/gim)) {
+    const id = `@${match[1]}`;
+    values.set(id, [...(values.get(id) ?? []), { kind: match[2], value: match[3] }]);
+  }
+  const entries = new Set(files.trim().split(/\r?\n/));
+  function requiredValues(id, kind, label) {
+    const found = values.get(id);
+    const file = kind !== 'string';
+    if (!found?.length || found.some(({ kind: actual, value }) => !kind.split('|').includes(actual) ||
+      !value.trim() || (file && !value.startsWith('res/')))) {
+      throw new Error(`APK ${label} resource is missing: ${id}`);
+    }
+    const paths = [...new Set(found.map(({ value }) => value))];
+    if (file) for (const path of paths) {
+      if (!entries.has(path)) throw new Error(`APK launcher resource is missing: ${path}`);
+    }
+    return paths;
+  }
+  const iconId = application.attributes.icon;
+  requiredValues(iconId, 'mipmap|drawable', 'launcher icon');
+  return { paths: requiredValues(shortcut.attributes.resource, 'xml', 'launcher shortcut'), iconId, requiredValues };
+}
+
+function verifyShortcuts(launcher, readXml) {
+  for (const path of launcher.paths) {
+    const shortcuts = compiledXml(readXml(path)).find(node => node.name === 'shortcuts');
+    const shortcut = shortcuts?.children.find(node => node.name === 'shortcut' && node.attributes.shortcutId === 'change_server');
+    if (!shortcut) throw new Error(`APK change_server launcher shortcut is missing: ${path}`);
+    equal(shortcut.attributes.enabled, '(type 0x12)0xffffffff', 'APK launcher shortcut enabled');
+    equal(shortcut.attributes.icon, launcher.iconId, 'APK launcher shortcut icon');
+    launcher.requiredValues(shortcut.attributes.shortcutShortLabel, 'string', 'launcher shortcut label');
+    const intents = shortcut.children.filter(node => node.name === 'intent');
+    equal(intents.length, 1, 'APK launcher shortcut intent count');
+    for (const [attribute, expected] of Object.entries({ action: 'ai.easyagent.kiki.CHANGE_SERVER',
+      targetPackage: 'ai.easyagent.kiki', targetClass: 'ai.easyagent.kiki.MainActivity' })) {
+      equal(intents[0].attributes[attribute], expected, `APK launcher shortcut ${attribute}`);
+    }
+  }
+}
+
+export function parseApkReports({ badging, signing, files, manifest, resources, readXml }, { variant, version, certificateSha256 }) {
   if (!['debug', 'release', 'release-check'].includes(variant)) throw new Error(`Unknown Android variant: ${variant}`);
   const pkg = /^package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'/m.exec(badging);
   if (pkg === null) throw new Error('APK package metadata is missing');
@@ -95,6 +165,7 @@ export function parseApkReports({ badging, signing, files }, { variant, version,
   for (const file of [...LAUNCHER_FILES, icon]) {
     if (!entries.has(file)) throw new Error(`APK launcher resource is missing: ${file}`);
   }
+  verifyShortcuts(launcherResources({ manifest, resources, files }), readXml);
   const certificates = [...signing.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([0-9a-f:]+)$/gim)];
   if (certificates.length !== 1) throw new Error('APK must have exactly one verified signing certificate');
   const certificate = certificateFingerprint(certificates[0][1]);
@@ -118,6 +189,9 @@ export function inspectApk(apk, options) {
     badging: run(aapt, ['dump', 'badging', apk]),
     signing: run(java, ['-jar', join(tools, 'lib/apksigner.jar'), 'verify', '--verbose', '--print-certs', apk]),
     files: run(aapt, ['list', apk]),
+    manifest: run(aapt, ['dump', 'xmltree', apk, 'AndroidManifest.xml']),
+    resources: run(aapt, ['dump', '--values', 'resources', apk]),
+    readXml: path => run(aapt, ['dump', 'xmltree', apk, path]),
   }, options);
 }
 
