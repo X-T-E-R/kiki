@@ -2217,6 +2217,7 @@ describe('SQLite Usage history source lifecycle', () => {
     const saved = await openRange([summary('first', 'workspace'), summary('later', 'workspace')], { [first]: [usageRecord(10, 1)], [later]: [usageRecord(20, 2)] }, true);
     const service = new UsageAggregationService(saved.core, () => 1000, { deadlineMs: 30 });
     const controller = new AbortController();
+    const reason = new Error(mode === 'cancel' ? 'Cancel metadata' : 'Metadata unavailable');
     let enter!: () => void, release!: () => void;
     const entered = new Promise<void>((resolve) => { enter = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -2224,30 +2225,85 @@ describe('SQLite Usage history source lifecycle', () => {
     const stalled = vi.spyOn(saved.storage, 'size').mockImplementation(async (target, key) => {
       if (target !== later || key !== 'wire.jsonl') return size(target, key);
       enter();
-      if (mode === 'error') throw new Error('Metadata unavailable');
       await gate;
+      if (mode === 'error') throw reason;
       return size(target, key);
     });
     const read = vi.spyOn(saved.storage, 'readStream');
     const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const pending = service.query(input, controller.signal);
-      const rejected = mode === 'deadline' ? undefined : expect(pending).rejects.toThrow(mode === 'cancel' ? 'Cancel metadata' : 'Metadata unavailable');
+      const rejected = mode === 'deadline' ? undefined : expect(pending).rejects.toBe(reason);
       await entered;
-      if (mode === 'cancel') controller.abort(new Error('Cancel metadata'));
-      if (mode === 'deadline') expect((await pending).reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
-      else await rejected;
+      expect(read.mock.calls.some(([, key]) => key === 'wire.jsonl')).toBe(false);
+      if (mode === 'deadline') {
+        vi.advanceTimersByTime(30);
+        const partial = await pending;
+        expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline', scanned_sessions: 0 });
+        expect(partial.summary.tokens.output).toBe(0);
+      } else {
+        if (mode === 'cancel') controller.abort(reason);
+        else release();
+        await rejected;
+      }
       expect(read.mock.calls.some(([, key]) => key === 'wire.jsonl')).toBe(false);
     } finally {
       release(); stalled.mockRestore();
       await Reflect.get(service, 'modelPreparing')?.catch(() => undefined);
       service.dispose();
+      vi.useRealTimers();
     }
+    expect(read.mock.calls.some(([, key]) => key === 'wire.jsonl')).toBe(false);
     const continued = new UsageAggregationService(saved.core, () => 1000);
-    const complete = await continued.query(input);
-    expect(complete.reliability.complete).toBe(true);
-    expect(complete.summary.tokens.output).toBe(2);
-    continued.dispose();
+    try {
+      const complete = await continued.query(input);
+      expect(complete.reliability).toMatchObject({ complete: true, incomplete_reason: null, usage_coverage: { known_records: 2, missing_records: 0, legacy_zero_records: 0 } });
+      expect(complete.summary.tokens.output).toBe(2);
+    } finally { continued.dispose(); }
+  });
+
+  it('returns a deadline partial when startup SQL verification has not reached a metadata error', async () => {
+    const first = scope('workspace', 'first'), later = scope('workspace', 'later');
+    const saved = await openRange([summary('first', 'workspace'), summary('later', 'workspace')], { [first]: [usageRecord(10, 1)], [later]: [usageRecord(20, 2)] }, true);
+    const service = new UsageAggregationService(saved.core, () => 1000, { deadlineMs: 30 });
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const size = saved.storage.size.bind(saved.storage);
+    const failed = vi.spyOn(saved.storage, 'size').mockImplementation(async (target, key) => {
+      if (target !== later || key !== 'wire.jsonl') return size(target, key);
+      enter();
+      throw new Error('Metadata unavailable');
+    });
+    const model = saved.core.accessor.get(IUsageReadModel);
+    const sources = model.sources.bind(model);
+    const delayed = vi.spyOn(model, 'sources').mockImplementationOnce(async (...args) => { await gate; return sources(...args); });
+    const read = vi.spyOn(saved.storage, 'readStream');
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = service.query(input);
+      await entered;
+      expect(delayed).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30);
+      const partial = await pending;
+      expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline', scanned_sessions: 0, usage_coverage: { known_records: 0, missing_records: 0, legacy_zero_records: 0 } });
+      expect(partial.summary.tokens.output).toBe(0);
+      expect(partial.sessions.items).toEqual([]);
+    } finally {
+      release(); failed.mockRestore(); delayed.mockRestore();
+      await Reflect.get(service, 'modelPreparing')?.catch(() => undefined);
+      service.dispose();
+      vi.useRealTimers();
+    }
+    expect(read.mock.calls.some(([, key]) => key === 'wire.jsonl')).toBe(false);
+    const continued = new UsageAggregationService(saved.core, () => 1000);
+    try {
+      const complete = await continued.query(input);
+      expect(complete.reliability).toMatchObject({ complete: true, incomplete_reason: null, usage_coverage: { known_records: 2, missing_records: 0, legacy_zero_records: 0 } });
+      expect(complete.summary.tokens.output).toBe(2);
+    } finally { continued.dispose(); }
   });
 
   it.each([false, true])('verifies all startup inventories and recovers only an unaligned source (stale: %s)', async (stale) => {
