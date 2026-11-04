@@ -2528,11 +2528,19 @@ describe('agent collaboration safe-boundary delivery', () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     target.setExecutionState('cancelling');
-    vi.spyOn(target.execution, 'settled').mockImplementation(async () => {
+    let releaseCancellation!: () => void;
+    const cancellation = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const settled = vi.spyOn(target.execution, 'settled').mockImplementation(async () => {
+      await cancellation;
       target.setRunning(false);
     });
+    let releaseDispatch!: () => void;
+    const dispatchGate = new Promise<void>((resolve) => { releaseDispatch = resolve; });
     const dispatch = dispatchHarness(async (child, request, options) => {
+      expect(child.agent).toBe(target.handle);
+      expect(target.execution.status().state).toBe('idle');
       await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      await dispatchGate;
       return {
         child,
         request: request as DispatchRun['request'],
@@ -2543,21 +2551,103 @@ describe('agent collaboration safe-boundary delivery', () => {
         }),
       };
     });
-    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
-      metadataHarness({ 'agent-target': {} }), dispatch);
-    const accepted = await service.send({
-      ...sendInput('after cancel', 'cancel-continue'),
-      waitForRunningDelivery: false,
-      idleWake: 'owned-child',
+    const lifecycle = lifecycleHarness([target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const service = messagingService(store, lifecycle.service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch, residency.manager);
+    const input = { ...sendInput('after cancel', 'cancel-continue'), waitForRunningDelivery: false, idleWake: 'owned-child' as const };
+    try {
+      const accepted = await service.send(input);
+      expect(accepted).toMatchObject({ delivery: 'queued' });
+      expect(accepted.resumed).toBeUndefined();
+      await vi.waitFor(() => { expect(settled).toHaveBeenCalledOnce(); });
+      const duplicate = await service.send(input);
+      expect(duplicate).toMatchObject({ delivery: 'queued', deduplicated: true, message: { messageId: accepted.message.messageId } });
+      expect(target.execution.status().state).toBe('cancelling');
+      expect(target.messages).toEqual([]);
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+      expect(residency.pins()).toBe(2);
+
+      releaseCancellation();
+      await vi.waitFor(async () => {
+        expect((await store.accept(messageInput('after cancel', 'cancel-continue'))).delivery).toBe('delivered');
+      });
+      expect(dispatch.runOnExisting).toHaveBeenCalledOnce();
+      expect(target.messages).toMatchObject([{
+        content: [{ type: 'text', text: 'Message from agent "root" (main):\n\nafter cancel' }],
+        origin: { kind: 'agent_message', senderAgentId: 'main', senderTaskName: 'root', messageId: accepted.message.messageId },
+      }]);
+      expect(target.operations).toEqual(['appendObservable', 'flush']);
+      expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+
+      releaseDispatch();
+      await waitUntil(() => residency.pins() === 0);
+      expect(dispatch.recordDelegatedRun).toHaveBeenCalledExactlyOnceWith('main', 'agent-target');
+      expect(dispatch.runOnExisting).toHaveBeenCalledOnce();
+      await expect(service.send(input)).resolves.toMatchObject({ delivery: 'delivered', deduplicated: true });
+      expect(dispatch.runOnExisting).toHaveBeenCalledOnce();
+      expect(target.messages).toHaveLength(1);
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    } finally {
+      releaseCancellation();
+      releaseDispatch();
+      await waitUntil(() => residency.pins() === 0);
+      await service.dispose();
+    }
+  });
+
+  it.each(['execution', 'loop'] as const)('retains a cancelling child message when %s settlement fails, then recovers it once', async (phase) => {
+    const store = mailboxStore(tempDir());
+    const enqueued: ContextMessage[] = [];
+    const sender = agentHandle('main', { enqueued, dispatcher: { dispatch: async () => {} } });
+    const target = agentHandle('agent-target');
+    target.setExecutionState('cancelling');
+    const failure = new Error(`${phase} cancellation did not settle`);
+    const settled = phase === 'execution'
+      ? vi.spyOn(target.execution, 'settled')
+      : vi.spyOn(target.handle.accessor.get(IAgentLoopService), 'settled');
+    settled.mockRejectedValue(failure);
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      expect(child.agent).toBe(target.handle);
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return { child, request: request as DispatchRun['request'], started: Promise.resolve({
+        agentId: child.agentId, turn: {} as never, completion: Promise.resolve({ summary: 'done' }),
+      }) };
     });
-    expect(accepted).toMatchObject({ delivery: 'queued' });
-    expect(accepted.resumed).toBeUndefined();
-    await vi.waitFor(() => { expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1); });
-    await vi.waitFor(async () => {
-      expect((await store.accept(messageInput('after cancel', 'cancel-continue'))).delivery).toBe('delivered');
-    });
-    expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
-    await service.dispose();
+    const lifecycle = lifecycleHarness([sender.handle, target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const service = messagingService(store, lifecycle.service, sessionContext(),
+      metadataHarness({ main: {}, 'agent-target': {} }), dispatch, residency.manager, log);
+    const input = { ...sendInput('after failed cancel', `cancel-settle-${phase}`), waitForRunningDelivery: false, idleWake: 'owned-child' as const };
+    try {
+      const accepted = await service.send(input);
+      expect(accepted).toMatchObject({ delivery: 'queued' });
+      await vi.waitFor(() => { expect(enqueued).toHaveLength(1); });
+      expect(warn).toHaveBeenCalledWith('Agent message delivery did not finish', {
+        messageId: accepted.message.messageId, targetAgentId: 'agent-target', error: failure,
+      });
+      expect(noticeText(enqueued[0]!)).toContain(failure.message);
+      expect(residency.pins()).toBe(0);
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+      expect(target.messages).toEqual([]);
+      await expect(store.accept(messageInput(input.content, input.idempotencyKey))).resolves.toMatchObject({
+        delivery: 'queued', deduplicated: true, message: { messageId: accepted.message.messageId },
+      });
+
+      settled.mockResolvedValue(undefined);
+      target.setRunning(false);
+      await expect(service.send({ ...input, waitForRunningDelivery: true })).resolves.toMatchObject({
+        delivery: 'delivered', resumed: true, deduplicated: true, message: { messageId: accepted.message.messageId },
+      });
+      expect(dispatch.runOnExisting).toHaveBeenCalledOnce();
+      expect(dispatch.recordDelegatedRun).toHaveBeenCalledExactlyOnceWith('main', 'agent-target');
+      expect(target.messages).toMatchObject([{ origin: { kind: 'agent_message', senderAgentId: 'main', messageId: accepted.message.messageId } }]);
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    } finally { await service.dispose(); }
   });
 
   it('leaves a saved message for an already admitted next turn', async () => {
