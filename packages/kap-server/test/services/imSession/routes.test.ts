@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootstrap, IConfigService, ISessionManager, logSeed, resolveLoggingConfig, type Scope } from '@kiki/agent-core-v2';
+import { bootstrap, IConfigService, ISessionIndex, ISessionManager, logSeed, resolveLoggingConfig, type Scope } from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
 import { TEST_HOST_IDENTITY } from '../../helpers/hostIdentity';
@@ -212,6 +212,7 @@ it('binds an existing indexed session through native routes and reopens the save
   const open = async () => {
     core = bootstrap({ homeDir: home, cwd: home, osHomeDir: home, userAgentProfileHomeDir: home, modelAccountHomeDir: home, env: {}, clientIdentity: TEST_HOST_IDENTITY }, logSeed(resolveLoggingConfig({ homeDir: home, env: {} }))).app;
     await core.accessor.get(IConfigService).ready;
+    expect(await core.accessor.get(ISessionIndex).prepare()).toMatchObject({ source: 'read-model', state: 'ready' });
     notifications = new NotificationService(core, home, () => false, () => undefined);
     await notifications.start();
     const adapter = new FakeImAdapter('wechat_bridge', 'test-account');
@@ -235,7 +236,11 @@ it('binds an existing indexed session through native routes and reopens the save
     await bridge!.setListening(pasted.provider_instance_id, true);
     const identity = { chatId: 'test-chat', senderId: 'test-sender', topicId: '0', chatKind: 'private' as const };
     await adapter.emit({ eventId: 'test-discovery', identity, kind: 'text', text: 'Kiki binding test' });
-    const catalog = (await app!.inject({ method: 'GET', url: '/im/sessions/catalog' })).json().data;
+    const catalogResponse = await app!.inject({ method: 'GET', url: '/im/sessions/catalog' });
+    expect(catalogResponse.statusCode, catalogResponse.body).toBe(200);
+    const catalogEnvelope = catalogResponse.json();
+    expect(catalogEnvelope, catalogResponse.body).toMatchObject({ code: 0 });
+    const catalog = catalogEnvelope.data;
     expect(catalog.sessions.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining(['im-existing', 'im-replacement']));
     const discoveryId = (await bridge!.snapshot()).discoveries[0]!.id;
     const confirmed = (await app!.inject({ method: 'POST', url: `/im/sessions/discoveries/${discoveryId}/confirm`, payload: { target: { kind: 'session', session_id: 'im-existing' } } })).json();
