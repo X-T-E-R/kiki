@@ -51,10 +51,14 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
     if (before === selected) return;
     const root = rootRef.current;
     if (root === null) return;
+    const focusBeforeFrame = document.activeElement;
     // After the swap paints, so the target exists and is visible.
     const frame = requestAnimationFrame(() => {
       if (selected !== null) {
-        root.querySelector<HTMLElement>('[data-detail-pane] [data-detail-heading]')?.focus({ preventScroll: true });
+        const pane = root.querySelector<HTMLElement>('[data-detail-pane]');
+        if (document.activeElement === focusBeforeFrame || pane?.contains(document.activeElement) !== true) {
+          pane?.querySelector<HTMLElement>('[data-detail-heading]')?.focus({ preventScroll: true });
+        }
         // Bring the whole surface in from its card's title, so the rail and
         // the detail header start together with nothing clipped above them.
         const scroller = root.closest<HTMLElement>('[data-settings-scroll]');

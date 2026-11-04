@@ -289,7 +289,18 @@ it('keeps dispatch policy out of the workspace header and mounts the shared comp
   ));
   await settle();
 
-  expect(harness.readCapabilities).toHaveBeenCalledExactlyOnceWith({ session_id: 'session', agent_id: 'child' });
+  const reads = harness.readCapabilities.mock.calls;
+  expect(reads).toHaveLength(3);
+  expect(reads.map((call) => call[0])).toEqual([
+    { session_id: 'session', agent_id: 'child' },
+    { session_id: 'session', agent_id: 'child' },
+    { session_id: 'session', agent_id: 'child' },
+  ]);
+  expect(reads.map((call) => call[1])).toEqual([
+    expect.any(AbortSignal),
+    undefined,
+    expect.any(AbortSignal),
+  ]);
   expect(header.querySelector('[data-dispatch-policy]')).toBeNull();
   expect(header.querySelector('[data-recommendation-status]')).toBeNull();
   expect(dock.querySelector('[data-composer-variant="subagent"]')).not.toBeNull();

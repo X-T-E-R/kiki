@@ -45,7 +45,7 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.equal((release.match(/update-catalog\.mjs/g) ?? []).length, 1);
   assert.match(release, /^  prepare:/m);
   const prepare = release.slice(release.indexOf('  prepare:'), release.indexOf('  cli-native:'));
-  assert.match(prepare, /- name: Checkout release commit[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
+  assert.match(prepare, /- name: Checkout release commit[\s\S]*?ref: \$\{\{ needs\.validate\.outputs\.source-sha \}\}/);
   assert.match(release, /artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
   assert.match(release, /prepare-artifact-id: \$\{\{ needs\.prepare\.outputs\.artifact-id \}\}/);
   assert.match(release, /select-artifacts/);
@@ -88,6 +88,139 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.ok(signatureVerify >= 0 && signatureVerify < manifest);
   assert.match(publish, /--public-key "\$KIKI_UPDATER_PUBLIC_KEY"/);
   assert.match(publish, /stage-npm/);
+});
+
+void test('release push and dispatch resolve the same product tag independently of workflow HEAD', async (t) => {
+  const workflow = await read('.github/workflows/kiki-desktop-release.yml');
+  const script = extractBashStep(workflow, 'Validate release tag');
+  assert.match(workflow, /workflow_dispatch:\s+inputs:\s+tag:[\s\S]*?required: true/);
+  assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}\s+fetch-depth: 0/);
+  assert.match(workflow, /group: kiki-desktop-release-\$\{\{ inputs\.tag \|\| github\.ref_name \}\}/);
+
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/release-source-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: scratch, encoding: 'utf8' });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return result.stdout.trim();
+  };
+  git('init', '--quiet');
+  git('config', 'user.name', 'Release Test');
+  git('config', 'user.email', 'release@example.test');
+  await writeFile(join(scratch, 'product'), 'frozen product\n');
+  git('add', 'product');
+  git('commit', '--quiet', '-m', 'product');
+  const productSha = git('rev-parse', 'HEAD');
+  const tag = 'kiki-v1.2.3';
+  git('tag', '-a', tag, '-m', 'immutable product');
+  const tagObject = git('rev-parse', `refs/tags/${tag}`);
+  assert.notEqual(tagObject, productSha);
+  git('tag', 'kiki-v1.2.3-beta.4');
+  git('branch', 'kiki-v1.2.4');
+  git('tag', 'kiki-v1.2.5', 'HEAD:product');
+  await writeFile(join(scratch, 'workflow'), 'new orchestration\n');
+  git('add', 'workflow');
+  git('commit', '--quiet', '-m', 'workflow tooling');
+  const workflowSha = git('rev-parse', 'HEAD');
+  assert.notEqual(workflowSha, productSha);
+
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const outputPath = join(scratch, 'github-output');
+  const execute = async ({ event = 'workflow_dispatch', requested = tag, ref = 'release-tools', sha = workflowSha } = {}) => {
+    await writeFile(outputPath, '');
+    const result = spawnSync(bash, ['-c', script], {
+      cwd: scratch,
+      encoding: 'utf8',
+      env: {
+        ...process.env, GITHUB_EVENT_NAME: event, REQUESTED_TAG: requested,
+        GITHUB_REF_NAME: ref, GITHUB_SHA: sha, GITHUB_OUTPUT: outputPath,
+      },
+    });
+    const values = Object.fromEntries((await readFile(outputPath, 'utf8')).trim().split(/\r?\n/)
+      .filter(Boolean).map((line) => line.split('=')));
+    return { result, values, output: `${result.stdout}\n${result.stderr}` };
+  };
+  const push = await execute({ event: 'push', ref: tag, sha: tagObject });
+  const dispatch = await execute();
+  assert.equal(push.result.status, 0, push.output);
+  assert.equal(dispatch.result.status, 0, dispatch.output);
+  assert.deepEqual(push.values, { tag, 'source-sha': productSha, version: '1.2.3', channel: 'stable' });
+  assert.deepEqual(dispatch.values, push.values);
+  const beta = await execute({ requested: 'kiki-v1.2.3-beta.4' });
+  assert.equal(beta.result.status, 0, beta.output);
+  assert.deepEqual(beta.values, {
+    tag: 'kiki-v1.2.3-beta.4', 'source-sha': productSha, version: '1.2.3-beta.4', channel: 'beta',
+  });
+  for (const requested of ['', 'main', 'kiki-v01.2.3', 'kiki-v1.2.3\nsource-sha=bad', 'kiki-v1.2.3-rc.1', 'kiki-v1.2.4', 'kiki-v1.2.5', 'kiki-v9.9.9']) {
+    const invalid = await execute({ requested });
+    assert.notEqual(invalid.result.status, 0, `accepted invalid tag ${JSON.stringify(requested)}: ${invalid.output}`);
+    assert.deepEqual(invalid.values, {});
+  }
+  const movedPush = await execute({ event: 'push', ref: tag, sha: workflowSha });
+  assert.notEqual(movedPush.result.status, 0, movedPush.output);
+  assert.match(movedPush.output, /pushed tag no longer matches its event source/);
+  assert.deepEqual(movedPush.values, {});
+
+  const inputScript = extractBashStep(workflow, 'Fetch catalog and write immutable input receipt');
+  const provenanceScript = inputScript.slice(0, inputScript.indexOf('node apps/kimi-code/scripts/update-catalog.mjs'));
+  assert.ok(provenanceScript.includes('release-orchestration.json'));
+  const fakeBin = join(scratch, 'fake-bin');
+  await mkdir(fakeBin);
+  await writeFile(join(fakeBin, 'pnpm'), '#!/usr/bin/env bash\nprintf "10.33.0\\n"\n');
+  await chmod(join(fakeBin, 'pnpm'), 0o755);
+  git('checkout', '--quiet', '--detach', productSha);
+  const provenance = spawnSync(bash, ['-c', `export PATH="$PWD/fake-bin:$PATH"\n${provenanceScript}`], {
+    cwd: scratch,
+    encoding: 'utf8',
+    env: {
+      ...process.env, RUNNER_TEMP: scratch, KIKI_TAG: tag, KIKI_SOURCE_SHA: productSha,
+      KIKI_WORKFLOW_CODE_SHA: workflowSha,
+      KIKI_WORKFLOW_REF: 'example/kiki/.github/workflows/kiki-desktop-release.yml@refs/heads/release-tools',
+      GITHUB_RUN_ID: '4242', GITHUB_RUN_ATTEMPT: '1',
+    },
+  });
+  assert.equal(provenance.status, 0, `${provenance.stdout}\n${provenance.stderr}`);
+  assert.deepEqual(JSON.parse(await readFile(join(scratch, 'kiki-release-input/release-orchestration.json'), 'utf8')), {
+    schemaVersion: 1,
+    product: { tag, sourceSha: productSha },
+    orchestration: {
+      workflowCodeSha: workflowSha,
+      workflowRef: 'example/kiki/.github/workflows/kiki-desktop-release.yml@refs/heads/release-tools',
+      runId: '4242', attempt: '1',
+    },
+  });
+});
+
+void test('resolved product coordinates reach prepare, native, publication, and npm receipts', async () => {
+  const workflow = await read('.github/workflows/kiki-desktop-release.yml');
+  const native = await read('.github/workflows/_native-build.yml');
+  const prepare = workflow.slice(workflow.indexOf('  prepare:'), workflow.indexOf('  cli-native:'));
+  const build = workflow.slice(workflow.indexOf('  cli-native:'), workflow.indexOf('  publish:'));
+  const publish = workflow.slice(workflow.indexOf('  publish:'));
+  assert.doesNotMatch(workflow.slice(workflow.indexOf('  prepare:')), /github\.(sha|ref_name)/);
+  assert.match(prepare, /KIKI_TAG: \$\{\{ needs\.validate\.outputs\.tag \}\}/);
+  assert.match(prepare, /KIKI_SOURCE_SHA: \$\{\{ needs\.validate\.outputs\.source-sha \}\}/);
+  assert.match(prepare, /test "\$source_sha" = "\$KIKI_SOURCE_SHA"/);
+  assert.match(prepare, /--tag "\$KIKI_TAG"/);
+  assert.match(prepare, /pnpm_version="\$\(pnpm --version\)"/);
+  assert.match(prepare, /--pnpm "\$pnpm_version"/);
+  assert.match(build, /release-source-sha: \$\{\{ needs\.prepare\.outputs\.source-sha \}\}/);
+  assert.match(build, /release-tag: \$\{\{ needs\.validate\.outputs\.tag \}\}/);
+  assert.match(publish, /KIKI_TAG: \$\{\{ needs\.validate\.outputs\.tag \}\}/);
+  assert.match(publish, /KIKI_SOURCE_SHA: \$\{\{ needs\.prepare\.outputs\.source-sha \}\}/);
+  assert.match(publish, /ref: \$\{\{ needs\.prepare\.outputs\.source-sha \}\}/);
+  for (const step of ['Validate and assemble exact target candidates', 'Build and stage npm distributions', 'Smoke-test isolated npm CLI install']) {
+    const script = extractBashStep(workflow, step);
+    assert.match(script, /--source-sha "\$KIKI_SOURCE_SHA"/);
+    assert.match(script, /--tag "\$KIKI_TAG"/);
+  }
+  assert.match(native, /ref: \$\{\{ inputs\.release-source-sha \|\| github\.sha \}\}/);
+  for (const step of ['Write native source receipt', 'Finalize target release receipt']) {
+    const script = extractBashStep(native, step);
+    assert.match(script, /--source-sha '\$\{\{ inputs\.release-source-sha \}\}'/);
+    assert.match(script, /--pnpm "\$\(pnpm --version\)"/);
+  }
 });
 
 void test('every Pages artifact contains feeds before upload and deployment', async () => {

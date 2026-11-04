@@ -16,6 +16,13 @@ import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiation
 import { CompactionCancelled, CompactionCompleted, CompactionStarted } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
 import { IGlobalSearchService } from '../src/search/searchService';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
+import { NotificationService } from '../src/services/notifications/notificationService';
+import { ImSessionBridge } from '../src/services/imSession/bridge';
+import { WebAccess } from '../src/services/webAccess';
+import { ExternalClientHost } from '../src/externalClients/host';
+import { NativeExternalClientListenerManager } from '../src/externalClients/listenerManager';
+import { SessionLifecycleService } from '@kiki/agent-core-v2/workspace/sessionLifecycle/sessionLifecycleService';
+import { AgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycleService';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
@@ -32,6 +39,7 @@ interface ClosePhase {
   phase: string;
   state: 'pending' | 'done' | 'failed';
   elapsedMs: number;
+  startedAfterMs: number;
   error?: string;
 }
 
@@ -47,6 +55,7 @@ function closePhaseText(error: unknown): string {
 }
 
 class ClosePhaseWatch {
+  private readonly started = Date.now();
   private readonly entries: Array<ClosePhase & { started: number; ended?: number }> = [];
   private readonly stack: Array<{ phase: string }> = [];
   private readonly restores: Array<() => void> = [];
@@ -54,7 +63,7 @@ class ClosePhaseWatch {
   track<T>(phase: string, run: () => T): T {
     const started = Date.now();
     const token = { phase };
-    const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, started };
+    const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, startedAfterMs: started - this.started, started };
     this.entries.push(entry);
     this.stack.push(token);
     const finish = (state: 'done' | 'failed', error?: unknown): void => {
@@ -102,20 +111,21 @@ class ClosePhaseWatch {
     });
   }
 
-  snapshot(): { pending: string | null; after: string | null; phases: ClosePhase[] } {
+  snapshot(): { elapsedMs: number; pending: string | null; after: string | null; phases: ClosePhase[] } {
     const now = Date.now();
     const phases = this.entries.map((entry) => {
       const phase: ClosePhase = {
         phase: entry.phase,
         state: entry.state,
         elapsedMs: (entry.ended ?? now) - entry.started,
+        startedAfterMs: entry.startedAfterMs,
       };
       if (entry.error !== undefined) phase.error = entry.error;
       return phase;
     });
     const pending = this.stack.at(-1)?.phase ?? null;
     const after = pending === null ? phases.at(-1)?.phase ?? 'before:app.close' : null;
-    return { pending, after, phases };
+    return { elapsedMs: now - this.started, pending, after, phases };
   }
 
   undo(restore: () => void): void {
@@ -182,6 +192,16 @@ function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
     watch.watch(host.app, 'close', 'app.close');
     watch.watch(host.core, 'dispose', 'core.dispose');
     watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
+    watch.watch(NotificationService.prototype, 'close', 'notifications.close');
+    watch.watch(ImSessionBridge.prototype, 'close', 'imSession.close');
+    watch.watch(WebAccess.prototype, 'close', 'webAccess.close');
+    watch.watch(ExternalClientHost.prototype, 'close', 'externalClient.close');
+    watch.watch(NativeExternalClientListenerManager.prototype, 'close', 'externalListener.close');
+    watch.watch(SessionLifecycleService.prototype, 'close', 'sessionLifecycle.close');
+    watch.watch(SessionLifecycleService.prototype, 'saveReplayCheckpoints', 'session.checkpoints');
+    watch.watch(SessionLifecycleService.prototype, 'drainAgents', 'session.drainAgents');
+    watch.watch(SessionLifecycleService.prototype, 'persistUsage', 'session.persistUsage');
+    watch.watch(AgentLifecycleService.prototype, 'remove', 'agent.remove');
     return watch;
   } catch (error) {
     watch.restore();

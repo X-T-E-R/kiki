@@ -138,7 +138,7 @@ describe('SSH management REST routes', () => {
     } } };
     const core = { accessor: { get: (token: unknown) => {
       if (token === ISshHostService) return hosts;
-      if (token === ISessionManager) return { acquire: async () => ({ handle: session, dispose: release }) };
+      if (token === ISessionManager) return { get: () => session, acquire: async () => ({ handle: session, dispose: release }) };
       throw new Error('unexpected service');
     } } } as unknown as Scope;
     registerSshRoutes(app as unknown as Parameters<typeof registerSshRoutes>[0], core);
@@ -178,7 +178,7 @@ describe('SSH management REST routes', () => {
     { send: (value) => { secretResponse = value; } });
     expect(JSON.stringify(secretResponse)).not.toContain(secret);
     expect(decideSsh).toHaveBeenCalledWith('ssh-approval', { decision: 'approved' }, { password: secret, save: 'session' });
-    expect(release).toHaveBeenCalledTimes(8);
+    expect(release).toHaveBeenCalledTimes(5);
     await state.dispose();
   });
 

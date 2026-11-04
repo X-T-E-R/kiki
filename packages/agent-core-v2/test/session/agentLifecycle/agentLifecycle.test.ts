@@ -1520,7 +1520,7 @@ describe('AgentLifecycleService', () => {
     const run = vi.fn();
     const executeSwitch = vi.fn();
     ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
-    ix.stub(ISessionSubagentService, { run, retain: () => ({ dispose: () => {} }) });
+    ix.stub(ISessionSubagentService, { retain: () => ({ dispose() {} }), run });
     ix.stub(IAgentContextMemoryService, { get: () => [] });
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     const lifecycle = ix.get(IAgentLifecycleService);

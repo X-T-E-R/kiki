@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, expect, it } from 'vitest';
 
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 import { SqliteSearchHost } from '../../src/search/sqlite/host';
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';
 
@@ -204,7 +205,10 @@ it('indexes in a child while a read-only worker serves search from the parent', 
   expect(result.rows.map((hit) => hit.value.text)).toEqual(['needle here']);
   expect(result.stale).toBe(false);
   expect(host.snapshot().indexerPid).not.toBe(process.pid);
-  expect(host.snapshot().indexerHeapLimit).toBeLessThan(512 * 1048576);
+  const workerHeapBytes = RESOURCE_DEFAULTS.workerHeapMb * 1048576;
+  const indexerHeapLimit = host.snapshot().indexerHeapLimit;
+  expect(indexerHeapLimit).toBeGreaterThanOrEqual(workerHeapBytes * 0.9);
+  expect(indexerHeapLimit).toBeLessThanOrEqual(workerHeapBytes + 256 * 1048576);
   expect(host.snapshot().watchdogTimeouts).toBe(0);
 });
 

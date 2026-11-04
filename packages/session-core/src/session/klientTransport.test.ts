@@ -96,7 +96,7 @@ describe('session command connection generations (F1)', () => {
   it.each(resumeActions)('fences the production HTTP resume-to-$command microtask gap without dispatching to the replacement', async ({ invoke }) => {
     const calls: string[] = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      calls.push(String(input));
+      calls.push((input instanceof Request ? input.url : input.toString()));
       if (calls.length === 1) return envelope({ id: 's1', kind: 'session' });
       throw new Error('A stale action must not dispatch another request');
     });
@@ -123,8 +123,8 @@ describe('session command connection generations (F1)', () => {
   it('permits explicit new actions on both sides of a rebind with each endpoint and bearer paired', async () => {
     const calls: Array<[string, string | undefined]> = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push([String(input), new Headers(init?.headers).get('authorization') ?? undefined]);
-      return String(input).endsWith('/api/klient/call') ? envelope({ id: 's1', kind: 'session' }) : envelope({ cancelled: true });
+      calls.push([(input instanceof Request ? input.url : input.toString()), new Headers(init?.headers).get('authorization') ?? undefined]);
+      return (input instanceof Request ? input.url : input.toString()).endsWith('/api/klient/call') ? envelope({ id: 's1', kind: 'session' }) : envelope({ cancelled: true });
     });
     const { klient, rebind } = createRebindableKlient({ ...old, fetch: fetcher });
     const transport = createSessionTransport(klient);

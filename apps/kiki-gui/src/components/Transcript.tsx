@@ -382,7 +382,7 @@ const UserMessage = memo(function UserMessage({
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
   const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
-  useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
+  const retryTextRead = useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
   const reader = useTranscriptController();
   const target = useTranscriptTarget();
   const textRange = continuation.pending.some((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])) &&
@@ -390,8 +390,9 @@ const UserMessage = memo(function UserMessage({
   const serverRef = textRange ? undefined : continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
   const serverRemaining = serverRef !== undefined;
   const serverStatus = serverRef !== undefined ? continuation.statusOf(serverRef) : undefined;
-  const isServerLoading = serverStatus?.status === 'loading';
+  const automaticTextRead = reader !== undefined && target !== undefined;
   const isServerFailed = serverStatus?.status === 'error';
+  const isServerLoading = !isServerFailed && serverRemaining && (automaticTextRead || serverStatus?.status === 'loading');
   const incomplete = continuation.pending.length > 0;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && !incomplete;
 
@@ -401,9 +402,9 @@ const UserMessage = memo(function UserMessage({
       return;
     }
     if (serverRemaining && serverRef !== undefined) {
-      continuation.request(serverRef);
+      if (automaticTextRead) retryTextRead(); else continuation.request(serverRef);
     }
-  }, [clipped, toggle, serverRemaining, serverRef, continuation]);
+  }, [clipped, toggle, serverRemaining, serverRef, continuation, automaticTextRead, retryTextRead]);
   const senderAgentId = block.agentMessage?.senderAgentId;
   const senderIdentity = senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
   const senderLabel = block.agentMessage === undefined ? undefined
@@ -649,7 +650,7 @@ const UserMessage = memo(function UserMessage({
               : projectTextWithAnnotationMarks(bodyText, annotations, projectBody)}
             {!clipped && serverRemaining ? (
               <span
-                data-content-continuation={serverStatus?.status ?? 'idle'}
+                data-content-continuation={isServerFailed ? 'error' : isServerLoading ? 'loading' : 'idle'}
                 className="inline-block ml-1 select-none"
               >
                 <button
@@ -682,7 +683,7 @@ const UserMessage = memo(function UserMessage({
           </div>
           {clipped ? (
             <div
-              data-content-continuation={serverRemaining ? (serverStatus?.status ?? 'idle') : undefined}
+              data-content-continuation={serverRemaining ? (isServerFailed ? 'error' : isServerLoading ? 'loading' : 'idle') : undefined}
               className="mt-1 flex justify-end select-none"
             >
               <button

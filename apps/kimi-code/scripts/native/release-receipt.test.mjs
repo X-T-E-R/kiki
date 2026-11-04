@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -192,6 +193,50 @@ test('Windows CLI samples pnpm.cmd through the native command wrapper when --pnp
     assert.equal(receipt.tools.pnpm, '10.33.0');
   } finally {
     process.env.PATH = previousPath;
+    rmSync(state.root, { recursive: true, force: true });
+  }
+});
+
+test('Windows release receipts use the working Bash pnpm when the cmd shim is broken', { skip: process.platform !== 'win32' }, () => {
+  const state = fixture();
+  try {
+    const fakeBin = join(state.root, 'fake-bin');
+    write(join(fakeBin, 'pnpm'), '#!/usr/bin/env bash\nprintf "10.33.0\\n"\n');
+    write(join(fakeBin, 'pnpm.cmd'), '@echo off\r\nnode "%~dp0global\\v11\\pnpm.cjs" %*\r\n');
+    write(join(state.root, 'apps/kimi-code/dist-native/bin/win32-x64/kiki.exe'), 'native-win32-x64');
+    write(join(state.root, 'apps/kimi-code/dist-native/artifacts/kiki-win32-x64.exe'), 'native-win32-x64');
+    write(join(state.root, 'apps/kimi-code/dist-native/artifacts/kiki-win32-x64.exe.sha256'), 'fixture-checksum\n');
+    const output = join(state.root, 'candidate');
+    const args = [
+      'stage-native', '--output', output, '--receipt', state.preparePath, '--catalog', state.catalog,
+      '--prepare-artifact-id', '9001', '--repository', 'example/kiki', '--source-sha', SHA,
+      '--tag', 'kiki-v1.2.3', '--version', '1.2.3', '--channel', 'stable', '--run-id', '77',
+      '--prepare-attempt', '1', '--candidate-attempt', '2', '--target', 'win32-x64',
+      '--rust-target', 'x86_64-pc-windows-msvc', '--rust', 'rustc fixture', '--signing', 'unsigned',
+      '--updater-public-key', UPDATER_KEY_A,
+    ];
+    const driver = `import { runCli } from ${JSON.stringify(new URL('./release-receipt.mjs', import.meta.url).href)};
+      runCli(process.argv.slice(1), process.env.KIKI_RECEIPT_FIXTURE_ROOT);`;
+    const env = {
+      ...process.env, PATH: `${fakeBin};${process.env.PATH}`,
+      KIKI_RECEIPT_FIXTURE_ROOT: state.root, RECEIPT_DRIVER: driver,
+    };
+    const broken = spawnSync(process.execPath, ['--input-type=module', '-e', driver, ...args], { env, encoding: 'utf8' });
+    assert.notEqual(broken.status, 0, `${broken.stdout}\n${broken.stderr}`);
+    assert.match(broken.stderr, /MODULE_NOT_FOUND/);
+    assert.match(broken.stderr, /global[\\/]v11[\\/]pnpm\.cjs/);
+
+    const bash = 'C:\\Program Files\\Git\\usr\\bin\\bash.exe';
+    const working = spawnSync(bash, [
+      '-c', 'set -euo pipefail\nnode --input-type=module -e "$RECEIPT_DRIVER" "$@" --pnpm "$(pnpm --version)"',
+      'release-receipt-test', ...args,
+    ], { env, encoding: 'utf8' });
+    assert.equal(working.status, 0, `${working.stdout}\n${working.stderr}`);
+    const receipt = JSON.parse(readFileSync(join(output, NATIVE_RECEIPT_NAME), 'utf8'));
+    assert.equal(receipt.tools.pnpm, '10.33.0');
+    assert.equal(receipt.sourceSha, SHA);
+    assert.equal(receipt.prepare.identity, receiptIdentity(state.prepare));
+  } finally {
     rmSync(state.root, { recursive: true, force: true });
   }
 });

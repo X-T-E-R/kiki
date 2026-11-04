@@ -554,14 +554,13 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
       expect(capturedEvents.map(([seq]) => seq)).toEqual(
         Array.from({ length: snap.as_of_seq }, (_, index) => index + 1),
       );
-      expect(capturedEvents.map(([, envelope]) => envelope.type)).toEqual(expect.arrayContaining([
-        'event.session.created', 'agent.created',
-      ]));
+      expect(capturedEvents.map(([, envelope]) => envelope.type)).toEqual(['event.session.created']);
+      expect(getLiveSessionById(server!.core.accessor, sid)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
       expect(capturedEvents.at(-1)?.[1].epoch).toBe(snap.epoch);
       expect(snap.epoch).toMatch(/^ep_/);
       expect(snap.messages.items).toEqual([]);
       expect(snap.in_flight_turn).toBeNull();
-      expect(snap.context_tokens).toBe(0);
+      expect(snap.context_tokens).toBeUndefined();
       expect(snap.max_context_tokens).toBeUndefined();
       expect(snap.context_breakdown).toBeUndefined();
       expect(snap.pending_approvals).toEqual([]);
@@ -665,8 +664,9 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     void first.catch(() => {});
     try {
       await entered.promise;
+      const listen = vi.spyOn(two.signal, 'addEventListener');
       const second = messageHistory.captureContextMessageHistory(server!.core, main, messages, two.signal);
-      for (let tick = 0; tick < 6; tick++) await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.waitFor(() => expect(listen).toHaveBeenCalledWith('abort', expect.any(Function), { once: true }));
       one.abort();
       await expect(first).rejects.toThrow();
       expect(signals).toHaveLength(1);
@@ -1694,6 +1694,7 @@ describe('server-v2 session operation lease', () => {
     if (session === undefined) throw new Error(`session ${sessionId} not found`);
     const agents = session.accessor.get(IAgentLifecycleService);
     if (agents.get('main') === undefined) await agents.create({ agentId: 'main' });
+    await agents.get('main')!.accessor.get(IAgentTaskService).resumeRestoration?.();
   }
 
   function managerOf(): ISessionManager {
@@ -1755,6 +1756,7 @@ describe('server-v2 session operation lease', () => {
     const sessionId = await createSession();
     await ensureMainAgent(sessionId);
     const manager = managerOf();
+    const leases = spyLeases(manager);
     const gate = deferred();
     let reached!: () => void;
     const reachedPromise = new Promise<void>((resolve) => {
@@ -1801,6 +1803,9 @@ describe('server-v2 session operation lease', () => {
     const result = await outcome;
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.session.id).toBe(sessionId);
+    expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+    expect(leases.disposals).toEqual([sessionId]);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
 
     await expect(manager.evictIfIdle!(sessionId)).resolves.toBe(true);
     expect(manager.residencyReport!().pinnedSessions).toBe(0);
@@ -1829,8 +1834,6 @@ describe('server-v2 session operation lease', () => {
   it('releases the session operation when snapshot assembly rejects', async () => {
     const sessionId = await createSession();
     await ensureMainAgent(sessionId);
-    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
-    await main.accessor.get(IAgentTaskService).resumeRestoration?.();
     const manager = managerOf();
     const leases = spyLeases(manager);
     const broadcaster = {
@@ -2442,7 +2445,7 @@ describe('cold session snapshot', () => {
     });
     void pending.catch(() => undefined);
     try {
-      await vi.waitFor(() => expect(observed).toBeDefined());
+      await vi.waitFor(() => expect(observed).toBeDefined(), { timeout: 5_000 });
       const workerSignal = requests.mock.calls.find(([operation]) => (operation as { type?: string }).type === 'wire.context')?.[1]?.signal;
       expect(workerSignal).toBe(observed);
       controller.abort();

@@ -28,7 +28,7 @@ import type { SettingsIaMode } from '../../lib/settingsIaPrototype';
 
 export const TASKFLOW_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'models-accounts', labelKey: 'st.group.modelsAccounts', sections: ['ai', 'identity'] },
+  { kind: 'group', id: 'models-accounts', labelKey: 'st.group.modelsAccounts', sections: ['ai', 'recipes', 'identity'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory', 'tasks'] },
   { kind: 'group', id: 'rules-alerts', labelKey: 'st.group.rulesAlerts', sections: ['permissions', 'notifications', 'hooks'] },
@@ -39,7 +39,7 @@ export const TASKFLOW_NAV_TREE: readonly SettingsNavNode[] = [
 
 export const OBJECTS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'models-accounts', labelKey: 'st.group.modelsAccounts', sections: ['ai'] },
+  { kind: 'group', id: 'models-accounts', labelKey: 'st.group.modelsAccounts', sections: ['ai', 'recipes'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory', 'tasks'] },
   { kind: 'group', id: 'rules-alerts', labelKey: 'st.group.rulesAlerts', sections: ['permissions', 'notifications', 'hooks'] },
@@ -58,7 +58,7 @@ export const OBJECTS_NAV_TREE: readonly SettingsNavNode[] = [
  */
 export const PURPOSE_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'notifications'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents', 'identity'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'recipes', 'agents', 'subagents', 'identity'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control'] },
   { kind: 'group', id: 'rules', labelKey: 'st.group.permissionsRules', sections: ['permissions', 'hooks'] },
@@ -131,7 +131,7 @@ export function objectsSectionTarget(section: string): string | null {
 /** Test oracle: every canonical leaf in the candidate tree is covered, plus any legacy leaf the tree still explicitly places. */
 const PROTOTYPE_ALL_SECTIONS: readonly string[] = [
   'general', 'appearance', 'shortcuts', 'notifications',
-  'ai', 'agents', 'subagents', 'identity',
+  'ai', 'recipes', 'agents', 'subagents', 'identity',
   'sessions', 'workspaces', 'memory', 'tasks',
   'skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control',
   'permissions', 'hooks',

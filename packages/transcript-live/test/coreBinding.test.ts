@@ -1117,7 +1117,7 @@ describe('bindSessionTranscript', () => {
     },
   );
 
-  it('preserves durable step timestamps when a live completion follows the recorded step end', () => {
+  it.each([false, true])('preserves durable step timestamps when live lifecycle events follow their recorded projection (replay=%s)', (replay) => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -1125,12 +1125,21 @@ describe('bindSessionTranscript', () => {
     onTestFinished(() => binding.dispose());
     const records = [
       { type: 'turn.prompt', turnId: 0, promptId: 'timed', input: [{ type: 'text', text: 'start' }], origin: { kind: 'user' }, time: 1_000 },
-      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'timed-step', time: 1_500 },
       { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'timed-step' }, time: 2_000 },
       { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 0, step: 1, uuid: 'timed-step' }, time: 4_000 },
+      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'timed-step', time: 4_500 },
       { type: 'turn.step.completed', turnId: 0, step: 1, stepId: 'timed-step', time: 5_000 },
     ];
+    if (replay) binding.beginReplay('main');
     for (const record of records) main.bus.emit(ev(record));
+    if (replay) {
+      const cold = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main');
+      const reducer = new TranscriptFactReducer(cold);
+      for (const record of records) reducer.apply(adapter.add(record));
+      store.ensureAgent('main').apply([{ op: 'reset', agentId: 'main', snapshot: cold.snapshot() }]);
+      binding.finishReplay('main', { adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
+    }
     expect(store.getAgent('main')?.getTurn('t0')?.steps[0]).toMatchObject({
       startedAt: new Date(2_000).toISOString(), endedAt: new Date(4_000).toISOString(),
     });
@@ -2847,19 +2856,30 @@ describe('bindSessionTranscript', () => {
 
       await vi.waitFor(() => {
         expect(tasks.getTask(taskId!)?.status).toBe(failed ? 'failed' : 'completed');
-        expect(lifecycle.publishedEvents).toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            type: failed ? 'subagent.failed' : 'subagent.completed', subagentId: 'agent-child', taskId,
-          }),
-          expect.objectContaining({ type: 'task.started', info: expect.objectContaining({ taskId }) }),
-          expect.objectContaining({ type: 'task.terminated', info: expect.objectContaining({ taskId }) }),
-        ]));
+        expect(lifecycle.publishedEvents.filter((event) =>
+          event.type === 'task.started' || event.type === 'task.terminated' || event.type === 'task.settlement_ready'))
+          .toEqual([
+            expect.objectContaining({
+              type: 'task.started',
+              info: expect.objectContaining({ taskId, status: 'running' }),
+            }),
+            expect.objectContaining({
+              type: 'task.terminated',
+              info: expect.objectContaining({ taskId, status: failed ? 'failed' : 'completed' }),
+            }),
+            expect.objectContaining({
+              type: 'task.settlement_ready',
+              info: expect.objectContaining({ taskId, status: failed ? 'failed' : 'completed' }),
+            }),
+          ]);
       });
 
       const decisive = lifecycle.publishedEvents
         .filter((event) => event.type.startsWith('subagent.'))
         .map((event) => event.type);
-      expect.soft(decisive).toEqual(['subagent.spawned', 'subagent.started', failed ? 'subagent.failed' : 'subagent.completed']);
+      expect(decisive).toEqual(failed
+        ? ['subagent.spawned', 'subagent.started']
+        : ['subagent.spawned', 'subagent.started', 'subagent.completed']);
 
       const liveTx = new AgentTranscript('main');
       const liveAdapter = new AgentTranscriptLiveAdapter('main');

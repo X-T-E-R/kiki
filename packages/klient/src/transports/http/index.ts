@@ -36,8 +36,8 @@ export function createKlient(options: HttpKlientOptions): Klient {
 /** Retains facade and subscription identities across an owner-verified server replacement. */
 export function createRebindableKlient(options: HttpKlientOptions): {
   klient: Klient;
-  rebind(connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>): void;
-  suspend(): void;
+  rebind: (connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>) => void;
+  suspend: () => void;
 } {
   const channel = new HttpChannel(options);
   return { klient: createKlientFromChannel(channel, options), rebind: (connection) => channel.rebind(connection), suspend: () => channel.suspend() };

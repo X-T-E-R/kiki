@@ -51,6 +51,7 @@ import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
 import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
 import {
   saveSubagentProfileToolSettings,
@@ -585,15 +586,15 @@ describe('GET /api/agents', () => {
     const body = await installed.json() as Envelope<{ release: { source: string; entry: string }; active?: { version: string } }>;
     expect(body.code).toBe(0);
     expect(body.data.release).toMatchObject({ source: 'bundled:external-harness', entry: 'agy-cli-acp.mjs' });
-    expect(body.data.active?.version).toBe('0.4.1');
+    expect(body.data.active?.version).toBe('0.5.1');
     expect(JSON.stringify(body.data)).not.toContain('supports_mcp');
     const updated = await readFile(script, 'utf8');
     const sourceEntry = await readFile(new URL('../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url), 'utf8');
     expect(updated).toContain('registerMcpPlugin');
     expect(updated).not.toContain('registerMcpAgent');
-    expect(updated).toContain('function readUrlTarget');
+    expect(updated).toContain('requestHookPermission');
     expect(updated).toContain('function safeDiagnosticLine');
-    expect(updated).toContain('permissionReceipt');
+    expect(updated).toContain('permissionChannelIdentity');
     expect(updated).toContain('AGY exited before terminal result (code:');
     expect(updated).toBe(sourceEntry);
     expect(await readFile(join(adapterDir, 'agy-hook-registration.mjs'), 'utf8')).toBe(
@@ -1572,6 +1573,22 @@ describe('GET /api/agents', () => {
       expect(body.code).toBe(0);
       expect(body.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual([
         'blocked-helper',
+        'engine:agy-cli',
+        'engine:antigravity-acp',
+        'engine:claude-acp',
+        'engine:cline-acp',
+        'engine:codebuddy-acp',
+        'engine:codex-acp',
+        'engine:codex-app-server',
+        'engine:cursor-acp',
+        'engine:deepseek-acp',
+        'engine:gemini-acp',
+        'engine:grok-acp',
+        'engine:kimi-acp',
+        'engine:openclaw-acp',
+        'engine:opencode-acp',
+        'engine:pi-acp',
+        'engine:qoder-acp',
         'explore',
         'general',
         'hidden-helper',
@@ -1596,7 +1613,26 @@ describe('GET /api/agents', () => {
       const after = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
       const afterBody = await after.json() as Envelope<typeof body.data>;
       expect(afterBody.code).toBe(0);
-      expect(afterBody.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual(['explore', 'general']);
+      expect(afterBody.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual([
+        'engine:agy-cli',
+        'engine:antigravity-acp',
+        'engine:claude-acp',
+        'engine:cline-acp',
+        'engine:codebuddy-acp',
+        'engine:codex-acp',
+        'engine:codex-app-server',
+        'engine:cursor-acp',
+        'engine:deepseek-acp',
+        'engine:gemini-acp',
+        'engine:grok-acp',
+        'engine:kimi-acp',
+        'engine:openclaw-acp',
+        'engine:opencode-acp',
+        'engine:pi-acp',
+        'engine:qoder-acp',
+        'explore',
+        'general',
+      ]);
       expect(tool.description).toBe(description);
     } finally {
       await registration.dispose();
@@ -1651,14 +1687,16 @@ describe('GET /api/agents', () => {
       expect((await read()).metrics?.['main']).toMatchObject({ inputTokens: 15, totalTokens: 20, totalCostUsd: null });
       usage.record('unpriced-fixture-model', { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 }, undefined, { usageKnown: false });
       const sourceRead = vi.spyOn(server.core.accessor.get(IFileSystemStorageService), 'readStream');
-      const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
-      expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
-      expect(narrow.profile).toBeUndefined();
-      expect(narrow.prompt).toBeUndefined();
-      expect(narrow.tools).toBeUndefined();
-      expect(narrow.targets).toEqual([]);
-      expect(sourceRead).not.toHaveBeenCalled();
-      sourceRead.mockRestore();
+      const settleUsage = vi.spyOn(usageRuntime(server.core).service, 'readAgentUsage');
+      const materialize = vi.spyOn(lifecycle, 'create');
+      for (let request = 0; request < 2; request++) {
+        const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
+        expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
+        expect(narrow.profile).toBeUndefined();
+        expect(narrow.prompt).toBeUndefined();
+        expect(narrow.tools).toBeUndefined();
+        expect(narrow.targets).toEqual([]);
+      }
       const plan = agent.accessor.get(IAgentPlanService);
       await plan.enter();
       const launch = vi.spyOn(dispatch, 'launch');
@@ -1704,6 +1742,9 @@ describe('GET /api/agents', () => {
       expect(launch).not.toHaveBeenCalled();
       expect(registerReader).not.toHaveBeenCalled();
       expect(executable).not.toHaveBeenCalled();
+      expect(materialize).not.toHaveBeenCalled();
+      expect(settleUsage).not.toHaveBeenCalled();
+      expect(sourceRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
       expect(lifecycle.list()).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
@@ -2869,7 +2910,7 @@ describe('GET /api/agents', () => {
     const summaryRead = vi.spyOn(server.core.accessor.get(IUsageFactStore), 'summary');
     const initial = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_only=true`);
     const initialData = agentCapabilitiesResponseSchema.parse((await initial.json() as Envelope<unknown>).data);
-    expect(initialData.metrics?.['main']).toMatchObject({ inputTokens: null, outputTokens: null, totalTokens: null, usageComplete: false });
+    expect(initialData.metrics?.['main']).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15, usageComplete: false, usageSource: 'persisted' });
     expect(summaryRead).not.toHaveBeenCalled();
     expect(wireRead).not.toHaveBeenCalled();
     const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_settle=true`);

@@ -1261,27 +1261,27 @@ describe('UsageAggregationService cache budgets', () => {
         return slice;
       } finally { clock.mockRestore(); }
     });
-    let first: Awaited<ReturnType<typeof query>>;
     try {
-      first = await query(f.service);
+      const first = await query(f.service);
+      framing.mockRestore();
+      expect(abortedAtYield).toBe(true);
+      expect(first.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+      const consumedOffset = Buffer.byteLength(records.slice(0, boundary).map((record) => `${JSON.stringify(record)}\n`).join(''));
+      await (Reflect.get(f.service, 'modelPreparing') as Promise<void> | undefined)?.catch(() => undefined);
+      const source = await f.facts.summary(wireScope);
+      expect(source.totals?.knownUsageRecords).toBe(boundary);
+      expect(source.checkpoint?.offset).toBe(consumedOffset);
+      f.readOffsets.length = 0;
+      f.readRanges.length = 0;
+      const resumed = await query(f.restart());
+      expect(f.readRanges.some((range) => range.start === consumedOffset)).toBe(true);
+      expect(resumed.reliability.complete).toBe(true);
+      expect(resumed.summary).toEqual(baseline.summary);
+      expect(resumed.reliability.usage_coverage).toEqual(baseline.reliability.usage_coverage);
     } finally {
       framing.mockRestore();
       vi.useRealTimers();
     }
-    expect(abortedAtYield).toBe(true);
-    expect(first.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
-    const consumedOffset = Buffer.byteLength(records.slice(0, boundary).map((record) => `${JSON.stringify(record)}\n`).join(''));
-    await (Reflect.get(f.service, 'modelPreparing') as Promise<void> | undefined)?.catch(() => undefined);
-    const source = await f.facts.summary(wireScope);
-    expect(source.totals?.knownUsageRecords).toBe(boundary);
-    expect(source.checkpoint?.offset).toBe(consumedOffset);
-    f.readOffsets.length = 0;
-    f.readRanges.length = 0;
-    const resumed = await query(f.restart());
-    expect(f.readRanges.some((range) => range.start === consumedOffset)).toBe(true);
-    expect(resumed.reliability.complete).toBe(true);
-    expect(resumed.summary).toEqual(baseline.summary);
-    expect(resumed.reliability.usage_coverage).toEqual(baseline.reliability.usage_coverage);
   });
 
   it('throws an external cancellation at the wire yield instead of publishing a deadline checkpoint', async () => {
@@ -2257,14 +2257,21 @@ describe('SQLite Usage history source lifecycle', () => {
     await saved.storage.write(`sessions/workspace/${sessions[0]!.id}/agents/empty`, 'wire.jsonl', new Uint8Array());
     const source = scope('workspace', sessions[0]!.id);
     if (stale) await saved.storage.append(source, 'wire.jsonl', Buffer.from(JSON.stringify(usageRecord(2, 8)) + '\n'));
-    const service = new UsageAggregationService(saved.core, () => 1000);
+    const service = new UsageAggregationService(saved.core, () => 1000, {}, { ready: true, onDidChange: () => ({ dispose() {} }) });
     const lists = vi.spyOn(saved.storage, 'list');
     const reads = vi.spyOn(saved.storage, 'readStream');
     const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
-    const response = await service.query(input);
-    expect(response.reliability.complete).toBe(true);
+    let response = await service.query(input);
+    for (let attempt = 0; !response.reliability.complete && attempt < 4; attempt += 1) {
+      expect(response.reliability.incomplete_reason).toBe('deadline');
+      await Reflect.get(service, 'modelPreparing');
+      response = await service.query(input);
+    }
+    if (!response.reliability.complete) expect(response.reliability.incomplete_reason).toBe('deadline');
+    expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
     expect(response.reliability.usage_coverage).toMatchObject({ known_records: stale ? 81 : 80, missing_records: 0 });
     expect(response.summary.tokens.output).toBe(stale ? 81 : 80);
+    expect((await service.query(input)).summary).toEqual(response.summary);
     const wireReads = reads.mock.calls.filter(([, key]) => key === 'wire.jsonl');
     expect(wireReads.every(([target]) => target === source)).toBe(true);
     expect(wireReads.length > 0).toBe(stale);

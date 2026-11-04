@@ -72,6 +72,7 @@ import {
   sessionMediaIdFromBlobUrl,
   releaseToolFramePayload,
   taskNotificationFrameId,
+  transcriptResidentValueEquals,
   type AgentRef,
   type AgentUsageMeta,
   type StepHeader,
@@ -639,17 +640,19 @@ export class AgentTranscriptLiveAdapter {
     };
   }
 
-  private onStepStarted(event: { turnId: number; step: number; stepId?: string }): TranscriptOperation[] {
+  private onStepStarted(event: { turnId: number; step: number; stepId?: string; time?: number }): TranscriptOperation[] {
     const turnId = `t${event.turnId}`;
     const stepId = event.stepId ?? `${turnId}.${event.step}`;
+    const persisted = this.lookups?.turnDetails?.(turnId)?.steps.find((step) => step.stepId === stepId);
     this.stepOrdinals.set(turnId, event.step);
     this.currentStep = {
       kind: 'step',
       stepId,
       turnId,
       ordinal: event.step,
-      state: 'running',
-      startedAt: nowIso(),
+      state: persisted?.state ?? 'running',
+      startedAt: persisted?.startedAt ?? (event.time === undefined ? nowIso() : epochMsToIso(event.time)),
+      endedAt: persisted?.endedAt,
     };
     this.frameOrdinal = 0;
     this.openText = undefined;
@@ -1416,10 +1419,23 @@ export class AgentTranscriptLiveAdapter {
       previous?.taskId === taskKey &&
       previous.kind === 'subagent' &&
       previous.agentId === event.subagentId &&
-      previous.startedAt === startedAt;
+      (event.taskId !== undefined || previous.startedAt === startedAt);
     const ops: TranscriptOperation[] = [];
     if (sameRun) {
-      this.tasks.set(taskKey, previous);
+      const task: TranscriptTask = {
+        ...previous,
+        name: event.name ?? previous.name,
+        subagentName: event.subagentName,
+        model: event.model ?? previous.model,
+        thinkingEffort: event.thinkingEffort ?? previous.thinkingEffort,
+        thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous.thinkingEffortExplicit,
+        executorId: event.executorId ?? previous.executorId,
+        executorProtocol: event.executorProtocol ?? previous.executorProtocol,
+        description: event.description ?? previous.description,
+      };
+      const enriched = transcriptResidentValueEquals(previous, task) ? previous : task;
+      this.tasks.set(taskKey, enriched);
+      if (enriched !== previous) ops.push({ op: 'task.upsert', task: enriched });
       this.replayedSubagentSpawns.set(event.subagentId, taskKey);
     } else {
       this.replayedSubagentSpawns.delete(event.subagentId);

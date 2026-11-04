@@ -87,7 +87,7 @@ interface TranscriptContract {
   agents: { agentId: string; type?: string }[];
   pending_interactions: string[];
   cursor?: { epoch?: string; seq: number };
-  coverage: { kind: 'full' | 'tail'; hasMoreOlder: boolean };
+  coverage: { kind: 'full' | 'tail' | 'unknown'; hasMoreOlder: boolean };
 }
 
 interface OpsCatchupContract {
@@ -797,7 +797,8 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     const sub = await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=sub-1`);
     expect(sub.body.code).toBe(0);
     expect(sub.body.data.items).toEqual([]);
-    expect(sub.body.data.has_more).toBe(false);
+    expect(sub.body.data.has_more).toBe(true);
+    expect(sub.body.data.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
   });
 
   it('backfills a resumed live session from the wire records, then continues live', async () => {

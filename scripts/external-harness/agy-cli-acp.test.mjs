@@ -186,7 +186,7 @@ void test('frozen writer roots reach the real fixture process without changing t
   };
   try {
     const id = (await b.newSession({ cwd: writer, additionalDirectories: [materials], mcpServers: [] })).sessionId;
-    b.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+    await b.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
     assert.equal((await turn(b, id, 'writer fixture', [])).stopReason, 'end_turn');
     assert.equal(resolve(b.session(id).init.init.cwd), resolve(writer));
     assert.equal(launch.cwd, writer);
@@ -223,7 +223,7 @@ void test('explicit external ID reaches CLI; streamed chunks are not duplicated 
   const b = bridge('gemini-3.8-flash-medium');
   const id = await session(b); const messages = [];
   try {
-    b.setConfig({ sessionId: id, configId: 'effort', value: 'medium' });
+    await b.setConfig({ sessionId: id, configId: 'effort', value: 'medium' });
     assert.equal((await turn(b, id, 'hello', messages)).stopReason, 'end_turn');
     const pid = b.session(id).child.pid;
     assert.equal(b.session(id).init.init.model, 'gemini-3.8-flash-medium');
@@ -744,13 +744,13 @@ void test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inher
   assert.equal(encodedEffort('anthropic/claude-opus-5-5'), undefined);
   const opus = bridge('claude-opus-5-5-high');
   const opusId = await session(opus);
-  opus.setConfig({ sessionId: opusId, configId: 'effort', value: 'high' });
+  await opus.setConfig({ sessionId: opusId, configId: 'effort', value: 'high' });
   assert.deepEqual(configOptions(opus.session(opusId))[0].options.map(option => option.value), ['engine-default', 'high']);
   assert.deepEqual(launchArgs(opus.session(opusId)), ['--input-format', 'stream-json', '--output-format', 'stream-json',
     '--model', 'claude-opus-5-5-high']);
   const gemini = bridge('gemini-3.8-flash-high');
   const geminiId = await session(gemini);
-  gemini.setConfig({ sessionId: geminiId, configId: 'effort', value: 'high' });
+  await gemini.setConfig({ sessionId: geminiId, configId: 'effort', value: 'high' });
   assert.ok(launchArgs(gemini.session(geminiId)).includes('--effort'));
   assert.equal(launchArgs(gemini.session(geminiId))[launchArgs(gemini.session(geminiId)).indexOf('--effort') + 1], 'high');
   const bare = bridge('anthropic/claude-opus-5-5');
@@ -776,7 +776,7 @@ void test('raw model effort suffix is authoritative, not the generic CLI effort 
     assert.throws(() => b.setConfig({ sessionId: id, configId: 'effort', value: effort === 'max' ? 'low' : 'max' }), /conflicts with effort/);
     assert.equal(b.session(id).effort, before);
     assert.equal(b.session(id).child, undefined);
-    b.setConfig({ sessionId: id, configId: 'effort', value: effort });
+    await b.setConfig({ sessionId: id, configId: 'effort', value: effort });
     const args = launchArgs(b.session(id));
     assert.equal(args[args.indexOf('--model') + 1], model);
     assert.equal(args.includes('--effort'), !model.startsWith('claude-'));
@@ -795,7 +795,7 @@ void test('Claude encoded effort survives exact native load with new and legacy 
     const loaded = bridge('claude-opus-5-5-high'); loaded.auditDir = root;
     try {
       const id = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
-      first.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+      await first.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
       assert.equal((await turn(first, id, 'first fixture turn', [])).stopReason, 'end_turn');
       await first.close();
       const auditPath = join(root, `${id}.ndjson`);
@@ -828,7 +828,7 @@ void test('native load uses only exact audited conversation and binding, owns a 
   const loaded = bridge('gemini-3.8-flash-medium'); loaded.auditDir = auditDir;
   const competitor = bridge('gemini-3.8-flash-medium'); competitor.auditDir = auditDir;
   try {
-    first.setConfig({ sessionId: id, configId: 'effort', value: 'medium' });
+    await first.setConfig({ sessionId: id, configId: 'effort', value: 'medium' });
     await turn(first, id, 'original user prompt', []);
     await assert.rejects(loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /owned process/);
     await first.close();
@@ -1276,12 +1276,12 @@ void test('agy models columns are raw ids; a listed id can be selected and an un
   assert.equal(options[1].id, 'model');
   assert.equal(options[1].category, 'model');
   assert.deepEqual(options[1].options.map(option => option.value), ['engine-default', 'fixture-alpha-high', 'fixture-beta-medium']);
-  bridge.setConfig({ sessionId: id, configId: 'model', value: 'fixture-alpha-high' });
+  await bridge.setConfig({ sessionId: id, configId: 'model', value: 'fixture-alpha-high' });
   assert.equal(launchArgs(bridge.session(id))[launchArgs(bridge.session(id)).indexOf('--model') + 1], 'fixture-alpha-high');
   assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'model', value: 'not-a-vendor-model' }), /not in the vendor catalog/);
   assert.equal(bridge.session(id).model, 'fixture-alpha-high');
   assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'effort', value: 'max' }), /conflicts with effort/);
-  bridge.setConfig({ sessionId: id, configId: 'model', value: 'engine-default' });
+  await bridge.setConfig({ sessionId: id, configId: 'model', value: 'engine-default' });
   assert.equal(launchArgs(bridge.session(id)).includes('--model'), false);
   bridge.session(id).child = { pid: 1 };
   assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'model', value: 'fixture-beta-medium' }), /frozen/);
@@ -1305,7 +1305,7 @@ void test('agy models columns are raw ids; a listed id can be selected and an un
   const noneId = (await none.newSession({ cwd, mcpServers: [] })).sessionId;
   assert.deepEqual(configOptions(none.session(noneId)).find(option => option.id === 'model').options, []);
   assert.throws(() => none.setConfig({ sessionId: noneId, configId: 'model', value: 'fixture-alpha-high' }), /not in the vendor catalog/);
-  none.setConfig({ sessionId: noneId, configId: 'model', value: 'engine-default' });
+  await none.setConfig({ sessionId: noneId, configId: 'model', value: 'engine-default' });
   await none.close();
 });
 

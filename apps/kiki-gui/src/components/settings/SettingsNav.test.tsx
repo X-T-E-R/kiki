@@ -119,7 +119,7 @@ describe('SettingsNav grouped tree', () => {
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
-    expect(leaves(1)).toEqual(['ai', 'agents']);
+    expect(leaves(1)).toEqual(['ai', 'recipes', 'agents']);
     expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory']);
     // Hooks are automation: they sit with the agent's capabilities, not rules.
     expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control', 'hooks']);

@@ -19,7 +19,7 @@ const contentRead = {
   beginContentRead() { return { release() {}, retry() {} }; },
   isContentRange() { return false; },
 };
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn(), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -73,6 +73,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     };
     loadTranscriptEntities = fixture.loadEntities;
     loadContentSegment = fixture.loadContent;
+    beginContentRead = fixture.beginRead;
     getState = () => this.state;
     getAgentState = () => this.state;
     setFocusedAgent() {}
@@ -120,6 +121,9 @@ beforeEach(() => {
   fixture.persistenceHints = [];
   fixture.loadEntities.mockClear();
   fixture.loadContent.mockClear();
+  fixture.releaseRead.mockClear();
+  fixture.retryRead.mockClear();
+  fixture.beginRead.mockReset().mockImplementation(() => ({ release: fixture.releaseRead, retry: fixture.retryRead }));
   fixture.readMedia.mockReset();
   fixture.readPreview.mockReset();
   fixture.pushToast.mockClear();
@@ -416,16 +420,17 @@ it('reads session structure a window did not carry without waiting for a press',
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  // The outlet is for a read in flight or one that failed, never for a ref that
-  // is merely waiting: this one was read on its own, so nothing hangs as
-  // "session content not loaded".
-  expect(fixture.loadContent).toHaveBeenCalledExactlyOnceWith('main', STRUCTURE_REF);
+  expect(fixture.beginRead).toHaveBeenCalledExactlyOnceWith('main', { kind: 'snapshot', id: '' }, ['session'], true, expect.arrayContaining([['session', 'title'], ['session', 'metadata', 'cwd']]));
+  expect(fixture.loadContent).not.toHaveBeenCalled();
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-remainder-toggle]')!.click(); });
+  const action = container.querySelector<HTMLButtonElement>('[data-continuation-kind="session"] [data-content-continuation-action]');
+  expect(action?.disabled).toBe(true);
+  expect(action?.textContent).toContain('Loading');
 });
 
-it('parks a remainder read that advanced nothing instead of retrying it', async () => {
+it('releases the visible snapshot demand when the session view leaves', async () => {
   fixture.queued = false;
   fixture.structureUnread = true;
-  fixture.loadContent.mockResolvedValue(false);
   root = createRoot(container);
   await act(async () => root!.render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -434,9 +439,11 @@ it('parks a remainder read that advanced nothing instead of retrying it', async 
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  // A ref that cannot advance is skipped rather than read again on every render,
-  // so a stuck structure cannot spin the drain.
-  expect(fixture.loadContent).toHaveBeenCalledExactlyOnceWith('main', STRUCTURE_REF);
+  expect(fixture.beginRead).toHaveBeenCalledTimes(1);
+  expect(fixture.releaseRead).not.toHaveBeenCalled();
+  await act(async () => { root!.unmount(); root = undefined; });
+  expect(fixture.releaseRead).toHaveBeenCalledTimes(1);
+  expect(fixture.loadContent).not.toHaveBeenCalled();
 });
 
 

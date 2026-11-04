@@ -26,6 +26,8 @@ import {
   IAppendLogStore,
   IHostEnvironment,
   IHostProcessService,
+  IHomeRuntimeService,
+  IThreadMailboxStore,
   ISessionContext,
   ISessionIndex,
   ISessionIndexMirror,
@@ -212,6 +214,8 @@ export async function runAcpServerWithStream(
       // Detach the klient's event subscriptions first so disposal below cannot
       // deliver into a torn-down scope.
       await klient.close();
+      await core.accessor.get(IThreadMailboxStore).close();
+      await core.accessor.get(IHomeRuntimeService).close();
       // Flush the append-log write-behind before disposing, so a clean shutdown
       // never races a pending drain against teardown (and doesn't drop the last
       // persisted ops). Best-effort: a flush failure must not block disposal.

@@ -18,6 +18,7 @@ import type { TranscriptMarker } from '../model/item';
 import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
 import { safetyBoundaryIndex } from '../ops/framePlace';
+import { transcriptResidentValueEquals } from '../ops/equality';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
 import type { TranscriptProvenance } from '../model/identity';
 
@@ -963,11 +964,24 @@ export class TranscriptWireAdapter {
         previous?.taskId === taskId &&
         previous.kind === 'subagent' &&
         previous.agentId === subagentId &&
-        previous.startedAt === startedAt;
+        (explicitTaskId !== undefined || previous.startedAt === startedAt);
       const operations: TranscriptOperation[] = [];
       if (sameRun) {
+        const task: TranscriptTask = {
+          ...previous,
+          name: stringOf(record['name']) ?? previous.name,
+          subagentName: stringOf(record['subagentName']) ?? previous.subagentName,
+          model: stringOf(record['model']) ?? previous.model,
+          thinkingEffort: stringOf(record['thinkingEffort']) ?? previous.thinkingEffort,
+          thinkingEffortExplicit: booleanOf(record['thinkingEffortExplicit']) ?? previous.thinkingEffortExplicit,
+          executorId: stringOf(record['executorId']) ?? previous.executorId,
+          executorProtocol: stringOf(record['executorProtocol']) ?? previous.executorProtocol,
+          description: stringOf(record['description']) ?? previous.description,
+        };
+        const enriched = transcriptResidentValueEquals(previous, task) ? previous : task;
+        this.#tasks.set(taskId, enriched);
         this.#replayedSubagentSpawns.set(subagentId, taskId);
-        operations.push({ op: 'task.upsert', task: previous });
+        operations.push({ op: 'task.upsert', task: enriched });
       } else {
         this.#replayedSubagentSpawns.delete(subagentId);
         const task: TranscriptTask = {

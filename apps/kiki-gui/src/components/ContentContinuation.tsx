@@ -310,7 +310,7 @@ export function ContentContinuation({
     {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} presentation={presentation} renderText={renderText} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
     {ref === undefined ? null : <ContinuationRow
       kind="content"
-      state={statusOf(ref)?.status ?? (automatic ? 'loading' : 'idle')}
+      state={statusOf(ref)?.status === 'error' ? 'error' : automatic ? 'loading' : statusOf(ref)?.status ?? 'idle'}
       progress={pending.length > 1
         ? `${label} · ${progress} · ${tp('transcript.content.morePending', pending.length - 1)}`
         : `${label} · ${progress}`}

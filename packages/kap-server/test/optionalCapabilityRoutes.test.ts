@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ErrorCodes, ISessionManager, type ISessionContext, type Scope } from '@kiki/agent-core-v2';
+import { ErrorCodes, ISessionIndex, ISessionManager, type ISessionContext, type Scope } from '@kiki/agent-core-v2';
 import { NATIVE_BROWSER_FLAG_ID } from '@kiki/agent-core-v2/app/browser/flag';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { IConfigService } from '@kiki/agent-core-v2/app/config/config';
@@ -79,6 +79,7 @@ describe('optional capability session routes', () => {
         get(token: unknown) {
           if (token === ISessionManager) {
             return {
+              get: (sessionId: string) => sessionId === 'missing' ? undefined : { accessor: { get: () => sessionFor(sessionId) } },
               acquire: async (sessionId: string) => {
                 if (sessionId === 'missing') return undefined;
                 const service = sessionFor(sessionId);
@@ -86,6 +87,7 @@ describe('optional capability session routes', () => {
               },
             };
           }
+          if (token === ISessionIndex) return { get: async () => undefined };
           throw new Error(`unexpected core service ${String(token)}`);
         },
       },

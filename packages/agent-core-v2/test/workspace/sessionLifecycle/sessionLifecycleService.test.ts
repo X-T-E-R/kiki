@@ -417,7 +417,7 @@ describe('SessionLifecycleService factory ownership', () => {
     }
   });
 
-  it.each(['close', 'unload', 'materialization-error', 'rollback', 'factory-error'] as const)(
+  it.each(['close', 'unload', 'parent-dispose', 'materialization-error', 'rollback', 'factory-error'] as const)(
     'awaits contributed cleanup and asynchronous lock release during %s', async (phase) => {
       let releaseCleanup!: () => void;
       let releaseLock!: () => void;
@@ -482,9 +482,21 @@ describe('SessionLifecycleService factory ownership', () => {
       let pending: Promise<unknown> | undefined;
       try {
         let settled = false;
-        const operation = phase === 'close' || phase === 'unload'
-          ? materialize().then<unknown>(() => fx.service[phase]('factory-session'))
-          : materialize();
+        const operation = phase === 'parent-dispose'
+          ? materialize().then(async (handle) => {
+            const scheduling = fx.service as unknown as {
+              scheduleCheckpoint(id: string, handle: ISessionScopeHandle, delay: number): void;
+              checkpointTimers: Map<string, unknown>;
+            };
+            scheduling.scheduleCheckpoint(handle.id, handle, 60_000);
+            const disposing = parent.dispose();
+            expect(fx.service.get(handle.id)).toBeUndefined();
+            expect(scheduling.checkpointTimers.size).toBe(0);
+            await disposing;
+          })
+          : phase === 'close' || phase === 'unload'
+            ? materialize().then<unknown>(() => fx.service[phase]('factory-session'))
+            : materialize();
         pending = operation.then(
           (value) => { settled = true; return { value }; },
           (error: unknown) => { settled = true; return { error }; },
@@ -501,7 +513,7 @@ describe('SessionLifecycleService factory ownership', () => {
         expect(events).toEqual(['cleanup start', 'cleanup end', 'workspace released', 'lock release start', 'lock release end']);
         expect(workspaceDispose).toHaveBeenCalledTimes(1);
         expect(lockDispose).toHaveBeenCalledTimes(1);
-        expect(result).toEqual(phase === 'close' ? { value: undefined } : phase === 'unload' ? { value: true } : { error: failure });
+        expect(result).toEqual(phase === 'close' || phase === 'parent-dispose' ? { value: undefined } : phase === 'unload' ? { value: true } : { error: failure });
         expect(fx.closed).toEqual(phase === 'close' || phase === 'unload' ? [{ sessionId: 'factory-session', reason: phase === 'close' ? 'exit' : 'evict' }] : []);
       } finally {
         releaseCleanup();
@@ -706,6 +718,38 @@ describe('SessionLifecycleService unload', () => {
       expect(save).toHaveBeenCalledTimes(6);
     } finally {
       scheduling.disposeCheckpointScheduling('session-1');
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires checkpoint continuations before asynchronous subscription disposal', async () => {
+    vi.useFakeTimers();
+    let finishSave!: (saved: boolean) => void;
+    let releaseSubscription!: () => void;
+    const save = vi.fn(() => new Promise<boolean>((resolve) => { finishSave = resolve; }));
+    const fx = fixture(undefined, accessor([[IEventDispatcher, { saveReplayCheckpoint: save }]]));
+    const scheduling = fx.service as unknown as {
+      scheduleCheckpoint(id: string, handle: ISessionScopeHandle, delay: number): void;
+      checkpointSubscriptions: Map<string, { dispose(): Promise<void> }>;
+    };
+    scheduling.checkpointSubscriptions.set('session-1', {
+      dispose: () => new Promise<void>((resolve) => { releaseSubscription = resolve; }),
+    });
+    try {
+      scheduling.scheduleCheckpoint('session-1', fx.handle, 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(save).toHaveBeenCalledOnce();
+      const disposing = fx.service.dispose();
+      expect(fx.service.list()).toEqual([]);
+      const get = vi.spyOn(fx.handle.accessor, 'get').mockImplementation(() => { throw new Error('retired accessor'); });
+      finishSave(false);
+      await drainMicrotasks();
+      expect(get).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      releaseSubscription();
+      await disposing;
+      expect(fx.dispose).toHaveBeenCalledOnce();
+    } finally {
       vi.useRealTimers();
     }
   });

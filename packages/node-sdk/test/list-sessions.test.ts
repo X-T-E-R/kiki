@@ -92,6 +92,9 @@ describe('KimiHarness.listSessions', () => {
       await harness.createSession({ id: 'ses_harness_all_a', workDir });
       await harness.createSession({ id: 'ses_harness_all_b', workDir: otherWorkDir });
 
+      const rpc = Reflect.get(harness, 'rpc') as SDKRpcClient;
+      const status = await rpc.engineAccessor.get(ISessionIndex).prepare();
+      expect(status.state).toBe('ready');
       const sessions = await harness.listSessions();
       expect(sessions.map((session) => session.id).toSorted()).toEqual([
         'ses_harness_all_a',
@@ -236,17 +239,20 @@ describe('SDKRpcClient.listSessionsPage', () => {
         await client.closeSession({ sessionId: created.id });
       }
       const index = client.engineAccessor.get(ISessionIndex);
-      await index.prepare();
+      expect((await index.prepare()).state).toBe('ready');
       // A summary whose workDir can no longer be resolved (unknown workspace,
       // no cwd) is dropped by the mapping; the page must still fill.
-      client.engineAccessor.get(ISessionIndexMirror).record({
+      const mirror = client.engineAccessor.get(ISessionIndexMirror);
+      mirror.record({
         id: 'ses_ghost',
         workspaceId: 'ws_missing',
         createdAt: 1,
         updatedAt: Date.now() + 60_000,
         archived: false,
       });
-      await drainSessionIndexMirror();
+      await mirror.drain();
+      expect(mirror.pending()).toEqual([]);
+      expect((await index.listRecent({ limit: 1 })).items.map((item) => item.id)).toEqual(['ses_ghost']);
 
       const page1 = await client.listSessionsPage({ limit: 2 });
       expect(page1.items).toHaveLength(2);
