@@ -159,6 +159,20 @@ test('reruns reuse the latest available Android candidate only within the same r
   assert.throws(() => select([{ ...artifact(100, 1), expired: true }]), /unavailable/);
 });
 
+test('Android SDK setup overrides retired tools defaults and retains the required platform and build-tools', () => {
+  const root = resolve(import.meta.dirname, '../../../..');
+  for (const [name, setupCount] of [['kiki-android-ci.yml', 1], ['kiki-android-signing-check.yml', 1], ['kiki-desktop-release.yml', 2]]) {
+    const workflow = readFileSync(join(root, '.github/workflows', name), 'utf8');
+    const setups = [...workflow.matchAll(/^      - uses: android-actions\/setup-android@v3\r?\n((?: {8,}[^\r\n]*\r?\n)*)/gm)];
+    assert.equal(setups.length, setupCount, `${name}: check every Android initialization step`);
+    for (const setup of setups) {
+      assert.match(setup[1], /^        with:\r?\n/, `${name}: override setup-android's retired tools default`);
+      assert.match(setup[1], /^          packages: platform-tools\r?$/m, `${name}: install only the supported platform-tools bootstrap package`);
+    }
+    assert.match(workflow, /run: sdkmanager 'platforms;android-36' 'build-tools;36\.1\.0'/, `${name}: retain the APK build SDK`);
+  }
+});
+
 test('workflows keep unsigned CI, protected manual signing and immutable tag publication separate', () => {
   const root = resolve(import.meta.dirname, '../../../..');
   const ci = readFileSync(join(root, '.github/workflows/kiki-android-ci.yml'), 'utf8');

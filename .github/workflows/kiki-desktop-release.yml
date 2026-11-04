@@ -207,6 +207,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android SDK packages
         run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
       - name: Download immutable release input
@@ -295,6 +297,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android verification SDK
         run: sdkmanager 'build-tools;36.1.0'
 
