@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - 'kiki-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable product tag to rebuild and publish'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: kiki-desktop-release-${{ github.ref_name }}
+  group: kiki-desktop-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -17,16 +23,36 @@ jobs:
     name: Validate release tag
     runs-on: ubuntu-24.04
     outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      source-sha: ${{ steps.release.outputs.source-sha }}
       version: ${{ steps.release.outputs.version }}
       channel: ${{ steps.release.outputs.channel }}
     steps:
+      - name: Checkout workflow code and release tags
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+
       - name: Validate release tag
         id: release
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ]; then
+            tag="$REQUESTED_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
           if [[ ! "$tag" =~ ^kiki-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]; then
             echo "Kiki desktop tags must be kiki-v<major>.<minor>.<patch> or kiki-v<major>.<minor>.<patch>-beta.<number>." >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+          if [ "$GITHUB_EVENT_NAME" = 'push' ] && [ "$source_sha" != "$(git rev-parse --verify "$GITHUB_SHA^{commit}")" ]; then
+            echo 'The pushed tag no longer matches its event source.' >&2
             exit 1
           fi
           version="${tag#kiki-v}"
@@ -35,8 +61,12 @@ jobs:
           else
             channel='stable'
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "source-sha=$source_sha"
+            echo "version=$version"
+            echo "channel=$channel"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Require updater public key
         shell: bash
@@ -62,7 +92,7 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.validate.outputs.source-sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -77,18 +107,36 @@ jobs:
         shell: bash
         env:
           KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
+          KIKI_TAG: ${{ needs.validate.outputs.tag }}
+          KIKI_SOURCE_SHA: ${{ needs.validate.outputs.source-sha }}
+          KIKI_WORKFLOW_CODE_SHA: ${{ github.workflow_sha }}
+          KIKI_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$KIKI_SOURCE_SHA"
+          pnpm_version="$(pnpm --version)"
           input="$RUNNER_TEMP/kiki-release-input"
           mkdir -p "$input"
+          node -e '
+            const fs = require("node:fs");
+            const env = process.env;
+            const provenance = {
+              schemaVersion: 1,
+              product: { tag: env.KIKI_TAG, sourceSha: env.KIKI_SOURCE_SHA },
+              orchestration: { workflowCodeSha: env.KIKI_WORKFLOW_CODE_SHA, workflowRef: env.KIKI_WORKFLOW_REF,
+                runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT },
+            };
+            fs.writeFileSync(process.argv[1], `${JSON.stringify(provenance, null, 2)}\n`);
+          ' "$input/release-orchestration.json"
           node apps/kimi-code/scripts/update-catalog.mjs --out "$input/built-in-catalog.json"
           node apps/kimi-code/scripts/native/release-receipt.mjs prepare \
             --catalog "$input/built-in-catalog.json" \
             --output "$input/release-input.json" \
             --repository "$GITHUB_REPOSITORY" \
             --source-sha "$source_sha" \
-            --tag "$GITHUB_REF_NAME" \
+            --tag "$KIKI_TAG" \
+            --pnpm "$pnpm_version" \
             --version '${{ needs.validate.outputs.version }}' \
             --channel '${{ needs.validate.outputs.channel }}' \
             --run-id "$GITHUB_RUN_ID" \
@@ -121,7 +169,7 @@ jobs:
       prepare-artifact-id: ${{ needs.prepare.outputs.artifact-id }}
       prepare-run-attempt: ${{ needs.prepare.outputs.producer-attempt }}
       release-source-sha: ${{ needs.prepare.outputs.source-sha }}
-      release-tag: ${{ github.ref_name }}
+      release-tag: ${{ needs.validate.outputs.tag }}
       release-version: ${{ needs.validate.outputs.version }}
       release-channel: ${{ needs.validate.outputs.channel }}
     permissions:
@@ -142,7 +190,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: X-T-E-R/kiki
-      KIKI_TAG: ${{ github.ref_name }}
+      KIKI_TAG: ${{ needs.validate.outputs.tag }}
       KIKI_VERSION: ${{ needs.validate.outputs.version }}
       KIKI_CHANNEL: ${{ needs.validate.outputs.channel }}
       KIKI_SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}

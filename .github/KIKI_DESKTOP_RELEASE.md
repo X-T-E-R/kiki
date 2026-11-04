@@ -49,7 +49,17 @@ Use `-beta.<number>` only for beta tags. Publish two beta versions and verify a 
 
 ## Recover a failed release
 
-Use **Re-run failed jobs** on the original Actions run to retain its successful targets and frozen input artifact. Target artifacts are named `kiki-release-target-<run>-<target>-<attempt>`; the publish job selects the latest successful artifact ID for each target within that run. All six receipts must match the original prepare identity, source, catalog, lockfile and release environment. If the input or target artifacts have expired, recovery stops; do not substitute artifacts from another run.
+If the original workflow code is still suitable, use **Re-run failed jobs** on that Actions run to retain its successful targets and frozen input artifact. Target artifacts are named `kiki-release-target-<run>-<target>-<attempt>`; the publish job selects the latest successful artifact ID for each target within that run. All six receipts must match the original prepare identity, source, catalog, lockfile and release environment. Expired input or target artifacts cannot be substituted from another run.
+
+If recovery needs corrected workflow code or the original artifacts have expired, land the tooling fix on the default branch, then start **Kiki Desktop Release → Run workflow** from that updated branch. Set **tag** to the existing product tag. For example, with the tooling fix on `kiki`:
+
+```sh
+gh workflow run kiki-desktop-release.yml --repo X-T-E-R/kiki --ref kiki -f tag=kiki-v0.5.1
+```
+
+`--ref` selects the orchestration code; `tag` selects the product. The workflow resolves only `refs/tags/<tag>` to its commit, including annotated tags, and uses that exact source for prepare, all native/desktop targets, publication scripts and npm. Missing tags, branch-only names, tags not pointing to a commit, and tags outside `kiki-v<major>.<minor>.<patch>[-beta.<number>]` are rejected. Keep the product tag unchanged. The immutable prepare artifact records both identities in `release-orchestration.json`: `product.tag`/`sourceSha` and `orchestration.workflowCodeSha`/`workflowRef`, with the run ID and attempt. The same-repository native workflow comes from the caller's tooling commit.
+
+A dispatched recovery is a new run: it freezes fresh release inputs and rebuilds all six targets. It does not import the original run's successful candidates. Windows receipt steps pass the pnpm version observed by their Bash shell through `--pnpm`, so receipt generation uses the working build invocation instead of probing a separate `pnpm.cmd` shim.
 
 For an existing draft Release, identical assets are reused and missing assets can be uploaded. Different bytes under an existing name stop publication. For an already public Release, missing assets or signatures also stop recovery rather than changing public contents.
 

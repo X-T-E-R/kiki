@@ -276,6 +276,7 @@ jobs:
             --target '${{ matrix.target }}' \
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
+            --pnpm "$(pnpm --version)" \
             --signing unsigned \
             --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
           {
@@ -414,6 +415,7 @@ jobs:
             --target '${{ matrix.target }}' \
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
+            --pnpm "$(pnpm --version)" \
             --signing unsigned \
             --updater-public-key "${KIKI_EMBEDDED_UPDATER_PUBLIC_KEY:-}"
 
