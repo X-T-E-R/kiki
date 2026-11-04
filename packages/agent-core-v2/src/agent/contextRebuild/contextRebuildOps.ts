@@ -61,8 +61,11 @@ export class ContextRebuildReported extends Event2<z.infer<typeof reportSchema>>
 }
 export interface ContextRebuildReported extends z.infer<typeof reportSchema> {}
 
+type ContextRebuildState = ContextRebuildControl & { readonly preference: boolean | null };
+
 const controlSchema = z.object({
   enabled: z.boolean(),
+  preference: z.boolean().nullable(),
   outcome: outcomeSchema.optional(),
   trigger: triggerSchema.optional(),
   at: z.string().optional(),
@@ -74,10 +77,11 @@ const controlSchema = z.object({
 
 export const contextRebuildControlKey = defineState(
   'contextRebuild.control',
-  (): ContextRebuildControl => ({ enabled: false, rebuilt: [], unsupported: [] }),
-).replayable({ schema: controlSchema as z.ZodType<ContextRebuildControl> })
+  (): ContextRebuildState => ({ enabled: true, preference: null, rebuilt: [], unsupported: [] }),
+).replayable({ schema: controlSchema as z.ZodType<ContextRebuildState> })
   .on(ContextRebuildPreferenceChanged, (state, event) => {
     state.enabled = event.enabled;
+    state.preference = event.enabled;
   })
   .on(ContextRebuildReported, (state, event) => {
     state.outcome = event.outcome;

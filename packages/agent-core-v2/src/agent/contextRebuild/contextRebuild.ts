@@ -82,7 +82,7 @@ export interface IAgentContextRebuildService {
   control(): ContextRebuildControl;
   /**
    * Persists this agent's switch. Enabling does not rebuild immediately and does not
-   * walk child agents. The default is off.
+   * walk child agents. The default is on; an explicit off survives restoration.
    */
   setEnabled(enabled: boolean): Promise<void>;
 }

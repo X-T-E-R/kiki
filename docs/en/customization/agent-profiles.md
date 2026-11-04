@@ -30,7 +30,7 @@ The full scope rules and directory list are in [Agent Locations](./agents-and-su
 
 ## When changes take effect
 
-Profile files under the user, project and extra-directory roots — plus `$KIKI_HOME/SYSTEM.md` — are watched: additions, edits and deletions reload automatically after roughly 200 ms, and a newly dispatched subagent picks up the reloaded version immediately. An existing session's main agent stays bound to the snapshot taken when the session was created, so use **Rebuild context** to pick up your edit while keeping the conversation. See [Rebuilding a session context](./agents-and-subagents.md#rebuilding-a-session-context).
+Profile files under the user, project and extra-directory roots — plus `$KIKI_HOME/SYSTEM.md` — are watched: additions, edits and deletions reload automatically after roughly 200 ms, and a newly dispatched subagent picks up the reloaded version immediately. Existing agents refresh their snapshot at the next compaction or session recovery by default. Turn off **Auto-update context** to keep an agent's snapshot frozen, or use **Rebuild context** to apply an edit immediately without losing the conversation. See [Rebuilding a session context](./agents-and-subagents.md#rebuilding-a-session-context).
 
 ## Main agents and subagents
 

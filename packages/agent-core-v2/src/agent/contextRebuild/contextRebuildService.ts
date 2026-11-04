@@ -113,7 +113,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     if (typeof enabled !== 'boolean') {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Context rebuild enablement must be a boolean.');
     }
-    if (this.control().enabled === enabled) return;
+    if (this.states.get(contextRebuildControlKey).preference === enabled) return;
     await this.dispatcher.dispatch(new ContextRebuildPreferenceChanged({ enabled }));
   }
 

@@ -11,7 +11,10 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
-import { appServices, sessionServices, testAgent, type TestAgentContext } from '../../harness';
+import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IWireService } from '#/wire/wire';
+import { appServices, InMemoryWireRecordPersistence, sessionServices, testAgent, type TestAgentContext } from '../../harness';
 
 const PROVIDER = {
   type: 'kimi',
@@ -46,7 +49,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     todo.setTodos([{ title: 'Keep the task', status: 'pending' }]);
     const todos = todo.getTodos('main');
     const history = ctx.compactHistory();
-    await ctx.get(IAgentContextRebuildService).setEnabled(true);
+    expect(ctx.get(IAgentContextRebuildService).control().enabled).toBe(true);
 
     const service = ctx.get(IAgentFullCompactionService);
     expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
@@ -59,7 +62,9 @@ describe('context rebuild at the committed compaction boundary', () => {
       enabled: true,
       outcome: 'applied',
       trigger: 'fresh_start',
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
     });
+    expect(ctx.llmCalls).toHaveLength(0);
     expect(profile.data().modelAlias).toBe(before.modelAlias);
     expect(profile.data().thinkingLevel).toBe(before.thinkingLevel);
     expect(profile.data().toolOverride).toEqual(before.toolOverride);
@@ -67,7 +72,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.get(IAgentPermissionModeService).mode).toBe(mode);
     expect(todo.getTodos('main')).toEqual(todos);
     const wire = await ctx.persistedWireRecords();
-    expect(wire.some((record) => record.type === 'context_rebuild.preference')).toBe(true);
+    expect(wire.some((record) => record.type === 'context_rebuild.preference')).toBe(false);
   }, 30_000);
 
   it('keeps the committed compaction when the refresh fails once', async () => {
@@ -149,6 +154,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     const memory = ctx.get(IAgentContextMemoryService);
     const model = profile.getModel();
     const thinking = profile.data().thinkingLevel;
+    await ctx.get(IAgentContextRebuildService).setEnabled(false);
     await memory.clear();
     await ctx.get(IAgentContextRebuildService).setEnabled(true);
     await memory.clear();
@@ -176,6 +182,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     profile.update({ thinkingLevel: 'low', disallowedTools: ['Bash'], systemPrompt: 'before rebuild' });
     const mode = ctx.get(IAgentPermissionModeService).mode;
     const model = profile.getModel();
+    await ctx.get(IAgentContextRebuildService).setEnabled(false);
     const service = ctx.get(IAgentFullCompactionService);
     expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
     await expect(service.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
@@ -230,7 +237,6 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(profile.data().profileName).toBeUndefined();
     profile.update({ thinkingLevel: 'off', disallowedTools: ['Bash'] });
     const modelAlias = profile.data().modelAlias;
-    await ctx.get(IAgentContextRebuildService).setEnabled(true);
     const compaction = ctx.get(IAgentFullCompactionService);
     expect(compaction.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
     await expect(compaction.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
@@ -247,15 +253,60 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect((await profile.getPromptDiagnostics()).request?.binding_revision).toBe((await profile.getPromptDiagnostics()).binding_revision);
   }, 30_000);
 
-  it('does not re-read sources when the switch stays off', async () => {
+  it.each([false, true])('restores the same history and binding, refreshing sources only without an explicit off: %s', async (off) => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let body = 'PROFILE OLD';
+    const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
+    const create = () => {
+      const ctx = testAgent({ persistence, autoConfigure: false }, sessionServices((reg) => {
+        reg.defineInstance(ISessionContextSourceReloader, { _serviceBrand: undefined, reload });
+      }));
+      agents.push(ctx);
+      const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => body });
+      const catalog = ctx.get(ISessionAgentProfileCatalog);
+      vi.spyOn(catalog, 'get').mockImplementation((name) => name === role.name ? role : undefined);
+      vi.spyOn(catalog, 'getDefault').mockReturnValue(role);
+      ctx.get(IAgentContextRebuildService);
+      return ctx;
+    };
+    const first = create();
+    await first.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: 'mock-model', thinking: 'off',
+      toolOverride: { disallowedTools: ['Bash'] } });
+    expect(first.get(IAgentProfileService).getSystemPrompt()).toContain('PROFILE OLD');
+    if (off) await first.get(IAgentContextRebuildService).setEnabled(false);
+    first.appendExchange(1, 'retained question', 'retained answer', 80);
+    const history = first.compactHistory();
+    await first.get(IWireService).flush();
+    await first.dispose();
+    body = 'PROFILE NEW';
+
+    const reopened = create();
+    await reopened.restorePersisted();
+    await reopened.get(IAgentProfileService).syncBindingMetadata();
+    expect(reload).toHaveBeenCalledTimes(off ? 0 : 1);
+    expect(reopened.get(IAgentProfileService).getSystemPrompt()).toContain(off ? 'PROFILE OLD' : 'PROFILE NEW');
+    expect(reopened.get(IAgentProfileService).data()).toMatchObject({ modelAlias: 'mock-model', thinkingLevel: 'off', disallowedTools: ['Bash'] });
+    expect(reopened.compactHistory().slice(0, history.length)).toEqual(history);
+    expect(reopened.llmCalls).toHaveLength(0);
+    expect(reopened.get(IAgentContextRebuildService).control()).toMatchObject(off
+      ? { enabled: false, rebuilt: [] }
+      : { enabled: true, trigger: 'restore', outcome: 'applied', rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] });
+  }, 30_000);
+
+  it.each([false, true])('persists the first explicit choice once and applies it at the boundary: %s', async (enabled) => {
     const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
     const ctx = openAgent(reload);
+    await ctx.get(IAgentContextRebuildService).setEnabled(enabled);
+    await ctx.get(IAgentContextRebuildService).setEnabled(enabled);
     const service = ctx.get(IAgentFullCompactionService);
     expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
     await expect(service.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
-    expect(reload).not.toHaveBeenCalled();
-    expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({ enabled: false });
-    expect(ctx.get(IAgentContextRebuildService).control().outcome).toBeUndefined();
+    expect(reload).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(ctx.get(IAgentContextRebuildService).control().enabled).toBe(enabled);
+    expect(ctx.get(IAgentContextRebuildService).control().outcome).toBe(enabled ? 'applied' : undefined);
+    expect((await ctx.persistedWireRecords()).filter((record) => record.type === 'context_rebuild.preference'))
+      .toEqual([expect.objectContaining({ enabled })]);
+    expect(ctx.llmCalls).toHaveLength(0);
   }, 30_000);
 });
 

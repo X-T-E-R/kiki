@@ -2393,7 +2393,7 @@ export interface AgentStateSnapshot {
   'contextProjector.lastRepairSignature': string | null;
   // src/agent/contextRebuild/contextRebuildOps.ts
   // replayable · durable — folds: ContextRebuildPreferenceChanged, ContextRebuildReported
-  'contextRebuild.control': /* ContextRebuildControl — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
+  'contextRebuild.control': /* ContextRebuildState — packages/agent-core-v2/src/agent/contextRebuild/contextRebuildOps.ts */ /* ContextRebuildControl — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
     readonly enabled: boolean;
     readonly outcome?: 'failed' | 'partial' | 'applied';
     readonly trigger?: 'manual' | 'summary' | 'compaction' | 'fresh_start' | 'restore' | 'model_switch_fresh' | 'model_switch_compact' | 'context_clear';
@@ -2413,6 +2413,8 @@ export interface AgentStateSnapshot {
       readonly surface: /* ContextRebuildUnsupportedSurface — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ 'profile' | 'skills' | 'instructions' | 'plugins' | 'mcp' | 'injections' | 'prompt_fields' | 'executor_session';
       readonly reason: string;
     }[];
+  } & {
+    readonly preference: boolean | null;
   };
   // src/agent/execution/externalExecutorOps.ts
   // replayable · durable — folds: ExecutorSessionUpdated, ExecutorAuthObserved, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay

@@ -43,7 +43,7 @@ export class PersistedContextRebuildReader {
     if ((size ?? 0) > READ_BYTES) {
       throw new Error2(ErrorCodes.SESSION_BUSY, 'Context rebuild control is unavailable for this inactive agent until an action restores it.');
     }
-    let control = contextRebuildControlKey.initial();
+    let state = contextRebuildControlKey.initial();
     let readBytes = 0;
     for await (const record of this.log.read<unknown>(scope, AGENT_WIRE_RECORD_KEY, {
       signal,
@@ -58,13 +58,14 @@ export class PersistedContextRebuildReader {
       if (entry === undefined) continue;
       const event = event2FromRecord(entry.event, record);
       if (event === undefined) throw new StorageError(StorageErrors.codes.STORAGE_CORRUPTED, 'Malformed context rebuild control event');
-      control = produce(control, draft => {
+      state = produce(state, draft => {
         entry.fold(draft, event, {
           silent: true, emit() {}, checkpoint() {}, clearCheckpoints() {}, undoToCheckpoint() {},
         });
       });
     }
     signal?.throwIfAborted();
+    const { preference: _preference, ...control } = state;
     const bytes = Buffer.byteLength(JSON.stringify(control));
     this.cacheBytes -= this.cache.get(scope)?.bytes ?? 0;
     this.cache.set(scope, { size: size ?? 0, mtime, generation, bytes, control });

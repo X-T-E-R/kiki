@@ -2,7 +2,9 @@
 
 A live conversation keeps the Recipe, prompts, skills, AGENTS instructions, enabled plugin tools, MCP catalog, and context injections it started with. Rebuilding re-reads those sources into the same agent. It does not start a new conversation, replay tool calls, or enable every installed plugin.
 
-The switch is labeled “Auto-update context”. It is off by default and belongs to one agent. Turning it on does not rebuild immediately, and it does not change child agents. Each agent keeps its own switch.
+The switch is labeled “Auto-update context”. It defaults on for every agent, including saved agents that never recorded a choice. An explicit off stays off after restoration. Changing the switch does not rebuild immediately or change child agents.
+
+`contextRebuild.control` saves `preference: null` for the default and a boolean for an explicit choice, alongside the effective `enabled` value. Legacy checkpoints lack this required field, so their first restore folds the canonical journal once and replaces the checkpoint; later restores use the checkpoint and verified tail as usual. Recorded `context_rebuild.preference` events preserve explicit choices. The older equality short-circuit did not record an initial `setEnabled(false)`; with no event, that request is indistinguishable from no choice and inherits the default.
 
 ## When it runs
 

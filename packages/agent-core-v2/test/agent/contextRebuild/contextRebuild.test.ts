@@ -35,6 +35,17 @@ import { createTestAgent } from '../../harness';
 
 const REBUILT = ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] as const;
 
+it.each([undefined, false, true])('uses the same default and explicit preference in cold reads: %s', async (enabled) => {
+  const reader = new PersistedContextRebuildReader({
+    flush: async () => {},
+    generation: async () => 'one',
+    read: async function* () {
+      if (enabled !== undefined) yield { type: 'context_rebuild.preference', time: 1, enabled };
+    },
+  } as never, { size: async () => 100, mtime: async () => 1, read: async () => undefined, pathFor: () => undefined } as never);
+  expect(await reader.read('agent')).toEqual({ enabled: enabled ?? true, rebuilt: [], unsupported: [] });
+});
+
 it('bounds retained cold control bytes and invalidates a changed journal generation', async () => {
   const reads = vi.fn();
   let generation = 'one';
@@ -105,20 +116,21 @@ describe('AgentContextRebuildService', () => {
     expect(result.changed).toBe(true);
     expect(result.changes?.mcp).toBe(true);
     expect(current[0]?.override).toBe('off');
-    expect(host.service.control()).toMatchObject({ trigger: 'manual', outcome: 'applied', enabled: false });
+    expect(host.service.control()).toMatchObject({ trigger: 'manual', outcome: 'applied', enabled: true });
   });
 
   it('keeps the freeze while the switch is off, including compaction and restore', async () => {
     const host = createHost(disposables);
+    await host.service.setEnabled(false);
     await host.commit.run(compactionTask());
     await host.restore.run({});
     expect(host.reload).not.toHaveBeenCalled();
     expect(host.service.control()).toEqual({ enabled: false, rebuilt: [], unsupported: [] });
   });
 
-  it('re-reads once after an enabled compaction boundary and records the report', async () => {
+  it('defaults on and re-reads all surfaces at compaction and restore boundaries without a choice', async () => {
     const host = createHost(disposables);
-    await host.service.setEnabled(true);
+    expect(host.service.control().enabled).toBe(true);
     expect(host.reload).not.toHaveBeenCalled();
     await host.commit.run(compactionTask());
     expect(host.reload).toHaveBeenCalledTimes(1);
@@ -129,6 +141,11 @@ describe('AgentContextRebuildService', () => {
       rebuilt: REBUILT,
     });
     expect(host.service.control().at).toEqual(expect.any(String));
+    await host.restore.run({});
+    expect(host.reload).toHaveBeenCalledTimes(2);
+    expect(host.plugins).toHaveBeenCalledTimes(2);
+    expect(host.injector).toHaveBeenCalledTimes(2);
+    expect(host.service.control()).toMatchObject({ trigger: 'restore', rebuilt: REBUILT });
     expect(host.setModel).not.toHaveBeenCalled();
     expect(host.history).toEqual([{ role: 'user', text: 'kept' }]);
   });
@@ -402,6 +419,7 @@ describe('AgentContextRebuildService', () => {
 
   it('rebuilds manually while the switch is off and does not call model or history mutation', async () => {
     const host = createHost(disposables);
+    await host.service.setEnabled(false);
     const result = await host.service.rebuild();
     expect(result.outcome).toBe('applied');
     expect(host.service.control().trigger).toBe('manual');
@@ -422,8 +440,12 @@ describe('AgentContextRebuildService', () => {
     expect(restored.service.control()).toMatchObject({ enabled: true, trigger: 'restore', outcome: 'applied' });
 
     const frozen = createHost(disposables);
-    await frozen.restore.run({});
-    expect(frozen.reload).not.toHaveBeenCalled();
+    await frozen.service.setEnabled(false);
+    const reopened = createHost(disposables);
+    reopened.states.set(contextRebuildControlKey, structuredClone(frozen.states.get(contextRebuildControlKey)));
+    await reopened.restore.run({});
+    expect(reopened.service.control().enabled).toBe(false);
+    expect(reopened.reload).not.toHaveBeenCalled();
   });
 
   it('names the executor surfaces it does not refresh', async () => {

@@ -30,7 +30,7 @@ Kiki 按作用域发现 profile 文件，作用域越具体，优先级越高：
 
 ## 修改什么时候生效
 
-用户级、项目级和额外目录根下的 profile 文件，以及 `$KIKI_HOME/SYSTEM.md`，都被监听：新增、修改、删除后约 200 ms 自动重载，之后新派发的 subagent 立即用上新版本。已有会话的 main agent 仍绑定创建时的快照，改完文件后在会话里执行「重建上下文」即可换上新版本，对话记录保留。详见 [重建会话上下文](./agents-and-subagents.md#重建会话上下文)。
+用户级、项目级和额外目录根下的 profile 文件，以及 `$KIKI_HOME/SYSTEM.md`，都被监听：新增、修改、删除后约 200 ms 自动重载，之后新派发的 subagent 立即用上新版本。已有 Agent 默认在下一次压缩或会话恢复时刷新快照。关闭**自动更新上下文**可保持该 Agent 的快照冻结，也可以执行**重建上下文**立即应用修改，对话记录保留。详见 [重建会话上下文](./agents-and-subagents.md#重建会话上下文)。
 
 ## Main agent 与 subagent
 

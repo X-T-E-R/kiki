@@ -88,6 +88,7 @@ describe('context rebuild at a completed context window', () => {
     expect(cancelled.state).toBe('cancelled');
     expect(reload).not.toHaveBeenCalled();
     const off = await open(reload);
+    await off.get(IAgentContextRebuildService).setEnabled(false);
     const fresh = await off.get(IAgentModelSwitchService).execute({ operationId: 'fresh-off', model: NEW, mode: 'fresh' });
     expect(fresh.state).toBe('completed');
     expect(reload).not.toHaveBeenCalled();

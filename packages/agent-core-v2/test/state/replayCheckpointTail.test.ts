@@ -8,6 +8,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { ContextRebuildPreferenceChanged, contextRebuildControlKey } from '#/agent/contextRebuild/contextRebuildOps';
 import { z } from 'zod';
 import { TurnPrompt } from '#/agent/loop/turnOps';
 import { agentMessageMaterializationsKey } from '#/session/agentCollaboration/messageReceiptState';
@@ -278,6 +279,44 @@ describe('replay checkpoint tail', () => {
     writes.mockClear();
     await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
     expect(writes).not.toHaveBeenCalled();
+  });
+
+  it.each(['default', 'off', 'on'] as const)('migrates legacy rebuild control once and preserves a recorded choice: %s', async (choice) => {
+    const legacyKey = defineState('contextRebuild.control', () => ({ enabled: false, rebuilt: [], unsupported: [] }))
+      .replayable({ schema: z.object({ enabled: z.boolean(), rebuilt: z.array(z.never()), unsupported: z.array(z.never()) }) })
+      .on(ContextRebuildPreferenceChanged, (state, event) => { state.enabled = event.enabled; });
+    const first = harness(undefined, legacyKey);
+    await seed(first.wire);
+    first.wire.appendRecord({ type: 'context.append_message', message: message('user', 'x'.repeat(70 * 1024)), time: 4 });
+    await first.wire.flush();
+    await first.dispatcher.restore();
+    const expectedTexts = texts(first.state);
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    if (choice !== 'default') {
+      await first.dispatcher.dispatch(new ContextRebuildPreferenceChanged({ enabled: true }));
+      if (choice === 'off') await first.dispatcher.dispatch(new ContextRebuildPreferenceChanged({ enabled: false }));
+    }
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const journal = await bytesOf(first.storage);
+
+    const upgraded = harness(first.storage, contextRebuildControlKey);
+    const upgradedReads = watchReads(upgraded.wire);
+    await upgraded.dispatcher.restore();
+    expect(upgradedReads.full).toBe(1);
+    expect(upgraded.state.get(contextRebuildControlKey).enabled).toBe(choice !== 'off');
+    expect(texts(upgraded.state)).toEqual(expectedTexts);
+    expect(queueText(upgraded.state)).toBe('queued-first');
+    expect(await bytesOf(first.storage)).toEqual(journal);
+    await expect(upgraded.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const current = harness(first.storage, contextRebuildControlKey);
+    const currentReads = watchReads(current.wire);
+    await current.dispatcher.restore();
+    expect(currentReads).toEqual({ full: 0, tails: [] });
+    expect(current.state.get(contextRebuildControlKey)).toEqual(upgraded.state.get(contextRebuildControlKey));
+    expect(texts(current.state)).toEqual(expectedTexts);
+    expect(queueText(current.state)).toBe('queued-first');
+    expect(await bytesOf(first.storage)).toEqual(journal);
   });
 
   it.each([false, true])('rebuilds mailbox evidence from a legacy checkpoint without losing pending input, consumed=%s', async (consumed) => {

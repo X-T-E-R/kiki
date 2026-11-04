@@ -212,6 +212,7 @@ describe('per-model cognition overlay', () => {
     const updated = await recipes.preview({ source: preview.summary.source, installation_id: installation, expected_revision: preview.digest });
     await recipes.install({ preview_id: updated.preview_id, consent: true });
     const frozenRebuild = agent.get(IAgentContextRebuildService);
+    await frozenRebuild.setEnabled(false);
     expect(frozenRebuild.control().enabled).toBe(false);
     agent.appendExchange(2, 'previous prompt', 'previous answer', 80);
     const frozenCompaction = agent.get(IAgentFullCompactionService);
