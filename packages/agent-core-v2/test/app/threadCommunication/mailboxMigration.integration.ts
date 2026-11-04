@@ -664,10 +664,11 @@ describe('canonical mailbox SQLite migration', () => {
     const migration = createMailboxMigrationService(home); handles.push(migration);
     const result = await migration.migrate();
     expect(result.failure, crash.errors).toBeUndefined();
-    expect(result.state).toBe('complete');
+    expect(result).toMatchObject({ state: 'complete', authority: 'sqlite' });
+    expect(await readMailboxAuthority(home)).toMatchObject({ backend: 'sqlite', migrationId: result.migrationId });
     const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
     expect(await db.prefix('w/test/override/')).toHaveLength(3);
-  });
+  }, 20_000);
 
   it('starts an empty home and active SQLite without requiring historical backup progress', async () => {
     await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
@@ -751,9 +752,14 @@ async function readSourceRows(): Promise<MailboxRow[]> {
 
 async function crashAt(boundary: string): Promise<{ code: number | null; output: string; errors: string }> {
   const child = spawn(process.execPath, ['--import', 'tsx', '--import', new URL('../../../../../build/register-raw-text-loader.mjs', import.meta.url).href,
-    fileURLToPath(new URL('./fixtures/mailbox-migration-crash.mts', import.meta.url)), home, boundary], { cwd: join(import.meta.dirname, '../../..'), stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 });
+    fileURLToPath(new URL('./fixtures/mailbox-migration-crash.mts', import.meta.url)), home, boundary], { cwd: join(import.meta.dirname, '../../..'), stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, killSignal: 'SIGKILL' });
   let output = ''; let errors = '';
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (value: string) => { output += value; }); child.stderr.on('data', (value: string) => { errors += value; });
-  return new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code) => resolve({ code, output, errors })); });
+  const closed = new Promise<{ code: number | null; output: string; errors: string }>((resolve, reject) => { child.once('error', reject); child.once('close', (code) => { resolve({ code, output, errors }); }); });
+  handles.push({ close: async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  } });
+  return closed;
 }
