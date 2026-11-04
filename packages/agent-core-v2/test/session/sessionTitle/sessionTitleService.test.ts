@@ -43,6 +43,24 @@ import type { StreamedMessagePart } from '#/kosong/contract/message';
 import { registerLogServices } from '../../_base/log/stubs';
 
 const SESSION_ID = 'sess-1';
+const TITLE_CLIP_MARKER = ' … [excerpt clipped] … ';
+
+function parseTitleSections(text: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  for (const line of text.split('\n')) {
+    const separator = line.indexOf(': ');
+    if (separator <= 0) throw new Error(`Invalid title section: ${line}`);
+    sections.set(line.slice(0, separator), line.slice(separator + 2));
+  }
+  return sections;
+}
+
+function expectClippedSection(section: string | undefined, source: string, budget: number): void {
+  const head = Math.ceil((budget - TITLE_CLIP_MARKER.length) * 0.75);
+  const tail = budget - TITLE_CLIP_MARKER.length - head;
+  expect(section).toBe(`${source.slice(0, head)}${TITLE_CLIP_MARKER}${source.slice(-tail)}`);
+  expect(section).toHaveLength(budget);
+}
 
 function asyncStream<T>(next: () => Promise<IteratorResult<T>>): AsyncIterable<T> {
   return { [Symbol.asyncIterator]: () => ({ next }) };
@@ -70,7 +88,8 @@ class FakeSessionMetadata implements ISessionMetadata {
     return Promise.resolve();
   }
   setTitle(title: string): Promise<void> { return this.update({ title, titleKind: 'custom' }); }
-  async setGeneratedTitleIfUncustomized(title: string, opts?: { force?: boolean }): Promise<boolean> {
+  async setGeneratedTitleIfUncustomized(title: string, opts?: Parameters<ISessionMetadata['setGeneratedTitleIfUncustomized']>[1]): Promise<boolean> {
+    if (opts?.expected !== undefined && (this.meta.title !== opts.expected.title || this.meta.titleKind !== opts.expected.titleKind)) return false;
     if (opts?.force !== true && this.meta.titleKind === 'custom') return false;
     await this.update({ title, titleKind: 'generated' });
     return true;
@@ -111,7 +130,7 @@ describe('SessionTitleService', () => {
   let tokenMock: ReturnType<typeof vi.fn<() => Promise<string>>>;
 
   beforeEach(() => {
-    titlePrompts = ['hello']; turnExcerpt = {}; digestExcerpt = {};
+    titlePrompts = ['hello']; turnExcerpt = {}; digestExcerpt = { recentUsers: [] };
     flagEnabled = true; titleModelAlias = 'title-model'; fastModelAlias = 'fast-title'; triggers = undefined;
     modelRequesters = new Map(); requesterLookups = []; titleRequests = []; published = [];
     titlePrompt = undefined; systemPrompts = [];
@@ -249,7 +268,7 @@ describe('SessionTitleService', () => {
     modelRequesters.set('title-model', stubTitleRequester('  "Vite 路由配置"\n'));
     await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBe('Vite 路由配置');
     expect(requesterLookups).toEqual(['title-model']);
-    expect(titleRequests[0]!.text).toBe('user: 先帮我搭一个 Vite 项目\nuser: 加上路由');
+    expect(titleRequests[0]!.text).toBe('initial_user_1: 先帮我搭一个 Vite 项目\ninitial_user_2: 加上路由');
     expect(titleRequests[0]!.params.attribution).toMatchObject({ sessionId: SESSION_ID, agentId: MAIN_AGENT_ID, purpose: 'session_title', logicalRequestId: expect.any(String), waitBudget: { waitedMs: 0 } });
     expect(titleRequests[0]!.params.maxCompletionTokens).toBeUndefined();
     expect(metadata.meta).toMatchObject({ title: 'Vite 路由配置', titleKind: 'generated' });
@@ -258,6 +277,7 @@ describe('SessionTitleService', () => {
   it.each([undefined, '', '   '])('makes zero automatic and manual requests with no selected model (%s), even with fast_model and managed credentials', async (model) => {
     titleModelAlias = model; triggers = ['first_user_message', 'first_turn_completed', 'context_compacted'];
     submitted(); start(); complete();
+    digestExcerpt = { recentUsers: [], summary: 'summary' };
     ix.get(IEventBus).publish(new ContextApplyCompaction({ summary: 'summary', compactedCount: 1 }));
     await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBeUndefined();
     await expect(ix.get(ISessionTitleService).generateTitle({ force: true, source: 'digest' })).resolves.toBeUndefined();
@@ -267,27 +287,35 @@ describe('SessionTitleService', () => {
   it('uses only the first completed reply by default, not submitted, failed or later turns', async () => {
     submitted(); start(); await flush(); expect(titleRequests).toHaveLength(0);
     complete(); await generated();
-    expect(titleRequests[0]!.text).toBe('user: hello\nassistant: first reply');
+    expect(titleRequests[0]!.text).toBe('earliest_available_user: hello\npaired_assistant_reply: first reply');
     submitted('second'); start(1, 'second'); complete(1); await flush();
     expect(titleRequests).toHaveLength(1);
   });
   it('first_user_message runs while queued, once, and not again after the reply', async () => {
     triggers = ['first_user_message']; submitted(); submitted('second'); await generated();
-    expect(titleRequests[0]!.text).toBe('user: hello');
+    expect(titleRequests[0]!.text).toBe('initial_user_1: hello');
     start(); complete(); await flush(); expect(titleRequests).toHaveLength(1);
   });
   it('context_compacted runs only on actual main context compaction and updates a generated title', async () => {
     triggers = ['context_compacted']; submitted(); start(); complete(); await flush(); expect(titleRequests).toHaveLength(0);
-    await metadata.setGeneratedTitleIfUncustomized('old generated');
+    const oldGeneratedTitle = `old password=secret ${'长'.repeat(400)}`;
+    const sanitizedOldGeneratedTitle = `old password=[redacted] ${'长'.repeat(400)}`;
+    await metadata.setGeneratedTitleIfUncustomized(oldGeneratedTitle);
+    digestExcerpt = { recentUsers: [], summary: 'compacted garden plans' };
     ix.get(IEventBus).publish(new ContextApplyCompaction({ contextSummary: 'compacted garden plans', compactedCount: 2 }));
     await generated(); expect(metadata.meta.title).toBe('生成的标题');
-    expect(titleRequests[0]!.text).toBe('summary: compacted garden plans');
+    const firstDigest = parseTitleSections(titleRequests[0]!.text);
+    expect(firstDigest.get('compaction_summary')).toBe('compacted garden plans');
+    expectClippedSection(firstDigest.get('previous_generated_title'), sanitizedOldGeneratedTitle, 200);
+    expect(firstDigest.get('previous_generated_title')).not.toContain('password=secret');
+    digestExcerpt = { recentUsers: [], summary: 'next compression' };
     ix.get(IEventBus).publish(new ContextApplyCompaction({ summary: 'next compression', compactedCount: 2 }));
     await generated(2);
+    expect(titleRequests[1]!.text).toBe('compaction_summary: next compression\nprevious_generated_title: 生成的标题');
   });
   it('multiple selected moments update in order rather than sharing away the later request', async () => {
     triggers = ['first_user_message', 'first_turn_completed']; submitted(); start(); complete();
-    await generated(2); expect(titleRequests.map((request) => request.text)).toEqual(['user: hello', 'user: hello\nassistant: first reply']);
+    await generated(2); expect(titleRequests.map((request) => request.text)).toEqual(['initial_user_1: hello', 'earliest_available_user: hello\npaired_assistant_reply: first reply']);
   });
   it('empty triggers and disabled flag suppress automation; empty triggers retain manual force', async () => {
     triggers = []; submitted(); start(); complete(); await flush(); expect(titleRequests).toHaveLength(0);
@@ -311,7 +339,8 @@ describe('SessionTitleService', () => {
   });
   it('does not request automatic titles for a manually named session', async () => {
     triggers = ['first_user_message', 'first_turn_completed', 'context_compacted']; await metadata.setTitle('my name');
-    submitted(); start(); complete(); ix.get(IEventBus).publish(new ContextApplyCompaction({ summary: 'summary', compactedCount: 2 }));
+    submitted(); start(); complete(); digestExcerpt = { recentUsers: [], summary: 'summary' };
+    ix.get(IEventBus).publish(new ContextApplyCompaction({ summary: 'summary', compactedCount: 2 }));
     await flush(); expect(titleRequests).toHaveLength(0); expect(metadata.meta.title).toBe('my name');
   });
   it('never overwrites a manual rename during an automatic request', async () => {
@@ -445,20 +474,45 @@ describe('SessionTitleService', () => {
     await expect(first).resolves.toBe('生成的标题'); await expect(second).resolves.toBe('生成的标题');
   });
   it('clamps model titles and ordered user prompt input without counting the character limit as a completion token budget', async () => {
-    titlePrompts = ['很长的输入'.repeat(400), '第二条']; modelRequesters.set('title-model', stubTitleRequester(`标题${'很'.repeat(500)}`));
+    const prompts = ['很长的输入'.repeat(600), '第二条'.repeat(1000), '第三条'.repeat(1000)];
+    titlePrompts = prompts; modelRequesters.set('title-model', stubTitleRequester(`标题${'很'.repeat(500)}`));
     const title = await ix.get(ISessionTitleService).generateTitle(); expect(title).toHaveLength(200); expect(title).not.toContain('\n');
-    expect(titleRequests[0]!.text).toHaveLength(1000); expect(titleRequests[0]!.text.startsWith('user: 很长的输入')).toBe(true);
+    const sections = parseTitleSections(titleRequests[0]!.text);
+    expect(sections.size).toBe(3);
+    expectClippedSection(sections.get('initial_user_1'), prompts[0]!, 2200);
+    expectClippedSection(sections.get('initial_user_2'), prompts[1]!, 2200);
+    expectClippedSection(sections.get('initial_user_3'), prompts[2]!, 2200);
+    expect(titleRequests[0]!.params.maxCompletionTokens).toBeUndefined();
   });
   it('first_turn remains strict and bounds each user/reply segment', async () => {
     turnExcerpt = { user: '只有问题' }; await expect(ix.get(ISessionTitleService).generateTitle({ source: 'first_turn' })).resolves.toBeUndefined();
-    turnExcerpt = { user: '问'.repeat(500), assistant: '答'.repeat(1000) };
-    await ix.get(ISessionTitleService).generateTitle({ source: 'first_turn' }); expect(titleRequests[0]!.text).toBe(`user: ${'问'.repeat(300)}\nassistant: ${'答'.repeat(600)}`);
+    const user = '问'.repeat(5000); const assistant = '答'.repeat(2500);
+    turnExcerpt = { user, assistant };
+    await ix.get(ISessionTitleService).generateTitle({ source: 'first_turn' });
+    const sections = parseTitleSections(titleRequests[0]!.text);
+    expect(sections.size).toBe(2);
+    expectClippedSection(sections.get('earliest_available_user'), user, 4000);
+    expectClippedSection(sections.get('paired_assistant_reply'), assistant, 1800);
   });
-  it('digest composes head/tail text, tolerates missing reply and rejects an empty window', async () => {
+  it('digest composes labelled sections, tolerates missing reply and rejects an empty window', async () => {
     await expect(ix.get(ISessionTitleService).generateTitle({ source: 'digest' })).resolves.toBeUndefined();
-    digestExcerpt = { firstUser: '开场', lastUser: '最新追问', assistant: '当前进展' };
-    await ix.get(ISessionTitleService).generateTitle({ source: 'digest' }); expect(titleRequests[0]!.text).toBe('user: 开场\nuser: 最新追问\nassistant: 当前进展');
-    digestExcerpt = { firstUser: '开场' }; await ix.get(ISessionTitleService).generateTitle({ force: true, source: 'digest' }); expect(titleRequests[1]!.text).toBe('user: 开场');
+    digestExcerpt = { firstUser: '开场', recentUsers: ['最新追问'], assistant: '当前进展' };
+    await ix.get(ISessionTitleService).generateTitle({ source: 'digest' }); expect(titleRequests[0]!.text).toBe('earliest_available_user: 开场\nrecent_user_1: 最新追问\nlatest_user_assistant_reply: 当前进展');
+    digestExcerpt = { firstUser: '开场', recentUsers: [] }; await ix.get(ISessionTitleService).generateTitle({ force: true, source: 'digest' }); expect(titleRequests[1]!.text).toBe('earliest_available_user: 开场\nprevious_generated_title: 生成的标题');
+  });
+  it('digest bounds each labelled section independently', async () => {
+    const firstUser = '开场'.repeat(1000);
+    const summary = '摘要'.repeat(1000);
+    const recentUsers = ['一'.repeat(700), '二'.repeat(700), '三'.repeat(700), '四'.repeat(700)];
+    const assistant = '答'.repeat(700);
+    digestExcerpt = { firstUser, summary, recentUsers, assistant };
+    await ix.get(ISessionTitleService).generateTitle({ source: 'digest' });
+    const sections = parseTitleSections(titleRequests[0]!.text);
+    expect(sections.size).toBe(7);
+    expectClippedSection(sections.get('earliest_available_user'), firstUser, 1600);
+    expectClippedSection(sections.get('compaction_summary'), summary, 1800);
+    recentUsers.forEach((text, index) => { expectClippedSection(sections.get(`recent_user_${index + 1}`), text, 600); });
+    expectClippedSection(sections.get('latest_user_assistant_reply'), assistant, 500);
   });
   it('does not turn lastPrompt slash metadata or empty input into a model request', async () => {
     titlePrompts = []; await metadata.update({ lastPrompt: '/compact' });

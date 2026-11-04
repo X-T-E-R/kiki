@@ -322,10 +322,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
   async setGeneratedTitleIfUncustomized(
     title: string,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; expected?: Pick<SessionMeta, 'title' | 'titleKind'> },
   ): Promise<boolean> {
     return this.enqueueUpdate(async () => {
       await this.ready;
+      if (opts?.expected !== undefined &&
+        (this.data.title !== opts.expected.title || this.data.titleKind !== opts.expected.titleKind)) return false;
       if (opts?.force !== true && this.data.titleKind === 'custom') return false;
       return this.applyUpdate({ title, titleKind: 'generated' }, { touchUpdatedAt: false });
     });

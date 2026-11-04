@@ -11,6 +11,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 
 import {
   IAgentTitlePromptSource,
+  MAX_TITLE_RECENT_USER_PROMPTS,
   type TitleDigestExcerpt,
   type TitleTurnExcerpt,
 } from './agentTitlePromptSource';
@@ -27,19 +28,12 @@ export class AgentTitlePromptSourceService implements IAgentTitlePromptSource {
     if (!Number.isSafeInteger(limit) || limit <= 0) return [];
 
     const result: string[] = [];
-    const seenMessageIds = new Set<string>();
-
-    const add = (message: ContextMessage): void => {
-      if (result.length >= limit || !isNaturalLanguagePrompt(message)) return;
-      if (message.id !== undefined) {
-        if (seenMessageIds.has(message.id)) return;
-        seenMessageIds.add(message.id);
-      }
+    for (const message of this.combinedMessages()) {
+      if (!isNaturalLanguagePrompt(message)) continue;
       const text = promptMetadataTextFromUserMessage(message);
       if (text !== undefined) result.push(text);
-    };
-
-    for (const message of this.combinedMessages()) add(message);
+      if (result.length >= limit) break;
+    }
     return result;
   }
 
@@ -50,7 +44,7 @@ export class AgentTitlePromptSourceService implements IAgentTitlePromptSource {
     const user = promptMetadataTextFromUserMessage(all[firstUserIndex]!);
     const span: ContextMessage[] = [];
     for (const message of all.slice(firstUserIndex + 1)) {
-      if (isNaturalLanguagePrompt(message)) break;
+      if (isNaturalLanguagePrompt(message) || message.origin?.kind === 'compaction_summary') break;
       span.push(message);
     }
     return { user, assistant: finalAssistantText(span) };
@@ -58,34 +52,44 @@ export class AgentTitlePromptSourceService implements IAgentTitlePromptSource {
 
   async digestExcerpt(): Promise<TitleDigestExcerpt> {
     const all = this.combinedMessages();
-    const firstUserIndex = all.findIndex(isNaturalLanguagePrompt);
-    if (firstUserIndex < 0) return {};
+    const users: string[] = [];
     let lastUserIndex = -1;
-    for (let index = all.length - 1; index >= 0; index--) {
-      if (isNaturalLanguagePrompt(all[index]!)) {
-        lastUserIndex = index;
-        break;
+    let summaryIndex = -1;
+    let summary: string | undefined;
+    for (const [index, message] of all.entries()) {
+      if (message.origin?.kind === 'compaction_summary') {
+        summaryIndex = index;
+        summary = promptMetadataTextFromContentParts(message.content);
       }
+      if (!isNaturalLanguagePrompt(message)) continue;
+      lastUserIndex = index;
+      const text = promptMetadataTextFromUserMessage(message);
+      if (text !== undefined) users.push(text);
     }
-    const firstUser = promptMetadataTextFromUserMessage(all[firstUserIndex]!);
-    const lastUser =
-      lastUserIndex > firstUserIndex
-        ? promptMetadataTextFromUserMessage(all[lastUserIndex]!)
-        : undefined;
-    const assistant =
-      finalAssistantText(all.slice(lastUserIndex + 1)) ??
-      finalAssistantText(all.slice(firstUserIndex + 1));
-    return { firstUser, lastUser, assistant };
+    return {
+      firstUser: users[0],
+      recentUsers: users.slice(1).slice(-MAX_TITLE_RECENT_USER_PROMPTS),
+      summary,
+      assistant: lastUserIndex >= 0 && lastUserIndex > summaryIndex
+        ? finalAssistantText(all.slice(lastUserIndex + 1))
+        : undefined,
+    };
   }
 
   private combinedMessages(): ContextMessage[] {
     const queue = this.prompt.list();
-    const all = [...this.context.get()];
-    if (queue.active !== undefined) all.push(queue.active.message);
-    const launching = queue.launching?.message;
-    if (launching !== undefined && (launching.id === undefined || !all.some((message) => message.id === launching.id))) all.push(launching);
-    for (const item of queue.pending) all.push(item.message);
-    return all;
+    const candidates = [...this.context.get()];
+    if (queue.active !== undefined) candidates.push(queue.active.message);
+    if (queue.launching !== undefined) candidates.push(queue.launching.message);
+    for (const item of queue.pending) candidates.push(item.message);
+    const seen = new Set<string>();
+    return candidates.filter(message => {
+      if (!isNaturalLanguagePrompt(message) || message.id === undefined) return true;
+      const key = JSON.stringify([message.id, message.providerMessageId]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 }
 

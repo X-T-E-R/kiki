@@ -1,25 +1,19 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
-/**
- * The first turn's excerpt: the opening natural-language user prompt and the
- * final assistant text of that turn. Either side is `undefined` when the
- * live window does not (yet) hold it — `first_turn` generation stays strict
- * and reports unavailability instead of degrading.
- */
+export const MAX_TITLE_RECENT_USER_PROMPTS = 4;
+
+/** The earliest available user prompt and its own reply; either may be unavailable. */
 export interface TitleTurnExcerpt {
-  readonly user?: string | undefined;
-  readonly assistant?: string | undefined;
+  readonly user?: string;
+  readonly assistant?: string;
 }
 
-/**
- * The whole-conversation digest excerpt: the first and last natural-language
- * user prompts (collapsed into one when the conversation has a single
- * prompt) and the final assistant text of the latest turn.
- */
+/** Bounded sources from the live window, not a second model-generated summary. */
 export interface TitleDigestExcerpt {
-  readonly firstUser?: string | undefined;
-  readonly lastUser?: string | undefined;
-  readonly assistant?: string | undefined;
+  readonly firstUser?: string;
+  readonly recentUsers: readonly string[];
+  readonly summary?: string;
+  readonly assistant?: string;
 }
 
 export interface IAgentTitlePromptSource {

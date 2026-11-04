@@ -135,15 +135,14 @@ export interface ISessionMetadata {
   update(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean }): Promise<void>;
   setTitle(title: string): Promise<void>;
   /**
-   * Applies a generated title unless the user customized theirs; the title
-   * kind is re-checked inside the serialized update, right before the write,
-   * so a custom title set while a generation was in flight still wins.
-   * `force` skips the kind check entirely (explicit user-requested
-   * regeneration — last writer wins).
+   * Checks title conditions inside the serialized update. `force` permits replacing
+   * an existing custom title. `expected`, when supplied, requires both title and
+   * kind to still match the request's starting state, including when forced.
+   * Callers that omit `expected` retain the unconditional force behavior.
    */
   setGeneratedTitleIfUncustomized(
     title: string,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; expected?: Pick<SessionMeta, 'title' | 'titleKind'> },
   ): Promise<boolean>;
   setArchived(archived: boolean): Promise<void>;
   registerAgent(agentId: string, meta: AgentMeta): Promise<void>;

@@ -1,21 +1,21 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 /**
- * Which conversation excerpt a title generation draws from:
- * - `user_prompts` (default): the first natural-language user prompts.
- * - `first_turn`: the opening user prompt plus the first turn's final
- *   assistant text; strict — unavailable until the first turn has produced
- *   an assistant reply.
- * - `digest`: first user prompt + latest user prompt + the latest turn's
- *   final assistant text, using whatever the (possibly compacted) window
- *   still holds; used for regeneration and automatic titles after compaction.
+ * Source-labelled, independently bounded title material from live context and the
+ * prompt queue; a compacted window need not retain the original opening request.
+ * - `user_prompts` (default): up to three earliest available natural-language user prompts.
+ * - `first_turn`: earliest available user and its own final assistant text;
+ *   unavailable when either side is missing or separated by compaction.
+ * - `digest`: earliest available user, up to four later recent user prompts,
+ *   live compaction summary, latest user's reply if available, and the previous
+ *   generated title as a revisable reference.
  */
 export type SessionTitleSource = 'user_prompts' | 'first_turn' | 'digest';
 
 export interface ISessionTitleService {
   readonly _serviceBrand: undefined;
 
-  /** Uses the configured bounded retry policy only before any model output, preserves concurrent manual renames unless forced, and cancels on service disposal. */
+  /** Retries only before model output and cancels on disposal. `force` may replace an existing title, but a title changed during the request wins. */
   generateTitle(opts?: {
     force?: boolean;
     source?: SessionTitleSource;

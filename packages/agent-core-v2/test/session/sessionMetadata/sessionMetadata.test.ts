@@ -755,6 +755,16 @@ describe('SessionMetadata', () => {
     });
   });
 
+  it('checks both expected title and kind while preserving unguarded internal force calls', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.setGeneratedTitleIfUncustomized('Same title');
+    const expected = { title: 'Same title', titleKind: 'generated' as const };
+    await meta.setTitle('Same title');
+    await expect(meta.setGeneratedTitleIfUncustomized('Stale generated', { force: true, expected })).resolves.toBe(false);
+    await expect(meta.setGeneratedTitleIfUncustomized('Internal forced title', { force: true })).resolves.toBe(true);
+    expect(await meta.read()).toMatchObject({ title: 'Internal forced title', titleKind: 'generated' });
+  });
+
   it('setTitle keeps updatedAt (rename must not reorder listings)', async () => {
     const meta = ix.get(ISessionMetadata);
     const before = (await meta.read()).updatedAt;
@@ -1280,9 +1290,10 @@ describe('SessionMetadata', () => {
     expect((await fresh.read()).titleKind).toBe('custom');
   });
 
-  it('keeps a queued custom title when a generated title is enqueued afterward', async () => {
+  it.each([false, true])('keeps a queued custom title before a later generated write (force=%s)', async force => {
     const meta = ix.get(ISessionMetadata);
-    await meta.ready;
+    const current = await meta.read();
+    const expected = force ? { title: current.title, titleKind: current.titleKind } : undefined;
     const store = ix.get(IAtomicDocumentStore);
     const set = store.set.bind(store);
     let releaseWrite: (() => void) | undefined;
@@ -1306,7 +1317,7 @@ describe('SessionMetadata', () => {
     const priorWrite = meta.update({ lastPrompt: 'hello' });
     await writeStarted;
     const rename = meta.setTitle('user title');
-    const generated = meta.setGeneratedTitleIfUncustomized('generated title');
+    const generated = meta.setGeneratedTitleIfUncustomized('generated title', { force, expected });
     releaseWrite?.();
 
     await priorWrite;

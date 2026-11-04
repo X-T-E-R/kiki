@@ -6,7 +6,8 @@ import { Error2 } from '#/_base/errors/errors';
 import { ILogService } from '#/_base/log/log';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptSubmitted } from '#/agent/prompt/promptService';
-import { ContextApplyCompaction, type ContextApplyCompactionPayload } from '#/agent/contextMemory/contextEvents';
+import { promptMetadataTextFromText } from '#/agent/prompt/promptMetadataText';
+import { ContextApplyCompaction } from '#/agent/contextMemory/contextEvents';
 import { TurnPrompt, TurnEnded, turnKey } from '#/agent/loop/turnOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { LifecycleScope } from '#/app/scopes';
@@ -29,11 +30,14 @@ import { AUTO_SESSION_TITLE_FLAG_ID } from './flag';
 import { ISessionTitleService, type SessionTitleSource } from './sessionTitle';
 
 const MAX_GENERATED_TITLE_LENGTH = 200;
-const MAX_TITLE_INPUT_LENGTH = 1000;
 const MAX_TITLE_PROMPTS = 3;
-const MAX_TITLE_USER_SEGMENT = 300;
-const MAX_TITLE_FIRST_TURN_ASSISTANT = 600;
-const MAX_TITLE_DIGEST_ASSISTANT = 400;
+const MAX_TITLE_INITIAL_USER = 2200;
+const MAX_TITLE_FIRST_TURN_USER = 4000;
+const MAX_TITLE_FIRST_TURN_ASSISTANT = 1800;
+const MAX_TITLE_OPENING_USER = 1600;
+const MAX_TITLE_RECENT_USER = 600;
+const MAX_TITLE_SUMMARY = 1800;
+const MAX_TITLE_DIGEST_ASSISTANT = 500;
 
 export class SessionTitleService extends Disposable implements ISessionTitleService {
   declare readonly _serviceBrand: undefined;
@@ -98,26 +102,21 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
       openingTurnId = undefined;
       if (event.reason === 'completed') this.trigger('first_turn_completed', 'first_turn');
     }));
-    this.mainSubscriptions.add(bus.subscribe(ContextApplyCompaction, (event) => {
-      const payload = event as unknown as ContextApplyCompactionPayload;
-      const summary = 'contextSummary' in payload ? payload.contextSummary ?? payload.summary : payload.summary;
-      const text = typeof summary === 'string' ? summary : summary?.content
-        .filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-      this.trigger('context_compacted', 'digest', text);
+    this.mainSubscriptions.add(bus.subscribe(ContextApplyCompaction, () => {
+      this.trigger('context_compacted', 'digest');
     }));
   }
 
-  private trigger(trigger: SessionTitleTrigger, source: SessionTitleSource, summary?: string): void {
+  private trigger(trigger: SessionTitleTrigger, source: SessionTitleSource): void {
     if (!resolveSessionTitleTriggers(this.config).includes(trigger)) return;
     if (!this.flags.enabled(AUTO_SESSION_TITLE_FLAG_ID) || resolveSessionTitleModelAlias(this.config) === undefined) return;
     const main = this.agentLifecycle.get(MAIN_AGENT_ID);
     if (main === undefined) return;
-    const input = composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source)
-      .then((value) => value ?? (summary === undefined ? undefined : `summary: ${summary.slice(0, MAX_TITLE_INPUT_LENGTH)}`));
+    const input = composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source);
     this.automatic = this.automatic.then(async () => {
       if (!resolveSessionTitleTriggers(this.config).includes(trigger)) return;
       const text = await input;
-      if (text !== undefined) await this.generateAndApply(text, false);
+      if (text !== undefined) await this.generateAndApply(text, false, source);
     }).catch((error) => {
       this.log.warn(`automatic session title generation failed: ${errorMessage(error)}`);
     });
@@ -143,18 +142,22 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     if (main === undefined) return undefined;
     const input = await composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source);
     if (input === undefined) return undefined;
-    return this.generateAndApply(input, force);
+    return this.generateAndApply(input, force, source);
   }
 
-  private async generateAndApply(chatContent: string, force: boolean): Promise<string | undefined> {
+  private async generateAndApply(chatContent: string, force: boolean, source: SessionTitleSource): Promise<string | undefined> {
     if (!this.flags.enabled(AUTO_SESSION_TITLE_FLAG_ID)) return undefined;
     const alias = resolveSessionTitleModelAlias(this.config);
     if (alias === undefined) return undefined;
     const current = await this.metadata.read();
     if (!force && current.titleKind === 'custom') return undefined;
-    const title = await this.requestModelTitle(chatContent, alias);
+    const previousTitle = source === 'digest' && current.titleKind === 'generated'
+      ? titleSection('previous_generated_title', promptMetadataTextFromText(current.title ?? ''), MAX_GENERATED_TITLE_LENGTH)
+      : undefined;
+    const expected = { title: current.title, titleKind: current.titleKind };
+    const title = await this.requestModelTitle(joinTitleSections([chatContent, previousTitle])!, alias);
     this.requestController.signal.throwIfAborted();
-    const applied = await this.metadata.setGeneratedTitleIfUncustomized(title, { force });
+    const applied = await this.metadata.setGeneratedTitleIfUncustomized(title, { force, expected });
     if (!applied) return undefined;
     this.eventService.publish(new SessionMetaUpdated({
       payload: {
@@ -211,12 +214,22 @@ function normalizeGeneratedTitle(raw: string): string {
   return (quoted ? title.slice(1, -1).trim() : title).slice(0, MAX_GENERATED_TITLE_LENGTH);
 }
 
-function titleInputFromPrompts(prompts: readonly string[]): string | undefined {
-  if (prompts.length === 0) return undefined;
-  return prompts
-    .map((prompt) => `user: ${prompt}`)
-    .join('\n')
-    .slice(0, MAX_TITLE_INPUT_LENGTH);
+function titleSection(label: string, text: string | undefined, budget: number): string | undefined {
+  if (text === undefined) return undefined;
+  const value = text.replace(/[\uD800-\uDBFF]$/, '');
+  if (value.length === 0) return undefined;
+  if (value.length <= budget) return `${label}: ${value}`;
+  const marker = ' … [excerpt clipped] … ';
+  const head = Math.ceil((budget - marker.length) * 0.75);
+  const tail = budget - marker.length - head;
+  const prefix = value.slice(0, head).replace(/[\uD800-\uDBFF]$/, '');
+  const suffix = value.slice(-tail).replace(/^[\uDC00-\uDFFF]/, '');
+  return `${label}: ${prefix}${marker}${suffix}`;
+}
+
+function joinTitleSections(sections: readonly (string | undefined)[]): string | undefined {
+  const text = sections.filter(section => section !== undefined).join('\n');
+  return text.length > 0 ? text : undefined;
 }
 
 async function composeTitleInput(
@@ -226,26 +239,22 @@ async function composeTitleInput(
   if (source === 'first_turn') {
     const excerpt = await promptSource.firstTurnExcerpt();
     if (excerpt.user === undefined || excerpt.assistant === undefined) return undefined;
-    return [
-      `user: ${excerpt.user.slice(0, MAX_TITLE_USER_SEGMENT)}`,
-      `assistant: ${excerpt.assistant.slice(0, MAX_TITLE_FIRST_TURN_ASSISTANT)}`,
-    ].join('\n');
+    return joinTitleSections([
+      titleSection('earliest_available_user', excerpt.user, MAX_TITLE_FIRST_TURN_USER),
+      titleSection('paired_assistant_reply', excerpt.assistant, MAX_TITLE_FIRST_TURN_ASSISTANT),
+    ]);
   }
   if (source === 'digest') {
     const excerpt = await promptSource.digestExcerpt();
-    const lines: string[] = [];
-    if (excerpt.firstUser !== undefined) {
-      lines.push(`user: ${excerpt.firstUser.slice(0, MAX_TITLE_USER_SEGMENT)}`);
-    }
-    if (excerpt.lastUser !== undefined) {
-      lines.push(`user: ${excerpt.lastUser.slice(0, MAX_TITLE_USER_SEGMENT)}`);
-    }
-    if (excerpt.assistant !== undefined) {
-      lines.push(`assistant: ${excerpt.assistant.slice(0, MAX_TITLE_DIGEST_ASSISTANT)}`);
-    }
-    return lines.length === 0 ? undefined : lines.join('\n');
+    return joinTitleSections([
+      titleSection('earliest_available_user', excerpt.firstUser, MAX_TITLE_OPENING_USER),
+      titleSection('compaction_summary', excerpt.summary, MAX_TITLE_SUMMARY),
+      ...excerpt.recentUsers.map((text, index) => titleSection(`recent_user_${index + 1}`, text, MAX_TITLE_RECENT_USER)),
+      titleSection('latest_user_assistant_reply', excerpt.assistant, MAX_TITLE_DIGEST_ASSISTANT),
+    ]);
   }
-  return titleInputFromPrompts(await promptSource.firstUserPrompts(MAX_TITLE_PROMPTS));
+  const prompts = await promptSource.firstUserPrompts(MAX_TITLE_PROMPTS);
+  return joinTitleSections(prompts.map((text, index) => titleSection(`initial_user_${index + 1}`, text, MAX_TITLE_INITIAL_USER)));
 }
 
 registerScopedService(
