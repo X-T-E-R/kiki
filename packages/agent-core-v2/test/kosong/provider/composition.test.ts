@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { release as osRelease } from 'node:os';
@@ -357,6 +358,9 @@ describe('per-request header attribution', () => {
 });
 
 describe('request identity final fetch projection', () => {
+  const kimiWireFixture = JSON.parse(readFileSync(new URL('./fixtures/kimi-agent-session-wire.json', import.meta.url), 'utf8')) as
+    Record<'anthropic' | 'openai_responses', Record<string, unknown>>;
+
   it('preserves the legacy raw-session cache input on OpenAI Chat wire', async () => {
     const provider = new OpenAILegacyChatProvider({
       model: 'gpt-4o',
@@ -531,7 +535,7 @@ describe('request identity final fetch projection', () => {
         installationId: '00000000-0000-4000-8000-000000000001',
         sharedSessionId: '00000000-0000-4000-8000-000000000002',
         threadId: '00000000-0000-4000-8000-000000000003',
-        agentSessionId: '00000000-0000-4000-8000-000000000004',
+        agentSessionId: '11111111-1111-4111-8111-111111111111',
         logicalId: '00000000-0000-4000-8000-000000000005',
         turnIndex: 1,
         windowId: '00000000-0000-4000-8000-000000000003:1',
@@ -558,11 +562,13 @@ describe('request identity final fetch projection', () => {
         cacheKey: projection.cacheKey,
         headers: projection.headers,
         requestIdentity: projection.wire,
+        maxCompletionTokens: 64,
       }),
     );
     const body = await request.clone().json() as Record<string, unknown>;
     expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
-    expect(body['prompt_cache_key']).toBe('session-example');
+    expect(body['prompt_cache_key']).toBe('session_11111111-1111-4111-8111-111111111111');
+    expect(body).toEqual(kimiWireFixture.openai_responses);
     if (isKimiProvider) {
       expect(request.headers.get('x-msh-platform')).toBe('kimi_code_cli');
       expect(request.headers.get('x-msh-device-name')).toBe('example-host');
@@ -588,7 +594,7 @@ describe('request identity final fetch projection', () => {
         installationId: '00000000-0000-4000-8000-000000000001',
         sharedSessionId: '00000000-0000-4000-8000-000000000002',
         threadId: '00000000-0000-4000-8000-000000000003',
-        agentSessionId: '00000000-0000-4000-8000-000000000004',
+        agentSessionId: '11111111-1111-4111-8111-111111111111',
         logicalId: '00000000-0000-4000-8000-000000000005',
         turnIndex: 1,
         windowId: '00000000-0000-4000-8000-000000000003:1',
@@ -608,11 +614,13 @@ describe('request identity final fetch projection', () => {
         cacheKey: projection.cacheKey,
         headers: projection.headers,
         requestIdentity: projection.wire,
+        maxCompletionTokens: 64,
       }),
     );
     const body = await request.clone().json() as Record<string, unknown>;
     expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
-    expect(body['metadata']).toEqual({ user_id: 'session-example' });
+    expect(body['metadata']).toEqual({ user_id: 'session_11111111-1111-4111-8111-111111111111' });
+    expect(body).toEqual(kimiWireFixture.anthropic);
     expect(body['system']).toEqual([
       expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
     ]);

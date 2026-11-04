@@ -173,7 +173,7 @@ describe('RequestIdentityCatalog preview', () => {
       expect(catalog.resolveLayers({ profile }).lineage.sessionScope).toBe('agent_session');
       const preview = await catalog.preview({ profile, protocol, model: 'example-model' });
       expect(preview.error).toBeUndefined();
-      expect(preview.params[field]).toBe('00000000-0000-4000-8000-000000000004');
+      expect(preview.params[field]).toBe('session_00000000-0000-4000-8000-000000000004');
     }
     const draft = { ...draftOf(copy), overrides: { lineage: { session_scope: 'shared_session' as const } } };
     expect((await catalog.preview({ draft, protocol, model: 'example-model' })).params[field])

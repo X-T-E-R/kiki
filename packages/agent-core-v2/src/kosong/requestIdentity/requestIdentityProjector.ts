@@ -301,7 +301,8 @@ function isTrueNone(policy: ResolvedRequestIdentityPolicy): boolean {
 
 function requestSessionIdentity(input: Parameters<typeof projectRequestIdentity>[0]): string {
   if (input.policy.lineage.sessionScope === 'agent_session') {
-    return requiredSnapshot(input.snapshot.agentSessionId, 'agent-session identity');
+    const id = requiredSnapshot(input.snapshot.agentSessionId, 'agent-session identity');
+    return input.policy.lineage.format === 'kimi_code' ? `session_${id}` : id;
   }
   if (input.policy.preset === 'kimi_code') return input.rawSessionId;
   return requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity');

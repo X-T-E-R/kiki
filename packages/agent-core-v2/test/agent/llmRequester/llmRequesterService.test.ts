@@ -1158,7 +1158,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       };
       const mainKey = await request(main.service);
       expect(sent).toHaveLength(2);
-      expect(mainKey).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(mainKey).toMatch(/^session_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
       expect(sent[0]?.key).toBe(mainKey);
       const child = makeService('agent-0');
       const childKey = await request(child.service);
@@ -1708,7 +1708,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       }
       expect(captured[0]?.headers).not.toHaveProperty('x-kiki-session-id');
       expect(captured[0]?.headers).not.toHaveProperty('x-kiki-agent-id');
-      expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000003');
+      expect(captured[0]?.cacheKey).toBe('session_00000000-0000-4000-8000-000000000003');
       expect(identitySnapshotCalls.value).toBe(1);
     }
   });
@@ -1762,7 +1762,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       parentAgentId: 'main',
       labels: { parentAgentId: 'main', workItem: 'review' },
     });
-    expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000003');
+    expect(captured[0]?.cacheKey).toBe('session_00000000-0000-4000-8000-000000000003');
     expect(captured[0]?.headers?.['X-Msh-Device-Id']).not.toBe('canonical-session');
     expect(captured[0]?.headers?.['X-Msh-Device-Id']).not.toBe('canonical-agent');
   });

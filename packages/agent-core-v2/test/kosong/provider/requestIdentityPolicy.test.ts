@@ -308,14 +308,14 @@ describe('request identity policy', () => {
     expect(kimi.headers?.['X-Msh-Device-Model']).toBeTruthy();
     expect(kimi.headers?.['X-Msh-Os-Version']).toBeTruthy();
     expect(Object.keys(kimi.headers ?? {}).some((key) => key.startsWith('x-kiki-'))).toBe(false);
-    expect(kimi.cacheKey).toBe(SNAPSHOT.agentSessionId);
+    expect(kimi.cacheKey).toBe(`session_${SNAPSHOT.agentSessionId}`);
 
     const compatible = project(
       { preset: 'kimi_code' },
       { hostRequestHeaders: { 'User-Agent': 'kimi-code-cli/1.0.0' } },
     );
     expect(compatible.headers).toEqual({ 'User-Agent': 'kimi-code-cli/1.0.0' });
-    expect(compatible.cacheKey).toBe(SNAPSHOT.agentSessionId);
+    expect(compatible.cacheKey).toBe(`session_${SNAPSHOT.agentSessionId}`);
   });
 
   it.each(['openai_responses', 'anthropic'] as const)(
@@ -325,7 +325,7 @@ describe('request identity policy', () => {
       expect(policy.lineage.sessionScope).toBe('agent_session');
       expect(resolveAuthoredRequestIdentity({ preset: 'kimi_code' })).toEqual(policy);
       expect(resolveAuthoredRequestIdentity({ profile: 'kimi_code' })).toEqual(policy);
-      expect(project({ profile: 'kimi_code' }, { protocol }).cacheKey).toBe(SNAPSHOT.agentSessionId);
+      expect(project({ profile: 'kimi_code' }, { protocol }).cacheKey).toBe(`session_${SNAPSHOT.agentSessionId}`);
       expect(project({
         profile: 'kimi_code',
         overrides: { lineage: { sessionScope: 'shared_session' } },
@@ -333,6 +333,26 @@ describe('request identity policy', () => {
       expect(project({ profile: 'none' }, { protocol }).cacheKey).toBeUndefined();
     },
   );
+
+  it('namespaces agent-session wire identities by lineage format rather than the base preset', () => {
+    const kimiFormat = project({
+      preset: 'none',
+      overrides: {
+        lineage: { format: 'kimi_code', sessionScope: 'agent_session' },
+        cache: { source: 'session', responses: 'prompt_cache_key' },
+      },
+    });
+    expect(kimiFormat.cacheKey).toBe(`session_${SNAPSHOT.agentSessionId}`);
+    const grokFormat = project({
+      preset: 'kimi_code',
+      overrides: {
+        lineage: { format: 'grok_build' },
+        cache: { messages: 'none' },
+      },
+    });
+    expect(grokFormat.cacheKey).toBe(SNAPSHOT.agentSessionId);
+    expect(grokFormat.headers?.['x-grok-session-id']).toBe(SNAPSHOT.agentSessionId);
+  });
 
   it('round-trips snake-case public policy fields', () => {
     const authored = {

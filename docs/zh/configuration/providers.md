@@ -382,7 +382,7 @@ Kiki 内置六种身份。内置身份只读，用「复制并编辑」得到的
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent、`x-opencode-client: cli`，以及动态的 `x-opencode-session`、`x-opencode-request` |
 | 无 | `none` / `none` | 不发送 Kiki 自选的身份字段：User-Agent、保留身份请求头与 `X-Msh-*` 设备头都会被移除。供应商认证协议要求的字段仍会发出——OAuth token、账号请求头、Grok 客户端版本标记——因为那些属于协议本身，不属于身份 |
 
-Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 会话身份写入 Responses 的 `prompt_cache_key` 和 Messages 的 `metadata.user_id`。不同会话、同一会话内的不同 Agent 使用不同值；同一个 Agent 在重试、后续轮次、续跑和上下文压缩后保持原值。显式选择 `preset = "kimi_code"` 或 `profile = "kimi_code"` 时也使用这一默认值。
+Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 会话身份以 `session_<UUID>` 的形式写入 Responses 的 `prompt_cache_key` 和 Messages 的 `metadata.user_id`。不同会话、同一会话内的不同 Agent 使用不同值；同一个 Agent 在重试、后续轮次、续跑和上下文压缩后保持原值。显式选择 `preset = "kimi_code"` 或 `profile = "kimi_code"` 时也使用这一默认值。
 
 ### OpenCode
 

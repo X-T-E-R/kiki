@@ -382,7 +382,7 @@ Kiki ships six identities. Built-in identities are read-only; **Duplicate and ed
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent, `x-opencode-client: cli`, and the dynamic `x-opencode-session` and `x-opencode-request` |
 | None | `none` / `none` | Sends no Kiki-chosen identity fields: the User-Agent, the reserved identity headers, and the `X-Msh-*` device headers are removed. Fields a provider's authentication protocol requires still go out — OAuth tokens, account headers, the Grok client-version marker — because those belong to the protocol rather than to identity |
 
-Kimi Code defaults to `lineage.session_scope = "agent_session"`. It sends that agent-session identity in Responses `prompt_cache_key` and Messages `metadata.user_id`. Different sessions and different agents within one session get different values; the same agent keeps its value across retries, later turns, resume, and context compaction. This default also applies when selecting `preset = "kimi_code"` or `profile = "kimi_code"` explicitly.
+Kimi Code defaults to `lineage.session_scope = "agent_session"`. It sends that agent-session identity as `session_<UUID>` in Responses `prompt_cache_key` and Messages `metadata.user_id`. Different sessions and different agents within one session get different values; the same agent keeps its value across retries, later turns, resume, and context compaction. This default also applies when selecting `preset = "kimi_code"` or `profile = "kimi_code"` explicitly.
 
 ### OpenCode
 
