@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { type RunningServer, startServer } from '../src/start';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
-import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
+import { UsageSourceTracker, type UsageSourceChange } from '../src/usage/usageSourceTracker';
 import { usageRuntime } from '../src/usage/usageRuntime';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -248,7 +248,7 @@ describe('server /api/usage', () => {
     const core = (server as RunningServer).core;
     const sources = new UsageSourceTracker(core);
     const service = new UsageAggregationService(core, Date.now, {}, sources);
-    const changed: Array<string | undefined> = [];
+    const changed: UsageSourceChange[] = [];
     sources.onDidChange((key) => { changed.push(key); });
     const readComplete = async (output: number): Promise<UsageResponse> => {
       let response = await service.query({});

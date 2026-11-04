@@ -14,6 +14,8 @@ import { EventService } from '#/app/event/eventService';
 import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
+  RETAINED_USAGE_KEY,
+  EPHEMERAL_USAGE_KEY,
   type RetainedDeletedSessionUsage,
   type RetainedUsageListQuery,
   type RetainedUsageRecord,
@@ -267,6 +269,98 @@ describe('RetainedUsageService', () => {
     expect(native.complete).toBe(true);
     expect(native.items).toEqual([{ workspaceId: 'workspace-1', time: 150, model: 'model-a', usage }]);
     expect(exported).toEqual(native.items);
+  });
+
+  it.each([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY])('commits the EOF continuation of %s once and reuses it after reopening', async (key) => {
+    const first = build();
+    const sessionScope = 'sessions/workspace-1/session-1';
+    first.appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, { type: 'usage.record', time: 150, model: 'model-a', usage });
+    await first.appendLog.flush();
+    if (key === RETAINED_USAGE_KEY) await first.service.retainDeletedSession(summary);
+    else await first.service.retainEphemeralUsage!(sessionScope, 'workspace-1');
+    const apply = vi.spyOn(first.model, 'apply');
+    expect((await first.service.prepareReadModel!(listQuery())).complete).toBe(true);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0]![0]).toMatchObject({ source: `retained-ledger:${key}`, publish: expect.any(Object), continuation: expect.any(Object) });
+    await first.model.close();
+    const reopened = build();
+    const replay = vi.spyOn(reopened.model, 'apply');
+    expect((await reopened.service.prepareReadModel!(listQuery())).complete).toBe(true);
+    expect(replay).not.toHaveBeenCalled();
+    const rows = await reopened.model.retained();
+    expect(rows).toHaveLength(1);
+    expect((await reopened.model.read(rows[0]!.source)).records).toMatchObject([{ usage }]);
+  });
+
+  it('persists an unfinished ledger tail through reopening and publishes its later commit once', async () => {
+    const first = build();
+    first.appendLog.append('store', EPHEMERAL_USAGE_KEY, { kind: 'source', sourceId: 'tail', recordCount: 1 });
+    first.appendLog.append('store', EPHEMERAL_USAGE_KEY, { kind: 'record', record: { workspaceId: 'workspace-1', time: 150, model: 'model-a', usage } });
+    await first.appendLog.flush();
+    const apply = vi.spyOn(first.model, 'apply');
+    expect((await first.service.prepareReadModel!(listQuery())).complete).toBe(false);
+    expect(apply).toHaveBeenCalledTimes(1);
+    const saved = await first.model.progress(`retained-ledger:${EPHEMERAL_USAGE_KEY}`);
+    expect(saved?.parser).toMatchObject({ current: { observed: 1, count: 1 } });
+    await first.model.close();
+    const reopened = build();
+    reopened.appendLog.append('store', EPHEMERAL_USAGE_KEY, { kind: 'commit', sourceId: 'tail' });
+    await reopened.appendLog.flush();
+    const resumed = vi.spyOn(reopened.model, 'apply');
+    expect((await reopened.service.prepareReadModel!(listQuery())).complete).toBe(true);
+    expect(resumed).toHaveBeenCalledTimes(1);
+    expect(resumed.mock.calls[0]![0].expected?.offset).toBe(saved?.offset);
+    expect((await reopened.service.listEphemeralUsage!(listQuery())).items).toEqual([{ workspaceId: 'workspace-1', time: 150, model: 'model-a', usage }]);
+  });
+
+  it('resumes a budgeted transaction after cancellation and reopening from its durable offset', async () => {
+    const first = build();
+    await first.appendLog.rewrite('store', EPHEMERAL_USAGE_KEY, [
+      { kind: 'source', sourceId: 'budgeted', recordCount: 2 },
+      ...[150, 160].map((time) => ({ kind: 'record', record: { workspaceId: 'workspace-1', time, model: 'model-a', usage } })),
+      { kind: 'commit', sourceId: 'budgeted' },
+    ]);
+    expect(await first.service.prepareReadModel!(listQuery({ recordLimit: 1 }))).toMatchObject({ complete: false, incompleteReason: 'record_budget', scannedRecords: 1 });
+    const saved = await first.model.progress(`retained-ledger:${EPHEMERAL_USAGE_KEY}`);
+    expect(saved?.parser).toMatchObject({ current: { observed: 0, count: 2 } });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(first.service.prepareReadModel!(listQuery({ signal: controller.signal }))).rejects.toThrow();
+    expect(await first.model.progress(`retained-ledger:${EPHEMERAL_USAGE_KEY}`)).toEqual(saved);
+    await first.model.close();
+    const reopened = build();
+    const apply = vi.spyOn(reopened.model, 'apply');
+    expect(await reopened.service.prepareReadModel!(listQuery())).toMatchObject({ complete: true, scannedRecords: 2 });
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0]![0].expected?.offset).toBe(saved?.offset);
+    const rows = await reopened.model.retained();
+    expect((await reopened.model.read(rows[0]!.source)).records).toHaveLength(2);
+  });
+
+  it('persists damage after a committed EOF and replaces it only after a ledger generation change', async () => {
+    const first = build();
+    const transaction = (sourceId: string) => [
+      { kind: 'source', sourceId, recordCount: 1 },
+      { kind: 'record', record: { workspaceId: 'workspace-1', time: 150, model: 'model-a', usage } },
+      { kind: 'commit', sourceId },
+    ];
+    await first.appendLog.rewrite('store', EPHEMERAL_USAGE_KEY, transaction('damaged'));
+    await fsp.appendFile(join(homeDir, 'store', EPHEMERAL_USAGE_KEY), '{"kind":');
+    const apply = vi.spyOn(first.model, 'apply');
+    expect((await first.service.prepareReadModel!(listQuery())).complete).toBe(false);
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(apply.mock.calls[1]![0].progress.parser).toMatchObject({ damaged: true, current: undefined });
+    expect(apply.mock.calls[1]![0].progress.offset).toBe(apply.mock.calls[0]![0].continuation?.offset);
+    await first.model.close();
+    const reopened = build();
+    const replay = vi.spyOn(reopened.model, 'apply');
+    expect((await reopened.service.prepareReadModel!(listQuery())).complete).toBe(false);
+    expect(replay).not.toHaveBeenCalled();
+    await reopened.appendLog.rewrite('store', EPHEMERAL_USAGE_KEY, transaction('repaired'));
+    expect((await reopened.service.prepareReadModel!(listQuery())).complete).toBe(true);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(replay.mock.calls[0]![0].expected).toBeUndefined();
+    expect(await reopened.model.retained()).toMatchObject([{ source: 'retained:ephemeral:repaired' }]);
   });
 
   it('completes a partially appended ephemeral source once and preserves genuine equal records', async () => {

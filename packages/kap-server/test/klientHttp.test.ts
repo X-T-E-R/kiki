@@ -178,6 +178,8 @@ describe('klient HTTP host', () => {
       expect(settled.mock.calls[1]).toEqual([{}]);
       const afterTemporary = await klient.rest.usage({ range: 'today' });
       expect(afterTemporary.summary.tokens.input_other - after.summary.tokens.input_other).toBe(4);
+      expect(afterTemporary.summary.tokens.output - after.summary.tokens.output).toBe(1);
+      expect(afterTemporary.reliability.complete, JSON.stringify(afterTemporary.reliability)).toBe(true);
       expect(afterTemporary.sessions.items.some((item) => item.id === temporary.id)).toBe(false);
       expect((await klient.rest.usage({ range: 'today' })).summary).toEqual(afterTemporary.summary);
       subscription.dispose();

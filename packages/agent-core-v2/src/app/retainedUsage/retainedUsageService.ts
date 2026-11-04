@@ -17,6 +17,9 @@ import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
+  RETAINED_USAGE_SCOPE,
+  RETAINED_USAGE_KEY,
+  EPHEMERAL_USAGE_KEY,
   type EphemeralUsageTotal,
   type RetainedDeletedSessionUsage,
   type RetainedUsageIncompleteReason,
@@ -26,8 +29,6 @@ import {
   type RetainedUsageExportEvent,
 } from './retainedUsage';
 
-const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
-const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
 const RETAINED_READ_CHUNK_BYTES = 64 * 1024;
 
 const tokenUsageSchema = z.object({
@@ -180,11 +181,14 @@ export class RetainedUsageService implements IRetainedUsageService {
   private async importLedger(key: string, ephemeral: boolean, query: RetainedUsageListQuery): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
     query.signal?.throwIfAborted();
     await this.appendLog.flush(this.storeScope, key);
-    const size = await this.storage.size(this.storeScope, key) ?? 0;
-    const mtimeMs = await this.storage.mtime(this.storeScope, key) ?? 0;
-    const generation = await this.appendLog.generation(this.storeScope, key);
     const source = `retained-ledger:${key}`;
-    let expected = await this.model.progress(source, query.signal);
+    const [storedSize, storedMtime, generation, progress] = await Promise.all([
+      this.storage.size(this.storeScope, key), this.storage.mtime(this.storeScope, key),
+      this.appendLog.generation(this.storeScope, key), this.model.progress(source, query.signal),
+    ]);
+    const size = storedSize ?? 0;
+    const mtimeMs = storedMtime ?? 0;
+    let expected = progress;
     let state = expected?.parser as RetainedImportState | undefined;
     if (state?.generation !== generation || (expected?.offset ?? 0) > size) { await this.model.abandon(source); expected = undefined; state = undefined; }
     state = structuredClone(state ?? { generation, damaged: false });
@@ -262,7 +266,8 @@ export class RetainedUsageService implements IRetainedUsageService {
       if (records.length >= 256 || reason !== undefined) await save();
       if (reason !== undefined) return { complete: false, scannedRecords, incompleteReason: reason };
     }
-    await save();
+    if (expected?.offset !== offset || records.length > 0 || reset
+      || state.damaged !== (expected?.parser as RetainedImportState | undefined)?.damaged) await save();
     const stable = await this.appendLog.generation(this.storeScope, key) === generation;
     const complete = stable && offset === size && state.current === undefined && !state.damaged;
     if (complete) await this.model.settleRetained(source, generation);
@@ -633,7 +638,7 @@ export class RetainedUsageService implements IRetainedUsageService {
   }
 
   private get storeScope(): string {
-    return this.bootstrap.scope('store');
+    return this.bootstrap.scope(RETAINED_USAGE_SCOPE);
   }
 
   private async readSessionRecords(

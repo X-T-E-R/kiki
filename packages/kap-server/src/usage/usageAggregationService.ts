@@ -245,11 +245,20 @@ export class UsageAggregationService {
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((key) => {
+      if (typeof key === 'object') {
+        this.retainedRevision++;
+        this.modelReady = false;
+        return;
+      }
       this.replayEpoch++;
-      if (key === undefined) { this.inventoryRevision++; this.agentInventories.clear(); }
-      else { this.dirtySessions.set(key, this.replayEpoch); this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1); this.agentInventories.delete(key); }
-      if (key === undefined) this.sourceMetadata.clear();
-      else {
+      if (key === undefined) {
+        this.inventoryRevision++;
+        this.agentInventories.clear();
+        this.sourceMetadata.clear();
+      } else if (typeof key === 'string') {
+        this.dirtySessions.set(key, this.replayEpoch);
+        this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+        this.agentInventories.delete(key);
         const prefix = `sessions/${key.replace('\0', '/')}/agents/`;
         for (const source of this.sourceMetadata.keys()) if (source.startsWith(prefix)) this.sourceMetadata.delete(source);
       }
@@ -259,6 +268,7 @@ export class UsageAggregationService {
   }
 
   private replayEpoch = 0;
+  private retainedRevision = 0;
   private readonly sourceSubscription?: { dispose(): void };
 
   dispose(): void {
@@ -895,17 +905,23 @@ export class UsageAggregationService {
       this.knownSessions = inventory.summaries;
       this.knownSources = inventory.sources;
       const retained = this.core.accessor.get(IRetainedUsageService);
+      let retainedRevision = this.retainedRevision;
       if (retained.prepareReadModel !== undefined) {
         this.retainedProgress = await retained.readModelImportProgress?.(signal) ?? [];
         if (this.retainedProgress.some((row) => !row.complete)) this.markPreparationRecovery();
         const progress = await retained.prepareReadModel({ deadlineAt, recordLimit: factBudget.remainingRecords, signal });
+        retainedRevision = this.retainedRevision;
         this.retainedProgress = await retained.readModelImportProgress?.(signal) ?? [];
-        if (!progress.complete) { this.modelIncompleteReason = progress.incompleteReason ?? null; return; }
+        if (!progress.complete || this.retainedProgress.some((row) => !row.complete)) {
+          this.modelIncompleteReason = progress.incompleteReason ?? null;
+          return;
+        }
       }
       signal.throwIfAborted();
       if (inventory.full) { this.modelVerifiedAt = this.now(); this.verifiedInventoryRevision = inventory.revision; }
       this.inventory = undefined;
-      this.modelReady = epoch === this.replayEpoch && this.dirtySessions.size === 0 && this.verifiedInventoryRevision === this.inventoryRevision;
+      this.modelReady = epoch === this.replayEpoch && retainedRevision === this.retainedRevision
+        && this.dirtySessions.size === 0 && this.verifiedInventoryRevision === this.inventoryRevision;
       if (this.modelReady) this.modelIncompleteReason = null;
       this.modelFailure = undefined;
     })().catch((error: unknown) => {

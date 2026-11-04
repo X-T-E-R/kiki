@@ -4,16 +4,22 @@ import {
   AGENT_WIRE_RECORD_KEY,
   Disposable,
   IAppendLogStore,
+  IBootstrapService,
   IFileSystemStorageService,
   ILogService,
+  RETAINED_USAGE_SCOPE,
+  RETAINED_USAGE_KEY,
+  EPHEMERAL_USAGE_KEY,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { onUnexpectedError } from '@kiki/agent-core-v2/_base/errors/unexpectedError';
 import { isPromiseLike } from '@kiki/agent-core-v2/_base/lifecycle/disposer';
 
+export type UsageSourceChange = string | { readonly kind: 'retained' } | undefined;
+
 export interface UsageSourceChanges {
   readonly ready: boolean;
-  onDidChange(listener: (sessionKey?: string) => void): { dispose(): void };
+  onDidChange(listener: (change: UsageSourceChange) => void): { dispose(): void };
 }
 
 type WatchSource = (root: string, listener: (filename: string | null, event?: 'rename' | 'change') => void) => {
@@ -28,7 +34,7 @@ const watchSource: WatchSource = (root, listener) => watch(root, {
 export class UsageSourceTracker extends Disposable implements UsageSourceChanges {
   private watching = false;
   private startWatch: (() => void) | undefined;
-  private readonly listeners = new Set<(sessionKey?: string) => void>();
+  private readonly listeners = new Set<(change: UsageSourceChange) => void>();
 
   get ready(): boolean {
     const start = this.startWatch;
@@ -37,25 +43,32 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
     return this.watching;
   }
 
-  onDidChange(listener: (sessionKey?: string) => void): { dispose(): void } {
+  onDidChange(listener: (change: UsageSourceChange) => void): { dispose(): void } {
     this.listeners.add(listener);
     return { dispose: () => { this.listeners.delete(listener); } };
   }
 
   constructor(core: Scope, createWatch: WatchSource = watchSource) {
     super();
-    const root = core.accessor.get(IFileSystemStorageService).pathFor('sessions', '');
-    const invalidate = (key?: string): void => {
-      for (const listener of this.listeners) listener(key);
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const root = storage.pathFor('sessions', '');
+    const retainedScope = core.accessor.get(IBootstrapService).scope(RETAINED_USAGE_SCOPE);
+    const invalidate = (change?: UsageSourceChange): void => {
+      for (const listener of this.listeners) listener(change);
     };
     this._register(core.accessor.get(IAppendLogStore).onDidWrite(({ scope, key }) => {
+      if (scope === retainedScope && (key === RETAINED_USAGE_KEY || key === EPHEMERAL_USAGE_KEY)) {
+        invalidate({ kind: 'retained' });
+        return;
+      }
       if (key !== AGENT_WIRE_RECORD_KEY) return;
       const parts = scope.split('/');
       if (parts.length === 5 && parts[0] === 'sessions' && parts[3] === 'agents') {
         invalidate(`${parts[1]}\0${parts[2]}`);
       }
     }));
-    if (root === undefined) return;
+    const watchLedger = storage.watch?.bind(storage);
+    if (root === undefined || watchLedger === undefined) return;
     this.startWatch = () => {
       const failed = (error: unknown): void => {
         this.watching = false;
@@ -78,6 +91,9 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
           failed(error);
         });
         this._register({ dispose: () => { watcher.close(); } });
+        for (const key of [RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY]) {
+          this._register(watchLedger(retainedScope, key)(() => { invalidate({ kind: 'retained' }); }));
+        }
         this.watching = true;
         invalidate();
       } catch (error) {

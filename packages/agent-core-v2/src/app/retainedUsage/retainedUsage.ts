@@ -4,6 +4,9 @@ import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export const RETAINED_USAGE_VERSION = 1 as const;
+export const RETAINED_USAGE_SCOPE = 'store' as const;
+export const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
+export const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
 
 export interface RetainedUsageRecord {
   readonly time: number;
