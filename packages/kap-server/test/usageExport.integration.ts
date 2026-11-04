@@ -86,6 +86,91 @@ async function destination(service: UsageExportService, endpoint = 'https://exam
 }
 async function enable(service: UsageExportService, id: string) { const preview = await service.preview(id); await service.enable(id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); return preview; }
 
+describe('usage export explicit save consent and automatic upload', () => {
+  it('records consent on save, schedules every 120 minutes and reuses it across edits and restart', async () => {
+    let now = T; const f = await fixture({}, () => now); const r = await receiverFixture();
+    f.add('automatic'); await f.write('automatic', 'main', [record(T + 1, 10)]);
+    const d = await destination(f.service, r.endpoint, r.port);
+    const draft = { id: d.id, label: d.label, target: d.target, scope: d.scope, schedule_minutes: 120 as const };
+    const app = Fastify(); registerUsageExportRoutes(app, f.service); await app.listen({ port: 0, host: '127.0.0.1' }); cleanup.push(() => app.close());
+    const address = app.server.address(); if (address === null || typeof address === 'string') throw new Error('missing-rest');
+    const client = createKlient({ endpoint: `http://127.0.0.1:${address.port}` }); cleanup.push(() => client.close());
+    const saved = await client.rest!.usageExport.saveDraft({ draft, auto_upload: true });
+    expect(saved).toMatchObject({ enabled: true, state: 'ready', schedule_minutes: 120, next_at: T });
+    expect(saved.consent_fingerprint).toBe((await f.service.preview(d.id)).preview_fingerprint);
+    await f.service.tick(); expect(r.requests).toBe(1); expect(f.store.get(d.id).next_at).toBe(T + 7_200_000);
+    now += 60_000;
+    const edited = await f.service.saveDraft({ draft: { ...draft, label: 'Renamed', schedule_minutes: 60 } });
+    expect(edited).toMatchObject({ enabled: true, consent_fingerprint: saved.consent_fingerprint, next_at: now + 3_600_000 });
+    await f.restart(); expect(f.store.get(d.id)).toEqual(edited);
+    await f.service.syncNow(d.id); expect(r.requests).toBe(1);
+    const backfill = await f.service.backfill(d.id, { ...d.scope, start_at: T - 1_800_000 });
+    expect(backfill.destination).toMatchObject({ enabled: false, consent_fingerprint: null, schedule_minutes: 60 });
+    const agreed = await f.service.saveDraft({ draft: { ...draft, scope: backfill.destination.scope }, auto_upload: true });
+    expect(agreed.enabled).toBe(true); expect(agreed.consent_fingerprint).not.toBe(saved.consent_fingerprint);
+  });
+
+  it('keeps an unchecked or explicitly disabled destination off across ordinary edits and retries', async () => {
+    const f = await fixture(); const r = await receiverFixture(); const d = await destination(f.service, r.endpoint, r.port);
+    const draft = { id: d.id, label: d.label, target: d.target, scope: d.scope, schedule_minutes: 120 as const };
+    expect(await f.service.saveDraft({ draft, auto_upload: false })).toMatchObject({ enabled: false, next_at: null });
+    await f.service.syncNow(d.id); expect(r.requests).toBe(0);
+    await f.service.saveDraft({ draft, auto_upload: true });
+    const paused = await f.service.saveDraft({ draft, auto_upload: false });
+    expect(paused).toMatchObject({ enabled: false, state: 'disabled', next_at: null });
+    expect(paused.consent_fingerprint).not.toBeNull();
+    await f.service.saveDraft({ draft: { ...draft, schedule_minutes: 30 } });
+    f.service.retry(d.id); await f.restart(); await f.service.tick(); await f.service.syncNow(d.id);
+    expect(f.store.get(d.id).enabled).toBe(false); expect(r.requests).toBe(0);
+  });
+
+  it('never transfers consent to another receiver implicitly, and preserves an authentication stop when only the interval changes', async () => {
+    const f = await fixture(); const d = await destination(f.service);
+    const draft = { id: d.id, label: d.label, target: d.target, scope: d.scope, schedule_minutes: 120 as const };
+    const a = await f.service.saveDraft({ draft, auto_upload: true });
+    f.store.update(d.id, { state: 'needs-auth', error_category: 'http_auth', next_at: null });
+    expect(await f.service.saveDraft({ draft: { ...draft, schedule_minutes: 60 }, auto_upload: true })).toMatchObject({ enabled: true, state: 'needs-auth', error_category: 'http_auth', next_at: null, consent_fingerprint: a.consent_fingerprint });
+    const other = { ...draft, target: { ...d.target, kind: 'webhook' as const, endpoint: 'https://other.example.test/usage', gzip: false, authentication: 'none' as const } };
+    expect(await f.service.saveDraft({ draft: other })).toMatchObject({ enabled: false, consent_fingerprint: null });
+    const agreed = await f.service.saveDraft({ draft: other, auto_upload: true });
+    expect(agreed.enabled).toBe(true); expect(agreed.consent_fingerprint).not.toBe(a.consent_fingerprint);
+  });
+
+  it.each(['save', 'device'] as const)('keeps an explicit disable effective during %s credential storage', async (mode) => {
+    let now = T; let release!: () => void; let started!: () => void; let key: string | undefined;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const factory: ExportKeyring = async () => ({ setPassword: async (value) => { started(); await new Promise<void>((resolve) => { release = resolve; }); key = value; }, getPassword: async () => key, deleteCredential: async () => false });
+    const send: VibeAuthRequest = async (path) => path.endsWith('/code') ? { deviceCode: 'SYNTHETIC', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', interval: 1 } : { apiKey: 'vbu_SYNTHETIC_KEY' };
+    const f = await fixture({}, () => now, factory, send); f.service.registerAdapter({ ...createWebhookUsageAdapter(), kind: 'vibe' });
+    const draft = { label: 'VibeCafe', target: { kind: 'vibe' as const, endpoint: VIBE_CAFE_INGEST_ENDPOINT }, schedule_minutes: 120 as const, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } };
+    const d = await f.service.saveDraft({ draft });
+    const flow = mode === 'device' ? await f.service.vibeAuth.begin(d.id, { auto_upload: true }) : undefined;
+    now += 1000;
+    const pending = flow === undefined ? f.service.saveDraft({ draft: { ...draft, id: d.id }, secret: { value: 'vbu_SYNTHETIC_KEY', storage: 'auto' }, auto_upload: true }) : f.service.vibeAuth.poll(flow.flow_id);
+    await waiting; f.service.disable(d.id); release(); await pending;
+    expect(f.store.get(d.id)).toMatchObject({ enabled: false, state: 'disabled', next_at: null, consent_fingerprint: null });
+    if (flow !== undefined) expect((await f.service.vibeAuth.poll(flow.flow_id)).state).toBe('cancelled');
+  });
+
+  it.each([true, false])('binds Vibe sign-in completion to this flow auto_upload=%s choice', async (autoUpload) => {
+    let now = T; let denied = false;
+    const send: VibeAuthRequest = async (path) => path.endsWith('/code') ? { deviceCode: 'SYNTHETIC', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', interval: 1 } : denied ? { error: 'access_denied' } : { apiKey: 'vbu_SYNTHETIC_KEY' };
+    const f = await fixture({}, () => now, undefined, send);
+    f.service.registerAdapter({ ...createWebhookUsageAdapter(), kind: 'vibe' });
+    const draft = { label: 'VibeCafe', target: { kind: 'vibe' as const, endpoint: VIBE_CAFE_INGEST_ENDPOINT }, schedule_minutes: 120 as const, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } };
+    const d = await f.service.saveDraft({ draft });
+    denied = true; const rejected = await f.service.vibeAuth.begin(d.id, { auto_upload: autoUpload }); now += 1000;
+    expect((await f.service.vibeAuth.poll(rejected.flow_id)).state).toBe('denied'); expect(f.store.get(d.id).enabled).toBe(false);
+    denied = false; const stale = await f.service.vibeAuth.begin(d.id, { auto_upload: autoUpload });
+    await f.service.saveDraft({ draft: { ...draft, id: d.id, scope: { ...draft.scope, include_ephemeral: true } } }); now += 1000;
+    expect(await f.service.vibeAuth.poll(stale.flow_id)).toMatchObject({ state: 'error', error_category: 'vibe-auth-destination-changed' }); expect(f.store.get(d.id).enabled).toBe(false);
+    const flow = await f.service.vibeAuth.begin(d.id, { auto_upload: autoUpload }); now += 1000;
+    expect((await f.service.vibeAuth.poll(flow.flow_id)).state).toBe('connected');
+    expect(f.store.get(d.id)).toMatchObject({ enabled: autoUpload, schedule_minutes: 120, credential_storage: 'private-file', state: autoUpload ? 'ready' : 'disabled' });
+    expect(f.store.get(d.id).consent_fingerprint !== null).toBe(autoUpload);
+  });
+});
+
 describe('usage export real source → SQLite outbox → loopback receiver → durable ACK', () => {
   it('sends nothing without destinations or from draft and disabled destinations after retirement', async () => {
     const f = await fixture(); const r = await receiverFixture();

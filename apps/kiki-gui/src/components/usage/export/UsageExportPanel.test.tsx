@@ -384,7 +384,7 @@ describe('VibeCafe connection', () => {
     } finally { open.mockRestore(); }
   });
 
-  it('signs in without URL or key input and still requires preview and consent', async () => {
+  it.each([true, false])('completes sign-in with this save consent auto_upload=%s, without another enable click', async (autoUpload) => {
     openUrl.mockClear();
     usageExport.beginVibeAuth.mockResolvedValue(authPending);
     usageExport.pollVibeAuth.mockResolvedValue({ ...authPending, state: 'connected', poll_after_ms: 0 });
@@ -392,23 +392,28 @@ describe('VibeCafe connection', () => {
     await click(q('[data-usage-export-add]'));
     expect(q('[data-usage-export-form-endpoint]')).toBeNull();
     expect(q('[data-usage-export-form-secret]')).toBeNull();
-    expect(q<HTMLButtonElement>('[data-usage-export-form-preview]')!.disabled).toBe(true);
+    expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe('true');
+    expect(q<HTMLSelectElement>('[data-usage-export-form-schedule]')!.value).toBe('120');
+    if (!autoUpload) await click(q('[data-usage-export-form-auto-upload]'));
+    expect(q('[data-usage-export-vibe-login]')!.textContent).toBe(translate('en', autoUpload ? 'usage.export.vibeAuth.authorize' : 'usage.export.vibeAuth.login'));
     await click(q('[data-usage-export-vibe-login]'));
-    expect(usageExport.saveDraft.mock.calls[0]![0].draft).toMatchObject({ label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest' } });
+    expect(usageExport.saveDraft.mock.calls[0]![0]).toMatchObject({ draft: { label: 'VibeCafe', schedule_minutes: 120, target: { kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest' } } });
+    expect(usageExport.saveDraft.mock.calls[0]![0].auto_upload).toBeUndefined();
     expect(usageExport.saveDraft.mock.calls[0]![0].secret).toBeUndefined();
-    expect(usageExport.beginVibeAuth).toHaveBeenCalledWith(ID_A, {});
+    expect(usageExport.beginVibeAuth).toHaveBeenCalledWith(ID_A, { auto_upload: autoUpload });
     expect(openUrl).toHaveBeenCalledWith(authPending.verification_uri);
     expect(q('[data-usage-export-vibe-code]')!.textContent).toBe('ABCD-EFGH');
-    expect(usageExport.enable).not.toHaveBeenCalled();
-    expect(usageExport.syncNow).not.toHaveBeenCalled();
+    usageExport.status.mockResolvedValue(status(destination({ enabled: autoUpload, schedule_minutes: 120 })));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     await flush();
-    expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
-    expect(q<HTMLButtonElement>('[data-usage-export-form-preview]')!.disabled).toBe(false);
-    await click(q('[data-usage-export-form-preview]'));
+    if (autoUpload) expect(q('[data-usage-export-form]')).toBeNull();
+    else {
+      expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
+      expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe('false');
+    }
+    expect(usageExport.preview).not.toHaveBeenCalled();
     expect(usageExport.enable).not.toHaveBeenCalled();
-    await click(q('[data-usage-export-form-enable]'));
-    expect(usageExport.enable).toHaveBeenCalledWith(ID_A, { preview_fingerprint: '9'.repeat(64), acknowledge: true });
+    expect(usageExport.syncNow).not.toHaveBeenCalled();
   });
 
   it('cancels a pending connection on close and ignores a late approval', async () => {
@@ -438,22 +443,23 @@ describe('VibeCafe connection', () => {
     expect(card.textContent).toContain('Could not save the credential. Try signing in again.');
     expect(card.textContent).not.toContain('vibe-auth-storage-failed');
     expect(q<HTMLButtonElement>('[data-usage-export-vibe-login]')!.disabled).toBe(false);
-    expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
+    expect(q('[data-usage-export-vibe-login]')!.textContent).toBe(translate('en', 'usage.export.vibeAuth.authorize'));
 
     expect(q('[data-usage-export-vibe-storage]')).toBeNull();
     expect(card.closest('form')!.querySelector('details')).toBeNull();
 
     usageExport.beginVibeAuth.mockResolvedValueOnce(authPending);
     usageExport.pollVibeAuth.mockResolvedValueOnce({ ...authPending, state: 'connected', poll_after_ms: 0 });
+    await click(q('[data-usage-export-form-auto-upload]'));
     usageExport.status.mockResolvedValue(status(destination({
-      id: ID_A,
+      id: ID_A, enabled: false,
       account_fingerprint: 'a'.repeat(64),
       credential_storage: 'keyring',
     })));
 
     await click(q('[data-usage-export-vibe-login]'));
     expect(usageExport.beginVibeAuth).toHaveBeenCalledTimes(2);
-    expect(usageExport.beginVibeAuth).toHaveBeenLastCalledWith(ID_A, {});
+    expect(usageExport.beginVibeAuth).toHaveBeenLastCalledWith(ID_A, { auto_upload: false });
 
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     await flush();
@@ -502,7 +508,7 @@ describe('VibeCafe connection', () => {
     await click(q('[data-usage-export-add]'));
     await click(q('[data-usage-export-vibe-login]'));
     expect(q('[data-usage-export-vibe-connect="denied"]')!.textContent).toContain('declined');
-    expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
+    expect(q('[data-usage-export-vibe-login]')!.textContent).toBe(translate('en', 'usage.export.vibeAuth.authorize'));
 
     // Switch to webhook to verify webhook still owns endpoint, secret and storage
     await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
@@ -525,6 +531,7 @@ describe('VibeCafe connection', () => {
     const pausedDest = destination({
       id: ID_B,
       label: 'paused vibe',
+      target: { kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest' },
       enabled: false,
       state: 'disabled',
       account_fingerprint: 'b'.repeat(64),
@@ -550,6 +557,77 @@ describe('VibeCafe connection', () => {
   });
 });
 
+describe('automatic upload on explicit save', () => {
+  it('preserves a custom Vibe receiver and bounded scope when changing the interval', async () => {
+    const source = destination({ schedule_minutes: 120, scope: { start_at: START, end_at: START + HALF_HOUR, include_ephemeral: false, excluded_workspace_ids: [] } });
+    usageExport.status.mockResolvedValue(status(source));
+    await render(); await click(row(ID_A)); await click(q('[data-usage-export-edit]'));
+    expect(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!.value).toBe(source.target.kind === 'vibe' ? source.target.endpoint : '');
+    expect(q('[data-usage-export-vibe-login]')).toBeNull();
+    await act(async () => { const select = q<HTMLSelectElement>('[data-usage-export-form-schedule]')!; select.value = '60'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await click(q('[data-usage-export-form-save]'));
+    expect(usageExport.saveDraft.mock.calls[0]![0]).toMatchObject({ auto_upload: true, draft: { target: source.target, scope: source.scope, schedule_minutes: 60 } });
+  });
+
+  it('returns to official sign-in without forwarding a manually entered webhook key', async () => {
+    usageExport.beginVibeAuth.mockResolvedValue(authPending);
+    usageExport.cancelVibeAuth.mockResolvedValue({ ...authPending, state: 'cancelled' });
+    await render(); await click(q('[data-usage-export-add]'));
+    await click(q('[data-axis="export-kind"] [data-axis-value="webhook"]'));
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://receiver.example.test/usage');
+    await type(q<HTMLInputElement>('[data-usage-export-form-secret]')!, 'SYNTHETIC_WEBHOOK_SECRET');
+    await click(q('[data-axis="export-kind"] [data-axis-value="vibe"]'));
+    expect(q('[data-usage-export-form-endpoint]')).toBeNull();
+    await click(q('[data-usage-export-vibe-login]'));
+    expect(usageExport.saveDraft.mock.calls[0]![0].draft.target).toEqual({ kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest', private_grant: undefined });
+    expect(usageExport.saveDraft.mock.calls[0]![0].secret).toBeUndefined();
+  });
+
+  it.each([true, false])('saves a new webhook with auto_upload=%s in one action, without mandatory preview', async (autoUpload) => {
+    await render(); await click(q('[data-usage-export-add]'));
+    expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe('true');
+    expect(q<HTMLSelectElement>('[data-usage-export-form-schedule]')!.value).toBe('120');
+    await click(q('[data-axis="export-kind"] [data-axis-value="webhook"]'));
+    await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'Example receiver');
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://example.test/usage');
+    if (!autoUpload) await click(q('[data-usage-export-form-auto-upload]'));
+    expect(q('[data-usage-export-form-save]')!.textContent).toBe(translate('en', autoUpload ? 'usage.export.form.saveConsent' : 'usage.export.form.save'));
+    await click(q('[data-usage-export-form-save]'));
+    expect(usageExport.saveDraft).toHaveBeenCalledOnce();
+    expect(usageExport.saveDraft.mock.calls[0]![0]).toMatchObject({ auto_upload: autoUpload, draft: { schedule_minutes: 120, target: { endpoint: 'https://example.test/usage' } } });
+    expect(usageExport.preview).not.toHaveBeenCalled(); expect(usageExport.enable).not.toHaveBeenCalled();
+    expect(q('[data-usage-export-form]')).toBeNull();
+  });
+
+  it.each([true, false])('keeps the saved enabled=%s choice while editing only the interval', async (enabled) => {
+    usageExport.status.mockResolvedValue(status(destination({ enabled, state: enabled ? 'ready' : 'disabled', schedule_minutes: 120 })));
+    await render(); await click(row(ID_A));
+    expect(detail(ID_A).textContent).toContain('Every 2 hours');
+    await click(q('[data-usage-export-edit]'));
+    expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe(String(enabled));
+    await act(async () => { const select = q<HTMLSelectElement>('[data-usage-export-form-schedule]')!; select.value = '60'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(q('[data-usage-export-form-save]')!.textContent).toBe('Save');
+    await click(q('[data-usage-export-form-save]'));
+    expect(usageExport.saveDraft.mock.calls.at(-1)![0]).toMatchObject({ auto_upload: enabled, draft: { id: ID_A, schedule_minutes: 60 } });
+    expect(usageExport.enable).not.toHaveBeenCalled();
+  });
+
+  it('authorizes a changed range or receiver only in the explicit consent save and leaves failed saves editable', async () => {
+    const source = destination({ target: { kind: 'webhook', endpoint: 'https://first.example.test/usage', authentication: 'none', gzip: true } });
+    usageExport.status.mockResolvedValue(status(source));
+    await render(); await click(row(ID_A)); await click(q('[data-usage-export-edit]'));
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://second.example.test/usage');
+    expect(q('[data-usage-export-form-save]')!.textContent).toBe('Agree and save');
+    expect(usageExport.saveDraft).not.toHaveBeenCalled();
+    usageExport.saveDraft.mockRejectedValueOnce(new Error('receiver not saved'));
+    await click(q('[data-usage-export-form-save]'));
+    expect(q('[data-usage-export-form]')).not.toBeNull(); expect(document.body.textContent).toContain('receiver not saved');
+    expect(usageExport.saveDraft.mock.calls[0]![0]).toMatchObject({ auto_upload: true, draft: { target: { endpoint: 'https://second.example.test/usage' } } });
+    await click(q('[data-usage-export-form-save]'));
+    expect(q('[data-usage-export-form]')).toBeNull();
+  });
+});
+
 describe('consent', () => {
   it('enables with the fingerprint the server issued for the previewed payload', async () => {
     await render();
@@ -571,7 +649,7 @@ describe('consent', () => {
     const visible = q('[data-usage-export-preview-block]')!
       .cloneNode(true) as HTMLElement;
     visible.querySelectorAll('details').forEach((node) => node.remove());
-    expect(visible.textContent).toContain('Changing the endpoint, the credential identity or the range needs a new preview');
+    expect(visible.textContent).toContain('changing the endpoint, credential identity or range makes it stale');
     expect(visible.textContent).not.toContain('9'.repeat(24));
     await click(q('[data-usage-export-form-enable]'));
     expect(usageExport.enable).toHaveBeenCalledTimes(1);

@@ -22,6 +22,7 @@ const FAILURE_KEYS: Record<string, I18nKey> = {
 export function UsageExportVibeConnect({
   api,
   begin,
+  authorizeUpload,
   credentialStored,
   accountFingerprint,
   disabled,
@@ -31,6 +32,7 @@ export function UsageExportVibeConnect({
 }: {
   readonly api: UsageExportApi | undefined;
   readonly begin: () => Promise<UsageExportVibeAuth | undefined>;
+  readonly authorizeUpload: boolean;
   readonly credentialStored: boolean;
   readonly accountFingerprint?: string | undefined;
   readonly disabled: boolean;
@@ -148,6 +150,7 @@ export function UsageExportVibeConnect({
         <span className="text-[11.5px] text-ink-faint">vibecafe.ai</span>
       </div>
       <p className="text-[12px] leading-relaxed text-ink-soft">{t('usage.export.vibeAuth.hint')}</p>
+      {authorizeUpload ? <p className="text-[12px] leading-relaxed text-ink-soft">{t('usage.export.vibeAuth.authorizeHint')}</p> : null}
       {pending ? (
         <>
           <p className="text-[11.5px] text-ink-soft">{t('st.oauth.codeLabel')}</p>
@@ -181,7 +184,7 @@ export function UsageExportVibeConnect({
               disabled={disabled || starting || disconnecting || api === undefined}
               onClick={() => void start()}
             >
-              {t(starting ? 'usage.export.vibeAuth.starting' : 'usage.export.vibeAuth.reconnect')}
+              {t(starting ? 'usage.export.vibeAuth.starting' : authorizeUpload ? 'usage.export.vibeAuth.authorize' : 'usage.export.vibeAuth.reconnect')}
             </button>
             {onDisconnect ? (
               <button
@@ -210,7 +213,7 @@ export function UsageExportVibeConnect({
             disabled={disabled || starting || api === undefined}
             onClick={() => void start()}
           >
-            {t(starting ? 'usage.export.vibeAuth.starting' : flow === null ? 'usage.export.vibeAuth.login' : 'usage.export.vibeAuth.retry')}
+            {t(starting ? 'usage.export.vibeAuth.starting' : authorizeUpload ? 'usage.export.vibeAuth.authorize' : flow === null ? 'usage.export.vibeAuth.login' : 'usage.export.vibeAuth.retry')}
           </button>
         </>
       )}

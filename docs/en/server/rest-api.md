@@ -137,18 +137,25 @@ Desktop integrations can call the native `create_space_shortcut` command with `{
 | `POST /api/oauth/logout` | Log out the managed provider |
 | `GET /api/oauth/usage` | Plan usage and limits |
 | `GET /api/oauth/userinfo` | Account profile |
+| `POST /api/usage-export/destinations` | Save a destination draft; optional `auto_upload` explicitly enables or disables it |
+| `GET /api/usage-export/destinations/{id}/preview` | Optional payload preview |
+| `POST /api/usage-export/destinations/{id}/enable` | Retained preview-and-enable consent flow |
 | `POST /api/usage-export/destinations/{id}/auth/begin` | Start a VibeCafe sign-in for a destination |
 | `POST /api/usage-export/auth/{id}/poll` | Poll that sign-in |
 | `POST /api/usage-export/auth/{id}/cancel` | Cancel that sign-in |
 | `POST /api/usage-export/destinations/{id}/disable` | Pause that destination without signing out |
 
-For the official `vibecafe.ai` destination, send `{}` to `POST /api/usage-export/destinations/{id}/auth/begin`. Omitted `storage` defaults to `auto`: Kiki saves the approved credential in the system keyring, or in a permission-protected private file if the keyring write fails. The file is not encrypted at rest. There is no address, client id, or key to paste; the service is fixed to `https://vibecafe.ai`. Existing explicit `keyring` requests remain keyring-only; explicit `private-file` requests still require `acknowledge_file_storage: true`. Webhook and script credential storage choices are unchanged.
+`POST /api/usage-export/destinations` accepts `{ draft, secret?, auto_upload? }`. `auto_upload: true` is explicit agreement to the current draft's destination and scope and enables automatic upload; `false` saves it disabled; omitting it preserves the draft's existing contract. New forms start with automatic upload enabled and a 120-minute schedule. Preview is optional for this save path. Routine syncs and schedule-only edits for the same destination reuse consent. Widening the range, changing the receiver, or switching to a credential whose identity cannot be proven the same requires an explicit `auto_upload: true` save. Editing an existing `disabled` destination does not restart it unless the request explicitly enables it. The preview plus `enable` endpoints remain available for clients using fingerprint-bound consent.
+
+The `auto_upload?` field on `POST /api/usage-export/destinations/{id}/auth/begin` applies to that auth flow. Send `true` to combine successful VibeCafe sign-in with explicit agreement and enablement for the current draft; send `false` to sign in without enabling; omit it to keep the existing auth-flow contract. A failed, denied or expired flow never enables automatic upload. For the official `vibecafe.ai` destination, `{}` keeps the login-only behavior. Omitted `storage` defaults to `auto`: Kiki saves the approved credential in the system keyring, or in a permission-protected private file if the keyring write fails. The file is not encrypted at rest. There is no address, client id, or key to paste; the service is fixed to `https://vibecafe.ai`. Existing explicit `keyring` requests remain keyring-only; explicit `private-file` requests still require `acknowledge_file_storage: true`. Webhook and script credential storage choices are unchanged.
 
 The response carries `flow_id`, `state`, `user_code`, `verification_uri`, `expires_at`, and `poll_after_ms`. Poll with `POST /api/usage-export/auth/{id}/poll` at the returned interval, or cancel with `POST /api/usage-export/auth/{id}/cancel`. The flow moves from `pending` to `connected`, `cancelled`, `denied`, `expired`, or `error`. If automatic storage cannot save to either backend, it returns `error` with `error_category: "vibe-auth-storage-failed"`; restore access to the server's credential directory or keyring, then begin a new sign-in.
 
-`connected` means the credential was saved, not that sending is enabled. The destination returns to `draft` with `enabled: false` and no export consent; preview the payload before enabling it. `credential_storage` reports the actual `keyring` or `private-file` backend and is reused after restart. Custom-address destinations use manual credentials; beginning device sign-in there returns `vibe-auth-official-only`.
+`connected` means the credential was saved. When this auth flow used `auto_upload: true`, successful connection also completes enablement for the current draft; `false` or an omitted field does not add new consent or enablement. A failed, denied or expired flow never enables. `credential_storage` reports the actual `keyring` or `private-file` backend and is reused after restart. Custom-address destinations use manual credentials; beginning device sign-in there returns `vibe-auth-official-only`.
 
 `POST /api/usage-export/destinations/{id}/disable` pauses a destination that is already signed in. It sets `enabled` to `false`, `state` to `"disabled"`, and `next_at` to `null`, and it stops a send already in flight. The saved account and `credential_storage` stay, and so does the queue. The page keeps showing that account. **Pause**, and **Disable sync** on an official vibecafe.ai destination, both call it. Deleting the stored credential is a separate remove.
+
+To import an existing Vibe config without exposing its key, use the local-owner [`connect-vibe` command](../reference/command.md#kiki-usage-export).
 
 #### Provider and external-service quotas
 

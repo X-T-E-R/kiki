@@ -39,7 +39,7 @@ features:
     details: "Replace any named part of the built-in prompt globally, per model, or per agent — down to rewriting one tool description a model misuses — inspect the effective prompt with `kiki prompt-fields`, and choose between Manual, Auto, Approve for me, and YOLO."
     link: ./features/freedom
   - title: "See the cost and what is holding a request"
-    details: "The Usage page names the concurrency rule holding each waiting request back, marks calls where a provider returned no usage as unknown instead of a fake zero, and syncs content-free stats only after you preview and approve the payload."
+    details: "The Usage page names the concurrency rule holding each waiting request back, marks calls where a provider returned no usage as unknown instead of a fake zero, and syncs content-free stats only after you explicitly agree to the current destination and scope; preview is optional."
     link: ./features/daily
   - title: "Your machine, your phone, your other tools"
     details: "Work files stay in your folder while sessions, history, and credentials stay in your local Kiki home. Isolate work and personal spaces, pair a WeChat or QQ chat to reply and approve from your phone, import earlier history as a session or archive, or connect editors over `kiki acp` and `kiki seat`."

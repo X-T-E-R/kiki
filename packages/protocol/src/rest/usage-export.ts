@@ -57,15 +57,15 @@ export const usageExportTargetSchema = z.discriminatedUnion('kind', [
 export const usageExportDraftSchema = z.object({
   id: z.string().uuid().optional(), label: z.string().min(1).max(80), target: usageExportTargetSchema,
   scope: usageExportScopeSchema,
-  schedule_minutes: z.union([z.literal(0), z.literal(5), z.literal(15), z.literal(30), z.literal(60)]),
+  schedule_minutes: z.union([z.literal(0), z.literal(5), z.literal(15), z.literal(30), z.literal(60), z.literal(120)]),
 }).strict();
 export const usageExportSecretInputSchema = z.object({
-  value: z.string().min(1).max(8192), storage: z.enum(['keyring', 'private-file']), acknowledge_file_storage: z.boolean().optional(),
+  value: z.string().min(1).max(8192), storage: z.enum(['auto', 'keyring', 'private-file']), acknowledge_file_storage: z.boolean().optional(),
 }).strict();
 export const VIBE_CAFE_ORIGIN = 'https://vibecafe.ai';
 export const VIBE_CAFE_INGEST_ENDPOINT = `${VIBE_CAFE_ORIGIN}/api/usage/ingest`;
 export const usageExportVibeAuthInputSchema = z.object({
-  storage: z.enum(['auto', 'keyring', 'private-file']).default('auto'), acknowledge_file_storage: z.boolean().optional(),
+  storage: z.enum(['auto', 'keyring', 'private-file']).default('auto'), acknowledge_file_storage: z.boolean().optional(), auto_upload: z.boolean().optional(),
 }).strict();
 export const usageExportVibeAuthSchema = z.object({
   flow_id: z.string().uuid(), destination_id: z.string().uuid(),
@@ -75,7 +75,11 @@ export const usageExportVibeAuthSchema = z.object({
 }).strict();
 export type UsageExportVibeAuthInput = z.input<typeof usageExportVibeAuthInputSchema>;
 export type UsageExportVibeAuth = z.infer<typeof usageExportVibeAuthSchema>;
-export const usageExportSaveSchema = z.object({ draft: usageExportDraftSchema, secret: usageExportSecretInputSchema.optional() }).strict();
+export const usageExportSaveSchema = z.object({
+  draft: usageExportDraftSchema, secret: usageExportSecretInputSchema.optional(),
+  /** Explicit consent to enable this supplied destination and scope; false saves it disabled. Omit for a draft-only write. */
+  auto_upload: z.boolean().optional(),
+}).strict();
 export const usageExportConsentSchema = z.object({ preview_fingerprint: hash, acknowledge: z.literal(true) }).strict();
 export const usageExportDestinationSchema = z.object({
   id: z.string().uuid(), label: z.string(), target: usageExportTargetSchema, account_fingerprint: hash,

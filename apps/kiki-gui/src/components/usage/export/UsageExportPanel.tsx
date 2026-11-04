@@ -548,9 +548,9 @@ function DestinationRow({
     await api.enable(destination.id, { preview_fingerprint: fingerprint, acknowledge: true });
   };
 
-  const scheduleKey = ([0, 5, 15, 30, 60] as readonly number[]).includes(destination.schedule_minutes)
+  const scheduleKey = ([0, 5, 15, 30, 60, 120] as readonly number[]).includes(destination.schedule_minutes)
     ? (`usage.export.schedule.${destination.schedule_minutes}` as I18nKey)
-    : ('usage.export.schedule.30' as I18nKey);
+    : ('usage.export.schedule.120' as I18nKey);
 
   return (
     <li data-usage-export-destination={destination.id}>
