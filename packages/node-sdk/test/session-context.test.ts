@@ -12,6 +12,7 @@ import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecyc
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
 import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import { estimateTokensForMessages } from '@kiki/agent-core-v2/kosong/contract/tokens';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, ErrorCodes, SDKRpcClient, type KimiError } from '#/index';
@@ -156,7 +157,15 @@ describe('Session context', () => {
 
       const resumed = await harness.resumeSession({ id: 'ses_context_resume' });
 
-      await expect(resumed.getContext()).resolves.toEqual(imported);
+      const restored = await resumed.getContext();
+      expect(restored.history.slice(0, imported.history.length)).toEqual(imported.history);
+      const refreshed = restored.history.slice(imported.history.length);
+      expect(refreshed.map((message) => message.origin)).toEqual([
+        expect.objectContaining({ kind: 'injection', variant: 'runtime_snapshot' }),
+        { kind: 'injection', variant: 'permission_mode' },
+      ]);
+      expect(restored.tokenCount).toBe(imported.tokenCount + estimateTokensForMessages(refreshed));
+      expect(restored.tokenCount).toBeGreaterThan(imported.tokenCount);
       expect(resumed.getResumeState()?.agents['main']?.replay).toContainEqual(
         expect.objectContaining({
           type: 'message',

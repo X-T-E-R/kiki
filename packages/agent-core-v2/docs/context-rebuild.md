@@ -17,7 +17,9 @@ With the switch on, the same rebuild runs once at these completed boundaries, be
 - A model switch finishes in fresh mode and replaces the context window. The report says “After a fresh context window”. The model chosen by that switch stays.
 - A model switch finishes in compact mode and replaces the context window with its summary. The report says “After a compacted context window”. The model chosen by that switch stays.
 - Context is cleared while the agent is idle and no compaction is running. The report says “After clearing the context”. An empty clear does nothing. A clear during a running turn or a compaction does not rebuild, so a model request already in progress is not swapped.
-- The agent’s saved session is restored, before a recovered prompt is sent. The report says “After session recovery”. Replaying an older switch or clear during that restore does not rebuild a second time.
+- The agent’s saved binding is restored, before a recovered prompt is sent. The report says “After session recovery”. Initializing a new unbound agent is not a recovery boundary. Replaying an older switch or clear during restore does not rebuild a second time.
+
+A saved execution resume point keeps the original binding for its unfinished turn. Automatic recovery skips rebuilding that agent, and manual rebuilding rejects until the saved execution resumes. The original turn and child task identities remain unchanged. A restored empty binding can refresh its sources, but does not append plugin reminders or runtime injections to empty history; the normal next-step injector delivers them when a request starts.
 
 A cancelled or failed compaction does not rebuild. A model switch that fails or keeps the current context (`direct`) does not rebuild. Resetting the context strategy only changes what the next compaction will do. Undo, an ordinary message, and each step do not rebuild. Switching execution engine is not one of these boundaries, and a rebuild does not change the selected model or engine.
 

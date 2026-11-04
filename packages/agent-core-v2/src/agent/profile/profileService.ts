@@ -1954,6 +1954,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.systemPromptRefreshTail.catch(() => undefined);
     this.memorySnapshot.invalidate();
     const current = this.profileState;
+    const bindingSelection: BindAgentInput['bindingSelection'] = {
+      model: { source: 'resume-existing', requestedValue: current.modelAlias },
+      thinking: { source: current.thinkingEffortExplicit === true ? 'resume-existing' : 'model-default', requestedValue: current.thinkingLevel },
+    };
     if (current.execution !== undefined && this.isExternalExecutor) {
       await this.bind({ execution: current.execution.selection });
       return;
@@ -1966,7 +1970,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (current.execution?.selection.profile_file !== undefined) {
       await this.bind({ execution: current.execution.selection, model: current.modelAlias, thinking: current.thinkingLevel,
         personaSnapshot: current.persona ?? this.currentPersona, personaOverrides: current.personaOverrides,
-        delegationPosition: this.delegationPosition });
+        bindingSelection, delegationPosition: this.delegationPosition });
       return;
     }
     if (current.profileName === undefined) {
@@ -1975,6 +1979,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profile: DEFAULT_AGENT_PROFILE_NAME,
         model: current.modelAlias,
         thinking: current.thinkingLevel,
+        bindingSelection,
         toolOverride: current.disallowedTools?.length
           ? {
               ...current.toolOverride,
@@ -2013,6 +2018,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       route: current.routeId,
       model: current.modelAlias,
       thinking: current.thinkingLevel,
+      bindingSelection,
       lease: current.appliedLease,
       spawnPolicy: current.spawnPolicy,
       delegationPosition: this.delegationPosition,

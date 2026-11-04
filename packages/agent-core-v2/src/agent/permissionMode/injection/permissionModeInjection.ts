@@ -7,6 +7,7 @@ import {
 import type { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { systemReminderContent } from '#/agent/systemReminder/systemReminder';
 import AUTO_MODE_ENTER_REMINDER from './permission-mode-auto-enter-reminder.md?raw';
 import AUTO_MODE_EXIT_REMINDER from './permission-mode-auto-exit-reminder.md?raw';
 import REVIEW_MODE_ENTER_REMINDER from './permission-mode-review-enter-reminder.md?raw';
@@ -40,15 +41,18 @@ export class PermissionModeInjection extends Service {
     this.states.set(permissionModeLastModeKey, value);
   }
 
-  private reminder({ injectedPositions }: ContextInjectionContext): string | undefined {
+  private reminder({ injectedPositions, lastInjection }: ContextInjectionContext): string | undefined {
     const currentMode = this.permissionMode.mode;
-    const previousMode = this.lastMode;
+    const restored = lastInjection === undefined ? undefined : systemReminderContent(lastInjection);
+    const previousMode = this.lastMode ?? (restored === AUTO_MODE_ENTER_REMINDER.trim() ? 'auto'
+      : restored === REVIEW_MODE_ENTER_REMINDER.trim() ? 'review'
+      : restored === AUTO_MODE_EXIT_REMINDER.trim() || restored === REVIEW_MODE_EXIT_REMINDER.trim() ? 'manual' : undefined);
+    this.lastMode = currentMode;
     if (currentMode === previousMode) {
       if (injectedPositions.length > 0) return undefined;
       if (currentMode === 'auto') return AUTO_MODE_ENTER_REMINDER;
       return currentMode === 'review' ? REVIEW_MODE_ENTER_REMINDER : undefined;
     }
-    this.lastMode = currentMode;
     if (currentMode === 'auto') return AUTO_MODE_ENTER_REMINDER;
     if (currentMode === 'review') return REVIEW_MODE_ENTER_REMINDER;
     if (previousMode === 'auto') return AUTO_MODE_EXIT_REMINDER;

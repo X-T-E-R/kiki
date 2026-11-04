@@ -89,6 +89,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     if (usage !== undefined) this._register(this.skillCatalog.onDidChange((sourceId) => {
       if (sourceId !== PLUGIN_SKILL_SOURCE_ID || !usage.enabled()) return;
       if (scopeContext.agentId === MAIN_AGENT_ID) this.refreshPending = true;
+      if (this.context.get().length === 0) return;
       void this.injector.reconcileWhenIdle('runtime_snapshot').then(() => this.refreshSessionStart()).catch((error) => {
         this.log.warn('Plugin prompt refresh failed', { error });
       });

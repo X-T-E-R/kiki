@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { AsyncEmitter, Emitter, Event } from '#/_base/event';
@@ -216,6 +219,35 @@ describe('AgentPluginService plugin session-start wiring', () => {
     await runInjectionBoundary(ctx);
 
     expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(0);
+  });
+
+  it.each(['new', 'cleared'] as const)('defers plugin source refresh in a %s empty context until the next step', async (state) => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(pluginSkill());
+    const sinkChange = new Emitter<string>();
+    const skillCatalog: ISessionSkillCatalog = {
+      _serviceBrand: undefined, catalog, ready: Promise.resolve(), onDidChange: sinkChange.event,
+      load: async () => {}, reload: async () => {}, list: async () => catalog.listSkills().map(summarizeSkill),
+    };
+    ctx = createTestAgent({ autoConfigure: true },
+      appService(IPluginService, stubPluginService({ sessionStarts: [{ pluginId: 'demo', skillName: 'demo-skill' }] })),
+      skillServices(skillCatalog), agentService(IAgentPluginService, new SyncDescriptor(AgentPluginService)));
+    ctx.get(IAgentPluginService);
+    expect(ctx.get(IPluginUsageService).enabled()).toBe(true);
+    if (state === 'cleared') {
+      await runInjectionBoundary(ctx);
+      await ctx.get(IAgentContextMemoryService).clear();
+    }
+    expect(ctx.contextData().history).toEqual([]);
+    const reconcile = vi.spyOn(ctx.get(IAgentContextInjectorService), 'reconcileWhenIdle');
+    sinkChange.fire('plugin');
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(ctx.contextData().history).toEqual([]);
+    await runInjectionBoundary(ctx);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+    expect(messageText(findPluginSessionStartEventMessages(ctx)[0]!)).toContain('Do the demo thing.');
+    reconcile.mockRestore();
+    sinkChange.dispose();
   });
 
   it('re-appends a fresh reminder when the plugin skill source finishes refreshing', async () => {

@@ -293,6 +293,41 @@ describe('context rebuild at the committed compaction boundary', () => {
       : { enabled: true, trigger: 'restore', outcome: 'applied', rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] });
   }, 30_000);
 
+  it('refreshes a saved empty binding without manufacturing context or model work', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let body = 'BEFORE RESTORE';
+    const create = () => {
+      const ctx = testAgent({ persistence, autoConfigure: false }, sessionServices((reg) => {
+        reg.defineInstance(ISessionContextSourceReloader, { _serviceBrand: undefined,
+          reload: async () => ({ instructionsChanged: false, pluginsChanged: false }) });
+      }));
+      agents.push(ctx);
+      const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => body });
+      vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockReturnValue(role);
+      return ctx;
+    };
+    const first = create();
+    await first.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: 'mock-model' });
+    expect(first.get(IAgentContextMemoryService).get()).toEqual([]);
+    await first.get(IWireService).flush();
+    await first.dispose();
+    body = 'AFTER RESTORE';
+    const reopened = create();
+    await reopened.restorePersisted();
+    expect(reopened.get(IAgentProfileService).getSystemPrompt()).toContain('AFTER RESTORE');
+    expect(reopened.get(IAgentContextRebuildService).control()).toMatchObject({ enabled: true, trigger: 'restore', outcome: 'applied' });
+    expect(reopened.get(IAgentContextMemoryService).get()).toEqual([]);
+    expect(reopened.get(IAgentProfileService).data().thinkingEffortExplicit).toBe(false);
+    expect(reopened.llmCalls).toHaveLength(0);
+    reopened.mockNextResponse({ type: 'text', text: 'first response' });
+    await reopened.rpc.prompt({ input: [{ type: 'text', text: 'first request' }] });
+    await reopened.untilTurnEnd();
+    expect(reopened.llmCalls).toHaveLength(1);
+    expect(reopened.get(IAgentContextMemoryService).get().filter(message => message.origin?.kind === 'injection')
+      .map(message => message.origin?.kind === 'injection' ? message.origin.variant : undefined))
+      .toEqual(expect.arrayContaining(['runtime_snapshot', 'permission_mode']));
+  });
+
   it.each([false, true])('persists the first explicit choice once and applies it at the boundary: %s', async (enabled) => {
     const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
     const ctx = openAgent(reload);

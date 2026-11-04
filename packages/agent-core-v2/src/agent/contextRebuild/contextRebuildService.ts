@@ -19,6 +19,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
@@ -58,6 +59,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     @IAgentFullCompactionService private readonly compaction: IAgentFullCompactionService,
     @IAgentModelSwitchService private readonly modelSwitch: IAgentModelSwitchService,
     @ILogService private readonly log: ILogService,
+    @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
     @ISessionPluginUsageService private readonly pluginUsage?: ISessionPluginUsageService,
   ) {
     super();
@@ -88,7 +90,12 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     }));
     this._register(this.dispatcher.hooks.onDidRestore.register('context-rebuild', async (_ctx, next) => {
       try {
-        await this.rebuildAfterBoundary('restore');
+        await this.executionControl.ready();
+        const binding = this.profile.data();
+        if ((binding.modelAlias !== undefined || binding.profileName !== undefined || binding.execution !== undefined)
+          && this.executionControl.resumePoint(this.scope.agentId) === undefined) {
+          await this.rebuildAfterBoundary('restore');
+        }
       } finally {
         await next();
       }
@@ -151,6 +158,10 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       if (this.scope.agentId !== MAIN_AGENT_ID) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Context rebuild is only available for the main agent.');
       }
+      await this.executionControl.ready();
+      if (this.executionControl.resumePoint(this.scope.agentId) !== undefined) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Resume the paused execution before rebuilding context.');
+      }
       const quiescence = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve' });
       if (quiescence === undefined) {
         throw new Error2(
@@ -175,6 +186,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     const completed: ContextRebuildSurface[] = [];
     const unsupported = this.limits();
     const skipped = new Set(unsupported.map((item) => item.surface));
+    const hasContext = this.context.get().length > 0;
     let sourceChanges: { instructionsChanged: boolean; pluginsChanged: boolean } | undefined;
     let beforeProfile: ReturnType<IAgentProfileService['data']> | undefined;
     let beforeContext = '';
@@ -215,7 +227,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       this.requester.invalidatePromptSnapshots();
       this.throwIfCancelled(signal);
       if (!skipped.has('plugins')) {
-        await this.plugin.refreshSessionStartAtSafeBoundary();
+        if (hasContext) await this.plugin.refreshSessionStartAtSafeBoundary();
         completed.push('plugins');
         this.throwIfCancelled(signal);
       }
@@ -223,7 +235,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       completed.push('mcp');
       this.throwIfCancelled(signal);
       if (!skipped.has('injections')) {
-        await this.injector.reconcileAllAtSafeBoundary();
+        if (hasContext) await this.injector.reconcileAllAtSafeBoundary();
         completed.push('injections');
         this.throwIfCancelled(signal);
       }

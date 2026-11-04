@@ -368,7 +368,7 @@ describe('klient HTTP host', () => {
       sessionId = created.id;
       const agent = klient.session(created.id).agent('main');
       const session = manager.get(created.id)!;
-      expect(await agent.contextRebuildControl()).toEqual({ enabled: false, rebuilt: [], unsupported: [] });
+      expect(await agent.contextRebuildControl()).toEqual({ enabled: true, rebuilt: [], unsupported: [] });
       await agent.getUsage();
       await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'preserved history' }], toolCalls: [] });
       const main = session.accessor.get(IAgentLifecycleService).get('main')!;
@@ -383,7 +383,7 @@ describe('klient HTTP host', () => {
         expect(manager.get(created.id)).toBeUndefined();
         await writeFile(path, source(marker));
         const control = await agent.contextRebuildControl();
-        expect(control.enabled).toBe(false);
+        expect(control.enabled).toBe(true);
         expect(manager.get(created.id)).toBeUndefined();
         const rebuilt = await agent.rebuildContext();
         expect(rebuilt).toMatchObject({ outcome: 'applied', appliesOn: 'next_request' });

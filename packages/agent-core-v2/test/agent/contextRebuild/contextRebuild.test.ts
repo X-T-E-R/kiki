@@ -27,11 +27,13 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { Event2 } from '#/app/event/event2';
 
 import type { McpSessionCapability } from '#/agent/mcp/mcp';
 import { createTestAgent } from '../../harness';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 
 const REBUILT = ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] as const;
 
@@ -148,6 +150,26 @@ describe('AgentContextRebuildService', () => {
     expect(host.service.control()).toMatchObject({ trigger: 'restore', rebuilt: REBUILT });
     expect(host.setModel).not.toHaveBeenCalled();
     expect(host.history).toEqual([{ role: 'user', text: 'kept' }]);
+  });
+
+  it('does not treat a new unbound agent as a restored context', async () => {
+    const host = createHost(disposables);
+    Object.assign(host.prompt, { modelAlias: undefined, profileName: undefined, boundProfile: undefined });
+    await host.restore.run({});
+    expect(host.service.control()).toEqual({ enabled: true, rebuilt: [], unsupported: [] });
+    expect(host.reload).not.toHaveBeenCalled();
+    expect(host.injector).not.toHaveBeenCalled();
+  });
+
+  it('keeps a saved paused binding frozen through restore and rejects a manual rebuild', async () => {
+    const point = { turnId: 7, completedSteps: 1, seed: { input: [], origin: { kind: 'unknown' as const } },
+      binding: { modelAlias: 'kept-model', thinkingLevel: 'low', systemPrompt: 'saved' } };
+    const host = createHost(disposables, { executionControl: { ...stubExecutionControl(), resumePoint: () => point } });
+    await host.restore.run({});
+    await expect(host.service.rebuild()).rejects.toThrow('Resume the paused execution before rebuilding context.');
+    expect(host.reload).not.toHaveBeenCalled();
+    expect(host.injector).not.toHaveBeenCalled();
+    expect(host.service.control()).toEqual({ enabled: true, rebuilt: [], unsupported: [] });
   });
 
   it('records a failed rebuild and leaves the previous binding when the first stage throws', async () => {
@@ -569,6 +591,7 @@ describe('AgentContextRebuildService', () => {
 interface HostOptions {
   readonly agentId?: string;
   readonly executorId?: string;
+  readonly executionControl?: ISessionExecutionControl;
   readonly busy?: boolean;
   readonly loop?: IAgentLoopService;
   readonly loopStatus?: Partial<AgentLoopStatus>;
@@ -623,6 +646,7 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
         hooks: { onDidCommitContextWindow: modelWindow },
       });
       reg.definePartialInstance(ILogService, { error: logError });
+      reg.defineInstance(ISessionExecutionControl, options.executionControl ?? stubExecutionControl());
       reg.definePartialInstance(IAgentScopeContext, { agentId: options.agentId ?? 'main' });
       reg.definePartialInstance(IAgentLoopService, options.loop ?? {
         tryAcquireQuiescence: () => options.busy === true ? undefined : toDisposable(() => {}),

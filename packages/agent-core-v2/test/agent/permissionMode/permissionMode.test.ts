@@ -16,6 +16,7 @@ import {
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventBus } from '#/app/event/eventBus';
@@ -297,7 +298,38 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     expect(await runRegisteredInjection()).toBeUndefined();
   });
 
-  it('re-announces auto mode on a fresh instance even with a live reminder in history (restore)', async () => {
+  it.each(['auto', 'review'] as const)('preserves a restored %s reminder without replaying it and still announces a mode change', async (mode) => {
+    svc.setMode(mode);
+    const reminder = await runRegisteredInjection();
+    expect(reminder).toBeDefined();
+    const lastInjection = {
+      id: 'restored-reminder',
+      role: 'user' as const,
+      toolCalls: [],
+      content: [{ type: 'text' as const, text: wrapSystemReminder(reminder!) }],
+      origin: { kind: 'injection' as const, variant: 'permission_mode' },
+    };
+    let restoredProvider: ContextInjectionProvider | undefined;
+    const ix2 = disposables.add(new TestInstantiationService());
+    ix2.stub(IAgentContextInjectorService, {
+      _serviceBrand: undefined,
+      register: (_name, provider) => {
+        restoredProvider = provider as ContextInjectionProvider;
+        return { dispose: () => {} };
+      },
+    });
+    ix2.set(IAgentStateService, new AgentStateService());
+    disposables.add(ix2.createInstance(PermissionModeInjection, svc));
+    if (restoredProvider === undefined) throw new Error('expected restored provider');
+    const run = () => restoredProvider!({ injectedPositions: [3], lastInjectedAt: 3, lastInjection, isNewTurn: true });
+    expect(await run()).toBeUndefined();
+    expect(await run()).toBeUndefined();
+    svc.setMode('manual');
+    expect(await run()).toContain('permission mode is no longer active');
+    expect(await run()).toBeUndefined();
+  });
+
+  it('announces auto mode on a fresh instance when the earlier reminder content is unavailable', async () => {
     svc.setMode('auto');
 
     let restoredProvider: ContextInjectionProvider | undefined;

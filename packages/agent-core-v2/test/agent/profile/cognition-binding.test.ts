@@ -1049,7 +1049,7 @@ describe('per-model cognition overlay', () => {
     expect(prompt).not.toContain('When the live alias matches.');
   });
 
-  it('consumes a profile Recipe file path without installing it or rewriting the model', async () => {
+  it.each([false, true])('consumes a profile Recipe file path and preserves its restore preference without installing it or rewriting the model: off=%s', async (off) => {
     const persistence = new InMemoryWireRecordPersistence();
     const roles = join(homeDir, 'roles');
     const pack = join(roles, 'focus');
@@ -1105,16 +1105,18 @@ describe('per-model cognition overlay', () => {
     expect(reference?.surface).toBe('profile');
     expect(reference?.installation_id.replaceAll('\\', '/')).toContain('/roles/focus/recipe.toml');
     const frozen = await profile.getCognitionBinding();
+    if (off) await agent.get(IAgentContextRebuildService).setEnabled(false);
     await writePack('FILE NEW');
     await agent.get(IWireService).flush(); await agent.dispose();
     agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService);
     await profile.syncBindingMetadata();
     await agent.get(IAgentLLMRequesterService).request({ tools: [] });
-    expect(observed).toContain('FILE BODY');
-    expect(observed).not.toContain('FILE NEW');
-    expect(await profile.getCognitionBinding()).toEqual(frozen);
+    expect(observed).toContain(off ? 'FILE BODY' : 'FILE NEW');
+    expect(observed).not.toContain(off ? 'FILE NEW' : 'FILE BODY');
+    if (off) expect(await profile.getCognitionBinding()).toEqual(frozen);
+    else expect((await profile.getCognitionBinding()).slots?.steering).toBe('LOWER STEERING');
     const rebuild = agent.get(IAgentContextRebuildService);
-    expect(rebuild.control().enabled).toBe(false);
+    expect(rebuild.control().enabled).toBe(!off);
     expect((await rebuild.rebuild()).outcome).toBe('applied');
     expect(rebuild.control().trigger).toBe('manual');
     await agent.get(IAgentLLMRequesterService).request({ tools: [] });
