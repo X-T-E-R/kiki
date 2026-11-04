@@ -269,6 +269,7 @@ export function createAgentLifecycleStub(
     }) as never,
     get: ((agentId: string) => handles.get(agentId)) as never,
     retain: () => ({ dispose() {} }),
+    recoverReceipts: async () => {},
     list: () => [...handles.values()],
     broadcastPermissionMode: () => {},
     countPendingBackgroundTasks: () => 0,

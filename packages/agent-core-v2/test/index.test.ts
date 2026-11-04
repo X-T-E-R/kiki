@@ -92,6 +92,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'subagent.completed',
   'subagent.failed',
   'subagent.suspended',
+  'subagent.autonomous_receipt_delivered',
   'staleGuard.recorded',
   'staleGuard.cleared',
   'interaction.request',
