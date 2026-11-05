@@ -32,7 +32,6 @@ export default defineConfig({
       '@kiki/plugin-sdk/media-download': fileURLToPath(new URL('../../packages/plugin-sdk/src/media-download.ts', import.meta.url)),
       '@kiki/plugin-sdk/harness-account': fileURLToPath(new URL('../../packages/plugin-sdk/src/harness-account.ts', import.meta.url)),
       '@kiki/plugin-sdk/session-import': fileURLToPath(new URL('../../packages/plugin-sdk/src/session-import.ts', import.meta.url)),
-      '@kiki/plugin-sdk/harness-account': fileURLToPath(new URL('../../packages/plugin-sdk/src/harness-account.ts', import.meta.url)),
       '@kiki/plugin-sdk/im': fileURLToPath(new URL('../../packages/plugin-sdk/src/im.ts', import.meta.url)),
       '@kiki/plugin-sdk/messages': fileURLToPath(new URL('../../packages/plugin-sdk/src/messages.ts', import.meta.url)),
       '@kiki/plugin-sdk': fileURLToPath(new URL('../../packages/plugin-sdk/src/index.ts', import.meta.url)),
