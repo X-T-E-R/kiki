@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const desktopLifecycleRequestSchema = z.object({
-  action: z.enum(['restart', 'update', 'quit']),
+  action: z.enum(['restart', 'update', 'quit', 'prepare-update', 'cancel-update']),
   server_id: z.string().min(1),
   consent: z.literal(true),
   interrupt_work: z.boolean().default(false),
@@ -11,6 +11,7 @@ export const desktopLifecycleStateSchema = z.object({
   home_id: z.string().min(1),
   managed: z.boolean(),
   draining: z.boolean(),
+  hot_switch_prepared: z.boolean().optional(),
   work_pending: z.array(z.string()),
   impact: z.literal('all-windows-in-this-space'),
 });

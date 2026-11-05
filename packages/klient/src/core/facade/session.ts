@@ -141,7 +141,7 @@ export interface SessionFacade {
   countPendingBackgroundTasks(): Promise<number>;
   drainBackgroundTasks(timeoutMs: number): Promise<void>;
   nextCronFireAt(): Promise<number | null>;
-  readonly execution: Pick<ISessionExecutionControl, 'read' | 'pause' | 'resume'>;
+  readonly execution: Pick<ISessionExecutionControl, 'read' | 'pause' | 'cancelPause' | 'resume'>;
   readonly todos: SessionTodosFacade;
   readonly init: SessionInitFacade;
   readonly btw: SessionBtwFacade;
@@ -238,6 +238,7 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
       read: () => call(scope, 'sessionExecutionControl', 'read', []) as ReturnType<ISessionExecutionControl['read']>,
       pause: input => call(scope, 'sessionExecutionControl', 'pause', [input]) as ReturnType<ISessionExecutionControl['pause']>,
       resume: input => call(scope, 'sessionExecutionControl', 'resume', [input], { timeoutMs: 0 }) as ReturnType<ISessionExecutionControl['resume']>,
+      cancelPause: input => call(scope, 'sessionExecutionControl', 'cancelPause', [input], { timeoutMs: 0 }) as ReturnType<ISessionExecutionControl['cancelPause']>,
     },
     optionalCapabilities: {
       read: () => call(scope, 'sessionOptionalCapabilityService', 'read', []) as Promise<SessionCapabilityView>,

@@ -136,6 +136,10 @@ export class TaskWaitTool implements ITaskWaitTool {
     };
   }
 
+  resumeExecutionWait(args: TaskWaitInput, ctx: ExecutableToolContext): Promise<ExecutableToolResult> {
+    return this.execute(args, ctx);
+  }
+
   private async execute(
     args: TaskWaitInput,
     ctx: ExecutableToolContext,
@@ -146,9 +150,12 @@ export class TaskWaitTool implements ITaskWaitTool {
         output: 'TaskWait is disabled: the task_wait experimental flag is off.',
       };
     }
-    const startedAt = Date.now();
-    const timeoutMs = args.timeout * 1000;
-    const runningAtStart = this.tasks.list(true);
+    const saved = ctx.executionWait?.kind === 'task' ? ctx.executionWait : undefined;
+    const startedAt = saved?.startedAt ?? Date.now();
+    const timeoutMs = saved?.timeoutMs ?? args.timeout * 1000;
+    const runningAtStart = saved === undefined ? this.tasks.list(true)
+      : saved.taskIds.flatMap(id => { const task = this.tasks.getTask(id); return task === undefined ? [] : [task]; });
+    const executionWait = { kind: 'task' as const, taskIds: args.task_id === undefined ? runningAtStart.map(task => task.taskId) : [args.task_id], startedAt, timeoutMs };
 
     if (args.task_id === undefined) {
       if (runningAtStart.length === 0) {
@@ -184,15 +191,19 @@ export class TaskWaitTool implements ITaskWaitTool {
     }
 
     let waited: AgentTaskInfo | undefined;
-    const signal =
-      ctx.steerSignal === undefined ? ctx.signal : AbortSignal.any([ctx.signal, ctx.steerSignal]);
+    const pause = ctx.executionPauseSignal;
+    const signal = AbortSignal.any([ctx.signal, ctx.steerSignal, pause].filter((candidate): candidate is AbortSignal => candidate !== undefined));
     const progress = startWaitProgress(args, this.tasks, ctx.onUpdate, startedAt);
+    const remaining = Math.max(0, startedAt + timeoutMs - Date.now());
     try {
-      waited =
-        args.task_id === undefined
-          ? await this.waitAny(runningAtStart, timeoutMs, signal)
-          : await this.tasks.wait(args.task_id, timeoutMs, signal);
+      signal.throwIfAborted();
+      const finished = saved === undefined ? undefined : runningAtStart.filter(task => TERMINAL_STATUSES.has(task.status))
+        .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))[0];
+      waited = finished !== undefined ? await this.tasks.wait(finished.taskId, 0, signal)
+        : args.task_id === undefined ? await this.waitAny(runningAtStart, remaining, signal)
+          : await this.tasks.wait(args.task_id, remaining, signal);
     } catch (error) {
+      if (!ctx.signal.aborted && pause?.aborted && error === pause.reason) return { output: '', executionWait };
       if (
         !ctx.signal.aborted &&
         ctx.steerSignal?.aborted === true &&

@@ -59,7 +59,21 @@ export interface MemoryWriteReceipt {
   readonly proposedTarget?: import('#/app/memory/memoryStore').MemoryTarget;
 }
 
+export type ExecutionTaskWait = {
+  readonly kind: 'task';
+  readonly taskIds: readonly string[];
+  readonly startedAt: number;
+  readonly timeoutMs: number;
+} | {
+  readonly kind: 'agent';
+  readonly taskId: string;
+  readonly handle: Omit<import('#/agent/tools/agent/subagent-task').SubagentHandle, 'completion'>;
+  readonly runLabel: string;
+  readonly timeoutMs: number;
+};
+
 export interface ExecutableToolSuccessResult {
+  readonly executionWait?: ExecutionTaskWait;
   readonly output: ExecutableToolOutput;
   readonly isError?: false | undefined;
   readonly stopTurn?: boolean | undefined;
@@ -101,6 +115,9 @@ export interface ToolUpdate {
 }
 
 export interface ExecutableToolContext {
+  readonly executionPauseSignal?: AbortSignal;
+  readonly taskOwnerSignal?: AbortSignal;
+  readonly executionWait?: ExecutionTaskWait;
   readonly turnId: number;
   readonly step?: number;
   readonly toolCallId: string;
@@ -136,6 +153,7 @@ export type ToolExecution = RunnableToolExecution | ExecutableToolErrorResult;
 export interface ExecutableTool<Input = unknown> extends Tool {
   readonly subagentDefault?: 'opt-in';
   resolveExecution(input: Input): ToolExecution | Promise<ToolExecution>;
+  resumeExecutionWait?(input: Input, ctx: ExecutableToolContext): Promise<ExecutableToolResult>;
 }
 
 export type ToolSource = 'builtin' | 'user' | 'mcp' | 'plugin';

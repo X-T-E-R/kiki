@@ -316,6 +316,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   ): Promise<ToolExecutionResult> {
     const { call } = prepared;
     const rawResult = timedResult.result;
+    if (rawResult.isError !== true && rawResult.executionWait !== undefined) {
+      return { toolCallId: call.toolCall.id, toolName: call.toolName, result: rawResult };
+    }
     const finalizeStartedAt = Date.now();
     const finalized = await this.finalizeToolResult(
       call,
@@ -420,6 +423,14 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
     if (call.kind === 'rejected') {
       return settleError(call.args, call.output, 'preflight-rejected');
+    }
+
+    if (options.executionWaits?.[call.toolCall.id] !== undefined) {
+      const resume = call.tool.resumeExecutionWait;
+      if (resume === undefined) return settleError(call.args, 'The saved observer is unavailable; its original task was not restarted.', 'preflight-rejected');
+      return { task: { accesses: ToolAccesses.none(), execute: signal => this.runSingleExecution(call, {
+        approvalRule: call.toolName, execute: ctx => resume.call(call.tool, call.args, ctx),
+      }, undefined, options, signal) } };
     }
 
     let execution: ToolExecution;
@@ -626,6 +637,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         trace: options.trace,
         metadata,
         signal,
+        taskOwnerSignal: options.taskOwnerSignal,
+        executionPauseSignal: options.executionPauseSignal,
+        executionWait: options.executionWaits?.[call.toolCall.id],
         steerSignal: options.steerSignal,
         onUpdate: (update) => {
           if (signal.aborted) return;
@@ -656,6 +670,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     execution: RunnableToolExecution | undefined,
   ): ToolResult {
     const coerced = coerceToolResult(rawResult, toolName);
+    if (coerced.isError !== true && coerced.executionWait !== undefined) return coerced;
     const normalized = normalizeToolResult(coerced);
     return {
       ...normalized,
@@ -673,6 +688,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     options: ToolExecutorExecuteOptions,
     displayFields?: ToolCallDisplayFields,
   ): void {
+    if (options.executionWaits?.[call.toolCall.id] !== undefined) return;
     void this.dispatcher.dispatch(
       new ToolCallStarted({
         turnId: options.turnId,

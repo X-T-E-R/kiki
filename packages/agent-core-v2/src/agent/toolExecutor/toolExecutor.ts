@@ -21,6 +21,9 @@ export interface ToolCallStartedPayload {
 
 export interface ToolExecutorExecuteOptions {
   readonly signal: AbortSignal;
+  readonly executionPauseSignal?: AbortSignal;
+  readonly executionWaits?: Readonly<Record<string, import('#/tool/toolContract').ExecutionTaskWait>>;
+  readonly taskOwnerSignal?: AbortSignal;
   readonly steerSignal?: AbortSignal;
   readonly turnId: number;
   readonly step?: number;

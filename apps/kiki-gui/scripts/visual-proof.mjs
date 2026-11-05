@@ -100,6 +100,7 @@ const MATRIX = {
   // logs the palette of every job instead).
   'tool-groups': ['width'],
   'usage-export': ['theme', 'width'],
+  'execution-pause': ['width'],
   'live-agents-compact': ['width'],
   'live-agents-attention': ['width'],
   'plugin-import': ['width'],
@@ -6397,12 +6398,13 @@ async function scenarioUsageDashboard() {
 }
 
 /**
- * execution-pause — the Live tab's session pause/resume: one session's row
- * action pauses it through the real klient dispatcher, the poll + emitter
- * carry it to durably `paused`, a reload reads the same state back from the
- * server (the restart-recovery view), and an explicit resume returns it to
- * running. Asserts hit the fixture's session record so the wire contract is
- * proven, not just the repaint.
+ * execution-pause — the Live tab's session pause/cancel/resume: one session's
+ * row action pauses it through the real klient dispatcher, the pausing state
+ * exposes an explicit cancel action, and a real click retracts the request
+ * before a second pause carries it to durably `paused`. A reload reads the
+ * held state back from the server (the restart-recovery view), and an explicit
+ * resume returns it to running. Asserts hit the fixture's session record so
+ * the wire contract is proven, not just the repaint.
  */
 async function scenarioExecutionPause() {
   const usageUrl = () =>
@@ -6422,15 +6424,37 @@ async function scenarioExecutionPause() {
   await row.waitFor({ timeout: 15_000 });
   // Running: the session's own row offers pause; nothing claims restart safety.
   const pauseLabel = dictionaryText(job().view.locale, 'usage.execution.pauseSession');
+  const cancelPauseLabel = dictionaryText(job().view.locale, 'usage.execution.cancelPause');
   const pausedHint = dictionaryText(job().view.locale, 'usage.execution.pausedHint');
   if (!(await row.innerText()).includes(pauseLabel)) throw new Error(`running row lost its pause action: ${await row.innerText()}`);
   if (await page.locator('[data-execution-paused]').count() !== 0) throw new Error('paused row rendered before any pause');
   await shot('execution-running');
 
-  // Pause through the confirm; the state settles to durably paused.
+  // The first pause is cancelled while it is still settling. This is a real
+  // button press against the klient fixture, not a local state shortcut.
   await row.locator('button').first().click();
   const dialog = page.locator('[role="alertdialog"]');
   await dialog.waitFor({ timeout: 5000 });
+  await dialog.locator('[data-confirm-action="confirm"]').click();
+  const cancelPause = row.locator('[data-execution-action="cancel-pause"]');
+  await cancelPause.waitFor({ timeout: 5000 });
+  if (!(await cancelPause.innerText()).includes(cancelPauseLabel)) throw new Error(`pausing row lost its cancel action: ${await row.innerText()}`);
+  await shot('execution-pausing-cancel');
+  await cancelPause.click();
+  let cancelled;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    cancelled = await executionOf();
+    if (cancelled?.phase === 'running') break;
+    await page.waitForTimeout(100);
+  }
+  if (cancelled?.phase !== 'running') throw new Error(`fixture did not retract the pause: ${JSON.stringify(cancelled)}`);
+  await row.waitFor({ timeout: 5000 });
+  if (await page.locator('[data-execution-paused]').count() !== 0) throw new Error('cancelled pause still rendered as held');
+  await shot('execution-cancelled');
+
+  // A second pause settles to durably paused, proving cancellation did not
+  // alter the underlying task or make the row unusable.
+  await row.locator('button').first().click();
   await dialog.locator('[data-confirm-action="confirm"]').click();
   await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
   const settled = await executionOf();
@@ -6449,7 +6473,7 @@ async function scenarioExecutionPause() {
   await resizeViewport(390);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   if (overflow > 1) throw new Error(`390px execution layout overflows by ${overflow}px`);
-  await shot('execution-paused-390');
+  await shot('execution-paused-narrow');
   await resizeViewport(1440);
 
   // Explicit resume returns the session to running and clears the overview.

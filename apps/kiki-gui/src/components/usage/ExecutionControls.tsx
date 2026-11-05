@@ -8,14 +8,11 @@
  * title, or a localized fallback with a short id — while every action still
  * targets the real session id. Several sessions fold behind one disclosure;
  * the folded list keeps every row that needs the user (pausing, paused,
- * failed, or an action in flight or failed) in view, so paused sessions keep
- * their explicit resume — the overview that answers "what is safe to restart"
- * after a normal restart.
- * Every control reads the single shared execution batch the panel runs; the
- * `execution.changed` event carries freshness and a slow poll is only the
- * reconnect fallback. Only a durably `paused` phase claims safety; `pausing`
- * reports settling work; `failed` keeps the server error and re-reads the
- * real state on the user's recovery click rather than resuming implicitly.
+ * failed, or an action in flight or failed) in view, so a paused session keeps
+ * its explicit resume after a restart.
+ * Every control reads the same execution batch. The `execution.changed`
+ * event carries freshness and a slow poll covers reconnects. `pausing` offers
+ * cancellation; `failed` shows the server error and lets the user read again.
  */
 
 import { useId, useState } from 'react';
@@ -28,6 +25,7 @@ import { useI18n } from '../../i18n';
 import {
   isExecutionActionError,
   liveInventorySessionIds,
+  useExecutionCancelPauseOne,
   useExecutionPause,
   useExecutionResumeOne,
   type ExecutionControlState,
@@ -74,7 +72,7 @@ function detailOf(error: unknown): string {
  */
 function executionFailureText(
   error: unknown,
-  kind: 'pause' | 'resume',
+  kind: 'pause' | 'resume' | 'cancelPause',
   t: Translate,
   tScoped?: { sessionTitle?: (id: string) => string | undefined },
 ): string {
@@ -93,7 +91,9 @@ function executionFailureText(
     const done = error.succeeded.length;
     const verb = kind === 'pause'
       ? t('usage.execution.pausePartial', { paused: done, total: error.total })
-      : t('usage.execution.resumePartial', { resumed: done, total: error.total });
+      : kind === 'resume'
+        ? t('usage.execution.resumePartial', { resumed: done, total: error.total })
+        : t('usage.execution.cancelPausePartial', { canceled: done, total: error.total });
     const named = first === undefined ? '' : (tScoped?.sessionTitle?.(first.sessionId) ?? first.sessionId);
     return `${verb} — ${named}: ${firstDetail}`;
   }
@@ -252,12 +252,13 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
   const { t } = useI18n();
   const navigate = useNavigate();
   const pause = useExecutionPause([sessionId]);
+  const cancelPause = useExecutionCancelPauseOne(sessionId, state);
   const resume = useExecutionResumeOne(sessionId, state);
   const [confirming, setConfirming] = useState(false);
   const phase = state.phase;
-  const busy = pause.pending || resume.pending || phase === 'pausing' || phase === 'resuming';
-  const needsUser = phase !== 'running' || confirming || pause.pending || resume.pending
-    || pause.error !== undefined || resume.error !== undefined;
+  const busy = pause.pending || cancelPause.pending || resume.pending || phase === 'pausing' || phase === 'resuming';
+  const needsUser = phase !== 'running' || confirming || pause.pending || cancelPause.pending || resume.pending
+    || pause.error !== undefined || cancelPause.error !== undefined || resume.error !== undefined;
   const settling = settlingCount(state);
   const name = sessionLabelText(label);
   const note = phaseHintShared
@@ -296,6 +297,19 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
               {t('usage.execution.pauseSession')}
             </button>
           ) : null}
+          {phase === 'pausing' && state.pauseOperationId !== undefined ? (
+            <button
+              type="button"
+              data-execution-action="cancel-pause"
+              data-execution-pending={cancelPause.pending || undefined}
+              className={ROW_BUTTON}
+              disabled={cancelPause.pending || pause.pending || resume.pending}
+              onClick={() => { cancelPause.run(); }}
+            >
+              <Icon name="close" size={12} />
+              {t('usage.execution.cancelPause')}
+            </button>
+          ) : null}
           {phase === 'paused' ? (
             <button type="button" data-execution-action="resume" className={ROW_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
               <Icon name="refresh" size={12} />
@@ -323,6 +337,9 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
       ) : null}
       {resume.error !== undefined ? (
         <FeedbackLine feedback={{ tone: 'error', text: executionFailureText(resume.error, 'resume', t) }} />
+      ) : null}
+      {cancelPause.error !== undefined ? (
+        <FeedbackLine feedback={{ tone: 'error', text: executionFailureText(cancelPause.error, 'cancelPause', t) }} />
       ) : null}
       <ConfirmDialog
         open={confirming}

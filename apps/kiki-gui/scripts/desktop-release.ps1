@@ -336,22 +336,16 @@ function Resolve-LaunchTarget([string]$Root) {
     }
 }
 
-function Invoke-Launch([string]$Root) {
+function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru) {
     $target = Resolve-LaunchTarget $Root
-
-    # Tauri starts the adjacent kiki-server.exe through its external sidecar API.
-    if ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') {
-        $previousHome = $env:KIKI_HOME
-        try {
-            $env:KIKI_HOME = $target.Root
-            Start-Process -FilePath $target.MainPath -WorkingDirectory $target.ReleasePath
-        }
-        finally {
-            $env:KIKI_HOME = $previousHome
-        }
+    $previousHome = $env:KIKI_HOME
+    try {
+        if ($LaunchHome) { $env:KIKI_HOME = $LaunchHome }
+        elseif ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') { $env:KIKI_HOME = $target.Root }
+        Start-Process -FilePath $target.MainPath -WorkingDirectory $target.ReleasePath -PassThru:$PassThru
     }
-    else {
-        Start-Process -FilePath $target.MainPath -WorkingDirectory $target.ReleasePath
+    finally {
+        $env:KIKI_HOME = $previousHome
     }
 }
 

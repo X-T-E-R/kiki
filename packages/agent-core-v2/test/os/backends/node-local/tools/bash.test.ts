@@ -491,6 +491,7 @@ function createFakeTaskService(
     _serviceBrand: undefined,
     hooks: { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() },
     hasUnfinishedWork: () => service.list().some((info) => info.lifetime !== 'service'),
+    checkpointExecutionWait: async () => {},
     track(): never {
       throw new Error('fake IAgentTaskService.track is not implemented');
     },

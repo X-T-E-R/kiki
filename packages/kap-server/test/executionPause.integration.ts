@@ -7,8 +7,10 @@ import { once } from 'node:events';
 import { createKlient } from '@kiki/klient/http';
 import { expect, it, vi } from 'vitest';
 
-type Frame = { type: string; phase?: string; elapsedMs?: number; port?: number; token?: string; pid?: number; count?: number; requestCount?: number; live?: boolean; message?: string;
-  prompt?: { phase: string; terminal?: { turnId?: number; state: string; result?: { type: string; steps: number } } }; history?: unknown[]; tasks?: Array<{ taskId: string; status: string; startedAt: number; result?: string }> };
+type TaskFrame = { taskId: string; agentId?: string; status: string; startedAt: number; model?: string; thinkingEffort?: string; result?: string };
+type Frame = { type: string; phase?: string; elapsedMs?: number; port?: number; token?: string; pid?: number; count?: number; requestCount?: number; live?: boolean; message?: string; childId?: string;
+  prompt?: { phase: string; terminal?: { turnId?: number; state: string; result?: { type: string; steps: number } } }; history?: unknown[];
+  tasks?: TaskFrame[]; task?: TaskFrame };
 
 async function waitForFrame(child: ChildProcess, frames: readonly Frame[], type: string): Promise<Frame> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -295,7 +297,8 @@ it('holds an execution across clean process exit and resumes its saved turn expl
   }
 }, 90_000);
 
-it('retains a native child task identity through restart and delivers its completion once', async () => {
+it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
+  const observer = mode !== 'background';
   const home = await mkdtemp(join(tmpdir(), 'kiki-execution-pause-child-'));
   await writeFile(join(home, 'config.toml'), 'default_model = "stub"\n[search]\nenabled = false\n[cron]\nmanualTick = true\n');
   let first: Awaited<ReturnType<typeof boot>> | undefined;
@@ -303,14 +306,32 @@ it('retains a native child task identity through restart and delivers its comple
   try {
     first = await boot(home, true);
     const session = await first.request<{ id: string }>('/api/sessions', { metadata: { cwd: home }, agent_config: { permission_mode: 'manual' } });
-    first.child.send({ type: 'child', sessionId: session.id });
-    const startedAt = (await first.wait('child-started')).tasks![0]!.startedAt;
+    first.child.send({ type: mode === 'AgentRun' ? 'foreground' : 'child', sessionId: session.id });
+    const started = await first.wait(mode === 'AgentRun' ? 'waiting' : 'child-started');
+    const { taskId, startedAt } = started.tasks![0]!;
+    const childId = mode === 'AgentRun' ? started.childId! : 'paused-child';
     expect(startedAt).toBeGreaterThan(0);
     await first.wait('model');
+    if (observer) {
+      if (mode === 'TaskWait') {
+        first.child.send({ type: 'observe', sessionId: session.id });
+        await first.wait('waiting');
+      }
+      const execution = first.client.session(session.id).execution;
+      await execution.pause({ operationId: 'pause-withdrawn' });
+      expect(await execution.cancelPause({ operationId: 'cancel-withdrawn', pauseOperationId: 'pause-withdrawn' })).toMatchObject({ phase: 'running' });
+      expect(await execution.cancelPause({ operationId: 'cancel-withdrawn', pauseOperationId: 'pause-withdrawn' })).toMatchObject({ phase: 'running' });
+      expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
+    }
     await first.client.session(session.id).execution.pause({ operationId: 'pause-child' });
     first.child.send({ type: 'release' });
     await vi.waitFor(async () => expect(await first!.client.session(session.id).execution.read()).toMatchObject({ phase: 'paused',
-      agents: expect.arrayContaining([expect.objectContaining({ agentId: 'paused-child', resumable: true })]) }));
+      agents: expect.arrayContaining([expect.objectContaining({ agentId: childId, resumable: true }),
+        ...(observer ? [expect.objectContaining({ agentId: 'main', resumable: true })] : [])]) }));
+    const lifecycle = await first.request<{ server_id: string; work_pending: string[] }>('/api/desktop-lifecycle');
+    expect(lifecycle.work_pending).toEqual([]);
+    await first.request('/api/desktop-lifecycle', { action: 'prepare-update', server_id: lifecycle.server_id, consent: true, interrupt_work: false });
+    await expect(first.client.session(session.id).execution.resume({ operationId: 'blocked-by-prepare', pauseOperationId: 'pause-child' })).rejects.toThrow();
     await cleanExit(first);
     second = await boot(home, false);
     const handle = second.client.session(session.id);
@@ -323,20 +344,28 @@ it('retains a native child task identity through restart and delivers its comple
     await handle.execution.resume({ operationId: 'resume-child', pauseOperationId: 'pause-child' });
     let sequence = 0;
     await vi.waitFor(async () => {
-      second!.child.send({ type: 'inspect', sessionId: session.id, sequence: ++sequence });
+      second!.child.send({ type: 'inspect', sessionId: session.id, sequence: ++sequence, taskId });
       const snapshot = await second!.wait(`inspect-${sequence}`);
-      expect(snapshot.tasks).toMatchObject([{ taskId: 'agent-checkpoint-child', status: 'completed', startedAt }]);
-      const receipts = snapshot.history!.filter(message => (message as { origin?: { kind?: string; taskId?: string } }).origin?.taskId === 'agent-checkpoint-child');
-      expect(receipts).toHaveLength(1);
+      expect(snapshot.task).toMatchObject({ taskId, agentId: childId, status: 'completed', startedAt, model: 'stub', thinkingEffort: 'high' });
+      const notifications = snapshot.history!.filter(message => (message as { origin?: { taskId?: string } }).origin?.taskId === taskId);
+      if (observer) {
+        const receipts = snapshot.history!.filter(message => (message as { role?: string; toolCallId?: string }).role === 'tool' &&
+          (message as { toolCallId?: string }).toolCallId === 'observer-call');
+        expect(receipts).toHaveLength(1);
+        expect(JSON.stringify(receipts[0])).toContain('completed');
+        if (mode === 'AgentRun') expect(JSON.stringify(receipts[0])).toContain(taskId);
+        expect(snapshot.prompt).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+        expect(notifications).toHaveLength(0);
+      } else expect(notifications).toHaveLength(1);
       expect(second!.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
     }, { timeout: 10_000 });
     expect(events).toContain('running');
     subscription.dispose();
-    expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(1);
+    expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(observer ? 2 : 1);
     expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
     await cleanExit(second);
-    process.stdout.write(`${JSON.stringify({ executionPauseChildProof: { sessionId: session.id, taskId: 'agent-checkpoint-child',
-      firstPid: first.ready.pid, secondPid: second.ready.pid, requestCounts: [1, 2] } })}\n`);
+    process.stdout.write(`${JSON.stringify({ executionPauseChildProof: { sessionId: session.id, taskId, childId, mode,
+      firstPid: first.ready.pid, secondPid: second.ready.pid, requestCounts: [observer ? 2 : 1, 2] } })}\n`);
   } finally {
     await first?.client.close(); await second?.client.close();
     for (const server of [first, second]) if (server !== undefined && server.child.exitCode === null) server.child.kill();

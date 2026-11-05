@@ -10,10 +10,12 @@ describe('session execution control facade', () => {
     const facade = createSessionFacade(async (...args) => { calls.push(args); return state; }, 'session-1');
     expect(await facade.execution.read()).toEqual(state);
     await facade.execution.pause({ operationId: 'pause-1' });
+    await facade.execution.cancelPause({ operationId: 'cancel-1', pauseOperationId: 'pause-1' });
     await facade.execution.resume({ operationId: 'resume-1', pauseOperationId: 'pause-1' });
     expect(calls).toEqual([
       [{ sessionId: 'session-1' }, 'sessionExecutionControl', 'read', []],
       [{ sessionId: 'session-1' }, 'sessionExecutionControl', 'pause', [{ operationId: 'pause-1' }]],
+      [{ sessionId: 'session-1' }, 'sessionExecutionControl', 'cancelPause', [{ operationId: 'cancel-1', pauseOperationId: 'pause-1' }], { timeoutMs: 0 }],
       [{ sessionId: 'session-1' }, 'sessionExecutionControl', 'resume', [{ operationId: 'resume-1', pauseOperationId: 'pause-1' }], { timeoutMs: 0 }],
     ]);
     expect(executionControlStateSchema.parse(state)).toEqual(state);

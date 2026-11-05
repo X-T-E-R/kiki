@@ -502,7 +502,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       outputWriteQueue: Promise.resolve(),
       pendingOutput: [],
       pendingOutputBytes: 0,
-      outputPersistStarted: detached && options.deferVisibility !== true,
+      outputPersistStarted: (detached || restored !== undefined) && options.deferVisibility !== true,
       waiters: [],
       terminalFired: false,
       timedOut: false,
@@ -762,6 +762,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return result;
   }
 
+  hasWorkPreventingPausedExit(): boolean {
+    return this.list(true).some(info => info.lifetime !== 'service' && !this.hasPausedExecution(info));
+  }
+
   hasUnfinishedWork(): boolean {
     if (this.restorePending) return true;
     for (const entry of this.tasks.values()) {
@@ -798,6 +802,34 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     await this.restoreAgentTaskNotifications();
+  }
+
+  async checkpointExecutionWait(taskId: string): Promise<void> {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined) {
+      const info = this.ghosts.get(taskId);
+      if (info === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The task for the execution wait is unavailable');
+      if (TERMINAL_STATUSES.has(info.status) && info.receiptVerification !== 'verified') {
+        const output = info.status === 'completed' ? await this.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER) : undefined;
+        if (output !== undefined && (output.previewBytes === 0 || output.truncated)) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original execution wait result is unavailable');
+        }
+        const receipt = await this.persistence.commitTerminalTask(info, output?.preview);
+        this.ghosts.set(taskId, { ...info, receipt, receiptVerification: 'verified' });
+      }
+      return;
+    }
+    this.startOutputPersist(entry);
+    if (TERMINAL_STATUSES.has(entry.status)) {
+      await entry.persistWriteQueue;
+      if (entry.receiptVerification !== 'verified') await this.commitTerminal(entry);
+      if (entry.receiptVerification !== 'verified') throw new Error2(ErrorCodes.REQUEST_INVALID, 'The execution wait result could not be saved');
+      return;
+    }
+    const info = this.toInfo(entry);
+    const saved = entry.persistWriteQueue.then(() => this.persistence.writeTask(info));
+    entry.persistWriteQueue = saved.catch(() => {});
+    await saved;
   }
 
   persistOutput(taskId: string): void {

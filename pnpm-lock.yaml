@@ -137,6 +137,9 @@ importers:
       '@kiki/klient':
         specifier: workspace:^
         version: link:../../packages/klient
+      '@kiki/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
       '@kiki/protocol':
         specifier: workspace:^
         version: link:../../packages/protocol
@@ -413,7 +416,7 @@ importers:
     dependencies:
       '@agentclientprotocol/sdk':
         specifier: ^1.3.0
-        version: 1.3.0(zod@4.3.6)
+        version: 1.3.0(zod@4.4.3)
       '@kiki/agent-core-v2':
         specifier: workspace:^
         version: link:../agent-core-v2
@@ -8712,6 +8715,10 @@ snapshots:
   '@agentclientprotocol/sdk@1.3.0(zod@4.3.6)':
     dependencies:
       zod: 4.3.6
+
+  '@agentclientprotocol/sdk@1.3.0(zod@4.4.3)':
+    dependencies:
+      zod: 4.4.3
 
   '@algolia/abtesting@1.18.1':
     dependencies:

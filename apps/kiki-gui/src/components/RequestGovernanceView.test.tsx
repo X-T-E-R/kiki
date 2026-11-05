@@ -719,6 +719,10 @@ function stubExecution(sessionId: string, initial: ReturnType<typeof executionSt
       state.current = executionState('paused', { pauseOperationId: operationId });
       return state.current;
     }),
+    cancelPause: vi.fn(async ({ operationId: _operationId, pauseOperationId }: { operationId: string; pauseOperationId: string }) => {
+      state.current = executionState('running', { pauseOperationId });
+      return state.current;
+    }),
     resume: vi.fn(async () => {
       state.current = executionState('running');
       return state.current;
@@ -781,11 +785,11 @@ describe('execution pause/resume', () => {
     expect(execution.facade.pause).toHaveBeenCalledTimes(1);
     expect(execution.facade.pause.mock.calls[0]?.[0]?.operationId).toMatch(/^pause:session-alpha:/);
 
-    // Paused: the overview reports restart safety and waits for the user.
+    // Paused: the overview keeps the manual resume action available.
     await settle(render, 1100);
     const panel = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
     expect(panel).not.toBeNull();
-    expect(panel.textContent).toContain('safe to restart');
+    expect(panel.textContent).toContain('Background tasks may still be running');
 
     // Explicit resume returns the session to running and clears the overview.
     await act(async () => { panel.querySelector<HTMLButtonElement>('[data-execution-action="resume"]')!.click(); });
@@ -870,7 +874,7 @@ describe('execution pause/resume', () => {
     expect(container.querySelector<HTMLElement>('[data-execution-sessions]')?.getAttribute('data-collapsed')).toBe('true');
     expect(row('session-alpha').hidden).toBe(true);
     expect(row('session-beta').hidden).toBe(false);
-    expect(row('session-beta').textContent).toContain('safe to restart');
+    expect(row('session-beta').textContent).toContain('Background tasks may still be running');
     expect(row('session-gamma').hidden).toBe(false);
     expect(row('session-gamma').textContent).toContain('resume lost a participant');
 
@@ -900,8 +904,8 @@ describe('execution pause/resume', () => {
     expect(list.querySelector('[data-execution-sessions-toggle]')).toBeNull();
     expect(list.getAttribute('data-collapsed')).toBeNull();
     expect(list.querySelectorAll('[data-execution-session]:not([hidden])')).toHaveLength(3);
-    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('safe to restart');
-    expect(list.textContent!.split('safe to restart')).toHaveLength(2);
+    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('Background tasks may still be running');
+    expect(list.textContent!.split('Background tasks may still be running')).toHaveLength(2);
     expect(list.querySelectorAll('[data-execution-action="resume"]')).toHaveLength(3);
   });
 
@@ -948,6 +952,47 @@ describe('execution pause/resume', () => {
     finish();
     await settle(render);
     expect(execution.facade.pause).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers cancel pause while settling, passes the pause operation, and blocks duplicate clicks', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    execution.facade.pause.mockImplementationOnce(async ({ operationId }: { operationId: string }) => {
+      execution.state.current = executionState('pausing', { pauseOperationId: operationId });
+      return execution.state.current;
+    });
+    let finishCancel!: () => void;
+    execution.facade.cancelPause.mockImplementationOnce(async ({ pauseOperationId }: { operationId: string; pauseOperationId: string }) => {
+      await new Promise<void>((resolve) => { finishCancel = resolve; });
+      execution.state.current = executionState('running');
+      return execution.state.current;
+    });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const control = () => container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
+    await act(async () => { control().querySelector<HTMLButtonElement>('[data-execution-action="pause"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+
+    const cancel = control().querySelector<HTMLButtonElement>('[data-execution-action="cancel-pause"]')!;
+    expect(cancel.textContent).toContain('Cancel pause');
+    expect(cancel.disabled).toBe(false);
+    const pauseArgs = execution.facade.pause.mock.calls[0] as unknown as [{ operationId: string }];
+    await act(async () => { cancel.click(); });
+    await settle(render);
+    expect(execution.facade.cancelPause).toHaveBeenCalledTimes(1);
+    expect(control().querySelector<HTMLButtonElement>('[data-execution-action="cancel-pause"]')?.disabled).toBe(true);
+    control().querySelector<HTMLButtonElement>('[data-execution-action="cancel-pause"]')?.click();
+    expect(execution.facade.cancelPause).toHaveBeenCalledTimes(1);
+
+    finishCancel();
+    await settle(render, 1100);
+    const cancelArgs = execution.facade.cancelPause.mock.calls[0] as unknown as [{ operationId: string; pauseOperationId: string }];
+    expect(cancelArgs[0].operationId).toMatch(/^cancelPause:session-alpha:/);
+    expect(cancelArgs[0].pauseOperationId).toBe(pauseArgs[0].operationId);
+    expect(execution.state.current.phase).toBe('running');
+    expect(control().textContent).toContain('Pause execution');
   });
 
   it('pauses every session in the full inventory with one action', async () => {

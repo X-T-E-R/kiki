@@ -14,6 +14,22 @@ Desktop discovery shares one in-flight result per native window and the home-loc
 
 Explicit desktop restart/update uses `/api/desktop-lifecycle`, whose canonical schemas live in `packages/protocol/src/rest/desktop-lifecycle.ts`. Only a service marked `desktop_managed` by desktop bootstrap can be stopped; the consent names its current `server_id`. Native confirmation states that all windows in the affected space disconnect and unfinished work will be cancelled and drained. Unconfirmed work keeps running. Confirmed work goes through the existing `start.ts` close path, session lifecycle `close`, agent removal, task cancellation and persistence drain; activity is not a permanent prohibition. The service blocks new mutations while draining. When normal shutdown closes HTTP before session teardown finishes, `serve --ensure` also waits for the registered live instance to release or exit before spawning a replacement. A still-live unreachable instance produces a recoverable reason at the wait deadline, not a second daemon. Native waits for the old registry instance to disappear without force-killing it, then startup uses the same home-local PID lease. A drain exceeding 90 seconds returns a recoverable reason instead of killing the process. Updates retain `server/ensure.lock` until installation finishes (or until the owning process exits); CLI ensure does not steal a live owner's lock after a time threshold, and reports a still-running update after its own bounded wait. Another home has a separate lock and is not restarted by a one-space restart. External services retain their original ownership guard.
 
+### Switch a local Windows desktop release with execution paused
+
+From a PowerShell window outside Kiki, run the switch script against the installed runtime, its active home, and a candidate with a verified desktop build receipt:
+
+```powershell
+& .\apps\kiki-gui\scripts\desktop-hot-switch.ps1 `
+  -RuntimeRoot $RuntimeRoot -KikiHome $KikiHome `
+  -CandidateRoot $CandidateRoot -ExpectedCommit $FullCommit
+```
+
+The script records the running release and its own pause operation IDs in `<RuntimeRoot>/hot-switch.json`. When the service reports no unfinished work that would be interrupted by exit, the script prepares the update. Preparation blocks client mutations that could start or resume work. If the desktop shell is open, wait for the script to ask you to choose **Quit → Stop services and quit** from the tray; closing a window only hides it. Use `-AllowLegacyDesktopQuit` for an older backend without the prepare action, and keep other clients from starting work until it exits. Do not quit other spaces as part of the switch.
+
+The script reuses `desktop-release.ps1` to promote and start the verified candidate. It checks the new service identity, build, space and home before releasing its own pauses. Earlier pauses stay in place. If the switch stops, keep its record and rerun the script with the same `-RuntimeRoot` and `-KikiHome` plus `-Recover`. Recovery uses the verified running release or starts the original release if no managed service is running. For an older backend that lacks cancellation, a pause that is still settling must reach `paused` before recovery can continue it. The script never forcibly stops a process.
+
+Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/kiki-gui/scripts/desktop-hot-switch.test.ps1` to exercise promotion, restart and recovery with an isolated runtime. `packages/kap-server/test/executionPause.integration.ts` covers the saved waits and task identity across real server processes; `desktopLifecycle.test.ts` covers the prepare gate.
+
 ## Preview contract and recovery
 
 The canonical request and response schemas live in `packages/protocol/src/rest/document-preview.ts`. The server registers `POST /api/sessions/{session_id}/document-preview` and session-scoped `GET .../document-preview/assets/{asset_id}`. Workspace sources retain runtime/filesystem authorization; session-media sources retain their session binding. Remote files are read through their runtime before local rendering. GUI consumers must fetch `ready.assets[].url` through the authenticated connection, not substitute a host filesystem read.

@@ -1,11 +1,9 @@
 /**
- * Session execution pause/resume — the GUI consumer of producer-965's
- * `session(id).execution` facade (klient SHA 4a8a24ebd).
+ * Session execution pause, cancel, and resume through `session(id).execution`.
  *
- * A pause never kills an in-flight step: the server persists the receipt,
- * settles the current step, then reports `paused`. Only a durably `paused`
- * phase means the session is safe to restart; `failed` keeps the server error
- * and waits for the user's explicit recovery action. There is no local pause
+ * The server reports `paused` once it saves the checkpoint. Detached tasks
+ * can still be running; `failed` keeps the server error and waits for the
+ * user's explicit recovery action. There is no local pause
  * flag — the state always comes from `session.execution.read()`, with
  * `execution.changed` observations as the primary channel and a slow poll as
  * the reconnect fallback. One read feeds every control (row, pause-all,
@@ -376,25 +374,28 @@ export interface ExecutionActionError {
   readonly failures: readonly { readonly sessionId: string; readonly error: unknown }[];
   readonly succeeded: readonly string[];
   readonly total: number;
-  readonly kind: 'pause' | 'resume';
+  readonly kind: 'pause' | 'resume' | 'cancelPause';
 }
 
 export function isExecutionActionError(error: unknown): error is ExecutionActionError {
   return typeof error === 'object' && error !== null && Array.isArray((error as ExecutionActionError).failures);
 }
 
+type ExecutionFacade = import('@kiki/klient').SessionFacade['execution'];
+
 /**
- * One action hook shape shared by pause and resume. The operationId lives for
- * exactly one operation attempt: a network-uncertain retry replays the same id
- * (the server answers with its receipt), and once an attempt settles the id is
- * dropped so the next user action mints a fresh operation. Resume always reads
- * the session's current durably paused `pauseOperationId` from the state the
- * caller rendered — it never resumes a stale pause.
+ * One action hook shape shared by pause, cancel-pause, and resume. The
+ * operationId lives for exactly one operation attempt: a network-uncertain
+ * retry replays the same id (the server answers with its receipt), and once an
+ * attempt settles the id is dropped so the next user action mints a fresh
+ * operation. Resume and cancel-pause always use the session's current
+ * pauseOperationId from the state the caller rendered — they never act on a
+ * stale pause.
  */
 function useExecutionAction(
   sessionIds: readonly string[],
-  kind: 'pause' | 'resume',
-  call: (execution: import('@kiki/klient').SessionFacade['execution'], sessionId: string, operationId: string) => Promise<ExecutionControlState>,
+  kind: 'pause' | 'resume' | 'cancelPause',
+  call: (execution: ExecutionFacade, sessionId: string, operationId: string) => Promise<ExecutionControlState>,
 ) {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
@@ -455,6 +456,27 @@ export function useExecutionPause(sessionIds: readonly string[]): ExecutionActio
   const joined = sessionIds.join('\n');
   const ids = useMemo(() => (joined === '' ? [] : joined.split('\n')), [joined]);
   return useExecutionAction(ids, 'pause', (execution, _sessionId, operationId) => execution.pause({ operationId }));
+}
+
+/**
+ * Cancel-pause is offered only while the server reports `pausing`. The
+ * pauseOperationId is captured from that state so a click that races the
+ * settling transition is still accepted when the server has already committed
+ * `paused`; cancellation only retracts the pause request.
+ */
+export function useExecutionCancelPauseOne(
+  sessionId: string,
+  state: ExecutionControlState | undefined,
+): ExecutionAction {
+  const pauseOperationId = state?.pauseOperationId;
+  const cancelable = useMemo(
+    () => state?.phase === 'pausing' && pauseOperationId !== undefined ? [sessionId] : [],
+    [pauseOperationId, sessionId, state?.phase],
+  );
+  return useExecutionAction(cancelable, 'cancelPause', (execution, _sessionId, operationId) => {
+    if (pauseOperationId === undefined) return Promise.reject(new Error('pause-operation-unavailable'));
+    return execution.cancelPause({ operationId, pauseOperationId });
+  });
 }
 
 /**

@@ -2489,11 +2489,13 @@ export class AgentPromptService implements IAgentPromptService {
 
   private async startNext(): Promise<void> {
     await this.executionControl.ready();
-    if (this.executionControl.isHeld()) return;
+    if (this.executionControl.isHeld() && !this.executionControl.isPausing()) return;
     if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
     if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
     const candidateId = this.nextReadyQueueId();
     if (candidateId === undefined) return;
+    if (this.executionControl.isHeld() && (this.scopeContext.parentAgentId === undefined ||
+      this.pending.find(candidate => candidate.id === candidateId)?.parentReceiptManaged !== true)) return;
     if (candidateId.startsWith(MODEL_SWITCH_QUEUE_PREFIX)) {
       if (this.loop.status().state !== 'idle') {
         if (!this.waitingForLoop) {

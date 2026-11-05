@@ -405,6 +405,9 @@ session with:
 
 The `read` call uses `method: "read"` and `params: []`. Resume uses
 `method: "resume"` and `params: [{ "operationId": "resume-1", "pauseOperationId": "pause-1" }]`.
+To withdraw a pending pause, use `method: "cancelPause"` and
+`params: [{ "operationId": "cancel-1", "pauseOperationId": "pause-1" }]`, or call
+`klient.session(sessionId).execution.cancelPause(...)`.
 The execution state is returned in the usual response envelope's `data`.
 Subscribe to `execution.changed` through `session.events` over the authenticated
 `/api/klient/events` socket, and use `read` to reconcile after reconnecting;
@@ -413,28 +416,24 @@ this is not a new `/api/sessions/{session_id}:pause` route or a legacy
 
 The returned `phase` is `running`, `pausing`, `paused`, `resuming`, or `failed`.
 `pause` atomically persists the hold intent before settling the session's
-`main` and native child agents. A native model or tool step that has already
-started finishes with its real result, then the hold takes effect before the
-next step. External execution, process, and media work is not forcibly
-cancelled, so the session can remain `pausing` until that work settles. Each
-`agents` entry reports `settling`, `paused`, `idle`, or `unknown`, plus whether
-it is `resumable`. A `failed` state may include an `error` string. If `phase` is
-`failed`, read `error` and `agents` to inspect the failure; the hold remains in
-place, and an `unknown` result from a cold session does not authorize automatic
-resume.
+`main` and its child agents. An in-flight model request or tool action reaches
+its real outcome before execution stops. A `TaskWait` or foreground `AgentRun`
+that is only waiting for a result can save its place without waiting for that
+result; resuming observes the same task. Detached process and media work can
+continue independently. Each `agents` entry reports `settling`, `paused`,
+`idle`, or `unknown`, plus whether it is `resumable`. If `phase` is `failed`,
+read `error` and `agents` before taking action; the hold remains in place.
 
-After the state becomes `paused`, normal close preserves the turn, tasks, queue,
-and binding. A restart keeps the hold; call `resume` explicitly with the
-current `pauseOperationId`, and do not automatically replay work whose
-external result is unknown. `operationId` and `pauseOperationId` must be
-non-empty strings of at most 256 characters. Start each new `pause` or `resume`
-cycle with a new `operationId`; reuse the stable ID only when retrying that same
-action. Retrying the same action with the same ID returns the operation's saved
-receipt or latest saved state, while reusing an ID for a different action is
-rejected. Ordinary sends remain accepted and queued while a hold is active. A
-user-requested pause is independent of Goal handling; Goal work does not resume
-it implicitly. `execution.resume` also does not reopen a Goal that the user
-paused.
+`cancelPause` withdraws the named pause while it is settling, including if that
+same pause finishes just before cancellation arrives. It does not stop the
+original task or repeat a model request or tool action. A restart retains a
+saved `paused` checkpoint; call `resume` with its `pauseOperationId` to continue
+the original turn and binding. A task with an unknown external outcome is not
+replayed. `operationId` and `pauseOperationId` must be non-empty strings of at
+most 256 characters. Use a new `operationId` for each new action; retrying the
+same action with the same ID returns its receipt. Reusing an ID for a different
+action is rejected. Ordinary sends queue while execution is held. Releasing
+execution does not reopen a Goal that the user paused.
 
 Session list and cold reads do not activate a cold session. `GET /api/sessions`
 and `GET /api/sessions/{session_id}` may include the optional read-only

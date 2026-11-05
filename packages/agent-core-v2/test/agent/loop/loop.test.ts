@@ -6,12 +6,13 @@ import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegist
 import type { ChatProvider } from '#/kosong/contract/provider';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentProfileService } from '#/index';
-import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { ISessionExecutionControl, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { ModelRequestTiming } from '#/kosong/model/modelRequester';
@@ -33,20 +34,24 @@ import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IEventBus } from '#/app/event/eventBus';
+import { IThreadMailboxStore } from '#/app/threadCommunication/threadMailboxStore';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { WIRE_PROTOCOL_VERSION } from '#/wire/migration/migration';
 
 import {
   agentService,
   appService,
   createTestAgent,
+  InMemoryWireRecordPersistence,
   permissionModeServices,
   type TestAgentContext,
   type TestAgentOptions,
+  wireRecordPersistenceServices,
 } from '../../harness';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
@@ -111,6 +116,397 @@ describe('Agent loop', () => {
     expect(steps).toBe(2);
     expect((await control.resume({ operationId: 'resume-once', pauseOperationId: 'pause-once' })).phase).toBe('running');
     expect(steps).toBe(2);
+  });
+
+  it('cancels a pause while the model step is running and ignores its late settlement', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    const requester = ctx.get(IAgentLLMRequesterService);
+    let releaseModel!: () => void;
+    const modelHeld = new Promise<void>(resolve => { releaseModel = resolve; });
+    const originalStart = requester.start.bind(requester);
+    let firstRequest = true;
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const task = originalStart(...args);
+      if (!firstRequest) return task;
+      firstRequest = false;
+      return { ...task, result: (async () => { await modelHeld; return task.result; })() };
+    });
+
+    ctx.mockNextResponse({ type: 'text', text: 'first result' });
+    ctx.mockNextResponse({ type: 'text', text: 'second result' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'work' }] });
+    await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(1));
+    const next = loop.enqueue(new ContinuationStepRequest());
+
+    expect(await control.pause({ operationId: 'pause-during-model' })).toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-during-model' });
+    expect(await control.read()).toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-during-model' });
+    const cancelled = await control.cancelPause({ operationId: 'cancel-model-pause', pauseOperationId: 'pause-during-model' });
+    expect(cancelled).toMatchObject({ phase: 'running', pauseOperationId: 'pause-during-model', cancelPauseOperationId: 'cancel-model-pause' });
+    expect(await control.cancelPause({ operationId: 'cancel-model-pause', pauseOperationId: 'pause-during-model' })).toEqual(cancelled);
+
+    releaseModel();
+    const turn = (await next.assigned).turn;
+    await expect(turn.result).resolves.toMatchObject({ type: 'completed', steps: 2 });
+    await loop.settled();
+
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(await control.read()).toMatchObject({ phase: 'running', pauseOperationId: 'pause-during-model', cancelPauseOperationId: 'cancel-model-pause' });
+    expect(loop.status().executionPaused).toBe(false);
+  });
+
+  it('ignores a late canceled pause before a newer pause settles', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    const pauseA = deferred();
+    const pauseB = deferred();
+    const gates = [pauseA, pauseB];
+    const pause = vi.fn(async (_signal: AbortSignal): Promise<undefined> => {
+      const gate = gates.shift();
+      if (gate === undefined) throw new Error('unexpected pause participant call');
+      await gate.promise;
+      return undefined;
+    });
+    const participant = control.register('delayed-pause-fixture', { pause, resume: async () => undefined });
+    try {
+      await expect(control.pause({ operationId: 'pause-A' })).resolves.toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-A' });
+      await vi.waitFor(() => expect(pause).toHaveBeenCalledTimes(1));
+      await expect(control.cancelPause({ operationId: 'cancel-A', pauseOperationId: 'pause-A' })).resolves.toMatchObject({
+        phase: 'running', pauseOperationId: 'pause-A', cancelPauseOperationId: 'cancel-A',
+      });
+
+      await expect(control.pause({ operationId: 'pause-B' })).resolves.toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-B' });
+      await vi.waitFor(() => expect(pause).toHaveBeenCalledTimes(2));
+      pauseA.resolve();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(await control.read()).toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-B' });
+
+      pauseB.resolve();
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'pause-B' }));
+      expect(pause).toHaveBeenCalledTimes(2);
+    } finally {
+      await participant.dispose();
+    }
+  });
+
+  it('accepts cancel when pause lands concurrently without rerunning the tool or changing the turn', async () => {
+    const local = createTestAgent(permissionModeServices('yolo'));
+    const localLoop = local.get(IAgentLoopService);
+    const localControl = local.get(ISessionExecutionControl);
+    const toolStarted = deferred();
+    const releaseTool = deferred();
+    const secondModelStarted = deferred();
+    const releaseSecondModel = deferred();
+    let toolRuns = 0;
+    let modelRequests = 0;
+    const tool: ExecutableTool = {
+      name: 'Work',
+      description: 'Perform one test operation.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      resolveExecution: () => ({
+        approvalRule: 'Work',
+        execute: async () => {
+          toolRuns++;
+          toolStarted.resolve();
+          await releaseTool.promise;
+          return { output: 'work complete' };
+        },
+      }),
+    };
+    local.get(IAgentProfileService).update({ activeToolNames: ['Work'] });
+    local.get(IAgentToolRegistryService).register(tool);
+    const requester = local.get(IAgentLLMRequesterService);
+    const originalStart = requester.start.bind(requester);
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const task = originalStart(...args);
+      modelRequests++;
+      if (modelRequests !== 2) return task;
+      secondModelStarted.resolve();
+      return { ...task, result: (async () => { await releaseSecondModel.promise; return task.result; })() };
+    });
+    local.mockNextResponse({ type: 'function', id: 'call-work', name: 'Work', arguments: '{}' });
+    local.mockNextResponse({ type: 'text', text: 'finished after cancel' });
+    const ended: TurnEnded[] = [];
+    const started: TurnStarted[] = [];
+    const bus = local.get(IEventBus);
+    const subscriptions = [
+      bus.subscribe(TurnStarted, event => started.push(event)),
+      bus.subscribe(TurnEnded, event => ended.push(event)),
+    ];
+    const documents = local.get(IAtomicDocumentStore);
+    const originalSet = documents.set.bind(documents);
+    const pausedWriteStarted = deferred();
+    const releasePausedWrite = deferred();
+    const save = vi.spyOn(documents, 'set').mockImplementation(async (scope, key, data) => {
+      if (key === 'execution-control.json' && (data as { state?: { phase?: string } }).state?.phase === 'paused') {
+        pausedWriteStarted.resolve();
+        await releasePausedWrite.promise;
+      }
+      await originalSet(scope, key, data);
+    });
+
+    try {
+      const prompt = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'run work' }], toolCalls: [], origin: { kind: 'user' },
+      } });
+      const turn = await prompt.launched;
+      await toolStarted.promise;
+      const turnId = turn!.id;
+      expect(localLoop.status().activeTurnId).toBe(turnId);
+
+      await expect(localControl.pause({ operationId: 'pause-race' })).resolves.toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-race' });
+      releaseTool.resolve();
+      await pausedWriteStarted.promise;
+      const cancellation = localControl.cancelPause({ operationId: 'cancel-race', pauseOperationId: 'pause-race' });
+      let canceled = false;
+      void cancellation.then(() => { canceled = true; });
+      await Promise.resolve();
+      expect(canceled).toBe(false);
+      releasePausedWrite.resolve();
+      await expect(cancellation).resolves.toMatchObject({ phase: 'running', pauseOperationId: 'pause-race', cancelPauseOperationId: 'cancel-race' });
+      await secondModelStarted.promise;
+      expect(localLoop.status().activeTurnId).toBe(turnId);
+      releaseSecondModel.resolve();
+      await expect(turn!.result).resolves.toMatchObject({ type: 'completed', steps: 2 });
+      await localLoop.settled();
+      await vi.waitFor(() => expect(ended).toHaveLength(1));
+
+      expect(started.map(event => event.turnId)).toEqual([turnId]);
+      expect(ended.map(event => event.turnId)).toEqual([turnId]);
+      expect(toolRuns).toBe(1);
+      expect(local.llmCalls).toHaveLength(2);
+      expect(wireLoopEvents(local, 'tool.call')).toHaveLength(1);
+    } finally {
+      releaseTool.resolve();
+      releasePausedWrite.resolve();
+      releaseSecondModel.resolve();
+      save.mockRestore();
+      for (const subscription of subscriptions) await subscription.dispose();
+      await local.dispose();
+    }
+  });
+
+  it('rejects stale pause operations and operation IDs reused for another action', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    await control.pause({ operationId: 'pause-current' });
+    await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'pause-current' }));
+    await expect(control.cancelPause({ operationId: 'stale-cancel', pauseOperationId: 'pause-stale' })).rejects.toThrow();
+    await expect(control.resume({ operationId: 'pause-current', pauseOperationId: 'pause-current' })).rejects.toThrow();
+    await expect(control.cancelPause({ operationId: 'cancel-current', pauseOperationId: 'pause-current' })).resolves.toMatchObject({
+      phase: 'running', pauseOperationId: 'pause-current', cancelPauseOperationId: 'cancel-current',
+    });
+    await expect(control.pause({ operationId: 'cancel-current' })).rejects.toThrow();
+  });
+
+  it('drops a resume point when the current turn is canceled during capture flush', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    let releaseBoundary!: () => void;
+    let boundaryReached!: () => void;
+    const boundaryHeld = new Promise<void>(resolve => { releaseBoundary = resolve; });
+    const boundaryEntered = new Promise<void>(resolve => { boundaryReached = resolve; });
+    const hook = loop.hooks.onDidFinishStep.register('cancel-during-capture', async (step, next) => {
+      await next();
+      if (step.step !== 1) return;
+      loop.enqueue(new ContinuationStepRequest());
+      boundaryReached();
+      await boundaryHeld;
+    });
+    const controlDispatcher = ctx.dispatcher;
+    const originalFlush = controlDispatcher.flush.bind(controlDispatcher);
+    const captureStarted = deferred();
+    const releaseCapture = deferred();
+    let flushGated = false;
+    const flush = vi.spyOn(controlDispatcher, 'flush').mockImplementation(async () => {
+      if (control.isPausing() && !flushGated) {
+        flushGated = true;
+        captureStarted.resolve();
+        await releaseCapture.promise;
+      }
+      await originalFlush();
+    });
+
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'cancel during capture' });
+      const turn = (await loop.enqueue(nextTurnMessage('cancel during capture')).assigned).turn;
+      await boundaryEntered;
+      await expect(control.pause({ operationId: 'pause-capture-cancel' })).resolves.toMatchObject({ phase: 'pausing' });
+      releaseBoundary();
+      await captureStarted.promise;
+      expect(await control.read()).toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-capture-cancel' });
+      expect(turn.cancel()).toBe(true);
+      await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+      releaseCapture.resolve();
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'pause-capture-cancel' }));
+
+      const paused = await control.read();
+      expect(paused.agents).toEqual([expect.objectContaining({ agentId: 'main', state: 'idle', resumable: false })]);
+      expect(control.resumePoint('main')).toBeUndefined();
+      await control.resume({ operationId: 'resume-canceled-capture', pauseOperationId: 'pause-capture-cancel' });
+      await loop.settled();
+      expect(turn.state).toBe('cancelled');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(await control.read()).toMatchObject({ phase: 'running' });
+    } finally {
+      releaseBoundary();
+      releaseCapture.resolve();
+      flush.mockRestore();
+      await hook.dispose();
+    }
+  });
+
+  it('invalidates a main capture while another participant keeps the session pausing', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    let releaseBoundary!: () => void;
+    let boundaryReached!: () => void;
+    const boundaryHeld = new Promise<void>(resolve => { releaseBoundary = resolve; });
+    const boundaryEntered = new Promise<void>(resolve => { boundaryReached = resolve; });
+    const hook = loop.hooks.onDidFinishStep.register('cancel-with-delayed-participant', async (step, next) => {
+      await next();
+      if (step.step !== 1) return;
+      loop.enqueue(new ContinuationStepRequest());
+      boundaryReached();
+      await boundaryHeld;
+    });
+    const otherPause = deferred();
+    const otherStarted = deferred();
+    const other = control.register('other-participant', {
+      pause: async () => {
+        otherStarted.resolve();
+        await otherPause.promise;
+        return undefined;
+      },
+      resume: async () => undefined,
+    });
+    const controlDispatcher = ctx.dispatcher;
+    const originalFlush = controlDispatcher.flush.bind(controlDispatcher);
+    const mainCaptured = deferred();
+    let captureObserved = false;
+    const flush = vi.spyOn(controlDispatcher, 'flush').mockImplementation(async () => {
+      const result = await originalFlush();
+      if (control.isPausing() && !captureObserved) {
+        captureObserved = true;
+        mainCaptured.resolve();
+      }
+      return result;
+    });
+
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'main capture' });
+      const turn = (await loop.enqueue(nextTurnMessage('main capture')).assigned).turn;
+      await boundaryEntered;
+      await expect(control.pause({ operationId: 'pause-delayed-participant' })).resolves.toMatchObject({ phase: 'pausing' });
+      await otherStarted.promise;
+      releaseBoundary();
+      await mainCaptured.promise;
+      await Promise.resolve();
+      expect(turn.cancel()).toBe(true);
+      await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+      expect(await control.read()).toMatchObject({ phase: 'pausing', pauseOperationId: 'pause-delayed-participant' });
+
+      otherPause.resolve();
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'pause-delayed-participant' }));
+      const paused = await control.read();
+      expect(paused.agents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: 'main', state: 'idle', resumable: false }),
+        expect.objectContaining({ agentId: 'other-participant', state: 'idle', resumable: false }),
+      ]));
+      expect(control.resumePoint('main')).toBeUndefined();
+      await control.resume({ operationId: 'resume-delayed-participant', pauseOperationId: 'pause-delayed-participant' });
+      await loop.settled();
+      expect(turn.state).toBe('cancelled');
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally {
+      releaseBoundary();
+      otherPause.resolve();
+      flush.mockRestore();
+      await other.dispose();
+      await hook.dispose();
+    }
+  });
+
+  it('does not resume a canceled turn from a stale execution point after restore', async () => {
+    const documents = ctx.get(IAtomicDocumentStore);
+    const session = ctx.get(ISessionContext);
+    let stepStarted!: () => void;
+    const started = new Promise<void>(resolve => { stepStarted = resolve; });
+    const hook = loop.hooks.onWillBeginStep.register('cancelled-turn-document', async (hookContext, next) => {
+      if (hookContext.step === 1) {
+        stepStarted();
+        await new Promise<void>(resolve => hookContext.signal.addEventListener('abort', () => resolve(), { once: true }));
+      }
+      await next();
+    });
+
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'must not execute' });
+      const turn = (await loop.enqueue(nextTurnMessage('cancelled turn')).assigned).turn;
+      await started;
+      expect(turn.cancel()).toBe(true);
+      await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+      await loop.settled();
+      await hook.dispose();
+
+      const point: ExecutionResumePoint = {
+        turnId: turn.id,
+        completedSteps: 0,
+        seed: { input: [{ type: 'text', text: 'cancelled turn' }], origin: { kind: 'user' } },
+        binding: structuredClone(profile.data()),
+      };
+      const state = {
+        phase: 'paused' as const,
+        pauseOperationId: 'legacy-pause',
+        pausedAt: new Date().toISOString(),
+        agents: [{ agentId: 'main', state: 'paused' as const, resumable: true, turnId: turn.id }],
+      };
+      await documents.set(session.scope(), 'execution-control.json', {
+        version: 1,
+        checkpointComplete: true,
+        state,
+        points: { main: point },
+        receipts: { 'legacy-pause': { action: 'pause', state } },
+      });
+      const persisted = await ctx.persistedWireRecords();
+      const records = persisted[0]?.type === 'metadata' ? persisted : [
+        { type: 'metadata' as const, protocol_version: WIRE_PROTOCOL_VERSION, created_at: Date.now() },
+        ...persisted,
+      ];
+      const mailbox = {
+        _serviceBrand: undefined,
+        readMessages: async () => ({ items: [] }),
+        acceptMessage: async () => { throw new Error('unused mailbox operation'); },
+        claimNext: async () => undefined,
+        acknowledgeDelivery: async () => false,
+        markUndeliverable: async () => false,
+        cancelProducer: async () => 0,
+        listPendingTargets: async () => [],
+        appendActivity: async input => ({ seq: 0, epoch: 'test', kind: input.kind, at: 0, reason: input.reason }),
+        readActivity: async () => ({ epoch: 'test', latestSeq: 0, activities: [] }),
+        getWorkspaceOverride: async () => undefined,
+        setWorkspaceOverride: async () => {},
+        clearWorkspaceOverride: async () => {},
+        close: async () => {},
+      } satisfies IThreadMailboxStore;
+      const resumed = createTestAgent(
+        { autoConfigure: false },
+        permissionModeServices('manual'),
+        appService(IAtomicDocumentStore, documents),
+        appService(IThreadMailboxStore, mailbox),
+        wireRecordPersistenceServices(new InMemoryWireRecordPersistence(records)),
+      );
+      try {
+        resumed.configure();
+        await resumed.restorePersisted();
+        const resumedControl = resumed.get(ISessionExecutionControl);
+        await resumedControl.ready();
+        expect(await resumedControl.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'legacy-pause' });
+        await resumedControl.resume({ operationId: 'legacy-resume', pauseOperationId: 'legacy-pause' });
+        await resumed.get(IAgentLoopService).settled();
+        expect(resumed.llmCalls).toHaveLength(0);
+        expect(await resumedControl.read()).toMatchObject({ phase: 'running' });
+      } finally {
+        await resumed.dispose();
+      }
+    } finally {
+      await hook.dispose();
+    }
   });
 
   it('holds queued prompts and the user-paused Goal until explicit execution resume', async () => {

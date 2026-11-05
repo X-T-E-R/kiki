@@ -222,6 +222,8 @@ class FakeTaskService implements IAgentTaskService {
     return result;
   }
 
+  async checkpointExecutionWait(): Promise<void> {}
+
   persistOutput(_taskId: string): void {}
 
   readonly failSnapshotTaskIds = new Set<string>();

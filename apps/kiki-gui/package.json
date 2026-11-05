@@ -67,6 +67,7 @@
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/space-grotesk": "^5.2.5",
     "@kiki/agent-profiles": "workspace:^",
+    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/klient": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",

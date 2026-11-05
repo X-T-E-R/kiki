@@ -1,5 +1,6 @@
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { abortError } from '#/_base/utils/abort';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
@@ -29,15 +30,26 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
   private document: ControlDocument = { version: 1, state: { phase: 'running', agents: [] }, points: {}, receipts: {} };
   private readonly loaded: Promise<void>;
   private initialized = false;
+  private pauseController = new AbortController();
+  private settleController?: AbortController;
   private tail: Promise<unknown> = Promise.resolve();
   private readonly parked = new Set<string>();
   private readonly attachedTurns = new WeakSet<import('#/agent/loop/loop').Turn>();
+  private readonly invalidatedTurns = new Map<string, Set<number>>();
 
-  resumePoint(agentId: string): ExecutionResumePoint | undefined { return this.document.points[agentId]; }
+  resumePoint(agentId: string): ExecutionResumePoint | undefined {
+    const point = this.document.points[agentId];
+    return point !== undefined && !this.invalidatedTurns.get(agentId)?.has(point.turnId) ? point : undefined;
+  }
   park(agentId: string): void { this.parked.add(agentId); }
   isParked(agentId: string): boolean { return this.parked.has(agentId); }
 
   invalidate(agentId: string, turnId: number): Promise<void> {
+    if (this.document.state.phase !== 'running') {
+      const turns = this.invalidatedTurns.get(agentId) ?? new Set<number>();
+      turns.add(turnId);
+      this.invalidatedTurns.set(agentId, turns);
+    }
     return this.serialize(async () => {
       await this.loaded;
       if (this.document.points[agentId]?.turnId !== turnId) return;
@@ -61,6 +73,9 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
   }
 
   ready(): Promise<void> { return this.loaded; }
+  pauseSignal(): AbortSignal { return this.pauseController.signal; }
+  isPausing(): boolean { return this.document.state.phase === 'pausing'; }
+  isDurablyPaused(): boolean { return this.document.state.phase === 'paused' && this.document.checkpointComplete === true; }
   isHeld(): boolean { return !this.initialized || this.document.state.phase !== 'running'; }
   async read(): Promise<ExecutionControlState> { await this.loaded; return structuredClone(this.document.state); }
 
@@ -74,6 +89,7 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       }
     }
     this.initialized = true;
+    if (this.isHeld()) this.pauseController.abort(abortError('Execution pause requested'));
     this.changed.fire(structuredClone(this.document.state));
   }
 
@@ -110,26 +126,38 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
         this.retainFailure(pending, error);
         throw error;
       }
-      const participants = [...this.participants.entries()];
-      void this.settlePause(input.operationId, participants);
+      const controller = new AbortController();
+      this.settleController = controller;
+      void this.settlePause(input.operationId, controller);
       return state;
     });
   }
 
-  private async settlePause(operationId: string, participants: readonly (readonly [string, ExecutionPauseParticipant])[]): Promise<void> {
-    const results = await Promise.allSettled(participants.map(async ([agentId, participant]) => ({ agentId, point: await participant.pause() })));
+  private async settlePause(operationId: string, controller: AbortController): Promise<void> {
+    const { signal } = controller;
+    const results = new Map<string, { participant: ExecutionPauseParticipant; result: PromiseSettledResult<ExecutionResumePoint | undefined> }>();
+    for (;;) {
+      const next = [...this.participants.entries()].filter(([id, participant]) => {
+        const prior = results.get(id);
+        return prior?.participant !== participant || (participant.turnId !== undefined && prior.result.status === 'fulfilled' &&
+          participant.turnId() !== prior.result.value?.turnId);
+      });
+      if (next.length === 0) break;
+      const settled = await Promise.allSettled(next.map(([, participant]) => participant.pause(signal)));
+      if (signal.aborted) return;
+      next.forEach(([id, participant], index) => results.set(id, { participant, result: settled[index]! }));
+    }
     await this.serialize(async () => {
-      if (this.document.state.pauseOperationId !== operationId) return;
+      if (this.document.state.pauseOperationId !== operationId || this.document.state.phase !== 'pausing') return;
       const points: Record<string, ExecutionResumePoint> = {};
       const agents: ExecutionControlState['agents'][number][] = [];
       let failure: string | undefined;
-      for (const [index, result] of results.entries()) {
-        const agentId = participants[index]![0];
+      for (const [agentId, { result }] of results) {
         if (result.status === 'rejected') {
           failure = result.reason instanceof Error ? result.reason.message : String(result.reason);
           agents.push({ agentId, state: 'unknown', resumable: false, detail: failure });
         } else {
-          const point = result.value.point;
+          const point = result.value !== undefined && !this.invalidatedTurns.get(agentId)?.has(result.value.turnId) ? result.value : undefined;
           if (point !== undefined) points[agentId] = point;
           agents.push({ agentId, state: point === undefined ? 'idle' : 'paused', resumable: point !== undefined, turnId: point?.turnId });
         }
@@ -143,18 +171,41 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
     });
   }
 
+  cancelPause(input: { readonly operationId: string; readonly pauseOperationId: string }): Promise<ExecutionControlState> {
+    return this.release(input, true);
+  }
+
   resume(input: { readonly operationId: string; readonly pauseOperationId: string }): Promise<ExecutionControlState> {
+    return this.release(input, false);
+  }
+
+  private release(input: { readonly operationId: string; readonly pauseOperationId: string }, cancel: boolean): Promise<ExecutionControlState> {
     return this.serialize(async () => {
       await this.loaded;
       this.validateId(input.operationId);
-      const action = `resume:${input.pauseOperationId}`;
+      const action = `${cancel ? 'cancelPause' : 'resume'}:${input.pauseOperationId}`;
       const replay = this.receipt(input.operationId, action);
       if (replay !== undefined && !(this.document.state.phase === 'failed' && this.document.checkpointComplete)) return replay;
-      if (this.document.state.pauseOperationId !== input.pauseOperationId ||
-        (this.document.state.phase !== 'paused' && !(this.document.state.phase === 'failed' && this.document.checkpointComplete))) {
+      const current = this.document.state;
+      if (current.pauseOperationId !== input.pauseOperationId) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Execution control requires the current pause operation');
+      }
+      if (cancel) {
+        const alreadyCanceled = current.phase === 'running' && current.cancelPauseOperationId !== undefined;
+        const liveCheckpoint = current.phase === 'paused' && Object.entries(this.document.points).every(([agentId, point]) =>
+          this.resumePoint(agentId) === undefined || (!this.parked.has(agentId) && this.participants.get(agentId)?.turnId?.() === point.turnId));
+        if (alreadyCanceled || current.phase === 'pausing' || liveCheckpoint) {
+          const state: ExecutionControlState = alreadyCanceled ? current
+            : { ...current, phase: 'running', agents: [], cancelPauseOperationId: input.operationId };
+          await this.save({ ...this.document, checkpointComplete: false, state, points: {}, receipts: { ...this.document.receipts,
+            [input.pauseOperationId]: { action: 'pause', state }, [input.operationId]: { action, state } } });
+          return state;
+        }
+      }
+      if (current.phase !== 'paused' && !(current.phase === 'failed' && this.document.checkpointComplete)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Resume requires the current durably paused operation');
       }
-      for (const { agentId } of this.document.state.agents) {
+      for (const { agentId } of current.agents) {
         if (this.participants.has(agentId)) continue;
         const point = this.document.points[agentId];
         await this.lifecycle.create({ agentId, restoreBinding: point === undefined ? undefined : {
@@ -163,12 +214,13 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
           executorId: point.binding.executorId, executorProtocol: point.binding.executorProtocol,
         } });
       }
-      const state: ExecutionControlState = { ...this.document.state, phase: 'resuming', resumeOperationId: input.operationId, error: undefined };
+      const state: ExecutionControlState = { ...this.document.state, phase: 'resuming', resumeOperationId: input.operationId,
+        cancelPauseOperationId: cancel ? input.operationId : undefined, error: undefined };
       const pending = { ...this.document, state, receipts: { ...this.document.receipts, [input.operationId]: { action, state } } };
       try {
         await this.save(pending);
         for (const [agentId, participant] of this.participants) {
-          const turn = await participant.resume(this.document.points[agentId]);
+          const turn = await participant.resume(this.resumePoint(agentId));
           if (turn !== undefined && !this.attachedTurns.has(turn)) {
             const agent = this.lifecycle.get(agentId)!;
             await resumeAgentTask(agent, turn);
@@ -212,6 +264,12 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
     if (document.state.phase !== 'running') this.document = document;
     await this.metadata.update({ executionPhase: document.state.phase });
     this.document = document;
+    if (document.state.phase === 'running') {
+      if (this.pauseController.signal.aborted) this.pauseController = new AbortController();
+      this.settleController?.abort(abortError('Pause request withdrawn'));
+      this.settleController = undefined;
+      this.invalidatedTurns.clear();
+    } else this.pauseController.abort(abortError('Execution pause requested'));
     this.changed.fire(structuredClone(document.state));
   }
 }

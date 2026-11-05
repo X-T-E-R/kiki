@@ -404,27 +404,27 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 读取使用 `method: "read"` 和 `params: []`。恢复使用
 `method: "resume"` 和 `params: [{ "operationId": "resume-1", "pauseOperationId": "pause-1" }]`。
+撤回暂停请求时，使用 `method: "cancelPause"` 和
+`params: [{ "operationId": "cancel-1", "pauseOperationId": "pause-1" }]`，或调用
+`klient.session(sessionId).execution.cancelPause(...)`。
 执行状态放在通常响应信封的 `data` 中返回。通过已认证的
 `/api/klient/events` socket 在 `session.events` 订阅 `execution.changed`，
 断线重连后用 `read` 对账；这不是新增的
 `/api/sessions/{session_id}:pause` 路由，也不是旧 `/api/ws` 的事件。
 
 返回的 `phase` 取 `running`、`pausing`、`paused`、`resuming` 或 `failed`。
-`pause` 会先原子持久化暂停意图，再协调会话的 `main` 和 native 子 Agent。
-已经开始的 native 模型或工具 step 会用真实结果完成，然后在下一 step 前停下。
-已启动的外部执行、进程和媒体工作不会被强制取消，会等真实结算，因此会话可能长时间
-保持 `pausing`。每个 `agents` 条目会报告 `settling`、`paused`、`idle` 或 `unknown`，
-以及是否 `resumable`。`failed` 状态可能带有 `error` 字符串。`phase` 为 `failed` 时，
-读取 `error` 和 `agents` 了解失败；暂停仍然保留，冷会话的未知结果也不授权自动 resume。
+`pause` 会先原子保存暂停意图，再协调会话的 `main` 和子 Agent。正在执行的模型请求
+和工具动作会先取得实际结果。只在等结果的 `TaskWait` 或前台 `AgentRun` 可以先保存
+等待位置，不必等到任务结束；继续时仍等原任务。转到后台的进程和媒体任务可以独立运行。
+每个 `agents` 条目会报告 `settling`、`paused`、`idle` 或 `unknown`，以及是否
+`resumable`。`phase` 为 `failed` 时，暂停仍保留，先读 `error` 和 `agents` 再处理。
 
-状态稳定为 `paused` 后，普通 close 会保留 turn、task、queue 和 binding。重启后
-仍保持 hold；必须带当前 `pauseOperationId` 显式调用 `resume`，外部结果未知的工作
-不会自动重放。`operationId` 和 `pauseOperationId` 都必须是 1–256 个字符的
-非空字符串。每次新的 pause 或 resume 周期都要使用新的 `operationId`；只有重试同一
-动作时才保留稳定 ID。用同一 ID 重试同一动作会返回该操作已保存的回执或最新已保存
-状态，把该 ID 改用于其他动作则会被拒绝。暂停期间普通发送仍会进入队列，不会加发送
-禁止门。用户发起的暂停独立于 Goal；Goal 不会隐式 resume 它，
-`execution.resume` 也不会重新打开用户暂停的 Goal。
+`cancelPause` 撤回指定的暂停请求，即使同一次暂停在取消请求到达前刚刚完成。它不会
+终止原任务，也不会重放模型请求或工具动作。重启会保留已保存的 `paused` 检查点，带上
+它的 `pauseOperationId` 调用 `resume`，即可按原绑定继续原轮次。外部结果未知的工作
+不会重放。`operationId` 和 `pauseOperationId` 均须为 1–256 字符的非空字符串。新动作
+使用新 `operationId`；用同一 ID 重试同一动作会返回已有回执，改用于其他动作则会被拒绝。
+暂停期间普通消息仍会排队；继续执行不会重新打开用户已暂停的 Goal。
 
 会话列表和冷读取不会激活冷会话。`GET /api/sessions` 与
 `GET /api/sessions/{session_id}` 可能带可选的只读事实投影 `execution_phase`；

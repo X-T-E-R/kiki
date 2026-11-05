@@ -144,6 +144,10 @@ export async function registerApiV1Routes(
   core: Scope,
   opts: RegisterApiV1RoutesOptions,
 ): Promise<void> {
+  if (opts.enableShutdown !== false) {
+    registerDesktopLifecycleRoutes(app as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core,
+      { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api' });
+  }
   await app.register(
     async (apiV1) => {
       registerHealthRoute(apiV1);
@@ -321,7 +325,6 @@ export async function registerApiV1Routes(
         opts.shutdownSignal,
       );
       if (opts.enableShutdown !== false) {
-        registerDesktopLifecycleRoutes(apiV1 as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core, { serverId: opts.serverId, onShutdown: opts.onShutdown });
         registerShutdownRoutes(apiV1 as unknown as Parameters<typeof registerShutdownRoutes>[0], {
           onShutdown: opts.onShutdown,
         });

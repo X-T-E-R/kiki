@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, ISessionExecutionControl, type Scope } from '@kiki/agent-core-v2';
 import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, type DesktopLifecycleState } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -9,17 +9,23 @@ export function desktopPendingWork(core: Scope): string[] {
   const sessions = core.accessor.get(ISessionManager);
   return [...new Set([...sessions.list(), ...sessions.listEphemeral()])].filter(session => {
     if (session.accessor.get(ISessionActivityView).state().pendingInteraction !== 'none') return true;
+    const control = session.accessor.get(ISessionExecutionControl);
+    if (control.isPausing()) return true;
+    const paused = control.isDurablyPaused();
     for (const agent of session.accessor.get(IAgentLifecycleService).list()) {
       const observed = agent.accessor.get(IAgentActivityView)?.state();
-      if (observed?.turn !== undefined || observed?.background.some((item) => item.kind === 'compaction') === true) return true;
+      if (observed?.background.some(item => item.kind === 'compaction') === true) return true;
       const loop = agent.accessor.get(IAgentLoopService).status();
       const prompt = agent.accessor.get(IAgentPromptService);
       const queue = prompt.list();
       const execution = agent.accessor.get(IAgentExecutionService).status();
-      if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
-        loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests || loop.pendingTurnIds.length > 0 ||
-        prompt.hasReadyPending() || queue.active !== undefined || queue.launching !== undefined || queue.pending.length > 0 ||
-        agent.accessor.get(IAgentTaskService).hasUnfinishedWork()) return true;
+      const tasks = agent.accessor.get(IAgentTaskService);
+      const parked = paused && loop.executionPaused && control.resumePoint(agent.id)?.turnId === loop.activeTurnId;
+      if (loop.finalizing || loop.persistenceFailure || queue.launching !== undefined || loop.pendingTurnIds.length > 0) return true;
+      if (!parked && (observed?.turn !== undefined || loop.state === 'running' || queue.active !== undefined ||
+        execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling')) return true;
+      if (paused ? (tasks.hasWorkPreventingPausedExit?.() ?? tasks.hasUnfinishedWork())
+        : (prompt.hasReadyPending() || loop.hasPendingRequests || queue.pending.length > 0 || tasks.hasUnfinishedWork())) return true;
     }
     return false;
   }).map(session => session.id);
@@ -28,22 +34,46 @@ export function desktopPendingWork(core: Scope): string[] {
 export function registerDesktopLifecycleRoutes(app: {
   get: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   post: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
-  addHook: (name: 'onRequest', handler: (...args: never[]) => unknown) => unknown;
-}, core: Scope, opts: { serverId: string; onShutdown: () => void }): void {
+  addHook: (name: 'onRequest' | 'preHandler', handler: (...args: never[]) => unknown) => unknown;
+}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string }): void {
   const bootstrap = core.accessor.get(IBootstrapService);
   let draining = false;
-  const state = (): DesktopLifecycleState => ({ server_id: opts.serverId, home_id: bootstrap.spaceId ?? 'main', managed: bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1', draining, work_pending: desktopPendingWork(core), impact: 'all-windows-in-this-space' });
+  let prepared = false;
+  const state = (): DesktopLifecycleState => ({ server_id: opts.serverId, home_id: bootstrap.spaceId ?? 'main', managed: bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1', draining, hot_switch_prepared: prepared, work_pending: desktopPendingWork(core), impact: 'all-windows-in-this-space' });
+  app.addHook('preHandler', ((req: { id: string; method: string; url: string; body?: { procedure?: { scope?: string; service?: string; method?: string } } }, reply: { send: (value: unknown) => unknown }, done: () => void) => {
+    const procedure = req.body?.procedure;
+    if (prepared && req.method !== 'GET' && req.url.split('?')[0] !== '/api/desktop-lifecycle' &&
+      !(procedure?.scope === 'session' && procedure.service === 'sessionExecutionControl' &&
+        ['read', 'pause'].includes(procedure.method ?? ''))) {
+      reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This space is preparing a version switch; finish or cancel it before starting new work', req.id));
+      return;
+    }
+    done();
+  }) as never);
   app.addHook('onRequest', ((req: { id: string; method: string }, reply: { send: (value: unknown) => unknown }, done: () => void) => {
     if (draining && req.method !== 'GET') { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This space is draining for a desktop restart, update or quit; wait for cleanup before reconnecting', req.id)); return; }
     done();
   }) as never);
-  const read = defineRoute({ method: 'GET', path: '/desktop-lifecycle', success: { data: desktopLifecycleStateSchema }, description: 'Read desktop service ownership and the scope of an explicit restart, update or quit', tags: ['meta'] }, (req, reply) => { reply.send(okEnvelope(state(), req.id)); });
+  const read = defineRoute({ method: 'GET', path: `${opts.pathPrefix ?? ''}/desktop-lifecycle`, success: { data: desktopLifecycleStateSchema }, description: 'Read desktop service ownership and the scope of an explicit restart, update or quit', tags: ['meta'] }, (req, reply) => { reply.send(okEnvelope(state(), req.id)); });
   app.get(read.path, read.options, read.handler as never);
-  const mutate = defineRoute({ method: 'POST', path: '/desktop-lifecycle', body: desktopLifecycleRequestSchema, success: { data: z.object({ ok: z.literal(true) }) }, errors: { [ErrorCode.CAPABILITY_UNSUPPORTED]: {}, [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Consent to drain and stop exactly this desktop-managed service', tags: ['meta'] }, (req, reply) => {
+  const mutate = defineRoute({ method: 'POST', path: `${opts.pathPrefix ?? ''}/desktop-lifecycle`, body: desktopLifecycleRequestSchema, success: { data: z.object({ ok: z.literal(true) }) }, errors: { [ErrorCode.CAPABILITY_UNSUPPORTED]: {}, [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Consent to drain and stop exactly this desktop-managed service', tags: ['meta'] }, (req, reply) => {
     const current = state();
     if (!current.managed) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This service is externally managed; stop it through its owner', req.id)); return; }
     if (req.body.server_id !== opts.serverId) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'The service changed; review the affected space again', req.id)); return; }
-    if (current.work_pending.length > 0 && !req.body.interrupt_work) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'Unfinished work will be cancelled and drained; confirm this impact before continuing', req.id)); return; }
+    if (req.body.action === 'cancel-update') {
+      prepared = false;
+      reply.send(okEnvelope({ ok: true }, req.id));
+      return;
+    }
+    if (current.work_pending.length > 0 && (prepared || req.body.action === 'prepare-update' || !req.body.interrupt_work)) {
+      reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'Some work is still settling; wait for its saved outcome before stopping this service', req.id));
+      return;
+    }
+    if (req.body.action === 'prepare-update') {
+      prepared = true;
+      reply.send(okEnvelope({ ok: true }, req.id));
+      return;
+    }
     draining = true;
     reply.send(okEnvelope({ ok: true }, req.id));
     setImmediate(opts.onShutdown);

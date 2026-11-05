@@ -8,7 +8,7 @@ import { IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2/os/i
 import { ISessionMcpHandle } from '@kiki/agent-core-v2/session/mcp/sessionMcpHandle';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { IAgentExecutionService, IAgentLifecycleService, IAgentLoopService, IAgentTaskService, ISessionActivityView, ISessionManager } from '@kiki/agent-core-v2';
+import { IAgentExecutionService, IAgentLifecycleService, IAgentLoopService, IAgentTaskService, ISessionActivityView, ISessionExecutionControl, ISessionManager } from '@kiki/agent-core-v2';
 import { desktopLifecycleStateSchema, metaResponseSchema } from '@kiki/protocol';
 import {
   cleanupServerSessions,
@@ -232,6 +232,46 @@ describe('desktop-managed shared lifecycle', () => {
       const restored = (await call(servers[1]!, `/api/sessions/${sessionId}/goal`)).data as { goalId: string; status: string; objective: string; terminalReason?: string } | null;
       expect(restored).toMatchObject({ goalId: before.goalId, objective: 'keep the example goal', status: 'paused', terminalReason: 'Paused after agent resume' });
     } finally { for (const server of servers.toReversed()) await server.close(); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it('prepares a settled switch, blocks root Klient writes and resume, and cancels preparation without losing the pause', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-prepare-'));
+    let server: RunningServer | undefined;
+    let cancelled = false;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root,
+        env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' });
+      const task = await createTask(server, root, () => { cancelled = true; });
+      const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      const prepare = { action: 'prepare-update', server_id: state.server_id, consent: true, interrupt_work: false };
+      expect((await call(server, '/api/desktop-lifecycle', prepare)).code).not.toBe(0);
+      expect(cancelled).toBe(false);
+      const sessions = server.core.accessor.get(ISessionManager);
+      await sessions.close(task.session.id);
+      const created = await call(server, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const sessionId = (created.data as { id: string }).id;
+      const control = sessions.get(sessionId)!.accessor.get(ISessionExecutionControl);
+      await control.pause({ operationId: 'prepare-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      expect((await call(server, '/api/desktop-lifecycle', prepare)).code).toBe(0);
+      expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: true, work_pending: [] });
+      const procedure = { scope: 'session', sessionId, service: 'sessionExecutionControl' };
+      expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method: 'read' }, params: [] })).data).toMatchObject({ phase: 'paused' });
+      for (const method of ['resume', 'cancelPause']) {
+        expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method },
+          params: [{ operationId: `blocked-${method}`, pauseOperationId: 'prepare-pause' }] })).code).not.toBe(0);
+      }
+      expect((await call(server, '/api/sessions', { metadata: { cwd: root } })).code).not.toBe(0);
+      expect((await control.read()).phase).toBe('paused');
+      expect((await call(server, '/api/desktop-lifecycle', { ...prepare, action: 'cancel-update' })).code).toBe(0);
+      expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: false });
+      expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method: 'resume' },
+        params: [{ operationId: 'resume-after-cancel', pauseOperationId: 'prepare-pause' }] })).data).toMatchObject({ phase: 'running' });
+    } finally {
+      await server?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it('refuses a non-interrupt restart while a finished task result is awaiting delivery', async () => {

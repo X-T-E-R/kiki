@@ -660,7 +660,7 @@ export class FixtureKlient {
         const sessionExecutionCall =
           procedure.scope === 'session' &&
           procedure.service === 'sessionExecutionControl' &&
-          (procedure.method === 'read' || procedure.method === 'pause' || procedure.method === 'resume');
+          (procedure.method === 'read' || procedure.method === 'pause' || procedure.method === 'cancelPause' || procedure.method === 'resume');
         // Media: the global surface is core-scoped like every other global
         // service, but a job's stop and resume belong to the session and agent
         // that own it, so the agent-scoped pair is admitted here.
@@ -1036,7 +1036,7 @@ export class FixtureKlient {
         // The background settle: the current step finishes, then the session is
         // durably paused. The GUI's 1s poll and the emitter both observe it.
         setTimeout(() => {
-          if (session.executionControl?.pauseOperationId !== input.operationId) return;
+          if (session.executionControl?.phase !== 'pausing' || session.executionControl.pauseOperationId !== input.operationId) return;
           session.executionControl = {
             ...pausing,
             phase: 'paused',
@@ -1046,6 +1046,26 @@ export class FixtureKlient {
           this.emitExecution(procedure.sessionId, session.executionControl);
         }, 600);
         return structuredClone(pausing);
+      }
+      case 'sessionExecutionControl.cancelPause': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        session.executionControl ??= { phase: 'running', agents: [] };
+        const input = args[0];
+        const current = session.executionControl;
+        if (current.cancelPauseOperationId === input.operationId) return structuredClone(current);
+        if (current.pauseOperationId !== input.pauseOperationId) {
+          throw invalid('Cancel pause requires the current pause operation', 40001);
+        }
+        if (current.phase !== 'pausing' && current.phase !== 'paused') {
+          throw invalid('Cancel pause requires a pausing or paused execution', 40001);
+        }
+        // A cancellation only retracts the pause request. It leaves the task and
+        // its current turn untouched, and the phase is authoritative from here.
+        const cancelled = { ...current, phase: 'running', cancelPauseOperationId: input.operationId, agents: [], error: undefined };
+        session.executionControl = cancelled;
+        this.emitExecution(procedure.sessionId, cancelled);
+        return structuredClone(cancelled);
       }
       case 'sessionExecutionControl.resume': {
         const session = server.sessions.get(procedure.sessionId);

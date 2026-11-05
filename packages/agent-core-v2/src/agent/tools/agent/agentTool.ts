@@ -6,6 +6,7 @@ import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/di
 import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from '#/session/dispatch/resume';
 import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
+  abortable,
   isAbortError,
   isUserCancellation,
   userCancellationReason,
@@ -393,13 +394,13 @@ export class SubagentTool implements ISubagentTool {
     return this.catalog.get(child.profileName)?.main === true;
   }
 
-  private mainProfileNotice(handle: SubagentHandle): string | undefined {
+  private mainProfileNotice(handle: Omit<SubagentHandle, 'completion'>): string | undefined {
     if (handle.mainProfile !== true || this.notifiedMainProfiles.has(handle.profileName)) return undefined;
     this.notifiedMainProfiles.add(handle.profileName);
     return mainProfileSubagentNotice(handle.profileName);
   }
 
-  private withMainProfileNotice(handle: SubagentHandle, output: string): string {
+  private withMainProfileNotice(handle: Omit<SubagentHandle, 'completion'>, output: string): string {
     const notice = this.mainProfileNotice(handle);
     return notice === undefined ? output : `${output}\n${notice}`;
   }
@@ -601,12 +602,13 @@ export class SubagentTool implements ISubagentTool {
 
   private async executeOnce(
     args: SubagentToolInput,
-    { toolCallId, signal, steerSignal, turnId }: ExecutableToolContext,
+    context: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<ExecutableToolResult> {
+    const { toolCallId, signal, turnId } = context;
     try {
       signal.throwIfAborted();
       const runLabel = args.description;
@@ -692,7 +694,7 @@ export class SubagentTool implements ISubagentTool {
           timeoutMs,
           detachTimeoutMs: timeoutMs,
           autoBackgroundOnTimeout: !runInBackground && allowBackground,
-          signal: runInBackground ? undefined : signal,
+          signal: runInBackground ? undefined : context.taskOwnerSignal ?? signal,
         };
         taskId = this.tasks.registerTask(
           new SubagentTask(
@@ -756,27 +758,8 @@ export class SubagentTool implements ISubagentTool {
         };
       }
 
-      const foregroundTaskId = taskId;
-      const detachForSteer = (): void => {
-        if (!signal.aborted) this.tasks.detach(foregroundTaskId);
-      };
-      const foregroundSteerSignal = this.isMainCaller ? steerSignal : undefined;
-      foregroundSteerSignal?.addEventListener('abort', detachForSteer, { once: true });
-      try {
-        if (foregroundSteerSignal?.aborted === true) detachForSteer();
-        const release = await this.tasks.waitForForegroundRelease(taskId);
-        if (release === 'detached' || release === 'timeout_detached') {
-          const output = formatBackgroundAgentResult(taskId, handle, runLabel);
-          return {
-            output: this.withMainProfileNotice(handle, foregroundSteerSignal?.aborted === true
-              ? `${output}\nNew input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.`
-              : output),
-          };
-        }
-        return await this.formatForegroundResult(taskId, handle, timeoutMs);
-      } finally {
-        foregroundSteerSignal?.removeEventListener('abort', detachForSteer);
-      }
+      const { completion: _completion, ...facts } = handle;
+      return await this.waitForAgent({ kind: 'agent', taskId, handle: facts, runLabel, timeoutMs }, context);
     } catch (error) {
       if (isError2(error) && error.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED) {
         return { output: JSON.stringify({ code: error.code, message: error.message, details: error.details }), isError: true };
@@ -788,9 +771,41 @@ export class SubagentTool implements ISubagentTool {
     }
   }
 
+  resumeExecutionWait(_args: SubagentToolInput, ctx: ExecutableToolContext): Promise<ExecutableToolResult> {
+    const wait = ctx.executionWait;
+    if (wait?.kind !== 'agent') throw new Error2(ErrorCodes.REQUEST_INVALID, 'The saved agent wait is invalid');
+    return this.waitForAgent(wait, ctx);
+  }
+
+  private async waitForAgent(wait: Extract<import('#/tool/toolContract').ExecutionTaskWait, { kind: 'agent' }>, ctx: ExecutableToolContext): Promise<ExecutableToolResult> {
+    const { taskId, handle, runLabel, timeoutMs } = wait;
+    const pause = ctx.executionPauseSignal;
+    const signal = pause === undefined ? ctx.signal : AbortSignal.any([ctx.signal, pause]);
+    const steer = this.isMainCaller ? ctx.steerSignal : undefined;
+    const detach = (): void => { if (!signal.aborted) this.tasks.detach(taskId); };
+    steer?.addEventListener('abort', detach, { once: true });
+    try {
+      if (steer?.aborted === true) detach();
+      signal.throwIfAborted();
+      const release = await abortable(this.tasks.waitForForegroundRelease(taskId), signal);
+      if (release === 'detached' || release === 'timeout_detached') {
+        const output = formatBackgroundAgentResult(taskId, handle, runLabel);
+        return { output: this.withMainProfileNotice(handle, steer?.aborted === true
+          ? `${output}\nNew input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.`
+          : output) };
+      }
+      return await this.formatForegroundResult(taskId, handle, timeoutMs);
+    } catch (error) {
+      if (!ctx.signal.aborted && pause?.aborted && error === pause.reason) return { output: '', executionWait: wait };
+      throw error;
+    } finally {
+      steer?.removeEventListener('abort', detach);
+    }
+  }
+
   private async formatForegroundResult(
     taskId: string,
-    handle: SubagentHandle,
+    handle: Omit<SubagentHandle, 'completion'>,
     timeoutMs: number,
   ): Promise<ExecutableToolResult> {
     const info = this.tasks.getTask(taskId);
@@ -820,7 +835,7 @@ registerAgentToolService(ISubagentTool, SubagentTool, {
   requiredRuntimeCapabilities: ['process'],
 });
 
-export function bindingResultLines(handle: SubagentHandle): string[] {
+export function bindingResultLines(handle: Omit<SubagentHandle, 'completion'> & Partial<Pick<SubagentHandle, 'completion'>>): string[] {
   const bindingAdvisories = handle.bindingAdvisories ?? [];
   return [
     `actual_profile: ${handle.profileName}`,
@@ -855,7 +870,7 @@ export function bindingResultLines(handle: SubagentHandle): string[] {
 
 function formatBackgroundAgentResult(
   taskId: string,
-  handle: SubagentHandle,
+  handle: Omit<SubagentHandle, 'completion'>,
   description: string,
 ): string {
   return [
@@ -873,7 +888,7 @@ function formatBackgroundAgentResult(
 
 function formatForegroundAgentSuccess(
   taskId: string,
-  handle: SubagentHandle,
+  handle: Omit<SubagentHandle, 'completion'>,
   result: string,
   snapshot?: AgentTaskOutputSnapshot,
 ): string {
@@ -902,7 +917,7 @@ function formatForegroundAgentSuccess(
 
 function formatForegroundAgentFailure(
   taskId: string,
-  handle: SubagentHandle,
+  handle: Omit<SubagentHandle, 'completion'>,
   message: string,
   timedOut: boolean,
 ): string {

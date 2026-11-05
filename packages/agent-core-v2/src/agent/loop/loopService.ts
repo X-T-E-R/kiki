@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { ISessionExecutionControl, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
+import { ISessionExecutionControl, type ExecutionPendingStep, type ExecutionPendingTool, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ResumeStepRequest } from './stepRequest';
 import { IInstantiationService } from '#/_base/di/instantiation';
@@ -22,7 +23,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
-import { abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
+import { abortable, abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorDisplayMessage, toErrorMessage } from '#/_base/errors/errorMessage';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
@@ -160,35 +161,33 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
   private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
   private persistenceWriteWakeAfter = 0;
-  private pauseReady?: ReturnType<typeof createControlledPromise<ExecutionResumePoint | undefined>>;
+  private pauseReady?: ReturnType<typeof createControlledPromise<void>>;
   private pauseWake?: ReturnType<typeof createControlledPromise<void>>;
   private pausedRuntime?: LoopRuntime;
   private parkedForExit = false;
 
-  private async pauseExecution(): Promise<ExecutionResumePoint | undefined> {
+  private async pauseExecution(signal: AbortSignal): Promise<ExecutionResumePoint | undefined> {
+    signal.throwIfAborted();
     const profile = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
     if ((profile.executorId ?? 'native') !== 'native') {
       const execution = this.instantiation.invokeFunction(accessor => accessor.get(IAgentExecutionService));
-      await execution.settled();
+      await abortable(execution.settled(), signal);
     }
-    let point: ExecutionResumePoint | undefined;
     if (this.activeTurnJob !== undefined && this.pausedRuntime === undefined) {
-      this.pauseReady ??= createControlledPromise<ExecutionResumePoint | undefined>();
-      point = await this.pauseReady;
+      this.pauseReady ??= createControlledPromise<void>();
+      await abortable(this.pauseReady, signal);
     }
-    const tasks = this.instantiation.invokeFunction(accessor => accessor.get(IAgentTaskService));
-    for (;;) {
-      const active = tasks.list(true).filter(task => task.kind === 'process' || task.kind === 'media');
-      if (active.length === 0) break;
-      await Promise.all(active.map(task => tasks.wait(task.taskId, 30_000)));
-    }
-    if (this.pausedRuntime !== undefined) return this.captureResumePoint(this.pausedRuntime);
-    await this.dispatcher.flush();
+    signal.throwIfAborted();
+    const runtime = this.pausedRuntime;
+    const point = runtime === undefined ? undefined : await this.captureResumePoint(runtime);
+    const job = this.activeTurnJob;
+    if (job?.turn.signal.aborted) await abortable(job.durableResult, signal);
+    if (runtime === undefined) await this.dispatcher.flush();
     return this.activeTurnJob?.turn.id === point?.turnId ? point : undefined;
   }
 
   private async captureResumePoint(runtime: LoopRuntime): Promise<ExecutionResumePoint | undefined> {
-    if (runtime.queue.pendingKinds().some(kind => kind !== 'continuation')) {
+    if (runtime.pendingStep === undefined && runtime.queue.pendingKinds().some(kind => kind !== 'continuation')) {
       for (;;) {
         const batch = runtime.queue.takeNextBatch();
         if (batch === undefined) break;
@@ -197,9 +196,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       runtime.queue.enqueue(new ResumeStepRequest(runtime.job?.seed ?? { input: [], origin: { kind: 'unknown' } }));
     }
     await this.dispatcher.flush();
+    for (const tool of runtime.pendingStep?.tools ?? []) {
+      if (tool.wait?.kind === 'agent') {
+        const tasks = this.instantiation.invokeFunction(accessor => accessor.get(IAgentTaskService));
+        await tasks.checkpointExecutionWait(tool.wait.taskId);
+      }
+    }
+    if (runtime.turnSignal.aborted || runtime.job === undefined || this.activeTurnJob !== runtime.job ||
+      this.states.get(turnKey).lastEnded?.turnId === runtime.turnId) return undefined;
     const binding = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
-    return runtime.job === undefined ? undefined : {
+    return {
       turnId: runtime.turnId, completedSteps: runtime.steps,
+      pendingStep: runtime.pendingStep,
       seed: runtime.job.seed, binding: structuredClone(binding),
     };
   }
@@ -207,22 +215,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private async pauseAtBoundary(runtime: LoopRuntime): Promise<void> {
     await this.executionControl.ready();
     if (!this.executionControl.isHeld()) return;
+    runtime.turnSignal.throwIfAborted();
     this.pausedRuntime = runtime;
-    this.pauseWake ??= createControlledPromise<void>();
-    const ready = this.pauseReady ??= createControlledPromise<ExecutionResumePoint | undefined>();
+    this.pauseReady?.resolve();
     try {
-      ready.resolve(await this.captureResumePoint(runtime));
-    } catch (error) {
-      ready.reject(error);
-    }
-    const aborted = () => this.pauseWake?.reject(runtime.turnSignal.reason);
-    runtime.turnSignal.addEventListener('abort', aborted, { once: true });
-    try {
-      while (this.executionControl.isHeld() && !this.parkedForExit) await this.pauseWake;
+      while (this.executionControl.isHeld() && !this.parkedForExit) {
+        const wake = this.pauseWake ??= createControlledPromise<void>();
+        await abortable(wake, runtime.turnSignal);
+        if (this.pauseWake === wake) this.pauseWake = undefined;
+      }
       if (this.parkedForExit) throw abortError('Execution checkpoint parked for restart');
       runtime.turnSignal.throwIfAborted();
     } finally {
-      runtime.turnSignal.removeEventListener('abort', aborted);
+      this.pauseWake?.resolve();
       this.pausedRuntime = undefined;
       this.pauseWake = undefined;
       this.pauseReady = undefined;
@@ -231,6 +236,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private async resumeExecution(point?: ExecutionResumePoint): Promise<Turn | undefined> {
     if (point === undefined) return;
+    const ended = this.states.get(turnKey).lastEnded;
+    const prompt = point.seed.promptId === undefined ? undefined : this.instantiation.invokeFunction(accessor =>
+      accessor.get(IAgentPromptService).lookup(point.seed.promptId!));
+    if ((ended !== undefined && ended.turnId >= point.turnId) || (prompt?.phase === 'terminal' && prompt.terminal?.turnId === point.turnId)) return;
     const binding = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
     if (binding.modelAlias !== point.binding.modelAlias || binding.thinkingLevel !== point.binding.thinkingLevel ||
       binding.executorId !== point.binding.executorId || binding.executorProtocol !== point.binding.executorProtocol ||
@@ -247,7 +256,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   preservePausedForExit(): boolean {
     if (this.parkedForExit) return true;
-    if (this.pausedRuntime === undefined || this.executionControl.resumePoint(this.scope.agentId) === undefined) return false;
+    if (this.pausedRuntime === undefined || this.pausedRuntime.turnSignal.aborted || this.executionControl.resumePoint(this.scope.agentId)?.turnId !== this.pausedRuntime.turnId) return false;
     this.parkedForExit = true;
     this.executionControl.park(this.scope.agentId);
     this.pauseWake?.resolve();
@@ -272,11 +281,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ) {
     super();
     this._register(executionControl.register(scope.agentId, {
-      pause: () => this.pauseExecution(),
+      turnId: () => this.activeTurnJob?.turn.id,
+      pause: signal => this.pauseExecution(signal),
       resume: point => this.resumeExecution(point),
     }));
     this._register(executionControl.onDidChange(() => {
       if (!executionControl.isHeld()) {
+        this.pauseReady?.resolve(undefined);
+        this.pauseReady = undefined;
         this.pauseWake?.resolve();
         this.pumpTurns();
       }
@@ -605,7 +617,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       cancel: (reason) => this.cancel(id, reason),
     };
     const job = { request, seed, controller, ready, result, durableResult, queue, steps, turn, restored, steerController: new AbortController() };
-    this.assignStep(job, request);
+    if (restored?.pendingStep === undefined) this.assignStep(job, request);
     this.moveStandaloneStepsTo(job);
     return job;
   }
@@ -695,7 +707,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private pumpTurns(): void {
-    if (this.disposing || this.executionControl.isHeld() || this.quiescenceDepth > 0 || this.activeTurnJob !== undefined) return;
+    if (this.disposing || this.quiescenceDepth > 0 || this.activeTurnJob !== undefined) return;
+    if (this.executionControl.isHeld() && !(this.executionControl.isPausing() && this.scope.parentAgentId !== undefined && this.pendingTurns[0]?.seed.parentReceiptManaged)) return;
     const job = this.pendingTurns.shift();
     if (job === undefined) {
       this.maybeSettle();
@@ -963,6 +976,25 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     try {
       while (true) {
         try {
+          if (runtime.pendingStep !== undefined) {
+            const step = runtime.pendingStep;
+            options.onStarted?.(step.step);
+            let reason: FinishReason;
+            try {
+              reason = await this.executeStepTools(runtime.turnId, runtime.turnSignal, step.step, step.stepId,
+                step.response, step.trace, runtime.job?.steerController.signal, runtime, step);
+              this.finishStep(runtime.turnId, runtime.turnSignal, step.step, step.stepId, step.response, reason, () => {});
+            } catch (error) {
+              if (!this.parkedForExit) this.context.appendLoopEvent({ type: 'step.end', uuid: step.stepId,
+                turnId: String(runtime.turnId), step: step.step, finishReason: isAbortError(error) || runtime.turnSignal.aborted ? 'interrupted' : 'error' });
+              throw error;
+            }
+            const stopped = await this.runAfterStep(runtime.turnId, runtime.turnSignal, step.step, step.step === 1,
+              step.response.usage, reason, step);
+            await this.runBoundaryRequests(runtime.turnId, runtime.turnSignal);
+            runtime.lastStopReason = reason;
+            if (stopped) return { type: 'completed', steps: runtime.steps, truncated: reason === 'truncated' };
+          }
           if (runtime.queue.hasPendingRequests()) await this.pauseAtBoundary(runtime);
           const begun = this.beginLoopStep(runtime);
           if ('result' in begun) return begun.result;
@@ -1000,6 +1032,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       job,
       queue: job?.queue ?? this.standaloneStepQueue,
       steps: job?.restored?.completedSteps ?? 0,
+      pendingStep: job?.restored?.pendingStep,
       thinkingOnlyContinuations: 0,
       thinkingOnlySnapshotActive: false,
       attempts: new Map(),
@@ -1217,7 +1250,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onStarted: ((step: number) => void) | undefined,
     steerSignal: AbortSignal | undefined,
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
-    continuationBudget: Pick<LoopRuntime, 'thinkingOnlyContinuations' | 'thinkingOnlySnapshotActive' | 'requestFailure'>,
+    continuationBudget: LoopRuntime,
     thinkingOnlyFollowup: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
@@ -1387,6 +1420,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         response,
         request.trace,
         steerSignal,
+        continuationBudget,
+        stepIdentity,
       );
       this.finishStep(turnId, signal, currentStep, stepUuid, response, finishReason, markStepStarted);
       stepEndAppended = true;
@@ -1424,7 +1459,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
-      if (!stepEndAppended) {
+      if (!stepEndAppended && !this.parkedForExit) {
         this.context.appendLoopEvent({
           type: 'step.end',
           uuid: stepUuid,
@@ -1511,112 +1546,74 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     response: AgentLLMRequestFinish,
     trace: LLMRequestTrace,
     steerSignal: AbortSignal | undefined,
+    runtime: LoopRuntime,
+    stepIdentity: Pick<BeforeStepContext, 'logicalStepId' | 'attempt'>,
   ): Promise<FinishReason> {
-    let finishReason = response.providerFinishReason ?? 'completed';
-    if (response.message.toolCalls.length === 0) {
-      return finishReason === 'tool_calls' ? 'other' : finishReason;
-    }
-    const truncating = isTruncatingProviderFinishReason(response.providerFinishReason);
-    const batches: Array<
-      | { readonly kind: 'execute'; calls: ToolCall[] }
-      | {
-          readonly kind: 'withhold';
-          readonly call: ToolCall;
-          readonly args: unknown;
-          readonly output: string;
+    const finishReason = response.providerFinishReason ?? 'completed';
+    if (response.message.toolCalls.length === 0) return finishReason === 'tool_calls' ? 'other' : finishReason;
+    let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
+    let stopTurn = runtime.pendingStep?.stopTurn ?? false;
+    while (pending.length > 0) {
+      runtime.pendingStep = { step: currentStep, stepId: stepUuid, ...stepIdentity, response, trace, tools: pending, stopTurn };
+      try { await this.pauseAtBoundary(runtime); }
+      finally { runtime.pendingStep = undefined; }
+      signal.throwIfAborted();
+      const suspended: ExecutionPendingTool[] = [];
+      const batches: Array<{ kind: 'execute'; tools: ExecutionPendingTool[] } |
+        { kind: 'withhold'; call: ToolCall; args: unknown; output: string }> = [];
+      const uuids = new Map(pending.flatMap(tool => tool.callUuid === undefined ? [] : [[tool.call.id, tool.callUuid] as const]));
+      for (const tool of pending) {
+        const { call } = tool;
+        const parsed = parseToolCallArguments(call.arguments);
+        if (tool.wait === undefined && isTruncatingProviderFinishReason(response.providerFinishReason) && (parsed.parseFailed || parsed.repaired === true)) {
+          batches.push({ kind: 'withhold', call, args: parsed.data,
+            output: parsed.truncation === undefined ? UNEXECUTED_TOOL_CALL_OUTPUT
+              : formatToolArgsTruncationRejection(call.name, call.arguments, parsed.truncation, true) });
+        } else {
+          const last = batches.at(-1);
+          if (last?.kind === 'execute') last.tools.push(tool);
+          else batches.push({ kind: 'execute', tools: [tool] });
         }
-    > = [];
-    for (const call of response.message.toolCalls) {
-      const parsed = parseToolCallArguments(call.arguments);
-      if (truncating && (parsed.parseFailed || parsed.repaired === true)) {
-        batches.push({
-          kind: 'withhold',
-          call,
-          args: parsed.data,
-          output:
-            parsed.truncation === undefined
-              ? UNEXECUTED_TOOL_CALL_OUTPUT
-              : formatToolArgsTruncationRejection(
-                  call.name,
-                  call.arguments,
-                  parsed.truncation,
-                  true,
-                ),
-        });
-        continue;
       }
-      const last = batches.at(-1);
-      if (last?.kind === 'execute') {
-        last.calls.push(call);
-      } else {
-        batches.push({ kind: 'execute', calls: [call] });
-      }
-    }
-    const toolCallUuids = new Map<string, string>();
-    let stopTurn = false;
-    for (const batch of batches) {
-      if (batch.kind === 'withhold') {
-        const callUuid = randomUUID();
-        this.context.appendLoopEvent({
-          type: 'tool.call',
-          uuid: callUuid,
-          turnId: String(turnId),
-          step: currentStep,
-          stepUuid,
-          toolCallId: batch.call.id,
-          name: batch.call.name,
-          args: batch.args,
-          extras: batch.call.extras,
-        });
-        this.context.appendLoopEvent({
-          type: 'tool.result',
-          parentUuid: callUuid,
-          toolCallId: batch.call.id,
-          result: { output: batch.output, isError: true },
-        });
-        continue;
-      }
-      for await (const toolResult of this.toolExecutor.execute(batch.calls, {
-        signal,
-        steerSignal,
-        turnId,
-        step: currentStep,
-        trace,
-        onToolCall: ({ toolCallId, name, args }) => {
+      let processed = 0;
+      for (const batch of batches) {
+        if (processed > 0 && (suspended.length > 0 || this.executionControl.isHeld())) break;
+        processed += batch.kind === 'withhold' ? 1 : batch.tools.length;
+        if (batch.kind === 'withhold') {
           const callUuid = randomUUID();
-          toolCallUuids.set(toolCallId, callUuid);
-          const extras = response.message.toolCalls.find((t) => t.id === toolCallId)?.extras;
-          this.context.appendLoopEvent({
-            type: 'tool.call',
-            uuid: callUuid,
-            turnId: String(turnId),
-            step: currentStep,
-            stepUuid,
-            toolCallId,
-            name,
-            args,
-            extras,
-          });
-        },
-      })) {
-        const { result } = toolResult;
-        this.context.appendLoopEvent({
-          type: 'tool.result',
-          parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
-          toolCallId: toolResult.toolCallId,
-          result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
-            fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } },
-        });
-        await this.hooks.onDidAppendToolResult.run({
-          toolCallId: toolResult.toolCallId,
-          isError: result.isError,
-        });
-        if (result.stopTurn === true &&
-          (toolResult.toolName !== 'SendMessage' || response.message.toolCalls.length === 1)) stopTurn = true;
+          this.context.appendLoopEvent({ type: 'tool.call', uuid: callUuid, turnId: String(turnId), step: currentStep, stepUuid,
+            toolCallId: batch.call.id, name: batch.call.name, args: batch.args, extras: batch.call.extras });
+          this.context.appendLoopEvent({ type: 'tool.result', parentUuid: callUuid, toolCallId: batch.call.id,
+            result: { isError: true, output: batch.output } });
+          continue;
+        }
+        for await (const toolResult of this.toolExecutor.execute(batch.tools.map(tool => tool.call), {
+          signal, taskOwnerSignal: runtime.turnSignal, executionPauseSignal: this.executionControl.pauseSignal(),
+          executionWaits: Object.fromEntries(batch.tools.flatMap(tool => tool.wait === undefined ? [] : [[tool.call.id, tool.wait]])),
+          steerSignal, turnId, step: currentStep, trace,
+          onToolCall: ({ toolCallId, name, args }) => {
+            const callUuid = randomUUID();
+            uuids.set(toolCallId, callUuid);
+            this.context.appendLoopEvent({ type: 'tool.call', uuid: callUuid, turnId: String(turnId), step: currentStep,
+              stepUuid, toolCallId, name, args, extras: response.message.toolCalls.find(call => call.id === toolCallId)?.extras });
+          },
+        })) {
+          const { result, toolCallId } = toolResult;
+          if (result.isError !== true && result.executionWait !== undefined) {
+            suspended.push({ call: batch.tools.find(tool => tool.call.id === toolCallId)!.call,
+              callUuid: uuids.get(toolCallId), wait: result.executionWait });
+            continue;
+          }
+          this.context.appendLoopEvent({ type: 'tool.result', parentUuid: uuids.get(toolCallId), toolCallId,
+            result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
+              fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } } });
+          await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: result.isError });
+          if (result.stopTurn === true && (toolResult.toolName !== 'SendMessage' || response.message.toolCalls.length === 1)) stopTurn = true;
+        }
       }
+      pending = [...suspended, ...pending.slice(processed)];
     }
-    finishReason = stopTurn ? 'completed' : 'tool_calls';
-    return finishReason;
+    return stopTurn ? 'completed' : 'tool_calls';
   }
 
   private sealGoogleProtocolStep(
@@ -2064,6 +2061,7 @@ interface LoopRuntime {
   readonly job: TurnJob | undefined;
   readonly queue: StepRequestQueue;
   readonly attempts: Map<string, number>;
+  pendingStep?: ExecutionPendingStep;
   steps: number;
   thinkingOnlyContinuations: number;
   thinkingOnlySnapshotActive: boolean;
