@@ -567,6 +567,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     );
   }
 
+  hasQueuedWorkPreventingPausedExit(): boolean {
+    const active = this.activeTurnJob;
+    const checkpointedTurn = active !== undefined && this.executionControl.resumePoint(this.scope.agentId)?.turnId === active.turn.id;
+    return active?.queue.hasWorkPreventingPausedExit(checkpointedTurn) === true ||
+      this.standaloneStepQueue.hasWorkPreventingPausedExit() ||
+      this.pendingTurns.some(job => job.queue.hasWorkPreventingPausedExit()) ||
+      this.heldAdmissions.some(({ request }) => !request.aborted && !request.recoverableAfterExit);
+  }
+
   settled(options?: { readonly rejectOnPersistenceFailure?: boolean }): Promise<void> {
     if (options?.rejectOnPersistenceFailure && this.finalization?.error !== undefined) {
       return Promise.reject(new TurnPersistenceError(this.finalization.turn.id, this.finalization.result, this.finalization.error));

@@ -26,6 +26,9 @@ $serverHomeId = '22222222-2222-4222-8222-222222222222'
 $runningSessionId = 'session-running'
 $priorPausedSessionId = 'session-prior-paused'
 $priorPauseId = 'prior-paused-operation'
+$taskId = 'fixture-task-running'
+$terminalReceiptId = 'terminal-receipt-running'
+$notificationId = 'task-notification-running'
 $originalKikiHome = $env:KIKI_HOME
 $completed = $false
 
@@ -138,10 +141,12 @@ internal static class Program
     private const string BuildId = "__BUILD_ID__";
     private const int FailLaunch = __FAIL_LAUNCH__;
     private const string ServerHomeId = "22222222-2222-4222-8222-222222222222";
-    private const string SpaceId = "main";
     private const string RunningSessionId = "session-running";
     private const string PriorPausedSessionId = "session-prior-paused";
     private const string PriorPauseId = "prior-paused-operation";
+    private const string TaskId = "fixture-task-running";
+    private const string TerminalReceiptId = "terminal-receipt-running";
+    private const string NotificationId = "task-notification-running";
     private static readonly object Gate = new object();
     private static readonly Dictionary<string, SessionState> Sessions = new Dictionary<string, SessionState>(StringComparer.Ordinal);
     private static string home;
@@ -154,11 +159,17 @@ internal static class Program
     private static long startedAt;
     private static HttpListener listener;
     private static bool stopping;
+    private static bool recoverableOnlyLogged;
 
     private sealed class SessionState
     {
         internal string Phase;
         internal string PauseOperationId;
+        internal string TaskId;
+        internal string TerminalReceiptId;
+        internal string NotificationId;
+        internal int TaskRunCount;
+        internal int NotificationDeliveryCount;
     }
 
     private static void Main()
@@ -355,11 +366,18 @@ internal static class Program
     private static string LifecycleState()
     {
         List<string> pending = new List<string>();
+        bool recoverableOnly = false;
         lock (Gate)
         {
             foreach (KeyValuePair<string, SessionState> item in Sessions)
             {
                 if (item.Value.Phase != "paused") pending.Add(item.Key);
+                else if (String.Equals(item.Value.TerminalReceiptId, TerminalReceiptId, StringComparison.Ordinal) && item.Value.NotificationDeliveryCount == 0) recoverableOnly = true;
+            }
+            if (recoverableOnly && !recoverableOnlyLogged)
+            {
+                recoverableOnlyLogged = true;
+                AppendEvent("lifecycle-recoverable-notification|" + TaskId + "|work_pending=0|task=settled");
             }
         }
         StringBuilder ids = new StringBuilder();
@@ -391,6 +409,14 @@ internal static class Program
             if (method == "pause")
             {
                 string operationId = JsonValue(body, "operationId");
+                if (sessionId == RunningSessionId && String.IsNullOrWhiteSpace(session.TerminalReceiptId))
+                {
+                    session.TaskId = TaskId;
+                    session.TaskRunCount = session.TaskRunCount == 0 ? 1 : session.TaskRunCount;
+                    session.TerminalReceiptId = TerminalReceiptId;
+                    session.NotificationId = NotificationId;
+                    AppendEvent("task-settled|" + session.TaskId + "|receipt=" + session.TerminalReceiptId + "|notification=" + session.NotificationId + "|task_runs=" + session.TaskRunCount);
+                }
                 session.Phase = "paused";
                 session.PauseOperationId = operationId;
                 AppendEvent("pause|" + sessionId + "|" + operationId);
@@ -404,6 +430,11 @@ internal static class Program
                 {
                     Send(context, 200, Envelope(40901, "Fixture pause operation changed", "null"));
                     return;
+                }
+                if (sessionId == RunningSessionId && String.Equals(session.TerminalReceiptId, TerminalReceiptId, StringComparison.Ordinal) && session.NotificationDeliveryCount == 0)
+                {
+                    session.NotificationDeliveryCount = 1;
+                    AppendEvent("notification-delivery|" + session.TaskId + "|" + session.NotificationId + "|count=" + session.NotificationDeliveryCount);
                 }
                 session.Phase = "running";
                 AppendEvent("resume|" + sessionId + "|" + operationId + "|" + pauseOperationId);
@@ -434,7 +465,9 @@ internal static class Program
     private static string ExecutionState(SessionState session)
     {
         return "{\"phase\":" + Json(session.Phase) + ",\"pauseOperationId\":" + Json(session.PauseOperationId) +
-            ",\"agents\":[]}";
+            ",\"taskId\":" + Json(session.TaskId) + ",\"terminalReceiptId\":" + Json(session.TerminalReceiptId) +
+            ",\"notificationId\":" + Json(session.NotificationId) + ",\"taskRunCount\":" + session.TaskRunCount +
+            ",\"notificationDeliveryCount\":" + session.NotificationDeliveryCount + ",\"agents\":[]}";
     }
 
     private static string ReadBody(HttpListenerContext context)
@@ -489,12 +522,23 @@ internal static class Program
                 string text = File.ReadAllText(statePath);
                 string runningPhase = StateValue(text, RunningSessionId, "phase");
                 string runningPause = StateValue(text, RunningSessionId, "pauseOperationId");
+                string runningTaskId = StateValue(text, RunningSessionId, "taskId");
+                string runningReceipt = StateValue(text, RunningSessionId, "terminalReceiptId");
+                string runningNotification = StateValue(text, RunningSessionId, "notificationId");
                 string priorPhase = StateValue(text, PriorPausedSessionId, "phase");
                 string priorPause = StateValue(text, PriorPausedSessionId, "pauseOperationId");
-                if (!String.IsNullOrWhiteSpace(runningPhase)) Sessions[RunningSessionId] = new SessionState { Phase = runningPhase, PauseOperationId = runningPause };
+                if (!String.IsNullOrWhiteSpace(runningPhase)) Sessions[RunningSessionId] = new SessionState {
+                    Phase = runningPhase, PauseOperationId = runningPause,
+                    TaskId = String.IsNullOrWhiteSpace(runningTaskId) ? TaskId : runningTaskId,
+                    TerminalReceiptId = runningReceipt, NotificationId = runningNotification,
+                    TaskRunCount = StateNumber(text, RunningSessionId, "taskRunCount"),
+                    NotificationDeliveryCount = StateNumber(text, RunningSessionId, "notificationDeliveryCount")
+                };
                 if (!String.IsNullOrWhiteSpace(priorPhase)) Sessions[PriorPausedSessionId] = new SessionState { Phase = priorPhase, PauseOperationId = priorPause };
             }
-            if (!Sessions.ContainsKey(RunningSessionId)) Sessions[RunningSessionId] = new SessionState { Phase = "running", PauseOperationId = String.Empty };
+            if (!Sessions.ContainsKey(RunningSessionId)) Sessions[RunningSessionId] = new SessionState {
+                Phase = "running", PauseOperationId = String.Empty, TaskId = TaskId, TaskRunCount = 1
+            };
             if (!Sessions.ContainsKey(PriorPausedSessionId)) Sessions[PriorPausedSessionId] = new SessionState { Phase = "paused", PauseOperationId = PriorPauseId };
             SaveSessions();
         }
@@ -507,12 +551,28 @@ internal static class Program
         return match.Success ? match.Groups[1].Value : String.Empty;
     }
 
+    private static int StateNumber(string text, string sessionId, string property)
+    {
+        string pattern = "\\\"" + Regex.Escape(sessionId) + "\\\"\\s*:\\s*\\{[^}]*\\\"" + Regex.Escape(property) + "\\\"\\s*:\\s*(\\d+)";
+        Match match = Regex.Match(text ?? String.Empty, pattern, RegexOptions.Singleline);
+        int value;
+        return match.Success && Int32.TryParse(match.Groups[1].Value, out value) ? value : 0;
+    }
+
+    private static string SessionJson(SessionState session)
+    {
+        return "{\"phase\":" + Json(session.Phase) + ",\"pauseOperationId\":" + Json(session.PauseOperationId) +
+            ",\"taskId\":" + Json(session.TaskId) + ",\"terminalReceiptId\":" + Json(session.TerminalReceiptId) +
+            ",\"notificationId\":" + Json(session.NotificationId) + ",\"taskRunCount\":" + session.TaskRunCount +
+            ",\"notificationDeliveryCount\":" + session.NotificationDeliveryCount + "}";
+    }
+
     private static void SaveSessions()
     {
         SessionState running = Sessions[RunningSessionId];
         SessionState prior = Sessions[PriorPausedSessionId];
-        string body = "{\"sessions\":{" + Json(RunningSessionId) + ":{\"phase\":" + Json(running.Phase) + ",\"pauseOperationId\":" + Json(running.PauseOperationId) + "}," +
-            Json(PriorPausedSessionId) + ":{\"phase\":" + Json(prior.Phase) + ",\"pauseOperationId\":" + Json(prior.PauseOperationId) + "}}}";
+        string body = "{\"sessions\":{" + Json(RunningSessionId) + ":" + SessionJson(running) + "," +
+            Json(PriorPausedSessionId) + ":" + SessionJson(prior) + "}}";
         File.WriteAllText(statePath, body, new UTF8Encoding(false));
     }
 
@@ -638,6 +698,15 @@ function Read-CurrentManifest {
     return Get-Content -LiteralPath (Join-Path $runtimeRoot 'current.json') -Raw | ConvertFrom-Json
 }
 
+function Read-FixtureExecution([object]$Server, [string]$SessionId) {
+    $reply = Invoke-Fixture $Server 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $SessionId; service = 'sessionExecutionControl'; method = 'read' }
+        params = @()
+    }
+    Assert-Equal 0 $reply.code "Execution read failed for $SessionId."
+    return $reply.data
+}
+
 try {
     $cscPath = Resolve-Csc
     [IO.Directory]::CreateDirectory((Join-Path $homePath 'server\instances')) | Out-Null
@@ -685,6 +754,13 @@ try {
     Assert-Equal 0 $initialPrior.code 'Initial paused-session read failed.'
     Assert-Equal 'paused' ([string]$initialPrior.data.phase) 'The fixture did not seed the earlier paused session.'
     Assert-Equal $priorPauseId ([string]$initialPrior.data.pauseOperationId) 'The earlier paused operation ID was not seeded.'
+    $initialRunning = Read-FixtureExecution $oldServer $runningSessionId
+    Assert-Equal 'running' ([string]$initialRunning.phase) 'The fixture did not seed the active task session as running.'
+    Assert-Equal $taskId ([string]$initialRunning.taskId) 'The fixture did not expose the original task identity.'
+    Assert-Equal 1 ([int]$initialRunning.taskRunCount) 'The fixture did not seed exactly one original task run.'
+    Assert-Equal 0 ([int]$initialRunning.notificationDeliveryCount) 'The fixture seeded a consumed task notification.'
+    $initialLifecycle = Invoke-Fixture $oldServer 'desktop-lifecycle'
+    Assert-True (@($initialLifecycle.data.work_pending) -contains $runningSessionId) 'The active task was missing from initial lifecycle work_pending.'
 
     $oldShellPath = Join-Path (Join-Path $runtimeRoot 'releases') (Join-Path $oldReleaseId 'kiki-desktop.exe')
     $oldShells = @(Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $oldShellPath })
@@ -716,10 +792,30 @@ try {
     $priorAfterSuccess = $stateAfterSuccess.sessions.PSObject.Properties[$priorPausedSessionId].Value
     Assert-Equal 'running' ([string]$runningAfterSuccess.phase) 'The newly paused session was not resumed after a successful switch.'
     Assert-True ([string]$runningAfterSuccess.pauseOperationId -match '^hot-switch:[0-9a-f]{32}$') 'The successful switch did not retain its new pause operation ID.'
+    Assert-Equal $taskId ([string]$runningAfterSuccess.taskId) 'The successful switch lost the original task identity.'
+    Assert-Equal $terminalReceiptId ([string]$runningAfterSuccess.terminalReceiptId) 'The successful switch lost the persisted terminal receipt.'
+    Assert-Equal $notificationId ([string]$runningAfterSuccess.notificationId) 'The successful switch lost the pending notification identity.'
+    Assert-Equal 1 ([int]$runningAfterSuccess.taskRunCount) 'The successful switch reran the original task.'
+    Assert-Equal 1 ([int]$runningAfterSuccess.notificationDeliveryCount) 'The successful switch did not deliver the original notification once.'
     Assert-Equal 'paused' ([string]$priorAfterSuccess.phase) 'The earlier paused session was changed by a successful switch.'
     Assert-Equal $priorPauseId ([string]$priorAfterSuccess.pauseOperationId) 'The earlier paused operation ID was changed by a successful switch.'
+    $goodExecution = Read-FixtureExecution $goodServer $runningSessionId
+    Assert-Equal 'running' ([string]$goodExecution.phase) 'The new backend did not resume the task session.'
+    Assert-Equal $terminalReceiptId ([string]$goodExecution.terminalReceiptId) 'The new backend did not expose the terminal receipt.'
+    Assert-Equal $notificationId ([string]$goodExecution.notificationId) 'The new backend did not expose the original notification ID.'
+    Assert-Equal 1 ([int]$goodExecution.taskRunCount) 'The new backend reran the original task.'
+    Assert-Equal 1 ([int]$goodExecution.notificationDeliveryCount) 'The new backend did not record one notification delivery.'
+    $goodPriorExecution = Read-FixtureExecution $goodServer $priorPausedSessionId
+    Assert-Equal 'paused' ([string]$goodPriorExecution.phase) 'The new backend changed the earlier paused session.'
+    Assert-Equal $priorPauseId ([string]$goodPriorExecution.pauseOperationId) 'The new backend changed the earlier paused operation ID.'
 
     $eventsAfterSuccess = Read-FixtureEvents
+    $settledEvents = @($eventsAfterSuccess | Where-Object { $_ -match ('^task-settled\|{0}\|receipt={1}\|notification={2}\|task_runs=1$' -f [regex]::Escape($taskId), [regex]::Escape($terminalReceiptId), [regex]::Escape($notificationId)) })
+    $recoverableLifecycleEvents = @($eventsAfterSuccess | Where-Object { $_ -match ('^lifecycle-recoverable-notification\|{0}\|work_pending=0\|task=settled$' -f [regex]::Escape($taskId)) })
+    $notificationDeliveryEvents = @($eventsAfterSuccess | Where-Object { $_ -match ('^notification-delivery\|{0}\|{1}\|count=1$' -f [regex]::Escape($taskId), [regex]::Escape($notificationId)) })
+    Assert-Equal 1 $settledEvents.Count 'The pause did not settle the original task into one terminal receipt.'
+    Assert-True ($recoverableLifecycleEvents.Count -ge 1) 'Lifecycle did not report zero real work after the task receipt became durable.'
+    Assert-Equal 1 $notificationDeliveryEvents.Count 'The resumed backend did not deliver exactly one original notification.'
     $successPauseEvents = @($eventsAfterSuccess | Where-Object { $_ -match ('^pause\|{0}\|hot-switch:' -f [regex]::Escape($runningSessionId)) })
     $successResumeEvents = @($eventsAfterSuccess | Where-Object { $_ -match ('^resume\|{0}\|' -f [regex]::Escape($runningSessionId)) })
     Assert-Equal 1 $successPauseEvents.Count 'Successful switch did not issue exactly one pause for the active session.'
@@ -747,8 +843,18 @@ try {
     $failedPauseId = [string]$runningAfterFailure.pauseOperationId
     Assert-True ($failedPauseId -match '^hot-switch:[0-9a-f]{32}$') 'A failed launch did not retain its new pause operation ID.'
     Assert-NotEqual $successPauseId $failedPauseId 'Two hot-switch attempts reused one pause operation ID.'
+    Assert-Equal $taskId ([string]$runningAfterFailure.taskId) 'A failed launch lost the original task identity.'
+    Assert-Equal $terminalReceiptId ([string]$runningAfterFailure.terminalReceiptId) 'A failed launch lost the persisted terminal receipt.'
+    Assert-Equal $notificationId ([string]$runningAfterFailure.notificationId) 'A failed launch lost the original notification ID.'
+    Assert-Equal 1 ([int]$runningAfterFailure.taskRunCount) 'A failed launch reran the original task.'
+    Assert-Equal 1 ([int]$runningAfterFailure.notificationDeliveryCount) 'A failed launch changed the already delivered notification count.'
     Assert-Equal 'paused' ([string]$priorAfterFailure.phase) 'A failed launch changed the earlier paused session.'
     Assert-Equal $priorPauseId ([string]$priorAfterFailure.pauseOperationId) 'A failed launch changed the earlier paused operation ID.'
+    $eventsAfterFailure = Read-FixtureEvents
+    $settledAfterFailure = @($eventsAfterFailure | Where-Object { $_ -match ('^task-settled\|{0}\|' -f [regex]::Escape($taskId)) })
+    $deliveryAfterFailure = @($eventsAfterFailure | Where-Object { $_ -match ('^notification-delivery\|{0}\|' -f [regex]::Escape($taskId)) })
+    Assert-Equal 1 $settledAfterFailure.Count 'A failed launch reran or re-settled the original task.'
+    Assert-Equal 1 $deliveryAfterFailure.Count 'A failed launch duplicated the original notification delivery.'
     $failedManifest = Read-CurrentManifest
     Assert-Equal $failedReleaseId ([string]$failedManifest.releaseId) 'The failed launch did not select the candidate release before reporting failure.'
     Assert-True ($null -eq (Get-ActiveFixtureServer)) 'The failed launcher unexpectedly left a backend process running.'
@@ -772,20 +878,38 @@ try {
     $priorAfterRecovery = $stateAfterRecovery.sessions.PSObject.Properties[$priorPausedSessionId].Value
     Assert-Equal 'running' ([string]$runningAfterRecovery.phase) 'Recovery did not resume the session paused by the failed switch.'
     Assert-Equal $failedPauseId ([string]$runningAfterRecovery.pauseOperationId) 'Recovery did not use the failed switch pause operation ID.'
+    Assert-Equal $taskId ([string]$runningAfterRecovery.taskId) 'Recovery lost the original task identity.'
+    Assert-Equal $terminalReceiptId ([string]$runningAfterRecovery.terminalReceiptId) 'Recovery lost the persisted terminal receipt.'
+    Assert-Equal $notificationId ([string]$runningAfterRecovery.notificationId) 'Recovery lost the original notification ID.'
+    Assert-Equal 1 ([int]$runningAfterRecovery.taskRunCount) 'Recovery reran the original task.'
+    Assert-Equal 1 ([int]$runningAfterRecovery.notificationDeliveryCount) 'Recovery duplicated or lost the original notification delivery count.'
     Assert-Equal 'paused' ([string]$priorAfterRecovery.phase) 'Recovery changed the earlier paused session.'
     Assert-Equal $priorPauseId ([string]$priorAfterRecovery.pauseOperationId) 'Recovery changed the earlier paused operation ID.'
+    $recoveredExecution = Read-FixtureExecution $recoveredServer $runningSessionId
+    Assert-Equal 'running' ([string]$recoveredExecution.phase) 'Recovery did not leave the task session running.'
+    Assert-Equal 1 ([int]$recoveredExecution.taskRunCount) 'Recovery reran the original task on the restored backend.'
+    Assert-Equal 1 ([int]$recoveredExecution.notificationDeliveryCount) 'Recovery delivered the original notification more than once.'
+    $recoveredPriorExecution = Read-FixtureExecution $recoveredServer $priorPausedSessionId
+    Assert-Equal 'paused' ([string]$recoveredPriorExecution.phase) 'Recovery changed the prior paused session collection.'
+    Assert-Equal $priorPauseId ([string]$recoveredPriorExecution.pauseOperationId) 'Recovery changed the prior paused operation ID.'
 
     $eventsAfterRecovery = Read-FixtureEvents
     $allPauseEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^pause\|{0}\|hot-switch:' -f [regex]::Escape($runningSessionId)) })
     $allResumeEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^resume\|{0}\|' -f [regex]::Escape($runningSessionId)) })
     Assert-Equal 2 $allPauseEvents.Count 'The two switch attempts did not create two distinct active-session pauses.'
     Assert-Equal 2 $allResumeEvents.Count 'The successful switch and recovery did not each resume one active-session pause.'
+    $allSettledEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^task-settled\|{0}\|' -f [regex]::Escape($taskId)) })
+    $allDeliveryEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^notification-delivery\|{0}\|' -f [regex]::Escape($taskId)) })
+    $allRecoverableLifecycleEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^lifecycle-recoverable-notification\|{0}\|work_pending=0\|task=settled$' -f [regex]::Escape($taskId)) })
+    Assert-Equal 1 $allSettledEvents.Count 'The failed launch or recovery reran the original task settlement.'
+    Assert-Equal 1 $allDeliveryEvents.Count 'The failed launch or recovery duplicated the original notification delivery.'
+    Assert-True ($allRecoverableLifecycleEvents.Count -ge 1) 'The lifecycle did not preserve the receipt-only recovery state.'
     $recoveredResumeParts = $allResumeEvents[1].Split('|')
     Assert-Equal $failedPauseId $recoveredResumeParts[3] 'Recovery resumed a pause operation other than the failed switch pause.'
     Assert-True ($recoveredResumeParts[2] -match '^hot-switch:[0-9a-f]{32}:resume$') 'Recovery did not record a fresh resume operation ID.'
 
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: real Promote/Launch, PID/build switch, fresh pause preservation, prior paused preservation, failed launch, and Recover.'
+    Write-Output 'desktop-hot-switch tests passed: real Promote/Launch, PID/build switch, durable task receipt, one notification delivery, fresh pause preservation, prior paused preservation, failed launch, and Recover.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome

@@ -415,8 +415,10 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 返回的 `phase` 取 `running`、`pausing`、`paused`、`resuming` 或 `failed`。
 `pause` 会先原子保存暂停意图，再协调会话的 `main` 和子 Agent。正在执行的模型请求
 和工具动作会先取得实际结果。只在等结果的 `TaskWait` 或前台 `AgentRun` 可以先保存
-等待位置，不必等到任务结束；继续时仍等原任务。转到后台的进程和媒体任务可以独立运行。
-每个 `agents` 条目会报告 `settling`、`paused`、`idle` 或 `unknown`，以及是否
+等待位置，不必等到任务结束；继续时仍等原任务。已经开始启动的原生后台 `AgentRun` 可以
+返回启动回执，子 Agent 则停在暂停边界，不会发出新的模型请求。转到后台的进程和媒体任务
+可以独立运行。有已验证结果回执的待投递任务通知会保留到正常重启之后，在恢复执行时
+投递一次。每个 `agents` 条目会报告 `settling`、`paused`、`idle` 或 `unknown`，以及是否
 `resumable`。`phase` 为 `failed` 时，暂停仍保留，先读 `error` 和 `agents` 再处理。
 
 `cancelPause` 撤回指定的暂停请求，即使同一次暂停在取消请求到达前刚刚完成。它不会

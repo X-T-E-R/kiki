@@ -51,6 +51,10 @@ export abstract class StepRequest {
     return undefined;
   }
 
+  get recoverableAfterExit(): boolean {
+    return false;
+  }
+
   get state(): StepRequestState {
     return this._state;
   }

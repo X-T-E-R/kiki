@@ -108,6 +108,12 @@ describe('Agent loop', () => {
     release();
     await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
     expect(loop.status()).toMatchObject({ activeTurnId: turnId, executionPaused: true });
+    expect(loop.hasQueuedWorkPreventingPausedExit?.()).toBe(false);
+    const unsaved = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'input after checkpoint' }],
+      toolCalls: [], origin: { kind: 'user' } }, { admission: 'activeTurnOnly' }));
+    expect(loop.hasQueuedWorkPreventingPausedExit?.()).toBe(true);
+    expect(unsaved.abort()).toBe(true);
+    expect(loop.hasQueuedWorkPreventingPausedExit?.()).toBe(false);
     expect((await control.pause({ operationId: 'pause-once' })).phase).toBe('paused');
     expect(steps).toBe(1);
     await expect(control.resume({ operationId: 'bad-resume', pauseOperationId: 'stale' })).rejects.toThrow();

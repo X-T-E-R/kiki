@@ -113,6 +113,7 @@ interface AgentTaskNotificationBuildContext {
   readonly renderContent: (delivery: object) => readonly ContentPart[];
   readonly origin: TaskOrigin;
   readonly notification: AgentTaskNotification;
+  readonly verifiedTerminalReceipt: boolean;
 }
 
 export const taskNotificationDeliveryKey = defineState(
@@ -239,6 +240,7 @@ export class TaskNotificationStepRequest extends MessageStepRequest {
     private readonly onWillDeliver?: () => void,
     private readonly renderContent?: (delivery: object) => readonly ContentPart[],
     private readonly resolveAdmission: StepRequestAdmission | (() => StepRequestAdmission) = 'activeOrNewTurn',
+    private readonly verifiedTerminalReceipt = false,
   ) {
     super(message, {
       kind: 'task_notification',
@@ -249,6 +251,10 @@ export class TaskNotificationStepRequest extends MessageStepRequest {
 
   override get admission(): StepRequestAdmission {
     return typeof this.resolveAdmission === 'function' ? this.resolveAdmission() : this.resolveAdmission;
+  }
+
+  override get recoverableAfterExit(): boolean {
+    return this.verifiedTerminalReceipt;
   }
 
   override resolveContextMessages(delivery: object = {}): readonly ContextMessage[] {
@@ -763,7 +769,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   hasWorkPreventingPausedExit(): boolean {
-    return this.list(true).some(info => info.lifetime !== 'service' && !this.hasPausedExecution(info));
+    return this.restorePending || this.pendingSettlements.size > 0 || this.buildingNotificationKeys.size > 0 ||
+      this.pendingWaitDeliveries.size > 0 ||
+      [...this.pendingNotificationRequests.values()].some(request => !request.aborted && !request.recoverableAfterExit) ||
+      [...this.tasks.values()].some(entry => entry.options.lifetime !== 'service' && entry.notificationPromise !== undefined) ||
+      this.list(true).some(info => info.lifetime !== 'service' && !this.hasPausedExecution(info));
   }
 
   hasUnfinishedWork(): boolean {
@@ -1811,6 +1821,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       () => this.fireNotificationHook(context.notification),
       context.renderContent,
       () => this.notificationAdmission(info),
+      context.verifiedTerminalReceipt,
     );
     this.pendingNotificationRequests.set(key, request);
     this.fireWorkChange();
@@ -1992,7 +2003,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           }),
         }];
       };
-      return { content: renderContent({}), renderContent, origin, notification };
+      return { content: renderContent({}), renderContent, origin, notification,
+        verifiedTerminalReceipt: TERMINAL_STATUSES.has(info.status) && info.receiptVerification === 'verified' };
     } finally {
       if (generation === this.notificationUndoGeneration) {
         this.buildingNotificationKeys.delete(key);

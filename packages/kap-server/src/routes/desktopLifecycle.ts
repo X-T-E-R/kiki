@@ -15,16 +15,18 @@ export function desktopPendingWork(core: Scope): string[] {
     for (const agent of session.accessor.get(IAgentLifecycleService).list()) {
       const observed = agent.accessor.get(IAgentActivityView)?.state();
       if (observed?.background.some(item => item.kind === 'compaction') === true) return true;
-      const loop = agent.accessor.get(IAgentLoopService).status();
+      const loopService = agent.accessor.get(IAgentLoopService);
+      const loop = loopService.status();
       const prompt = agent.accessor.get(IAgentPromptService);
       const queue = prompt.list();
       const execution = agent.accessor.get(IAgentExecutionService).status();
       const tasks = agent.accessor.get(IAgentTaskService);
       const parked = paused && loop.executionPaused && control.resumePoint(agent.id)?.turnId === loop.activeTurnId;
-      if (loop.finalizing || loop.persistenceFailure || queue.launching !== undefined || loop.pendingTurnIds.length > 0) return true;
+      if (loop.finalizing || loop.persistenceFailure || queue.launching !== undefined) return true;
       if (!parked && (observed?.turn !== undefined || loop.state === 'running' || queue.active !== undefined ||
         execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling')) return true;
-      if (paused ? (tasks.hasWorkPreventingPausedExit?.() ?? tasks.hasUnfinishedWork())
+      if (paused ? ((loopService.hasQueuedWorkPreventingPausedExit?.() ?? loop.hasPendingRequests) ||
+        (tasks.hasWorkPreventingPausedExit?.() ?? tasks.hasUnfinishedWork()))
         : (prompt.hasReadyPending() || loop.hasPendingRequests || queue.pending.length > 0 || tasks.hasUnfinishedWork())) return true;
     }
     return false;

@@ -178,6 +178,7 @@ export interface IAgentLoopService {
   run(options: LoopRunOptions): Promise<LoopRunResult>;
 
   status(): AgentLoopStatus;
+  hasQueuedWorkPreventingPausedExit?(): boolean;
   readonly onDidChangePersistence?: Event<void>;
   /** Invalidates work facts after admission or cancellation changes pending requests. */
   readonly onDidChangeWork?: Event<void>;

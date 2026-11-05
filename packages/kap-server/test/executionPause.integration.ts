@@ -7,10 +7,11 @@ import { once } from 'node:events';
 import { createKlient } from '@kiki/klient/http';
 import { expect, it, vi } from 'vitest';
 
-type TaskFrame = { taskId: string; agentId?: string; status: string; startedAt: number; model?: string; thinkingEffort?: string; result?: string };
+type TaskFrame = { taskId: string; agentId?: string; status: string; startedAt: number; model?: string; thinkingEffort?: string; result?: string; receiptVerification?: string };
 type Frame = { type: string; phase?: string; elapsedMs?: number; port?: number; token?: string; pid?: number; count?: number; requestCount?: number; live?: boolean; message?: string; childId?: string;
   prompt?: { phase: string; terminal?: { turnId?: number; state: string; result?: { type: string; steps: number } } }; history?: unknown[];
-  tasks?: TaskFrame[]; task?: TaskFrame; version?: number };
+  tasks?: TaskFrame[]; task?: TaskFrame; version?: number; finiteStarts?: number; exitBlockedByTasks?: boolean;
+  loop?: { state: string; pendingTurnIds: number[]; pendingRequestKinds: string[]; hasPendingRequests: boolean } };
 
 async function waitForFrame(child: ChildProcess, frames: readonly Frame[], type: string): Promise<Frame> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -221,14 +222,17 @@ async function boot(home: string, first: boolean) {
   return { child, client, wait, frames, ready, request, output: () => output };
 }
 
-async function cleanExit(server: Awaited<ReturnType<typeof boot>>): Promise<void> {
+async function cleanExit(server: Awaited<ReturnType<typeof boot>>, updateServerId?: string): Promise<void> {
   await server.client.close();
   const controller = new AbortController();
   const exited = once(server.child, 'exit', { signal: controller.signal });
   void exited.catch(() => undefined);
   const timer = setTimeout(() => { controller.abort(new Error('Fixture did not exit after close')); }, 30_000);
   try {
-    server.child.send({ type: 'close' });
+    server.child.send({ type: updateServerId === undefined ? 'close' : 'await-close' });
+    if (updateServerId !== undefined) await server.request('/api/desktop-lifecycle', {
+      action: 'update', server_id: updateServerId, consent: true, interrupt_work: false,
+    });
     await server.wait('closed');
     const [code, signal] = await exited;
     expect({ code, signal }, server.output()).toEqual({ code: 0, signal: null });
@@ -299,8 +303,8 @@ it('holds an execution across clean process exit and resumes its saved turn expl
   }
 }, 90_000);
 
-it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
-  const observer = mode !== 'background';
+it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
+  const observer = mode === 'TaskWait' || mode === 'AgentRun';
   const home = await mkdtemp(join(tmpdir(), 'kiki-execution-pause-child-'));
   await writeFile(join(home, 'config.toml'), 'default_model = "stub"\n[search]\nenabled = false\n[cron]\nmanualTick = true\n');
   let first: Awaited<ReturnType<typeof boot>> | undefined;
@@ -308,10 +312,17 @@ it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child
   try {
     first = await boot(home, true);
     const session = await first.request<{ id: string }>('/api/sessions', { metadata: { cwd: home }, agent_config: { permission_mode: 'manual' } });
-    first.child.send({ type: mode === 'AgentRun' ? 'foreground' : 'child', sessionId: session.id });
-    const started = await first.wait(mode === 'AgentRun' ? 'waiting' : 'child-started');
+    first.child.send({ type: mode === 'AgentRun' ? 'foreground' : mode === 'AgentRun launch' ? 'resume-background' : 'child', sessionId: session.id });
+    if (mode === 'AgentRun launch') {
+      await first.wait('launch-blocked');
+      expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(1);
+      expect(await first.client.session(session.id).execution.pause({ operationId: 'pause-child' })).toMatchObject({ phase: 'pausing' });
+      first.child.send({ type: 'release' });
+    }
+    const started = await first.wait(mode === 'AgentRun' || mode === 'AgentRun launch' ? 'waiting' : 'child-started');
     const { taskId, startedAt } = started.tasks![0]!;
-    const childId = mode === 'AgentRun' ? started.childId! : 'paused-child';
+    const childId = mode === 'AgentRun' || mode === 'AgentRun launch' ? started.childId! : 'paused-child';
+    if (mode === 'AgentRun launch') expect(childId).toBe('existing-child');
     expect(startedAt).toBeGreaterThan(0);
     await first.wait('model');
     if (observer) {
@@ -325,8 +336,10 @@ it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child
       expect(await execution.cancelPause({ operationId: 'cancel-withdrawn', pauseOperationId: 'pause-withdrawn' })).toMatchObject({ phase: 'running' });
       expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
     }
-    await first.client.session(session.id).execution.pause({ operationId: 'pause-child' });
-    first.child.send({ type: 'release' });
+    if (mode !== 'AgentRun launch') {
+      await first.client.session(session.id).execution.pause({ operationId: 'pause-child' });
+      first.child.send({ type: 'release' });
+    }
     await vi.waitFor(async () => expect(await first!.client.session(session.id).execution.read()).toMatchObject({ phase: 'paused',
       agents: expect.arrayContaining([expect.objectContaining({ agentId: childId, resumable: true }),
         ...(observer ? [expect.objectContaining({ agentId: 'main', resumable: true })] : [])]) }));
@@ -361,6 +374,13 @@ it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child
         expect(snapshot.prompt).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
         expect(notifications).toHaveLength(0);
       } else expect(notifications).toHaveLength(1);
+      if (mode === 'AgentRun launch') {
+        const receipts = snapshot.history!.filter(message => (message as { role?: string; toolCallId?: string }).role === 'tool' &&
+          (message as { toolCallId?: string }).toolCallId === 'observer-call');
+        expect(receipts).toHaveLength(1);
+        expect(JSON.stringify(receipts[0])).toContain(taskId);
+        expect(snapshot.prompt).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+      }
       expect(second!.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
     }, { timeout: 10_000 });
     expect(events).toContain('running');
@@ -370,6 +390,85 @@ it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child
     await cleanExit(second);
     process.stdout.write(`${JSON.stringify({ executionPauseChildProof: { sessionId: session.id, taskId, childId, mode,
       firstPid: first.ready.pid, secondPid: second.ready.pid, requestCounts: [observer ? 2 : 1, 2] } })}\n`);
+  } finally {
+    await first?.client.close(); await second?.client.close();
+    for (const server of [first, second]) if (server !== undefined && server.child.exitCode === null) server.child.kill();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 90_000);
+
+
+it('restarts a paused session with a verified completed-task notification and delivers it once after explicit resume', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-paused-task-receipt-'));
+  await writeFile(join(home, 'config.toml'), 'default_model = "stub"\n[search]\nenabled = false\n[cron]\nmanualTick = true\n');
+  let first: Awaited<ReturnType<typeof boot>> | undefined;
+  let second: Awaited<ReturnType<typeof boot>> | undefined;
+  let sequence = 0;
+  const taskId = 'finite-fixture0';
+  try {
+    first = await boot(home, true);
+    const create = () => first!.request<{ id: string }>('/api/sessions', { metadata: { cwd: home }, agent_config: { permission_mode: 'manual' } });
+    const prior = await create();
+    await first.client.session(prior.id).execution.pause({ operationId: 'prior-pause' });
+    await vi.waitFor(async () => expect(await first!.client.session(prior.id).execution.read()).toMatchObject({ phase: 'paused' }));
+    const session = await create();
+    first.child.send({ type: 'finite', sessionId: session.id });
+    await first.wait('finite-started');
+    const execution = first.client.session(session.id).execution;
+    await execution.pause({ operationId: 'pause-finite' });
+    await vi.waitFor(async () => expect(await execution.read()).toMatchObject({ phase: 'paused' }));
+    expect((await first.request<{ work_pending: string[] }>('/api/desktop-lifecycle')).work_pending).toContain(session.id);
+    first.child.send({ type: 'finish-finite' });
+    await first.wait('finite-receipt-pending');
+    first.child.send({ type: 'inspect', sessionId: session.id, sequence: ++sequence, taskId });
+    const uncommitted = await first.wait(`inspect-${sequence}`);
+    expect(uncommitted.task?.status).toBe('completed');
+    expect(uncommitted.task?.receiptVerification).not.toBe('verified');
+    expect(uncommitted.exitBlockedByTasks).toBe(true);
+    const blocked = await first.request<{ server_id: string; work_pending: string[] }>('/api/desktop-lifecycle');
+    expect(blocked.work_pending).toContain(session.id);
+    await expect(first.request('/api/desktop-lifecycle', { action: 'prepare-update', server_id: blocked.server_id,
+      consent: true, interrupt_work: false })).rejects.toThrow();
+    first.child.send({ type: 'release-finite-receipt' });
+    await first.wait('finite-completed');
+    let startedAt = 0;
+    await vi.waitFor(async () => {
+      first!.child.send({ type: 'inspect', sessionId: session.id, sequence: ++sequence, taskId });
+      const snapshot = await first!.wait(`inspect-${sequence}`);
+      expect(snapshot.task).toMatchObject({ status: 'completed', receiptVerification: 'verified' });
+      startedAt = snapshot.task!.startedAt;
+      expect(snapshot.loop).toMatchObject({ state: 'idle', pendingTurnIds: [0], pendingRequestKinds: ['task_notification'] });
+      expect(snapshot.exitBlockedByTasks).toBe(false);
+      expect(snapshot.finiteStarts).toBe(1);
+    }, { timeout: 10_000 });
+    expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(0);
+    const lifecycle = await first.request<{ server_id: string; work_pending: string[] }>('/api/desktop-lifecycle');
+    expect(lifecycle.work_pending).toEqual([]);
+    await first.request('/api/desktop-lifecycle', { action: 'prepare-update', server_id: lifecycle.server_id, consent: true, interrupt_work: false });
+    await cleanExit(first, lifecycle.server_id);
+    second = await boot(home, false);
+    expect(second.ready.pid).not.toBe(first.ready.pid);
+    const restored = second.client.session(session.id).execution;
+    expect(await restored.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'pause-finite' });
+    expect(await second.client.session(prior.id).execution.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'prior-pause' });
+    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(0);
+    await restored.resume({ operationId: 'resume-finite', pauseOperationId: 'pause-finite' });
+    await vi.waitFor(async () => {
+      second!.child.send({ type: 'inspect', sessionId: session.id, sequence: ++sequence, taskId });
+      const snapshot = await second!.wait(`inspect-${sequence}`);
+      expect(snapshot.task).toMatchObject({ taskId, status: 'completed', receiptVerification: 'verified', startedAt });
+      const notifications = snapshot.history!.filter(message => (message as { origin?: { taskId?: string } }).origin?.taskId === taskId);
+      expect(notifications).toHaveLength(1);
+      expect(JSON.stringify(notifications[0])).toContain('original finite result');
+      expect(snapshot.finiteStarts).toBe(0);
+      expect(snapshot.loop).toMatchObject({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false });
+      expect(second!.frames.filter(frame => frame.type === 'model')).toHaveLength(1);
+    }, { timeout: 10_000 });
+    expect(await second.client.session(prior.id).execution.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'prior-pause' });
+    expect(await restored.resume({ operationId: 'resume-finite', pauseOperationId: 'pause-finite' })).toMatchObject({ phase: 'running' });
+    await cleanExit(second);
+    process.stdout.write(`${JSON.stringify({ pausedTaskNotificationProof: { firstPid: first.ready.pid, secondPid: second.ready.pid,
+      taskId, originalTaskStarts: 1, restoredTaskStarts: 0, requestCounts: [0, 1], notificationCount: 1 } })}\n`);
   } finally {
     await first?.client.close(); await second?.client.close();
     for (const server of [first, second]) if (server !== undefined && server.child.exitCode === null) server.child.kill();

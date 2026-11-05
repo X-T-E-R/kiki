@@ -1,4 +1,4 @@
-import type { StepRequest } from './stepRequest';
+import { ContinuationStepRequest, type StepRequest } from './stepRequest';
 
 export interface StepRequestBatch {
   readonly driver: StepRequest;
@@ -22,6 +22,11 @@ export class StepRequestQueue {
 
   pendingKinds(): readonly string[] {
     return this.items.filter((item) => !item.aborted).map((item) => item.kind);
+  }
+
+  hasWorkPreventingPausedExit(checkpointedTurn = false): boolean {
+    return this.items.some(item => !item.aborted && !item.recoverableAfterExit &&
+      !(checkpointedTurn && item instanceof ContinuationStepRequest));
   }
 
   takeNextBatch(): StepRequestBatch | undefined {

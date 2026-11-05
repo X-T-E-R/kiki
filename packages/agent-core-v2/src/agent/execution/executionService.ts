@@ -63,6 +63,18 @@ interface ActiveRun {
   turnId?: number;
 }
 
+function waitForExecutionRelease(control: ISessionExecutionControl, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => { subscription.dispose(); signal.removeEventListener('abort', aborted); };
+    const aborted = (): void => { cleanup(); reject(signal.reason); };
+    const released = (): void => { if (!control.isHeld()) { cleanup(); resolve(); } };
+    const subscription = control.onDidChange(released);
+    signal.addEventListener('abort', aborted, { once: true });
+    if (signal.aborted) aborted();
+    else released();
+  });
+}
+
 export class AgentExecutionService implements IAgentExecutionService {
   declare readonly _serviceBrand: undefined;
 
@@ -112,16 +124,10 @@ export class AgentExecutionService implements IAgentExecutionService {
     options.signal.throwIfAborted();
     const control = this.agent.accessor.get(ISessionExecutionControl);
     if (control.isHeld()) await control.ready();
-    if (control.isHeld()) {
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = (): void => { subscription.dispose(); options.signal.removeEventListener('abort', aborted); };
-        const aborted = (): void => { cleanup(); reject(options.signal.reason); };
-        const subscription = control.onDidChange(() => { if (!control.isHeld()) { cleanup(); resolve(); } });
-        options.signal.addEventListener('abort', aborted, { once: true });
-        if (options.signal.aborted) aborted();
-        else if (!control.isHeld()) { cleanup(); resolve(); }
-      });
-    }
+    const settlingNativeLaunch = control.isPausing() && this.scope.parentAgentId !== undefined &&
+      options.parentReceiptManaged === true && options.capacityReservation !== undefined &&
+      (this.profile.data().executorId ?? 'native') === 'native';
+    if (control.isHeld() && !settlingNativeLaunch) await waitForExecutionRelease(control, options.signal);
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
     let activityPermit: RequestPermit | undefined;
@@ -198,6 +204,9 @@ export class AgentExecutionService implements IAgentExecutionService {
         }
       }
       controller.signal.throwIfAborted();
+      if (settlingNativeLaunch && (this.profile.data().executorId ?? 'native') !== 'native' && control.isHeld()) {
+        await waitForExecutionRelease(control, controller.signal);
+      }
       session = await this.resolveSession();
       controller.signal.throwIfAborted();
       this.broken = undefined;

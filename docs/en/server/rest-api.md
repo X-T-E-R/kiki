@@ -419,9 +419,13 @@ The returned `phase` is `running`, `pausing`, `paused`, `resuming`, or `failed`.
 `main` and its child agents. An in-flight model request or tool action reaches
 its real outcome before execution stops. A `TaskWait` or foreground `AgentRun`
 that is only waiting for a result can save its place without waiting for that
-result; resuming observes the same task. Detached process and media work can
-continue independently. Each `agents` entry reports `settling`, `paused`,
-`idle`, or `unknown`, plus whether it is `resumable`. If `phase` is `failed`,
+result; resuming observes the same task. A native background `AgentRun` already
+launching can return its launch receipt while the child waits at the pause
+boundary, without starting a new model request. Detached process and media work
+can continue independently. A pending task notification backed by a verified
+result survives a clean restart and is delivered once after execution resumes.
+Each `agents` entry reports `settling`, `paused`, `idle`, or `unknown`, plus
+whether it is `resumable`. If `phase` is `failed`,
 read `error` and `agents` before taking action; the hold remains in place.
 
 `cancelPause` withdraws the named pause while it is settling, including if that

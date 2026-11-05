@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { ProcessTask } from '@kiki/agent-core-v2/agent/tools/os/bash/process-task';
+import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import { IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import { ISessionMcpHandle } from '@kiki/agent-core-v2/session/mcp/sessionMcpHandle';
 import { tmpdir } from 'node:os';
@@ -268,6 +269,41 @@ describe('desktop-managed shared lifecycle', () => {
       expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: false });
       expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method: 'resume' },
         params: [{ operationId: 'resume-after-cancel', pauseOperationId: 'prepare-pause' }] })).data).toMatchObject({ phase: 'running' });
+    } finally {
+      await server?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('keeps non-durable queued input blocking a paused exit even when named task_notification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-queued-'));
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root,
+        env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' });
+      const created = await call(server, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const session = server.core.accessor.get(ISessionManager).get((created.data as { id: string }).id)!;
+      const agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+      const control = session.accessor.get(ISessionExecutionControl);
+      await control.pause({ operationId: 'queued-pause' });
+      const loop = agent.accessor.get(IAgentLoopService);
+      await vi.waitFor(async () => {
+        expect(await control.read()).toMatchObject({ phase: 'paused' });
+        expect(desktopLifecycleStateSchema.parse((await call(server!, '/api/desktop-lifecycle')).data).work_pending).toEqual([]);
+      });
+      for (const kind of ['message', 'task_notification']) {
+        const receipt = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Retain unsaved input' }],
+          toolCalls: [], origin: { kind: 'user' } }, { kind, admission: 'newTurn' }));
+        expect(loop.status()).toMatchObject({ state: 'idle', pendingRequestKinds: [kind] });
+        const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+        expect(state.work_pending).toContain(session.id);
+        expect((await call(server, '/api/desktop-lifecycle', { action: 'prepare-update', server_id: state.server_id,
+          consent: true, interrupt_work: false })).code).not.toBe(0);
+        expect(await control.read()).toMatchObject({ phase: 'paused', pauseOperationId: 'queued-pause' });
+        expect(receipt.abort()).toBe(true);
+      }
+      expect(desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data).work_pending).toEqual([]);
     } finally {
       await server?.close();
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
