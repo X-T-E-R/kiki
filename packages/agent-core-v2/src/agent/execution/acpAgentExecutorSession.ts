@@ -24,6 +24,7 @@ import {
 } from '@kiki/acp-client';
 
 import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
+import { CLAUDE_EXPLICIT_SETTINGS_SOURCES } from '#/app/agentExecutor/claudeCredentials';
 import { antigravityProcessService } from '#/app/agentExecutor/antigravityProcess';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp } from './harnessMcpLease';
@@ -374,7 +375,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined,
       request.kind === 'prompt' ? request.contextMessages : undefined);
-    if (this.context.descriptor.id === 'claude-acp') {
+    if (this.context.descriptor.id === 'claude-acp' || this.context.descriptor.claudeSettingsFile !== undefined) {
       const actualModel = configured.configOptions.find((option) =>
         option.category === 'model' && typeof option.currentValue === 'string')?.currentValue;
       const agentVersion = opened.initialize.agentInfo?.version;
@@ -724,12 +725,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         : acpMcpServers(mcp.connectionManager, roots.workDir,
           (name) => process.env[name], this.context.descriptor.mcpTransports,
           kikiChildDefaults(this.context.agent.accessor.get(IBootstrapService).homeDir));
+    const sessionMeta = { ...this.#harnessMcp?.sessionMeta, 'kiki.permission': externalPermissionMeta(this.context) };
+    const settings = this.context.descriptor.claudeSettingsFile;
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
-      sessionMeta: { ...this.#harnessMcp?.sessionMeta,
-        'kiki.permission': externalPermissionMeta(this.context) },
+      sessionMeta: settings === undefined ? sessionMeta : {
+        ...sessionMeta,
+        claudeCode: { options: { settings, settingSources: [...CLAUDE_EXPLICIT_SETTINGS_SOURCES] } },
+      },
       ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, this.#client.status().state === 'broken'),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&

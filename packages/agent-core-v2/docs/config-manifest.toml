@@ -140,6 +140,7 @@
   # auth: object | object | object
   # args: string[] (default: [])
   # env: record<string, string>
+  # claude_settings_file: string
   # home_env: string
   # startup_timeout_ms: integer
   # shutdown_grace_ms: integer

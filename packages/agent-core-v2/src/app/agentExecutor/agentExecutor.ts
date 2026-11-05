@@ -163,6 +163,7 @@ export interface AgentExecutorDescriptor {
         readonly args: readonly string[] };
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  readonly claudeSettingsFile?: string;
   /**
    * Environment variable that names this engine's own configuration
    * directory, when the engine has one. A user-configured `homeDir` is

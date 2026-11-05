@@ -141,6 +141,7 @@ interface FakeHarnessOptions {
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
   readonly executorVersion?: string;
+  readonly claudeSettingsFile?: string;
   readonly agentId?: string;
   readonly parentAgentId?: string;
   readonly providerName?: string;
@@ -527,6 +528,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       profileDelivery: options.profileDelivery,
       supportsMcp: options.supportsMcp,
       version: options.executorVersion,
+      claudeSettingsFile: options.claudeSettingsFile,
       revision: 'r1',
     },
     binding: {
@@ -731,6 +733,27 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it.each(['new', 'load'] as const)('passes independent Claude settings through native %s session metadata', async (mode) => {
+    const settings = '/config/example-claude.json';
+    const harness = createHarness({ mode, executorId: 'example-claude-cmd', claudeSettingsFile: settings });
+    const official = createHarness({ executorId: 'claude-acp' });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.opens[0]?.sessionMeta).toMatchObject({
+        'kiki.permission': { version: 2 },
+        claudeCode: { options: { settings, settingSources: ['project', 'local'] } },
+      });
+      expect(harness.starts[0]?.session?.sessionMeta).toEqual(harness.opens[0]?.sessionMeta);
+      const normal = await official.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await normal.completion;
+      expect(official.opens[0]?.sessionMeta?.['claudeCode']).toBeUndefined();
+    } finally {
+      await harness.session.shutdown();
+      await official.session.shutdown();
+    }
+  });
+
   it.each(['openSession', 'configureSession', 'startTurn'] as const)('records a typed authentication requirement from %s without marking sign-out', async (method) => {
     const harness = createHarness();
     const error = new AcpClientError('executor.authentication_required', 'Sign in');
@@ -994,8 +1017,11 @@ describe('ACP external executor', () => {
     expect(AcpAgentExecutorProvider.validateOptions({})).toEqual({});
   });
 
-  it('records Claude ACP negotiated model metadata as a runtime fact', async () => {
-    const harness = createHarness({ executorId: 'claude-acp', modelAlias: 'model-a' });
+  it.each([
+    { executorId: 'claude-acp' },
+    { executorId: 'example-claude-cmd', claudeSettingsFile: '/config/example-claude.json' },
+  ])('records $executorId negotiated model metadata as a runtime fact', async (entry) => {
+    const harness = createHarness({ ...entry, modelAlias: 'model-a' });
     const handle = await harness.session.run(
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },

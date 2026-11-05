@@ -172,6 +172,8 @@ discovery_initialized = true
 
 向 `POST /api/config` 发送同名 snake_case 字段。JSON `null` 只删除对应的显示偏好，启动设置与 defaults 仍在。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。`GET /api/executors` 只读最近一次检查，不探测程序或登录。检查某一个引擎用 `POST /api/executors/{id}/check`。目录 `status: "unknown"` 表示这个引擎还没有检查结果。超过 60 秒后，响应仍带上一次的 `check_status` 和 `checked_at`，并用 `check_stale: true` 标明它已过新鲜期。某一引擎超时或失败只出现在该引擎上。设置页列出全部引擎，可以继续配置或 Check。第一次打开设置页且 `discovery_initialized` 还不是 `true` 时，每个外部引擎各检查一次；结果为 `ready` 或 `warning`、并且该引擎还没有明确开关的，会写成 `show_in_profile_list = true`。失败、超时，以及已经是 `false` 的引擎保持原样。这次导入记下 `discovery_initialized = true` 之后，再次进入设置页不再重跑。裸执行入口要同时满足三件事：程序就绪、已确认登录或已配置该引擎声明的 API 密钥环境变量、并且 `show_in_profile_list` 为 `true`。只保存了 profile、启动偏好或 Kiki 原生模型，还不能把它放进新选择。
 
+要在 Kiki 选择另一套 Claude Code 设置并保留普通入口，使用官方 Claude ACP 适配器，为另一套设置配置单独的 `[agent_executors.<id>]`。将 `claude_settings_file` 设为服务端本机设置文件的绝对路径，为新入口启用 `show_in_profile_list`，原 `claude-acp` 保持原样。新建和恢复的会话加载指定文件及项目、本地设置，跳过用户级 `settings.json`。若描述符使用 `auth.kind = "claude-credentials"`，登录检查也会把同一文件交给 Claude CLI。修改文件路径后需新建执行绑定。
+
 自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
 
 ```toml

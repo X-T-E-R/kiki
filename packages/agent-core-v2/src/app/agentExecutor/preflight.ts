@@ -12,6 +12,7 @@ import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProce
 import { ANTIGRAVITY_IDE_NOT_ACP, IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
 import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
 import {
+  CLAUDE_EXPLICIT_SETTINGS_SOURCES,
   claudeConfigDir,
   claudeSettingsPaths,
   credentialFromClaudeCliStatus,
@@ -279,21 +280,26 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     descriptor: AgentExecutorDescriptor,
     auth: { readonly command: string; readonly args: readonly string[] },
   ): Promise<CredentialResolution> {
-    const lookup = executorEnvLookup(descriptor, (name) => this.bootstrap.getEnv(name));
-    const configDir = claudeConfigDir({ get: lookup }, this.bootstrap.osHomeDir);
-    const local = await scanClaudeCredentials({
-      env: { get: lookup },
-      readText: async (path) => {
-        try {
-          return await this.fs.readText(path);
-        } catch {
-          return undefined;
-        }
-      },
-      settingsPaths: claudeSettingsPaths(configDir),
-    });
-    if (local.source !== 'none') return { loginStatus: 'logged_in', source: local.source, detail: local.detail };
-    const probe = await this.#probe(auth.command, auth.args, executorProcessEnv(descriptor));
+    const settings = descriptor.claudeSettingsFile;
+    if (settings === undefined) {
+      const lookup = executorEnvLookup(descriptor, (name) => this.bootstrap.getEnv(name));
+      const configDir = claudeConfigDir({ get: lookup }, this.bootstrap.osHomeDir);
+      const local = await scanClaudeCredentials({
+        env: { get: lookup },
+        readText: async (path) => {
+          try {
+            return await this.fs.readText(path);
+          } catch {
+            return undefined;
+          }
+        },
+        settingsPaths: claudeSettingsPaths(configDir),
+      });
+      if (local.source !== 'none') return { loginStatus: 'logged_in', source: local.source, detail: local.detail };
+    }
+    const args = settings === undefined ? auth.args
+      : ['--settings', settings, '--setting-sources', CLAUDE_EXPLICIT_SETTINGS_SOURCES.join(','), ...auth.args];
+    const probe = await this.#probe(auth.command, args, executorProcessEnv(descriptor));
     if (!probe.available || probe.code === -1) {
       return { loginStatus: 'unknown', source: 'unknown' };
     }

@@ -208,6 +208,22 @@ describe('AgentExecutorRegistryService', () => {
     expect(BUILTIN_AGENT_EXECUTORS['agy-cli']?.command).toBeUndefined();
   });
 
+  it('loads a host-defined Claude settings file into only the selected ACP descriptor and its revision', () => {
+    const settings = process.platform === 'win32' ? 'C:/config/example-claude.json' : '/config/example-claude.json';
+    const raw = { 'example-claude': { protocol: 'acp-v1', command: 'claude-agent-acp', claude_settings_file: settings } };
+    const configured = AgentExecutorsConfigSchema.parse(agentExecutorsFromToml(raw));
+    expect(agentExecutorsToToml(configured)).toMatchObject(raw);
+    services.set(IConfigService, configWith(configured));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    expect(registry.get('example-claude')?.claudeSettingsFile).toBe(settings);
+    expect(registry.get('claude-acp')?.claudeSettingsFile).toBeUndefined();
+    const descriptor = configured['example-claude']!;
+    expect(registry.get('example-claude')?.revision).not.toBe(descriptorRevisionFromConfig({ ...descriptor, claudeSettingsFile: undefined }));
+    expect(AgentExecutorsConfigSchema.safeParse({ relative: { ...descriptor, claudeSettingsFile: './settings.json' } }).success).toBe(false);
+    expect(AgentExecutorsConfigSchema.safeParse({ notAcp: { ...descriptor, protocol: 'codex-app-server' } }).success).toBe(false);
+  });
+
   it('rejects unknown executor ids instead of falling back to native', () => {
     services.set(IConfigService, configWith({}));
     services.set(

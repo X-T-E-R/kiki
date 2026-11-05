@@ -732,6 +732,27 @@ describe('AgentExecutorPreflightService', () => {
       services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
     };
 
+    it('asks the Claude CLI about the selected settings without using the default settings probe', async () => {
+      const settings = 'C:/config/example-claude.json';
+      services.set(IConfigService, { get: (section: string) => section === AGENT_EXECUTORS_SECTION
+        ? { 'example-claude': {
+          protocol: 'acp-v1', args: [], claudeSettingsFile: settings,
+          sources: [{ id: 'fixture', kind: 'node-script', path: CLAUDE_MANAGED }],
+          versionProbe: { args: ['--version'] },
+          auth: { kind: 'claude-credentials', command: 'claude', args: ['auth', 'status', '--json'] },
+        } } : undefined } as IConfigService);
+      setClaudeSettings({ env: { ANTHROPIC_API_KEY: 'fixture-official-settings-key' } });
+      const probe = `claude --settings ${settings} --setting-sources project,local auth status --json`;
+      processService.outputs.set(probe, { output: '{"loggedIn":true,"authMethod":"api_key","apiKeySource":"ANTHROPIC_API_KEY"}' });
+      const [result] = await services.get(IAgentExecutorPreflightService).run(['example-claude']);
+      expect(result).toMatchObject({ loginStatus: 'logged_in', credentialSource: 'api_key', credentialDetail: 'ANTHROPIC_API_KEY' });
+      expect(processService.calls).toContain(probe);
+      expect(processService.calls).not.toContain('claude auth status --json');
+      processService.outputs.set(probe, { output: 'settings error', code: 1 });
+      const [failed] = await services.get(IAgentExecutorPreflightService).run(['example-claude']);
+      expect(failed).toMatchObject({ loginStatus: 'unknown', credentialSource: 'unknown' });
+    });
+
     it('accepts an API key from the host environment without reading the CLI sign-in', async () => {
       services.set(IBootstrapService, bootstrap({ ANTHROPIC_API_KEY: 'sk-ant-api03-fixture-value' }));
       const result = await check();

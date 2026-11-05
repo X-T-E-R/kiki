@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 import { isPlainObject } from '#/app/config/toml';
@@ -108,6 +109,7 @@ export const AgentExecutorConfigSchema = z
     ]).optional(),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
+    claudeSettingsFile: z.string().trim().refine(isAbsolute, 'Expected an absolute settings file path').optional(),
     homeEnv: z.string().trim().min(1).optional(),
     startupTimeoutMs: z.number().int().positive().optional(),
     shutdownGraceMs: z.number().int().nonnegative().optional(),
@@ -139,6 +141,9 @@ export const AgentExecutorConfigSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.claudeSettingsFile !== undefined && value.protocol !== 'acp-v1') {
+      context.addIssue({ code: 'custom', path: ['claudeSettingsFile'], message: 'Claude settings files require an ACP executor' });
+    }
     if (value.command === undefined && value.sources === undefined) {
       context.addIssue({ code: 'custom', message: 'command or sources is required' });
     }
@@ -183,6 +188,7 @@ const TOML_TO_RUNTIME = {
   login_command: 'loginCommand',
   api_key_env: 'apiKeyEnv',
   home_env: 'homeEnv',
+  claude_settings_file: 'claudeSettingsFile',
   steer_delivery: 'steerDelivery',
   profile_delivery: 'profileDelivery',
   version_probe: 'versionProbe',
@@ -210,6 +216,7 @@ const RUNTIME_TO_TOML = {
   loginCommand: 'login_command',
   apiKeyEnv: 'api_key_env',
   homeEnv: 'home_env',
+  claudeSettingsFile: 'claude_settings_file',
   steerDelivery: 'steer_delivery',
   profileDelivery: 'profile_delivery',
   versionProbe: 'version_probe',

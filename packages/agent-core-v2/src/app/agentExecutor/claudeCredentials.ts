@@ -2,6 +2,8 @@ import { join } from 'pathe';
 
 import type { AgentExecutorCredentialSource } from './agentExecutor';
 
+export const CLAUDE_EXPLICIT_SETTINGS_SOURCES = ['project', 'local'] as const;
+
 /**
  * The environment variables Claude Code reads a credential from, ordered the
  * way its own authentication precedence ranks them.
