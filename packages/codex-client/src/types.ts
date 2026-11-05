@@ -3,6 +3,7 @@ import type { Readable, Writable } from 'node:stream';
 export interface HostProcessOptionsLike {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly envUnset?: readonly string[];
   readonly shell?: boolean | string;
   readonly detached?: boolean;
   readonly windowsHide?: boolean;
@@ -36,11 +37,13 @@ export interface CodexProcessDescriptor {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly envUnset?: readonly string[];
   readonly startupTimeoutMs?: number;
   /** Optional caller wait deadline; does not cancel or resend the RPC. Unset waits for the response or disconnection. */
   readonly requestTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly stderrMaxBytes?: number;
+  readonly redactDiagnostic?: (text: string) => string;
   readonly clientName?: string;
   readonly clientVersion?: string;
 }

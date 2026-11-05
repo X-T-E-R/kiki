@@ -28,6 +28,7 @@ import {
   type AgentExecutorProtocol,
   type AgentExecutorProvider,
   IAgentExecutorRegistry,
+  executorSourceId,
   type ResolvedAgentExecutor,
   registeredAgentExecutorProviders,
 } from './agentExecutor';
@@ -55,6 +56,7 @@ import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravi
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
 import { join } from 'pathe';
 import { readExecutorDiscovery } from './executorDiscovery';
+import { AGENT_EXECUTOR_INSTANCES_SECTION, executorInstanceIssue, INSTANCE_ISSUE_MESSAGE, materializeExecutorInstance, type AgentExecutorInstances } from './executorInstances';
 import type { ExecutorDiscoveryStatus } from '@kiki/protocol';
 
 const CAPABILITY_CACHE_MAX_AGE_MS = 60_000;
@@ -95,9 +97,19 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
 
   get(id: string): AgentExecutorDescriptor | undefined {
     if (id === 'native') return NATIVE_DESCRIPTOR;
-    const entry = this.config.get<AgentExecutorsConfig | undefined>(
-      AGENT_EXECUTORS_SECTION,
-    )?.[id] ?? BUILTIN_AGENT_EXECUTORS[id];
+    const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION);
+    const instance = instances !== undefined && Object.hasOwn(instances, id) ? instances[id] : undefined;
+    if (instance !== undefined) {
+      return materializeExecutorInstance(id, instance, this.#registeredDescriptor(instance.source_executor, true),
+        (name) => this.bootstrap.getEnv(name));
+    }
+    return this.#registeredDescriptor(id);
+  }
+
+  #registeredDescriptor(id: string, programOnly = false): AgentExecutorDescriptor | undefined {
+    const configured = this.config.get<AgentExecutorsConfig | undefined>(AGENT_EXECUTORS_SECTION);
+    const entry = configured !== undefined && Object.hasOwn(configured, id) ? configured[id]
+      : Object.hasOwn(BUILTIN_AGENT_EXECUTORS, id) ? BUILTIN_AGENT_EXECUTORS[id] : undefined;
     if (entry === undefined) return undefined;
     const raw = this.config.get<AgentExecutorOverridesConfig | undefined>(
       AGENT_EXECUTOR_OVERRIDES_SECTION,
@@ -105,20 +117,21 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const parsed = raw === undefined ? undefined : AgentExecutorOverrideSchema.safeParse(raw);
     return applyExecutorOverride(
       descriptorFromConfig(id, entry),
-      parsed?.success === true ? parsed.data : undefined,
+      parsed?.success === true ? programOnly ? { binPath: parsed.data.binPath } : parsed.data : undefined,
     );
   }
 
   list(): readonly AgentExecutorDescriptor[] {
     const configured = this.config.get<AgentExecutorsConfig | undefined>(AGENT_EXECUTORS_SECTION) ?? {};
-    return ['native', ...new Set([...Object.keys(BUILTIN_AGENT_EXECUTORS), ...Object.keys(configured)]).values()]
+    const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION) ?? {};
+    return [...new Set(['native', ...Object.keys(BUILTIN_AGENT_EXECUTORS), ...Object.keys(configured), ...Object.keys(instances)])]
       .map((id) => this.get(id)!)
       .toSorted((a, b) => a.id.localeCompare(b.id));
   }
 
-  recordNegotiated(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void {
+  recordNegotiated(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities, expectedRevision?: string): void {
     const descriptor = this.get(id);
-    if (descriptor === undefined) return;
+    if (descriptor === undefined || (expectedRevision !== undefined && descriptor.revision !== expectedRevision)) return;
     const cached = this.negotiatedById.get(id);
     const previous = cached?.revision === descriptor.revision ? cached : undefined;
     const previousCatalog = previous?.catalog;
@@ -151,8 +164,18 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   async refreshExecutorCapabilityCatalog(id: string): Promise<ExecutorCapabilityCatalog> {
     const descriptor = this.get(id);
     if (descriptor === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
+    const issue = await executorInstanceIssue(descriptor, this.fs);
     const modelProbe = executorModelProbe(descriptor);
     const probing = modelProbe === descriptor.modelProbe ? descriptor : { ...descriptor, modelProbe };
+    if (issue !== undefined) {
+      return {
+        executorId: id, descriptorRevision: descriptor.revision,
+        source: 'negotiated', provenance: 'acp_negotiation', observedAt: 0,
+        models: { state: 'unavailable', diagnostic: INSTANCE_ISSUE_MESSAGE[issue] },
+        thinkingLevels: { state: 'unavailable', diagnostic: INSTANCE_ISSUE_MESSAGE[issue] },
+        context: unknownContextCapabilities(), controls: executorControlCapabilities(descriptor),
+      };
+    }
     if (probing.modelProbe === undefined) {
       const existing = this.negotiatedById.get(id)?.catalog;
       if (existing?.descriptorRevision === descriptor.revision) return existing;
@@ -294,6 +317,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         { details: { executorId: id } },
       );
     }
+    if (descriptor.instanceIssue !== undefined) throw instanceConfigError(id, descriptor.instanceIssue);
     const provider = this.provider(descriptor.protocol);
     const normalized = scalarOptions(options, id);
     if (provider === undefined) {
@@ -412,6 +436,8 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   ): Promise<ResolvedAgentExecutor> {
     const resolved = this.resolve(id, options);
     if (resolved.descriptor.id === 'native') return resolved;
+    const issue = await executorInstanceIssue(resolved.descriptor, this.fs);
+    if (issue !== undefined) throw instanceConfigError(id, issue);
     const descriptor = await this.#withManagedSource(resolved.descriptor);
     const probes = await resolveExecutorSource(
       descriptor,
@@ -439,6 +465,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         selectedSource: selected.id,
         sourceProbes: probes,
         version: selected.version,
+        registryRevision: resolved.descriptor.revision,
         revision: resolvedExecutableRevision({
           baseRevision: resolved.descriptor.revision,
           selectedSource: selected.id,
@@ -490,8 +517,9 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   }
 
   async #withManagedSource(descriptor: AgentExecutorDescriptor): Promise<AgentExecutorDescriptor> {
-    if (descriptor.id === 'antigravity-acp') {
-      const state = await this.documents?.get<AntigravityCacheState>(ANTIGRAVITY_CACHE_SCOPE, descriptor.id);
+    const sourceId = executorSourceId(descriptor);
+    if (sourceId === 'antigravity-acp') {
+      const state = await this.documents?.get<AntigravityCacheState>(ANTIGRAVITY_CACHE_SCOPE, sourceId);
       if (state?.activeVersion !== undefined && descriptor.sources?.some((source) => source.id === 'kiki-managed')) {
         const release = antigravityRelease(state.activeVersion, this.bootstrap.platform, this.bootstrap.arch);
         const path = join(antigravityCacheRoot(this.bootstrap.homeDir), release.version, release.platform, release.entry);
@@ -500,13 +528,18 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       }
       return descriptor;
     }
-    const state = await this.documents?.get<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, descriptor.id);
+    const state = await this.documents?.get<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, sourceId);
     return withManagedAdapterSource(descriptor, this.bootstrap.homeDir, state);
   }
 
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined {
     return this.providers.get(protocol);
   }
+}
+
+function instanceConfigError(id: string, issue: import('@kiki/protocol').ExecutorInstanceIssue): Error2 {
+  return new Error2(ErrorCodes.CONFIG_INVALID, `Executor instance "${id}": ${INSTANCE_ISSUE_MESSAGE[issue]}`,
+    { details: { executorId: id, reason: issue } });
 }
 
 function descriptorFromConfig(

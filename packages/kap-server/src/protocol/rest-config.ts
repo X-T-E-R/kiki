@@ -25,6 +25,7 @@ import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/wor
 import { RequestCompressionWireSchema, ResponsesWebSocketWireSchema } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, retryConfigResponseSchema, retryConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
+import { executorInstancesPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -285,5 +286,6 @@ export const patchConfigRequestSchema = z.object({
   request_governance: requestGovernanceConfigPatchSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
+  agent_executor_instances: executorInstancesPatchSchema.optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

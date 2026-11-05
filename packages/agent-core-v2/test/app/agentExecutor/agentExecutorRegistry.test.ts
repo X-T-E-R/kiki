@@ -35,8 +35,12 @@ import {
   agentExecutorOverridesFromToml,
   agentExecutorOverridesToToml,
   executorProcessEnv,
+  redactExecutorOutput,
 } from '#/app/agentExecutor/executorOverrides';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import { AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSchema, type AgentExecutorInstances } from '#/app/agentExecutor/executorInstances';
+import { executorSourceId } from '#/app/agentExecutor/agentExecutor';
+import { withManagedAdapterSource } from '#/app/agentExecutor/managedAdapterRegistry';
 
 const processService = { _serviceBrand: undefined } as unknown as IHostProcessService;
 const fs = { _serviceBrand: undefined } as unknown as IHostFileSystem;
@@ -121,6 +125,49 @@ describe('AgentExecutorRegistryService', () => {
     await provider?.dispose();
     provider = undefined;
     await services.dispose();
+  });
+
+  it('keeps named instance registrations and observations separate from their source', () => {
+    let instances: AgentExecutorInstances = {};
+    const baseConfig = configWith({});
+    services.set(IConfigService, {
+      ...baseConfig,
+      get: <T>(section: string) => section === AGENT_EXECUTOR_INSTANCES_SECTION ? instances as T : baseConfig.get<T>(section),
+    });
+    services.set(IBootstrapService, { homeDir: '/kiki', getEnv: () => undefined } as unknown as IBootstrapService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    const defaultRevision = registry.get('agy-cli')!.revision;
+    expect(registry.list().filter(item => executorSourceId(item) === 'agy-cli').map(item => item.id)).toEqual(['agy-cli']);
+    const id = 'instance-work';
+    instances = AgentExecutorInstancesSchema.parse({ [id]: { source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' }, proxy: { kind: 'direct' } } });
+    const first = registry.get(id)!;
+    expect(first).toMatchObject({ id, label: 'Work', defaultProfile: false, envUnset: expect.arrayContaining(['HTTP_PROXY', 'ALL_PROXY']) });
+    expect(registry.get('agy-cli')!.revision).toBe(defaultRevision);
+    registry.recordNegotiated!(id, undefined, { models: ['work-model'] }, first.revision);
+    expect(registry.lastNegotiated!(id)?.models).toEqual(['work-model']);
+    expect(registry.lastNegotiated!('agy-cli')).toBeUndefined();
+    instances = { [id]: { ...instances[id]!, proxy: { kind: 'inherit' } } };
+    expect(registry.get(id)!.revision).not.toBe(first.revision);
+    registry.recordNegotiated!(id, undefined, { models: ['obsolete-model'] }, first.revision);
+    expect(registry.lastNegotiated!(id)).toBeUndefined();
+    instances = {};
+    expect(registry.get(id)).toBeUndefined();
+    expect(registry.get('agy-cli')!.revision).toBe(defaultRevision);
+  });
+
+  it('redacts encoded and decoded authenticated proxy fields from instance diagnostics', () => {
+    const instances = AgentExecutorInstancesSchema.parse({ 'instance-work': {
+      source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' }, proxy: { kind: 'env', name: 'WORK_PROXY' },
+    } });
+    const config = configWith({});
+    services.set(IConfigService, { ...config, get: <T>(section: string) => section === AGENT_EXECUTOR_INSTANCES_SECTION ? instances as T : config.get<T>(section) });
+    services.set(IBootstrapService, { getEnv: () => 'socks5h://example-user:p%40ssword@127.0.0.1:1080' } as unknown as IBootstrapService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const descriptor = services.get(IAgentExecutorRegistry).get('instance-work')!;
+    expect(descriptor.instanceIssue).toBeUndefined();
+    expect(redactExecutorOutput(descriptor, 'socks5h://example-user:p%40ssword@127.0.0.1:1080 example-user p%40ssword p@ssword'))
+      .toBe('[redacted] [redacted] [redacted] [redacted]');
   });
 
   it('discovers installed files without executing adapters, reading credentials or changing preferences', async () => {

@@ -86,7 +86,7 @@ export function engineChoices(
   const ids = new Set<string>();
   if (prefs.externalsVisible) {
     for (const item of catalog) {
-      if (item.id !== 'native' && prefs.enabled.has(item.id)) ids.add(item.id);
+      if (item.id !== 'native' && offeredEngine(item, prefs)) ids.add(item.id);
     }
   }
   for (const id of choice?.retain ?? []) {
@@ -128,6 +128,10 @@ export interface EngineVisibilityPrefs {
   readonly enabled: ReadonlySet<string>;
   /** Per-engine opt-out. Absent is not a member; a member stays off across refresh and re-import. */
   readonly disabled: ReadonlySet<string>;
+}
+
+export function offeredEngine(item: ExecutorCatalogItem, prefs: EngineVisibilityPrefs): boolean {
+  return prefs.externalsVisible && (item.instance === undefined ? prefs.enabled.has(item.id) : !prefs.disabled.has(item.id));
 }
 
 export const DEFAULT_ENGINE_VISIBILITY: EngineVisibilityPrefs = {
@@ -261,7 +265,7 @@ export function visibleEngines(
   const prefs = engineVisibilityOf(overrides, display);
   return catalog.filter((item) => {
     if (item.id === NATIVE_EXECUTOR) return true;
-    if (!prefs.externalsVisible || !prefs.enabled.has(item.id)) return false;
+    if (!offeredEngine(item, prefs)) return false;
     return isRunnableEngine(item, overrides, descriptors);
   });
 }

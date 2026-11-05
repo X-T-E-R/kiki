@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ExecutionBinding } from '@kiki/protocol';
+import type { ExecutionBinding, ExecutorInstanceConfig, ExecutorInstanceIssue } from '@kiki/protocol';
 
 import {
   createDecorator,
@@ -141,6 +141,11 @@ export type AgentExecutorDiagnosticRule =
 
 export interface AgentExecutorDescriptor {
   readonly id: string;
+  readonly instance?: ExecutorInstanceConfig;
+  readonly instanceIssue?: ExecutorInstanceIssue;
+  readonly registryRevision?: string;
+  readonly envUnset?: readonly string[];
+  readonly launchSecrets?: readonly string[];
   readonly protocol: AgentExecutorProtocol;
   readonly label?: string;
   readonly command?: string;
@@ -207,6 +212,10 @@ export interface AgentExecutorDescriptor {
    */
   readonly profileDelivery?: AgentExecutorProfileDelivery;
   readonly revision: string;
+}
+
+export function executorSourceId(descriptor: AgentExecutorDescriptor): string {
+  return descriptor.instance?.source_executor ?? descriptor.id;
 }
 
 export interface AgentExecutionStatus {
@@ -322,7 +331,7 @@ export interface IAgentExecutorRegistry {
     id: string,
     expected?: { readonly descriptorRevision?: string; readonly version?: string; readonly programVersion?: string },
   ): ExecutorCapabilityCatalog | undefined;
-  recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void;
+  recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities, expectedRevision?: string): void;
   negotiated?(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined;
   /** Last observation for the current descriptor, without launching the executor or verifying its installed version. */
   lastNegotiated?(id: string): NegotiatedExecutorCapabilities | undefined;

@@ -1395,6 +1395,12 @@ class FixtureServer {
     const items = structuredClone(this.scenario?.data.executors ?? [
       { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
     ]);
+    for (const [id, instance] of Object.entries(this.config.agent_executor_instances ?? {})) {
+      const source = items.find(item => item.id === instance.source_executor);
+      items.push({ ...source, id, label: instance.label, instance: structuredClone(instance), default_profile: false,
+        status: source?.status ?? 'unavailable', protocol: source?.protocol ?? 'unavailable',
+        model_binding: source?.model_binding ?? 'unavailable', thinking_binding: source?.thinking_binding ?? 'unavailable' });
+    }
     return items.map((item) => {
       const login = item.id === 'antigravity-acp' ? antigravityLogin(this) ?? this.executorLogin?.[item.id] : this.executorLogin?.[item.id];
       return item.connection !== undefined && login !== undefined
@@ -1414,7 +1420,12 @@ class FixtureServer {
     const seed = this.scenario?.data.engineDiscovery;
     const snapshot = typeof seed === 'function' ? seed(this.engineDiscoveryReads ?? 0) : seed;
     this.engineDiscoveryReads = (this.engineDiscoveryReads ?? 0) + 1;
-    return structuredClone(snapshot ?? { items: [] });
+    const result = structuredClone(snapshot ?? { items: [] });
+    for (const [id, instance] of Object.entries(this.config.agent_executor_instances ?? {})) {
+      const source = result.items.find(item => item.id === instance.source_executor);
+      if (source) result.items.push({ ...source, id, label: instance.label });
+    }
+    return result;
   }
 
   /**
@@ -2820,6 +2831,16 @@ class FixtureServer {
       // on the wire, so it is stored exactly as it arrives.
       const executorPatch = patch.agent_executor_overrides;
       delete patch.agent_executor_overrides;
+      const instancesPatch = patch.agent_executor_instances;
+      delete patch.agent_executor_instances;
+      if (instancesPatch !== undefined) {
+        const instances = { ...this.config.agent_executor_instances };
+        for (const [id, entry] of Object.entries(instancesPatch)) {
+          if (entry === null) delete instances[id];
+          else instances[id] = structuredClone(entry);
+        }
+        this.config.agent_executor_instances = instances;
+      }
       this.config = { ...this.config, ...patch };
       if (executorPatch !== null && typeof executorPatch === 'object' && !Array.isArray(executorPatch)) {
         const previous = this.config.agent_executor_overrides;
@@ -3460,6 +3481,13 @@ class FixtureServer {
     }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
+    }
+    const removeInstance = /^\/executors\/([^/]+)\/registration:remove$/.exec(path);
+    if (removeInstance && method === 'POST') {
+      const id = decodeURIComponent(removeInstance[1]);
+      const registration_removed = Object.hasOwn(this.config.agent_executor_instances ?? {}, id);
+      if (registration_removed) delete this.config.agent_executor_instances[id];
+      return this.envelope(res, { id, registration_removed, builtin_retained: !registration_removed, resources: 'not_owned' });
     }
     // Native-engine discovery (`executorDiscoveryResponseSchema`): the read
     // re-reads the engines' files server-side, so a re-detect is the same GET

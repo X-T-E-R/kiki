@@ -86,7 +86,8 @@ export class CodexAppServerClient {
   }
 
   stderrTail(): string {
-    return this.#stderr.value();
+    const text = this.#stderr.value();
+    return this.descriptor.redactDiagnostic?.(text) ?? text;
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
@@ -107,6 +108,7 @@ export class CodexAppServerClient {
         {
           cwd: this.descriptor.cwd,
           env: this.descriptor.env,
+          envUnset: this.descriptor.envUnset,
           shell: false,
           windowsHide: true,
           mergeStderr: false,

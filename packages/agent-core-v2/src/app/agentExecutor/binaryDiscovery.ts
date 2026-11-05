@@ -7,12 +7,13 @@ import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProce
 
 import {
   ANTIGRAVITY_IDE_NOT_ACP,
+  executorSourceId,
   type AgentExecutorBinarySource,
   type AgentExecutorDescriptor,
   type AgentExecutorSourceProbe,
 } from './agentExecutor';
 import type { ExecutorCapabilityDimension } from '@kiki/agent-profiles/ports';
-import { executorProcessEnv } from './executorOverrides';
+import { executorProcessOptions, redactExecutorOutput } from './executorOverrides';
 
 interface ProbeResult {
   readonly available: boolean;
@@ -60,7 +61,7 @@ export async function discoverExecutorMetadata(
       const commands = (await sourceCommands(source, fs, bootstrap, true)).toSorted(compareExecutorBinaryPaths);
       for (const command of commands.toReversed()) {
         if (!await isFile(fs, command, true)) continue;
-        if (descriptor.id === 'antigravity-acp') {
+        if (executorSourceId(descriptor) === 'antigravity-acp') {
           const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
           const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
           if (ide || !await isFile(fs, sibling, true)) continue;
@@ -136,7 +137,7 @@ export async function probeExecutorModelCatalog(
     processService,
     command,
     [...launchPrefix, ...probe.versionProbe.args],
-    executorProcessEnv(descriptor),
+    descriptor,
     probe.timeoutMs,
     probe.maxOutputBytes,
   );
@@ -145,7 +146,7 @@ export async function probeExecutorModelCatalog(
     processService,
     command,
     args,
-    executorProcessEnv(descriptor),
+    descriptor,
     { timeoutMs: probe.timeoutMs, maxOutputBytes: probe.maxOutputBytes, stdoutOnly: true },
   );
   if (!result.available) return { models: { state: 'unavailable', diagnostic: 'Model probe could not start' }, command, programVersion };
@@ -175,11 +176,11 @@ async function probeProgramVersion(
   processService: IHostProcessService,
   command: string,
   args: readonly string[],
-  env: Readonly<Record<string, string>> | undefined,
+  descriptor: AgentExecutorDescriptor,
   timeoutMs: number | undefined,
   maxOutputBytes: number | undefined,
 ): Promise<string | undefined> {
-  const result = await probeCommand(processService, command, args, env, {
+  const result = await probeCommand(processService, command, args, descriptor, {
     timeoutMs,
     maxOutputBytes,
     stdoutOnly: true,
@@ -225,7 +226,7 @@ async function probeDescriptorCommand(
     processService,
     descriptor.command,
     descriptor.versionProbe?.args ?? ['--version'],
-    executorProcessEnv(descriptor),
+    descriptor,
   );
   return [{
     id: 'command',
@@ -261,7 +262,7 @@ async function probeSource(
     ? [commands.toSorted(compareExecutorBinaryPaths).at(-1)!]
     : commands;
   const candidates = await Promise.all(selectedCommands.map(async (command) => {
-    if (descriptor.id === 'antigravity-acp') {
+    if (executorSourceId(descriptor) === 'antigravity-acp') {
       const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
       const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
       if (ide || !await isFile(fs, sibling)) return { command, probe: {
@@ -273,7 +274,7 @@ async function probeSource(
       return { command, probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' } };
     }
     return { command, probe: await probeCommand(processService, command,
-      descriptor.versionProbe?.args ?? ['--version'], executorProcessEnv(descriptor)) };
+      descriptor.versionProbe?.args ?? ['--version'], descriptor) };
   }));
   const available = candidates.filter((candidate) => candidate.probe.available && candidate.probe.code === 0);
   if (available.length === 0) {
@@ -284,9 +285,9 @@ async function probeSource(
       available: false,
       command: first?.command,
       version: firstLine(first?.probe.output ?? ''),
-      diagnosticCode: descriptor.id === 'antigravity-acp' && first?.command !== undefined &&
+      diagnosticCode: executorSourceId(descriptor) === 'antigravity-acp' && first?.command !== undefined &&
         stripExecutableExtension(basename(first.command)).toLowerCase() === 'antigravity' ? ANTIGRAVITY_IDE_NOT_ACP : undefined,
-      diagnostic: descriptor.id === 'antigravity-acp' && first?.probe.output
+      diagnostic: executorSourceId(descriptor) === 'antigravity-acp' && first?.probe.output
         ? first.probe.output : first?.probe.available === true
           ? `version probe exited with code ${String(first.probe.code)}`
           : 'not found or not executable',
@@ -323,7 +324,7 @@ async function probeNodeScript(
     processService,
     node,
     [script, ...descriptor.versionProbe?.args ?? ['--version']],
-    executorProcessEnv(descriptor),
+    descriptor,
   );
   const version = firstLine(probe.output);
   if (!probe.available || probe.code !== 0) {
@@ -460,13 +461,13 @@ async function probeCommand(
   processService: IHostProcessService,
   command: string,
   args: readonly string[],
-  env: Readonly<Record<string, string>> | undefined,
+  descriptor: AgentExecutorDescriptor,
   limits: { readonly timeoutMs?: number; readonly maxOutputBytes?: number; readonly stdoutOnly?: boolean } = {},
 ): Promise<ProbeResult> {
   let child: IHostProcess;
   try {
     child = await processService.spawn(command, args, {
-      env: env === undefined ? undefined : { ...env },
+      ...executorProcessOptions(descriptor),
       shell: false,
       windowsHide: true,
       mergeStderr: false,
@@ -504,7 +505,7 @@ async function probeCommand(
       }),
     ]);
     if (code === -1 && child.exitCode === null) await child.kill('SIGTERM').catch(() => undefined);
-    return { available: true, code, output: output.trim(), truncated };
+    return { available: true, code, output: redactExecutorOutput(descriptor, output.trim()), truncated };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     await child.dispose();

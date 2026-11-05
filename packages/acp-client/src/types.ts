@@ -13,6 +13,7 @@ import type {
 export interface HostProcessOptionsLike {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly envUnset?: readonly string[];
   readonly shell?: boolean | string;
   readonly detached?: boolean;
   readonly windowsHide?: boolean;
@@ -41,10 +42,12 @@ export interface HostProcessServiceLike {
 
 export interface AcpProcessDescriptor {
   readonly id: string;
+  readonly sourceId?: string;
   readonly command: string;
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly envUnset?: readonly string[];
   readonly startupTimeoutMs?: number;
   readonly cancelGraceMs?: number;
   readonly shutdownGraceMs?: number;
@@ -54,6 +57,7 @@ export interface AcpProcessDescriptor {
    */
   readonly stdinCloseGraceMs?: number;
   readonly stderrMaxBytes?: number;
+  readonly redactDiagnostic?: (text: string) => string;
   readonly clientName?: string;
 }
 

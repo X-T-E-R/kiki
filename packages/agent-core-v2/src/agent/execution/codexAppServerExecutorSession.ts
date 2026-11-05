@@ -19,7 +19,7 @@ import { codexAuthObservation, recordExecutorAuth } from './executorAuth';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
 import { codexAttachments, externalAttachments } from './externalAttachments';
-import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
+import { executorLaunchArgs, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
@@ -159,7 +159,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           command: requiredCommand(context),
           commandArgsPrefix: context.descriptor.launchArgs,
           args: executorLaunchArgs(context.descriptor, context.descriptor.args),
-          env: executorProcessEnv(context.descriptor),
+          ...executorProcessOptions(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',

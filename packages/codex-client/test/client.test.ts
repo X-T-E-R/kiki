@@ -109,6 +109,14 @@ function scriptedProcess(
 }
 
 describe('CodexAppServerClient limits and observers', () => {
+  it('forwards instance environment removal without changing the host', async () => {
+    const spawn = vi.fn(async () => { throw new Error('fixture stop'); });
+    const envUnset = ['HTTP_PROXY', 'HTTPS_PROXY'];
+    const client = new CodexAppServerClient({ spawn }, { id: 'instance-work', command: 'fixture', envUnset });
+    await expect(client.connect()).rejects.toThrow('fixture stop');
+    expect(spawn).toHaveBeenCalledWith('fixture', expect.any(Array), expect.objectContaining({ envUnset }));
+    await client.shutdown();
+  });
   it('isolates state observer failures during startup and shutdown', async () => {
     const logger = { error: vi.fn() };
     const spawn = vi.fn(async () => {

@@ -328,7 +328,8 @@ export class AcpProcessClient {
   }
 
   stderrTail(): string {
-    return this.#stderr.toString();
+    const text = this.#stderr.toString();
+    return this.#descriptor.redactDiagnostic?.(text) ?? text;
   }
 
   sessionRef(): ExecutorSessionRefEnvelope | undefined {
@@ -550,7 +551,7 @@ export class AcpProcessClient {
     session = { ...this.#openResult, mode: session.mode };
 
     for (const attachment of request.attachments ?? []) {
-      if (attachment.type === 'image' && session.capabilities.promptCapabilities?.image !== true && this.#descriptor.id !== 'grok-acp') {
+      if (attachment.type === 'image' && session.capabilities.promptCapabilities?.image !== true && (this.#descriptor.sourceId ?? this.#descriptor.id) !== 'grok-acp') {
         throw new AcpProtocolError('ACP harness does not support image attachments');
       }
       if (attachment.type === 'audio' && session.capabilities.promptCapabilities?.audio !== true) {
@@ -749,6 +750,7 @@ export class AcpProcessClient {
       {
         cwd: this.#descriptor.cwd,
         env: this.#descriptor.env,
+        envUnset: this.#descriptor.envUnset,
         shell: false,
         windowsHide: true,
         mergeStderr: false,
@@ -768,7 +770,7 @@ export class AcpProcessClient {
     this.#observeProcess(child);
     child.stderr.on('data', (chunk: Buffer | string) => {
       this.#stderr.append(chunk);
-      this.#options.logger?.debug?.('ACP agent stderr', {
+      if (this.#descriptor.redactDiagnostic === undefined) this.#options.logger?.debug?.('ACP agent stderr', {
         chunk: Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk,
       });
     });
@@ -787,7 +789,7 @@ export class AcpProcessClient {
     });
     this.#grokMcpSetupObserved = false;
     this.#grokMcpReadySessions.clear();
-    if (this.#descriptor.id === 'grok-acp') {
+    if ((this.#descriptor.sourceId ?? this.#descriptor.id) === 'grok-acp') {
       app.onNotification<unknown>('_x.ai/session/setup', (params) => params, ({ params }) => {
         if (objectValue(params)?.['phase'] === 'mcp_merge') this.#grokMcpSetupObserved = true;
       });
@@ -1151,7 +1153,7 @@ export class AcpProcessClient {
   #isEventMethod(method: string): boolean {
     return method === methods.client.session.update ||
       method === UNKNOWN_UPDATE_METHOD ||
-      this.#descriptor.id === 'grok-acp' &&
+      (this.#descriptor.sourceId ?? this.#descriptor.id) === 'grok-acp' &&
         (method === '_x.ai/session_notification' || method === '_x.ai/session/update');
   }
 

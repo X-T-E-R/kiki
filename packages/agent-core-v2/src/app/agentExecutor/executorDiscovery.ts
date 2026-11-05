@@ -5,6 +5,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { AgentExecutorDescriptor } from './agentExecutor';
 import { discoverExecutorMetadata, locateCommand } from './binaryDiscovery';
 import { sourceOwnedAdapterScript } from './managedAdapterRegistry';
+import { executorInstanceIssue, INSTANCE_ISSUE_MESSAGE } from './executorInstances';
 
 export async function readExecutorDiscovery(
   descriptor: AgentExecutorDescriptor,
@@ -13,6 +14,9 @@ export async function readExecutorDiscovery(
 ): Promise<ExecutorDiscoveryStatus> {
   const identity = { id: descriptor.id, label: descriptor.label ?? descriptor.id, protocol: descriptor.protocol };
   try {
+    const issue = await executorInstanceIssue(descriptor, fs);
+    if (issue !== undefined) return { ...identity, installed: false, status: 'error',
+      checked_at: new Date().toISOString(), reason: INSTANCE_ISSUE_MESSAGE[issue], reason_code: issue, components: [] };
     const probes = await discoverExecutorMetadata(descriptor, fs, bootstrap);
     const selected = probes.find(probe => probe.available);
     const path = selected?.launchArgs?.[0] ?? selected?.command;

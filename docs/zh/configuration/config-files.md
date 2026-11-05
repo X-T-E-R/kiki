@@ -159,7 +159,7 @@ Kiki 自己的执行器只接受省略或 `engine-default`。AGY CLI 的菜单�
 
 通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
 
-显示偏好与执行设置分开。外部引擎要成为新的 profile 或执行选择，需要在 `[agent_executor_overrides.<id>]` 下写成 `show_in_profile_list = true`。字段不存在时，该引擎留在设置页，不进入新选择。`show_in_profile_list = false` 会一直保持关闭：刷新、重新检查和再次导入都沿用这个关闭。`[agent_executor_display]` 的 `externals_visible = false` 同时挡住全部外部引擎的新选择；省略或写成 `true` 只打开这道总闸，已经明确关闭的引擎仍保持关闭。总闸重新打开后，只有仍为 `true` 的引擎回到新选择。`discovery_initialized = true` 记录设置页已经完成过一次导入检测，它本身不开关任何引擎。原生引擎始终留在选择里。已经绑定某个隐藏或不可用引擎的 profile 与会话继续使用该身份；这些引擎留作当前值，不会被换掉，也不会因此回到新选择列表。关闭显示不会卸载引擎、不会改已有执行绑定，也不会取消任务。
+显示偏好与执行设置分开。原有外部引擎入口要成为新的 profile 或执行选择，需要在 `[agent_executor_overrides.<id>]` 下写成 `show_in_profile_list = true`；[显式创建的实例](#具名-harness-实例) 则在未被隐藏时进入选择器。字段不存在时，该引擎留在设置页，不进入新选择。`show_in_profile_list = false` 会一直保持关闭：刷新、重新检查和再次导入都沿用这个关闭。`[agent_executor_display]` 的 `externals_visible = false` 同时挡住全部外部引擎的新选择；省略或写成 `true` 只打开这道总闸，已经明确关闭的引擎仍保持关闭。总闸重新打开后，只有仍为 `true` 的引擎回到新选择。`discovery_initialized = true` 记录设置页已经完成过一次导入检测，它本身不开关任何引擎。原生引擎始终留在选择里。已经绑定某个隐藏或不可用引擎的 profile 与会话继续使用该身份；这些引擎留作当前值，不会被换掉，也不会因此回到新选择列表。关闭显示不会卸载引擎、不会改已有执行绑定，也不会取消任务。
 
 ```toml
 [agent_executor_overrides."claude-acp"]
@@ -172,7 +172,25 @@ discovery_initialized = true
 
 向 `POST /api/config` 发送同名 snake_case 字段。JSON `null` 只删除对应的显示偏好，启动设置与 defaults 仍在。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。`GET /api/executors` 只读最近一次检查，不探测程序或登录。检查某一个引擎用 `POST /api/executors/{id}/check`。目录 `status: "unknown"` 表示这个引擎还没有检查结果。超过 60 秒后，响应仍带上一次的 `check_status` 和 `checked_at`，并用 `check_stale: true` 标明它已过新鲜期。某一引擎超时或失败只出现在该引擎上。设置页列出全部引擎，可以继续配置或 Check。第一次打开设置页且 `discovery_initialized` 还不是 `true` 时，每个外部引擎各检查一次；结果为 `ready` 或 `warning`、并且该引擎还没有明确开关的，会写成 `show_in_profile_list = true`。失败、超时，以及已经是 `false` 的引擎保持原样。这次导入记下 `discovery_initialized = true` 之后，再次进入设置页不再重跑。裸执行入口要同时满足三件事：程序就绪、已确认登录或已配置该引擎声明的 API 密钥环境变量、并且 `show_in_profile_list` 为 `true`。只保存了 profile、启动偏好或 Kiki 原生模型，还不能把它放进新选择。
 
-要在 Kiki 选择另一套 Claude Code 设置并保留普通入口，使用官方 Claude ACP 适配器，为另一套设置配置单独的 `[agent_executors.<id>]`。将 `claude_settings_file` 设为服务端本机设置文件的绝对路径，为新入口启用 `show_in_profile_list`，原 `claude-acp` 保持原样。新建和恢复的会话加载指定文件及项目、本地设置，跳过用户级 `settings.json`。若描述符使用 `auth.kind = "claude-credentials"`，登录检查也会把同一文件交给 Claude CLI。修改文件路径后需新建执行绑定。
+### 具名 harness 实例
+
+要为同一个 harness 使用不同账号或代理，在 **设置 → 模型与提供方 → 提供方与账号 → 外部引擎** 中打开对应引擎，选择 **添加实例**。填写名称、选择该引擎支持的配置来源，再设置代理。实例会作为独立引擎进入现有的执行与 profile 选择器，原入口保持原样。没有实例配置时，AGY 仍只有原来的全局 `agy-cli` 入口。
+
+实例复用来源引擎的安装与协议，包括显式指定的程序路径。原入口的配置目录、环境变量和额外启动参数不会复制到实例。每个实例分别保存模型默认值、检查结果和执行身份。全部外部引擎的显示开关，以及实例上明确设置的 `show_in_profile_list = false`，仍可隐藏新选择；除此之外，显式创建的实例会在引擎可运行时进入选择器。
+
+```toml
+[agent_executor_instances.instance-work]
+source_executor = "codex-app-server"
+label = "Work"
+configuration = { kind = "config_directory", path = "C:/accounts/work/codex" }
+proxy = { kind = "url", url = "socks5h://127.0.0.1:1080" }
+```
+
+实例 ID 必须唯一并以 `instance-` 开头，配置路径必须已存在于 Kiki 主机。配置来源包括：`inherit` 跟随引擎；`config_directory` 用于声明了配置目录环境变量的引擎；`claude_settings` 用于官方 Claude 适配器；`credential_env` 用于声明了 API 密钥环境变量的引擎。`credential_env` 只保存主机环境变量名，不保存密钥。Claude 设置文件实例加载指定文件及项目、本地设置，跳过用户级 `settings.json`，登录检查也使用同一文件。
+
+代理 `inherit` 保留主机环境，`direct` 清除该子进程的代理与绕过变量，`url` 接受 HTTP(S) 或 SOCKS 代理地址。代理需要认证时，使用 `proxy = { kind = "env", name = "WORK_PROXY_URL" }`，并在 Kiki 主机环境中设置完整 URL。显式代理仍让本机回环流量直连。这些设置只作用于该实例的子进程，不改变 Kiki 或其他引擎。
+
+已有会话保留原实例身份和配置版本。修改实例配置或代理后，新建会话才能使用新版本；旧会话不会静默改用另一账号恢复。在设置中移除实例只删除注册，不删除来源引擎或账号目录。通过 `POST /api/config` 修改时，将 `agent_executor_instances.<instance-id>` 设为 JSON `null` 即可移除该项。
 
 自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
 

@@ -20,6 +20,7 @@ import {
   expandExecutorText,
   AGENT_EXECUTORS_SECTION,
   AGENT_EXECUTOR_OVERRIDES_SECTION,
+  AGENT_EXECUTOR_INSTANCES_SECTION,
   BUILTIN_AGENT_EXECUTORS,
   kikiMcpDefaultView,
   IConfigService,
@@ -397,6 +398,12 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     const registrationRemoved = userValue !== undefined && userValue !== null && typeof userValue === 'object'
       && Object.hasOwn(userValue, id);
     const descriptor = core.accessor.get(IAgentExecutorRegistry).get(id);
+    if (descriptor?.instance !== undefined) {
+      await config.removeOverride(AGENT_EXECUTOR_INSTANCES_SECTION, [id]);
+      await config.removeOverride(AGENT_EXECUTOR_OVERRIDES_SECTION, [id]);
+      reply.send(okEnvelope({ id, registration_removed: true, builtin_retained: false, resources: 'not_owned' as const }, req.id));
+      return;
+    }
     await config.removeOverride(AGENT_EXECUTORS_SECTION, [id]);
     const removal = await core.accessor.get(IManagedAdapterService).removeOwnedResources(id, descriptor);
     reply.send(okEnvelope({
@@ -1416,7 +1423,10 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
     id: descriptor.id,
     label: descriptor.label ?? (descriptor.id === 'native' ? 'Kiki' : descriptor.id),
     protocol: descriptor.protocol,
-    status,
+    status: descriptor.instanceIssue !== undefined ? 'unavailable' as const : status,
+    instance: descriptor.instance,
+    supports_claude_settings: descriptor.id === 'claude-acp' || descriptor.claudeSettingsFile !== undefined,
+    configuration_issue: descriptor.instanceIssue,
     version: check?.version,
     model_binding: descriptor.protocol === 'native' || capabilities.modelBinding !== undefined
       ? 'mapped' as const : 'unavailable' as const,

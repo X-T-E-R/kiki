@@ -8,8 +8,9 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (56 sections · 1 overlay(s))
+# Index (57 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
+#   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -77,6 +78,22 @@
 [agent_executor_display]
 # externals_visible: boolean
 # discovery_initialized: boolean
+
+# ##########################################################################
+# agentExecutorInstances (config.toml: agent_executor_instances)
+#   owner: src/app/agentExecutor/executorInstances.ts
+#   scope: core
+#   hooks: custom merge · custom fromToml · custom toToml
+# ##########################################################################
+
+[agent_executor_instances]
+
+# one [agent_executor_instances."<name>"] table per entry:
+# [agent_executor_instances."<name>"]
+  # source_executor: string
+  # label: string
+  # configuration: object | object | object | object
+  # proxy: object | object | object | object
 
 # ##########################################################################
 # agentExecutorOverrides (config.toml: agent_executor_overrides)

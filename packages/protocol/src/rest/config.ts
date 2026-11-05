@@ -8,6 +8,7 @@ import { hooksConfigSchema } from './hooksConfig';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
 import { requestGovernanceConfigPatchSchema } from './requestGovernance';
 import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
+import { executorInstancesPatchSchema } from './executor';
 
 export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
@@ -439,6 +440,7 @@ export const patchConfigRequestSchema = z.object({
   disabled_named_profiles: z.array(z.string()).optional(),
   /** Per-engine launch overrides keyed by executor id; a null value removes a field. */
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
+  agent_executor_instances: executorInstancesPatchSchema.optional(),
   request_governance: requestGovernanceConfigPatchSchema.optional(),
   retry: retryConfigSchema.optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),

@@ -306,6 +306,7 @@ export * from '#/app/agentExecutor/capabilities';
 export * from '#/app/agentExecutor/builtinDescriptors';
 export * from '#/app/agentExecutor/configSection';
 export * from '#/app/agentExecutor/executorOverrides';
+export { AGENT_EXECUTOR_INSTANCES_SECTION } from '#/app/agentExecutor/executorInstances';
 export * from '#/app/agentExecutor/agentExecutorRegistryService';
 export * from '#/app/agentExecutor/managedAdapterRegistry';
 export * from '#/app/agentExecutor/managedAdapterService';

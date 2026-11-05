@@ -249,7 +249,16 @@ export function executorEnvLookup(
   host: (name: string) => string | undefined,
 ): (name: string) => string | undefined {
   const overrides = executorProcessEnv(descriptor);
-  return (name) => overrides?.[name] ?? host(name);
+  return (name) => descriptor.envUnset?.includes(name) === true ? undefined : overrides?.[name] ?? host(name);
+}
+
+export function executorProcessOptions(descriptor: AgentExecutorDescriptor) {
+  return { env: executorProcessEnv(descriptor), envUnset: descriptor.envUnset,
+    redactDiagnostic: descriptor.launchSecrets?.length ? (text: string) => redactExecutorOutput(descriptor, text) : undefined };
+}
+
+export function redactExecutorOutput(descriptor: AgentExecutorDescriptor, text: string): string {
+  return descriptor.launchSecrets?.reduce((result, secret) => result.replaceAll(secret, '[redacted]'), text) ?? text;
 }
 
 registerConfigSection(AGENT_EXECUTOR_OVERRIDES_SECTION, AgentExecutorOverridesSchema, {

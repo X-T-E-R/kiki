@@ -74,11 +74,62 @@ export type ExecutorDiscoveryStatus = z.infer<typeof executorDiscoveryStatusSche
 export const executorDiscoveryResponseSchema = z.object({ items: z.array(executorDiscoveryStatusSchema) });
 export type ExecutorDiscoveryResponse = z.infer<typeof executorDiscoveryResponseSchema>;
 
+const executorEnvironmentNameSchema = z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Enter an environment variable name');
+
+/** Parses a proxy origin, not a URL for a resource. Credentials are allowed only when read from the host environment. */
+export function executorProxyUrl(value: string, allowCredentials = false): URL | undefined {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:', 'socks4:', 'socks4a:', 'socks5:', 'socks5h:'].includes(url.protocol)
+      || !url.hostname || (url.pathname !== '' && url.pathname !== '/') || url.search || url.hash
+      || (!allowCredentials && (url.username || url.password))) return undefined;
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+    return url;
+  } catch { return undefined; }
+}
+
+export const executorInstanceConfigurationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('inherit') }),
+  z.strictObject({ kind: z.literal('config_directory'), path: z.string().trim().min(1) }),
+  z.strictObject({ kind: z.literal('claude_settings'), path: z.string().trim().min(1) }),
+  z.strictObject({ kind: z.literal('credential_env'), name: executorEnvironmentNameSchema }),
+]);
+export type ExecutorInstanceConfiguration = z.infer<typeof executorInstanceConfigurationSchema>;
+
+export const executorInstanceProxySchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('inherit') }),
+  z.strictObject({ kind: z.literal('direct') }),
+  z.strictObject({ kind: z.literal('url'), url: z.string().trim().refine((value) => executorProxyUrl(value) !== undefined,
+    'Enter an HTTP(S) or SOCKS proxy origin without credentials; use an environment reference for authentication') }),
+  z.strictObject({ kind: z.literal('env'), name: executorEnvironmentNameSchema }),
+]);
+export type ExecutorInstanceProxy = z.infer<typeof executorInstanceProxySchema>;
+
+export const executorInstanceIdSchema = z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/);
+export const executorInstanceConfigSchema = z.strictObject({
+  source_executor: z.string().trim().min(1),
+  label: z.string().trim().min(1).max(80),
+  configuration: executorInstanceConfigurationSchema,
+  proxy: executorInstanceProxySchema,
+});
+export type ExecutorInstanceConfig = z.infer<typeof executorInstanceConfigSchema>;
+export const executorInstancesPatchSchema = z.record(executorInstanceIdSchema, executorInstanceConfigSchema.nullable());
+
+export const executorInstanceIssueSchema = z.enum([
+  'instance_source_unavailable', 'instance_configuration_unsupported', 'instance_configuration_path',
+  'instance_credential_unset', 'instance_proxy_unavailable',
+]);
+export type ExecutorInstanceIssue = z.infer<typeof executorInstanceIssueSchema>;
+
 export const executorCatalogItemSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   protocol: z.string().min(1),
   status: z.enum(['ready', 'unavailable', 'unknown']),
+  instance: executorInstanceConfigSchema.optional(),
+  supports_claude_settings: z.boolean().optional(),
+  configuration_issue: executorInstanceIssueSchema.optional(),
   /** Last explicit check, kept after the 60s freshness window. Absent until that engine has been checked. */
   check_status: z.enum(['ready', 'warning', 'unavailable']).optional(),
   checked_at: z.string().optional(),

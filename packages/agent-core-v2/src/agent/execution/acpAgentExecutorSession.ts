@@ -33,8 +33,8 @@ import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import { acpAuthObservation, recordExecutorAuth } from './executorAuth';
-import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
-import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { executorLaunchArgs, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
+import { executorSourceId, IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
@@ -164,18 +164,19 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         processService,
         {
           id: context.descriptor.id,
+          sourceId: executorSourceId(context.descriptor),
           command: requiredCommand(context),
           args: resolveAcpProcessArgs(context),
-          env: executorProcessEnv(context.descriptor),
+          ...executorProcessOptions(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
           clientName: 'kiki-agent-core-v2',
         },
         { permissionHandler,
-          elicitationHandler: ['codex-acp', 'deepseek-acp'].includes(context.descriptor.id) ? elicitationHandler : undefined,
-          planApprovalHandler: context.descriptor.id === 'grok-acp' ? planApprovalHandler : undefined,
-          contextHookHandler: context.descriptor.id === 'grok-acp' ? contextHookHandler : undefined },
+          elicitationHandler: ['codex-acp', 'deepseek-acp'].includes(executorSourceId(context.descriptor)) ? elicitationHandler : undefined,
+          planApprovalHandler: executorSourceId(context.descriptor) === 'grok-acp' ? planApprovalHandler : undefined,
+          contextHookHandler: executorSourceId(context.descriptor) === 'grok-acp' ? contextHookHandler : undefined },
       ),
   ) {
     const runtime = context.agent.accessor.get(IAgentRuntimeService);
@@ -199,7 +200,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
     this.#client = clientFactory(
-      harnessContextProcess(context.descriptor.id === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
+      harnessContextProcess(executorSourceId(context.descriptor) === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
         context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp),
       (request, options) => this.#requestPermission(request, options),
       (request, options) => this.#requestElicitation(request, options.signal),
@@ -263,7 +264,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
           this.context.descriptor.id, this.context.descriptor.version, {
             resume: error.details['resumeSupported'], load: error.details['loadSupported'],
-          },
+          }, this.context.descriptor.registryRevision,
         );
       }
       throw error;
@@ -307,19 +308,19 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       nativeAgents: advertisedSelectValues(configured.configOptions, 'native_agent') ?? [],
       authMethods: opened.initialize.authMethods?.map((method) => method.id),
       agentVersion: opened.initialize.agentInfo?.version,
-      image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
+      image: opened.capabilities.promptCapabilities?.image === true || executorSourceId(this.context.descriptor) === 'grok-acp',
       audio: opened.capabilities.promptCapabilities?.audio === true,
       fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
       nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
-      questionForm: ['codex-acp', 'deepseek-acp'].includes(this.context.descriptor.id),
-      planApproval: this.context.descriptor.id === 'grok-acp',
+      questionForm: ['codex-acp', 'deepseek-acp'].includes(executorSourceId(this.context.descriptor)),
+      planApproval: executorSourceId(this.context.descriptor) === 'grok-acp',
       resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
       load: opened.capabilities.loadSession === true,
       permissionModes: opened.availableModes,
     };
     await recordNegotiatedSnapshot(this.context, negotiated);
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
-      this.context.descriptor.id, this.context.descriptor.version, negotiated,
+      this.context.descriptor.id, this.context.descriptor.version, negotiated, this.context.descriptor.registryRevision,
     );
     const handoff = this.context.binding.execution === undefined && opened.mode === 'new' && prior.sessionRef !== undefined
       ? buildHandoff(this.#memory.get())
@@ -375,7 +376,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined,
       request.kind === 'prompt' ? request.contextMessages : undefined);
-    if (this.context.descriptor.id === 'claude-acp' || this.context.descriptor.claudeSettingsFile !== undefined) {
+    if (executorSourceId(this.context.descriptor) === 'claude-acp' || this.context.descriptor.claudeSettingsFile !== undefined) {
       const actualModel = configured.configOptions.find((option) =>
         option.category === 'model' && typeof option.currentValue === 'string')?.currentValue;
       const agentVersion = opened.initialize.agentInfo?.version;

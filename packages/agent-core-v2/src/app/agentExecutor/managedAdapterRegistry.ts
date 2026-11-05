@@ -2,7 +2,7 @@ import { basename, join, normalize } from 'pathe';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
-import type { AgentExecutorDescriptor, AgentExecutorModelProbe } from './agentExecutor';
+import { executorSourceId, type AgentExecutorDescriptor, type AgentExecutorModelProbe } from './agentExecutor';
 
 export interface ManagedAdapterRelease {
   readonly packageName: string;
@@ -125,7 +125,7 @@ export function withManagedAdapterSource(
   homeDir: string,
   state: ManagedAdapterState | undefined,
 ): AgentExecutorDescriptor {
-  const entry = managedAdapterEntry(descriptor.id, homeDir, state?.active);
+  const entry = managedAdapterEntry(executorSourceId(descriptor), homeDir, state?.active);
   if (entry === undefined) return descriptor;
   if (descriptor.sources === undefined) {
     if (descriptor.command === undefined) return descriptor;

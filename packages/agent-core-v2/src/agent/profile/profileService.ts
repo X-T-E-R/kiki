@@ -11,7 +11,7 @@ import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
 import { resolveSelectedExecutionBinding } from './executionBinding';
-import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, agentExecutorBindingMatches, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 import { frozenRecipeDiagnostics, promptConfigurationChannels } from './promptDiagnostics';
@@ -655,6 +655,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       selection.profile.executorOptions,
     );
     assertResearchExecutor(executionRestriction, executor.descriptor.id);
+    this.assertInstanceRevision(executor.descriptor);
     const external = executor.descriptor.id !== 'native';
     const resolveId = external
       ? (id: string): string => id
@@ -882,6 +883,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
+  private assertInstanceRevision(descriptor: AgentExecutorDescriptor): void {
+    if (descriptor.instance === undefined || this.profileState.executorId !== descriptor.id
+      || this.profileState.executorDescriptorRevision === undefined
+      || this.profileState.executorDescriptorRevision === descriptor.revision) return;
+    throw new Error2(ErrorCodes.CONFIG_INVALID,
+      `Executor instance "${descriptor.label ?? descriptor.id}" changed after this session was bound. Start a new conversation to use the updated configuration.`,
+      { details: { executorId: descriptor.id, reason: 'executor_instance_changed' } });
+  }
+
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
     const retainedPolicy = this.profileState.boundProfile;
     const candidate = input.resolvedProfile ?? (retainedPolicy !== undefined && isNativeTarget(retainedPolicy)
@@ -950,6 +960,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
     const executor = await this.executors.resolveExecutable(requested.executor, role?.executorOptions);
+    this.assertInstanceRevision(executor.descriptor);
     const nativeAgent = execution.effective.native_agent;
     if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
       if (!['acp', 'acp-v1'].includes(executor.descriptor.protocol)) {

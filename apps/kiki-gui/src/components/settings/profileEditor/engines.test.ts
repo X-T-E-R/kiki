@@ -247,6 +247,20 @@ describe('visibleEngines', () => {
 });
 
 describe('engineChoices', () => {
+  it('offers explicitly created instances without enabling their source and keeps explicit hiding', () => {
+    const instance: ExecutorCatalogItem = { ...engine('instance-work'), status: 'ready', instance: {
+      source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' }, proxy: { kind: 'direct' },
+    } };
+    const catalog = [engine('native'), engine('agy-cli'), instance];
+    expect(engineChoices([], catalog)).toEqual(['', 'instance-work']);
+    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'instance-work']);
+    const hidden = { 'instance-work': { show_in_profile_list: false } };
+    expect(engineChoices([], catalog, { overrides: hidden })).toEqual(['']);
+    expect(visibleEngines(catalog, [], hidden).map(item => item.id)).toEqual(['native']);
+    expect(engineChoices([], catalog, { display: { externals_visible: false } })).toEqual(['']);
+    expect(engineChoices([], catalog, { overrides: hidden, retain: ['instance-work'] })).toEqual(['', 'instance-work']);
+    expect(engineChoices([], catalog.filter(item => item !== instance))).toEqual(['']);
+  });
   it('offers native and explicitly enabled engines, and keeps only the retained identity', () => {
     const overrides = { 'claude-acp': { show_in_profile_list: true }, 'codex-app-server': { show_in_profile_list: false } };
     expect(engineChoices([profile('lead', 'grok-acp'), profile('other', 'codex-app-server')], CATALOG, { overrides }))

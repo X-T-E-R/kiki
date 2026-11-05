@@ -9,7 +9,7 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 
-import { ANTIGRAVITY_IDE_NOT_ACP, IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
+import { ANTIGRAVITY_IDE_NOT_ACP, executorSourceId, IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
 import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
 import {
   CLAUDE_EXPLICIT_SETTINGS_SOURCES,
@@ -18,7 +18,8 @@ import {
   credentialFromClaudeCliStatus,
   scanClaudeCredentials,
 } from './claudeCredentials';
-import { executorEnvLookup, executorLaunchArgs, executorProcessEnv } from './executorOverrides';
+import { executorEnvLookup, executorLaunchArgs, executorProcessOptions, redactExecutorOutput } from './executorOverrides';
+import { executorInstanceIssue, INSTANCE_ISSUE_MESSAGE } from './executorInstances';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
@@ -125,11 +126,12 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const descriptor = this.registry.get(id);
     if (descriptor === undefined) return resultOf(id, '', [], undefined,
       [error(`Unknown external executor "${id}".`)]);
-    if (descriptor.sources !== undefined) return this.#discovered(id);
+    const issue = await executorInstanceIssue(descriptor, this.fs);
+    if (issue !== undefined) return resultOf(id, '', [], undefined, [error(INSTANCE_ISSUE_MESSAGE[issue], issue)]);
+    if (descriptor.sources !== undefined || descriptor.instance !== undefined) return this.#discovered(descriptor);
     const command = descriptor.command ?? '';
     const versionArgs = descriptor.versionProbe?.args ?? ['--version'];
-    const launchEnv = executorProcessEnv(descriptor);
-    const probe = await this.#probe(command, versionArgs, launchEnv);
+    const probe = await this.#probe(command, versionArgs, descriptor);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
     if (!probe.available) diagnostics.push(error(`${command} is not installed or not executable.`));
     else if (probe.code !== 0) diagnostics.push(warning(`${command} ${versionArgs.join(' ')} exited with code ${probe.code}.`));
@@ -143,8 +145,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       [...rules.requirements, program]);
   }
 
-  async #discovered(id: string): Promise<AgentExecutorPreflightResult> {
-    const descriptor = this.registry.get(id)!;
+  async #discovered(descriptor: AgentExecutorDescriptor): Promise<AgentExecutorPreflightResult> {
+    const { id } = descriptor;
     const sources = await this.registry.discover(id);
     const selected = selectExecutorSource(descriptor, sources);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = sources.map((source) =>
@@ -158,7 +160,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
-    if (id === 'antigravity-acp' && selected === undefined && (sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
+    if (executorSourceId(descriptor) === 'antigravity-acp' && selected === undefined && (sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
       return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。', ANTIGRAVITY_IDE_NOT_ACP)], undefined, sources, undefined,
         [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
     }
@@ -169,6 +171,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       ? sources.find((source) => !source.available && source.command !== undefined) : undefined;
     const program = programRequirement(descriptor, selected !== undefined ? 'ok' : failed !== undefined ? 'failed' : 'missing',
       selected === undefined ? undefined : sourceLocation(selected), selected?.version, this.bootstrap);
+    let auth: CredentialResolution = { loginStatus: 'unknown' };
+    if (selected !== undefined) auth = await this.#auth(executable, selected.command);
     return resultOf(
       id,
       selected?.command ?? '',
@@ -177,7 +181,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       diagnostics,
       selected?.id,
       sources,
-      selected === undefined ? { loginStatus: 'unknown' as const } : await this.#auth(executable, selected.command),
+      auth,
       [...rules.requirements, program],
     );
   }
@@ -195,19 +199,20 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
     const requirements: AgentExecutorRequirement[] = [];
     let resolvedArgs = descriptor.args;
+    const lookup = executorEnvLookup(descriptor, (name) => this.bootstrap.getEnv(name));
     for (const rule of descriptor.diagnostics ?? []) {
       if (rule.kind === 'message') diagnostics.push({ severity: rule.severity, message: rule.message });
-      if (rule.kind === 'env') diagnostics.push(info(this.bootstrap.getEnv(rule.name) === undefined ? rule.absent : rule.present));
+      if (rule.kind === 'env') diagnostics.push(info(lookup(rule.name) === undefined ? rule.absent : rule.present));
       if (rule.kind === 'path') {
         const path = rule.envHome === undefined ? join(this.bootstrap.osHomeDir, rule.path)
-          : join(this.bootstrap.getEnv(rule.envHome) ?? join(this.bootstrap.osHomeDir, rule.path.split('/')[0]!),
+          : join(lookup(rule.envHome) ?? join(this.bootstrap.osHomeDir, rule.path.split('/')[0]!),
             rule.path.split('/').slice(1).join('/'));
         const present = await this.#exists(path);
         const message = (present ? rule.present : rule.absent).replaceAll('{path}', path);
         diagnostics.push(present ? info(message) : { severity: rule.absentSeverity, message });
       }
       if (rule.kind === 'dependency') {
-        const probe = await this.#probe(rule.command, rule.args, executorProcessEnv(descriptor));
+        const probe = await this.#probe(rule.command, rule.args, descriptor);
         if (!probe.available) diagnostics.push(error(rule.unavailable));
         else if (probe.code !== 0) diagnostics.push(warning(rule.failed.replaceAll('{code}', String(probe.code))));
         requirements.push({
@@ -221,7 +226,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         });
       }
       if (rule.kind === 'flag' && command !== undefined) {
-        const probe = await this.#probe(command, [...descriptor.launchArgs ?? [], ...rule.args], executorProcessEnv(descriptor));
+        const probe = await this.#probe(command, [...descriptor.launchArgs ?? [], ...rule.args], descriptor);
         const hasFlag = (flag: string): boolean => probe.output.split(/\s+/).includes(flag);
         if (probe.available && hasFlag(rule.stable)) diagnostics.push(info(rule.stableMessage));
         else if (probe.available && hasFlag(rule.fallback)) {
@@ -246,7 +251,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       const client = new CodexAppServerClient(this.processService, {
         id: descriptor.id, command, commandArgsPrefix: descriptor.launchArgs,
         args: executorLaunchArgs(descriptor, descriptor.args),
-        env: executorProcessEnv(descriptor),
+        ...executorProcessOptions(descriptor),
         startupTimeoutMs: 12_000, requestTimeoutMs: 12_000,
       });
       try {
@@ -264,7 +269,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     }
     if (auth?.kind === 'claude-credentials') return this.#claudeCredentials(descriptor, auth);
     if (auth?.kind !== 'command-json') return { loginStatus: 'unknown' };
-    const probe = await this.#probe(auth.command, auth.args, executorProcessEnv(descriptor));
+    const probe = await this.#probe(auth.command, auth.args, descriptor);
     if (!probe.available || probe.code === -1) return { loginStatus: 'unknown' };
     try {
       const data: unknown = JSON.parse(probe.output);
@@ -299,7 +304,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     }
     const args = settings === undefined ? auth.args
       : ['--settings', settings, '--setting-sources', CLAUDE_EXPLICIT_SETTINGS_SOURCES.join(','), ...auth.args];
-    const probe = await this.#probe(auth.command, args, executorProcessEnv(descriptor));
+    const probe = await this.#probe(auth.command, args, descriptor);
     if (!probe.available || probe.code === -1) {
       return { loginStatus: 'unknown', source: 'unknown' };
     }
@@ -310,14 +315,14 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       : { loginStatus: 'logged_in', source: remote.source, detail: remote.detail };
   }
 
-  async #probe(command: string, args: readonly string[], env?: Record<string, string>): Promise<CommandProbe> {
+  async #probe(command: string, args: readonly string[], descriptor: AgentExecutorDescriptor): Promise<CommandProbe> {
     let child: IHostProcess;
     try {
       child = await this.processService.spawn(command, args, {
         shell: false,
         windowsHide: true,
         mergeStderr: false,
-        env,
+        ...executorProcessOptions(descriptor),
       });
     } catch {
       return { available: false, output: '' };
@@ -338,7 +343,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         }),
       ]);
       if (code === -1 && child.exitCode === null) await child.kill('SIGTERM').catch(() => undefined);
-      return { available: true, code, output: output.trim() };
+      return { available: true, code, output: redactExecutorOutput(descriptor, output.trim()) };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       await child.dispose();

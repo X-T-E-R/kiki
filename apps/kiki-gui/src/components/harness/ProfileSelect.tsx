@@ -761,7 +761,8 @@ export function ProfileSelect({
                                 </span>
                               ) : (
                                 <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
-                                  {item.version ? `${item.id} · ${item.version}` : item.id}
+                                  {[item.instance === undefined ? item.id : catalog.find(source => source.id === item.instance?.source_executor)?.label ?? item.instance.source_executor,
+                                    item.version].filter(Boolean).join(' · ')}
                                 </span>
                               )}
                             </span>

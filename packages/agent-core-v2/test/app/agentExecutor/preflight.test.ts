@@ -176,8 +176,11 @@ describe('AgentExecutorPreflightService', () => {
     command = '/fixture/second';
     expect(preflight.lastCheck('example')).toBeUndefined();
     let release!: (sources: Awaited<ReturnType<IAgentExecutorRegistry['discover']>>) => void;
-    discovery.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    let started!: () => void;
+    const discoveryStarted = new Promise<void>((resolve) => { started = resolve; });
+    discovery.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; started(); }));
     const pending = preflight.run(['example']);
+    await discoveryStarted;
     command = '/fixture/third';
     release([{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/second', version: '2.0' }]);
     expect((await pending)[0]?.version).toBe('2.0');

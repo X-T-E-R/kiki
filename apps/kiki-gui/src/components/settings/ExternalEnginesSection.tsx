@@ -22,11 +22,13 @@ import {
   engineOverridesOf,
   engineVisibilityOf,
   engineVisibilityPatch,
+  offeredEngine,
   executorCatalogQueryKey,
   shouldAutoEnableEngine,
   useExecutorCatalogQuery,
 } from './profileEditor/engines';
 import { EngineDefaults } from './EngineDefaults';
+import { EngineInstanceForm } from './EngineInstanceForm';
 import { ANTIGRAVITY_ID, AntigravitySetup } from './AntigravitySetup';
 import { HARNESS_CAPABILITIES } from '../harness/HarnessMark';
 
@@ -208,7 +210,7 @@ function EngineVisibilityToggle({ item, overrides, display }: {
   const prefs = engineVisibilityOf(overrides, display);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const visible = prefs.externalsVisible && prefs.enabled.has(item.id);
+  const visible = offeredEngine(item, prefs);
 
   const toggle = async (next: boolean) => {
     const patch = engineVisibilityPatch(prefs, { engine: { id: item.id, visible: next } });
@@ -316,7 +318,7 @@ export function ExternalEnginesList() {
     .toSorted((a, b) => a.label.localeCompare(b.label));
   const [faults, setFaults] = useState<Readonly<Record<string, string>>>({});
   const [removalNote, setRemovalNote] = useState<string | undefined>();
-  const engineIds = engines.map((item) => item.id).join('\0');
+  const engineIds = engines.filter((item) => item.instance === undefined).map((item) => item.id).join('\0');
   const discoveryKey = `${scopeId}\0${meta?.server_id ?? ''}`;
   const ran = useRef(false);
   useEffect(() => {
@@ -404,8 +406,10 @@ export function ExternalEnginesList() {
         onSelect={() => { engineDetail.open(item.id); }} />;
     })}
   </DetailRailGroup>;
-  const detail = detailItem === undefined ? null : <EngineDetailPane item={detailItem} overrides={overrides} display={display}
+  const detail = detailItem === undefined ? null : <EngineDetailPane key={detailItem.id} item={detailItem} overrides={overrides} display={display}
     discovery={discoveryOf(discovery, detailItem.id)}
+    source={engines.find((entry) => entry.id === detailItem.instance?.source_executor)}
+    onInstanceCreated={engineDetail.open}
     onClose={engineDetail.close}
     onRegistrationRemoved={setRemovalNote}
     onFault={(id, text) => {
@@ -854,6 +858,7 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.advanced')}
       </summary>
+      {item.instance !== undefined ? null : <>
       <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.hint')}</p>
       <div className="space-y-1">
         <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-bin`}>{t('st.engines.override.binPath')}</label>
@@ -899,6 +904,7 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
         </button>
         <span className="text-[12px] text-ink-faint">{t('st.engines.override.recheck')}</span>
       </div>
+      </>}
       {children}
       <FeedbackLine feedback={feedback} />
     </details>
@@ -1041,8 +1047,10 @@ function EngineRow({ item, overrides: _overrides, display: _display, fault, disc
  * setup, checks, parameters, diagnostics and the custom-registration
  * removal — as the pane of the DetailSplit, not a panel over the list.
  */
-function EngineDetailPane({ item, overrides, display, discovery, onClose, onFault, onRegistrationRemoved }: {
+function EngineDetailPane({ item, overrides, display, discovery, source: instanceSource, onInstanceCreated, onClose, onFault, onRegistrationRemoved }: {
   item: ExecutorCatalogItem;
+  source?: ExecutorCatalogItem;
+  onInstanceCreated: (id: string) => void;
   overrides: Readonly<Record<string, unknown>> | undefined;
   display: Readonly<Record<string, unknown>> | undefined;
   /** The backend's discovery entry for this engine, when one was reported. */
@@ -1071,8 +1079,9 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
   const refetchConfig = useCallback(async () => { await configQuery.refetch(); }, [configQuery]);
   const connection = item.connection;
   const config = configQuery.data;
-  const customRegistration = Object.hasOwn(configuredEngineDescriptors(config) ?? {}, item.id);
+  const customRegistration = item.instance !== undefined || Object.hasOwn(configuredEngineDescriptors(config) ?? {}, item.id);
   const [removing, setRemoving] = useState(false);
+  const [creating, setCreating] = useState(false);
   const shown = check ?? catalogCheckOf(item);
   const faultText = localFault;
   const health = localFault !== undefined && shown === undefined ? 'warning' : engineHealth(item, shown);
@@ -1133,11 +1142,15 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
     setFeedback(null);
     try {
       const result = await client.removeExecutorRegistration(item.id);
-      const text = registrationRemovalText(locale, result);
+      const text = item.instance !== undefined && result.registration_removed ? t('st.engines.instance.removed') : registrationRemovalText(locale, result);
       setFeedback({ tone: result.resources === 'removed' ? 'success' : 'info', text });
       onRegistrationRemoved?.(text);
-      await queryClient.invalidateQueries({ queryKey: ['config'] });
-      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+        queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) }),
+        queryClient.invalidateQueries({ queryKey: discoverySnapshotKey(scopeId, meta?.server_id) }),
+      ]);
+      if (item.instance !== undefined && result.registration_removed) onClose();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -1162,6 +1175,15 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
       </div>
           <div data-engine-panel={item.id} className="space-y-6">
             <div className="space-y-4">
+              {item.instance !== undefined ? (
+                <EngineInstanceForm item={item} source={instanceSource} onSaved={() => { setCheck(undefined); setCheckedAt(undefined); setLocalFault(undefined); onFault?.(item.id, undefined); }} />
+              ) : creating ? (
+                <EngineInstanceForm source={item} onCreated={onInstanceCreated} onCancel={() => setCreating(false)} />
+              ) : (
+                <button type="button" data-engine-add-instance className={SECONDARY_BUTTON} onClick={() => setCreating(true)}>
+                  {t('st.engines.instance.add')}
+                </button>
+              )}
               {discovery !== undefined ? (
                 <div data-engine-discovery-banner={discovery.status}
                   className={`rounded-md border px-3 py-2 ${
@@ -1406,7 +1428,7 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
                   {t('common.remove')}
                 </button>
                 <p className="text-[12px] leading-4 text-ink-faint">
-                  {locale === 'zh'
+                  {item.instance !== undefined ? t('st.engines.instance.removeHint') : locale === 'zh'
                     ? '只移出这项自定义注册。活动或可恢复的绑定会留下适配器文件，原因显示在这里。内置引擎不会被删除。'
                     : 'Removes this custom registration only. A live or recoverable binding keeps its adapter files, and the reason is shown here. A built-in engine is not deleted.'}
                 </p>

@@ -398,7 +398,7 @@ describe('AcpProcessClient limits and observers', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it('spawns the agent with the caller environment and no unset list', async () => {
+  it.each([[undefined], [['HTTP_PROXY', 'HTTPS_PROXY']]] as const)('spawns with the caller environment and unset list %j', async (envUnset) => {
     const calls: Array<{ command: string; options: Record<string, unknown> | undefined }> = [];
     const client = new AcpProcessClient(
       {
@@ -407,7 +407,7 @@ describe('AcpProcessClient limits and observers', () => {
           throw new Error('spawn refused');
         },
       } as unknown as HostProcessServiceLike,
-      { id: 'claude-acp', command: 'node', args: ['agent.js'] },
+      { id: 'claude-acp', command: 'node', args: ['agent.js'], envUnset },
       { logger: { error: () => {} } },
     );
 
@@ -415,7 +415,7 @@ describe('AcpProcessClient limits and observers', () => {
 
     expect(calls[0]?.command).toBe('node');
     expect(calls[0]?.options).toMatchObject({ shell: false, windowsHide: true });
-    expect(calls[0]?.options).not.toHaveProperty('envUnset');
+    expect(calls[0]?.options?.['envUnset']).toBe(envUnset);
     expect(calls[0]?.options?.['env']).toBeUndefined();
     expect(calls[0]?.options?.['cwd']).toBeUndefined();
   });
@@ -429,10 +429,10 @@ describe('Grok session MCP readiness', () => {
   };
   const setup = (stdout: PassThrough): void => notify(stdout, '_x.ai/session/setup', { method: 'session/new', phase: 'mcp_merge', sessionId: null });
 
-  it('holds the first prompt until the owning session reports MCP initialized', async () => {
+  it.each(['grok-acp', 'instance-work'])('holds %s until its source engine reports MCP initialized', async (id) => {
     const beforeOpen = vi.fn(setup);
     const child = burstProcess(vi.fn(), 0, false, beforeOpen);
-    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'grok-acp', command: 'fixture', shutdownGraceMs: 20 }, { platform: 'linux' });
+    const client = new AcpProcessClient({ spawn: async () => child }, { id, sourceId: 'grok-acp', command: 'fixture', shutdownGraceMs: 20 }, { platform: 'linux' });
     let opened = false;
     const options = { cwd: '/workspace', mcpServers };
     const opening = client.openSession(options).then((result) => { opened = true; return result; });
@@ -443,7 +443,7 @@ describe('Grok session MCP readiness', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(opened).toBe(false);
       notify(child.stdout as PassThrough, '_x.ai/mcp_initialized', { sessionId: 'session-burst', mcpToolCount: 1 });
-      await opening;
+      expect((await opening).sessionRef.executorId).toBe(id);
       const turn = await client.startTurn({ session: options, signal: new AbortController().signal, prompt: 'Use the connected fixture' });
       expect((await turn.completion).response.stopReason).toBe('end_turn');
     } finally { await client.shutdown(); }

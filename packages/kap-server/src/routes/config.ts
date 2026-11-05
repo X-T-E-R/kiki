@@ -516,6 +516,7 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
     }
   }
   const raw = isPlainObject(wire['raw']) ? { ...wire['raw'] } : {};
+  if (wire['agent_executor_instances'] !== undefined) raw['agent_executor_instances'] = wire['agent_executor_instances'];
   if (wire['agent_executor_overrides'] !== undefined) raw['agent_executor_overrides'] = agentExecutorOverridesToToml(wire['agent_executor_overrides']);
   if (wire['agent_executors'] !== undefined) raw['agent_executors'] = agentExecutorsToToml(wire['agent_executors']);
   const display = wire['agent_executor_display'];
@@ -599,7 +600,9 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && key === 'agent_executor_overrides') {
+      if (!preserveKeys && key === 'agent_executor_instances') {
+        result[targetKey] = value;
+      } else if (!preserveKeys && key === 'agent_executor_overrides') {
         result[targetKey] = agentExecutorOverridesFromToml(value);
       } else if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
         result[targetKey] = value;
