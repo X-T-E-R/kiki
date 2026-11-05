@@ -957,6 +957,7 @@ describe('stepRetry plugin', () => {
 
   it.each([
     { code: 'generation_failed', status: 500, mode: 'exhaust' },
+    { code: 'generation_failed', status: 500, mode: 'executed' },
     { code: 'incomplete_stream', status: 502, mode: 'exhaust' },
     { code: 'incomplete_stream', status: 502, mode: 'partial' },
     { code: 'generation_failed', status: 500, mode: 'deny' },
@@ -972,8 +973,9 @@ describe('stepRetry plugin', () => {
     sockets.on('connection', socket => socket.on('message', () => {
       frames++;
       if (mode === 'partial') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'retained partial' }));
-      socket.send(JSON.stringify({ type: 'error', status, error: { type: 'server_error', code,
-        message: 'Generation failed. Delivery may be unknown; do not automatically replay.', param: '' } }));
+      socket.send(JSON.stringify({ type: 'error', status, execution: mode === 'executed' ? 'executed' : undefined,
+        error: { type: 'server_error', code,
+          message: 'Generation failed. Delivery may be unknown; do not automatically replay.', param: '' } }));
     }));
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -1008,6 +1010,11 @@ describe('stepRetry plugin', () => {
       else expect(toErrorPayload(failure).details).not.toHaveProperty('retry_exhausted');
       expect(frames).toBe(attempts);
       expect(httpRequests).toBe(0);
+      if (mode === 'executed') {
+        expect(requestDeliveryProvenance(failure)).toBe('executed');
+        expect(toErrorPayload(failure).details).toMatchObject({ execution: 'executed', retry: false });
+        expect(toErrorPayload(failure).details).not.toHaveProperty('request_output');
+      }
       expect(rpcEvents('turn.step.retrying')).toHaveLength(attempts - 1);
       expect(rpcEvents('turn.ended')).toContainEqual(expect.objectContaining({ args: expect.objectContaining({
         reason: 'failed', error: expect.objectContaining({ code: expectedCode, message: display }),

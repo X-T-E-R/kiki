@@ -30,10 +30,11 @@ export function guardRequestDelivery(stream: StreamedMessage, enabled: boolean):
         }
       } catch (error) {
         if (isAbortError(error)) throw error;
-        if (requestDeliveryProvenance(error) === 'executed' || yielded) {
+        if (yielded) {
           noteExecutedRequestDelivery(error);
           throw error;
         }
+        if (requestDeliveryProvenance(error) === 'executed') throw error;
         const attached = typeof error === 'object' && error !== null ? readAttachedErrorDetails(error) : undefined;
         const source = attached?.['errorSource'] ?? (isError2(error) ? error.details?.['errorSource'] : undefined);
         if (source === 'provider_event' || source === 'provider_stream' || source === 'provider_http' || requestDeliveryProvenance(error) === 'unknown') throw error;

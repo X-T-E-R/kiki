@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, toErrorPayload, unwrapErrorCause } from '#/errors';
 import {
   APIConnectionError,
   APIStatusError,
   ChatProviderError,
   createAbortError,
+  noteConfirmedRequestExecution,
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import type { Message } from '#/kosong/contract/message';
@@ -51,6 +52,17 @@ describe('guardRequestDelivery', () => {
     expect(parsed).toMatchObject({ statusCode: 401, message: 'unauthorized', requestId: 'req-auth' });
     expect(requestDeliveryProvenance(parsed)).toBeUndefined();
     expect((parsed as { details?: { request_delivery?: unknown } }).details?.['request_delivery']).not.toBe('ambiguous');
+  });
+
+  it('marks output as observed only when it actually yields after execution confirmation', async () => {
+    const failure = new APIStatusError(500, 'provider reported execution');
+    noteConfirmedRequestExecution(failure);
+    expect(await catchDelivery(deliveryStream(failure))).toBe(failure);
+    expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', retry: false });
+    expect(toErrorPayload(failure).details).not.toHaveProperty('request_output');
+
+    expect(await catchDelivery(deliveryStream(failure, { parts: [{ type: 'text', text: 'partial' }] }))).toBe(failure);
+    expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed', retry: false });
   });
 
   it('rethrows abort without a delivery mark', async () => {

@@ -293,15 +293,16 @@ function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined
   return undefined;
 }
 
-function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): void {
+function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed' | 'confirmed'): void {
   const visited = new Set<unknown>();
   let current: unknown = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     if (!(mark === 'executed' && explicitDeliveryMark(current) === 'unknown')) {
-      attachErrorDetails(current, { request_delivery: mark });
+      attachErrorDetails(current, { request_delivery: mark === 'confirmed' ? 'executed' : mark });
     }
     if (mark === 'executed') attachErrorDetails(current, { request_output: 'observed' });
+    if (mark === 'confirmed') attachErrorDetails(current, { execution: 'executed', retry: false });
     current = current instanceof Error ? current.cause : undefined;
   }
 }
@@ -309,7 +310,7 @@ function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): vo
 /** Delivery observations retained for generation recovery decisions.
  *
  * `unknown` means the outcome was not observed. `executed` means actual output or
- * tool execution was observed. A failure event or response id alone is neither.
+ * tool execution was observed, or a trusted boundary confirmed execution. A failure event or response id alone is neither.
  * `undefined` means neither fact is present, so a pre-stream HTTP retry and the one explicit
  * HTTP 401 refresh stay available. The walk includes causes, and the marks are
  * stored on that chain, so `unwrapErrorCause` does not remove them. Call this on
@@ -347,6 +348,11 @@ export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
 /** Records that this failure happened after a response, partial output, or tool was observed. */
 export function noteExecutedRequestDelivery(error: unknown): void {
   noteRequestDelivery(error, 'executed');
+}
+
+/** Records trusted execution confirmation without claiming observed output and forbids replay. */
+export function noteConfirmedRequestExecution(error: unknown): void {
+  noteRequestDelivery(error, 'confirmed');
 }
 
 const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([

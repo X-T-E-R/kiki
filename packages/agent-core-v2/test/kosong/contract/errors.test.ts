@@ -21,6 +21,7 @@ import {
   isRetryableGenerateError,
   isRetryableRequestInterruption,
   normalizeAPIStatusError,
+  noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
   requestDeliveryProvenance,
   PROVIDER_API_ERROR_CODE,
@@ -388,6 +389,18 @@ describe('requestDeliveryProvenance', () => {
     expect(requestDeliveryProvenance(unwrapErrorCause(parsed))).toBeUndefined();
     expect(isRetryableGenerateError(parsed)).toBe(true);
     expect(parsed).toMatchObject({ statusCode: 429, message: 'slow down', requestId: 'req-429', traceId: 'trace-429' });
+  });
+
+  it('vetoes both retry paths when execution is confirmed across an error wrapper', () => {
+    const cause = new APIConnectionError('provider reported execution');
+    const failure = new ChatProviderError('request failed', undefined, { cause });
+    noteConfirmedRequestExecution(failure);
+    expect(unwrapErrorCause(failure)).toBe(cause);
+    for (const error of [failure, unwrapErrorCause(failure)]) {
+      expect(requestDeliveryProvenance(error)).toBe('executed');
+      expect(isRetryableGenerateError(error)).toBe(false);
+      expect(isRetryableRequestInterruption(error)).toBe(false);
+    }
   });
 });
 

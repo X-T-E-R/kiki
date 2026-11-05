@@ -14,6 +14,7 @@ import {
   isAbortError,
   isContextOverflowErrorCode,
   markProviderEventError,
+  noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
   providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
@@ -140,20 +141,26 @@ function asRawObject(value: unknown): RawObject | null {
 function transportStatusError(error: unknown): ChatProviderError | undefined {
   if ((error instanceof ResponsesWebSocketError || error instanceof OpenAIAPIError) &&
     error.code === 'websocket_connection_limit_reached') {
-    return attachErrorDetails(new APIConnectionError(error.message), {
+    const failure = attachErrorDetails(new APIConnectionError(error.message), {
       ...providerStreamErrorDetails(error instanceof OpenAIAPIError ? error.error : undefined),
       errorSource: 'provider_event', nativeCode: error.code, upstreamErrorCode: error.code,
-      execution: error instanceof ResponsesWebSocketError ? error.execution : undefined,
     });
+    return withTransportExecution(failure, error instanceof ResponsesWebSocketError ? error.execution : undefined);
   }
   if (!(error instanceof ResponsesWebSocketError)) return undefined;
   if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
   const failure = isContextOverflowErrorCode(error.code) ? new APIContextOverflowError(error.status, error.message)
     : isOpenAIInsufficientQuotaCode(error.code) ? new APIProviderQuotaExhaustedError(error.message)
     : new APIStatusError(error.status, error.message);
-  return attachErrorDetails(markProviderEventError(failure, error.code), {
-    errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
-  });
+  return withTransportExecution(attachErrorDetails(markProviderEventError(failure, error.code), {
+    errorSource: 'provider_event', nativeCode: error.code,
+  }), error.execution);
+}
+
+function withTransportExecution(failure: ChatProviderError, execution: string | undefined): ChatProviderError {
+  if (execution === 'executed') noteConfirmedRequestExecution(failure);
+  else attachErrorDetails(failure, { execution });
+  return failure;
 }
 
 const RETRYABLE_WEBSOCKET_CLOSE_CODES = new Set([1000, 1001, 1006, 1011, 1012, 1013, 1014]);

@@ -18,6 +18,8 @@ import {
   APIProviderQuotaExhaustedError,
   APIStatusError,
   isRetryableGenerateError,
+  isRetryableRequestInterruption,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import {
   ProvidersSectionSchema,
@@ -772,6 +774,53 @@ describe('production Responses adapter → generate → canonical history → of
       expect(gateway.frames).toHaveLength(1);
       expect(gateway.httpRequests).toHaveLength(0);
     } finally { transport.dispose(); }
+  });
+
+  it.each([
+    { code: 'generation_failed', metadataFirst: false },
+    { code: 'websocket_connection_limit_reached', metadataFirst: true },
+  ])('preserves confirmed execution without output: $code', async ({ code, metadataFirst }) => {
+    const gateway = await createGateway((_body, socket) => {
+      if (metadataFirst) sendCreated(socket, 'resp_pending');
+      socket.send(JSON.stringify({ type: 'error', status: 500, execution: 'executed',
+        error: { type: 'server_error', code, message: 'Synthetic generation failed' } }));
+    });
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(requestDeliveryProvenance(failure)).toBe('executed');
+      expect(isRetryableGenerateError(failure)).toBe(false);
+      expect(isRetryableRequestInterruption(failure)).toBe(false);
+      expect(toErrorPayload(failure).details).toMatchObject({ execution: 'executed', retry: false, upstreamErrorCode: code });
+      expect(toErrorPayload(failure).details).not.toHaveProperty('request_output');
+      expect(gateway.frames.map(({ body }) => body['type'])).toEqual(['response.create']);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it('keeps an HTTP Upgrade 502 eligible for retry without sending a response.create', async () => {
+    let upgrades = 0;
+    let httpRequests = 0;
+    const server = createServer((_request, response) => { httpRequests++; response.writeHead(500).end(); });
+    server.on('upgrade', (_request, socket) => {
+      upgrades++;
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(requestDeliveryProvenance(failure)).toBe('unknown');
+      expect(isRetryableGenerateError(failure)).toBe(true);
+      expect(toErrorPayload(failure).details).not.toHaveProperty('request_output');
+      expect(transport.diagnostics()).toMatchObject({ webSocketCapabilities: false, webSocketConnectionAgeMs: null });
+      expect(upgrades).toBe(1);
+      expect(httpRequests).toBe(0);
+    } finally {
+      transport.dispose();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   it('does not replay after partial output even if a later error claims not_executed', async () => {
