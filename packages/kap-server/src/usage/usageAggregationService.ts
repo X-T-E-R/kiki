@@ -102,6 +102,7 @@ export interface AgentUsageReadOptions {
   readonly maxBytes?: number;
   readonly deadlineAt?: number;
   readonly rangeStart?: number;
+  readonly onCompleteSummary?: (agentId: string, row: AgentUsageProjection) => void;
 }
 
 interface SourceReadOptions extends AgentUsageReadOptions {
@@ -244,12 +245,13 @@ export class UsageAggregationService {
     private readonly recovery: UsageRecoveryPool = usageRecoveryPool(core),
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
-    this.sourceSubscription = sourceChanges?.onDidChange((key) => {
-      if (typeof key === 'object') {
+    this.sourceSubscription = sourceChanges?.onDidChange((change) => {
+      if (typeof change === 'object' && change.kind === 'retained') {
         this.retainedRevision++;
         this.modelReady = false;
         return;
       }
+      const key = typeof change === 'object' ? change.sessionKey : change;
       this.replayEpoch++;
       if (key === undefined) {
         this.inventoryRevision++;
@@ -387,8 +389,15 @@ export class UsageAggregationService {
     const factBudget = { remainingRecords: options.maxFacts ?? (bounded ? this.limits.usageFactBudget : Infinity) };
     const recoveryBudget = { remainingRecords: options.maxRecords ?? Infinity, remainingBytes: options.maxBytes ?? Infinity };
     const rows: Record<string, AgentUsageProjection> = {};
+    const prepare = async (): Promise<void> => {
+      if (options.summaryOnly) {
+        await this.readVerifiedAgentSummaries(workspaceId, sessionId, agentIds, factSignal, rows, options.onCompleteSummary);
+      }
+      const pending = agentIds.filter((id) => !rows[id]?.complete);
+      if (pending.length > 0) await this.readAgentUsageSources(workspaceId, sessionId, pending, { ...options, factSignal, factBudget, recoveryBudget }, rows);
+    };
     try {
-      await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, agentIds, { ...options, factSignal, factBudget, recoveryBudget }, rows), factSignal);
+      await waitForSource(prepare(), factSignal);
     } catch (error) {
       options.signal?.throwIfAborted();
       if (!deadline.signal.aborted) throw error;
@@ -399,6 +408,48 @@ export class UsageAggregationService {
     } finally { if (timer !== undefined) clearTimeout(timer); }
     for (const id of agentIds) rows[id] ??= { records: [], complete: false };
     return rows;
+  }
+
+  private async readVerifiedAgentSummaries(
+    workspaceId: string,
+    sessionId: string,
+    agentIds: readonly string[],
+    signal: AbortSignal,
+    rows: Record<string, AgentUsageProjection>,
+    onComplete?: AgentUsageReadOptions['onCompleteSummary'],
+  ): Promise<void> {
+    const facts = this.core.accessor.get(IUsageFactStore);
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const model = this.core.accessor.get(IUsageReadModel);
+    const session = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+    const sources = [...new Set(agentIds)].map((agentId) => ({ agentId, source: agentScopeOf(session, agentId) }));
+    const snapshots = await model.summaries(sources.map(({ source }) => source), signal);
+    const candidates = sources.filter(({ source }) => {
+      const head = snapshots[source]?.head;
+      return head?.checkpoint?.valid === true && head.pendingCheckpoint === undefined;
+    });
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      if (offset > 0) await yieldToEventLoop(undefined, { signal });
+      signal.throwIfAborted();
+      await Promise.all(candidates.slice(offset, offset + 32).map(async ({ agentId, source }) => {
+        const snapshot = snapshots[source]!;
+        const head = snapshot.head!;
+        const checkpoint = head.checkpoint!;
+        const [generation, size, mtimeMs, journalSize] = await Promise.all([
+          logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY),
+          storage.mtime(source, AGENT_WIRE_RECORD_KEY), facts.journalSize(source, signal),
+        ]);
+        if (checkpoint.generation !== generation || checkpoint.offset !== (size ?? 0)
+          || checkpoint.size !== (size ?? 0) || checkpoint.mtimeMs !== (mtimeMs ?? 0)
+          || head.journalOffset !== journalSize
+          || await logs.generation(source, AGENT_WIRE_RECORD_KEY) !== generation) return;
+        signal.throwIfAborted();
+        const row = { records: [], totals: snapshot.totals, complete: true };
+        rows[agentId] = row;
+        onComplete?.(agentId, row);
+      }));
+    }
   }
 
   private async readAgentUsageSources(
@@ -427,8 +478,11 @@ export class UsageAggregationService {
       revisions?.set(id, `${id}:${snapshot.head?.revision ?? 0}:${checkpoint?.generation ?? ''}:${checkpoint?.offset ?? 0}`);
       if (options.summaryOnly) rows[id] = { records: [], totals: snapshot.totals, complete: false };
       const complete = covered && checkpoint?.valid === true && snapshot.head?.pendingCheckpoint === undefined && checkpoint.generation === generation && checkpoint.size === (size ?? 0) && checkpoint.offset === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && await waitForSource(logs.generation(source, AGENT_WIRE_RECORD_KEY), signal) === generation;
-      if (options.summaryOnly) rows[id] = { records: [], totals: snapshot.totals, complete };
-      else { const read = await facts.read(source, undefined, signal); rows[id] = { records: read.records, complete: complete && read.readComplete !== false }; }
+      if (options.summaryOnly) {
+        const row = { records: [], totals: snapshot.totals, complete };
+        rows[id] = row;
+        if (complete) options.onCompleteSummary?.(id, row);
+      } else { const read = await facts.read(source, undefined, signal); rows[id] = { records: read.records, complete: complete && read.readComplete !== false }; }
     }
     return rows;
   }

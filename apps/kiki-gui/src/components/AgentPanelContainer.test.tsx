@@ -17,6 +17,8 @@ import { AgentTranscriptLiveAdapter, type LiveAdapterBusEvent } from '../../../.
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { I18nProvider } from '../i18n';
 import { AgentPanelContainer } from './AgentPanelContainer';
+import { subscribeUsageFreshness } from '../lib/usageFreshness';
+import type { Klient } from '@kiki/klient';
 
 /**
  * The panel must read every agent-scoped field from the tab's OWN agent, which
@@ -40,7 +42,7 @@ const harness = vi.hoisted(() => {
   const getAutoCompact = vi.fn();
   const getAgentCapabilities = vi.fn();
   const getAgentPlan = vi.fn();
-  const events = { on: vi.fn(() => ({ ready: Promise.resolve(), dispose: vi.fn() })) };
+  const events = { on: vi.fn((_name: string, _listener: (source: { sessionId?: string; agentId?: string }) => void) => ({ ready: Promise.resolve(), dispose: vi.fn() })) };
   const klient = {
     global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => getAgentCapabilities(query, options.signal) } },
     events,
@@ -132,7 +134,10 @@ function forestOf(agentIds: readonly string[]): AgentForest {
 let root: Root;
 let element: HTMLDivElement;
 let queryClient: QueryClient;
+let offUsage: (() => void) | undefined;
 beforeEach(() => {
+  offUsage = undefined;
+  harness.klient = { ...harness.klient };
   getAgentCapabilities.mockReset();
   getAgentPlan.mockReset();
   getAgentPlan.mockResolvedValue(null);
@@ -159,6 +164,7 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 afterEach(async () => {
+  offUsage?.();
   await act(async () => root.unmount());
   queryClient.clear();
   element.remove();
@@ -698,13 +704,13 @@ it('settles only the missing tree agents once, then keeps the total on a local s
     });
   });
   await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
-  expect(element.querySelector('[data-usage-scope-incomplete]')).not.toBeNull();
-  expect(getAgentCapabilities.mock.calls[1]?.[0]).toEqual({
-    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child', 'main'],
-  });
-  const readsBeforeSwitch = getAgentCapabilities.mock.calls.length;
+  expect(settleCalls()).toEqual([]);
   await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
-  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
+  expect(element.querySelector('[data-usage-scope-incomplete]')).not.toBeNull();
+  expect(settleCalls()).toEqual([{
+    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child'],
+  }]);
+  const readsAfterSwitch = getAgentCapabilities.mock.calls.length;
   await act(async () => {
     resolveSettle?.({
       context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
@@ -718,8 +724,10 @@ it('settles only the missing tree agents once, then keeps the total on a local s
   expect(element.querySelector('[data-overview-tree-incomplete]')).toBeNull();
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
-  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
-  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')?.click(); });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsAfterSwitch);
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
 });
 
 it('aborts a cold settle while hidden and resumes the missing projection on reopen', async () => {
@@ -1011,7 +1019,9 @@ it('refreshes only the agent whose roster usage changed and keeps the scope loca
   });
   const forest = forestOf(['main', 'child']);
   await render('main', { part: 'overview', forest, renderOverview: renderOverviewLayout });
-  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: ['child', 'main'] });
+  expect(settleCalls()).toEqual([]);
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: ['child'] });
   pending[0]?.({
     context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
     metrics: { main: countedMetrics(1_200, 0.05), child: countedMetrics(3_400, 0.10) },
@@ -1045,6 +1055,90 @@ it('refreshes only the agent whose roster usage changed and keeps the scope loca
   await render('main', { part: 'overview', forest: grown, renderOverview: renderOverviewLayout });
   expect(settleCalls()).toHaveLength(reads + 2);
   expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['grand'] });
+});
+
+it('reads Standard main only until tree demand, then keeps 1210 rows and continues only the unpublished child', async () => {
+  const ids = ['main', 'active', ...Array.from({ length: 1208 }, (_, i) => `history-${i}`)];
+  const forest = forestOf(ids);
+  const pending: Array<(value: unknown) => void> = [];
+  let headerPartial = false;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle) return new Promise((resolve) => { pending.push(resolve); });
+    return Promise.resolve({ metrics: { main: { ...countedMetrics(headerPartial ? 1 : 100, 0), usageComplete: !headerPartial, usagePartial: headerPartial } } });
+  });
+  await render('main', { part: 'overview', forest });
+  expect(settleCalls()).toEqual([]);
+  expect(element.querySelector('[data-agent-usage] [data-overview-fact="tokens"]')?.textContent).toContain('100');
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(settleCalls()).toEqual([expect.objectContaining({ metrics_agent_ids: ids.filter((id) => id !== 'main').sort() })]);
+  pending[0]?.({ metrics: Object.fromEntries(ids.filter((id) => id !== 'main').map((id) => [id, {
+    ...countedMetrics(id === 'active' ? 20 : 1, 0), usageComplete: id !== 'active', usagePartial: id === 'active',
+  }])) });
+  await flushRender();
+  expect(settleCalls()).toHaveLength(2);
+  expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['active'] });
+  expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,328');
+  expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+  pending[1]?.({ metrics: { active: { ...countedMetrics(20, 0), usageComplete: true } } });
+  await flushRender();
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+  headerPartial = true;
+  harness.agents['main'] = viewState({ profile: 'changed' });
+  await act(async () => { harness.emit(); });
+  await flushRender();
+  expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,328');
+  expect(settleCalls()).toHaveLength(2);
+  const statusOnly = { ...forest, byId: { ...forest.byId, active: { ...forest.byId['active']!, busy: true, status: 'running' as const } } };
+  await render('main', { part: 'overview', forest: statusOnly });
+  expect(settleCalls()).toHaveLength(2);
+  offUsage = subscribeUsageFreshness(harness.klient as unknown as Klient, queryClient);
+  await flushRender();
+  const emitUsage = harness.klient.events.on.mock.calls.findLast(([name]) => name === 'usage.settled')![1];
+  await act(async () => { emitUsage({ sessionId: 'elsewhere', agentId: 'active' }); emitUsage({}); });
+  expect(settleCalls()).toHaveLength(2);
+  await act(async () => { emitUsage({ sessionId: 'session', agentId: 'active' }); });
+  expect(settleCalls()).toHaveLength(3);
+  expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['active'] });
+  expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+  pending[2]?.({ metrics: { active: { ...countedMetrics(23, 0), usageComplete: true } } });
+  await flushRender();
+  expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,331');
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')?.click(); });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(settleCalls()).toHaveLength(3);
+});
+
+it('waits for the automatic roster continuation before settling the whole tree and retains a complete prefix', async () => {
+  const ref = { source: { kind: 'snapshot' as const, id: '' }, path: ['subagents'], kind: 'array' as const, offset: 2, total: 1209, revision: 'roster' };
+  harness.agents['main'] = viewState({ contentRefs: [ref] });
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; metrics_agent_ids?: string[] }) => Promise.resolve({ metrics: query.metrics_settle
+    ? Object.fromEntries(query.metrics_agent_ids!.map((id) => [id, { ...countedMetrics(1, 0), usageComplete: true }]))
+    : { main: { ...countedMetrics(100, 0), usageComplete: true } } }));
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child-1', 'child-2']) });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(settleCalls()).toEqual([]);
+  expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+  harness.agents['main'] = viewState();
+  await render('main', { part: 'overview', forest: forestOf(['main', ...Array.from({ length: 1209 }, (_, i) => `child-${i}`)]) });
+  expect(settleCalls()).toHaveLength(1);
+  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: expect.any(Array) });
+  expect((settleCalls()[0] as { metrics_agent_ids: string[] }).metrics_agent_ids).toHaveLength(1209);
+  expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,309');
+});
+
+it('keeps Cockpit tree metrics across selected-agent focus changes', async () => {
+  const forest = forestOf(['main', 'child']);
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; agent_id: string }) => Promise.resolve({ metrics: query.metrics_settle
+    ? { child: { ...countedMetrics(20, 0), usageComplete: true } }
+    : { [query.agent_id]: { ...countedMetrics(query.agent_id === 'main' ? 100 : 20, 0), usageComplete: true } } }));
+  await render('main', { part: 'overview', overviewMode: 'cockpit', forest });
+  expect(settleCalls()).toHaveLength(1);
+  await render('child', { part: 'overview', overviewMode: 'cockpit', forest });
+  expect(settleCalls()).toHaveLength(1);
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+  await render('main', { part: 'overview', overviewMode: 'cockpit', forest });
+  expect(settleCalls()).toHaveLength(1);
 });
 
 it('does not keep the previous agent or space totals, or its retry', async () => {
@@ -1101,16 +1195,14 @@ it('paints this agent, the whole tree, and a roster update from the current over
   });
   const forest = forestOf(['main', 'child']);
   await render('main', { part: 'overview', forest, renderOverview: renderOverviewLayout });
-  pending[0]?.({
-    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
-    metrics: { main: countedMetrics(1_200, 0.05), child: countedMetrics(3_400, 0.10) },
-  });
-  await flushRender();
+  expect(settleCalls()).toEqual([]);
   expect(element.querySelector('[data-usage-scope="agent"]')?.getAttribute('aria-checked')).toBe('true');
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
   const agentHtml = element.innerHTML;
   await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  pending[0]?.({ metrics: { child: countedMetrics(3_400, 0.10) } });
+  await flushRender();
   expect(element.querySelector('[data-usage-scope="tree"]')?.getAttribute('aria-checked')).toBe('true');
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
@@ -1204,17 +1296,19 @@ it('marks the tree scope incomplete while a child has not reported, and says so 
   });
   await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
   const tree = () => element.querySelector<HTMLButtonElement>('[data-overview-test-head] [data-usage-scope="tree"]')!;
-  expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(true);
+  expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(false);
   expect(tree().disabled).toBe(false);
-  expect(tree().title).toContain('尚未上报');
   // Switching to the tree really changes the scope, and the caveat travels
   // with it. The sum is the real one over the agents that reported — main's
   // 1.2k here — and the row says which agents it could not count, rather
   // than passing 1.2k off as the whole tree or inventing a total.
   await act(async () => { tree().click(); });
   expect(tree().getAttribute('aria-checked')).toBe('true');
+  expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(true);
+  expect(tree().title).toContain('部分用量或费用不完整');
   const note = element.querySelector<HTMLElement>('[data-overview-tree-incomplete]');
-  expect(note?.textContent).toContain('仍在统计中');
+  expect(note?.textContent).toContain('已显示可用的小计');
+  expect(element.querySelector('[data-metrics-counting]')?.textContent).toBe('统计中…');
   expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
   // Back on the agent scope the caveat is gone and the real count returns.

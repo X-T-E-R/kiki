@@ -1824,9 +1824,10 @@ describe('UsageSourceTracker', () => {
     expect(watches).toBe(0);
     logs.append('sessions/w/s/agents/main', 'wire.jsonl', usageRecord(1));
     await logs.flush();
-    expect(changes).toEqual(['w\0s']);
+    const mainChanged = { kind: 'agent', sessionKey: 'w\0s', agentId: 'main' };
+    expect(changes).toEqual([mainChanged]);
     await logs.rewrite('sessions/w/s/agents/main', 'wire.jsonl', [usageRecord(2)]);
-    expect(changes).toEqual(['w\0s', 'w\0s']);
+    expect(changes).toEqual([mainChanged, mainChanged]);
     expect(tracker.ready).toBe(true);
     expect(watches).toBe(1);
     expect(changes.at(-1)).toBeUndefined();
@@ -1839,9 +1840,11 @@ describe('UsageSourceTracker', () => {
     expect(changes).toHaveLength(count);
     signal('w/s/agents/main/wire.jsonl', 'change');
     expect(changes).toHaveLength(count + 1);
-    expect(changes.at(-1)).toBe('w\0s');
+    expect(changes.at(-1)).toEqual(mainChanged);
     signal('w\\s\\agents\\child', 'rename');
     expect(changes).toHaveLength(count + 2);
+    expect(changes.at(-1)).toEqual({ kind: 'agent', sessionKey: 'w\0s', agentId: 'child' });
+    signal('w/s/agents', 'rename');
     expect(changes.at(-1)).toBe('w\0s');
     signal(null);
     expect(changes.at(-1)).toBeUndefined();
@@ -2143,7 +2146,9 @@ describe('shared agent and History typed usage', () => {
   });
 
   it('bounds a stalled source preparation by the panel caller deadline without reading wire', async () => {
-    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100);
+    const main = scope('w', 's');
+    const f = fixture([summary('s', 'w')], { [main]: [usageRecord(10)] }, () => 100);
+    await f.model.summaries([main]);
     let aborted = false;
     vi.spyOn(f.facts, 'summary').mockImplementationOnce(async (_scope, signal, options) => {
       expect(options?.budget?.remainingRecords).toBe(200_000);

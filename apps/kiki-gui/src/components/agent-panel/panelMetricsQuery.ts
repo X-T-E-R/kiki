@@ -24,6 +24,7 @@ export type PanelMetricsSource = {
   readonly cursorSeq?: number;
   readonly cursorEpoch?: string;
   readonly transcriptResetVersion?: number;
+  readonly usageSourceRevision?: string;
   readonly usage?: UsageRevision;
   readonly rosterUsage?: UsageRevision;
 };
@@ -76,11 +77,12 @@ function packUsage(usage: UsageRevision | undefined): string {
  */
 export function panelMetricsSourceRevision(source: PanelMetricsSource | undefined): string {
   if (source === undefined) return '';
+  const reset = `${source.transcriptResetVersion ?? ''}:${source.cursorEpoch ?? ''}`;
   const usage = packUsage(source.usage);
   const roster = packUsage(source.rosterUsage);
   const hasCursor = source.cursorSeq !== undefined || source.cursorEpoch !== undefined || source.transcriptResetVersion !== undefined;
-  if (!hasCursor && usage === '' && roster === '') return '';
-  return `${source.transcriptResetVersion ?? ''}:${source.cursorEpoch ?? ''}:${usage}:${roster}`;
+  if (!hasCursor && usage === '' && roster === '' && source.usageSourceRevision === undefined) return '';
+  return `${reset}:${usage}:${roster}:${source.usageSourceRevision ?? ''}`;
 }
 
 /**

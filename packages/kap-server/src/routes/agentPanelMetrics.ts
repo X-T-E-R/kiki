@@ -34,6 +34,7 @@ type PersistedUsage = {
 
 interface PersistedMetricsCacheEntry {
   readonly expiresAt: number;
+  readonly liveRecords?: number;
   readonly usage: PersistedUsage;
 }
 
@@ -45,6 +46,8 @@ interface PersistedMetricsScanResult {
 interface PersistedMetricsFlight {
   readonly controller: AbortController;
   readonly promise: Promise<PersistedMetricsScanResult>;
+  readonly valid: Set<string>;
+  readonly completed: Map<string, PersistedUsage>;
   waiters: number;
   sharedWaiters: number;
   settled: boolean;
@@ -54,8 +57,9 @@ interface PersistedMetricsFlight {
 interface PersistedMetricsState {
   readonly cache: Map<string, PersistedMetricsCacheEntry>;
   readonly flights: Map<string, PersistedMetricsFlight>;
+  readonly activeFlights: Set<PersistedMetricsFlight>;
+  readonly reads: Set<Set<string>>;
   readonly liveSeen: Map<string, Set<string>>;
-  revision: number;
 }
 
 export interface PersistedAgentPanelMetricsLimits {
@@ -137,9 +141,10 @@ export async function readPersistedAgentPanelMetrics(
     : [...new Set(options.agentIds)];
   const wanted = requested.filter((agentId) => !skip.has(agentId));
   const mutable = new Set(options.mutableAgentIds ?? []);
+  const sourceFor = (agentId: string) => agentMetricsCacheKey(workspaceId, sessionId, agentId);
   const keyFor = (agentId: string) => {
     const records = options.mutableUsageRecords?.[agentId];
-    const key = agentMetricsCacheKey(workspaceId, sessionId, agentId);
+    const key = sourceFor(agentId);
     return records === undefined ? key : `${key}\0usage:${records}`;
   };
   const liveSeenKey = `${workspaceId}\0${sessionId}`;
@@ -148,98 +153,114 @@ export async function readPersistedAgentPanelMetrics(
   for (const agentId of liveNow) {
     if (!liveSeen.has(agentId)) {
       liveSeen.add(agentId);
-      state.cache.delete(agentMetricsCacheKey(workspaceId, sessionId, agentId));
+      invalidatePersistedMetrics(state, sourceFor(agentId));
     }
   }
   for (const agentId of liveSeen) {
     if (!liveNow.has(agentId)) {
       liveSeen.delete(agentId);
-      state.cache.delete(agentMetricsCacheKey(workspaceId, sessionId, agentId));
+      invalidatePersistedMetrics(state, sourceFor(agentId));
     }
   }
   if (liveSeen.size === 0) state.liveSeen.delete(liveSeenKey);
   else state.liveSeen.set(liveSeenKey, liveSeen);
+  const valid = new Set(wanted.map(sourceFor));
+  state.reads.add(valid);
   const result = new Map<string, AgentPanelMetrics>();
-  const missing: string[] = [];
-  const now = Date.now();
-  for (const agentId of wanted) {
-    const cached = state.cache.get(keyFor(agentId));
-    if (cached !== undefined && cached.expiresAt > now) result.set(agentId, toPersistedMetrics(cached.usage, pricing));
-    else missing.push(agentId);
-  }
-  if (missing.length === 0) return Object.freeze(Object.fromEntries(result));
-  if (options.settle === false) {
-    const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
-    for (const agentId of missing) result.set(agentId, toPersistedMetrics(persistedUsageOf(rows[agentId]), pricing));
-    return Object.freeze(Object.fromEntries(result));
-  }
-  const limitsKey = [
-    options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
-    options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
-    options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
-  ].join(':');
-  const flightKey = `${missing.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
-  let flight = state.flights.get(flightKey);
-  if (flight !== undefined) {
-    flight.detach ||= options.complete === true;
-    flight.sharedWaiters += 1;
-    log.info('agent panel persisted metrics scan shared', {
-      workspace_id: workspaceId, session_id: sessionId, cache_state: 'shared',
-      targeted: options.agentIds !== undefined,
-    });
-  } else {
-    log.info('agent panel persisted metrics cache miss', {
-      workspace_id: workspaceId, session_id: sessionId, cache_state: 'miss',
-      targeted: options.agentIds !== undefined,
-    });
-    const controller = new AbortController();
-    const revision = state.revision;
-    let created!: PersistedMetricsFlight;
-    const promise = Promise.resolve().then(() => scanPersistedAgentPanelMetrics(
-      core, workspaceId, sessionId, missing, options.agentIds !== undefined,
-      options.limits,
-      controller.signal, () => created.sharedWaiters,
-    )).then((scanResult) => {
-      if (revision !== state.revision || controller.signal.aborted) return scanResult;
-      for (const [agentId, usage] of Object.entries(scanResult.usages)) {
-        if (!usage.complete) continue;
-        const ttl = mutable.has(agentId)
-          ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
-          : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
-        cachePersistedMetrics(state, keyFor(agentId), {
-          expiresAt: Date.now() + ttl,
-          usage,
-        });
-      }
-      return scanResult;
-    }).finally(() => {
-      created.settled = true;
-      if (state.flights.get(flightKey) === created) state.flights.delete(flightKey);
-    });
-    created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false, detach: options.complete === true };
-    void promise.catch(() => undefined);
-    flight = created;
-    state.flights.set(flightKey, flight);
-  }
-  const slice = new AbortController();
-  const timer = options.complete === true ? setTimeout(() => { slice.abort(new DOMException('Panel preparation continues in background', 'TimeoutError')); }, 650) : undefined;
-  timer?.unref();
-  let scanned: PersistedMetricsScanResult;
+  const finish = () => Object.freeze(Object.fromEntries([...result].map(([id, metrics]) => [id,
+    valid.has(sourceFor(id)) ? metrics : { ...metrics, usageComplete: false, usagePartial: true, costPartial: true },
+  ])));
   try {
-    scanned = await waitForPersistedMetricsFlight(flight, options.signal === undefined ? slice.signal : AbortSignal.any([options.signal, slice.signal]));
-  } catch (error) {
-    options.signal?.throwIfAborted();
-    if (!slice.signal.aborted) throw error;
-    const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
-    scanned = { usages: Object.fromEntries(missing.map((id) => [id, persistedUsageOf(rows[id])])), budgetCapped: true };
-  } finally { if (timer !== undefined) clearTimeout(timer); }
-  for (const agentId of missing) {
-    const usage = scanned.usages[agentId]
-      ?? state.cache.get(keyFor(agentId))?.usage
-      ?? emptyPersistedUsage(true);
-    result.set(agentId, toPersistedMetrics(usage, pricing));
-  }
-  return Object.freeze(Object.fromEntries(result));
+    const missing: string[] = [];
+    const now = Date.now();
+    for (const agentId of wanted) {
+      const cached = state.cache.get(sourceFor(agentId));
+      if (cached !== undefined && cached.expiresAt > now && cached.liveRecords === options.mutableUsageRecords?.[agentId]) result.set(agentId, toPersistedMetrics(cached.usage, pricing));
+      else missing.push(agentId);
+    }
+    if (missing.length === 0) return finish();
+    if (options.settle === false) {
+      const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
+      for (const agentId of missing) result.set(agentId, toPersistedMetrics(persistedUsageOf(rows[agentId]), pricing));
+      return finish();
+    }
+    const limitsKey = [
+      options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
+      options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
+      options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
+    ].join(':');
+    const flightKey = `${missing.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
+    let flight = state.flights.get(flightKey);
+    if (flight !== undefined && (flight.valid.size !== missing.length || flight.controller.signal.aborted)) flight = undefined;
+    if (flight !== undefined) {
+      flight.detach ||= options.complete === true;
+      flight.sharedWaiters += 1;
+      log.info('agent panel persisted metrics scan shared', {
+        workspace_id: workspaceId, session_id: sessionId, cache_state: 'shared',
+        targeted: options.agentIds !== undefined,
+      });
+    } else {
+      log.info('agent panel persisted metrics cache miss', {
+        workspace_id: workspaceId, session_id: sessionId, cache_state: 'miss',
+        targeted: options.agentIds !== undefined,
+      });
+      const controller = new AbortController();
+      const flightValid = new Set(missing.map(sourceFor));
+      state.reads.add(flightValid);
+      let created!: PersistedMetricsFlight;
+      const promise = Promise.resolve().then(() => scanPersistedAgentPanelMetrics(
+        core, workspaceId, sessionId, missing, options.agentIds !== undefined,
+        options.limits,
+        controller.signal, () => created.sharedWaiters,
+        (id, usage) => { created.completed.set(id, usage); },
+      )).then((scanResult) => {
+        const usages = { ...scanResult.usages };
+        for (const [agentId, usage] of Object.entries(usages)) {
+          if (!flightValid.has(sourceFor(agentId))) {
+            usages[agentId] = { ...usage, complete: false, partial: true };
+            continue;
+          }
+          if (!usage.complete || controller.signal.aborted) continue;
+          const ttl = mutable.has(agentId)
+            ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
+            : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
+          cachePersistedMetrics(state, sourceFor(agentId), { expiresAt: Date.now() + ttl, liveRecords: options.mutableUsageRecords?.[agentId], usage });
+        }
+        return { usages, budgetCapped: Object.values(usages).some((usage) => !usage.complete) };
+      }).finally(() => {
+        created.settled = true;
+        state.reads.delete(flightValid);
+        state.activeFlights.delete(created);
+        if (state.flights.get(flightKey) === created) state.flights.delete(flightKey);
+      });
+      created = { controller, promise, valid: flightValid, completed: new Map(), waiters: 0, sharedWaiters: 0, settled: false, detach: options.complete === true };
+      void promise.catch(() => undefined);
+      flight = created;
+      state.flights.set(flightKey, flight);
+      state.activeFlights.add(flight);
+    }
+    const slice = new AbortController();
+    const timer = options.complete === true ? setTimeout(() => { slice.abort(new DOMException('Panel preparation continues in background', 'TimeoutError')); }, 650) : undefined;
+    timer?.unref();
+    let scanned: PersistedMetricsScanResult;
+    try {
+      scanned = await waitForPersistedMetricsFlight(flight, options.signal === undefined ? slice.signal : AbortSignal.any([options.signal, slice.signal]));
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (!slice.signal.aborted) throw error;
+      const completed = flight.completed;
+      const pending = missing.filter((id) => !completed.has(id) || !flight.valid.has(sourceFor(id)));
+      const rows = pending.length === 0 ? {} : await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, pending, options.signal);
+      scanned = { usages: Object.fromEntries(missing.map((id) => [id,
+        (flight.valid.has(sourceFor(id)) ? completed.get(id) : undefined) ?? persistedUsageOf(rows[id]),
+      ])), budgetCapped: pending.length > 0 };
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+    for (const agentId of missing) {
+      const usage = scanned.usages[agentId] ?? emptyPersistedUsage(true);
+      result.set(agentId, toPersistedMetrics(usage, pricing));
+    }
+    return finish();
+  } finally { state.reads.delete(valid); }
 }
 
 function agentMetricsCacheKey(workspaceId: string, sessionId: string, agentId: string): string {
@@ -258,23 +279,36 @@ function cachePersistedMetrics(
   state.cache.set(key, entry);
 }
 
+function invalidatePersistedMetrics(state: PersistedMetricsState, sourceKey?: string, sessionKey?: string): void {
+  if (sourceKey !== undefined) {
+    state.cache.delete(sourceKey);
+    for (const read of state.reads) read.delete(sourceKey);
+  } else if (sessionKey !== undefined) {
+    const prefix = `${sessionKey}\0`;
+    for (const key of state.cache.keys()) if (key.startsWith(prefix)) state.cache.delete(key);
+    for (const read of state.reads) for (const key of read) if (key.startsWith(prefix)) read.delete(key);
+  } else {
+    state.cache.clear();
+    for (const read of state.reads) read.clear();
+  }
+}
+
 function persistedMetricsState(core: Scope): PersistedMetricsState {
   let state = persistedMetricsStates.get(core);
   if (state === undefined) {
-    state = { cache: new Map(), flights: new Map(), liveSeen: new Map(), revision: 0 };
+    state = { cache: new Map(), flights: new Map(), activeFlights: new Set(), reads: new Set(), liveSeen: new Map() };
     persistedMetricsStates.set(core, state);
     const captured = state;
     const { sources } = usageRuntime(core);
-    const subscription = sources.onDidChange((key) => {
-      captured.revision++;
-      for (const cacheKey of captured.cache.keys()) {
-        if (key === undefined || cacheKey.startsWith(`${key}\0`)) captured.cache.delete(cacheKey);
-      }
+    const subscription = sources.onDidChange((change) => {
+      if (typeof change === 'object') {
+        if (change.kind === 'agent') invalidatePersistedMetrics(captured, `${change.sessionKey}\0${change.agentId}`);
+      } else invalidatePersistedMetrics(captured, undefined, change);
     });
     void sources.ready;
     core.accessor.get(IInstantiationService).onWillDispose(() => {
       subscription.dispose();
-      for (const flight of captured.flights.values()) flight.controller.abort();
+      for (const flight of captured.activeFlights) flight.controller.abort();
       captured.cache.clear();
       persistedMetricsStates.delete(core);
     });
@@ -316,6 +350,7 @@ async function scanPersistedAgentPanelMetrics(
   requestedLimits: Partial<PersistedAgentPanelMetricsLimits> | undefined,
   signal: AbortSignal,
   sharedWaiters: () => number,
+  onComplete: (agentId: string, usage: PersistedUsage) => void,
 ): Promise<PersistedMetricsScanResult> {
   const startedAt = Date.now();
   const rows = await usageRuntime(core).service.readAgentUsage(workspaceId, sessionId, agentIds, {
@@ -324,6 +359,7 @@ async function scanPersistedAgentPanelMetrics(
     maxRecords: requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
     maxBytes: requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     deadlineAt: startedAt + (requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS),
+    onCompleteSummary: (id, row) => { onComplete(id, persistedUsageOf(row)); },
   });
   const usages: Record<string, PersistedUsage> = {};
   let partial = false;

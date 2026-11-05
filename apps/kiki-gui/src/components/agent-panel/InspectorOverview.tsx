@@ -137,7 +137,7 @@ export const InspectorOverview = memo(function InspectorOverview({
   // measurable: main always carries the switch, and a tree the server has not
   // finished counting is marked rather than dropped. A subagent's own figures
   // have no tree of their own, so it has nothing to switch to.
-  const treePartial = treeFigures?.incomplete === true;
+  const treePartial = tree && treeFigures?.incomplete === true;
   const scopeSwitch = treeFigures === undefined ? null : (
     <div
       role="radiogroup"
@@ -180,7 +180,7 @@ export const InspectorOverview = memo(function InspectorOverview({
           label={t('inspector.tokens')}
           title={shown.inputTokens !== undefined && shown.outputTokens !== undefined
             ? t('inspector.inOut', { input: compactTokens(shown.inputTokens), output: compactTokens(shown.outputTokens) })
-            : undefined}
+            : tree ? shown.totalTokens.toLocaleString() : undefined}
         />
       : null,
     shown.cacheRate !== undefined

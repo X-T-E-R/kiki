@@ -109,13 +109,11 @@ describe('the overview separates the present from this conversation\'s history',
 });
 
 describe('the overview owns the figures, and the scope that changes them', () => {
-  it('keeps 本智能体 / 全树 standing on a tree that is not fully counted, and marks it', async () => {
-    // A tree the server has not finished counting is a state the rail passes
-    // through on every cold open. The switch must not blink out of existence
-    // while it lasts, and the marked side must say what it could not count.
+  it('keeps 本智能体 / 全树 available and marks the selected partial tree', async () => {
     const container = await render({
       figures: { totalTokens: 1_200 },
       treeFigures: { totalTokens: 1_200, incomplete: true },
+      scope: 'tree',
       contextUsed: 1_200, contextLimit: 100_000,
     });
     const group = container.querySelector<HTMLElement>('[role="radiogroup"]')!;
@@ -125,7 +123,7 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(tree.textContent).toContain('全树');
     expect(tree.disabled).toBe(false);
     expect(tree.hasAttribute('data-usage-scope-incomplete')).toBe(true);
-    expect(tree.title).toContain('尚未上报');
+    expect(tree.title).toContain('部分用量或费用不完整');
   });
 
   it('says in words which counts the partial tree left out, and only while it is shown', async () => {
@@ -136,7 +134,8 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     });
     const note = partial.querySelector<HTMLElement>('[data-overview-tree-incomplete]')!;
     expect(note).not.toBeNull();
-    expect(note.textContent).toContain('仍在统计中');
+    expect(note.textContent).toContain('部分用量或费用仍不完整');
+    expect(partial.querySelector('[data-metrics-counting]')).toBeNull();
     // The agent scope is a full count; it claims nothing it cannot back.
     const agent = await render({
       figures: { totalTokens: 1_200 },

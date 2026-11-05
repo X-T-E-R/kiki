@@ -23,6 +23,8 @@ import {
   IFileSystemStorageService,
   ILogService,
   IInstantiationService,
+  RETAINED_USAGE_KEY,
+  RETAINED_USAGE_SCOPE,
   type IAgentScopeHandle,
   type Scope,
   type TokenUsage,
@@ -243,6 +245,7 @@ function persistedFixture(
         if (identifier === IAppendLogStore) return appendLog;
         if (identifier === ILogService) return log;
         if (identifier === IInstantiationService) return ix;
+        if (identifier === IBootstrapService) return ix.get(IBootstrapService);
         throw new Error(`unexpected service ${String(identifier)}`);
       },
     },
@@ -255,8 +258,8 @@ function persistedFixture(
       wire = serialize();
       mtime += 1;
     },
-    notify(scope: string) {
-      for (const listener of listeners) listener({ scope, key: 'wire.jsonl' });
+    notify(scope: string, key = 'wire.jsonl') {
+      for (const listener of listeners) listener({ scope, key });
     },
     projectionText: () => [...documents.values()].map((value) => Buffer.from(value).toString('utf8')).join('\n'),
     reads: () => reads,
@@ -592,7 +595,7 @@ describe('persisted agent panel metrics provenance', () => {
     try {
       const partial = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', options);
       expect(performance.now() - started).toBeLessThan(1000);
-      expect(partial['main']).toMatchObject({ totalTokens: 5, usageComplete: false });
+      expect(partial['main']).toMatchObject({ totalTokens: 5, usageComplete: true });
       expect(partial['child']).toMatchObject({ totalTokens: null, usageComplete: false });
       const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', { settle: false });
       expect(header['main']).toMatchObject({ totalTokens: 5, usageComplete: false });
@@ -1244,6 +1247,77 @@ describe('usage projection maintenance', () => {
     expect((await persisted(fixture.core, pricing({ model: 5 }), 'price'))['main']?.totalCostUsd).toBe(5);
     expect((await persisted(fixture.core, pricing({ model: undefined }), 'price'))['main']).toMatchObject({ totalTokens: 7, totalCostUsd: null, costPartial: true });
     expect(fixture.reads()).toBe(1);
+  });
+
+  it('batch-verifies 1210 aligned typed SQLite sources beyond the 1024-row cache without preparing facts or wires', async () => {
+    const ids = ['main', ...Array.from({ length: 1209 }, (_, i) => `child-${i}`)];
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, { agentIds: ids });
+    const { core } = fixture;
+    const model = core.accessor.get(IUsageReadModel);
+    const logs = core.accessor.get(IAppendLogStore);
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const session = 'sessions/workspace-batch/session-batch/agents';
+    const first = `${session}/main`;
+    const size = await storage.size(first, 'wire.jsonl') ?? 0;
+    const mtimeMs = await storage.mtime(first, 'wire.jsonl') ?? 0;
+    await model.applyBatch(await Promise.all(ids.map(async (id) => ({
+      source: `${session}/${id}`, progress: { batchStart: 0, offset: 0, ordinal: 1 },
+      records: [{ time: 1, model: 'model', usage: usage(1, 0), usageKnown: true }],
+      publish: { start: 0, journalSize: 0, checkpoint: { generation: await logs.generation(`${session}/${id}`, 'wire.jsonl'), offset: size, size, mtimeMs, boundaryHash: '', valid: true } },
+    }))));
+    const batches = vi.spyOn(model, 'summaries');
+    const summaries = vi.spyOn(core.accessor.get(IUsageFactStore), 'summary');
+    const singles = vi.spyOn(model, 'summary');
+    for (let index = 0; index < 3; index++) {
+      const rows = await persisted(core, pricing({ model: 1 }), 'batch', { agentIds: ids });
+      expect(Object.keys(rows)).toHaveLength(1210);
+      expect(Object.values(rows).every((row) => row.totalTokens === 1 && row.usageComplete)).toBe(true);
+    }
+    expect(batches.mock.calls.map(([sources]) => sources.length)).toEqual([1210, 186, 186]);
+    expect(summaries).not.toHaveBeenCalled();
+    expect(singles).not.toHaveBeenCalled();
+    expect(fixture.reads()).toBe(0);
+    expect(fixture.lists()).toBe(0);
+  });
+
+  it('rechecks source metadata after the typed snapshot instead of accepting an intervening append as complete', async () => {
+    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
+    const { service } = usageRuntime(fixture.core);
+    await service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
+    const model = fixture.core.accessor.get(IUsageReadModel);
+    const read = model.summaries.bind(model);
+    vi.spyOn(model, 'summaries').mockImplementationOnce(async (...args) => {
+      const rows = await read(...args);
+      fixture.setRecords([record('model', usage(1, 0), true), record('model', usage(3, 0), true)]);
+      return rows;
+    });
+    const rows = await service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
+    expect(rows['main']).toMatchObject({ complete: true, totals: { records: 2, usage: { inputOther: 4 } } });
+    expect(fixture.reads()).toBe(2);
+  });
+
+  it.each(['same-session-unrelated', 'other-session', 'retained', 'changed-row'] as const)('preserves unaffected cache and in-flight rows on %s writes', async (change) => {
+    const entered = deferred();
+    const release = deferred();
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      beforeRead: async (scope) => { if (scope.endsWith('/child')) { entered.resolve(); await release.promise; } },
+    });
+    const options = { agentIds: ['main', 'child'] };
+    const reading = persisted(fixture.core, pricing({ model: 1 }), 'precise', options);
+    await entered.promise;
+    if (change === 'retained') fixture.notify(fixture.core.accessor.get(IBootstrapService).scope(RETAINED_USAGE_SCOPE), RETAINED_USAGE_KEY);
+    else fixture.notify(change === 'other-session' ? 'sessions/workspace-other/session-other/agents/main'
+      : `sessions/workspace-precise/session-precise/agents/${change === 'changed-row' ? 'child' : 'unrelated'}`);
+    release.resolve();
+    const first = await reading;
+    expect(first['main']?.usageComplete).toBe(true);
+    expect(first['child']?.usageComplete).toBe(change !== 'changed-row');
+    const facts = vi.spyOn(fixture.core.accessor.get(IUsageFactStore), 'summary');
+    const next = await persisted(fixture.core, pricing({ model: 1 }), 'precise', options);
+    expect(next['child']?.usageComplete).toBe(true);
+    expect(facts.mock.calls.map(([scope]) => scope)).toEqual([]);
+    expect(fixture.log.info.mock.calls.filter(([message]) => message === 'agent panel usage projection read')
+      .map(([, details]) => details.agents_count)).toEqual(change === 'changed-row' ? [2, 1] : [2]);
   });
 
   it('invalidates targeted cached facts on append and rewrite events without waiting for ttl', async () => {

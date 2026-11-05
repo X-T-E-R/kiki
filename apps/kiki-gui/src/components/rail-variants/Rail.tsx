@@ -632,7 +632,7 @@ export function Rail({
       <div data-rail-overview-well>
         {panelSlot.mounted ? (
           <AgentPanelContainer
-            key={`overview:${agentPanelKey}`}
+            key={`overview:${mode === 'cockpit' ? state.sessionId : agentPanelKey}`}
             state={state}
             forest={forest}
             agentId={focusedAgentId}

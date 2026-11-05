@@ -1,19 +1,54 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import type { Klient } from '@kiki/klient';
-import { subscribeUsageFreshness } from './usageFreshness';
+import { observePanelUsage, panelUsageRevision, subscribeUsageFreshness } from './usageFreshness';
 
 function source() {
-  let listener!: (value: { sessionId: string; agentId: string }) => void;
+  let listener!: (value: { sessionId?: string; agentId?: string }) => void;
   let attached!: () => void;
   const ready = new Promise<void>((resolve) => { attached = resolve; });
   const dispose = vi.fn();
   const klient = { events: { on: vi.fn((_event, callback) => { listener = callback; return { ready, dispose }; }) } } as unknown as Pick<Klient, 'events'>;
-  return { klient, attached, dispose, emit: (sessionId = 'session-a') => { listener({ sessionId, agentId: 'main' }); } };
+  return { klient, attached, dispose, publish: (payload: { sessionId?: string; agentId?: string }) => listener(payload), emit: (sessionId = 'session-a') => { listener({ sessionId, agentId: 'main' }); } };
 }
 
 describe('usage query freshness', () => {
-  it('leaves scoped static catalogs alone while refreshing session metrics', async () => {
+  it('keeps settled revisions agent-scoped across panel remounts and rechecks after reconnect', async () => {
+    const queries = new QueryClient();
+    const event = source();
+    const changed = vi.fn();
+    const other = vi.fn();
+    const off = subscribeUsageFreshness(event.klient, queries);
+    const stop = observePanelUsage(event.klient, 'session-a', changed);
+    const stopOther = observePanelUsage(event.klient, 'session-b', other);
+    event.attached();
+    await Promise.resolve();
+    expect(changed).not.toHaveBeenCalled();
+    event.publish({});
+    expect(changed).not.toHaveBeenCalled();
+    event.publish({ sessionId: 'session-a', agentId: 'child' });
+    const first = panelUsageRevision(event.klient, 'session-a', 'child');
+    expect(first).toBeDefined();
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(other).not.toHaveBeenCalled();
+    expect(panelUsageRevision(event.klient, 'session-a', 'main')).toBeUndefined();
+    stop();
+    event.publish({ sessionId: 'session-a', agentId: 'child' });
+    const stopAgain = observePanelUsage(event.klient, 'session-a', changed);
+    const remounted = panelUsageRevision(event.klient, 'session-a', 'child');
+    expect(remounted).not.toBe(first);
+    expect(changed).toHaveBeenCalledTimes(1);
+    off();
+    const offAgain = subscribeUsageFreshness(event.klient, queries);
+    await Promise.resolve();
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(panelUsageRevision(event.klient, 'session-a', 'child')).not.toBe(remounted);
+    expect(panelUsageRevision(event.klient, 'session-a', 'child')).toBe(panelUsageRevision(event.klient, 'session-a', 'main'));
+    offAgain(); stopAgain(); stopOther(); queries.clear();
+  });
+
+  it('leaves scoped static catalogs and sibling metrics alone while refreshing the settled agent', async () => {
     const queries = new QueryClient();
     const query = { session_id: 'session-a', agent_id: 'main' };
     const catalogKey = ['agentCapabilities', query, 'local', 'scope-a', 'server-a', 'catalog'];
@@ -26,11 +61,14 @@ describe('usage query freshness', () => {
       staleTime: Infinity,
     });
     const stop = catalog.subscribe(() => {});
+    const siblingKey = ['agentCapabilities', { ...query, agent_id: 'child', metrics_only: true }, 'local', 'scope-a', 'server-a'];
     queries.setQueryData(metricsKey, 1);
+    queries.setQueryData(siblingKey, 2);
     const event = source();
     const off = subscribeUsageFreshness(event.klient, queries);
     event.emit();
     await vi.waitFor(() => expect(queries.getQueryState(metricsKey)?.isInvalidated).toBe(true));
+    expect(queries.getQueryState(siblingKey)?.isInvalidated).toBe(false);
     expect(signal?.aborted).toBe(false);
     expect(queries.getQueryState(catalogKey)?.isInvalidated).toBe(false);
     finish('complete catalog');

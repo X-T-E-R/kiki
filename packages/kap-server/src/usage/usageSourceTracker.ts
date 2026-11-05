@@ -15,7 +15,11 @@ import {
 import { onUnexpectedError } from '@kiki/agent-core-v2/_base/errors/unexpectedError';
 import { isPromiseLike } from '@kiki/agent-core-v2/_base/lifecycle/disposer';
 
-export type UsageSourceChange = string | { readonly kind: 'retained' } | undefined;
+export type UsageSourceChange = string | {
+  readonly kind: 'agent';
+  readonly sessionKey: string;
+  readonly agentId: string;
+} | { readonly kind: 'retained' } | undefined;
 
 export interface UsageSourceChanges {
   readonly ready: boolean;
@@ -64,7 +68,7 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
       if (key !== AGENT_WIRE_RECORD_KEY) return;
       const parts = scope.split('/');
       if (parts.length === 5 && parts[0] === 'sessions' && parts[3] === 'agents') {
-        invalidate(`${parts[1]}\0${parts[2]}`);
+        invalidate({ kind: 'agent', sessionKey: `${parts[1]}\0${parts[2]}`, agentId: parts[4]! });
       }
     }));
     const watchLedger = storage.watch?.bind(storage);
@@ -83,7 +87,10 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
           } else if (parts.length <= 2 || (parts[2] === 'agents' && (
             parts.length <= 4 && event !== 'change' || (parts.length === 5 && parts[4] === AGENT_WIRE_RECORD_KEY)
           ))) {
-            invalidate(`${parts[0]}\0${parts[1]}`);
+            const sessionKey = `${parts[0]}\0${parts[1]}`;
+            invalidate(parts[2] === 'agents' && parts.length >= 4
+              ? { kind: 'agent', sessionKey, agentId: parts[3]! }
+              : sessionKey);
           }
         });
         watcher.on('error', (error) => {
