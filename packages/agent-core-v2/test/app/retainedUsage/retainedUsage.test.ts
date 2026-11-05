@@ -26,6 +26,8 @@ import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { SqliteUsageReadModel } from '#/persistence/backends/sqlite/sqliteUsageReadModel';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IUsageReadModel } from '#/persistence/interface/usageReadModel';
 import {
   IFileSystemStorageService,
@@ -153,6 +155,7 @@ describe('RetainedUsageService', () => {
     ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
     ix.set(IEventService, new SyncDescriptor(EventService));
     ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
@@ -686,7 +689,7 @@ describe('RetainedUsageService', () => {
     expect(storage.chunksRead).toBeGreaterThan(1);
     const iterator = service.readExportUsage!(false);
     const exported: RetainedUsageRecord[] = [];
-    for (let i = 0; i < 100; i++) expect((await iterator.next()).value?.kind).toBe('progress');
+    for (let i = 0; i < 100; i++) expect(await iterator.next()).toEqual({ done: false, value: { kind: 'progress' } });
     for await (const event of iterator) if (event.kind === 'session') exported.push(...event.snapshot.records);
     expect(exported).toHaveLength(20_000);
     expect(exported.reduce((sum, record) => sum + record.usage.inputOther, 0)).toBe(20_000 * usage.inputOther);

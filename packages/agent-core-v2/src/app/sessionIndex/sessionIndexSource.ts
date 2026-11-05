@@ -354,7 +354,7 @@ type SessionMetadataReadResult =
   | { readonly kind: 'missing' }
   | { readonly kind: 'error'; readonly error: unknown };
 
-async function readSessionMetadataResult(
+export async function readSessionMetadataResult(
   docs: IAtomicDocumentStore,
   sessionsScope: string,
   workspaceId: string,

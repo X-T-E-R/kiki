@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
@@ -10,8 +10,12 @@ import { UsageSettled } from '#/agent/usage/usageEvents';
 import { usageFactTotalsSchema, type UsageFact } from '#/agent/usage/usageFact';
 import { IUsageReadModel, type UsageImportProgress, type UsageReadModelSession } from '#/persistence/interface/usageReadModel';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { readSessionMetadataResult } from '#/app/sessionIndex/sessionIndexSource';
+import { ILogService } from '#/_base/log/log';
+import type { IDisposable } from '#/_base/di/lifecycle';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, type IStorageLock } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import {
@@ -157,6 +161,23 @@ interface RetainedImportState {
   current?: { source: string; transactionId?: string; count: number; observed: number; valid: boolean; session?: UsageReadModelSession; header?: RetainedUsageLedgerStart; meta?: RetainedUsageLedgerMeta };
 }
 
+type OperationUsageEntry = z.infer<typeof operationUsageSchema>;
+interface OperationWriter {
+  readonly lock: IStorageLock;
+  readonly owner: IDisposable;
+  readonly appended: OperationUsageEntry[];
+}
+interface OperationSourceSnapshot {
+  readonly generation: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+interface OperationImportState extends OperationSourceSnapshot {
+  readonly publicationGeneration: string;
+  readonly boundaryHash: string;
+  damaged: boolean;
+}
+
 export class RetainedUsageService implements IRetainedUsageService {
   declare readonly _serviceBrand: undefined;
 
@@ -166,24 +187,96 @@ export class RetainedUsageService implements IRetainedUsageService {
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @IEventService private readonly events: IEventService,
     @IUsageReadModel private readonly model: IUsageReadModel,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @ILogService private readonly log: ILogService,
   ) {}
 
   private importing = Promise.resolve();
   private operationWrites = Promise.resolve();
+  private readonly operationQueue: OperationUsageEntry[] = [];
+  private operationWriter?: OperationWriter;
+
+  get operationWritesPending(): boolean {
+    return this.operationQueue.length > 0 || (this.operationWriter?.appended.length ?? 0) > 0;
+  }
 
   recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void> {
-    const value = operationUsageSchema.parse({ version: 1, session, record });
-    const work = this.operationWrites.then(async () => {
-      const lock = await this.storage.acquireLock(this.storeScope, 'session-operations-v1.lock', { waitForMs: 3000, owner: { kind: 'usage-operations' } });
-      const owner = this.appendLog.acquire(this.storeScope, OPERATION_USAGE_KEY);
-      try {
-        this.appendLog.append(this.storeScope, OPERATION_USAGE_KEY, value);
-        await this.appendLog.flush(this.storeScope, OPERATION_USAGE_KEY);
-        this.events.publish(new UsageSettled({ payload: { sessionId: session.id, agentId: record.agentId } }));
-      } finally { try { await owner.dispose(); } finally { await lock.release(); } }
+    this.operationQueue.push(operationUsageSchema.parse({ version: 1, session, record }));
+    return this.runOperationWrite(async () => {
+      if (this.operationQueue.length === 0 && this.operationWriter === undefined) return;
+      try { await this.withOperationWriter(3000, undefined, async () => {}); }
+      catch (error) {
+        if (!(error instanceof StorageError)) throw error;
+        this.log.warn('operation usage awaiting persistence recovery', { sessionId: session.id, agentId: record.agentId, error: error.code });
+      }
     });
-    this.operationWrites = work.then(() => undefined, () => undefined);
-    return work;
+  }
+
+  private runOperationWrite<T>(work: () => Promise<T>): Promise<T> {
+    const pending = this.operationWrites.then(work);
+    this.operationWrites = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
+
+  private async withOperationWriter<T>(waitForMs: number, signal: AbortSignal | undefined, observe: () => Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    const key = OPERATION_USAGE_KEY;
+    let writer = this.operationWriter;
+    if (writer === undefined) {
+      const lock = await this.storage.acquireLock(this.storeScope, 'session-operations-v1.lock', { waitForMs, signal, owner: { kind: 'usage-operations' } });
+      writer = { lock, owner: this.appendLog.acquire(this.storeScope, key), appended: [] };
+      this.operationWriter = writer;
+    }
+    for (const entry of this.operationQueue.splice(0)) {
+      this.appendLog.append(this.storeScope, key, entry);
+      writer.appended.push(entry);
+    }
+    await this.appendLog.flush(this.storeScope, key);
+    this.operationWriter = undefined;
+    try { return await observe(); }
+    finally {
+      await this.releaseOperationWriter(writer);
+      for (const { session, record } of writer.appended) this.events.publish(new UsageSettled({ payload: { sessionId: session.id, agentId: record.agentId } }));
+    }
+  }
+
+  private async releaseOperationWriter(writer: OperationWriter): Promise<void> {
+    try { await writer.owner.dispose(); }
+    finally { await writer.lock.release(); }
+  }
+
+  private async inspectOperationSource(deadlineAt: number, signal?: AbortSignal): Promise<OperationSourceSnapshot | undefined> {
+    return this.runOperationWrite(async () => {
+      const key = OPERATION_USAGE_KEY;
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) return undefined;
+      try {
+        return await this.withOperationWriter(Math.min(3000, remaining), signal, async () => ({
+          size: await this.storage.size(this.storeScope, key) ?? 0,
+          mtimeMs: await this.storage.mtime(this.storeScope, key) ?? 0,
+          generation: await this.appendLog.generation(this.storeScope, key),
+        }));
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof StorageError)) throw error;
+        return undefined;
+      }
+    });
+  }
+
+  private async operationSourceUnchanged(snapshot: OperationSourceSnapshot): Promise<boolean> {
+    const key = OPERATION_USAGE_KEY;
+    return (await this.storage.size(this.storeScope, key) ?? 0) === snapshot.size
+      && (await this.storage.mtime(this.storeScope, key) ?? 0) === snapshot.mtimeMs
+      && await this.appendLog.generation(this.storeScope, key) === snapshot.generation
+      && !this.operationWritesPending;
+  }
+
+  private async operationBoundaryHash(end: number, signal?: AbortSignal): Promise<string> {
+    if (end === 0) return '';
+    const digest = createHash('sha256');
+    for await (const bytes of this.storage.readStream(this.storeScope, OPERATION_USAGE_KEY, { start: Math.max(0, end - 4096), end: end - 1 }, { signal })) digest.update(bytes);
+    return digest.digest('base64url');
   }
 
   async readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery) {
@@ -198,27 +291,37 @@ export class RetainedUsageService implements IRetainedUsageService {
     return next;
   }
 
-  async dispose(): Promise<void> { await this.operationWrites; await this.importing; }
+  async dispose(): Promise<void> {
+    await this.importing;
+    await this.runOperationWrite(async () => {
+      if (this.operationWriter === undefined && this.operationQueue.length === 0) return;
+      try { await this.withOperationWriter(3000, undefined, async () => {}); }
+      catch (error) {
+        const writer = this.operationWriter;
+        this.operationWriter = undefined;
+        if (writer !== undefined) {
+          try { await writer.owner.dispose(); await this.appendLog.drainRetirements(); }
+          finally { await writer.lock.release(); }
+        }
+        throw error;
+      }
+    });
+  }
 
   private async importOperations(query: RetainedUsageListQuery): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
     const key = OPERATION_USAGE_KEY;
-    query.signal?.throwIfAborted();
-    const lock = await this.storage.acquireLock(this.storeScope, 'session-operations-v1.lock', { waitForMs: Math.max(0, Math.min(3000, query.deadlineAt - Date.now())), signal: query.signal });
-    let size: number, mtimeMs: number, generation: string;
-    try {
-      await this.appendLog.flush(this.storeScope, key);
-      size = await this.storage.size(this.storeScope, key) ?? 0;
-      mtimeMs = await this.storage.mtime(this.storeScope, key) ?? 0;
-      generation = await this.appendLog.generation(this.storeScope, key);
-    } finally { await lock.release(); }
+    const snapshot = await this.inspectOperationSource(query.deadlineAt, query.signal);
+    if (snapshot === undefined) return { complete: false, scannedRecords: 0, incompleteReason: Date.now() >= query.deadlineAt ? 'deadline' : undefined };
+    const { size, mtimeMs } = snapshot;
     const source = `retained-ledger:${key}`;
     let expected = await this.model.progress(source, query.signal);
     if (size === 0 && expected === undefined) return { complete: true, scannedRecords: 0 };
-    const prior = expected?.parser as { generation: string; damaged: boolean } | undefined;
-    const reset = prior?.generation !== generation || (expected?.offset ?? 0) > size;
-    if (reset && expected !== undefined) { await this.model.abandon(source); expected = undefined; }
-    const state = { generation, damaged: !reset && (prior?.damaged ?? false) };
-    let offset = expected?.offset ?? 0;
+    const prior = expected?.parser as OperationImportState | undefined;
+    const reusable = operationPrefixCurrent(prior, snapshot) && (size === prior.size || await this.operationBoundaryHash(prior.size, query.signal) === prior.boundaryHash);
+    const boundaryHash = reusable && size === prior.size ? prior.boundaryHash : await this.operationBoundaryHash(size, query.signal);
+    const state: OperationImportState = { ...snapshot, boundaryHash, publicationGeneration: reusable ? prior.publicationGeneration : randomUUID(), damaged: reusable && prior.damaged };
+    const generation = state.publicationGeneration;
+    let offset = reusable ? expected?.offset ?? 0 : 0;
     let scannedRecords = 0;
     const remaining = (): RetainedUsageIncompleteReason | undefined => Date.now() >= query.deadlineAt ? 'deadline' : scannedRecords >= query.recordLimit ? 'record_budget' : undefined;
     for await (const raw of this.appendLog.read<unknown>(this.storeScope, key, { startOffset: offset, endOffset: size, signal: query.signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (position) => { offset = position; }, onTruncate: () => { state.damaged = true; } })) {
@@ -238,11 +341,12 @@ export class RetainedUsageService implements IRetainedUsageService {
       })) throw new Error('Operation Usage progress changed; retry');
       expected = { ...progress, ordinal: 0 };
     }
-    if (state.damaged && (expected?.parser as typeof state | undefined)?.damaged !== true) {
+    const saved = expected?.parser as OperationImportState | undefined;
+    if (saved?.publicationGeneration !== generation || saved.size !== size || saved.damaged !== state.damaged || expected?.offset !== offset) {
       const progress: UsageImportProgress = { batchStart: offset, offset, ordinal: 0, parser: state };
       if (!await this.model.apply({ source, expected, progress, records: [] })) throw new Error('Operation Usage progress changed; retry');
     }
-    const complete = !state.damaged && offset === size && await this.storage.size(this.storeScope, key) === size && await this.appendLog.generation(this.storeScope, key) === generation;
+    const complete = !state.damaged && offset === size && await this.operationSourceUnchanged(snapshot);
     if (complete) await this.model.settleRetained(source, generation);
     return { complete, scannedRecords };
   }
@@ -251,10 +355,11 @@ export class RetainedUsageService implements IRetainedUsageService {
     const sources = await Promise.all([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY, OPERATION_USAGE_KEY].map(async (key) => {
       signal?.throwIfAborted();
       const source = `retained-ledger:${key}`;
-      const [size, generation, progress] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal)]);
+      const [size, generation, progress, mtimeMs] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal), key === OPERATION_USAGE_KEY ? this.storage.mtime(this.storeScope, key) : 0]);
       const state = progress?.parser as RetainedImportState | undefined;
-      const readBytes = state?.generation === generation ? Math.min(size ?? 0, progress?.offset ?? 0) : 0;
-      return { source, size: size ?? 0, readBytes, complete: state?.generation === generation && readBytes === size && state.current === undefined && !state.damaged };
+      const current = key !== OPERATION_USAGE_KEY || !this.operationWritesPending && operationPrefixCurrent(progress?.parser as OperationImportState | undefined, { generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 });
+      const readBytes = current && state?.generation === generation ? Math.min(size ?? 0, progress?.offset ?? 0) : 0;
+      return { source, size: size ?? 0, readBytes, complete: current && state?.generation === generation && readBytes === size && state.current === undefined && !state.damaged };
     }));
     return sources.filter((row) => row.size > 0);
   }
@@ -385,7 +490,7 @@ export class RetainedUsageService implements IRetainedUsageService {
     this.appendLog.append(this.storeScope, EPHEMERAL_USAGE_KEY, {
       kind: 'commit', sourceId,
     });
-    await this.appendLog.flush();
+    await this.appendLog.flush(this.storeScope, EPHEMERAL_USAGE_KEY);
     this.events.publish(new UsageSettled({ payload: {} }));
   }
 
@@ -432,8 +537,12 @@ export class RetainedUsageService implements IRetainedUsageService {
   }
 
   async retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage> {
-    const sessionScope = `${this.bootstrap.scope('sessions')}/${summary.workspaceId}/${summary.id}`;
-    const { records, complete } = await this.readSessionRecords(sessionScope);
+    const sessionsScope = this.bootstrap.scope('sessions');
+    const sessionScope = `${sessionsScope}/${summary.workspaceId}/${summary.id}`;
+    const metadata = await readSessionMetadataResult(this.documents, sessionsScope, summary.workspaceId, summary.id, this.log);
+    const registry = z.object({ agents: z.record(z.string(), z.unknown()) }).safeParse(metadata.kind === 'found' ? metadata.meta : undefined);
+    const expectedAgents = registry.success ? Object.keys(registry.data.agents) : undefined;
+    const { records, complete } = await this.readSessionRecords(sessionScope, expectedAgents);
     const snapshot: RetainedDeletedSessionUsage = {
       version: RETAINED_USAGE_VERSION,
       ...summary,
@@ -461,11 +570,11 @@ export class RetainedUsageService implements IRetainedUsageService {
       this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'record', record });
     }
     this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'commit' });
-    await this.appendLog.flush();
+    await this.appendLog.flush(this.storeScope, RETAINED_USAGE_KEY);
     return snapshot;
   }
 
-  async *readExportUsage(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent> {
+  async *readExportUsage(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent, { operationsComplete: boolean }> {
     let damaged = false;
     let current: { start: RetainedUsageLedgerStart; meta?: RetainedUsageLedgerMeta; records: RetainedUsageRecord[]; observed: number; valid: boolean } | undefined;
     for await (const raw of this.appendLog.read<unknown>(this.storeScope, RETAINED_USAGE_KEY, { signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onTruncate: () => { damaged = true; } })) {
@@ -497,14 +606,20 @@ export class RetainedUsageService implements IRetainedUsageService {
       else if (event.kind === 'record') yield { kind: 'ephemeral', record: event.record };
       else if (event.kind === 'incomplete') damaged = true;
     }
+    const operations = await this.inspectOperationSource(Date.now() + 3000, signal);
     let position = 0;
-    for await (const raw of this.appendLog.read<unknown>(this.storeScope, OPERATION_USAGE_KEY, { signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (end) => { position = end; }, onTruncate: () => { damaged = true; } })) {
-      yield { kind: 'progress' };
-      const parsed = operationUsageSchema.safeParse(raw);
-      if (parsed.success) yield { kind: 'operation', session: parsed.data.session, record: parsed.data.record, position };
-      else damaged = true;
+    let operationDamaged = false;
+    if (operations !== undefined && operations.size > 0) {
+      for await (const raw of this.appendLog.read<unknown>(this.storeScope, OPERATION_USAGE_KEY, { signal, endOffset: operations.size, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (end) => { position = end; }, onTruncate: () => { operationDamaged = true; } })) {
+        yield { kind: 'progress' };
+        const parsed = operationUsageSchema.safeParse(raw);
+        if (parsed.success) yield { kind: 'operation', session: parsed.data.session, record: parsed.data.record, position };
+        else operationDamaged = true;
+      }
     }
-    if (damaged) yield { kind: 'incomplete' };
+    const operationsComplete = operations !== undefined && !operationDamaged && position === operations.size && await this.operationSourceUnchanged(operations);
+    if (damaged || !operationsComplete) yield { kind: 'incomplete' };
+    return { operationsComplete };
   }
 
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
@@ -744,10 +859,11 @@ export class RetainedUsageService implements IRetainedUsageService {
 
   private async readSessionRecords(
     sessionScope: string,
+    expectedAgents?: readonly string[],
   ): Promise<{ readonly records: readonly RetainedUsageRecord[]; readonly complete: boolean }> {
     const agentIds = await this.storage.list(`${sessionScope}/agents`);
     const records: RetainedUsageRecord[] = [];
-    let complete = agentIds.length > 0;
+    let complete = expectedAgents === undefined ? agentIds.length > 0 : expectedAgents.every((id) => agentIds.includes(id));
     for (const agentId of agentIds) {
       let hasRecords = false;
       let truncated = false;
@@ -787,6 +903,12 @@ async function readWithDeadline<T>(query: RetainedUsageListQuery, read: (query: 
   const aborted = new Promise<typeof expired>((resolve) => { abort = () => resolve(expired); signal.addEventListener('abort', abort, { once: true }); });
   try { return await Promise.race([read({ ...query, signal }), aborted]); }
   finally { signal.removeEventListener('abort', abort); if (timer !== undefined) clearTimeout(timer); }
+}
+
+function operationPrefixCurrent(prior: OperationImportState | undefined, current: OperationSourceSnapshot): prior is OperationImportState {
+  return prior !== undefined && typeof prior.publicationGeneration === 'string' && typeof prior.boundaryHash === 'string'
+    && prior.generation === current.generation && current.size >= prior.size
+    && (current.size > prior.size || current.mtimeMs === prior.mtimeMs);
 }
 
 registerScopedService(

@@ -13,7 +13,7 @@ export type Contribution = z.infer<typeof contributionSchema>;
 export interface SourceContribution {
   readonly key: string;
   readonly workspaceId: string;
-  readonly kind: 'session' | 'ephemeral';
+  readonly kind: UsageExportSource['kind'];
   readonly buckets: readonly Contribution[];
   readonly invalidRecords: number;
 }

@@ -166,10 +166,10 @@ export class UsageExportService {
             if (this.started && !this.closing) { this.continuationTimer = setTimeout(() => { void this.scan().catch(() => {}); }, 25); this.continuationTimer.unref(); }
             return;
           }
-          if (this.store.meta('scan-complete') === 'true') await this.store.publishStageAsync(run, false, result.reason); else this.store.discardStage(run);
+          if (this.store.meta('scan-complete') === 'true') await this.store.publishStageAsync(run, false, result.reason, result.operationsComplete); else this.store.discardStage(run);
           this.scanRun = undefined; return;
         }
-        await this.store.publishStageAsync(run); this.scanRun = undefined;
+        await this.store.publishStageAsync(run, true, null, result.operationsComplete); this.scanRun = undefined;
       } catch (error) {
         await this.reader.resetExportRead(); if (this.closing) return;
         this.store.discardStage(run); this.scanRun = undefined; const category = error instanceof Error && error.message === 'export-queue-full' ? 'queue-full' : 'scan-failed';

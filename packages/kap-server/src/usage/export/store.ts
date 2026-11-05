@@ -134,11 +134,12 @@ export class UsageExportStore {
     this.db.prepare('INSERT INTO staging VALUES(?,?,?,?,?,?) ON CONFLICT(run,id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid').run(run, source.key, source.workspaceId, source.kind, JSON.stringify(source.buckets.map((bucket) => contributionSchema.parse(bucket))), source.invalidRecords);
   }
   discardStage(run: string): void { this.assertWriter(); this.db.prepare('DELETE FROM staging WHERE run=?').run(run); }
-  async publishStageAsync(run: string, complete = true, incompleteReason: string | null = null): Promise<void> {
+  async publishStageAsync(run: string, complete = true, incompleteReason: string | null = null, operationsComplete = false): Promise<void> {
     return this.withProjection(async () => {
+      if (!operationsComplete) this.db.prepare("DELETE FROM staging WHERE run=? AND kind='operation'").run(run);
       const plans = new Map<string, ProjectionPlan>();
-      for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run));
-      this.publishStage(run, complete, incompleteReason, plans, false);
+      for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run, undefined, operationsComplete));
+      this.publishStage(run, complete, incompleteReason, plans, false, operationsComplete);
       const remove = this.db.prepare('DELETE FROM staging WHERE rowid IN (SELECT rowid FROM staging WHERE run=? LIMIT 16)');
       for (;;) {
         this.assertWriter();
@@ -147,14 +148,15 @@ export class UsageExportStore {
       }
     });
   }
-  publishStage(run: string, complete = true, incompleteReason: string | null = null, plans?: Map<string, ProjectionPlan>, cleanup = true): void {
+  publishStage(run: string, complete = true, incompleteReason: string | null = null, plans?: Map<string, ProjectionPlan>, cleanup = true, operationsComplete = false): void {
     this.transaction(() => {
       if (plans !== undefined) {
         const enabled = this.list().filter((destination) => destination.enabled);
         if (enabled.length !== plans.size || enabled.some((destination) => !plans.has(destination.id))) throw new Error('export-projection-changed');
         for (const [id, plan] of plans) this.assertProjection(id, plan);
       }
-      const missing = (this.db.prepare('SELECT COUNT(*) AS n FROM sources WHERE id NOT IN (SELECT id FROM staging WHERE run=?)').get(run) as Row)['n'];
+      if (operationsComplete) this.db.prepare("DELETE FROM sources WHERE kind='operation' AND id NOT IN (SELECT id FROM staging WHERE run=?)").run(run);
+      const missing = (this.db.prepare("SELECT COUNT(*) AS n FROM sources WHERE kind!='operation' AND id NOT IN (SELECT id FROM staging WHERE run=?)").get(run) as Row)['n'];
       this.db.prepare('INSERT INTO sources SELECT id,workspace,kind,data,invalid FROM staging WHERE run=? ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid WHERE sources.workspace IS NOT excluded.workspace OR sources.kind IS NOT excluded.kind OR sources.data IS NOT excluded.data OR sources.invalid IS NOT excluded.invalid').run(run);
       if (complete) this.setMeta('scan-complete', 'true');
       this.setMeta('scan-error', incompleteReason ?? (Number(missing) > 0 ? 'source-missing-retained-gap' : ''));
@@ -198,11 +200,16 @@ export class UsageExportStore {
     for (const row of this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources').iterate() as Iterable<SourceRow>) this.accumulateProjection(row, destination, identityKey, groups, this.projectedOrigins);
     return this.finishProjection(groups, identityKey);
   }
-  private async projectionPlan(id: string, run?: string, override?: UsageExportDestination): Promise<ProjectionPlan> {
+  private async projectionPlan(id: string, run?: string, override?: UsageExportDestination, operationsComplete = false): Promise<ProjectionPlan> {
     const saved = this.privateDestination(id); const destination = override ?? saved.destination; const identityKey = saved.identityKey; const sourceGeneration = this.meta('source-generation');
     const groups = new Map<string, ProjectionAccumulator>(); const origins = new Map<string, Set<string>>(); let cursor = '';
     for (;;) {
-      const rows = (run === undefined ? this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources WHERE id>? ORDER BY id LIMIT 16').all(cursor) : this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM staging WHERE run=? AND id>? UNION ALL SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources WHERE id>? AND id NOT IN (SELECT id FROM staging WHERE run=?) ORDER BY id LIMIT 16').all(run, cursor, cursor, run)) as unknown as SourceRow[];
+      const rows = (run === undefined
+        ? this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources WHERE id>? ORDER BY id LIMIT 16').all(cursor)
+        : this.db.prepare(`SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM staging WHERE run=? AND id>?
+            UNION ALL SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources
+              WHERE id>? AND (?=0 OR kind!='operation') AND id NOT IN (SELECT id FROM staging WHERE run=?)
+            ORDER BY id LIMIT 16`).all(run, cursor, cursor, Number(operationsComplete), run)) as unknown as SourceRow[];
       if (rows.length === 0) break;
       for (const row of rows) this.accumulateProjection(row, destination, identityKey, groups, origins);
       cursor = Buffer.from(rows.at(-1)!.id).toString('utf8'); await yieldToEventLoop();

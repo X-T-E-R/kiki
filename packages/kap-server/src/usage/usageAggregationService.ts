@@ -77,7 +77,7 @@ export type NormalizedUsageRecord = UsageFact;
 export interface UsageExportSource {
   readonly key: string;
   readonly workspaceId: string;
-  readonly kind: 'session' | 'ephemeral';
+  readonly kind: 'session' | 'ephemeral' | 'operation';
   readonly records: readonly NormalizedUsageRecord[];
 }
 
@@ -200,7 +200,7 @@ export class UsageAggregationService {
     state: 'idle', scanned_sessions: 0, total_sessions: 0, scanned_records: 0,
     started_at: null, finished_at: null, error: null,
   };
-  private exportRetainedIterator: AsyncGenerator<import('@kiki/agent-core-v2').RetainedUsageExportEvent> | undefined;
+  private exportRetainedIterator: ReturnType<NonNullable<IRetainedUsageService['readExportUsage']>> | undefined;
   private readonly exportEphemeralRecords = new Map<string, NormalizedUsageRecord[]>();
   private exportRetainedIncomplete = false;
   private exportVerifyBoundary = false;
@@ -306,7 +306,7 @@ export class UsageAggregationService {
     const saved = this.sessionAccounting.get(key);
     const snapshot = saved?.snapshot;
     if (saved === undefined || snapshot === undefined) return { ...(fallback ?? { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: 0, complete: false, tokens: { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: true }), freshness: fallback === undefined ? 'unverified' : 'stale' };
-    const freshness = saved.snapshotVersion === this.sessionVersion(key) && saved.operationVersion === this.operationRevision && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
+    const freshness = saved.snapshotVersion === this.sessionVersion(key) && saved.operationVersion === this.operationRevision && !this.core.accessor.get(IRetainedUsageService).operationWritesPending && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
     return { ...snapshot, freshness };
   }
 
@@ -321,7 +321,7 @@ export class UsageAggregationService {
       saved = { version, rows: {}, revisions: new Map(), pricingReady: false, snapshot: saved?.snapshot };
       this.sessionAccounting.set(key, saved);
     }
-    if (saved.snapshot?.complete && saved.snapshotVersion === version && saved.operationVersion === this.operationRevision) {
+    if (saved.snapshot?.complete && saved.snapshotVersion === version && saved.operationVersion === this.operationRevision && !this.core.accessor.get(IRetainedUsageService).operationWritesPending) {
       saved.snapshot = { ...saved.snapshot, ...this.sessionAccountingTotals(Object.values(saved.rows), saved.pricingReady, saved.operation?.totals) };
       return this.readSessionAccountingSnapshot(workspaceId, sessionId);
     }
@@ -539,7 +539,7 @@ export class UsageAggregationService {
   async readExportSources(
     consume: (source: UsageExportSource) => Promise<void>,
     includeEphemeral = false,
-  ): Promise<{ complete: boolean; reason: string | null; sources: number }> {
+  ): Promise<{ complete: boolean; reason: string | null; sources: number; operationsComplete?: boolean }> {
     const budget: ScanBudget = { remainingRecords: this.limits.wireRecordBudget, deadlineAt: this.now() + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
     const index = this.core.accessor.get(ISessionIndex);
     const active = this.exportActiveKeys; let sources = 0;
@@ -568,7 +568,7 @@ export class UsageAggregationService {
           this.exportEphemeralRecords.clear(); this.exportRetainedIterator = undefined;
           const complete = !this.exportRetainedIncomplete; this.exportRetainedIncomplete = false;
           this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
-          return { complete, reason: complete ? null : 'retained-incomplete', sources };
+          return { complete, reason: complete ? null : 'retained-incomplete', sources, operationsComplete: event.value?.operationsComplete };
         }
         if (event.value.kind === 'progress') { budget.remainingRecords--; if (budget.remainingRecords % 1024 === 0) await yieldToEventLoop(); }
         else if (event.value.kind === 'session') {
@@ -579,7 +579,7 @@ export class UsageAggregationService {
           const record = event.value.record; const records = this.exportEphemeralRecords.get(record.workspaceId) ?? []; records.push(normalizeRetainedRecord(record)); this.exportEphemeralRecords.set(record.workspaceId, records);
         } else if (event.value.kind === 'operation') {
           const { session, record, position } = event.value;
-          await consume({ key: `operation\0${sessionKey(session)}\0${position}`, workspaceId: session.workspaceId, kind: 'session', records: [normalizeRetainedRecord(record)] });
+          await consume({ key: `operation\0${sessionKey(session)}\0${position}`, workspaceId: session.workspaceId, kind: 'operation', records: [normalizeRetainedRecord(record)] });
           sources++;
         } else this.exportRetainedIncomplete = true;
       }
@@ -716,6 +716,7 @@ export class UsageAggregationService {
 
   private async prepareReadModel(requestSignal: AbortSignal, startAt?: number): Promise<void> {
     if (this.rescan.state === 'running') return;
+    if (this.core.accessor.get(IRetainedUsageService).operationWritesPending) this.modelReady = false;
     if (this.modelReady && (startAt ?? -Infinity) >= this.modelRangeStart && this.sourceChanges?.ready && this.now() - this.modelVerifiedAt < SOURCE_RECHECK_MS) return;
     this.discoverImportProgress();
     if (this.preparationController?.signal.aborted) await this.modelPreparing?.catch(() => undefined);

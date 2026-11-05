@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { OPERATION_USAGE_KEY } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsage';
+import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
 import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
 import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
@@ -58,6 +62,7 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   const log = stubLog();
   ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append); ix.stub(ILogService, log);
   ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
   const model = ix.get(IUsageReadModel); cleanup.push(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); });
   const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
@@ -254,6 +259,72 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
         expect(JSON.parse(row.origins)).toEqual(ids.map((id) => `work\0${id}`));
       } finally { db.close(); }
     } finally { read.mockRestore(); }
+  });
+
+  it('replaces changed operation contributions in History, accounting and durable export while retaining ordinary deleted history', async () => {
+    const f = await fixture();
+    const source = f.add('operation-only');
+    await f.storage.write('sessions/work/operation-only', 'state.json', Buffer.from(JSON.stringify({ ...source, agents: {} })));
+    const tracker = new UsageSourceTracker(f.core);
+    const accounting = new UsageAggregationService(f.core, Date.now, {}, tracker);
+    cleanup.push(async () => { accounting.dispose(); tracker.dispose(); });
+    const operation = { time: T + 1, model: 'gpt-5', modelAlias: 'gpt-5', provider: 'fixture', agentId: 'main', usageKnown: true, requestKind: 'output_layer', usage: { inputOther: 7, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };
+    await f.retained.recordOperation(source, operation);
+    const d = await destination(f.service);
+    const expectAll = async (tokens: number, records: number) => {
+      await vi.waitFor(async () => {
+        expect(await accounting.readSessionAccounting('work', source.id)).toMatchObject({ complete: true, tokens: { input_other: tokens } });
+        const history = await accounting.query({ range: 'all', provider: 'fixture' });
+        expect(history).toMatchObject({ reliability: { complete: true }, summary: { tokens: { input_other: tokens } } });
+      });
+      await f.service.scan(true);
+      const preview = await f.service.preview(d.id);
+      expect(preview.source_complete).toBe(true);
+      expect(preview.items.reduce((sum, item) => sum + item.bucket!.tokens.input_other, 0)).toBe(tokens);
+      expect(preview.items.reduce((sum, item) => sum + item.bucket!.quality.known_records, 0)).toBe(records);
+      if (f.store.get(d.id).enabled) {
+        const persisted = new Map<string, ReturnType<UsageExportStore['exportQueue']>[number]>();
+        for (const item of f.store.exportQueue(d.id)) if ((persisted.get(item.bucket_id)?.revision ?? 0) < item.revision) persisted.set(item.bucket_id, item);
+        expect([...persisted.values()].reduce((sum, item) => sum + (item.bucket?.tokens.input_other ?? 0), 0)).toBe(tokens);
+      }
+    };
+    await expectAll(7, 1);
+    await enable(f.service, d.id);
+    const original = (await f.storage.read('store', OPERATION_USAGE_KEY))!;
+    const edited = Buffer.from(Buffer.from(original).toString('utf8').replace('"inputOther":7', '"inputOther":9'));
+    expect(edited.byteLength).toBe(original.byteLength);
+    const rewrite = async (bytes: Uint8Array, revision: number) => {
+      await f.storage.write('store', OPERATION_USAGE_KEY, bytes);
+      await utimes(join(f.home, 'store', OPERATION_USAGE_KEY), new Date(T + revision), new Date(T + revision));
+    };
+    await rewrite(edited, 100);
+    await expectAll(9, 1);
+    await f.retained.recordOperation(source, { ...operation, time: T + 2, usage: { ...operation.usage, inputOther: 5 } });
+    await expectAll(14, 2);
+    const rows = (await f.storage.read('store', OPERATION_USAGE_KEY))!;
+    const moved = Buffer.from(Buffer.from(rows).toString('utf8').replace('"modelAlias":"gpt-5"', '"modelAlias":"gpt-5-longer-alias"'));
+    await rewrite(moved, 150);
+    await expectAll(14, 2);
+    await rewrite(edited, 200);
+    await expectAll(9, 1);
+    expect(await f.retained.retainDeletedSession(source)).toMatchObject({ complete: true, records: [] });
+    f.sessions.splice(f.sessions.indexOf(source), 1);
+    await f.service.scan(true);
+    expect((await f.service.preview(d.id)).source_complete).toBe(true);
+    expect(f.store.preview(d.id).items[0]?.bucket?.tokens.input_other).toBe(9);
+    const retained = f.add('ordinary-deleted');
+    await f.write(retained.id, 'main', [record(T + 3, 4, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 })]);
+    await f.retained.retainDeletedSession(retained);
+    f.sessions.splice(f.sessions.indexOf(retained), 1);
+    await f.service.scan(true);
+    await rewrite(new Uint8Array(0), 300);
+    await f.service.scan(true);
+    const final = await f.service.preview(d.id);
+    expect(final.source_complete).toBe(true);
+    expect(final.items.reduce((sum, item) => sum + item.bucket!.tokens.input_other, 0)).toBe(4);
+    await f.restart();
+    await f.service.scan(true);
+    expect(f.store.preview(d.id).items.reduce((sum, item) => sum + item.bucket!.tokens.input_other, 0)).toBe(4);
   });
 
   it('conserves all four tokens with subagents, active/retained replacement and explicit ephemeral opt-in; no content escapes', async () => {

@@ -1050,7 +1050,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (!ephemeral) {
         await this.index.remove(sessionId);
         this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
-        await this.appendLogStore.flush();
+        await this.appendLogStore.flush('', 'session_index.jsonl');
       }
     } finally {
       try {

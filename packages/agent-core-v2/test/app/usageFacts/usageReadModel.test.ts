@@ -16,7 +16,9 @@ import { IEventService } from '#/app/event/event';
 import { IUsageReadModel, type UsageReadModelQuery } from '#/persistence/interface/usageReadModel';
 import { SqliteUsageReadModel } from '#/persistence/backends/sqlite/sqliteUsageReadModel';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
@@ -41,6 +43,7 @@ describe('Usage source read model', () => {
     ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
     ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
     ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
@@ -231,6 +234,50 @@ describe('Usage source read model', () => {
     expect((await model.query(query)).total).toMatchObject({ cost: 3, knownRecords: 3 });
   });
 
+  it.each(['unwritten', 'partial', 'unsynced'] as const)('recovers the original operation after an %s append without duplicating its Usage', async (failureMode) => {
+    const key = 'session-operations-v1.jsonl';
+    const session = { id: 'operation-history', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false };
+    const service = ix.get(IRetainedUsageService);
+    const operation = { ...record(1, 7), turnId: undefined, provider: 'selected', requestKind: 'output_layer' };
+    const append = storage.append.bind(storage);
+    const calls: Uint8Array[] = [];
+    let blocked = true;
+    let written = 0;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'no space left on device', { details: { errno: 'ENOSPC', committed: failureMode !== 'unwritten' } });
+    storage.append = async (scope, file, bytes, options) => {
+      if (file !== key) { await append(scope, file, bytes, options); return; }
+      calls.push(bytes.slice());
+      if (!blocked) { await append(scope, file, bytes, options); return; }
+      if (calls.length === 1 && failureMode !== 'unwritten') {
+        written = failureMode === 'partial' ? 11 : bytes.byteLength;
+        await append(scope, file, bytes.subarray(0, written), options);
+      }
+      throw failure;
+    };
+    const receipt = await service.recordOperation(session, operation).catch((error: unknown) => error);
+    const budget = { deadlineAt: Date.now() + 10_000, recordLimit: 100 };
+    expect(service.operationWritesPending).toBe(true);
+    expect(await service.readOperationSummary(session.workspaceId, session.id, budget)).toMatchObject({ complete: false });
+    await expect(storage.acquireLock('store', 'session-operations-v1.lock')).rejects.toMatchObject({ code: 'storage.locked' });
+    const failedAttempts = calls.length;
+    blocked = false;
+    expect(await service.readOperationSummary(session.workspaceId, session.id, budget)).toMatchObject({ complete: true, totals: { records: 1, usage: usage(7) } });
+    expect(service.operationWritesPending).toBe(false);
+    expect(receipt).toBeUndefined();
+    expect(calls.slice(failedAttempts)).toEqual([calls[0]!.subarray(written)]);
+    expect(await model.query(query)).toMatchObject({ total: { usage: usage(7), knownRecords: 1 } });
+    const exportUsage = async () => {
+      const events = [];
+      for await (const event of service.readExportUsage!(false)) if (event.kind !== 'progress') events.push(event);
+      return events;
+    };
+    expect(await exportUsage()).toEqual([expect.objectContaining({ kind: 'operation', record: expect.objectContaining({ time: 1, usage: usage(7) }) })]);
+    await service.recordOperation(session, { ...operation, time: 2, usage: usage(5) });
+    expect(await service.readOperationSummary(session.workspaceId, session.id, budget)).toMatchObject({ complete: true, totals: { records: 2, usage: usage(12) } });
+    expect(await model.query(query)).toMatchObject({ total: { usage: usage(12), knownRecords: 2 } });
+    expect(await exportUsage()).toHaveLength(2);
+  });
+
   it('persists independent operation usage across budgets and restart without a turn journal or duplicate accounting', async () => {
     const session = { id: 'operation-history', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false };
     const service = ix.get(IRetainedUsageService);
@@ -263,6 +310,56 @@ describe('Usage source read model', () => {
     await ix.get(IRetainedUsageService).prepareReadModel!({ deadlineAt: Date.now() + 10000, recordLimit: 100 });
     expect((await model.query(filtered)).total.knownRecords).toBe(0);
     expect(await ix.get(IRetainedUsageService).readOperationSummary('example', session.id, { deadlineAt: Date.now() + 10000, recordLimit: 100 })).toMatchObject({ complete: true, totals: { usage: usage(0), records: 0 } });
+  });
+
+  it.each(['agentless', 'missing-wire', 'damaged-wire'] as const)('retains an operation-only deletion with truthful %s coverage', async (coverage) => {
+    const session = { id: 'operation-only', workspaceId: 'example', createdAt: 1, updatedAt: 1, archived: false };
+    const service = ix.get(IRetainedUsageService);
+    const scope = `sessions/${session.workspaceId}/${session.id}`;
+    const complete = coverage === 'agentless';
+    await ix.get(IAtomicDocumentStore).set(scope, 'state.json', { ...session, version: 2, agents: complete ? {} : { main: { type: 'main' } } });
+    if (coverage === 'damaged-wire') await storage.write(`${scope}/agents/main`, 'wire.jsonl', Buffer.from('{damaged\n'));
+    await service.recordOperation(session, { ...record(1, 7), requestKind: 'output_layer' });
+    await model.catalog([{ ...session, deleted: false }], [], true);
+    expect(await service.retainDeletedSession(session)).toMatchObject({ deleted: true, complete, records: [] });
+    await service.prepareReadModel!({ deadlineAt: Date.now() + 10000, recordLimit: 100 });
+    await model.catalog([], [], true);
+    expect(await model.query(query)).toMatchObject({ includesDeletedSessions: true, incompleteSessions: complete ? 0 : 1, total: { usage: usage(7), knownRecords: 1 } });
+    const events = [];
+    for await (const event of service.readExportUsage!(false)) if (event.kind !== 'progress') events.push(event);
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'session', snapshot: expect.objectContaining({ complete, records: [] }) }),
+      expect.objectContaining({ kind: 'operation', record: expect.objectContaining({ usage: usage(7) }) }),
+    ]);
+  });
+
+  it('replaces visible same-size and shorter operation ledgers while importing ordinary appends incrementally', async () => {
+    const key = 'session-operations-v1.jsonl';
+    const session = { id: 'operation-edits', workspaceId: 'example', createdAt: 1, updatedAt: 1, archived: false };
+    const service = ix.get(IRetainedUsageService);
+    const operation = { ...record(1, 7), turnId: undefined, requestKind: 'output_layer' };
+    const budget = { deadlineAt: Date.now() + 10000, recordLimit: 100 };
+    const read = () => service.readOperationSummary(session.workspaceId, session.id, budget);
+    const baseMtime = storage.mtime.bind(storage);
+    let revision = 0;
+    storage.mtime = async (scope, file) => file === key ? revision : baseMtime(scope, file);
+    await service.recordOperation(session, operation);
+    expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(7) } });
+    const original = (await storage.read('store', key))!;
+    const edited = Buffer.from(Buffer.from(original).toString('utf8').replace('"inputOther":7', '"inputOther":9'));
+    expect(edited.byteLength).toBe(original.byteLength);
+    await storage.write('store', key, edited); revision++;
+    expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(9) } });
+    expect(await model.query(query)).toMatchObject({ total: { usage: usage(9), knownRecords: 1 } });
+    await service.recordOperation(session, { ...operation, time: 2, usage: usage(5) }); revision++;
+    expect(await service.prepareReadModel!(budget)).toMatchObject({ complete: true, scannedRecords: 1 });
+    expect(await read()).toMatchObject({ complete: true, totals: { records: 2, usage: usage(14) } });
+    await storage.write('store', key, edited); revision++;
+    expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(9) } });
+    expect(await model.query(query)).toMatchObject({ total: { usage: usage(9), knownRecords: 1 } });
+    const exported = [];
+    for await (const event of service.readExportUsage!(false)) if (event.kind === 'operation') exported.push(event.record.usage.inputOther);
+    expect(exported).toEqual([9]);
   });
 
   it('retires a replaced retained ledger and rejects mismatched ephemeral commits', async () => {

@@ -78,13 +78,14 @@ export type RetainedUsageExportEvent =
 
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
+  readonly operationWritesPending?: boolean;
   recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void>;
   readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery): Promise<{ readonly totals?: UsageFactTotals; readonly revision?: number; readonly complete: boolean }>;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
   readModelImportProgress?(signal?: AbortSignal): Promise<readonly { readonly source: string; readonly size: number; readonly readBytes: number; readonly complete: boolean }[]>;
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;
   prepareReadModel?(query: RetainedUsageListQuery, includeEphemeral?: boolean): Promise<{ readonly complete: boolean; readonly scannedRecords: number; readonly incompleteReason?: RetainedUsageIncompleteReason }>;
-  readExportUsage?(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent>;
+  readExportUsage?(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent, { readonly operationsComplete: boolean } | void>;
   retainEphemeralUsage?(sessionScope: string, workspaceId: string): Promise<void>;
   listEphemeralUsage?(query: RetainedUsageListQuery): Promise<{
     readonly items: readonly EphemeralUsageTotal[];

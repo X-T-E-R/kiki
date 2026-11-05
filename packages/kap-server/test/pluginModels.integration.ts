@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { IAgentToolRegistryService, IPluginService, ISessionManager, ensureMainAgent } from '@kiki/agent-core-v2';
+import { IAgentToolRegistryService, IPluginService, IOutputLayerService, ISessionManager, ensureMainAgent } from '@kiki/agent-core-v2';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import { IWireService } from '@kiki/agent-core-v2/wire/wire';
 import { IEventDispatcher } from '@kiki/agent-core-v2/state/eventDispatcher';
@@ -13,7 +13,8 @@ import { ExternalText } from '@kiki/agent-core-v2/agent/execution/externalClient
 import { SessionSubagentService } from '@kiki/agent-core-v2/session/subagent/subagentService';
 import { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
-import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { OPERATION_USAGE_KEY } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsage';
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import { usageRuntime } from '../src/usage/usageRuntime';
 import { FileTokenStorage } from '@kiki/oauth';
@@ -203,7 +204,21 @@ it('executes third-party and Output Layer requests with host identity, credentia
     const beforeLiveReading = await completeAccounting(session.id);
     expect((await output(outputInput.preset)).at(-1)).toMatchObject({ type: 'failed' });
     expect(records).toHaveLength(beforeBlank);
-    expect((await output({ ...outputInput.preset, modelId: 'fixture-model' })).at(-1)).toMatchObject({ type: 'completed', text: 'first second' });
+    const append = storage.append.bind(storage);
+    let damaged = false;
+    const failedAppend = vi.spyOn(storage, 'append').mockImplementation(async (scope, key, bytes, options) => {
+      if (key !== OPERATION_USAGE_KEY) { await append(scope, key, bytes, options); return; }
+      if (!damaged) { damaged = true; await append(scope, key, bytes.subarray(0, 11), options); }
+      throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'fixture disk full', { details: { committed: true } });
+    });
+    try {
+      expect((await output({ ...outputInput.preset, modelId: 'fixture-model' })).at(-1)).toMatchObject({ type: 'completed', text: 'first second' });
+      expect(records).toHaveLength(beforeBlank + 1);
+      expect(await storage.size('store', OPERATION_USAGE_KEY)).toBe(11);
+      expect(await accounting.readSessionAccounting(workspaceId, session.id)).toMatchObject({ complete: false });
+    } finally { failedAppend.mockRestore(); }
+    expect(await completeAccounting(session.id)).toMatchObject({ tokens: { input_other: beforeLiveReading.tokens.input_other + 19, output: beforeLiveReading.tokens.output + 4 } });
+    expect(records).toHaveLength(beforeBlank + 1);
     expect(records.at(-1)!.headers['x-opencode-session']).toBe(identity);
     expect(records.at(-1)!.body).not.toHaveProperty('max_tokens');
     expect((await output({ ...outputInput.preset, modelId: 'fixture-model', connectionId: 'selected', customModelId: 'read-model', maxOutputTokens: 256 })).at(-1)).toMatchObject({ type: 'completed' });
@@ -260,9 +275,42 @@ it('executes third-party and Output Layer requests with host identity, credentia
       const withoutMain = await manager.create({ workDir: home });
       await probe('live-without-main', withoutMain.id);
       expect(withoutMain.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
-      const unknown = await output({ ...outputInput.preset, connectionId: 'selected', customModelId: 'reject-model' }, withoutMain.id);
-      expect(unknown.at(-1)).toMatchObject({ type: 'failed', code: 'provider.api_error' });
+      await completeAccounting(withoutMain.id);
+      const unrelated = await manager.create({ workDir: home });
+      const unrelatedScope = unrelated.accessor.get(ISessionContext).scope();
+      const indexTarget = await manager.create({ workDir: home });
+      let failIndex = false;
+      const failedUsage = vi.spyOn(storage, 'append').mockImplementation(async (scope, key, bytes, options) => {
+        if (failIndex && key === 'session_index.jsonl') throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'fixture index disk full', { details: { committed: false } });
+        if (key === OPERATION_USAGE_KEY) throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'fixture disk full', { details: { committed: false } });
+        await append(scope, key, bytes, options);
+      });
+      const requestsBeforeError = records.length;
+      try {
+        const unknown = await output({ ...outputInput.preset, connectionId: 'selected', customModelId: 'reject-model' }, withoutMain.id);
+        expect(unknown.at(-1)).toMatchObject({ type: 'failed', code: 'provider.api_error' });
+        expect(await accounting.readSessionAccounting(workspaceId, withoutMain.id)).toMatchObject({ complete: false, tokens: { input_other: 19, output: 4 } });
+        const controller = new AbortController();
+        const cancelled: OutputLayerEvent[] = [];
+        for await (const event of server.core.accessor.get(IOutputLayerService).stream({ ...outputInput, sessionId: withoutMain.id,
+          preset: { ...outputInput.preset, connectionId: 'selected', customModelId: 'wait-reading' },
+        }, controller.signal)) {
+          cancelled.push(event);
+          if (event.type === 'delta') controller.abort();
+        }
+        expect(cancelled.at(-1)).toEqual({ type: 'cancelled' });
+        expect(withoutMain.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+        await manager.delete(unrelated.id);
+        expect(manager.get(unrelated.id)).toBeUndefined();
+        expect(await storage.read(unrelatedScope, 'state.json')).toBeUndefined();
+        const index = new TextDecoder().decode(await storage.read('', 'session_index.jsonl'));
+        expect(index.split('\n').filter((line) => line === JSON.stringify({ sessionId: unrelated.id, deleted: true }))).toHaveLength(1);
+        failIndex = true;
+        await expect(manager.delete(indexTarget.id)).rejects.toMatchObject({ code: 'storage.disk_full', message: 'fixture index disk full' });
+        expect(await accounting.readSessionAccounting(workspaceId, withoutMain.id)).toMatchObject({ complete: false, tokens: { input_other: 19, output: 4 } });
+      } finally { failedUsage.mockRestore(); }
       expect(await completeAccounting(withoutMain.id)).toMatchObject({ complete: true, tokens: { input_other: 19, output: 4 }, tokens_unknown: true });
+      expect(records).toHaveLength(requestsBeforeError + 2);
       expect(probes).toEqual([
         expect.objectContaining({ kind: 'ordinary-cold-with-body', materialized: 0, recovered: 0, live: false, terminal: { type: 'completed', text: 'first second' } }),
         expect.objectContaining({ kind: 'archived-with-body', materialized: 0, recovered: 0, live: false, terminal: { type: 'completed', text: 'first second' } }),
@@ -273,10 +321,10 @@ it('executes third-party and Output Layer requests with host identity, credentia
       const exportedOperations: { key: string; workspaceId: string; known?: boolean }[] = [];
       expect(await accounting.readExportSources(async (source) => {
         if (source.key.startsWith('operation\0')) for (const record of source.records) exportedOperations.push({ key: source.key, workspaceId: source.workspaceId, known: record.usageKnown });
-      })).toMatchObject({ complete: true });
-      expect(new Set(exportedOperations.map((row) => row.key)).size).toBe(7);
+      })).toMatchObject({ complete: true, operationsComplete: true });
+      expect(new Set(exportedOperations.map((row) => row.key)).size).toBe(8);
       expect(exportedOperations.filter((row) => row.known === true)).toHaveLength(6);
-      expect(exportedOperations.filter((row) => row.known === false)).toHaveLength(1);
+      expect(exportedOperations.filter((row) => row.known === false)).toHaveLength(2);
       expect(exportedOperations.every((row) => row.workspaceId === workspaceId)).toBe(true);
       await client.close();
       client = undefined;
