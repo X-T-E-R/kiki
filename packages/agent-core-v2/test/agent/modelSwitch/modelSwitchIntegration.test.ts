@@ -11,6 +11,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { AgentPromptService } from '#/agent/prompt/promptService';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentLoopService, TurnPersistenceError } from '#/agent/loop/loop';
@@ -305,7 +306,8 @@ describe('model switch integration with current prompt projections', () => {
     const context = ctx.get(IAgentContextMemoryService);
     ctx.appendExchange(1, 'Continue the implementation.', 'Inspecting the file.', 20);
     context.append({ role: 'assistant', content: [], toolCalls: [{ id: 'read-before-switch', type: 'function', name: 'Read', arguments: '{"path":"/project/example.ts"}' }] });
-    context.append({ role: 'tool', toolCallId: 'read-before-switch', toolCalls: [], source: { stepId: 't1.2' }, content: [{ type: 'text', text: '1\texport const value = 1;\n<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>' }] });
+    context.append({ role: 'tool', toolCallId: 'read-before-switch', toolCalls: [], source: { stepId: 't1.2' },
+      content: [{ type: 'text', text: '1\texport const value = 1;' }], note: '<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>' });
     ctx.mockNextResponse({ type: 'text', text: 'Apply the investigated change.' });
     expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'carry-read-history', model: NEW, mode: 'compact' })).toMatchObject({ state: 'completed' });
     const summary = context.get().find(message => message.origin?.kind === 'compaction_summary')!;
@@ -313,6 +315,12 @@ describe('model switch integration with current prompt projections', () => {
     expect(text(ctx)).toContain('## Files read (content not carried)');
     const record = (await journal(ctx)).find(item => item.type === 'agent.model_switch');
     expect(record?.['context']).toEqual(context.get());
+    const tokens = ctx.get(IAgentTokenCountingService);
+    const carriedTokens = tokens.estimateMessages(context.get());
+    const withoutLedger = context.get().filter(message => message !== summary);
+    expect(Number(record?.['contextTokens'])).toBeGreaterThanOrEqual(carriedTokens);
+    expect(tokens.get().size).toBe(record?.['contextTokens']);
+    expect(carriedTokens - tokens.estimateMessages(withoutLedger)).toBeGreaterThan(tokens.estimateText('Apply the investigated change.'));
     ctx.appendExchange(2, 'Continue after switching.', 'Applying the edit.', 80);
     const service = ctx.get(IAgentFullCompactionService);
     expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);

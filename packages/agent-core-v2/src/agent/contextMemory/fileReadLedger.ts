@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import type { ToolCall } from '#/kosong/contract/message';
+import { resolveSshToolTarget } from '#/agent/tools/os/sshToolTarget';
 import type { ContextMessage, ContextMessageSource } from './types';
 
 const sourceSchema = z.object({ stepId: z.string().optional(), turnId: z.number().int().nonnegative().optional(),
@@ -34,17 +35,27 @@ function argumentsOf(call: ToolCall): Record<string, unknown> | undefined {
   } catch { return undefined; }
 }
 
-function targetOf(call: ToolCall): { path: string; host?: string } | undefined {
+function sshHeader(text: string): { host?: string; body: string } {
+  const header = /^host: ([A-Za-z0-9][A-Za-z0-9._@:-]{0,255})\r?\n(?:platform: [^\r\n]*\r?\n)?(?:shell: [^\r\n]*\r?\n)?/.exec(text);
+  return { host: header?.[1], body: header === null ? text : text.slice(header[0].length) };
+}
+
+function targetOf(call: ToolCall, result: ContextMessage): { path: string; host?: string } | undefined {
   const args = argumentsOf(call);
-  return typeof args?.['path'] === 'string' && args['path'].trim() ? {
-    path: args['path'], host: typeof args['host'] === 'string' && args['host'] !== 'local' ? args['host'] : undefined,
-  } : undefined;
+  if (typeof args?.['path'] !== 'string' || !args['path'].trim()) return undefined;
+  try {
+    const target = resolveSshToolTarget(typeof args['host'] === 'string' ? args['host'] : undefined, args['path']);
+    const runtimeId = result.runtimeId ?? result.fileRead?.file.runtimeId;
+    const host = runtimeId === 'local' ? 'local' : runtimeId?.startsWith('ssh:') ? runtimeId.slice(4)
+      : sshHeader(textOf(result)).host ?? target.host;
+    return { path: target.path!, host };
+  } catch { return undefined; }
 }
 
 function keyOf(target: { path: string; host?: string }): string {
   let path = target.path.replaceAll('\\', '/');
   if (/^[a-z]:\//i.test(path)) path = path.toLowerCase();
-  return JSON.stringify([target.host ?? 'local', path]);
+  return JSON.stringify([target.host ?? null, path]);
 }
 
 function sourceOf(message: ContextMessage, call: ToolCall, result: ContextMessage): ContextMessageSource | undefined {
@@ -57,11 +68,11 @@ function successful(result: ContextMessage | undefined): result is ContextMessag
 }
 
 function readEntry(call: ToolCall, result: ContextMessage, source?: ContextMessageSource): FileReadEntry | undefined {
-  const target = targetOf(call);
+  const target = targetOf(call, result);
   if (target === undefined) return undefined;
-  const text = textOf(result);
-  const note = /\n?<system>((?:\d+ lines? read starting at line \d+\.|No lines read\.)[^\r\n]*)<\/system>\s*$/.exec(text);
-  const body = note === null ? text : text.slice(0, note.index);
+  const text = sshHeader(textOf(result)).body;
+  const note = /(?:^|\n)<system>((?:\d+ lines? read starting at line \d+\.|No lines read\.)[^\r\n]*)<\/system>\s*$/.exec(result.note ?? text);
+  const body = result.note === undefined && note !== null ? text.slice(0, note.index) : text;
   const count = note === null ? undefined : /^(\d+) lines? read starting at line (\d+)\./.exec(note[1]!);
   const lines = body.length === 0 ? [] : body.split('\n');
   const start = count === null || count === undefined ? undefined : Number(count[2]);
@@ -105,7 +116,7 @@ export function collectFileReads(history: readonly ContextMessage[], compactCoun
     if (owner === undefined || !successful(message)) continue;
     const { call } = owner;
     const source = sourceOf(owner.message, call, message);
-    const target = targetOf(call);
+    const target = targetOf(call, message);
     if (target === undefined) continue;
     const key = keyOf(target);
     const previous = files.get(key);
@@ -140,7 +151,7 @@ function rangesText(ranges: readonly LineRange[]): string {
 
 export function fileReadEvidence(call: ToolCall, result: ContextMessage, source?: ContextMessageSource): string | undefined {
   if (!successful(result)) {
-    const target = targetOf(call);
+    const target = targetOf(call, result);
     const text = textOf(result);
     return target === undefined ? undefined : `${JSON.stringify(target.path)} Read failed (${text.length} chars returned): ${sliceUtf16(text, 0, 240)}`;
   }
@@ -153,7 +164,7 @@ function entryText(entry: FileReadEntry, includeSource = true): string {
   const range = entry.ranges.length > 0 ? `${rangesText(entry.ranges)}/${total}` : `range unknown/${total}`;
   const stale = entry.staleRanges.length > 0 ? `; before edit: ${rangesText(entry.staleRanges)} (stale) · ${pointer(entry.edited?.readSource)}` : '';
   const edited = entry.edited === undefined ? '' : `; edited ${pointer(entry.edited.source)}; re-read before Edit`;
-  return `${JSON.stringify(entry.path)}${entry.host === undefined ? '' : ` on ${JSON.stringify(entry.host)}`} ${range} (${entry.chars} chars returned by last Read)${stale}${edited}${includeSource ? ` · ${pointer(entry.source)}` : ''}`;
+  return `${JSON.stringify(entry.path)}${entry.host === undefined ? ' on host unknown' : ` on ${JSON.stringify(entry.host)}`} ${range} (${entry.chars} chars returned by last Read)${stale}${edited}${includeSource ? ` · ${pointer(entry.source)}` : ''}`;
 }
 
 export function renderFileReads(ledger: FileReadLedger): string {

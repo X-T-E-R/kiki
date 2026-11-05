@@ -2455,6 +2455,7 @@ export interface AgentStateSnapshot {
     };
     readonly isError?: boolean;
     readonly note?: string;
+    readonly runtimeId?: string;
     readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
       readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
         readonly path: string;
@@ -7914,6 +7915,7 @@ export interface AgentStateSnapshot {
         };
         readonly isError?: boolean;
         readonly note?: string;
+        readonly runtimeId?: string;
         readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
           readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
             readonly path: string;

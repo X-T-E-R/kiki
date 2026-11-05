@@ -1604,7 +1604,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           type: 'tool.result',
           parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
           toolCallId: toolResult.toolCallId,
-          result: { output: result.output, isError: result.isError, note: result.note, memoryReceipt: result.memoryReceipt,
+          result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
             fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } },
         });
         await this.hooks.onDidAppendToolResult.run({

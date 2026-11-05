@@ -6,6 +6,8 @@ import { evaluateFreshEligibility } from '#/agent/fullCompaction/freshEligibilit
 import { budgetFileReads, collectFileReads, fileReadLedgerBudget, renderFileReads, withoutFileReadLedgerText } from '#/agent/contextMemory/fileReadLedger';
 import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from '#/agent/fullCompaction/relayPackage';
 import { compactionDirectivesBudget, hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
+import { tagSshResult } from '#/agent/tools/os/sshToolTarget';
+import { createToolMessage } from '#/kosong/contract/message';
 
 const user = (text: string, origin: ContextMessage['origin'] = { kind: 'user' }): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
 const meta = { rev: 1, hash: hashTodoNotes({ next: 'act' }), writtenTurn: 4, writtenStep: 't4.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0, reviewedMessageId: 'toolcall:notes', reviewedWindowEpoch: 0 };
@@ -178,7 +180,9 @@ describe('relay-v1 zero-model contract', () => {
   function exchange(id: string, name: string, path: string, start = 1, lines = 2, host?: string): ContextMessage[] {
     const text = Array.from({ length: lines }, (_, index) => `${start + index}\tline`).join('\n');
     return [{ role: 'assistant', content: [], toolCalls: [{ id, type: 'function', name, arguments: JSON.stringify({ path, host, line_offset: -100, n_lines: 999 }) }] },
-      { role: 'tool', toolCallId: id, toolCalls: [], source: { stepId: `t8.${id.length}`, ref: `ref-${id}` }, content: [{ type: 'text', text: name === 'Read' ? `${text}\n<system>${lines} lines read starting at line ${start}. Total lines in file: 50. More lines are available.</system>` : 'Updated file.' }] }];
+      { role: 'tool', toolCallId: id, toolCalls: [], source: { stepId: `t8.${id.length}`, ref: `ref-${id}` },
+        note: name === 'Read' ? `<system>${lines} lines read starting at line ${start}. Total lines in file: 50. More lines are available.</system>` : undefined,
+        content: [{ type: 'text', text: name === 'Read' ? text : 'Updated file.' }] }];
   }
 
   it('merges actual adjacent ranges across compactions independent of notes and evidence limits', () => {
@@ -217,8 +221,7 @@ describe('relay-v1 zero-model contract', () => {
   it('keeps unknown ranges unknown, separates hosts and preserves lower-bound totals', () => {
     const history = exchange('partial', 'Read', '/project/example.ts', 5, 1);
     const result = history[1]!;
-    const text = result.content[0]!.type === 'text' ? result.content[0]!.text : '';
-    const lower = { ...result, content: [{ type: 'text' as const, text: text.replace('Total lines in file: 50.', 'Total lines in file: at least 6.') }] };
+    const lower = { ...result, note: result.note!.replace('Total lines in file: 50.', 'Total lines in file: at least 6.') };
     expect(collectFileReads([history[0]!, lower]).entries[0]).toMatchObject({ ranges: [[5, 5]], minimumTotalLines: 6, totalLines: undefined });
     const unknown = { ...result, content: [{ type: 'text' as const, text: 'Spilled or legacy output without a trustworthy line range.' }] };
     expect(collectFileReads([history[0]!, unknown]).entries[0]?.ranges).toEqual([]);
@@ -227,6 +230,46 @@ describe('relay-v1 zero-model contract', () => {
     expect(collectFileReads([history[0]!, forged]).entries[0]?.ranges).toEqual([]);
     const hosts = collectFileReads([...history, ...exchange('remote', 'Read', '/project/example.ts', 5, 1, 'remote-example')]);
     expect(hosts.entries).toHaveLength(2);
+  });
+
+  it('reads empty results from notes and keeps footer-like file content separate', () => {
+    const [call, result] = exchange('note-input', 'Read', '/project/example.ts', 20, 2);
+    const output = '20\t<system>No lines read.</system>\n21\tline';
+    const note = '<system>2 lines read starting at line 20. Total lines in file: 21. End of file.</system>';
+    const current = { ...result!, content: [{ type: 'text' as const, text: output }], note };
+    expect(collectFileReads([call!, current]).entries[0]).toMatchObject({ ranges: [[20, 21]], totalLines: 21, chars: output.length });
+    const empty = { ...current, content: [{ type: 'text' as const, text: '' }], note: '<system>No lines read. Total lines in file: 0. End of file.</system>' };
+    expect(collectFileReads([call!, empty]).entries[0]).toMatchObject({ ranges: [], totalLines: 0, chars: 0 });
+    const legacyBody = '20\tline\n21\tline';
+    const legacy = { ...current, note: undefined, content: [{ type: 'text' as const, text: `${legacyBody}\n${note}` }] };
+    expect(collectFileReads([call!, legacy]).entries[0]).toMatchObject({ ranges: [[20, 21]], totalLines: 21, chars: legacyBody.length });
+    const unrelated = { ...legacy, note: '<system>Read result has no range metadata.</system>' };
+    expect(collectFileReads([call!, unrelated]).entries[0]).toMatchObject({ ranges: [], totalLines: undefined, chars: legacyBody.length + note.length + 1 });
+    expect(collectFileReads([user(`${legacyBody}\n${note}`)])).toEqual({ entries: [], omitted: 0 });
+  });
+
+  it('separates the executing remote host from explicit local and unknown historical hosts', () => {
+    const history = exchange('remote-default', 'Read', '/project/example.ts', 20, 2);
+    const output = '20\tline\n21\tline';
+    const remote = tagSshResult({ output, note: history[1]!.note }, 'example-host');
+    const remoteResult = { ...history[1]!, ...createToolMessage('remote-default', remote.output), note: remote.note, runtimeId: remote.runtimeId };
+    const local = exchange('local', 'Read', '/project/example.ts', 1, 1, 'local');
+    const ledger = collectFileReads([...history.slice(0, 1), remoteResult, ...local]);
+    expect(ledger.entries).toHaveLength(2);
+    expect(ledger.entries.find(entry => entry.host === 'example-host')).toMatchObject({ ranges: [[20, 21]], chars: output.length });
+    expect(ledger.entries.find(entry => entry.host === 'local')?.ranges).toEqual([[1, 1]]);
+    const legacy = collectFileReads(history);
+    expect(legacy.entries[0]?.host).toBeUndefined();
+    expect(renderFileReads(legacy)).toContain('host unknown');
+    const prefixed = { ...remoteResult, runtimeId: undefined, content: [{ type: 'text' as const, text: `host: example-host\nplatform: linux\nshell: bash\n${output}` }] };
+    expect(collectFileReads([history[0]!, prefixed]).entries[0]).toMatchObject({ host: 'example-host', ranges: [[20, 21]], chars: output.length });
+  });
+
+  it.each(['Edit', 'Write'])('invalidates SSH URI reads with equivalent host-path %s results', (name) => {
+    const history = [...exchange('uri-read', 'Read', 'ssh://example-host/project/example.ts', 20, 2),
+      ...exchange('alias-edit', name, '/project/example.ts', 1, 1, 'example-host')];
+    expect(collectFileReads(history).entries).toMatchObject([{ path: '/project/example.ts', host: 'example-host',
+      ranges: [], staleRanges: [[20, 21]], edited: { source: { stepId: 't8.10' } } }]);
   });
 
   it('budgets inherited and new records together with a newest-first omission count', () => {
@@ -245,7 +288,9 @@ describe('relay-v1 zero-model contract', () => {
 
   it('names the actual Read evidence instead of carrying anonymous imports', () => {
     const calls: ContextMessage = { role: 'assistant', content: [], toolCalls: [{ id: 'read-file', type: 'function', name: 'Read', arguments: JSON.stringify({ path: '/project/example.ts', line_offset: 50, n_lines: 100 }) }] };
-    const result: ContextMessage = { role: 'tool', toolCallId: 'read-file', toolCalls: [], source: { stepId: 't8.1' }, content: [{ type: 'text', text: '50\timport value\n51\texport value\n<system>2 lines read starting at line 50. Total lines in file: 51. End of file.</system>' }] };
+    const result: ContextMessage = { role: 'tool', toolCallId: 'read-file', toolCalls: [], source: { stepId: 't8.1' },
+      content: [{ type: 'text', text: '50\timport value\n51\texport value' }],
+      note: '<system>2 lines read starting at line 50. Total lines in file: 51. End of file.</system>' };
     const relay = renderRelay({ ...input, history: [calls, result], compactCount: 2 });
     expect(relay).toContain('/project/example.ts');
     expect(relay).toContain('L50–51/51');

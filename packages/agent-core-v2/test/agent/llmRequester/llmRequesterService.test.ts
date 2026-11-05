@@ -1819,7 +1819,7 @@ describe('AgentLLMRequesterService measured anchors', () => {
 
   it('marks missing usage unknown while preserving provider-reported zero as known', async () => {
     const missing = createService(createRequester({ value: 0 }, null), undefined);
-    await missing.service.request();
+    expect(await missing.service.request()).toMatchObject({ usageKnown: false, usage: emptyUsage() });
     expect(missing.usageRecords[0]?.usage).toEqual(emptyUsage());
     expect(missing.usageRecords[0]?.context?.usageKnown).toBe(false);
 
@@ -1830,7 +1830,7 @@ describe('AgentLLMRequesterService measured anchors', () => {
       yield* base(input, signal, options);
     };
     const known = createService(requester, undefined);
-    await known.service.request();
+    expect(await known.service.request()).toMatchObject({ usageKnown: true, usage: emptyUsage() });
     expect(known.usageRecords[0]?.usage).toEqual(emptyUsage());
     expect(known.usageRecords[0]?.context?.usageKnown).toBe(true);
   });

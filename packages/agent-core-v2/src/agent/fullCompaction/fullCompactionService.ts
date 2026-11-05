@@ -1197,13 +1197,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
       if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
       const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
+      const contextSummary = buildCompactionSummaryText(summary);
       const summarizeReasons = selectionReasons(requestedStrategy, selectionSource, reasons);
       const result = await this.commitCompaction(active, {
         summary,
-        contextSummary: buildCompactionSummaryText(summary),
+        contextSummary,
         compactedCount: compactCount,
         tokensBefore,
         summaryOutputTokens: attempt.usage?.output,
+        summaryAddedTokens: attempt.usage === null ? undefined : Math.max(0,
+          this.tokenCounting.estimateText(contextSummary) - this.tokenCounting.estimateText(attempt.summary)),
         requestOverheadTokens: this.requestTokens([]),
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
         strategy: 'summarize',
@@ -1332,7 +1335,7 @@ function collectSummary(finish: AgentLLMRequestFinish): CompactionAttemptResult 
     );
   }
 
-  return { summary, usage: finish.usage, traceId: finish.traceId };
+  return { summary, usage: finish.usageKnown === false ? null : finish.usage, traceId: finish.traceId };
 }
 
 function historySafeToCompact(

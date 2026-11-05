@@ -41,6 +41,7 @@ export interface ContextCompactionShapeInput {
   readonly tokensBefore: number;
   readonly tokensAfter?: number;
   readonly summaryOutputTokens?: number;
+  readonly summaryAddedTokens?: number;
   readonly requestOverheadTokens?: number;
   readonly keptUserMessageCount?: number;
   readonly keptHeadUserMessageCount?: number;
@@ -110,7 +111,7 @@ export function buildContextCompactionShape(
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
-      (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
+      (input.summaryOutputTokens === undefined ? estimate.text(contextSummary) : input.summaryOutputTokens + (input.summaryAddedTokens ?? 0)) +
       estimate.messages([...keptMessages, ...tail]);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;

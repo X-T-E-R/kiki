@@ -27,6 +27,7 @@ export type AgentLLMRequestSource =
 export interface AgentLLMRequestFinish {
   message: Message;
   usage: TokenUsage;
+  usageKnown?: boolean;
   model?: string | undefined;
   providerFinishReason?: FinishReason;
   completionAuthority?: 'normal';

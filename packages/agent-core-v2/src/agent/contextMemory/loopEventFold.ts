@@ -61,6 +61,7 @@ export type LoopRecordedEvent =
         readonly output: string | readonly ContentPart[];
         readonly isError?: boolean;
         readonly note?: string;
+        readonly runtimeId?: string;
         readonly errorCode?: string;
         readonly fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
         readonly memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
@@ -198,6 +199,7 @@ function createLoopEventFoldWithState(
               ),
               isError: event.result.isError,
               note: event.result.note,
+              runtimeId: event.result.runtimeId,
               fileRead: event.result.fileRead,
               memoryReceipt: event.result.memoryReceipt,
             },

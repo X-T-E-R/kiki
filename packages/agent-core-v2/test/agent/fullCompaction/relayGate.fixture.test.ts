@@ -172,7 +172,8 @@ async function stalledWindow(ctx: TestAgentContext): Promise<void> {
   expect(todo.getNotes('main').meta).toMatchObject({ windowEpoch: 0, reviewedWindowEpoch: 1, rev: 1 });
   const chars = Math.ceil(Math.max(16_000, service.getAutoCompact().tokens * 0.2) + 5_000) * 4;
   ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ id: 'large-read', type: 'function', name: 'Read', arguments: '{"path":"/project/example.ts"}' }] });
-  ctx.context.append({ role: 'tool', toolCallId: 'large-read', toolCalls: [], source: { stepId: 't2.2' }, content: [{ type: 'text', text: `1\t${'x'.repeat(chars)}\n<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>` }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'large-read', toolCalls: [], source: { stepId: 't2.2' },
+    content: [{ type: 'text', text: `1\t${'x'.repeat(chars)}` }], note: '<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>' });
   ctx.appendExchange(3, 'Keep the pending user requirement.', 'Ready to act.', 80);
   ctx.newEvents();
 }

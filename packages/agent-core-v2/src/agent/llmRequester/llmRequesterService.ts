@@ -750,6 +750,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       return {
         message,
         usage: usage ?? emptyUsage(),
+        usageKnown: usage !== undefined,
         model: request.modelAlias,
         providerFinishReason: finish.providerFinishReason,
         completionAuthority: finish.completionAuthority,
