@@ -3,6 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LOCALE_STORAGE_KEY } from '@kiki/session-core/i18n';
@@ -12,10 +13,10 @@ import { PluginSettingsForm } from './PluginSettingsForm';
 
 const getPluginSettings = vi.fn();
 const setPluginSettings = vi.fn();
-const listProviders = vi.fn(async () => ({ items: [] as { id: string; name?: string }[] }));
+const listPluginModels = vi.fn(async () => ({ models: [], connections: [] as { id: string; type: string }[] }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getPluginSettings, setPluginSettings, listProviders } }),
+  useConnection: () => ({ client: { getPluginSettings, setPluginSettings, listPluginModels } }),
 }));
 
 const VIEW = {
@@ -47,6 +48,7 @@ beforeEach(() => {
   localStorage.removeItem(LOCALE_STORAGE_KEY);
   getPluginSettings.mockReset().mockResolvedValue(VIEW);
   setPluginSettings.mockReset().mockResolvedValue(VIEW);
+  listPluginModels.mockReset().mockResolvedValue({ models: [], connections: [] });
 });
 afterEach(() => {
   for (const root of roots.splice(0)) root.unmount();
@@ -65,7 +67,7 @@ async function render(): Promise<HTMLDivElement> {
   roots.push(root);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root.render(<QueryClientProvider client={queryClient}><I18nProvider><PluginSettingsForm pluginId="demo" /></I18nProvider></QueryClientProvider>);
+    root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider><PluginSettingsForm pluginId="demo" /></I18nProvider></MemoryRouter></QueryClientProvider>);
   });
   for (let i = 0; i < 4; i++) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -249,40 +251,105 @@ describe('PluginSettingsForm', () => {
     expect(setPluginSettings).toHaveBeenCalledWith('demo', { openai__baseUrl: 'https://example.test/openai' });
   });
 
-  it('separates ungrouped global defaults from source group panels and offers a connection picker when model connections exist', async () => {
-    listProviders.mockResolvedValueOnce({
-      items: [
-        { id: 'openai-main', name: 'OpenAI Main' },
-        { id: 'proxy-gateway', name: 'Proxy Gateway' },
-      ],
-    });
-    getPluginSettings.mockResolvedValue({
-      schema: {
-        schemaVersion: 1,
-        schema: {
-          type: 'object',
-          properties: {
-            defaultImageProvider: { type: 'string', title: 'Default image provider', enum: ['openai-image', 'google-image'] },
-            openai__connectionId: { type: 'string', title: 'Connection ID', group: 'openai', groupTitle: 'OpenAI' },
-            openai__enabled: { type: 'boolean', title: 'Enabled', group: 'openai', groupTitle: 'OpenAI', default: true },
-            google__connectionId: { type: 'string', title: 'Connection ID', group: 'google', groupTitle: 'Google' },
-          },
+  it('uses declared connection formats, preserves stored secrets and validates only the relevant self-managed group', async () => {
+    listPluginModels.mockResolvedValue({ models: [], connections: [{ id: 'proxy-gateway', type: 'openai' }] });
+    const view = {
+      schema: { schema: {
+        type: 'object',
+        required: ['endpoint', 'accessToken', 'otherEndpoint'],
+        properties: {
+          connectionId: { type: 'string', title: 'An ordinary string' },
+          gateway: { type: 'string', format: 'kiki-connection', title: 'Connection', group: 'primary' },
+          endpoint: { type: 'string', title: 'Endpoint', group: 'primary', requiredUnless: 'gateway', advanced: true },
+          accessToken: { type: 'string', title: 'API key', secret: true, group: 'primary', requiredUnless: 'gateway' },
+          otherGateway: { type: 'string', format: 'kiki-connection', title: 'Other connection', group: 'secondary' },
+          otherEndpoint: { type: 'string', title: 'Other endpoint', group: 'secondary', requiredUnless: 'otherGateway' },
         },
-      },
-      values: { openai__connectionId: 'openai-main' },
-      secretsConfigured: [],
-    });
-
+      } },
+      values: { gateway: 'old-gateway' },
+      secretsConfigured: ['accessToken'],
+    };
+    getPluginSettings.mockResolvedValue(view);
+    setPluginSettings.mockResolvedValue({ ...view, values: { gateway: 'proxy-gateway' } });
     const container = await render();
-    expect(container.querySelector('[data-plugin-settings-global] [data-plugin-setting="defaultImageProvider"]')).not.toBeNull();
-    await click(container.querySelector('[data-plugin-setting-group-open="openai"]')!);
-    const panel = container.querySelector('[data-plugin-setting-group-panel="openai"]');
-    expect(panel).not.toBeNull();
-    expect(panel?.querySelector('[data-plugin-setting="defaultImageProvider"]')).toBeNull();
-    const picker = panel?.querySelector<HTMLSelectElement>('[data-plugin-setting-connection="openai__connectionId"]');
-    expect(picker).not.toBeNull();
-    expect(picker?.value).toBe('openai-main');
-    expect(picker?.textContent).toContain('OpenAI Main');
-    expect(picker?.textContent).toContain('Proxy Gateway');
+    expect(container.querySelector('[data-plugin-setting="connectionId"] input')).not.toBeNull();
+    await click(container.querySelector('[data-plugin-setting-group-open="primary"]')!);
+    const picker = container.querySelector('[data-plugin-setting-catalog="gateway"] button')!;
+    expect(picker.textContent).toContain('old-gateway');
+    await click(picker);
+    await click([...document.querySelectorAll('[role="option"]')].find((option) => option.textContent?.includes('proxy-gateway'))!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledWith('demo', { gateway: 'proxy-gateway' });
+    expect(container.querySelector('[data-plugin-setting="accessToken"]')?.textContent).toContain('Saved in Kiki credentials');
+    await click(picker);
+    await click(document.querySelector('[role="option"]')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-plugin-setting="endpoint"] [role="alert"]')?.textContent).toBe('This setting is required.');
+    expect(input(container, 'endpoint')).toBe(document.activeElement);
+    await type(input(container, 'endpoint'), 'https://example.test/v1');
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenLastCalledWith('demo', { gateway: null, endpoint: 'https://example.test/v1' });
+  });
+
+  it('uses draft group switches and tombstones when validating required values', async () => {
+    const view = {
+      schema: { schema: { required: ['endpoint', 'token', 'removedEndpoint'], properties: {
+        label: { type: 'string', title: 'Label' },
+        source__enabled: { type: 'boolean', group: 'source', default: false },
+        endpoint: { type: 'string', group: 'source', title: 'Endpoint' },
+        token: { type: 'string', group: 'source', title: 'Token', secret: true },
+        removed__removed: { type: 'boolean', group: 'removed', hidden: true },
+        removedEndpoint: { type: 'string', group: 'removed', title: 'Removed endpoint' },
+      } } }, values: { label: 'Old', removed__removed: true }, secretsConfigured: ['token'],
+    };
+    getPluginSettings.mockResolvedValue(view);
+    setPluginSettings.mockImplementation(async (_id, patch) => ({ ...view, values: { ...view.values, ...patch } }));
+    const container = await render();
+    await type(input(container, 'label'), 'New');
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledWith('demo', { label: 'New' });
+    await click(container.querySelector('[data-plugin-setting-group-switch="source"] input')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-plugin-setting="endpoint"] [role=alert]')?.textContent).toContain('required');
+    await type(input(container, 'endpoint'), 'https://example.test');
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenLastCalledWith('demo', { source__enabled: true, endpoint: 'https://example.test' });
+    await click(container.querySelector('[data-plugin-secret-remove="token"]')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-plugin-setting="token"] [role=alert]')?.textContent).toContain('required');
+    await click(container.querySelector('[data-plugin-setting-group-switch="source"] input')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenLastCalledWith('demo', { source__enabled: false, token: null });
+    await click(container.querySelector('[data-plugin-setting-restore="removed__removed"]')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('[data-plugin-setting="removedEndpoint"] [role=alert]')?.textContent).toContain('required');
+  });
+
+  it('keeps old catalog values through failure, retries, and offers self-managed settings with no connections', async () => {
+    const view = { schema: { schema: { properties: {
+      route: { type: 'string', title: 'Connection', format: 'kiki-connection' },
+      model: { type: 'string', title: 'Model', format: 'kiki-model' },
+    } } }, values: { route: 'retired-connection', model: 'old/model' }, secretsConfigured: [] };
+    getPluginSettings.mockResolvedValue(view);
+    listPluginModels.mockRejectedValueOnce(new Error('Catalog unavailable')).mockResolvedValue({ models: [], connections: [] });
+    const container = await render();
+    const picker = container.querySelector('[data-plugin-setting-catalog="route"] button')!;
+    expect(picker.textContent).toContain('retired-connection');
+    expect(container.textContent).toContain('old/model');
+    expect(container.textContent).toContain('Catalog unavailable');
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(listPluginModels).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('No connections yet.');
+    expect(container.textContent).toContain('No models yet.');
+    expect(container.querySelector('a')?.getAttribute('href')).toContain('/settings/ai?tab=providers');
+    await click(picker);
+    await click(document.querySelector('[role=option]')!);
+    await click(save(container));
+    expect(setPluginSettings).toHaveBeenCalledWith('demo', { route: null });
   });
 });

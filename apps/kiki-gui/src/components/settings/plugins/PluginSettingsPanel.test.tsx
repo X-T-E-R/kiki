@@ -424,8 +424,10 @@ describe('the settings slot reads and saves the media document', () => {
     }
   });
 
-  it('reports the panel unsaved bit and clears it when the save lands', async () => {
+  it('keeps dirty notices out of the request budget and preserves edits newer than a save', async () => {
     const reports: Array<readonly [string, boolean]> = [];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     const container = document.createElement('div');
     document.body.append(container);
     containers.push(container);
@@ -433,7 +435,7 @@ describe('the settings slot reads and saves the media document', () => {
     roots.push(root);
     await act(async () => {
       root.render(
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <QueryClientProvider client={queryClient}>
           <DirtyGuardContext.Provider value={{
             dirty: false,
             reportDirty: (id, bit) => { reports.push([id, bit]); },
@@ -450,7 +452,7 @@ describe('the settings slot reads and saves the media document', () => {
     const frame = await waitFrame(container);
     await awaitInit(frame);
     await act(async () => {
-      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 4, method: 'plugin.dirty', dirty: true });
+      for (let id = 30; id < 75; id++) request(frame, { channel: 'kiki.panel.v1', kind: 'request', id, method: 'plugin.dirty', dirty: true });
       await new Promise((done) => setTimeout(done, 0));
     });
     expect(reports).toContainEqual(['plugin-settings:kiki-media', true]);
@@ -462,6 +464,19 @@ describe('the settings slot reads and saves the media document', () => {
       await new Promise((done) => setTimeout(done, 0));
     });
     expect(reports.at(-1)).toEqual(['plugin-settings:kiki-media', false]);
+    expect(setPluginSettings).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['plugin', 'kiki-media'] });
+    let finish!: (value: typeof stored) => void;
+    setPluginSettings.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 80, method: 'plugin.dirty', dirty: true });
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 81, method: 'plugin.settings.patch', values: { openai__imageModel: 'm2' } });
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 82, method: 'plugin.dirty', dirty: true });
+      await new Promise((done) => setTimeout(done, 0));
+      finish(stored);
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(reports.at(-1)).toEqual(['plugin-settings:kiki-media', true]);
   });
 
   it('returns the settings error and refuses a patch that is not a flat value map', async () => {
@@ -688,7 +703,7 @@ function manifest(extensionKey: 'kiki' | 'x-kiki', slots: readonly { slot: strin
   return { name: 'field-notes', [extensionKey]: { panels: slots } };
 }
 
-async function renderSettingsPage(): Promise<HTMLDivElement> {
+async function renderSettingsPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -696,7 +711,7 @@ async function renderSettingsPage(): Promise<HTMLDivElement> {
   roots.push(root);
   await act(async () => {
     root.render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <I18nProvider>
             <PluginSettingsPage pluginId="field-notes" />
@@ -764,19 +779,46 @@ describe('the settings page chooses the declared panel or the generic schema for
     expect(container.textContent).not.toContain('super-secret');
   });
 
-  it('stays on the schema form when the plugin is off, because the document route refuses it', async () => {
+  it('directs the user to Enable without replacing a disabled dedicated panel with a schema form', async () => {
     listPlugins.mockResolvedValue({ plugins: [{ ...INSTALLED, enabled: false }] });
     getPlugin.mockResolvedValue({
       ...INSTALLED,
       enabled: false,
       manifest: manifest('kiki', [{ slot: 'settings', id: 'prefs', label: 'Preferences' }]),
     });
-    getPluginSettings.mockResolvedValue(SCHEMA);
     const container = await renderSettingsPage();
-    await until(() => container.querySelector('[data-plugin-setting="workspace"]') !== null);
+    await until(() => container.querySelector('[data-plugin-settings-panel-off]') !== null);
+    expect(container.querySelector('[data-plugin-settings-panel-off]')).not.toBeNull();
     expect(container.querySelector('iframe')).toBeNull();
     expect(getPluginPanelDocument).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain('super-secret');
+    expect(getPluginSettings).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed dedicated document without exposing a schema form', async () => {
+    listPlugins.mockResolvedValue({ plugins: [INSTALLED] });
+    getPlugin.mockResolvedValue({ ...INSTALLED, manifest: manifest('kiki', [{ slot: 'settings', id: 'prefs', label: 'Preferences' }]) });
+    getPluginPanelDocument.mockRejectedValueOnce(new Error('Panel is temporarily unavailable'));
+    const container = await renderSettingsPage();
+    await until(() => container.querySelector('[data-plugin-panel-error] button') !== null);
+    expect(container.textContent).toContain('Panel is temporarily unavailable');
+    expect(getPluginSettings).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-plugin-panel-error] button')!.click(); });
+    await waitFrame(container);
+    expect(getPluginPanelDocument).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-plugin-panel-error]')).toBeNull();
+  });
+
+  it('keeps the mounted editor if refreshing known metadata fails', async () => {
+    listPlugins.mockResolvedValue({ plugins: [INSTALLED] });
+    getPlugin.mockResolvedValue({ ...INSTALLED, manifest: manifest('kiki', [{ slot: 'settings', id: 'prefs', label: 'Preferences' }]) });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await renderSettingsPage(queryClient);
+    const frame = await waitFrame(container);
+    getPlugin.mockRejectedValue(new Error('Metadata temporarily unavailable'));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['plugin', 'field-notes'] }); });
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(getPluginPanelDocument).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-plugin-settings="field-notes"]')).toBeNull();
   });
 
   it('reports a failed plugin detail instead of reading it as "no settings", and one retry repairs the body', async () => {

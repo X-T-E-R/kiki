@@ -154,7 +154,7 @@ export function OutputPresetModal({
     try {
       await savePreset(nextPreset, { settings: nextSettings, client: outputClient, sessionId });
       if (!mounted.current || activeContext.current !== savingContext) return;
-      void queryClient.invalidateQueries({ queryKey: ['plugin', 'output-layer-configuration'] });
+      void queryClient.invalidateQueries({ queryKey: ['plugin', 'kiki-output-layer', 'configuration'] });
       onSaved?.(nextPreset);
       onClose();
     } catch (err: unknown) {
@@ -174,7 +174,7 @@ export function OutputPresetModal({
     try {
       await deletePreset(preset.id, { client: outputClient, sessionId });
       if (!mounted.current || activeContext.current !== deletingContext) return;
-      void queryClient.invalidateQueries({ queryKey: ['plugin', 'output-layer-configuration'] });
+      void queryClient.invalidateQueries({ queryKey: ['plugin', 'kiki-output-layer', 'configuration'] });
       onClose();
     } catch (err: unknown) {
       if (mounted.current && activeContext.current === deletingContext) {

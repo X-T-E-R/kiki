@@ -27,7 +27,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n, type Locale } from '../../../i18n';
 import { prefersDark, type ResolvedTheme } from '../../../lib/theme';
 import { useConnection } from '../../../state/connection';
-import { PluginSettingsForm } from '../../capabilities/PluginSettingsForm';
+
 import { bridgeBody, isPanelRequest, patchValues, PANEL_CHANNEL as CHANNEL, type PanelRequest } from '../../capabilities/pluginPanelBridge';
 import { InlineError } from '../../controls';
 import { useDirtyReporter } from '../../dirtyGuard';
@@ -154,10 +154,10 @@ let lastHeight=0;
 function reportHeight(){
   const body=document.body,doc=document.documentElement;
   if(!body||!doc)return;
-  const h=Math.max(body.scrollHeight||0,body.offsetHeight||0,doc.scrollHeight||0);
+  const h=Math.ceil(Math.max(body.scrollHeight,body.getBoundingClientRect().height));
   if(h>0&&Math.abs(h-lastHeight)>2){
     lastHeight=h;
-    parent.postMessage({channel:CHANNEL,kind:'resize',height:h+16},'*');
+    parent.postMessage({channel:CHANNEL,kind:'resize',height:h},'*');
   }
 }
 window.addEventListener('message',function(e){
@@ -182,47 +182,41 @@ function augmentPanelHtml(html: string): string {
   return `${html}${PANEL_HOST_BRIDGE_SCRIPT}`;
 }
 
-export function PluginSettingsPanel({
-  pluginId,
-  panelId,
-  label,
-}: {
+interface PluginSettingsPanelProps {
   readonly pluginId: string;
   readonly panelId: string;
   readonly label: string;
-}) {
+}
+
+export function PluginSettingsPanel(props: PluginSettingsPanelProps) {
+  const { scopeId, meta } = useConnection();
+  return <PluginSettingsDocument key={`${scopeId}:${meta?.server_id ?? ''}:${props.pluginId}:${props.panelId}`} {...props} />;
+}
+
+function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPanelProps) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const recent = useRef<number[]>([]);
-  /** Seat of the plugin, panel, scope, and server instance now on screen. Late receipts compare against it. */
-  const seatRef = useRef(0);
+  const dirtyRevision = useRef(0);
   const frameWindowRef = useRef<Window | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [frameHeight, setFrameHeight] = useState<number | undefined>(undefined);
-  // `meta.server_id` is the instance. The client wrapper is a new object on
-  // later renders of the same server, so it is not part of the seat.
-  const serverId = meta?.server_id ?? '';
-  const identity = `${scopeId ?? ''}:${serverId}:${pluginId}:${panelId}`;
-  const [renderedIdentity, setRenderedIdentity] = useState(identity);
-  if (renderedIdentity !== identity) {
-    setRenderedIdentity(identity);
-    setDirty(false);
-    setLoadSeq(0);
-    setFrameHeight(undefined);
-    seatRef.current += 1;
-    frameWindowRef.current = null;
-    recent.current = [];
-  }
   useDirtyReporter(`plugin-settings:${pluginId}`, dirty);
+  const serverId = meta?.server_id ?? '';
   const documentQuery = useQuery({
-    queryKey: ['plugin-panel-document', scopeId ?? '', serverId, pluginId, panelId, 'settings'],
+    queryKey: ['plugin-panel-document', scopeId, serverId, pluginId, panelId, 'settings'],
     queryFn: () => client.getPluginPanelDocument(pluginId, panelId),
     staleTime: 60_000,
     retry: false,
   });
+  const [renderedHtml, setRenderedHtml] = useState(documentQuery.data?.html);
+  if (!dirty && documentQuery.data !== undefined && renderedHtml !== documentQuery.data.html) {
+    setRenderedHtml(documentQuery.data.html);
+    setFrameHeight(undefined);
+  }
 
   const post = useCallback((message: unknown) => {
     const target = frameRef.current?.contentWindow;
@@ -267,24 +261,25 @@ export function PluginSettingsPanel({
         && (event.data as { kind?: unknown }).kind === 'resize'
       ) {
         const nextHeight = Number((event.data as { height?: unknown }).height);
-        if (Number.isFinite(nextHeight) && nextHeight >= 180 && nextHeight <= 4000) {
-          setFrameHeight(Math.ceil(nextHeight));
+        if (Number.isFinite(nextHeight) && nextHeight > 0) {
+          setFrameHeight(Math.max(100, Math.min(4000, Math.ceil(nextHeight))));
         }
         return;
       }
       if (!isSettingsRequest(event.data)) return;
       const request = event.data;
-      const generation = seatRef.current;
-      const target = frameRef.current?.contentWindow ?? null;
-      // A switch keeps the call that was already accepted. Only this seat may
-      // see the receipt, the cache write, or a dirty clear.
-      const stillHere = () => seatRef.current === generation
-        && target !== null
-        && frameRef.current?.contentWindow === target;
+      const target = frame.contentWindow;
+      const stillHere = () => target !== null && frameRef.current?.contentWindow === target;
       const respond = (ok: boolean, payload: { result?: unknown; error?: string }) => {
         if (!stillHere() || target === null) return;
         target.postMessage({ channel: CHANNEL, kind: 'response', id: request.id, ok, ...payload }, '*');
       };
+      if (request.method === 'plugin.dirty') {
+        dirtyRevision.current += 1;
+        setDirty(request.dirty === true);
+        respond(true, { result: true });
+        return;
+      }
       const now = Date.now();
       recent.current = recent.current.filter((stamp) => now - stamp < RATE_WINDOW_MS);
       if (recent.current.length >= MAX_REQUESTS_PER_WINDOW) {
@@ -292,16 +287,11 @@ export function PluginSettingsPanel({
         return;
       }
       recent.current.push(now);
-      if (request.method === 'plugin.dirty') {
-        setDirty(request.dirty === true);
-        respond(true, { result: true });
-        return;
-      }
       if (request.method === 'plugin.settings.get') {
         void client.getPluginSettings(pluginId)
           .then((result) => {
             if (!stillHere()) return;
-            queryClient.setQueryData(['plugin-settings', pluginId], result);
+            queryClient.setQueryData(['plugin-settings', pluginId, scopeId, serverId], result);
             respond(true, { result });
           })
           .catch((error: unknown) => { if (stillHere()) respond(false, { error: errorText(locale, error) }); });
@@ -313,11 +303,13 @@ export function PluginSettingsPanel({
           respond(false, { error: 'invalid settings' });
           return;
         }
+        const savingRevision = dirtyRevision.current;
         void client.setPluginSettings(pluginId, values)
           .then((result) => {
+            void queryClient.invalidateQueries({ queryKey: ['plugin', pluginId] });
             if (!stillHere()) return;
-            queryClient.setQueryData(['plugin-settings', pluginId], result);
-            setDirty(false);
+            queryClient.setQueryData(['plugin-settings', pluginId, scopeId, serverId], result);
+            if (dirtyRevision.current === savingRevision) setDirty(false);
             respond(true, { result });
           })
           .catch((error: unknown) => { if (stillHere()) respond(false, { error: errorText(locale, error) }); });
@@ -334,40 +326,39 @@ export function PluginSettingsPanel({
     };
     window.addEventListener('message', onMessage);
     return () => { window.removeEventListener('message', onMessage); };
-  }, [client, locale, panelId, pluginId, post, queryClient]);
+  }, [client, locale, panelId, pluginId, queryClient, scopeId, serverId]);
 
-  if (documentQuery.isPending) {
-    return (
-      <p className="flex items-center gap-2 py-2 text-[13px] text-ink-faint" role="status" data-plugin-settings-panel-loading>
-        <Spinner label={t('cap.loading')} />{t('cap.panel.loading')}
-      </p>
-    );
-  }
-  if (documentQuery.isError) {
-    return (
-      <div className="space-y-2" data-plugin-panel-error>
-        <InlineError error={documentQuery.error} />
-        <button type="button" className={SECONDARY_BUTTON} onClick={() => { void documentQuery.refetch(); }}>{t('common.retry')}</button>
-        <PluginSettingsForm pluginId={pluginId} />
-      </div>
-    );
-  }
   return (
-    <iframe
-      key={identity}
-      ref={frameRef}
-      title={label}
-      srcDoc={augmentPanelHtml(documentQuery.data.html)}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      onLoad={() => {
-        frameWindowRef.current = frameRef.current?.contentWindow ?? null;
-        setLoadSeq((seq) => seq + 1);
-      }}
-      data-plugin-panel={`${pluginId}:${panelId}`}
-      data-plugin-settings-panel={pluginId}
-      style={{ height: frameHeight === undefined ? '38rem' : `${frameHeight}px` }}
-      className="block w-full border-0 bg-paper"
-    />
+    <>
+      {documentQuery.isError ? (
+        <div className="space-y-2" data-plugin-panel-error>
+          <InlineError error={documentQuery.error} />
+          <button type="button" className={SECONDARY_BUTTON} disabled={documentQuery.isFetching} onClick={() => { void documentQuery.refetch(); }}>{t('common.retry')}</button>
+        </div>
+      ) : null}
+      {renderedHtml !== undefined ? (
+        <iframe
+          key={renderedHtml}
+          ref={frameRef}
+          title={label}
+          srcDoc={augmentPanelHtml(renderedHtml)}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          onLoad={() => {
+            frameWindowRef.current = frameRef.current?.contentWindow ?? null;
+            recent.current = [];
+            setLoadSeq((seq) => seq + 1);
+          }}
+          data-plugin-panel={`${pluginId}:${panelId}`}
+          data-plugin-settings-panel={pluginId}
+          style={{ height: frameHeight === undefined ? '16rem' : `${frameHeight}px` }}
+          className="block w-full border-0 bg-paper"
+        />
+      ) : documentQuery.isPending ? (
+        <p className="flex items-center gap-2 py-2 text-[13px] text-ink-faint" role="status" data-plugin-settings-panel-loading>
+          <Spinner label={t('cap.loading')} />{t('cap.panel.loading')}
+        </p>
+      ) : null}
+    </>
   );
 }

@@ -2828,6 +2828,10 @@ export class KikiClient {
     return this.run(this.rest.plugins.settings(pluginId));
   }
 
+  listPluginModels(): Promise<import('@kiki/protocol').PluginModelCatalog> {
+    return this.run(this.rest.plugins.models());
+  }
+
   /** Per-key write: a value sets it, null removes it; keys not sent are kept. */
   setPluginSettings(
     pluginId: string,

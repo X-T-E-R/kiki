@@ -16,6 +16,8 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { LINK_CLASS } from './CapabilityLink';
 
 import type { PluginSettingsResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -26,6 +28,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { SettingField } from '../settings/fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../settings/SecretField';
@@ -41,6 +44,8 @@ interface Property extends SettingTextSource {
   readonly enum?: readonly string[];
   readonly multiline?: boolean;
   readonly advanced?: boolean;
+  readonly format?: 'kiki-model' | 'kiki-connection';
+  readonly requiredUnless?: string;
 }
 
 interface SettingsSchema {
@@ -57,6 +62,11 @@ function isRemovedTombstone(key: string, property: Property): boolean {
 
 function isGroupSwitch(key: string, property: Property): boolean {
   return property.group !== undefined && property.type === 'boolean' && key.endsWith('__enabled');
+}
+
+function isCatalogField(property: Property): boolean {
+  return property.type === 'string' && property.hidden !== true && !property.secret
+    && (property.format === 'kiki-connection' || property.format === 'kiki-model');
 }
 
 function schemaOf(view: PluginSettingsResponse | undefined): SettingsSchema | undefined {
@@ -79,15 +89,30 @@ function draftOf(view: PluginSettingsResponse, schema: SettingsSchema): Draft {
 type Issue = { readonly key: string; readonly text: string };
 
 /** Only changed keys; an emptied plain value or a cleared secret is sent as null. Hidden tombstones other than Restore are never written. */
-function patchOf(draft: Draft, baseline: Draft, schema: SettingsSchema, t: ReturnType<typeof useI18n>['t']): { values?: Record<string, string | number | boolean | null>; issue?: Issue } {
+function patchOf(draft: Draft, baseline: Draft, schema: SettingsSchema, stored: PluginSettingsResponse, t: ReturnType<typeof useI18n>['t']): { values?: Record<string, string | number | boolean | null>; issue?: Issue } {
   const values: Record<string, string | number | boolean | null> = {};
   const required = new Set(schema.schema.required ?? []);
-  for (const [key, property] of Object.entries(schema.schema.properties)) {
+  const entries = Object.entries(schema.schema.properties);
+  const changedGroups = new Set(Object.keys(draft).filter((key) => JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]))
+    .map((key) => schema.schema.properties[key]?.group));
+  const inactiveGroups = new Set(entries.filter(([key, property]) => property.group !== undefined
+    && (isGroupSwitch(key, property) && draft[key] === false || isRemovedTombstone(key, property) && draft[key] === true))
+    .map(([, property]) => property.group));
+  for (const [key, property] of entries) {
     if (property.hidden === true && !isRemovedTombstone(key, property)) continue;
     const next = draft[key];
     if (next === undefined) continue;
+    const alternate = property.requiredUnless;
+    const alternateValue = alternate === undefined ? undefined : (draft[alternate] ?? stored.values[alternate]);
+    const alternateSet = typeof alternateValue === 'string' && alternateValue.trim() !== '';
+    // An incomplete source must not block a save for another source.
+    const validateGroup = property.group === undefined || (!inactiveGroups.has(property.group)
+      && (changedGroups.has(property.group) || (alternate !== undefined && draft[alternate] !== baseline[alternate])));
+    const needsValue = required.has(key) && property.default === undefined && !alternateSet && validateGroup;
     if (property.secret) {
       const secret = next as SecretDraft;
+      const configured = secret.mode === 'set' ? secret.value.trim() !== '' : secret.mode === 'keep' && stored.secretsConfigured.includes(key);
+      if (needsValue && !configured) return { issue: { key, text: t('cap.settings.required') } };
       if (secret.mode === 'set') values[key] = secret.value;
       else if (secret.mode === 'clear') values[key] = null;
       continue;
@@ -97,7 +122,7 @@ function patchOf(draft: Draft, baseline: Draft, schema: SettingsSchema, t: Retur
       continue;
     }
     const text = (next as string).trim();
-    if (text === '' && required.has(key) && property.default === undefined) return { issue: { key, text: t('cap.settings.required') } };
+    if (text === '' && needsValue) return { issue: { key, text: t('cap.settings.required') } };
     if (text === (baseline[key] as string).trim()) continue;
     if (text === '') { values[key] = null; continue; }
     if (property.type === 'number') {
@@ -138,30 +163,34 @@ function groupsOf(entries: readonly Entry[], locale: string): readonly Group[] {
   return order.map((id) => ({ id, ...byId.get(id)! }));
 }
 
-export function PluginSettingsForm({
-  pluginId,
-  showEmptyNote = false,
-}: {
+interface PluginSettingsFormProps {
   readonly pluginId: string;
   readonly showEmptyNote?: boolean;
-}) {
-  const { client } = useConnection();
-  const { t, tp, locale } = useI18n();
+}
+
+export function PluginSettingsForm(props: PluginSettingsFormProps) {
+  const { scopeId, meta } = useConnection();
+  return <PluginSettingsFields key={`${scopeId}:${meta?.server_id ?? ''}:${props.pluginId}`} {...props} />;
+}
+
+function PluginSettingsFields({ pluginId, showEmptyNote = false }: PluginSettingsFormProps) {
+  const { client, scopeId, meta } = useConnection();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const queryKey = ['plugin-settings', pluginId] as const;
-  const query = useQuery({ queryKey, queryFn: () => client.getPluginSettings(pluginId) });
+  const queryKey = ['plugin-settings', pluginId, scopeId, meta?.server_id ?? ''] as const;
+  const query = useQuery({ queryKey, queryFn: () => client.getPluginSettings(pluginId), retry: false });
   const view = query.data;
   const schema = schemaOf(view);
-  const hasConnectionFields = schema !== undefined && Object.keys(schema.schema.properties).some(
-    (key) => key === 'connectionId' || key.endsWith('__connectionId'),
-  );
-  const providersQuery = useQuery({
-    queryKey: ['providers'],
-    queryFn: () => client.listProviders(),
-    enabled: hasConnectionFields && typeof client.listProviders === 'function',
+  const hasCatalogFields = schema !== undefined && Object.values(schema.schema.properties).some(isCatalogField);
+  const catalogQuery = useQuery({
+    queryKey: ['plugin-model-catalog', scopeId, meta?.server_id ?? ''],
+    queryFn: () => client.listPluginModels(),
+    enabled: hasCatalogFields,
     staleTime: 60_000,
+    retry: false,
   });
-  const providers = providersQuery.data?.items ?? [];
+  const models = catalogQuery.data?.models ?? [];
+  const connections = catalogQuery.data?.connections ?? [];
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<Draft | null>(null);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
@@ -180,11 +209,30 @@ export function PluginSettingsForm({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- schema derives from view
   }, [view, dirty, saving]);
 
+  useEffect(() => {
+    if (issue === null) return;
+    const control = document.getElementById(`plugin-setting-${pluginId}-${issue.key}`);
+    let detail = control?.closest('details');
+    while (detail !== null && detail !== undefined) {
+      detail.open = true;
+      detail = detail.parentElement?.closest('details');
+    }
+    const focusTarget = control instanceof HTMLInputElement && control.disabled
+      ? document.getElementById(`${control.id}-undo`) : control;
+    focusTarget?.focus({ preventScroll: true });
+    control?.closest('[data-plugin-setting]')?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  }, [issue, openGroup, pluginId]);
+
   const none = showEmptyNote ? (
     <p className="text-[13px] text-ink-faint" data-plugin-settings-none>{t('cap.settings.none')}</p>
   ) : null;
-  if (query.isError) return <InlineError error={query.error} />;
-  if (view === undefined) return null;
+  if (view === undefined && query.isError) return (
+    <div className="space-y-2" data-plugin-settings-error>
+      <InlineError error={query.error} />
+      <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }}>{t('common.retry')}</button>
+    </div>
+  );
+  if (view === undefined) return <p className="py-2 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
   if (schema === undefined) return none;
   if (draft === null || baseline === null) return null;
   const entries: readonly Entry[] = Object.entries(schema.schema.properties);
@@ -198,7 +246,7 @@ export function PluginSettingsForm({
   const edit = (key: string, value: Draft[string]) => { setDraft({ ...draft, [key]: value }); setIssue(null); };
 
   const save = async () => {
-    const built = patchOf(draft, baseline, schema, t);
+    const built = patchOf(draft, baseline, schema, view, t);
     if (built.values === undefined) {
       setIssue(built.issue ?? null);
       const owner = built.issue === undefined ? undefined : schema.schema.properties[built.issue.key]?.group;
@@ -231,9 +279,8 @@ export function PluginSettingsForm({
       if (property.secret) { if (secrets.has(key)) parts.push(t('cap.settings.summary.secretSet', { name: localizeSettingText(property, locale).title ?? key })); continue; }
       const value = draft[key];
       if (typeof value === 'string' && value.trim() !== '') {
-        const isConnection = key.endsWith('__connectionId') || key.endsWith('__connection');
-        const provider = isConnection ? providers.find((item) => item.id === value) : undefined;
-        parts.push((provider as { name?: string } | undefined)?.name ?? value);
+        const model = property.format === 'kiki-model' ? models.find((item) => item.id === value) : undefined;
+        parts.push(model?.display_name ?? value);
       }
     }
     return parts.length === 0 ? t('cap.settings.summary.empty') : parts.slice(0, 3).join(' · ');
@@ -242,25 +289,31 @@ export function PluginSettingsForm({
   const renderControl = (key: string, property: Property, fieldId: string, label: string) => {
     const invalid = issue?.key === key;
     const currentText = (draft[key] as string) ?? '';
-    const isConnectionField = property.type === 'string' && (key === 'connectionId' || key.endsWith('__connectionId') || key === 'connection' || key.endsWith('__connection'));
     const choices = property.type === 'string' && property.enum !== undefined && property.enum.length > 0 ? property.enum : undefined;
     const border = invalid ? 'border-danger' : '';
-    if (isConnectionField && providers.length > 0) {
+    if (isCatalogField(property)) {
+      const model = property.format === 'kiki-model';
+      const options: SearchableSelectOption[] = model
+        ? models.map((item) => ({ value: item.id, label: item.display_name ?? item.id, group: item.provider_id, hint: item.remote_id, keywords: `${item.id} ${item.provider_id}` }))
+        : connections.map((item) => ({ value: item.id, label: item.id, hint: item.type, keywords: `${item.type} ${item.id}` }));
+      if (currentText !== '' && !options.some((item) => item.value === currentText)) options.unshift({ value: currentText, label: currentText, hint: '', keywords: currentText });
+      options.unshift({ value: '', label: t(model ? 'cap.media.setting.notSet' : 'cap.settings.selfManaged'), hint: '', keywords: '' });
       return (
-        <select id={fieldId} data-plugin-setting-connection={key} className={`${INPUT_BOX} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
-          value={currentText} onChange={(event) => { edit(key, event.target.value); }}>
-          <option value="">{t('cap.media.connection.selfManaged')}</option>
-          {currentText !== '' && !providers.some((item) => item.id === currentText) ? <option value={currentText}>{currentText}</option> : null}
-          {providers.map((item) => {
-            const customName = (item as { name?: string }).name;
-            return (
-              <option key={item.id} value={item.id}>
-                {customName !== undefined && customName !== '' ? customName : item.id}
-                {item.has_api_key || item.oauth?.signed_in === true ? ` · ${tp('cap.media.connection.hasCredential', 1)}` : ''}
-              </option>
-            );
-          })}
-        </select>
+        <div className="w-64 max-w-full space-y-1" data-plugin-setting-catalog={key}>
+          <SearchableSelect id={fieldId} options={options} value={currentText} onChange={(value) => { edit(key, value); }} ariaLabel={label} />
+          {catalogQuery.isPending ? <p className="text-[12px] text-ink-soft" role="status">{t('cap.settings.connectionsLoading')}</p> : null}
+          {catalogQuery.isError ? (
+            <div className="space-y-1">
+              <InlineError error={catalogQuery.error} />
+              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void catalogQuery.refetch(); }}>{t('common.retry')}</button>
+            </div>
+          ) : null}
+          {catalogQuery.isSuccess && (model ? models : connections).length === 0 ? (
+            <p className="text-[12px] text-ink-soft">{t(model ? 'cap.settings.modelsEmpty' : 'cap.settings.connectionsEmpty')}{' '}
+              <Link className={LINK_CLASS} to="/settings/ai?tab=providers#st-card-providers-add">{t('cap.settings.connectionsManage')}</Link>
+            </p>
+          ) : null}
+        </div>
       );
     }
     if (choices !== undefined) {
@@ -312,9 +365,10 @@ export function PluginSettingsForm({
               placeholder={t(stored ? 'cap.settings.secretReplace' : 'st.secret.newPlaceholder')}
               sourceText={t(secret.mode === 'clear' ? 'cap.settings.secretRemovePending' : stored ? 'cap.settings.secretSet' : 'cap.settings.secretUnset')}
               hint={description} />
+            {issue?.key === key ? <p role="alert" className="mt-1 text-[12px] text-danger">{issue.text}</p> : null}
           </div>
           {stored ? (
-            <button type="button" className={`${SECONDARY_BUTTON} mt-[1.625rem] h-8`} data-plugin-secret-remove={key}
+            <button type="button" id={`${fieldId}-undo`} className={`${SECONDARY_BUTTON} h-8 sm:mt-[1.625rem]`} data-plugin-secret-remove={key}
               onClick={() => { edit(key, secret.mode === 'clear' ? KEEP_SECRET : { mode: 'clear' }); }}>
               {t(secret.mode === 'clear' ? 'st.secret.undoClear' : 'cap.settings.secretRemove')}
             </button>
@@ -334,8 +388,10 @@ export function PluginSettingsForm({
     return (
       <div key={key} data-plugin-setting={key}>
         <SettingField label={label} htmlFor={fieldId} help={description} layout={property.multiline === true ? 'stack' : 'row'}>
-          {renderControl(key, property, fieldId, label)}
-          {issue?.key === key ? <p role="alert" className="basis-full text-[12px] text-danger">{issue.text}</p> : null}
+          <div className={`max-w-full space-y-1 ${property.multiline === true ? 'w-full' : 'w-64'}`}>
+            {renderControl(key, property, fieldId, label)}
+            {issue?.key === key ? <p role="alert" className="text-[12px] text-danger">{issue.text}</p> : null}
+          </div>
         </SettingField>
       </div>
     );

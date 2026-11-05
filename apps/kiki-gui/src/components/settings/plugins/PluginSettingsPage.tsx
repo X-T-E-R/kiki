@@ -21,7 +21,8 @@ import { installedPluginsPath, workspacesSettingsPath } from '@kiki/session-core
 
 import { useI18n } from '../../../i18n';
 import type { PluginSummary } from '../../../lib/client';
-import { pluginOrigin, type PluginOrigin } from '../../../lib/pluginCatalog';
+import { pluginContributions, pluginOrigin, type PluginOrigin } from '../../../lib/pluginCatalog';
+import { useDirtyGuard, useGuardedNavigate } from '../../dirtyGuard';
 import { useConnection } from '../../../state/connection';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
@@ -54,7 +55,7 @@ export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) 
   if (installed.isPending) {
     return <p className="py-3 text-[13px] text-ink-faint" role="status" data-plugin-settings-loading>{t('cap.loading')}</p>;
   }
-  if (installed.isError) {
+  if (installed.isError && installed.data === undefined) {
     return (
       <div className="space-y-2" data-plugin-settings-error>
         <InlineError error={installed.error} />
@@ -139,6 +140,9 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const invalidate = useInvalidatePlugins();
+  const guard = useDirtyGuard();
+  const info = usePluginInfo(plugin.id);
+  const hasDedicatedEditor = settingsPanelOf(info.data?.manifest) !== undefined;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
@@ -148,13 +152,14 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   );
   const defaultOn = pluginDefaultOn(plugin);
 
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (action: () => Promise<unknown>, report: 'inline' | 'guard' = 'inline') => {
     setBusy(true);
     setFailure(null);
     try {
       await action();
       await invalidate();
     } catch (error) {
+      if (report === 'guard') throw error;
       setFailure(error);
     } finally {
       setBusy(false);
@@ -179,9 +184,14 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
       <SettingField label={t('st.plugins.enable')} htmlFor={`plugin-${plugin.id}-enabled`} help={plugin.enabled ? undefined : t('st.plugins.enableOffHint')}>
         <span data-plugin-settings-switch>
           <Toggle id={`plugin-${plugin.id}-enabled`} layout="bare" label={t('st.plugins.enable')} checked={plugin.enabled} disabled={busy}
-            onChange={(checked) => { void run(() => plugin.defaultEnabled === undefined
-              ? client.setPluginEnabled(plugin.id, checked)
-              : client.setPluginState(plugin.id, { enabled: checked, defaultEnabled: plugin.defaultEnabled })); }} />
+            onChange={(checked) => {
+              const update = () => plugin.defaultEnabled === undefined
+                ? client.setPluginEnabled(plugin.id, checked)
+                : client.setPluginState(plugin.id, { enabled: checked, defaultEnabled: plugin.defaultEnabled });
+              if (!checked && hasDedicatedEditor && guard?.dirty && guard.confirmDiscard !== undefined) {
+                guard.confirmDiscard(`plugin-settings:${plugin.id}`, () => run(update, 'guard'));
+              } else void run(update);
+            }} />
         </span>
       </SettingField>
       <SettingField label={t('cap.defaultOn')} htmlFor={`plugin-${plugin.id}-default-on`} help={t(defaultOn ? 'st.plugins.defaultOnHint' : 'st.plugins.defaultOffHint')}>
@@ -226,59 +236,54 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   );
 }
 
-/**
- * The plugin's own settings panel when it ships one and the master switch
- * still allows the document. Otherwise the generic schema form, which is also
- * what a turned-off plugin keeps: its document route refuses a disabled plugin.
- *
- * A manifest read that failed is reported in place instead of being read as
- * "this plugin declares no settings" — the page does not know yet, and saying
- * otherwise would send the reader away from a form that exists. Its retry asks
- * both reads again, so one click repairs the whole body.
- */
+/** A declared panel stays the editor, including when it needs enabling or a retry. */
 function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
   const { t } = useI18n();
-  const { scopeId, meta } = useConnection();
-  const queryClient = useQueryClient();
   const info = usePluginInfo(plugin.id);
-  const panel = settingsPanelOf(info.data?.manifest);
-  const canOpen = plugin.enabled && plugin.state === 'ok' && panel !== undefined;
-  if (plugin.enabled && plugin.state === 'ok' && info.isPending) {
+  if (info.isPending) {
     return <p className="py-2 text-[13px] text-ink-faint" role="status" data-plugin-settings-panel-loading>{t('cap.loading')}</p>;
   }
-  if (canOpen && panel !== undefined) {
+  if (info.isError && info.data === undefined) {
     return (
-      <PluginSettingsPanel
-        key={`${scopeId}:${meta?.server_id ?? ''}:${plugin.id}:${panel.id}`}
-        pluginId={plugin.id}
-        panelId={panel.id}
-        label={panel.label}
-      />
+      <div className="space-y-2" data-plugin-settings-manifest-error>
+        <InlineError error={info.error} />
+        <button type="button" className={SECONDARY_BUTTON} onClick={() => { void info.refetch(); }}>{t('common.retry')}</button>
+      </div>
     );
   }
-  const manifestUnread = info.isError;
+  const panel = settingsPanelOf(info.data.manifest);
+  if (panel === undefined) {
+    const workspaces = pluginContributions(plugin.id, info.data.manifest).panels.filter((item) => item.slot === 'workspace');
+    return (
+      <div className="space-y-3">
+        {workspaces.length > 0 ? (
+          plugin.enabled && plugin.state === 'ok' ? (
+            <div className="flex flex-wrap gap-3">
+              {workspaces.map((item) => (
+                <Link key={item.id} to={`/capabilities?plugin=${encodeURIComponent(plugin.id)}&panel=${encodeURIComponent(`${plugin.id}:${item.id}`)}`}
+                  className={LINK_CLASS} data-plugin-workspace-settings={item.id}>
+                  {t('cap.settings.openPanel', { name: item.label })}<Icon name="arrowRight" size={14} />
+                </Link>
+              ))}
+            </div>
+          ) : <p className="text-[13px] text-ink-soft">{t(plugin.enabled ? 'cap.settings.panelUnavailable' : 'cap.settings.panelOff')}</p>
+        ) : null}
+        <PluginSettingsForm pluginId={plugin.id} showEmptyNote={workspaces.length === 0} />
+      </div>
+    );
+  }
+  if (!plugin.enabled) {
+    return <p className="text-[13px] text-ink-soft" data-plugin-settings-panel-off>{t('cap.settings.panelOff')}</p>;
+  }
+  if (plugin.state !== 'ok') {
+    return <p className="text-[13px] text-ink-soft" data-plugin-settings-panel-unavailable>{t('cap.settings.panelUnavailable')}</p>;
+  }
   return (
-    <div className="space-y-2">
-      {manifestUnread ? (
-        <div className="space-y-2" data-plugin-settings-manifest-error>
-          <InlineError error={info.error} />
-          <button
-            type="button"
-            className={SECONDARY_BUTTON}
-            onClick={() => {
-              void info.refetch();
-              void queryClient.invalidateQueries({ queryKey: ['plugin-settings', plugin.id] });
-            }}
-          >
-            {t('common.retry')}
-          </button>
-        </div>
-      ) : null}
-      {panel !== undefined && !plugin.enabled ? (
-        <p className="text-[13px] text-ink-faint" data-plugin-settings-panel-off>{t('cap.settings.panelOff')}</p>
-      ) : null}
-      <PluginSettingsForm pluginId={plugin.id} showEmptyNote={panel === undefined && !manifestUnread} />
-    </div>
+    <PluginSettingsPanel
+      pluginId={plugin.id}
+      panelId={panel.id}
+      label={panel.label}
+    />
   );
 }
 
@@ -288,7 +293,7 @@ function PluginHeader({ plugin, origin }: {
   readonly origin: PluginOrigin;
 }) {
   const { t } = useI18n();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const broken = plugin.state === 'error' || plugin.hasErrors;
   const contributions = usePluginContributions(plugin);
   return (

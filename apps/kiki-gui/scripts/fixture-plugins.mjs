@@ -41,8 +41,22 @@ export function pluginSkins(server) {
     server.plugins.some((plugin) => plugin.id === skin.plugin?.id && plugin.enabled && plugin.state === 'ok'));
 }
 
+function pluginModelCatalog(server) {
+  return {
+    models: server.models,
+    connections: server.providers.map(({ id, type, status, service, default_model, models, has_api_key }) => ({
+      id, type, status, service: service ?? 'chat', default_model, models,
+      authentication: type === 'oauth' ? 'oauth' : has_api_key ? 'api-key' : 'none',
+    })),
+  };
+}
+
 /** Returns true when the request was handled. */
 export function handlePlugins(server, res, path, method, body) {
+  if (path === '/plugins/models' && method === 'GET') {
+    server.envelope(res, pluginModelCatalog(server));
+    return true;
+  }
   if (path === '/plugins:preview' && method === 'POST') {
     const source = String(body?.source ?? '').trim();
     const candidate = candidateFor(server, source);
@@ -165,7 +179,11 @@ export function handlePlugins(server, res, path, method, body) {
         const answers = server.scenario?.data.pluginCallResponses?.[pluginId] ?? {};
         const answer = answers[body?.action];
         if (answer === undefined) server.envelope(res, null, 40404, `Fixture plugin.call has no answer for ${pluginId}/${String(body?.action)}`);
-        else server.envelope(res, { result: structuredClone(answer) });
+        else server.envelope(res, { result: typeof answer === 'function'
+          ? answer(server.pluginSettings?.[pluginId]?.values ?? server.scenario?.data.pluginSettings?.[pluginId]?.values ?? {})
+          : structuredClone(answer) });
+      } else if (body?.method === 'plugin.models.list') {
+        server.envelope(res, { result: pluginModelCatalog(server) });
       } else if (body?.method === 'session.summary') {
         server.envelope(res, { result: { id: body.session_id, title: 'Fixture session' } });
       } else if (body?.method === 'session.sendMessage') {

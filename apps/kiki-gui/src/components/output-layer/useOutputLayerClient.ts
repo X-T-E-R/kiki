@@ -73,7 +73,7 @@ export function useOutputLayerClient(sessionId?: string): OutputLayerClient | nu
     if (!outputClient) return;
 
     if (queryClient) {
-      const queryKey = ['plugin', 'output-layer-configuration', scopeKey, serverId, sessionId ?? '__all__'];
+      const queryKey = ['plugin', 'kiki-output-layer', 'configuration', scopeKey, serverId, sessionId ?? '__all__'];
       const observer = new QueryObserver(queryClient, {
         queryKey,
         queryFn: () => outputClient.configuration(sessionId ? { sessionId } : undefined),
