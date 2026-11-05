@@ -3,9 +3,10 @@ import {
   type OutputLayerConfiguration, type OutputLayerEvent, type OutputLayerRequest,
 } from '@kiki/protocol';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IAgentPluginModels } from '#/agent/pluginModels/pluginModels';
-import { ISessionManager, type SessionLease } from '#/app/sessionManager/sessionManager';
-import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { IPluginModelRequests } from '#/app/plugin/pluginModelRequests';
+import { IRequestIdentityInstallation, operationRequestIdentity } from '#/session/requestIdentity/requestIdentityRegistry';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
@@ -16,7 +17,7 @@ import type { ModelRequestParams } from '#/kosong/model/modelRequester';
 import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { IOutputLayerService } from './outputLayer';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
-import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { Error2, ErrorCodes } from '#/errors';
 
@@ -31,21 +32,31 @@ export class OutputLayerService implements IOutputLayerService {
     @IPluginUsageService private readonly usage: IPluginUsageService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @IWorkspaceService private readonly workspaces: IWorkspaceService,
-    @ISessionManager private readonly sessionManager: ISessionManager,
+    @IPluginModelRequests private readonly modelRequests: IPluginModelRequests,
+    @IRequestIdentityInstallation private readonly installation: IRequestIdentityInstallation,
+    @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
   ) {}
 
+  private async indexedSession(sessionId: string): Promise<SessionSummary> {
+    const session = await this.sessions.get(sessionId);
+    if (session === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Session was not found');
+    return session;
+  }
+
   async configuration(sessionId?: string): Promise<OutputLayerConfiguration> {
+    return this.readConfiguration(sessionId === undefined ? undefined : await this.indexedSession(sessionId));
+  }
+
+  private async readConfiguration(session?: SessionSummary): Promise<OutputLayerConfiguration> {
     let workspaceId: string | undefined;
-    if (sessionId !== undefined) {
-      const session = await this.sessions.get(sessionId);
-      if (session === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Session was not found');
+    if (session !== undefined) {
       const workspace = await this.workspaces.get(session.workspaceId);
       if (workspace === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Session workspace was not found');
       workspaceId = workspace.id;
     }
     const installed = await this.plugins.listPlugins();
     const info = installed.find((plugin) => plugin.id === OUTPUT_LAYER_PLUGIN_ID);
-    if (!info?.enabled || info.state !== 'ok' || !await this.usage.allows(workspaceId, OUTPUT_LAYER_PLUGIN_ID, sessionId)) return { enabled: false, presets: [], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } };
+    if (!info?.enabled || info.state !== 'ok' || !await this.usage.allows(workspaceId, OUTPUT_LAYER_PLUGIN_ID, session?.id)) return { enabled: false, presets: [], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } };
     const prepared = await this.hosts.requestPanel(OUTPUT_LAYER_PLUGIN_ID, 'settings', 'configuration', {});
     return outputLayerConfigurationSchema.parse(prepared);
   }
@@ -60,11 +71,11 @@ export class OutputLayerService implements IOutputLayerService {
 
   async *stream(raw: OutputLayerRequest, signal: AbortSignal): AsyncIterable<OutputLayerEvent> {
     let text = '';
-    let lease: SessionLease | undefined;
     try {
       const input = outputLayerRequestSchema.parse(raw);
       signal.throwIfAborted();
-      const config = await this.configuration(input.sessionId);
+      const summary = await this.indexedSession(input.sessionId);
+      const config = await this.readConfiguration(summary);
       if (!config.enabled) throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, '启用 Kiki Output Layer 后再试');
       const preset = input.preset;
       if (!preset.modelId && !(preset.connectionId && preset.customModelId)) throw new Error2(ErrorCodes.CONFIG_INVALID, '请先为输出预设选择模型');
@@ -89,10 +100,7 @@ export class OutputLayerService implements IOutputLayerService {
       messages.push(current);
       const inputTokensEstimate = prefixTokens + estimateTokensForMessages(messages);
       const cycleId = historyReset ? crypto.randomUUID() : input.cycleId;
-      lease = await this.sessionManager.acquire?.(input.sessionId, 'output-layer', undefined, signal);
-      const owner = lease?.handle.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
-      if (owner === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, '当前会话没有可归属输出请求的主代理');
-      const models = owner.accessor.get(IAgentPluginModels);
+      signal.throwIfAborted();
       yield { type: 'started', cycleId, historyReset, contextWindow: window, inputTokensEstimate };
       const request = { systemPrompt, messages, tools: [] };
       const params: ModelRequestParams = {
@@ -100,7 +108,13 @@ export class OutputLayerService implements IOutputLayerService {
         maxCompletionTokens: outputBudget, maxContextTokens: window, usedContextTokens: inputTokensEstimate,
         usedContextTokensTrusted: outputBudget !== undefined,
       };
-      for await (const event of models.request(requester, request, signal, params, 'output_layer')) {
+      const source = this.modelRequests.request(requester, request, signal, params, 'output_layer', {
+        sessionId: input.sessionId, agentId: MAIN_AGENT_ID,
+        snapshot: async ({ turnKey, logicalIdKind, turnIndex }) => operationRequestIdentity({ installationId: await this.installation.get(), sessionId: input.sessionId, agentId: MAIN_AGENT_ID, turnKey, logicalIdKind, turnIndex }),
+        recordUsage: (usage, usageKnown) => this.retainedUsage.recordOperation(summary, { time: Date.now(), model: requester.model.name, agentId: MAIN_AGENT_ID,
+          provider: requester.model.providerName, modelAlias: requester.model.id, executorId: 'native', requestKind: 'output_layer', usage, usageKnown }),
+      });
+      for await (const event of source) {
         if (event.type === 'attempt.discarded') { text = ''; yield { type: 'reset' }; }
         if (event.type === 'part' && event.part.type === 'text') { text += event.part.text; yield { type: 'delta', text: event.part.text }; }
         if (event.type === 'finish') {
@@ -115,7 +129,7 @@ export class OutputLayerService implements IOutputLayerService {
     } catch (error) {
       if (signal.aborted) yield { type: 'cancelled' };
       else yield { type: 'failed', message: error instanceof Error ? error.message : String(error), code: (error as { code?: string } | null)?.code };
-    } finally { await lease?.dispose(); }
+    }
   }
 }
 

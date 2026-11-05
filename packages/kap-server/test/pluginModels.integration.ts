@@ -8,6 +8,14 @@ import { IAgentToolRegistryService, IPluginService, ISessionManager, ensureMainA
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import { IWireService } from '@kiki/agent-core-v2/wire/wire';
 import { IEventDispatcher } from '@kiki/agent-core-v2/state/eventDispatcher';
+import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ExternalText } from '@kiki/agent-core-v2/agent/execution/externalClientEvents';
+import { SessionSubagentService } from '@kiki/agent-core-v2/session/subagent/subagentService';
+import { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { FileTokenStorage } from '@kiki/oauth';
 import { createKlient } from '@kiki/klient/http';
 import { OUTPUT_LAYER_DEFAULT_PRESETS, type OutputLayerEvent, type OutputLayerRequest } from '@kiki/protocol';
@@ -119,7 +127,7 @@ it('executes third-party and Output Layer requests with host identity, credentia
     if (tool === undefined) throw new Error('Third-party model tool was not registered');
     const invoke = async (args: unknown, options?: { signal?: AbortSignal; onDelta?: () => void }) => {
       const execution = await tool.resolveExecution(args);
-      if (!('execute' in execution)) throw new Error(String(execution.output));
+      if (!('execute' in execution)) throw new Error(JSON.stringify(execution.output));
       const result = await execution.execute({ signal: options?.signal ?? AbortSignal.timeout(10_000), toolCallId: crypto.randomUUID(), turnId: 1, onUpdate: (update) => {
         if (update.text === 'fixture model delta') options?.onDelta?.();
       } });
@@ -174,11 +182,25 @@ it('executes third-party and Output Layer requests with host identity, credentia
 
     const outputInput: OutputLayerRequest = { sessionId: session.id, sourceId: 'visible-block', sourceRevision: '1', text: 'Visible Assistant text',
       preset: { ...OUTPUT_LAYER_DEFAULT_PRESETS[0]! }, history: [], historyTokens: 16384, cycleId: 'read-cycle' };
-    const output = async (preset: OutputLayerRequest['preset']) => {
+    const output = async (preset: OutputLayerRequest['preset'], sessionId = session.id) => {
       const events: OutputLayerEvent[] = [];
-      await rest.outputLayer.stream({ ...outputInput, preset }, (event) => events.push(event));
+      await rest.outputLayer.stream({ ...outputInput, sessionId, preset }, (event) => events.push(event));
       return events;
     };
+    const manager = server.core.accessor.get(ISessionManager);
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const sessionContext = session.accessor.get(ISessionContext);
+    const accounting = usageRuntime(server.core).service;
+    const workspaceId = sessionContext.workspaceId;
+    const wireScope = sessionContext.scope('agents/main');
+    const completeAccounting = (sessionId: string) => vi.waitFor(async () => {
+      const snapshot = await accounting.readSessionAccounting(workspaceId, sessionId);
+      expect(snapshot).toMatchObject({ complete: true, freshness: 'current' });
+      return snapshot;
+    }, { timeout: 5000 });
+    await agent.accessor.get(IEventDispatcher).flush();
+    const liveWire = await storage.read(wireScope, 'wire.jsonl');
+    const beforeLiveReading = await completeAccounting(session.id);
     expect((await output(outputInput.preset)).at(-1)).toMatchObject({ type: 'failed' });
     expect(records).toHaveLength(beforeBlank);
     expect((await output({ ...outputInput.preset, modelId: 'fixture-model' })).at(-1)).toMatchObject({ type: 'completed', text: 'first second' });
@@ -193,9 +215,84 @@ it('executes third-party and Output Layer requests with host identity, credentia
     expect(usages).toEqual([
       expect.objectContaining({ agentId: 'main', model: 'catalog-model', modelAlias: 'fixture-model', provider: 'catalog', requestKind: 'plugin:fixture-model-client', usage: expect.objectContaining({ inputOther: 19, output: 4 }) }),
       expect.objectContaining({ agentId: 'main', model: 'direct-model', provider: 'selected', requestKind: 'plugin:fixture-model-client' }),
-      expect.objectContaining({ agentId: 'main', model: 'catalog-model', provider: 'catalog', requestKind: 'output_layer' }),
-      expect.objectContaining({ agentId: 'main', model: 'read-model', provider: 'selected', requestKind: 'output_layer' }),
     ]);
+    expect(await storage.read(wireScope, 'wire.jsonl')).toEqual(liveWire);
+    expect(await completeAccounting(session.id)).toMatchObject({ complete: true, tokens: { input_other: beforeLiveReading.tokens.input_other + 38, output: beforeLiveReading.tokens.output + 8 } });
+
+    expect(await client.session(session.id).agent('main').prompt({ input: [{ type: 'text', text: 'Create a saved Assistant body.' }] }, { waitFor: 'terminal' })).toMatchObject({ state: 'completed' });
+    const recovered = vi.spyOn(SessionSubagentService.prototype, 'recoverReceipts');
+    const created: string[] = [];
+    const creation = manager.onWillCreateSession?.((event) => { created.push(event.sessionId); });
+    const probes: unknown[] = [];
+    const probe = async (kind: string, sessionId: string) => {
+      const restores = created.length;
+      const receipts = recovered.mock.calls.length;
+      const requests = records.length;
+      const events = await output({ ...outputInput.preset, modelId: 'fixture-model' }, sessionId);
+      probes.push({ kind, terminal: events.at(-1), materialized: created.length - restores, recovered: recovered.mock.calls.length - receipts,
+        requests: records.length - requests, live: manager.get(sessionId) !== undefined });
+    };
+    try {
+      await manager.close(session.id);
+      const originalWire = await storage.read(wireScope, 'wire.jsonl');
+      const originalReceipt = await storage.read(wireScope, 'wire.transcript-receipt.json');
+      const beforeCold = await completeAccounting(session.id);
+      const blank = await output(outputInput.preset);
+      expect(blank.at(-1)).toMatchObject({ type: 'failed' });
+      expect(manager.get(session.id)).toBeUndefined();
+      const writer = await storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(sessionContext.scope()), { owner: { kind: 'fixture-other-execution-owner' } });
+      try { await probe('ordinary-cold-with-body', session.id); }
+      finally { await writer.release(); }
+      expect(records.at(-1)!.headers['x-opencode-session']).toBe(identity);
+      expect(records.at(-1)!.body).not.toHaveProperty('max_tokens');
+      await manager.archive(session.id);
+      await probe('archived-with-body', session.id);
+      expect(await storage.read(wireScope, 'wire.jsonl')).toEqual(originalWire);
+      expect(await storage.read(wireScope, 'wire.transcript-receipt.json')).toEqual(originalReceipt);
+      expect(await completeAccounting(session.id)).toMatchObject({ complete: true, tokens: { input_other: beforeCold.tokens.input_other + 38, output: beforeCold.tokens.output + 8 } });
+      const external = await manager.create({ workDir: home });
+      const externalAgent = await ensureMainAgent(external);
+      const source = { connectionId: 'fixture-external', clientName: 'Fixture external client', sessionRef: 'fixture-history', driver: 'external' as const };
+      await external.accessor.get(ISessionMetadata).update({ custom: { externalClient: source } });
+      await externalAgent.accessor.get(IEventDispatcher).dispatchDurably(new ExternalText({ recordId: 'external-visible', turnId: 1, text: 'Visible external Assistant body', kind: 'assistant_excerpt', source }));
+      await manager.close(external.id);
+      await probe('external-visible-cold', external.id);
+      const withoutMain = await manager.create({ workDir: home });
+      await probe('live-without-main', withoutMain.id);
+      expect(withoutMain.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+      const unknown = await output({ ...outputInput.preset, connectionId: 'selected', customModelId: 'reject-model' }, withoutMain.id);
+      expect(unknown.at(-1)).toMatchObject({ type: 'failed', code: 'provider.api_error' });
+      expect(await completeAccounting(withoutMain.id)).toMatchObject({ complete: true, tokens: { input_other: 19, output: 4 }, tokens_unknown: true });
+      expect(probes).toEqual([
+        expect.objectContaining({ kind: 'ordinary-cold-with-body', materialized: 0, recovered: 0, live: false, terminal: { type: 'completed', text: 'first second' } }),
+        expect.objectContaining({ kind: 'archived-with-body', materialized: 0, recovered: 0, live: false, terminal: { type: 'completed', text: 'first second' } }),
+        expect.objectContaining({ kind: 'external-visible-cold', materialized: 0, recovered: 0, live: false, terminal: { type: 'completed', text: 'first second' } }),
+        expect.objectContaining({ kind: 'live-without-main', materialized: 0, recovered: 0, live: true, terminal: { type: 'completed', text: 'first second' } }),
+      ]);
+      expect(probes.every((row) => (row as { requests: number }).requests === 1)).toBe(true);
+      const exportedOperations: { key: string; workspaceId: string; known?: boolean }[] = [];
+      expect(await accounting.readExportSources(async (source) => {
+        if (source.key.startsWith('operation\0')) for (const record of source.records) exportedOperations.push({ key: source.key, workspaceId: source.workspaceId, known: record.usageKnown });
+      })).toMatchObject({ complete: true });
+      expect(new Set(exportedOperations.map((row) => row.key)).size).toBe(7);
+      expect(exportedOperations.filter((row) => row.known === true)).toHaveLength(6);
+      expect(exportedOperations.filter((row) => row.known === false)).toHaveLength(1);
+      expect(exportedOperations.every((row) => row.workspaceId === workspaceId)).toBe(true);
+      await client.close();
+      client = undefined;
+      await server.close();
+      server = undefined;
+      server = await startServer({ homeDir: home, port: 0, hostIdentity: TEST_HOST_IDENTITY, logLevel: 'silent' });
+      client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
+      const history = () => client!.rest!.usage({ range: 'all', dimension: 'agent', granularity: 'session', include_archived: 'true', 'agent.id': 'main', 'workspace.id': workspaceId });
+      await vi.waitFor(async () => {
+        const usage = await history();
+        expect(usage.reliability.complete).toBe(true);
+        expect(usage.sessions.items).toContainEqual(expect.objectContaining({ id: withoutMain.id, workspace_id: workspaceId, usage: expect.objectContaining({ tokens: { input_other: 19, output: 4, input_cache_read: 0, input_cache_creation: 0 }, tokens_unknown: true }) }));
+        expect(usage.sessions.items).toContainEqual(expect.objectContaining({ id: session.id, archived: true, usage: expect.objectContaining({ tokens: expect.objectContaining({ input_other: beforeCold.tokens.input_other + 38, output: beforeCold.tokens.output + 8 }) }) }));
+      }, { timeout: 7000 });
+      expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
+    } finally { creation?.dispose(); recovered.mockRestore(); }
   } finally {
     await client?.close();
     await server?.close();

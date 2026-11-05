@@ -28,6 +28,7 @@ import {
   RETAINED_USAGE_VERSION,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
+  OPERATION_USAGE_KEY,
   type EphemeralUsageTotal,
   type RetainedDeletedSessionUsage,
   type RetainedUsageListQuery,
@@ -317,6 +318,8 @@ function fixture(
   };
   const retainedUsage: IRetainedUsageService = {
     _serviceBrand: undefined,
+    recordOperation: async () => {},
+    readOperationSummary: async () => ({ complete: true }),
     retainDeletedSession: async () => { throw new Error('retain is not used'); },
     prepareReadModel: async (_query, includeEphemeral = true) => {
       await publishRows(includeEphemeral);
@@ -415,7 +418,11 @@ async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Re
   };
   const core = { accessor: { get: (id: unknown) => {
     if (id === ISessionIndex) return { listRecent: async () => ({ items: [...sessions] }) };
-    if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+    if (id === IRetainedUsageService) return {
+      recordOperation: async () => {},
+      readOperationSummary: async () => ({ complete: true }),
+      listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }),
+    };
     if (id === IModelPricingService) return pricing;
     if (id === IUsageReadModel) return model;
     if (id === IUsageFactStore) return facts;
@@ -1886,7 +1893,7 @@ describe('UsageSourceTracker', () => {
       await logs.rewrite('retained-store', key, []);
       expect(changes).toEqual([{ kind: 'retained' }, { kind: 'retained' }]);
       expect(tracker.ready).toBe(true);
-      expect(watched).toEqual([`retained-store/${RETAINED_USAGE_KEY}`, `retained-store/${EPHEMERAL_USAGE_KEY}`]);
+      expect(watched).toEqual([`retained-store/${RETAINED_USAGE_KEY}`, `retained-store/${EPHEMERAL_USAGE_KEY}`, `retained-store/${OPERATION_USAGE_KEY}`]);
       changes.length = 0;
       await memory.append('retained-store', key, Buffer.from('{}\n'));
       expect(changes).toEqual([{ kind: 'retained' }]);
@@ -1901,13 +1908,53 @@ describe('UsageSourceTracker', () => {
     } finally { tracker.dispose(); await logs.close(); await logs.dispose(); }
   });
 
+  it('invalidates operation usage by session for committed batches and all operations for cold changes', async () => {
+    const memory = new InMemoryStorageService();
+    const root = join(process.cwd(), '.tmp', 'usage-tracker', 'sessions');
+    const storage = new Proxy(memory, { get: (target, property, receiver) => {
+      if (property === 'pathFor') return () => root;
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const logs = new AppendLogStore(storage);
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === IFileSystemStorageService) return storage;
+      if (id === IAppendLogStore) return logs;
+      if (id === IBootstrapService) return { scope: () => 'retained-store' };
+      throw new Error('unexpected service');
+    } } } as unknown as Scope;
+    const tracker = new UsageSourceTracker(core, () => ({ close: () => {}, on: () => {} }));
+    const changes: UsageSourceChange[] = [];
+    tracker.onDidChange((change) => { changes.push(change); });
+    const operation = (sessionId: string) => ({ version: 1, session: { id: sessionId, workspaceId: 'w', createdAt: 1, updatedAt: 1, archived: false }, record: {
+      time: 1, model: 'model', usage: { inputOther: 1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 }, requestKind: 'output_layer',
+    } });
+    try {
+      logs.append('retained-store', OPERATION_USAGE_KEY, operation('first'));
+      logs.append('retained-store', OPERATION_USAGE_KEY, operation('other'));
+      await logs.flush();
+      expect(changes).toEqual([
+        { kind: 'operation', sessionKey: 'w\0first' },
+        { kind: 'operation', sessionKey: 'w\0other' },
+      ]);
+      changes.length = 0;
+      logs.append('retained-store', OPERATION_USAGE_KEY, operation('first'));
+      await logs.flush();
+      expect(changes).toEqual([{ kind: 'operation', sessionKey: 'w\0first' }]);
+      expect(tracker.ready).toBe(true);
+      changes.length = 0;
+      await memory.append('retained-store', OPERATION_USAGE_KEY, Buffer.from('{}\n'));
+      expect(changes).toEqual([{ kind: 'operation' }]);
+    } finally { tracker.dispose(); await logs.close(); await logs.dispose(); }
+  });
+
   it('leaves source validation enabled after unsupported watches and in-memory storage', async () => {
     const writes = new Emitter<{ scope: string; key: string }>();
     for (const root of [undefined, join(process.cwd(), '.tmp', 'unsupported-watch')]) {
       let warnings = 0;
       const core = { accessor: { get: (id: unknown) => {
         if (id === IFileSystemStorageService) return { pathFor: () => root, watch: () => Event.None };
-        if (id === IAppendLogStore) return { onDidWrite: writes.event };
+        if (id === IAppendLogStore) return { registerProjection: () => ({ dispose() {} }), onDidWrite: writes.event };
         if (id === IBootstrapService) return { scope: () => 'store' };
         if (id === ILogService) return { warn: () => { warnings++; } };
         throw new Error('unexpected service');

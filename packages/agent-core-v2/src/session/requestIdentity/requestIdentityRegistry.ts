@@ -152,23 +152,7 @@ export class RequestIdentityRegistry implements IRequestIdentityRegistry {
       dimensions.logicalRequestIdentity && input.logicalIdKind === 'uuidv7'
         ? await (this.createdAt ??= this.metadata.read().then((meta) => meta.createdAt))
         : 0;
-    const sharedSessionId = dimensions.sharedSessionIdentity
-      ? stableUuid(identitySeed, this.session.sessionId, 'shared-session')
-      : undefined;
-    const threadId =
-      dimensions.threadIdentity
-        ? input.agentId === 'main'
-          ? (sharedSessionId ?? stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId))
-          : stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId)
-        : undefined;
-    const agentSessionId = dimensions.agentSessionIdentity
-      ? stableUuid(
-          identitySeed,
-          this.session.sessionId,
-          'agent-session',
-          input.agentId,
-        )
-      : undefined;
+    const { sharedSessionId, threadId, agentSessionId } = sessionIdentityParts(identitySeed, this.session.sessionId, input.agentId, dimensions);
     const needsTurn =
       dimensions.logicalRequestIdentity || dimensions.turnIndex || dimensions.turnState;
     let turn: TurnIdentity | undefined;
@@ -293,6 +277,37 @@ export class RequestIdentityRegistry implements IRequestIdentityRegistry {
     if (stored?.version === 1 && stored.agents !== undefined) return stored;
     return { version: 1, agents: {} };
   }
+}
+
+function sessionIdentityParts(seed: string, sessionId: string, agentId: string, dimensions: RequestIdentityDimensions) {
+  const sharedSessionId = dimensions.sharedSessionIdentity ? stableUuid(seed, sessionId, 'shared-session') : undefined;
+  const threadId = dimensions.threadIdentity
+    ? (agentId === 'main' ? sharedSessionId : undefined) ?? stableUuid(seed, sessionId, 'thread', agentId)
+    : undefined;
+  const agentSessionId = dimensions.agentSessionIdentity ? stableUuid(seed, sessionId, 'agent-session', agentId) : undefined;
+  return { sharedSessionId, threadId, agentSessionId };
+}
+
+/** Projects a standalone request without opening or advancing a conversation's turn registry. */
+export function operationRequestIdentity(input: {
+  readonly installationId: string;
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly turnKey: string;
+  readonly logicalIdKind: 'uuidv7' | 'uuidv4';
+  readonly turnIndex: boolean;
+}): RequestIdentitySnapshot {
+  const { installationId, sessionId, agentId, turnKey, logicalIdKind, turnIndex } = input;
+  const parts = sessionIdentityParts(installationId, sessionId, agentId, ALL_IDENTITY_DIMENSIONS);
+  return {
+    ...parts,
+    installationId,
+    agentSessionId: turnIndex ? stableUuid(installationId, sessionId, 'operation-agent-session', agentId, turnKey) : parts.agentSessionId,
+    windowId: `${parts.threadId}:1`,
+    logicalId: logicalTurnId(logicalIdKind, turnKey, 0, installationId, sessionId, agentId),
+    turnIndex: turnIndex ? 1 : undefined,
+    setTurnState: () => undefined,
+  };
 }
 
 function stableUuid(...parts: readonly string[]): string {

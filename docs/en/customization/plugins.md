@@ -134,7 +134,7 @@ Auto processing stays local: nothing is uploaded and no OCR runs. An empty or im
 
 ## Output translation and rewriting
 
-**Kiki Output Layer** (`kiki-output-layer`) streams translations or rewrites of Assistant text while you read, leaving the original conversation and main model context unchanged. It uses your existing Kiki models and connections, without another copy of your API key.
+**Kiki Output Layer** (`kiki-output-layer`) streams translations or rewrites of Assistant text while you read. You can use it in an active or saved conversation, including archived conversations and visible history from an external agent, without starting or resuming an agent. It uses your existing Kiki models and connections, without another copy of your API key. Requests count toward the original conversation's Usage without changing its messages or main model context.
 
 To try the local package, install and enable it from a Kiki session at the root of the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins):
 

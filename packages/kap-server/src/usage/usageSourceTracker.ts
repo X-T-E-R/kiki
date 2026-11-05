@@ -10,6 +10,7 @@ import {
   RETAINED_USAGE_SCOPE,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
+  OPERATION_USAGE_KEY,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { onUnexpectedError } from '@kiki/agent-core-v2/_base/errors/unexpectedError';
@@ -19,7 +20,7 @@ export type UsageSourceChange = string | {
   readonly kind: 'agent';
   readonly sessionKey: string;
   readonly agentId: string;
-} | { readonly kind: 'retained' } | undefined;
+} | { readonly kind: 'retained' } | { readonly kind: 'operation'; readonly sessionKey?: string } | undefined;
 
 export interface UsageSourceChanges {
   readonly ready: boolean;
@@ -60,6 +61,15 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
     const invalidate = (change?: UsageSourceChange): void => {
       for (const listener of this.listeners) listener(change);
     };
+    this._register(core.accessor.get(IAppendLogStore).registerProjection({
+      key: OPERATION_USAGE_KEY,
+      prepare: (scope, records) => scope !== retainedScope ? [] : records.flatMap((value) => {
+        const session = (value as { session?: { workspaceId?: unknown; id?: unknown } } | null)?.session;
+        return typeof session?.workspaceId === 'string' && typeof session.id === 'string' ? [`${session.workspaceId}\0${session.id}`] : [];
+      }),
+      commit: async (_position, sessions) => { for (const sessionKey of new Set(sessions)) invalidate({ kind: 'operation', sessionKey }); },
+      onError: () => { invalidate({ kind: 'operation' }); },
+    }));
     this._register(core.accessor.get(IAppendLogStore).onDidWrite(({ scope, key }) => {
       if (scope === retainedScope && (key === RETAINED_USAGE_KEY || key === EPHEMERAL_USAGE_KEY)) {
         invalidate({ kind: 'retained' });
@@ -98,8 +108,8 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
           failed(error);
         });
         this._register({ dispose: () => { watcher.close(); } });
-        for (const key of [RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY]) {
-          this._register(watchLedger(retainedScope, key)(() => { invalidate({ kind: 'retained' }); }));
+        for (const key of [RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY, OPERATION_USAGE_KEY]) {
+          this._register(watchLedger(retainedScope, key)(() => { invalidate({ kind: key === OPERATION_USAGE_KEY ? 'operation' : 'retained' }); }));
         }
         this.watching = true;
         invalidate();

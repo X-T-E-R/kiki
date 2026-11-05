@@ -22,18 +22,14 @@ import type { RetryConfig } from '#/agent/stepRetry/configSection';
 import { APIConnectionError, APIStatusError, APIEmptyResponseError, APIProviderQuotaExhaustedError, markProviderEventError, noteExecutedRequestDelivery } from '#/kosong/contract/errors';
 import type { StreamedMessagePart } from '#/kosong/contract/message';
 import { attachErrorDetails } from '#/errors';
-import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { IAgentPluginModels, AgentPluginModels } from '#/agent/pluginModels/pluginModels';
+import { IPluginModelRequests, PluginModelRequests } from '#/app/plugin/pluginModelRequests';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { resolveRequestIdentityLayers } from '#/kosong/requestIdentity/requestIdentityPolicy';
-import { IRequestIdentityRegistry } from '#/session/requestIdentity/requestIdentityRegistry';
+import { IRequestIdentityInstallation } from '#/session/requestIdentity/requestIdentityRegistry';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IAgentUsageService } from '#/agent/usage/usage';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubAgentIdentity } from '../agentIdentity/stubs';
 
@@ -80,17 +76,11 @@ function setup(usageEnabled = true, retry?: RetryConfig) {
   ix.stub(IModelService, { getDefaultModel: () => 'default-model', get: () => undefined, resolveId: () => undefined });
   ix.stub(IProviderService, { get: () => undefined });
   ix.stub(IRequestIdentityCatalog, { ready: Promise.resolve(), resolveLayers: resolveRequestIdentityLayers, render: () => undefined });
-  ix.stub(IRequestIdentityRegistry, { snapshot: async () => ({ agentSessionId: 'fixture-agent-session', setTurnState() {} }) });
   ix.stub(IAgentIdentity, stubAgentIdentity({}));
   ix.stub(IBootstrapService, stubBootstrap('/example'));
-  ix.stub(ISessionContext, { sessionId: 'session-example' });
-  ix.stub(IAgentScopeContext, { agentId: 'main' });
-  ix.stub(IAgentUsageService, { record: vi.fn() });
-  ix.set(IAgentPluginModels, new SyncDescriptor(AgentPluginModels));
-  ix.stub(IAgentLifecycleService, { get: () => ({ id: 'main', kind: 'agent', accessor: ix, dispose() {} }) });
-  ix.stub(ISessionManager, { acquire: async () => ({
-    handle: { id: 'session-example', kind: 'session', accessor: ix, dispose() {} }, dispose() {},
-  }) });
+  ix.stub(IRequestIdentityInstallation, { get: async () => '00000000-0000-4000-8000-000000000001' });
+  ix.stub(IRetainedUsageService, { recordOperation: vi.fn() });
+  ix.set(IPluginModelRequests, new SyncDescriptor(PluginModelRequests));
   ix.stub(IFlagService, { enabled: () => usageEnabled });
   ix.stub(ISessionIndex, { get: async (id) => ['session-example', 'session-other'].includes(id) ? { id, workspaceId: 'workspace-example', createdAt: 1, updatedAt: 1, archived: false } : undefined });
   ix.stub(IWorkspaceService, { get: async (id) => ({ id, root: '/example', name: 'Example', createdAt: 1, lastOpenedAt: 1, pinned: false }) });

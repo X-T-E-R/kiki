@@ -100,7 +100,7 @@ export class UsageDatabase {
       case 'models': return this.db.prepare('SELECT DISTINCT t.model FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.present=1').all().map((row) => String(row['model']));
       case 'retained': return this.db.prepare("SELECT id,retained_meta FROM source WHERE kind='retained' AND present=1 AND retained_meta IS NOT NULL").all().map((row) => ({ source: String(row['id']), session: JSON.parse(String(row['retained_meta'])) as UsageReadModelSession })).filter((row) => operation.workspaceIds === undefined || operation.workspaceIds.includes(row.session.workspaceId));
       case 'settleRetained': return this.transaction(() => {
-        const changed = this.db.prepare("UPDATE source SET present=0 WHERE kind='retained' AND present=1 AND id IN (SELECT target FROM retained_publication WHERE ledger=? AND generation!=?)").run(operation.ledger, operation.generation).changes;
+        const changed = this.db.prepare("UPDATE source SET present=0 WHERE kind IN ('retained','operation') AND present=1 AND id IN (SELECT target FROM retained_publication WHERE ledger=? AND generation!=?)").run(operation.ledger, operation.generation).changes;
         this.db.exec("UPDATE session SET present=0 WHERE deleted=1 AND present=1 AND NOT EXISTS(SELECT 1 FROM source s WHERE s.workspace=session.workspace AND s.session_id=session.id AND s.kind='retained' AND s.present=1)");
         if (Number(changed) > 0) this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
       });
@@ -128,7 +128,7 @@ export class UsageDatabase {
   private summary(source: string) {
     const head = this.source(source);
     if (head?.checkpoint === undefined) return { head };
-    const rows = this.db.prepare('SELECT t.* FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.id=?').all(source);
+    const rows = this.db.prepare('SELECT t.* FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.id=? AND s.present=1').all(source);
     const byModel: Record<string, typeof EMPTY> = {};
     const byModelMask: Record<string, Record<string, typeof EMPTY>> = {};
     const usage = { ...EMPTY };
@@ -192,9 +192,10 @@ export class UsageDatabase {
       else this.db.prepare('UPDATE source SET generation=?,checkpoint=?,ordinal=?,building_generation=NULL,building_checkpoint=NULL,building_ordinal=0,revision=revision+1 WHERE id=?').run(generation, JSON.stringify({ ...checkpoint, valid }), ordinal + page.progress.ordinal, target);
       if (session !== undefined) {
         this.db.prepare('INSERT INTO retained_publication VALUES(?,?,?) ON CONFLICT(ledger,target) DO UPDATE SET generation=excluded.generation').run(page.source, target, checkpoint.generation);
-        this.db.prepare("UPDATE source SET kind='retained',workspace=?,session_id=?,retained_meta=?,present=1 WHERE id=?").run(session.workspaceId, session.id, JSON.stringify(session), target);
+        const kind = page.publish.kind ?? 'retained';
+        this.db.prepare('UPDATE source SET kind=?,workspace=?,session_id=?,retained_meta=?,present=1 WHERE id=?').run(kind, session.workspaceId, session.id, JSON.stringify(session), target);
         const live = this.db.prepare('SELECT present,deleted FROM session WHERE workspace=? AND id=?').get(session.workspaceId, session.id);
-        if (live === undefined || !live['present'] || live['deleted']) this.catalog([session], [], false);
+        if (live === undefined || (kind === 'retained' && (!live['present'] || live['deleted']))) this.catalog([session], [], false);
       }
       if (page.progress.ordinal > 0 || replace) this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
     }
@@ -271,7 +272,7 @@ export class UsageDatabase {
     const exclude = this.db.prepare('INSERT OR IGNORE INTO excluded_source VALUES(?)');
     for (const source of query.excludedSources ?? []) exclude.run(source);
     const parameters: SQLInputValue[] = [];
-    const clauses = ['s.present=1', 'u.present=1', "((s.kind='wire' AND u.deleted=0) OR (s.kind='retained' AND u.deleted=1))", 'f.generation=s.generation', 'f.state!=3', 'usage_check()=1'];
+    const clauses = ['s.present=1', 'u.present=1', "((s.kind='wire' AND u.deleted=0) OR (s.kind='retained' AND u.deleted=1) OR s.kind='operation')", 'f.generation=s.generation', 'f.state!=3', 'usage_check()=1'];
     if (!query.includeArchived) clauses.push('u.archived=0');
     if (query.startAt !== undefined) { clauses.push('f.time>=?'); parameters.push(query.startAt); }
     if (query.endAt !== undefined) { clauses.push('f.time<?'); parameters.push(query.endAt); }

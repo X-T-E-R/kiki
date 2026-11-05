@@ -13,6 +13,7 @@ import {
   IRequestIdentityRegistry,
   RequestIdentityInstallation,
   RequestIdentityRegistry,
+  operationRequestIdentity,
 } from '#/session/requestIdentity/requestIdentityRegistry';
 
 interface RegistryStore {
@@ -78,6 +79,26 @@ function createRegistry(
 }
 
 describe('request identity registry', () => {
+  it('preserves conversation lineage for standalone requests without advancing a conversation turn', async () => {
+    const store: RegistryStore = {};
+    const installationId = '00000000-0000-4000-8000-000000000001';
+    const sessionId = 'session-a';
+    const registry = createRegistry(store, { sessionId, installationId });
+    const conversation = await registry.snapshot({ agentId: 'main', turnKey: 'turn:0', compactionWindow: 0, logicalIdKind: 'uuidv7' });
+    const input = { installationId, sessionId, agentId: 'main', turnKey: 'output_layer:one', logicalIdKind: 'uuidv7' as const, turnIndex: false };
+    const operation = operationRequestIdentity(input);
+    expect(operation).toMatchObject({ sharedSessionId: conversation.sharedSessionId, threadId: conversation.threadId, agentSessionId: conversation.agentSessionId, windowId: conversation.windowId });
+    expect(operation.logicalId).toMatch(/^[a-f0-9-]{14}7[a-f0-9-]{21}$/);
+    expect(operation.logicalId).not.toBe(conversation.logicalId);
+    const indexed = operationRequestIdentity({ ...input, turnIndex: true });
+    const next = operationRequestIdentity({ ...input, turnKey: 'output_layer:two', turnIndex: true });
+    expect(indexed.turnIndex).toBe(1);
+    expect(indexed.agentSessionId).not.toBe(conversation.agentSessionId);
+    expect(next.agentSessionId).not.toBe(indexed.agentSessionId);
+    expect(next.sharedSessionId).toBe(conversation.sharedSessionId);
+    expect((await registry.snapshot({ agentId: 'main', turnKey: 'turn:1', compactionWindow: 0, logicalIdKind: 'uuidv7' })).turnIndex).toBe(2);
+  });
+
   it('isolates Codex parent and sibling threads while preserving session lineage across retries and resume', async () => {
     const store: RegistryStore = {};
     const registry = createRegistry(store);

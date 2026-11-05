@@ -134,7 +134,7 @@ Auto 默认本地处理，不上传也不做 OCR。空内容或只有图像的�
 
 ## 输出翻译与改写
 
-**Kiki Output Layer**（`kiki-output-layer`）在阅读时流式翻译或改写 Assistant 正文，原始对话和主模型上下文保持原样。它使用你已有的 Kiki 模型与连接，不需要再填一份 API 密钥。
+**Kiki Output Layer**（`kiki-output-layer`）在阅读时流式翻译或改写 Assistant 正文。当前会话、已归档会话和外部 Agent 的可见历史都可以处理，无需启动或恢复 Agent。它使用你已有的 Kiki 模型与连接，无需再填 API 密钥。请求计入原会话的用量，不改变原始消息或主模型上下文。
 
 本地试用时，在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 根目录的 Kiki 会话中安装并启用：
 

@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { UsageRecordScope } from '#/agent/usage/usageOps';
+import type { UsageFactTotals } from '#/agent/usage/usageFact';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
@@ -7,6 +8,19 @@ export const RETAINED_USAGE_VERSION = 1 as const;
 export const RETAINED_USAGE_SCOPE = 'store' as const;
 export const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
 export const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
+export const OPERATION_USAGE_KEY = 'session-operations-v1.jsonl';
+
+export type OperationUsageSession = Pick<SessionSummary, 'id' | 'workspaceId' | 'createdAt' | 'updatedAt' | 'archived'>;
+
+export interface OperationUsageRecord extends Omit<RetainedUsageRecord, 'turnId' | 'usageScope' | 'agentId' | 'usageKnown'> {
+  readonly agentId: string;
+  readonly usageKnown: boolean;
+  readonly requestKind: string;
+}
+
+export function operationUsageSource(workspaceId: string, sessionId: string): string {
+  return `operation:${workspaceId}\0${sessionId}`;
+}
 
 export interface RetainedUsageRecord {
   readonly time: number;
@@ -59,10 +73,13 @@ export type RetainedUsageExportEvent =
   | { readonly kind: 'progress' }
   | { readonly kind: 'session'; readonly snapshot: RetainedDeletedSessionUsage }
   | { readonly kind: 'ephemeral'; readonly record: EphemeralUsageTotal }
+  | { readonly kind: 'operation'; readonly session: OperationUsageSession; readonly record: RetainedUsageRecord; readonly position: number }
   | { readonly kind: 'incomplete' };
 
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
+  recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void>;
+  readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery): Promise<{ readonly totals?: UsageFactTotals; readonly revision?: number; readonly complete: boolean }>;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
   readModelImportProgress?(signal?: AbortSignal): Promise<readonly { readonly source: string; readonly size: number; readonly readBytes: number; readonly complete: boolean }[]>;
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;

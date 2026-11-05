@@ -25,7 +25,7 @@ export interface UsageSourcePage {
   readonly progress: UsageImportProgress;
   readonly records: readonly UsageFact[];
   readonly reset?: boolean;
-  readonly publish?: { readonly start: number; readonly checkpoint: UsageFactCheckpoint; readonly journalSize: number; readonly source?: string; readonly session?: UsageReadModelSession };
+  readonly publish?: { readonly start: number; readonly checkpoint: UsageFactCheckpoint; readonly journalSize: number; readonly source?: string; readonly session?: UsageReadModelSession; readonly kind?: 'operation' };
   readonly continuation?: UsageImportProgress;
 }
 

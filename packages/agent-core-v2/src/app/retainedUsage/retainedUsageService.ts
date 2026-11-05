@@ -20,6 +20,10 @@ import {
   RETAINED_USAGE_SCOPE,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
+  OPERATION_USAGE_KEY,
+  operationUsageSource,
+  type OperationUsageSession,
+  type OperationUsageRecord,
   type EphemeralUsageTotal,
   type RetainedDeletedSessionUsage,
   type RetainedUsageIncompleteReason,
@@ -58,6 +62,17 @@ const retainedUsageRecordSchema = z.object({
   profileName: z.string().optional(),
   executorId: z.string().optional(),
   usageKnown: z.boolean().optional(),
+});
+
+const operationUsageSchema = z.object({
+  version: z.literal(1),
+  session: z.object({
+    id: z.string().min(1), workspaceId: z.string().min(1),
+    createdAt: z.number().finite().nonnegative(), updatedAt: z.number().finite().nonnegative(), archived: z.boolean(),
+  }),
+  record: retainedUsageRecordSchema.omit({ turnId: true, usageScope: true }).extend({
+    model: z.string().min(1), agentId: z.string().min(1), usageKnown: z.boolean(), requestKind: z.string().min(1),
+  }),
 });
 
 const ephemeralUsageSchema = z.object({
@@ -154,9 +169,86 @@ export class RetainedUsageService implements IRetainedUsageService {
   ) {}
 
   private importing = Promise.resolve();
+  private operationWrites = Promise.resolve();
+
+  recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void> {
+    const value = operationUsageSchema.parse({ version: 1, session, record });
+    const work = this.operationWrites.then(async () => {
+      const lock = await this.storage.acquireLock(this.storeScope, 'session-operations-v1.lock', { waitForMs: 3000, owner: { kind: 'usage-operations' } });
+      const owner = this.appendLog.acquire(this.storeScope, OPERATION_USAGE_KEY);
+      try {
+        this.appendLog.append(this.storeScope, OPERATION_USAGE_KEY, value);
+        await this.appendLog.flush(this.storeScope, OPERATION_USAGE_KEY);
+        this.events.publish(new UsageSettled({ payload: { sessionId: session.id, agentId: record.agentId } }));
+      } finally { try { await owner.dispose(); } finally { await lock.release(); } }
+    });
+    this.operationWrites = work.then(() => undefined, () => undefined);
+    return work;
+  }
+
+  async readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery) {
+    const progress = await this.prepareOperations(query);
+    const { totals, head } = await this.model.summary(operationUsageSource(workspaceId, sessionId), query.signal);
+    return { totals, revision: head?.revision, complete: progress.complete };
+  }
+
+  private prepareOperations(query: RetainedUsageListQuery) {
+    const next = this.importing.then(() => this.importOperations(query));
+    this.importing = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  async dispose(): Promise<void> { await this.operationWrites; await this.importing; }
+
+  private async importOperations(query: RetainedUsageListQuery): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+    const key = OPERATION_USAGE_KEY;
+    query.signal?.throwIfAborted();
+    const lock = await this.storage.acquireLock(this.storeScope, 'session-operations-v1.lock', { waitForMs: Math.max(0, Math.min(3000, query.deadlineAt - Date.now())), signal: query.signal });
+    let size: number, mtimeMs: number, generation: string;
+    try {
+      await this.appendLog.flush(this.storeScope, key);
+      size = await this.storage.size(this.storeScope, key) ?? 0;
+      mtimeMs = await this.storage.mtime(this.storeScope, key) ?? 0;
+      generation = await this.appendLog.generation(this.storeScope, key);
+    } finally { await lock.release(); }
+    const source = `retained-ledger:${key}`;
+    let expected = await this.model.progress(source, query.signal);
+    if (size === 0 && expected === undefined) return { complete: true, scannedRecords: 0 };
+    const prior = expected?.parser as { generation: string; damaged: boolean } | undefined;
+    const reset = prior?.generation !== generation || (expected?.offset ?? 0) > size;
+    if (reset && expected !== undefined) { await this.model.abandon(source); expected = undefined; }
+    const state = { generation, damaged: !reset && (prior?.damaged ?? false) };
+    let offset = expected?.offset ?? 0;
+    let scannedRecords = 0;
+    const remaining = (): RetainedUsageIncompleteReason | undefined => Date.now() >= query.deadlineAt ? 'deadline' : scannedRecords >= query.recordLimit ? 'record_budget' : undefined;
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, key, { startOffset: offset, endOffset: size, signal: query.signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (position) => { offset = position; }, onTruncate: () => { state.damaged = true; } })) {
+      const reason = remaining();
+      if (reason !== undefined) return { complete: false, scannedRecords, incompleteReason: reason };
+      const parsed = operationUsageSchema.safeParse(raw);
+      scannedRecords++;
+      if (!parsed.success) state.damaged = true;
+      const progress: UsageImportProgress = { batchStart: offset, offset, ordinal: parsed.success ? 1 : 0, parser: { ...state } };
+      const value = parsed.success ? parsed.data : undefined;
+      const target = value === undefined ? undefined : operationUsageSource(value.session.workspaceId, value.session.id);
+      const previous = target === undefined ? undefined : (await this.model.source(target, query.signal))?.checkpoint;
+      if (!await this.model.apply({ source, expected, progress, records: value === undefined ? [] : [value.record], reset: true,
+        publish: value === undefined ? undefined : { source: target, kind: 'operation', session: { ...value.session, deleted: false }, start: previous?.generation === generation ? previous.offset : 0,
+          checkpoint: { generation, offset, size: offset, mtimeMs, boundaryHash: '', valid: true }, journalSize: size },
+        continuation: { ...progress, ordinal: 0 },
+      })) throw new Error('Operation Usage progress changed; retry');
+      expected = { ...progress, ordinal: 0 };
+    }
+    if (state.damaged && (expected?.parser as typeof state | undefined)?.damaged !== true) {
+      const progress: UsageImportProgress = { batchStart: offset, offset, ordinal: 0, parser: state };
+      if (!await this.model.apply({ source, expected, progress, records: [] })) throw new Error('Operation Usage progress changed; retry');
+    }
+    const complete = !state.damaged && offset === size && await this.storage.size(this.storeScope, key) === size && await this.appendLog.generation(this.storeScope, key) === generation;
+    if (complete) await this.model.settleRetained(source, generation);
+    return { complete, scannedRecords };
+  }
 
   async readModelImportProgress(signal?: AbortSignal): Promise<readonly { source: string; size: number; readBytes: number; complete: boolean }[]> {
-    const sources = await Promise.all([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY].map(async (key) => {
+    const sources = await Promise.all([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY, OPERATION_USAGE_KEY].map(async (key) => {
       signal?.throwIfAborted();
       const source = `retained-ledger:${key}`;
       const [size, generation, progress] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal)]);
@@ -170,9 +262,11 @@ export class RetainedUsageService implements IRetainedUsageService {
   prepareReadModel(query: RetainedUsageListQuery, includeEphemeral = true): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
     const next = this.importing.then(async () => {
       const deleted = await this.importLedger(RETAINED_USAGE_KEY, false, query);
-      if (!deleted.complete || !includeEphemeral) return deleted;
-      const ephemeral = await this.importLedger(EPHEMERAL_USAGE_KEY, true, { ...query, recordLimit: query.recordLimit - deleted.scannedRecords });
-      return { ...ephemeral, scannedRecords: deleted.scannedRecords + ephemeral.scannedRecords };
+      if (!deleted.complete) return deleted;
+      const ephemeral = includeEphemeral ? await this.importLedger(EPHEMERAL_USAGE_KEY, true, { ...query, recordLimit: query.recordLimit - deleted.scannedRecords }) : { complete: true, scannedRecords: 0 };
+      if (!ephemeral.complete) return { ...ephemeral, scannedRecords: deleted.scannedRecords + ephemeral.scannedRecords };
+      const operations = await this.importOperations({ ...query, recordLimit: query.recordLimit - deleted.scannedRecords - ephemeral.scannedRecords });
+      return { ...operations, scannedRecords: deleted.scannedRecords + ephemeral.scannedRecords + operations.scannedRecords };
     });
     this.importing = next.then(() => undefined, () => undefined);
     return next;
@@ -402,6 +496,13 @@ export class RetainedUsageService implements IRetainedUsageService {
       if (event.kind === 'progress') yield event;
       else if (event.kind === 'record') yield { kind: 'ephemeral', record: event.record };
       else if (event.kind === 'incomplete') damaged = true;
+    }
+    let position = 0;
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, OPERATION_USAGE_KEY, { signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (end) => { position = end; }, onTruncate: () => { damaged = true; } })) {
+      yield { kind: 'progress' };
+      const parsed = operationUsageSchema.safeParse(raw);
+      if (parsed.success) yield { kind: 'operation', session: parsed.data.session, record: parsed.data.record, position };
+      else damaged = true;
     }
     if (damaged) yield { kind: 'incomplete' };
   }

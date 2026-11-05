@@ -246,7 +246,11 @@ export class UsageAggregationService {
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((change) => {
-      if (typeof change === 'object' && change.kind === 'retained') {
+      if (typeof change === 'object' && (change.kind === 'retained' || change.kind === 'operation')) {
+        if (change.kind === 'operation') {
+          if (change.sessionKey === undefined) this.operationRevision++;
+          else this.sessionVersions.set(change.sessionKey, (this.sessionVersions.get(change.sessionKey) ?? 0) + 1);
+        }
         this.retainedRevision++;
         this.modelReady = false;
         return;
@@ -271,6 +275,7 @@ export class UsageAggregationService {
 
   private replayEpoch = 0;
   private retainedRevision = 0;
+  private operationRevision = 0;
   private readonly sourceSubscription?: { dispose(): void };
 
   dispose(): void {
@@ -289,6 +294,8 @@ export class UsageAggregationService {
   private readonly sessionVersions = new Map<string, number>();
   private readonly sessionAccounting = new Map<string, {
     version: string; agents?: readonly string[]; rows: Record<string, AgentUsageProjection>; revisions: Map<string, string>;
+    operation?: Awaited<ReturnType<IRetainedUsageService['readOperationSummary']>>;
+    operationVersion?: number;
     snapshot?: UsageAccountingSnapshot; snapshotVersion?: string; pricingReady: boolean; flight?: Promise<UsageAccountingSnapshot>;
   }>();
 
@@ -299,7 +306,7 @@ export class UsageAggregationService {
     const saved = this.sessionAccounting.get(key);
     const snapshot = saved?.snapshot;
     if (saved === undefined || snapshot === undefined) return { ...(fallback ?? { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: 0, complete: false, tokens: { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: true }), freshness: fallback === undefined ? 'unverified' : 'stale' };
-    const freshness = saved.snapshotVersion === this.sessionVersion(key) && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
+    const freshness = saved.snapshotVersion === this.sessionVersion(key) && saved.operationVersion === this.operationRevision && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
     return { ...snapshot, freshness };
   }
 
@@ -314,8 +321,8 @@ export class UsageAggregationService {
       saved = { version, rows: {}, revisions: new Map(), pricingReady: false, snapshot: saved?.snapshot };
       this.sessionAccounting.set(key, saved);
     }
-    if (saved.snapshot?.complete && saved.snapshotVersion === version) {
-      saved.snapshot = { ...saved.snapshot, ...this.sessionAccountingTotals(Object.values(saved.rows), saved.pricingReady) };
+    if (saved.snapshot?.complete && saved.snapshotVersion === version && saved.operationVersion === this.operationRevision) {
+      saved.snapshot = { ...saved.snapshot, ...this.sessionAccountingTotals(Object.values(saved.rows), saved.pricingReady, saved.operation?.totals) };
       return this.readSessionAccountingSnapshot(workspaceId, sessionId);
     }
     const state = saved;
@@ -332,14 +339,20 @@ export class UsageAggregationService {
         const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
         state.agents ??= await waitForSource(this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`), readSignal);
         const pending = state.agents.filter((agent) => !state.rows[agent]?.complete).slice(0, this.limits.sourceScanLimit);
-        await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, pending, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget: { remainingRecords: this.limits.usageFactBudget }, recoveryBudget: { remainingRecords: Math.min(100_000, this.limits.wireRecordBudget), remainingBytes: 128 * 1024 * 1024 } }, state.rows, state.revisions), readSignal);
+        const factBudget = { remainingRecords: this.limits.usageFactBudget };
+        await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, pending, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget, recoveryBudget: { remainingRecords: Math.min(100_000, this.limits.wireRecordBudget), remainingBytes: 128 * 1024 * 1024 } }, state.rows, state.revisions), readSignal);
+        const operationVersion = this.operationRevision;
+        state.operation = await waitForSource(this.core.accessor.get(IRetainedUsageService).readOperationSummary(workspaceId, sessionId, { deadlineAt, recordLimit: factBudget.remainingRecords, signal: readSignal }), readSignal);
+        state.operationVersion = operationVersion;
         await waitForSource(preparation, readSignal);
       } catch (error) {
         this.modelController.signal.throwIfAborted();
         if (!deadline.signal.aborted) throw error;
       } finally { clearTimeout(timer); }
       const agents = state.agents ?? [];
-      state.snapshot = { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: agents.map((agent) => state.revisions.get(agent) ?? `${agent}:unread`).join('|'), covered_at: this.now(), complete: state.agents !== undefined && agents.every((agent) => state.rows[agent]?.complete) && state.version === this.sessionVersion(key), ...this.sessionAccountingTotals(Object.values(state.rows), state.pricingReady) };
+      const revisions = agents.map((agent) => state.revisions.get(agent) ?? `${agent}:unread`);
+      if (state.operation?.revision !== undefined) revisions.push(`operation:${state.operation.revision}`);
+      state.snapshot = { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: revisions.join('|'), covered_at: this.now(), complete: state.agents !== undefined && agents.every((agent) => state.rows[agent]?.complete) && state.operation?.complete === true && state.operationVersion === this.operationRevision && state.version === this.sessionVersion(key), ...this.sessionAccountingTotals(Object.values(state.rows), state.pricingReady, state.operation?.totals) };
       state.snapshotVersion = state.version;
       return this.readSessionAccountingSnapshot(workspaceId, sessionId);
     })().finally(() => { state.flight = undefined; });
@@ -348,14 +361,15 @@ export class UsageAggregationService {
     return waitForSource(flight, signal);
   }
 
-  private sessionAccountingTotals(rows: readonly AgentUsageProjection[], pricingReady: boolean): Pick<UsageAccountingSnapshot, 'tokens' | 'tokens_unknown' | 'cost_usd_estimated' | 'cost_unknown'> {
+  private sessionAccountingTotals(rows: readonly AgentUsageProjection[], pricingReady: boolean, operations?: UsageFactTotals): Pick<UsageAccountingSnapshot, 'tokens' | 'tokens_unknown' | 'cost_usd_estimated' | 'cost_unknown'> {
     const totals = summarizeUsageFacts([]);
     const pricing = this.core.accessor.get(IModelPricingService);
     let partial = false;
     let cost = 0;
     let costUnknown = !pricingReady;
-    for (const row of rows) {
-      const summary = row.totals ?? summarizeUsageFacts(row.records);
+    const summaries = rows.map((row) => row.totals ?? summarizeUsageFacts(row.records));
+    if (operations !== undefined) summaries.push(operations);
+    for (const summary of summaries) {
       for (const key of ['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation'] as const) totals.usage[key] += summary.usage[key];
       partial ||= summary.partial;
       if (pricingReady) for (const [model, masks] of Object.entries(summary.byModelMask ?? {})) for (const value of Object.values(masks)) {
@@ -563,6 +577,10 @@ export class UsageAggregationService {
           await consume({ key, workspaceId: snapshot.workspaceId, kind: 'session', records: snapshot.records.map(normalizeRetainedRecord) }); sources++;
         } else if (event.value.kind === 'ephemeral') {
           const record = event.value.record; const records = this.exportEphemeralRecords.get(record.workspaceId) ?? []; records.push(normalizeRetainedRecord(record)); this.exportEphemeralRecords.set(record.workspaceId, records);
+        } else if (event.value.kind === 'operation') {
+          const { session, record, position } = event.value;
+          await consume({ key: `operation\0${sessionKey(session)}\0${position}`, workspaceId: session.workspaceId, kind: 'session', records: [normalizeRetainedRecord(record)] });
+          sources++;
         } else this.exportRetainedIncomplete = true;
       }
       return { complete: false, reason: budget.remainingRecords <= 0 ? 'record_budget' : 'deadline', sources };

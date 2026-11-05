@@ -2,10 +2,9 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
-import { IOutputLayerService, OutputLayerService, IPluginService, IPluginHostService, IPluginSettingsService, IModelCatalog, IModelService, IPluginUsageService, ISessionIndex, IWorkspaceService, IConfigService, type Scope } from '@kiki/agent-core-v2';
-import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
-import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
-import { IAgentPluginModels } from '@kiki/agent-core-v2/agent/pluginModels/pluginModels';
+import { IOutputLayerService, OutputLayerService, IPluginService, IPluginHostService, IPluginSettingsService, IModelCatalog, IModelService, IPluginUsageService, ISessionIndex, IWorkspaceService, IConfigService, IRetainedUsageService, type Scope } from '@kiki/agent-core-v2';
+import { IPluginModelRequests } from '@kiki/agent-core-v2/app/plugin/pluginModelRequests';
+import { IRequestIdentityInstallation } from '@kiki/agent-core-v2/session/requestIdentity/requestIdentityRegistry';
 import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ModelRequestInput, ModelRequestEvent } from '@kiki/agent-core-v2/kosong/model/modelRequester';
 import { HttpChannel } from '@kiki/klient/transports/http/channel';
@@ -50,9 +49,12 @@ async function fixture() {
   ix.stub(IPluginUsageService, { allows });
   ix.stub(ISessionIndex, { get: async (id) => ['example-session', 'disabled-session'].includes(id) ? { id, workspaceId: 'workspace-example', createdAt: 1, updatedAt: 1, archived: false } : undefined });
   ix.stub(IWorkspaceService, { get: async (id) => ({ id, root: '/example', name: 'Example', createdAt: 1, lastOpenedAt: 1, pinned: false }) });
-  ix.stub(IAgentPluginModels, { request: (_requester, input, signal) => requester.request(input, signal) });
-  ix.stub(IAgentLifecycleService, { get: () => ({ id: 'main', kind: 'agent', accessor: ix, dispose() {} }) });
-  ix.stub(ISessionManager, { acquire: async () => ({ handle: { id: 'example-session', kind: 'session', accessor: ix, dispose() {} }, dispose() {} }) });
+  ix.stub(IPluginModelRequests, { request: (_requester, input, signal) => requester.request(input, signal) });
+  ix.stub(IRequestIdentityInstallation, { get: async () => '00000000-0000-4000-8000-000000000001' });
+  ix.stub(IRetainedUsageService, {
+    recordOperation: async () => {},
+    readOperationSummary: async () => ({ complete: true }),
+  });
   ix.set(IOutputLayerService, new SyncDescriptor(OutputLayerService));
   const scope = { accessor: { get: ix.get.bind(ix) } } as unknown as Scope;
   const app = Fastify(); cleanup.push(() => app.close());

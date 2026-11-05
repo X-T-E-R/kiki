@@ -19,6 +19,7 @@ import {
   IAppendLogStore,
   IUsageFactStore,
   IUsageReadModel,
+  IRetainedUsageService,
   IBootstrapService,
   IFileSystemStorageService,
   ILogService,
@@ -243,6 +244,10 @@ function persistedFixture(
         if (identifier === IUsageReadModel) return model;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
+        if (identifier === IRetainedUsageService) return {
+          recordOperation: async () => {},
+          readOperationSummary: async () => ({ complete: true }),
+        };
         if (identifier === ILogService) return log;
         if (identifier === IInstantiationService) return ix;
         if (identifier === IBootstrapService) return ix.get(IBootstrapService);

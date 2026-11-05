@@ -231,6 +231,40 @@ describe('Usage source read model', () => {
     expect((await model.query(query)).total).toMatchObject({ cost: 3, knownRecords: 3 });
   });
 
+  it('persists independent operation usage across budgets and restart without a turn journal or duplicate accounting', async () => {
+    const session = { id: 'operation-history', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false };
+    const service = ix.get(IRetainedUsageService);
+    const operation = { ...record(1, 7), turnId: undefined, provider: 'selected', requestKind: 'output_layer' };
+    await service.recordOperation(session, operation);
+    await service.recordOperation(session, { ...operation, time: 2, usage: usage(0), usageKnown: false });
+    await service.recordOperation(session, { ...operation, time: 3, usage: usage(5) });
+    const first = await service.readOperationSummary('example', session.id, { deadlineAt: Date.now() + 10000, recordLimit: 1 });
+    expect(first).toMatchObject({ complete: false, totals: { usage: usage(7), records: 1 } });
+    expect(await storage.size('sessions/example/operation-history/agents/main', 'wire.jsonl')).toBeUndefined();
+    await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); open();
+    const resumed = await ix.get(IRetainedUsageService).readOperationSummary('example', session.id, { deadlineAt: Date.now() + 10000, recordLimit: 100 });
+    expect(resumed).toMatchObject({ complete: true, totals: { usage: usage(12), records: 3, knownUsageRecords: 2, partial: true } });
+    await model.catalog([{ ...session, deleted: false }], [], true);
+    const filtered = { ...query, providers: ['selected'], agentIds: ['main'], workspaceIds: ['example'], dimension: 'session' as const };
+    expect(await model.query(filtered)).toMatchObject({ total: { usage: usage(12), knownRecords: 2, missingRecords: 1 }, sessionCount: 1, incompleteSessions: 0 });
+    await ix.get(IRetainedUsageService).prepareReadModel!({ deadlineAt: Date.now() + 10000, recordLimit: 100 });
+    expect((await model.query(filtered)).total.usage).toEqual(usage(12));
+    await model.catalog([{ ...session, deleted: false, archived: true }], [], true);
+    expect((await model.query({ ...filtered, includeArchived: false })).total.knownRecords).toBe(0);
+    expect((await model.query(filtered)).total.knownRecords).toBe(2);
+    const exported = [];
+    for await (const event of ix.get(IRetainedUsageService).readExportUsage!(false)) if (event.kind === 'operation') exported.push(event);
+    expect(exported).toHaveLength(3);
+    await ix.get(IRetainedUsageService).retainDeletedSession({ ...session, archived: true });
+    await ix.get(IRetainedUsageService).prepareReadModel!({ deadlineAt: Date.now() + 10000, recordLimit: 100 });
+    await model.catalog([], [], true);
+    expect(await model.query(filtered)).toMatchObject({ includesDeletedSessions: true, total: { usage: usage(12), knownRecords: 2, missingRecords: 1 }, sessionCount: 1 });
+    await logs.rewrite('store', 'session-operations-v1.jsonl', []);
+    await ix.get(IRetainedUsageService).prepareReadModel!({ deadlineAt: Date.now() + 10000, recordLimit: 100 });
+    expect((await model.query(filtered)).total.knownRecords).toBe(0);
+    expect(await ix.get(IRetainedUsageService).readOperationSummary('example', session.id, { deadlineAt: Date.now() + 10000, recordLimit: 100 })).toMatchObject({ complete: true, totals: { usage: usage(0), records: 0 } });
+  });
+
   it('retires a replaced retained ledger and rejects mismatched ephemeral commits', async () => {
     const key = 'ephemeral-totals-v1.jsonl';
     const service = ix.get(IRetainedUsageService);
