@@ -10,6 +10,9 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { IPluginService } from '#/app/plugin/plugin';
+import { pluginModelCatalog } from '#/app/plugin/pluginModelCatalog';
+import type { IModelCatalog } from '#/kosong/model/catalog';
+import { settingsContributionSchema } from '#/app/plugin/contributions';
 import { scriptSettingsSchema } from '#/app/plugin/mediaSourceSettings';
 import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -112,14 +115,14 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
         kiki: {
           permissions: { secrets: true },
           mediaSources: [
-            { id: 'openai', label: 'OpenAI', settingsPrefix: 'openai__', kinds: ['image', 'tts'] },
-            { id: 'google', label: 'Google', settingsPrefix: 'google__', kinds: ['image', 'video'] },
+            { id: 'openai', label: 'OpenAI', providerIds: ['openai-image', 'openai-tts'], settingsPrefix: 'openai__', required: ['apiKey', 'baseUrl'] },
+            { id: 'google', label: 'Google', providerIds: ['google-image', 'google-video'], settingsPrefix: 'google__', required: [] },
           ],
           mediaProviders: [
-            { id: 'openai-image', kinds: ['image'], sourceId: 'openai' },
-            { id: 'google-image', kinds: ['image'], sourceId: 'google' },
-            { id: 'google-video', kinds: ['video'], sourceId: 'google' },
-            { id: 'openai-tts', kinds: ['tts'], sourceId: 'openai' },
+            { schemaVersion: 1, id: 'openai-image', label: 'OpenAI Images', kinds: ['image'], resumeVersion: 1, connectionSetting: 'connectionId' },
+            { schemaVersion: 1, id: 'google-image', label: 'Google Images', kinds: ['image'], resumeVersion: 1 },
+            { schemaVersion: 1, id: 'google-video', label: 'Google Video', kinds: ['video'], resumeVersion: 1 },
+            { schemaVersion: 1, id: 'openai-tts', label: 'OpenAI Speech', kinds: ['tts'], resumeVersion: 1 },
           ],
           settings: {
             schemaVersion: 1,
@@ -131,6 +134,7 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
                 defaultTtsProvider: { type: 'string', title: 'Default TTS provider' },
                 openai__enabled: { type: 'boolean', title: 'Enabled', default: true },
                 openai__apiKey: { type: 'string', title: 'API key', secret: true },
+                openai__baseUrl: { type: 'string', title: 'API base URL' },
                 openai__connectionId: { type: 'string', title: 'Connection ID' },
                 openai__removed: { type: 'boolean', title: 'Source removed' },
                 openai__cleared: { type: 'string', title: 'Cleared fields' },
@@ -145,7 +149,9 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
   ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
   try {
     const settings = ix.get(IPluginSettingsService);
-    const props = (await settings.inspect('kiki-media')).schema?.schema.properties ?? {};
+    const inspected = (await settings.inspect('kiki-media')).schema?.schema;
+    const props = inspected?.properties ?? {};
+    expect(inspected?.required).toEqual(['openai__apiKey', 'openai__baseUrl']);
     expect(props['defaultImageProvider']?.enum).toEqual(['openai-image', 'google-image']);
     expect(props['defaultVideoProvider']?.enum).toEqual(['google-video']);
     expect(props['defaultTtsProvider']?.enum).toEqual(['openai-tts']);
@@ -154,6 +160,9 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
     expect(props['openai__apiKey']?.groupTitle).toBe('OpenAI');
     expect(props['openai__apiKey']?.localizations?.['zh']?.title).toBe('API 密钥');
     expect(props['openai__connectionId']?.localizations?.['zh']?.title).toBe('Kiki 连接（可选）');
+    expect(props['openai__connectionId']?.format).toBe('kiki-connection');
+    expect(props['openai__apiKey']?.requiredUnless).toBe('openai__connectionId');
+    expect(props['openai__baseUrl']?.requiredUnless).toBe('openai__connectionId');
     expect(props['openai__removed']?.hidden).toBe(true);
     expect(props['openai__cleared']?.hidden).toBe(true);
     expect(props['scriptSources']?.multiline).toBe(true);
@@ -161,4 +170,80 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
   } finally {
     await ix.dispose();
   }
+});
+
+it('projects connection metadata for an independent legacy media provider without guessing ordinary settings', async () => {
+  const config = new StubConfigService({ pluginSettings: {} });
+  const ix = new TestInstantiationService();
+  ix.stub(IConfigService, config);
+  ix.stub(IPluginService, {
+    getPluginInfo: async () => ({
+      manifest: {
+        kiki: {
+          mediaProviders: [{ id: 'agnes-video', kinds: ['video'], connectionSetting: 'connectionId' }],
+          settings: {
+            schemaVersion: 1,
+            schema: {
+              type: 'object',
+              required: ['apiKey', 'baseUrl'],
+              properties: {
+                apiKey: { type: 'string', secret: true },
+                baseUrl: { type: 'string' },
+                connectionId: { type: 'string' },
+                connectionIdGuess: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    }),
+  } as unknown as IPluginService);
+  ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
+  try {
+    const properties = (await ix.get(IPluginSettingsService).inspect('independent-media')).schema?.schema.properties ?? {};
+    expect(properties['connectionId']?.format).toBe('kiki-connection');
+    expect(properties['apiKey']?.requiredUnless).toBe('connectionId');
+    expect(properties['baseUrl']?.requiredUnless).toBe('connectionId');
+    expect(properties['connectionIdGuess']?.format).toBeUndefined();
+  } finally {
+    await ix.dispose();
+  }
+});
+
+
+it('validates setting formats and requiredUnless declarations without changing secret storage', () => {
+  const base = { schemaVersion: 1, schema: { type: 'object' as const, required: ['apiKey'], properties: {
+    apiKey: { type: 'string' as const, secret: true },
+    connectionId: { type: 'string' as const, format: 'kiki-connection' as const },
+    modelId: { type: 'string' as const, format: 'kiki-model' as const },
+  } } };
+  expect(settingsContributionSchema.parse(base).schema.properties.connectionId.format).toBe('kiki-connection');
+  expect(() => settingsContributionSchema.parse({ ...base, schema: { ...base.schema, properties: { ...base.schema.properties, apiKey: { type: 'string', secret: true, format: 'kiki-connection' } } } })).toThrow();
+  expect(() => settingsContributionSchema.parse({ ...base, schema: { ...base.schema, properties: { ...base.schema.properties, modelId: { type: 'boolean', format: 'kiki-model' } } } })).toThrow();
+  expect(() => settingsContributionSchema.parse({ schemaVersion: 1, schema: { type: 'object', required: ['apiKey'], properties: {
+    apiKey: { type: 'string', secret: true, requiredUnless: 'secretTarget' }, secretTarget: { type: 'string', secret: true },
+  } } })).toThrow();
+  expect(settingsContributionSchema.parse({ schemaVersion: 1, schema: { type: 'object', required: ['apiKey'], properties: {
+    apiKey: { type: 'string', secret: true, requiredUnless: 'connectionId' }, connectionId: { type: 'string' },
+  } } })).toEqual(expect.objectContaining({ schema: expect.any(Object) }));
+});
+
+
+it('projects only safe model and connection catalog fields with decision and OAuth precedence', async () => {
+  const result = await pluginModelCatalog({
+    listModels: async () => [{ id: 'chat-alias', provider_id: 'chat', remote_id: 'remote-chat', display_name: 'Chat', max_context_size: 8192, effective_capabilities: ['tool_use'], effective_protocol: 'openai', api_key: 'fixture-model-secret', base_url: 'https://secret.example.test' }],
+    listProviders: async () => [
+      { id: 'chat', type: 'openai', status: 'connected', service: 'chat', default_model: 'chat-alias', models: ['remote-chat'], oauth: { storage: 'file', signed_in: false }, has_api_key: true, api_key: 'fixture-secret', effective_base_url: 'https://secret.example.test', custom_header_keys: ['authorization'] },
+      { id: 'decision', type: 'system_one', status: 'unconfigured', service: 'chat', decision_protocol: 'system_one', models: ['judge'], has_api_key: false },
+    ],
+  } as unknown as IModelCatalog);
+  expect(result).toEqual({
+    models: [{ id: 'chat-alias', provider_id: 'chat', remote_id: 'remote-chat', display_name: 'Chat', max_context_size: 8192, effective_capabilities: ['tool_use'], effective_protocol: 'openai' }],
+    connections: [
+      { id: 'chat', type: 'openai', status: 'connected', service: 'chat', default_model: 'chat-alias', models: ['remote-chat'], authentication: 'oauth' },
+      { id: 'decision', type: 'system_one', status: 'unconfigured', service: 'decision', models: ['judge'], authentication: 'none' },
+    ],
+  });
+  expect(JSON.stringify(result)).not.toContain('fixture-secret');
+  expect(JSON.stringify(result)).not.toContain('secret.example.test');
 });

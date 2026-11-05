@@ -18,7 +18,7 @@ import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
 import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema,
-  executorAccountSourcesResponseSchema, executorAccountsResponseSchema } from '@kiki/protocol';
+  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, pluginModelCatalogSchema } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -797,6 +797,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     plugins: {
       navigation: () => transport.json('/plugins/navigation'),
+      models: async () => pluginModelCatalogSchema.parse(await transport.json('/plugins/models')),
       usage: (target) => transport.json('/plugins/usage', { query: target }),
       setUsage: (input) => transport.json('/plugins/usage', { method: 'POST', body: input }),
       marketplace: () => transport.json('/plugins/marketplace'),

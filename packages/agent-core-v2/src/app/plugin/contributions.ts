@@ -12,7 +12,7 @@ import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import type { PluginDiagnostic } from './types';
 
-export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.2';
+export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.3';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
 function checkAborted(signal?: AbortSignal): void {
@@ -86,30 +86,69 @@ export const commandContributionSchema = z.object({
   prompt: z.string().min(1).max(16_384),
 }).strict();
 
+const settingsPropertySchema = z.object({
+  type: z.enum(['string', 'boolean', 'number']),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  secret: z.boolean().optional(),
+  default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  hidden: z.boolean().optional(),
+  group: z.string().min(1).max(80).optional(),
+  groupTitle: z.string().min(1).max(80).optional(),
+  localizations: z.record(z.string().min(2).max(35), z.object({
+    title: z.string().optional(),
+    description: z.string().optional(),
+    groupTitle: z.string().min(1).max(80).optional(),
+  }).strict()).optional(),
+  enum: z.array(z.string().min(1)).max(2000).optional(),
+  multiline: z.boolean().optional(),
+  advanced: z.boolean().optional(),
+  format: z.enum(['kiki-model', 'kiki-connection']).optional(),
+  requiredUnless: z.string().min(1).optional(),
+}).strict().superRefine((property, ctx) => {
+  if (property.format !== undefined && property.type !== 'string') {
+    ctx.addIssue({ code: 'custom', path: ['format'], message: 'format requires a string setting' });
+  }
+  if (property.format !== undefined && property.secret === true) {
+    ctx.addIssue({ code: 'custom', path: ['format'], message: 'secret settings cannot declare format' });
+  }
+});
+
+type SettingsProperty = z.infer<typeof settingsPropertySchema>;
+
 export const settingsContributionSchema = z.object({
   schemaVersion,
   schema: z.object({
     type: z.literal('object'),
-    properties: z.record(z.string(), z.object({
-      type: z.enum(['string', 'boolean', 'number']),
-      title: z.string().optional(),
-      description: z.string().optional(),
-      secret: z.boolean().optional(),
-      default: z.union([z.string(), z.number(), z.boolean()]).optional(),
-      hidden: z.boolean().optional(),
-      group: z.string().min(1).max(80).optional(),
-      groupTitle: z.string().min(1).max(80).optional(),
-      localizations: z.record(z.string().min(2).max(35), z.object({
-        title: z.string().optional(),
-        description: z.string().optional(),
-        groupTitle: z.string().min(1).max(80).optional(),
-      }).strict()).optional(),
-      enum: z.array(z.string().min(1)).max(2000).optional(),
-      multiline: z.boolean().optional(),
-      advanced: z.boolean().optional(),
-    }).strict()),
+    properties: z.record(z.string(), settingsPropertySchema),
     required: z.array(z.string()).optional(),
-  }).strict(),
+  }).strict().superRefine((schema, ctx) => {
+    for (const [key, property] of Object.entries(schema.properties) as [string, SettingsProperty][]) {
+      const reference = property.requiredUnless;
+      if (reference === undefined) continue;
+      if (property.type !== 'string') {
+        ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: 'requiredUnless requires a string setting' });
+      }
+      if (schema.required?.includes(key) !== true) {
+        ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: 'requiredUnless requires the setting to be listed in required' });
+      }
+      if (reference === key) {
+        ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: 'requiredUnless cannot reference the same setting' });
+        continue;
+      }
+      const target = schema.properties[reference];
+      if (target === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: `requiredUnless references unknown setting ${reference}` });
+      } else {
+        if (target.type !== 'string') {
+          ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: 'requiredUnless must reference a string setting' });
+        }
+        if (target.secret === true) {
+          ctx.addIssue({ code: 'custom', path: ['properties', key, 'requiredUnless'], message: 'requiredUnless cannot reference a secret setting' });
+        }
+      }
+    }
+  }),
 }).strict();
 
 export type PluginPermissions = z.infer<typeof permissionSchema>;
@@ -202,7 +241,13 @@ export async function parsePluginExtension(
     }
   }
   for (const provider of value.mediaProviders ?? []) {
-    if (provider.connectionSetting !== undefined && value.settings?.schema.properties[provider.connectionSetting]?.type !== 'string') {
+    const group = value.mediaSources?.find((item) => item.providerIds.includes(provider.id));
+    const setting = provider.connectionSetting === undefined
+      ? undefined
+      : group === undefined || provider.connectionSetting.startsWith(group.settingsPrefix)
+        ? provider.connectionSetting
+        : group.settingsPrefix + provider.connectionSetting;
+    if (setting !== undefined && value.settings?.schema.properties[setting]?.type !== 'string') {
       diagnostics.push({ severity: 'error', message: `Media provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }

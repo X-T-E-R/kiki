@@ -214,6 +214,22 @@ describe('HTTP REST domains', () => {
       ]);
     } finally { await channel.close(); }
   });
+  it('reads the safe plugin model catalog through the authenticated REST method', async () => {
+    const catalog = {
+      models: [{ id: 'local-model', provider_id: 'chat-connection', remote_id: 'remote-model', display_name: 'Fixture model', max_context_size: 32768, effective_capabilities: ['tool_use'], effective_protocol: 'openai' }],
+      connections: [{ id: 'chat-connection', type: 'openai', status: 'connected', service: 'chat', default_model: 'local-model', models: ['remote-model'], authentication: 'api-key' }],
+    } as const;
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/plugins/models');
+      expect(init?.method ?? 'GET').toBe('GET');
+      return envelope(catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.plugins.models()).resolves.toEqual(catalog);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await channel.close(); }
+  });
   it('forwards optional session identity for output-layer configuration without changing global reads', async () => {
     const urls: URL[] = [];
     const fetchMock = vi.fn(async (input: string | URL) => {

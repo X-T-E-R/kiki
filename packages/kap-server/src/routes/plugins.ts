@@ -31,9 +31,11 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
+import { pluginModelCatalog } from '@kiki/agent-core-v2/app/plugin/pluginModelCatalog';
 import { z } from 'zod';
 import {
   pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema, pluginNavigationSchema,
+  pluginModelCatalogSchema,
   pluginPanelSummarySchema, pluginPanelDocumentSchema, pluginPanelBridgeRequestSchema, pluginPanelBridgeResponseSchema,
 } from '@kiki/protocol';
 
@@ -300,6 +302,21 @@ export function registerPluginsRoutes(
     listRoute.handler as Parameters<PluginsRouteHost['get']>[2],
   );
 
+  const modelCatalogRoute = defineRoute(
+    {
+      method: 'GET', path: '/plugins/models',
+      success: { data: pluginModelCatalogSchema },
+      errors: {}, description: 'List safe model and connection choices for plugins', tags: ['plugins'],
+      operationId: 'listPluginModels',
+    },
+    async (req, reply) => {
+      try {
+        reply.send(okEnvelope(await pluginModelCatalog(core.accessor.get(IModelCatalog)), req.id));
+      } catch (error) { reply.send(mapPluginError(error, req.id)); }
+    },
+  );
+  app.get(modelCatalogRoute.path, modelCatalogRoute.options, modelCatalogRoute.handler as Parameters<PluginsRouteHost['get']>[2]);
+
   const panelListRoute = defineRoute(
     {
       method: 'GET', path: '/plugins/panels', querystring: pluginContextQuery,
@@ -443,9 +460,7 @@ export function registerPluginsRoutes(
           return;
         }
         if (req.body.method === 'plugin.models.list') {
-          const catalog = core.accessor.get(IModelCatalog);
-          const [models, providers] = await Promise.all([catalog.listModels(), catalog.listProviders()]);
-          reply.send(okEnvelope({ result: { models, connections: providers.map((provider) => ({ id: provider.id, type: provider.type, status: provider.status })) } }, req.id));
+          reply.send(okEnvelope({ result: await pluginModelCatalog(core.accessor.get(IModelCatalog)) }, req.id));
           return;
         }
         if (info.manifest?.kiki?.panels?.find((item) => item.id === req.params.panel_id)?.slot === 'settings') {

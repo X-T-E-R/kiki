@@ -35,6 +35,33 @@ export const pluginSettingsResponseSchema = z.object({
   values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
   secretsConfigured: z.array(z.string()),
 });
+
+const pluginModelCatalogModelSchema = z.object({
+  id: z.string().min(1),
+  provider_id: z.string(),
+  remote_id: z.string().min(1),
+  display_name: z.string().min(1).optional(),
+  max_context_size: z.number().int().min(0),
+  effective_capabilities: z.array(z.string()).optional(),
+  effective_protocol: z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']).optional(),
+}).strict();
+
+const pluginModelCatalogConnectionSchema = z.object({
+  id: z.string().min(1),
+  type: z.string().min(1),
+  status: z.enum(['connected', 'error', 'unconfigured']),
+  service: z.enum(['chat', 'decision']),
+  default_model: z.string().min(1).optional(),
+  models: z.array(z.string().min(1)).optional(),
+  authentication: z.enum(['oauth', 'api-key', 'none']),
+}).strict();
+
+export const pluginModelCatalogSchema = z.object({
+  models: z.array(pluginModelCatalogModelSchema),
+  connections: z.array(pluginModelCatalogConnectionSchema),
+}).strict();
+export type PluginModelCatalog = z.infer<typeof pluginModelCatalogSchema>;
+
 export const pluginSettingsPatchSchema = z.object({
   values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
 });

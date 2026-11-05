@@ -254,7 +254,14 @@ describe('server-v2 /api plugins', () => {
     expect(patched.body.data.result.secretsConfigured).toEqual(['token']);
     const read = await call('POST', path, { method: 'plugin.settings.get' });
     expect(JSON.stringify(read)).not.toContain('fixture-private-token');
-    expect((await call<{ result: { models: unknown[]; connections: unknown[] } }>('POST', path, { method: 'plugin.models.list' })).body.data.result).toMatchObject({ models: expect.any(Array), connections: expect.any(Array) });
+    const directCatalog = await call<{ models: unknown[]; connections: unknown[] }>('GET', '/api/plugins/models');
+    expect(directCatalog.body.code).toBe(0);
+    const directCatalogText = JSON.stringify(directCatalog.body.data);
+    expect(directCatalogText).not.toContain('fixture-private-token');
+    expect(directCatalogText).not.toMatch(/api_key|base_url|custom_header|request_identity/u);
+    const panelCatalog = await call<{ result: { models: unknown[]; connections: unknown[] } }>('POST', path, { method: 'plugin.models.list' });
+    expect(panelCatalog.body.data.result).toEqual(directCatalog.body.data);
+    expect(panelCatalog.body.data.result).toMatchObject({ models: expect.any(Array), connections: expect.any(Array) });
     expect((await call('POST', path, { method: 'session.summary', session_id: 'missing' })).body.code).toBe(40001);
     expect((await call('POST', path, { method: 'session.sendMessage', session_id: 'missing', text: 'not submitted' })).body.code).toBe(40001);
   });

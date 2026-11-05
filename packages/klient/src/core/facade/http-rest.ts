@@ -46,6 +46,7 @@ import type {
   PersonaPutInput,
   PersonaSnapshot,
   PersonaSummary,
+  PluginModelCatalog,
 } from '@kiki/protocol';
 import type { UsageResponse, UsagePricingResponse, UsagePricingUpdate } from '@kiki/protocol';
 
@@ -760,6 +761,7 @@ export interface HttpRestFacade {
 
   readonly plugins: {
     navigation(): Promise<import('@kiki/protocol').PluginNavigation>;
+    models(): Promise<PluginModelCatalog>;
     usage(target: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginUsageResponse>;
     setUsage(input: import('@kiki/protocol').PluginUsageRequest): Promise<import('@kiki/protocol').PluginUsageResponse>;
     marketplace(): Promise<HttpRestPluginMarketplaceResponse>;

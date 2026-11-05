@@ -8,7 +8,7 @@ import { IPluginService } from './plugin';
 import { currentPluginId } from './renamedPlugins';
 import { scriptSources, scriptEnvironmentKey } from './mediaSourceSettings';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
-import type { PluginSettings, PluginExtension } from './contributions';
+import type { PluginSettings, PluginExtension, PluginMediaSourceGroup } from './contributions';
 import { builtinHistory } from '#/app/pluginImport/builtinHistory';
 
 export interface SettingsView {
@@ -60,7 +60,8 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
         };
       }
     }
-    return { ...extension, settings: { ...extension.settings, schema: { ...extension.settings.schema, properties } } };
+    const required = projectLegacyMediaRequired(extension, properties, extension.settings.schema.required);
+    return { ...extension, settings: { ...extension.settings, schema: { ...extension.settings.schema, properties, required } } };
   }
 
   async inspect(pluginId: string): Promise<SettingsView> {
@@ -266,7 +267,85 @@ function enrichMediaProperties(extension: PluginExtension, raw: PropertyMap): Re
       }),
     };
   }
+  projectLegacyMediaProperties(extension, properties);
   return properties;
+}
+
+function projectLegacyMediaRequired(
+  extension: PluginExtension,
+  properties: Record<string, Property>,
+  existing: readonly string[] | undefined,
+): string[] | undefined {
+  const required = [...(existing ?? [])];
+  for (const group of extension.mediaSources ?? []) {
+    for (const key of group.required ?? []) {
+      const propertyKey = group.settingsPrefix + key;
+      const property = properties[propertyKey];
+      if (property !== undefined && property.hidden !== true) required.push(propertyKey);
+    }
+  }
+  if (existing === undefined && required.length === 0) return undefined;
+  return [...new Set(required)];
+}
+
+function projectLegacyMediaProperties(extension: PluginExtension, properties: Record<string, Property>): void {
+  for (const definition of extension.mediaProviders ?? []) {
+    const group = mediaSourceGroupForDefinition(extension, definition);
+    const connectionKey = mediaConnectionSettingKey(definition.connectionSetting, group?.settingsPrefix);
+    if (connectionKey === undefined) continue;
+    const property = properties[connectionKey];
+    if (property?.type === 'string' && property.secret !== true && property.format === undefined) {
+      properties[connectionKey] = { ...property, format: 'kiki-connection' };
+    }
+  }
+  const independentConnectionKeys = new Set(extension.mediaProviders
+    ?.filter((definition) => mediaSourceGroupForDefinition(extension, definition) === undefined)
+    .map((definition) => mediaConnectionSettingKey(definition.connectionSetting, undefined))
+    .filter((key): key is string => key !== undefined && properties[key]?.type === 'string' && properties[key]?.secret !== true));
+  if (independentConnectionKeys.size === 1) {
+    const [connectionKey] = independentConnectionKeys;
+    for (const key of extension.settings?.schema.required ?? []) {
+      if (key !== 'apiKey' && key !== 'baseUrl') continue;
+      const property = properties[key];
+      if (property?.type !== 'string' || property.requiredUnless !== undefined) continue;
+      properties[key] = { ...property, requiredUnless: connectionKey };
+    }
+  }
+  for (const group of extension.mediaSources ?? []) {
+    const connectionKeys = new Set(extension.mediaProviders
+      ?.filter((definition) => mediaSourceContainsDefinition(group, definition))
+      .map((definition) => mediaConnectionSettingKey(definition.connectionSetting, group.settingsPrefix))
+      .filter((key): key is string => key !== undefined && properties[key]?.type === 'string' && properties[key]?.secret !== true));
+    if (connectionKeys.size !== 1) continue;
+    const [connectionKey] = connectionKeys;
+    for (const key of group.required ?? []) {
+      if (key !== 'apiKey' && key !== 'baseUrl') continue;
+      const propertyKey = group.settingsPrefix + key;
+      const property = properties[propertyKey];
+      if (property?.type !== 'string' || property.requiredUnless !== undefined) continue;
+      properties[propertyKey] = { ...property, requiredUnless: connectionKey };
+    }
+  }
+}
+
+function mediaSourceGroupForDefinition(
+  extension: PluginExtension,
+  definition: { readonly id: string },
+): PluginMediaSourceGroup | undefined {
+  return extension.mediaSources?.find((group) => mediaSourceContainsDefinition(group, definition));
+}
+
+function mediaSourceContainsDefinition(
+  group: PluginMediaSourceGroup,
+  definition: { readonly id: string },
+): boolean {
+  return group.providerIds.includes(definition.id);
+}
+
+function mediaConnectionSettingKey(setting: string | undefined, settingsPrefix: string | undefined): string | undefined {
+  if (setting === undefined) return undefined;
+  if (settingsPrefix === undefined || setting.startsWith(settingsPrefix)) return setting;
+  return settingsPrefix + setting;
 }
 
 registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnScopeCreated, 'plugin');
