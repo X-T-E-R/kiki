@@ -15,7 +15,7 @@ import { ILogService } from '#/_base/log/log';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService, StorageError, type IStorageLock } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, type IStorageLock, type StorageFileStat } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import {
@@ -171,6 +171,7 @@ interface OperationSourceSnapshot {
   readonly generation: string;
   readonly size: number;
   readonly mtimeMs: number;
+  readonly stat?: StorageFileStat;
 }
 interface OperationImportState extends OperationSourceSnapshot {
   readonly publicationGeneration: string;
@@ -247,15 +248,10 @@ export class RetainedUsageService implements IRetainedUsageService {
 
   private async inspectOperationSource(deadlineAt: number, signal?: AbortSignal): Promise<OperationSourceSnapshot | undefined> {
     return this.runOperationWrite(async () => {
-      const key = OPERATION_USAGE_KEY;
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) return undefined;
       try {
-        return await this.withOperationWriter(Math.min(3000, remaining), signal, async () => ({
-          size: await this.storage.size(this.storeScope, key) ?? 0,
-          mtimeMs: await this.storage.mtime(this.storeScope, key) ?? 0,
-          generation: await this.appendLog.generation(this.storeScope, key),
-        }));
+        return await this.withOperationWriter(Math.min(3000, remaining), signal, () => this.operationSourceSnapshot());
       } catch (error) {
         signal?.throwIfAborted();
         if (!(error instanceof StorageError)) throw error;
@@ -264,11 +260,21 @@ export class RetainedUsageService implements IRetainedUsageService {
     });
   }
 
-  private async operationSourceUnchanged(snapshot: OperationSourceSnapshot): Promise<boolean> {
+  private async operationSourceSnapshot(): Promise<OperationSourceSnapshot> {
     const key = OPERATION_USAGE_KEY;
-    return (await this.storage.size(this.storeScope, key) ?? 0) === snapshot.size
-      && (await this.storage.mtime(this.storeScope, key) ?? 0) === snapshot.mtimeMs
-      && await this.appendLog.generation(this.storeScope, key) === snapshot.generation
+    const stat = await this.storage.stat?.(this.storeScope, key);
+    return {
+      size: stat?.size ?? await this.storage.size(this.storeScope, key) ?? 0,
+      mtimeMs: await this.storage.mtime(this.storeScope, key) ?? 0,
+      generation: await this.appendLog.generation(this.storeScope, key),
+      stat,
+    };
+  }
+
+  private async operationSourceUnchanged(snapshot: OperationSourceSnapshot): Promise<boolean> {
+    const current = await this.operationSourceSnapshot();
+    return current.size === snapshot.size && current.mtimeMs === snapshot.mtimeMs && current.generation === snapshot.generation
+      && current.stat?.identity === snapshot.stat?.identity && current.stat?.revision === snapshot.stat?.revision
       && !this.operationWritesPending;
   }
 
@@ -355,11 +361,17 @@ export class RetainedUsageService implements IRetainedUsageService {
     const sources = await Promise.all([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY, OPERATION_USAGE_KEY].map(async (key) => {
       signal?.throwIfAborted();
       const source = `retained-ledger:${key}`;
-      const [size, generation, progress, mtimeMs] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal), key === OPERATION_USAGE_KEY ? this.storage.mtime(this.storeScope, key) : 0]);
+      if (key === OPERATION_USAGE_KEY) {
+        const [snapshot, progress] = await Promise.all([this.operationSourceSnapshot(), this.model.progress(source, signal)]);
+        const state = progress?.parser as OperationImportState | undefined;
+        const current = !this.operationWritesPending && operationPrefixCurrent(state, snapshot);
+        const readBytes = current ? Math.min(snapshot.size, progress?.offset ?? 0) : 0;
+        return { source, size: snapshot.size, readBytes, complete: current && readBytes === snapshot.size && !state.damaged };
+      }
+      const [size, generation, progress] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal)]);
       const state = progress?.parser as RetainedImportState | undefined;
-      const current = key !== OPERATION_USAGE_KEY || !this.operationWritesPending && operationPrefixCurrent(progress?.parser as OperationImportState | undefined, { generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 });
-      const readBytes = current && state?.generation === generation ? Math.min(size ?? 0, progress?.offset ?? 0) : 0;
-      return { source, size: size ?? 0, readBytes, complete: current && state?.generation === generation && readBytes === size && state.current === undefined && !state.damaged };
+      const readBytes = state?.generation === generation ? Math.min(size ?? 0, progress?.offset ?? 0) : 0;
+      return { source, size: size ?? 0, readBytes, complete: state?.generation === generation && readBytes === size && state.current === undefined && !state.damaged };
     }));
     return sources.filter((row) => row.size > 0);
   }
@@ -907,8 +919,9 @@ async function readWithDeadline<T>(query: RetainedUsageListQuery, read: (query: 
 
 function operationPrefixCurrent(prior: OperationImportState | undefined, current: OperationSourceSnapshot): prior is OperationImportState {
   return prior !== undefined && typeof prior.publicationGeneration === 'string' && typeof prior.boundaryHash === 'string'
-    && prior.generation === current.generation && current.size >= prior.size
-    && (current.size > prior.size || current.mtimeMs === prior.mtimeMs);
+    && prior.generation === current.generation && prior.stat?.identity === current.stat?.identity
+    && (prior.stat === undefined) === (current.stat === undefined)
+    && (current.size > prior.size || current.size === prior.size && current.mtimeMs === prior.mtimeMs && current.stat?.revision === prior.stat?.revision);
 }
 
 registerScopedService(

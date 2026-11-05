@@ -273,9 +273,9 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     const d = await destination(f.service);
     const expectAll = async (tokens: number, records: number) => {
       await vi.waitFor(async () => {
-        expect(await accounting.readSessionAccounting('work', source.id)).toMatchObject({ complete: true, tokens: { input_other: tokens } });
         const history = await accounting.query({ range: 'all', provider: 'fixture' });
-        expect(history).toMatchObject({ reliability: { complete: true }, summary: { tokens: { input_other: tokens } } });
+        expect(history).toMatchObject({ reliability: { complete: true, usage_coverage: { known_records: records } }, summary: { tokens: { input_other: tokens } } });
+        expect(await accounting.readSessionAccounting('work', source.id)).toMatchObject({ complete: true, tokens: { input_other: tokens } });
       });
       await f.service.scan(true);
       const preview = await f.service.preview(d.id);
@@ -288,17 +288,35 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
         expect([...persisted.values()].reduce((sum, item) => sum + (item.bucket?.tokens.input_other ?? 0), 0)).toBe(tokens);
       }
     };
+    const stamped = new Date(T);
+    const operationPath = f.storage.pathFor('store', OPERATION_USAGE_KEY);
+    await utimes(operationPath, stamped, stamped);
     await expectAll(7, 1);
     await enable(f.service, d.id);
     const original = (await f.storage.read('store', OPERATION_USAGE_KEY))!;
     const edited = Buffer.from(Buffer.from(original).toString('utf8').replace('"inputOther":7', '"inputOther":9'));
     expect(edited.byteLength).toBe(original.byteLength);
+    const before = await f.storage.stat('store', OPERATION_USAGE_KEY);
+    const beforeMtime = await f.storage.mtime('store', OPERATION_USAGE_KEY);
+    const observed = vi.fn();
+    const subscription = tracker.onDidChange(observed);
+    try {
+      await f.storage.write('store', OPERATION_USAGE_KEY, edited, { atomic: true });
+      await utimes(operationPath, stamped, stamped);
+      await vi.waitFor(() => { expect(observed).toHaveBeenCalledWith({ kind: 'operation' }); });
+    } finally { subscription.dispose(); }
+    const after = await f.storage.stat('store', OPERATION_USAGE_KEY);
+    expect(after?.size).toBe(before?.size);
+    expect(before?.identity).toBeDefined();
+    expect(after?.identity).toBeDefined();
+    expect(after?.identity).not.toBe(before?.identity);
+    expect(await f.storage.mtime('store', OPERATION_USAGE_KEY)).toBe(beforeMtime);
+    expect(await f.retained.readModelImportProgress!()).toContainEqual(expect.objectContaining({ source: `retained-ledger:${OPERATION_USAGE_KEY}`, complete: false, readBytes: 0 }));
+    await expectAll(9, 1);
     const rewrite = async (bytes: Uint8Array, revision: number) => {
       await f.storage.write('store', OPERATION_USAGE_KEY, bytes);
-      await utimes(join(f.home, 'store', OPERATION_USAGE_KEY), new Date(T + revision), new Date(T + revision));
+      await utimes(operationPath, new Date(T + revision), new Date(T + revision));
     };
-    await rewrite(edited, 100);
-    await expectAll(9, 1);
     await f.retained.recordOperation(source, { ...operation, time: T + 2, usage: { ...operation.usage, inputOther: 5 } });
     await expectAll(14, 2);
     const rows = (await f.storage.read('store', OPERATION_USAGE_KEY))!;

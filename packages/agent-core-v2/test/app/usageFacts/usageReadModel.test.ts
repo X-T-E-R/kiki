@@ -333,8 +333,10 @@ describe('Usage source read model', () => {
     ]);
   });
 
-  it('replaces visible same-size and shorter operation ledgers while importing ordinary appends incrementally', async () => {
+  it.each(['stat', 'without-stat', 'legacy-checkpoint'] as const)('replaces visible operation changes and imports appends incrementally with %s', async (mode) => {
     const key = 'session-operations-v1.jsonl';
+    const ledger = `retained-ledger:${key}`;
+    if (mode !== 'stat') Object.defineProperty(storage, 'stat', { value: undefined, configurable: true });
     const session = { id: 'operation-edits', workspaceId: 'example', createdAt: 1, updatedAt: 1, archived: false };
     const service = ix.get(IRetainedUsageService);
     const operation = { ...record(1, 7), turnId: undefined, requestKind: 'output_layer' };
@@ -345,10 +347,21 @@ describe('Usage source read model', () => {
     storage.mtime = async (scope, file) => file === key ? revision : baseMtime(scope, file);
     await service.recordOperation(session, operation);
     expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(7) } });
+    if (mode === 'legacy-checkpoint') {
+      const saved = (await model.progress(ledger))!;
+      const parser = { ...saved.parser } as { stat?: unknown };
+      delete parser.stat;
+      expect(await model.apply({ source: ledger, expected: saved, progress: { ...saved, parser }, records: [] })).toBe(true);
+      delete (storage as Partial<InMemoryStorageService>).stat;
+      expect(await service.readModelImportProgress!()).toContainEqual(expect.objectContaining({ source: ledger, complete: false, readBytes: 0 }));
+      expect(await service.prepareReadModel!(budget)).toMatchObject({ complete: true, scannedRecords: 1 });
+      expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(7) } });
+    }
     const original = (await storage.read('store', key))!;
     const edited = Buffer.from(Buffer.from(original).toString('utf8').replace('"inputOther":7', '"inputOther":9'));
     expect(edited.byteLength).toBe(original.byteLength);
-    await storage.write('store', key, edited); revision++;
+    await storage.write('store', key, edited);
+    if (mode !== 'stat') revision++;
     expect(await read()).toMatchObject({ complete: true, totals: { records: 1, usage: usage(9) } });
     expect(await model.query(query)).toMatchObject({ total: { usage: usage(9), knownRecords: 1 } });
     await service.recordOperation(session, { ...operation, time: 2, usage: usage(5) }); revision++;
@@ -360,6 +373,25 @@ describe('Usage source read model', () => {
     const exported = [];
     for await (const event of service.readExportUsage!(false)) if (event.kind === 'operation') exported.push(event.record.usage.inputOther);
     expect(exported).toEqual([9]);
+  });
+
+  it('rejects complete operation export coverage when only the storage revision changes during the read', async () => {
+    const key = 'session-operations-v1.jsonl';
+    const service = ix.get(IRetainedUsageService);
+    storage.mtime = async () => 0;
+    await service.recordOperation({ id: 'operation-export', workspaceId: 'example', createdAt: 1, updatedAt: 1, archived: false }, { ...record(1, 9), requestKind: 'output_layer' });
+    const iterator = service.readExportUsage!(false);
+    let event = await iterator.next();
+    while (!event.done && event.value.kind !== 'operation') event = await iterator.next();
+    expect(event).toMatchObject({ done: false, value: { kind: 'operation', record: { usage: usage(9) } } });
+    const before = await storage.stat('store', key);
+    await storage.write('store', key, (await storage.read('store', key))!);
+    const after = await storage.stat('store', key);
+    expect(after?.identity).toBe(before?.identity);
+    expect(after?.size).toBe(before?.size);
+    expect(after?.revision).not.toBe(before?.revision);
+    expect(await iterator.next()).toEqual({ done: false, value: { kind: 'incomplete' } });
+    expect(await iterator.next()).toEqual({ done: true, value: { operationsComplete: false } });
   });
 
   it('retires a replaced retained ledger and rejects mismatched ephemeral commits', async () => {
