@@ -448,6 +448,65 @@ Supported fields:
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
+### Host models and credentials
+
+A native plugin tool can use Kiki's configured models and connections without copying their API keys. Declare `"engines": { "kiki": ">=0.4.3" }` inside `x-kiki`; the types are exported from `@kiki/plugin-sdk`.
+
+Use settings formats to give both the generic settings form and your own panel the same choices:
+
+```json
+{
+  "x-kiki": {
+    "engines": { "kiki": ">=0.4.3" },
+    "permissions": { "secrets": true },
+    "settings": {
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "modelId": { "type": "string", "format": "kiki-model" },
+          "connectionId": { "type": "string", "format": "kiki-connection" },
+          "remoteModel": { "type": "string" },
+          "apiKey": { "type": "string", "secret": true, "requiredUnless": "connectionId" }
+        },
+        "required": ["apiKey"]
+      }
+    }
+  }
+}
+```
+
+`format` applies only to non-secret strings. `kiki-model` stores a configured model ID; `kiki-connection` stores a connection ID. For a required property, `requiredUnless` names another non-secret string in the same schema: a nonempty alternate value satisfies that field's requirement. It does not change storage or select a connection by itself. Keep local API settings only if your plugin's own adapter supports them; media generation continues to use its media adapter.
+
+Inside a registered tool, stream a configured model with `context.models.stream()`:
+
+```js
+const modelId = String(context.settings.modelId ?? "").trim();
+if (!modelId) return { output: "Choose a model in this plugin's settings." };
+
+let text = "";
+for await (const event of context.models.stream({
+  target: { modelId },
+  systemPrompt: "Summarize the supplied text.",
+  messages: [{ role: "user", text: args.text }]
+}, { signal: context.signal })) {
+  if (event.type === "reset") text = "";
+  if (event.type === "delta") text += event.text;
+  if (event.type === "completed") text = event.text;
+}
+return { output: text };
+```
+
+To use a connection and an explicit remote model, pass `target: { connectionId, modelName: remoteModel }` instead of `target: { modelId }`. If the user selects both, choose the connection form in your tool. `maxContextSize` is optional in that form and defaults to 32768. Kiki rejects an empty target before contacting a provider. Omit `maxOutputTokens` to leave the limit unspecified, or set a positive integer explicitly.
+
+Events are `started` (resolved model and connection), `delta`, `reset` (discard previous attempt text), `usage`, and `completed`. Iteration rejects on errors with a stable `error.code`; cancellation uses `request.cancelled`. Passing an `AbortSignal`, cancelling the tool, or leaving the loop stops its request. Kiki resolves credentials and OAuth refresh, projects request identity, applies request governance, and records Usage against the invoking session and agent.
+
+`await context.models.list()` returns `{ models, connections }`. Model entries expose `id`, `provider_id`, `remote_id`, display name, context size, and available effective capabilities/protocol. Connection entries expose `id`, provider `type`, `status`, `service` (`chat` or `decision`), default/listed models, and `authentication` (`oauth`, `api-key`, or `none`). Use those fields to label and filter choices rather than inferring capabilities from IDs. Keys, endpoint URLs, custom headers and request-identity settings are not included.
+
+A custom panel backend receives `PluginPanelContext` as the third argument of `handlePanelRequest(action, args, context)`. It can list models and manage its own declared secret settings, but model execution requires an admitted tool call. A browser panel can use `plugin.models.list`; a client can use `klient.rest.plugins.models()` or `GET /api/plugins/models` for the same catalog.
+
+For a plugin-owned secret, use `await context.credentials.status("apiKey")` and `await context.credentials.set("apiKey", value)`. Status returns `{ reference: { kind: "plugin-setting", setting: "apiKey" }, configured }`, never the secret. A string replaces the value; `null` clears it. Only declared secret fields are accepted, and writing requires `permissions.secrets`. These calls use Kiki's existing credential storage. Settings reads return `secretsConfigured`; settings patches keep an omitted secret, replace a supplied string and clear a supplied `null`.
+
 ### External harness account sources
 
 An account-source plugin lets users choose one of its accounts for a specific [external harness](../configuration/config-files.md#external-harness-defaults). Install and enable the plugin, sign in through the plugin, then select its source and account for the harness instance. The default AGY CLI bridge keeps its existing login. If a selected account is signed out or the plugin is disabled or missing, restore that account or explicitly choose another one; Kiki does not switch accounts for you.

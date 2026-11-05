@@ -1720,6 +1720,7 @@ interface UsageRecordPayload {
   /** UsageRecordScope */
   usageScope?: 'session' | 'turn';
   turnId?: number;
+  requestKind?: string;
   agentId?: string;
   parentAgentId?: string;
   provider?: string;

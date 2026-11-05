@@ -105,7 +105,7 @@ it('gives the script fields the host synthesizes Chinese text beside its own Eng
   } finally { await ix.dispose(); }
 });
 
-it('enriches ungrouped media plugin settings from mediaSources and mediaProviders metadata', async () => {
+it('enriches grouped media plugin settings from mediaSources and mediaProviders metadata', async () => {
   const config = new StubConfigService({ pluginSettings: {} });
   const ix = new TestInstantiationService();
   ix.stub(IConfigService, config);
@@ -172,6 +172,39 @@ it('enriches ungrouped media plugin settings from mediaSources and mediaProvider
   }
 });
 
+it.each(['agnes', 'novita'])('preserves %s grouped requirements across selecting and clearing its connection', async (source) => {
+  const prefix = `${source}__`;
+  const config = new StubConfigService({ pluginSettings: {} });
+  const ix = new TestInstantiationService();
+  ix.stub(IConfigService, config);
+  ix.stub(IPluginService, {
+    getPluginInfo: async () => ({ manifest: { kiki: {
+      mediaSources: [{ id: source, label: source, providerIds: [`${source}-video`], settingsPrefix: prefix, required: ['baseUrl'] }],
+      mediaProviders: [{ schemaVersion: 1, id: `${source}-video`, label: source, kinds: ['video'], resumeVersion: 1, connectionSetting: prefix + 'connectionId' }],
+      settings: { schemaVersion: 1, schema: { type: 'object', properties: {
+        [prefix + 'enabled']: { type: 'boolean', default: true },
+        [prefix + 'baseUrl']: { type: 'string' },
+        [prefix + 'connectionId']: { type: 'string' },
+      } } },
+    } } }),
+  } as unknown as IPluginService);
+  ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
+  try {
+    const settings = ix.get(IPluginSettingsService);
+    const selected = await settings.update({ pluginId: 'grouped-media', values: { [prefix + 'connectionId']: 'example-connection' } });
+    expect(selected.schema?.schema.required).toEqual([prefix + 'baseUrl']);
+    expect(selected.schema?.schema.properties[prefix + 'baseUrl']).toMatchObject({ group: source, requiredUnless: prefix + 'connectionId' });
+    expect(await settings.forExecution('grouped-media')).toEqual({ [prefix + 'connectionId']: 'example-connection' });
+    const cleared = await settings.update({ pluginId: 'grouped-media', values: { [prefix + 'connectionId']: null } });
+    expect(cleared.values).toEqual({});
+    expect(cleared.schema?.schema.required).toEqual([prefix + 'baseUrl']);
+    expect(cleared.schema?.schema.properties[prefix + 'baseUrl']?.requiredUnless).toBe(prefix + 'connectionId');
+    const disabled = await settings.update({ pluginId: 'grouped-media', values: { [prefix + 'enabled']: false } });
+    expect(disabled.values).toEqual({ [prefix + 'enabled']: false });
+    expect(disabled.schema?.schema.properties[prefix + 'enabled']?.group).toBe(source);
+  } finally { await ix.dispose(); }
+});
+
 it('projects connection metadata for an independent legacy media provider without guessing ordinary settings', async () => {
   const config = new StubConfigService({ pluginSettings: {} });
   const ix = new TestInstantiationService();
@@ -217,7 +250,7 @@ it('validates setting formats and requiredUnless declarations without changing s
     connectionId: { type: 'string' as const, format: 'kiki-connection' as const },
     modelId: { type: 'string' as const, format: 'kiki-model' as const },
   } } };
-  expect(settingsContributionSchema.parse(base).schema.properties.connectionId.format).toBe('kiki-connection');
+  expect(settingsContributionSchema.parse(base).schema.properties['connectionId']?.format).toBe('kiki-connection');
   expect(() => settingsContributionSchema.parse({ ...base, schema: { ...base.schema, properties: { ...base.schema.properties, apiKey: { type: 'string', secret: true, format: 'kiki-connection' } } } })).toThrow();
   expect(() => settingsContributionSchema.parse({ ...base, schema: { ...base.schema, properties: { ...base.schema.properties, modelId: { type: 'boolean', format: 'kiki-model' } } } })).toThrow();
   expect(() => settingsContributionSchema.parse({ schemaVersion: 1, schema: { type: 'object', required: ['apiKey'], properties: {

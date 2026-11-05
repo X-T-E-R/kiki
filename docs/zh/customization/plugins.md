@@ -449,6 +449,65 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
+### 宿主模型与凭据
+
+原生插件工具可以直接使用 Kiki 中已配置的模型和连接，无须复制其 API 密钥。在 `x-kiki` 中声明 `"engines": { "kiki": ">=0.4.3" }`；类型从 `@kiki/plugin-sdk` 导出。
+
+用设置字段的 `format` 为通用表单和插件自己的面板提供相同的选项：
+
+```json
+{
+  "x-kiki": {
+    "engines": { "kiki": ">=0.4.3" },
+    "permissions": { "secrets": true },
+    "settings": {
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "modelId": { "type": "string", "format": "kiki-model" },
+          "connectionId": { "type": "string", "format": "kiki-connection" },
+          "remoteModel": { "type": "string" },
+          "apiKey": { "type": "string", "secret": true, "requiredUnless": "connectionId" }
+        },
+        "required": ["apiKey"]
+      }
+    }
+  }
+}
+```
+
+`format` 只用于非密钥字符串。`kiki-model` 保存已配置的模型 ID，`kiki-connection` 保存连接 ID。`requiredUnless` 可在必填字段上指向同一 schema 中另一个非密钥字符串字段；该字段非空时，原字段可以留空。这个声明不改变存储，也不会自动选择连接。只有插件自身的 adapter 支持时才保留自有 API 设置；媒体生成继续走原有媒体 adapter。
+
+在已注册的工具中，通过 `context.models.stream()` 流式调用已配置的模型：
+
+```js
+const modelId = String(context.settings.modelId ?? "").trim();
+if (!modelId) return { output: "请先在插件设置中选择模型。" };
+
+let text = "";
+for await (const event of context.models.stream({
+  target: { modelId },
+  systemPrompt: "总结提供的文本。",
+  messages: [{ role: "user", text: args.text }]
+}, { signal: context.signal })) {
+  if (event.type === "reset") text = "";
+  if (event.type === "delta") text += event.text;
+  if (event.type === "completed") text = event.text;
+}
+return { output: text };
+```
+
+使用连接和显式远端模型时，改传 `target: { connectionId, modelName: remoteModel }`。如果用户同时选了模型和连接，工具优先使用连接形式。该形式的 `maxContextSize` 可省略，默认为 32768。目标留空时，Kiki 会在联系供应商前拒绝请求。`maxOutputTokens` 可省略，不指定输出上限；需要限制时传正整数。
+
+流事件包含 `started`（解析后的模型和连接）、`delta`、`reset`（丢弃上一次尝试的文本）、`usage` 和 `completed`。错误会中断迭代，并提供稳定的 `error.code`；取消对应 `request.cancelled`。中止传入的 `AbortSignal`、取消工具或退出循环都会停止请求。Kiki 负责凭据解析和 OAuth 刷新、请求身份和治理，并将用量归入调用工具的会话和 Agent。
+
+`await context.models.list()` 返回 `{ models, connections }`。模型条目提供 `id`、`provider_id`、`remote_id`、显示名、上下文大小和可用的有效能力及协议。连接条目提供 `id`、供应商 `type`、`status`、用途 `service`（`chat` 或 `decision`）、默认及列出的模型，以及 `authentication`（`oauth`、`api-key` 或 `none`）。用这些字段标记和筛选选项，不要从 ID 猜测用途。目录不返回密钥、端点地址、自定义请求头或请求身份配置。
+
+自定义面板后端的 `handlePanelRequest(action, args, context)` 第三个参数是 `PluginPanelContext`。它可以列出模型、管理插件自己声明的密钥，但执行模型请求须通过已准入的工具调用。浏览器面板可调用 `plugin.models.list`，客户端可调用 `klient.rest.plugins.models()` 或 `GET /api/plugins/models`，使用同一份目录。
+
+对于插件自有密钥，使用 `await context.credentials.status("apiKey")` 和 `await context.credentials.set("apiKey", value)`。状态返回 `{ reference: { kind: "plugin-setting", setting: "apiKey" }, configured }`，不返回密钥。字符串替换原值，`null` 清除。仅接受声明为密钥的字段，写入须声明 `permissions.secrets`。这些操作沿用 Kiki 的凭据存储。设置读取返回 `secretsConfigured`；更新设置时，省略字段保留原值，传字符串替换，传 `null` 清除。
+
 ### 外部 harness 账号来源
 
 账号来源插件可为指定的[外部 harness](../configuration/config-files.md#外部-harness-默认设置)提供账号。安装并启用插件，在插件中登录，然后为 harness 实例选择该来源和账号。默认 AGY CLI 桥仍使用原有登录。如果选定账号已退出登录，或插件已停用、卸载，请恢复该账号或明确另选一个；Kiki 不会自动换号。

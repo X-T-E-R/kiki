@@ -20,6 +20,7 @@ import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { LifecycleScope } from '#/app/scopes';
 import { PLUGIN_IM_DIGEST_MAX_UTF8_BYTES, type PluginImBridge, type PluginImSendRequest } from '#/app/plugin/pluginImBridge';
 import { stubBootstrap } from '../bootstrap/stubs';
@@ -40,6 +41,7 @@ beforeEach(async () => {
     stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
     stubPair(IBootstrapService, { ...stubBootstrap(join(root, 'home')), osHomeDir: join(root, 'user') }),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
     stubPair(IOAuthService, {} as IOAuthService),
     stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
     stubPair(ISessionManager, { list: () => [], get: () => undefined, onDidCreateSession: Event.None, onDidCloseSession: Event.None } as unknown as ISessionManager),

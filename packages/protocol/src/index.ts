@@ -97,6 +97,7 @@ export * from '@kiki/plugin-sdk/media';
 export * from '@kiki/plugin-sdk/harness-account';
 export * from '@kiki/plugin-sdk/im';
 export * from '@kiki/plugin-sdk/messages';
+export { pluginModelTargetSchema, pluginModelRequestSchema, type PluginModelTarget, type PluginModelRequest, type PluginModelEvent, type PluginModelsApi, type PluginCredentialsApi, type PluginCredentialStatus } from '@kiki/plugin-sdk';
 export * from './media-management';
 export * from './rest/persona';
 export * from './rest/memory';

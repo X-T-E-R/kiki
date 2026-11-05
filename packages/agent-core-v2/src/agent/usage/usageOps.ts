@@ -18,6 +18,7 @@ const usageRecordSchema = z.object({
   usage: z.custom<TokenUsage>(),
   usageScope: z.custom<UsageRecordScope>().optional(),
   turnId: z.number().int().nonnegative().optional(),
+  requestKind: z.string().optional(),
   agentId: z.string().optional(),
   parentAgentId: z.string().optional(),
   provider: z.string().optional(),

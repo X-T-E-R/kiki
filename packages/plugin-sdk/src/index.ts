@@ -2,6 +2,8 @@ import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './ha
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 import type { PluginMessagesApi } from './messages.js';
+import type { PluginModelsApi, PluginCredentialsApi } from './models.js';
+export * from './models.js';
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 
 export * from './harness-account.js';
@@ -58,6 +60,9 @@ export interface PluginExecutionContext {
   readonly imageIn: boolean;
   readonly media: PluginMediaApi;
   readonly messages: PluginMessagesApi;
+  /** Available on Kiki plugin engine 0.4.3 and later. */
+  readonly models: PluginModelsApi;
+  readonly credentials: PluginCredentialsApi;
   progress(update: { kind: 'progress' | 'status' | 'stdout' | 'stderr'; text?: string; percent?: number }): void;
 }
 

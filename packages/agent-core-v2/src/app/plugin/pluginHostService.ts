@@ -9,6 +9,8 @@ import { satisfies, valid } from 'semver';
 import type { PluginImAdapterRegistration, PluginImAdapterSink } from './imAdapter';
 export type { PluginImAdapterRegistration, PluginImAdapterSink, PluginImConnection } from './imAdapter';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { pluginModelCatalog } from './pluginModelCatalog';
 import { IOAuthService } from '#/app/auth/auth';
 import { oauthRequestAuth } from '#/kosong/model/modelOAuth';
 import { resolveConfiguredModelBaseUrl } from '#/kosong/model/modelAuth';
@@ -81,6 +83,7 @@ export interface PluginExecutionScope {
   readonly workspaceId?: string;
   readonly media?: PluginMediaApi;
   readonly messages?: PluginMessagesApi;
+  readonly models?: import('@kiki/protocol').PluginModelsApi;
   readonly attachmentStore?: ISessionMediaStore;
 }
 
@@ -196,6 +199,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IPluginService private readonly plugins: IPluginService,
     @IPluginSettingsService private readonly settings: IPluginSettingsService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IProviderService private readonly connections?: IProviderService,
     @IOAuthService private readonly oauth?: IOAuthService,
     @IRequestIdentityCatalog private readonly identityCatalog?: IRequestIdentityCatalog,
@@ -552,16 +556,26 @@ export class PluginHostService extends Service implements IPluginHostService {
   private getHost(info: Pick<PluginInfo, 'id' | 'manifest'>): PluginHost {
     let host = this.hosts.get(info.id);
     if (host === undefined) {
+      const updateSettings = async (values: Record<string, string | number | boolean | null>) => {
+        this.ownSettingsWrites.add(info.id);
+        try { return await this.settings.update({ pluginId: info.id, values }); }
+        finally { this.ownSettingsWrites.delete(info.id); }
+      };
       host = new PluginHost(info.id, info.manifest!.kiki!.entry!, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders,
-        { resident: info.manifest?.kiki?.activation === 'app', updateSettings: async (values) => {
-          this.ownSettingsWrites.add(info.id);
-          try { return await this.settings.update({ pluginId: info.id, values }); }
-          finally { this.ownSettingsWrites.delete(info.id); }
-        }, observeActivity: this.sessions === undefined ? undefined : (listener) => observePluginActivity(this.sessions!, listener),
+        { resident: info.manifest?.kiki?.activation === 'app', updateSettings, observeActivity: this.sessions === undefined ? undefined : (listener) => observePluginActivity(this.sessions!, listener),
         focusSession: (sessionId) => {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
-        }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources);
+        }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources, {
+        models: { list: () => pluginModelCatalog(this.modelCatalog) },
+        credentials: {
+          status: async (setting) => credentialStatus(await this.settings.inspect(info.id), setting),
+          set: async (setting, value) => {
+            credentialStatus(await this.settings.inspect(info.id), setting);
+            return credentialStatus(await updateSettings({ [setting]: value }), setting);
+          },
+        },
+      });
       this.hosts.set(info.id, host);
     }
     return host;
@@ -623,6 +637,11 @@ export class PluginHostService extends Service implements IPluginHostService {
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined {
     return this.navigationRequest !== undefined && Date.now() - this.navigationRequest.at < 10000 ? this.navigationRequest : undefined;
   }
+}
+
+function credentialStatus(view: import('./pluginSettingsService').SettingsView, setting: string): import('@kiki/protocol').PluginCredentialStatus {
+  if (view.schema?.schema.properties[setting]?.secret !== true) throw new Error('Plugin credential is not declared');
+  return { reference: { kind: 'plugin-setting', setting }, configured: view.secretsConfigured.includes(setting) };
 }
 
 function harnessAccountSourceError(source: string, error: unknown): Error2 {

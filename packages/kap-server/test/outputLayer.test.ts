@@ -3,6 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
 import { IOutputLayerService, OutputLayerService, IPluginService, IPluginHostService, IPluginSettingsService, IModelCatalog, IModelService, IPluginUsageService, ISessionIndex, IWorkspaceService, IConfigService, type Scope } from '@kiki/agent-core-v2';
+import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { IAgentPluginModels } from '@kiki/agent-core-v2/agent/pluginModels/pluginModels';
 import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ModelRequestInput, ModelRequestEvent } from '@kiki/agent-core-v2/kosong/model/modelRequester';
 import { HttpChannel } from '@kiki/klient/transports/http/channel';
@@ -47,6 +50,9 @@ async function fixture() {
   ix.stub(IPluginUsageService, { allows });
   ix.stub(ISessionIndex, { get: async (id) => ['example-session', 'disabled-session'].includes(id) ? { id, workspaceId: 'workspace-example', createdAt: 1, updatedAt: 1, archived: false } : undefined });
   ix.stub(IWorkspaceService, { get: async (id) => ({ id, root: '/example', name: 'Example', createdAt: 1, lastOpenedAt: 1, pinned: false }) });
+  ix.stub(IAgentPluginModels, { request: (_requester, input, signal) => requester.request(input, signal) });
+  ix.stub(IAgentLifecycleService, { get: () => ({ id: 'main', kind: 'agent', accessor: ix, dispose() {} }) });
+  ix.stub(ISessionManager, { acquire: async () => ({ handle: { id: 'example-session', kind: 'session', accessor: ix, dispose() {} }, dispose() {} }) });
   ix.set(IOutputLayerService, new SyncDescriptor(OutputLayerService));
   const scope = { accessor: { get: ix.get.bind(ix) } } as unknown as Scope;
   const app = Fastify(); cleanup.push(() => app.close());
@@ -75,7 +81,7 @@ describe('output layer HTTP vertical path (mock provider)', () => {
     expect(f.calls).toHaveLength(0);
   });
 
-  it('reads and updates plugin settings then streams native output without a session or agent operation', async () => {
+  it('reads and updates plugin settings then streams through the session-owned model request', async () => {
     const f = await fixture();
     expect((await f.api.configuration()).enabled).toBe(true);
     expect((await f.api.configure({ presets: [{ ...input.preset, instruction: 'Changed prompt' }], settings: { ...OUTPUT_LAYER_DEFAULT_SETTINGS, groupChars: 800 } })).settings.groupChars).toBe(800);

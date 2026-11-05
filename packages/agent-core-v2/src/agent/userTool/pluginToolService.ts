@@ -16,6 +16,7 @@ import {
 } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
+import { IAgentPluginModels } from '#/agent/pluginModels/pluginModels';
 import { dispose, type IDisposable } from '#/_base/di/lifecycle';
 import { isAbortError } from '#/_base/utils/abort';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -71,6 +72,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @IAgentScopeContext private readonly agentContext?: IAgentScopeContext,
     @IAgentToolExecutorService private readonly toolExecutor?: IAgentToolExecutorService,
     @IAtomicTomlDocumentStore private readonly messageDocuments?: IAtomicTomlDocumentStore,
+    @IAgentPluginModels private readonly models?: IAgentPluginModels,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
@@ -388,6 +390,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             media: this.media?.api(context.toolCallId, admittedRequest),
             attachmentStore: this.attachmentStore,
             messages: this.messagesApi(pluginId, context),
+            models: this.models?.api(pluginId, context.signal),
           };
           return await this.hosts.execute(pluginId, definition.name, resolvedArgs, context.signal, context.onUpdate, scope, definition);
         } finally { current.dispose(); }

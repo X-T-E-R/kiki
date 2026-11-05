@@ -24,6 +24,7 @@ import { PluginImportService } from '#/app/pluginImport/pluginImportService';
 import { LifecycleScope } from '#/app/scopes';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -45,6 +46,7 @@ function host(targetHome = home): ScopedTestHost {
   const result = createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(targetHome)),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
     stubPair(ISessionManager, { list: () => [], get: () => undefined, onDidCreateSession: Event.None, onDidCloseSession: Event.None } as unknown as ISessionManager),
     stubPair(IConfigService, new StubConfigService({ pluginSettings: {} })),
     stubPair(IOAuthService, stubOAuthService()),

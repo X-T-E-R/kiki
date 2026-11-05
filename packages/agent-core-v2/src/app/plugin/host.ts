@@ -49,6 +49,13 @@ interface Call {
   readonly messages?: PluginMessagesApi;
   readonly output?: PluginToolOutput;
   readonly connection?: () => Promise<unknown>;
+  readonly signal?: AbortSignal;
+  readonly models?: import('@kiki/protocol').PluginModelsApi;
+}
+
+export interface PluginHostModelServices {
+  readonly models: Pick<import('@kiki/protocol').PluginModelsApi, 'list'>;
+  readonly credentials: import('@kiki/protocol').PluginCredentialsApi;
 }
 
 export class PluginHost {
@@ -81,7 +88,19 @@ export class PluginHost {
     private readonly kikiHome?: string,
     private readonly imAdapters: readonly PluginImAdapterDefinition[] = [],
     private readonly harnessAccountSources: readonly HarnessAccountSourceDefinition[] = [],
+    private readonly modelServices?: PluginHostModelServices,
   ) {}
+
+  private readonly modelStreams = new Map<number, { readonly owner: number; readonly controller: AbortController; readonly iterator: AsyncIterator<import('@kiki/protocol').PluginModelEvent>; busy: boolean }>();
+  private nextModelStream = 0;
+
+  private async closeModelStreams(owner?: number): Promise<void> {
+    await Promise.all([...this.modelStreams].filter(([, stream]) => owner === undefined || stream.owner === owner).map(async ([id, stream]) => {
+      this.modelStreams.delete(id);
+      stream.controller.abort();
+      await stream.iterator.return?.();
+    }));
+  }
 
   private readonly registeredHarnessAccountSources = new Set<string>();
   private readonly harnessAccountLeases = new Set<number>();
@@ -279,7 +298,7 @@ export class PluginHost {
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly models?: import('@kiki/protocol').PluginModelsApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     signal.throwIfAborted();
     await this.start();
@@ -293,7 +312,7 @@ export class PluginHost {
         signal.removeEventListener('abort', cancel);
         this.pending.delete(requestId);
         this.scheduleIdle();
-        return output.dispose();
+        return Promise.all([output.dispose(), this.closeModelStreams(requestId)]).then(() => undefined);
       };
       const cancel = () => {
         this.send({ method: 'cancel', params: { id: requestId } });
@@ -311,6 +330,8 @@ export class PluginHost {
         onProgress,
         media: scope.media,
         messages: scope.messages,
+        models: scope.models,
+        signal,
         output,
       });
       this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn, workspaceId: scope.workspaceId, kikiHome: this.kikiHome } });
@@ -529,6 +550,16 @@ export class PluginHost {
             }).then((result) => this.send({ method: 'settings-result', params: { callId, result } }),
               () => this.send({ method: 'settings-result', params: { callId, error: 'Plugin settings could not be saved' } }));
           } else if (this.acceptIm(message)) {
+          } else if (message.method === 'model-call') {
+            const { id, callId, action, input, streamId } = message.params ?? {};
+            void this.modelCall(id, action, input, streamId).then(
+              (result) => { if (this.child === child) this.send({ method: 'model-result', params: { callId, result } }); },
+              (error: unknown) => {
+                const cancelled = this.pending.get(id)?.signal?.aborted === true || (error instanceof Error && error.name === 'AbortError');
+                const code = cancelled ? 'request.cancelled' : typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : 'plugin.model_failed';
+                if (this.child === child) this.send({ method: 'model-result', params: { callId, error: { code, message: cancelled ? 'Model request cancelled' : 'Model request failed. Check the selected model, connection and credentials.' } } });
+              },
+            );
           } else if (message.method === 'app-focus-session') {
             const { callId, sessionId } = message.params ?? {};
             void Promise.resolve().then(() => {
@@ -591,6 +622,47 @@ export class PluginHost {
     });
     try { await this.ready; }
     catch (error) { this.ready = undefined; throw error; }
+  }
+
+  private async modelCall(id: number, action: string, input: unknown, streamId: number): Promise<unknown> {
+    const call = this.pending.get(id);
+    if (this.stopped || call === undefined) throw new Error('Plugin invocation has ended');
+    call.signal?.throwIfAborted();
+    if (action === 'list') return this.modelServices?.models.list();
+    if (action === 'credential-status' || action === 'credential-set') {
+      const value = input as { setting?: unknown; value?: unknown };
+      if (typeof value?.setting !== 'string' || this.modelServices === undefined) throw new Error('Invalid credential setting');
+      if (action === 'credential-status') return this.modelServices.credentials.status(value.setting);
+      if (value.value !== null && typeof value.value !== 'string') throw new Error('Invalid credential value');
+      return this.modelServices.credentials.set(value.setting, value.value);
+    }
+    if (action === 'start') {
+      if (call.models === undefined) throw new Error('Model execution requires an admitted agent tool call');
+      const controller = new AbortController();
+      const iterator = call.models.stream(input as import('@kiki/protocol').PluginModelRequest, { signal: controller.signal })[Symbol.asyncIterator]();
+      const streamId = ++this.nextModelStream;
+      this.modelStreams.set(streamId, { owner: id, controller, iterator, busy: false });
+      return { streamId };
+    }
+    const stream = this.modelStreams.get(streamId);
+    if (stream === undefined || stream.owner !== id) throw new Error('Model stream has ended');
+    if (action === 'return') {
+      this.modelStreams.delete(streamId);
+      stream.controller.abort();
+      await stream.iterator.return?.();
+      return { done: true };
+    }
+    if (action !== 'next' || stream.busy) throw new Error('Invalid model stream operation');
+    stream.busy = true;
+    try {
+      const result = await stream.iterator.next();
+      if (result.done) this.modelStreams.delete(streamId);
+      return result;
+    } catch (error) {
+      this.modelStreams.delete(streamId);
+      stream.controller.abort();
+      throw error;
+    } finally { stream.busy = false; }
   }
 
   private acceptIm(message: { method?: string; params?: { callId?: unknown; request?: unknown } }): boolean {

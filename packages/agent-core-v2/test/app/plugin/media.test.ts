@@ -24,6 +24,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { IProviderService, type ProviderConfig } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IRequestIdentityCatalog, RequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IOAuthService } from '#/app/auth/auth';
 import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
@@ -61,6 +62,7 @@ function host(
     stubPair(ISessionIndex, sessions),
     stubPair(ISessionManager, {} as ISessionManager),
     stubPair(IProviderService, stubProviderService(providers)),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
     stubPair(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: async () => 'fixture-oauth-token' }) } as unknown as IOAuthService),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
     stubPair(IFileSystemStorageService, storage),

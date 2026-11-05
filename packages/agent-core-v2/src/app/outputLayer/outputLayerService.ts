@@ -3,9 +3,9 @@ import {
   type OutputLayerConfiguration, type OutputLayerEvent, type OutputLayerRequest,
 } from '@kiki/protocol';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IConfigService } from '#/app/config/config';
-import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
-import { requestModelWithRetry } from '#/agent/stepRetry/modelRequestRetry';
+import { IAgentPluginModels } from '#/agent/pluginModels/pluginModels';
+import { ISessionManager, type SessionLease } from '#/app/sessionManager/sessionManager';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
@@ -31,7 +31,7 @@ export class OutputLayerService implements IOutputLayerService {
     @IPluginUsageService private readonly usage: IPluginUsageService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @IWorkspaceService private readonly workspaces: IWorkspaceService,
-    @IConfigService private readonly config: IConfigService,
+    @ISessionManager private readonly sessionManager: ISessionManager,
   ) {}
 
   async configuration(sessionId?: string): Promise<OutputLayerConfiguration> {
@@ -60,6 +60,7 @@ export class OutputLayerService implements IOutputLayerService {
 
   async *stream(raw: OutputLayerRequest, signal: AbortSignal): AsyncIterable<OutputLayerEvent> {
     let text = '';
+    let lease: SessionLease | undefined;
     try {
       const input = outputLayerRequestSchema.parse(raw);
       signal.throwIfAborted();
@@ -88,14 +89,18 @@ export class OutputLayerService implements IOutputLayerService {
       messages.push(current);
       const inputTokensEstimate = prefixTokens + estimateTokensForMessages(messages);
       const cycleId = historyReset ? crypto.randomUUID() : input.cycleId;
+      lease = await this.sessionManager.acquire?.(input.sessionId, 'output-layer', undefined, signal);
+      const owner = lease?.handle.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+      if (owner === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, '当前会话没有可归属输出请求的主代理');
+      const models = owner.accessor.get(IAgentPluginModels);
       yield { type: 'started', cycleId, historyReset, contextWindow: window, inputTokensEstimate };
       const request = { systemPrompt, messages, tools: [] };
-      const params: ModelRequestParams & { attribution: NonNullable<ModelRequestParams['attribution']> } = {
+      const params: ModelRequestParams = {
         cacheKey: `output-layer:${input.sessionId}:${cycleId}`,
         maxCompletionTokens: outputBudget, maxContextTokens: window, usedContextTokens: inputTokensEstimate,
-        attribution: { logicalRequestId: crypto.randomUUID(), sessionId: input.sessionId, agentId: 'output-layer', purpose: 'output_layer', waitBudget: { waitedMs: 0 } },
+        usedContextTokensTrusted: outputBudget !== undefined,
       };
-      for await (const event of requestModelWithRetry(requester, request, signal, params, () => this.config.get<RetryConfig | undefined>(RETRY_SECTION))) {
+      for await (const event of models.request(requester, request, signal, params, 'output_layer')) {
         if (event.type === 'attempt.discarded') { text = ''; yield { type: 'reset' }; }
         if (event.type === 'part' && event.part.type === 'text') { text += event.part.text; yield { type: 'delta', text: event.part.text }; }
         if (event.type === 'finish') {
@@ -110,7 +115,7 @@ export class OutputLayerService implements IOutputLayerService {
     } catch (error) {
       if (signal.aborted) yield { type: 'cancelled' };
       else yield { type: 'failed', message: error instanceof Error ? error.message : String(error), code: (error as { code?: string } | null)?.code };
-    }
+    } finally { await lease?.dispose(); }
   }
 }
 

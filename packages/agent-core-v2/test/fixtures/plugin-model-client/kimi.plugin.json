@@ -1,0 +1,19 @@
+{
+  "name": "fixture-model-client",
+  "version": "1.0.0",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.3" },
+    "entry": "./entry.mjs",
+    "permissions": { "secrets": true, "uiPanel": true },
+    "settings": {
+      "schemaVersion": 1,
+      "schema": { "type": "object", "properties": {
+        "model": { "type": "string", "format": "kiki-model" },
+        "connection": { "type": "string", "format": "kiki-connection" },
+        "credential": { "type": "string", "secret": true }
+      } }
+    },
+    "panels": [{ "schemaVersion": 1, "id": "settings", "label": "Settings", "slot": "settings", "path": "./settings.html" }],
+    "tools": [{ "schemaVersion": 1, "name": "ModelCall", "description": "Exercise host model services with synthetic fixture inputs.", "parameters": { "type": "object" }, "accesses": [{ "kind": "all" }], "disclosure": "inline" }]
+  }
+}

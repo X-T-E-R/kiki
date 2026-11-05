@@ -17,10 +17,12 @@ import { PluginService } from '#/app/plugin/pluginService';
 import { IPluginHostService, PluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentPluginToolService, AgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentPluginModels } from '#/agent/pluginModels/pluginModels';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -132,6 +134,7 @@ function makeHost(home: string): { readonly host: ScopedTestHost; readonly root:
     stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
     stubPair(IOAuthService, {} as IOAuthService),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
     stubPair(ISessionManager, { list: () => [], get: () => undefined } as unknown as ISessionManager),
     stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
@@ -187,6 +190,7 @@ describe('plugin hot reload lifecycle', () => {
     const agent = host.childOf(session, LifecycleScope.Agent, 'agent', [
       stubPair(IAgentToolExecutorService, {} as IAgentToolExecutorService),
       stubPair(IAgentScopeContext, {} as IAgentScopeContext),
+      stubPair(IAgentPluginModels, { _serviceBrand: undefined, api: vi.fn(), request: vi.fn() } as unknown as IAgentPluginModels),
     ]);
     const registry = agent.accessor.get(IAgentToolRegistryService);
     const pluginTools = agent.accessor.get(IAgentPluginToolService);

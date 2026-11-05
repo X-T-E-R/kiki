@@ -23,7 +23,9 @@ import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/plug
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { LifecycleScope } from '#/app/scopes';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IAgentPluginToolService, AgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentPluginModels } from '#/agent/pluginModels/pluginModels';
 import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -137,6 +139,7 @@ function liveAgent(media?: IAgentPluginMediaService) {
   const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent', [
     stubPair(IAgentToolExecutorService, {} as IAgentToolExecutorService),
     stubPair(IAgentScopeContext, {} as IAgentScopeContext),
+    stubPair(IAgentPluginModels, { _serviceBrand: undefined, api: vi.fn(), request: vi.fn() } as unknown as IAgentPluginModels),
     ...(media === undefined ? [] : [stubPair(IAgentPluginMediaService, media)]),
   ]);
   return {
@@ -191,6 +194,7 @@ beforeEach(async () => {
     } as IAtomicTomlDocumentStore),
     stubPair(IBootstrapService, stubBootstrap(path.join(root, 'home'))),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
     stubPair(ISessionManager, { list: () => [], get: () => undefined } as unknown as ISessionManager),
     stubPair(IOAuthService, {} as IOAuthService),
     stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),

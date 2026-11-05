@@ -87,6 +87,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
       usage,
       usageScope,
       turnId,
+      requestKind: source?.type === 'operation' ? source.requestKind : undefined,
       agentId: this.scope.agentId,
       parentAgentId: this.scope.parentAgentId,
       provider: context?.provider,

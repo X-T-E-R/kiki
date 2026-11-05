@@ -92,6 +92,54 @@ function outputRequest(id, action, input) {
     send({ method: 'output-request', params: { id, callId, action, input } });
   });
 }
+const modelCalls = new Map();
+let nextModelCall = 0;
+function modelError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+function modelRpc(id, action, input, streamId) {
+  const callId = ++nextModelCall;
+  return new Promise((resolve, reject) => {
+    modelCalls.set(callId, { resolve, reject });
+    send({ method: 'model-call', params: { id, callId, action, input, streamId } });
+  });
+}
+function modelContext(id, ownerSignal, canStream) {
+  const call = (action, input) => {
+    if (ownerSignal.aborted) return Promise.reject(modelError('request.cancelled', 'Plugin invocation has ended'));
+    return modelRpc(id, action, input);
+  };
+  const models = { list: () => call('list') };
+  if (canStream) models.stream = async function* (input, options) {
+    const signal = options?.signal === undefined ? ownerSignal : AbortSignal.any([ownerSignal, options.signal]);
+    const check = () => { if (signal.aborted) throw modelError('request.cancelled', 'Model request cancelled'); };
+    check();
+    const { streamId } = await call('start', input);
+    let finished = false;
+    let closing;
+    const close = () => closing ??= modelRpc(id, 'return', undefined, streamId).catch(() => undefined);
+    signal.addEventListener('abort', close, { once: true });
+    try {
+      for (;;) {
+        check();
+        const frame = await modelRpc(id, 'next', undefined, streamId);
+        check();
+        if (frame.done) { finished = true; return; }
+        yield frame.value;
+      }
+    } catch (error) {
+      check();
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', close);
+      if (!finished) await close();
+    }
+  };
+  return { models, credentials: {
+    status: (setting) => call('credential-status', { setting }),
+    set: (setting, value) => call('credential-set', { setting, value }),
+  } };
+}
 const OUTPUT_PREVIEW_CHARS = 50_000;
 const IMAGE_PREVIEW_CHARS = 512 * 1024;
 async function saveOutput(id, value, mimeType, signal, base64 = false) {
@@ -381,6 +429,14 @@ for await (const line of input) {
     );
     continue;
   }
+  if (message.method === 'model-result') {
+    const call = modelCalls.get(message.params?.callId);
+    modelCalls.delete(message.params?.callId);
+    const error = message.params?.error;
+    if (error !== undefined) call?.reject(modelError(error.code, error.message));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
   if (message.method === 'output-result') {
     const call = outputCalls.get(message.params?.callId);
     outputCalls.delete(message.params?.callId);
@@ -466,7 +522,7 @@ for await (const line of input) {
   if (message.method === 'panel-request') {
     Promise.resolve().then(() => {
       if (typeof handlePanelRequest !== 'function') throw new Error('Plugin has no panel backend');
-      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId });
+      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId, ...modelContext(message.id, lifetime.signal, false) });
     }).then(
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
@@ -507,6 +563,7 @@ for await (const line of input) {
           media(input) { return callMedia(message.id, 'media', input); },
         },
         messages: { send(input) { return callMedia(message.id, 'message-send', input); } },
+        ...modelContext(message.id, controller.signal, true),
       });
     }).then((result) => prepareToolResult(message.id, result, controller.signal)).then(
       (result) => send({ id: message.id, result }),
