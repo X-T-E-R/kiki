@@ -34,7 +34,8 @@ when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin direc
 
 `kimi.plugin.json`（或 `.kimi-plugin/plugin.json`）常用字段：`name`（plugin id，匹配 `[a-z0-9][a-z0-9_-]{0,63}`）、`version`、`description`、`icon`（`./` 路径的 svg/png，≤64 KB）、`skills`、`interface`。Kiki 专属贡献写在 `x-kiki` 里：`engines.kiki`、`entry`、`tools`、`permissions`、`settings`、`panels`、`commands`。字段全集、每项限制和 diagnostics 读法写在服务器主机当前 Space 的 `<home>/docs/{en,zh}/customization/plugins.md` 里；先读 Space 段给出的已解析 Product docs 路径再定字段，不要凭印象写。若该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。
 
-- 有 `tools`、`sessionSources`、`panels`、`commands`、`settings`、`themes` 任何一项就必须写 `engines.kiki`；声明了 `tools` 或 `sessionSources` 还必须有 `entry`。
+- 声明 Kiki 贡献时写 `engines.kiki`；声明 `tools`、`sessionSources`、`mediaProviders`、`imAdapters` 或 `harnessAccountSources` 还必须有 `entry`。
+- 为外部 harness 提供账号时，用 `x-kiki.harnessAccountSources` 和 `registerHarnessAccountSource`；不要用面板 RPC 返回连接凭据。合同见 `customization/plugins.md` 的「外部 harness 账号来源」。
 - 所有 `./` 路径（`skills`、`agents`、`commands`、`icon`、`systemPromptPath`、panel、entry）解析符号链接后仍须留在 plugin 根目录内。
 - `tools` 里写的工具定义必须和 entry 里 `registerTool` 的定义逐字段一致；不一致时宿主会拒绝注册，报「registered a changed tool definition」。用一份定义源（`lib/definitions.mjs` 之类）同时喂给两处。
 

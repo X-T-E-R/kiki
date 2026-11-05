@@ -1,7 +1,10 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { skinFileSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, type PluginImAdapterDefinition, type MediaProviderDefinition, type SessionSourceDefinition, type SkinFile } from '@kiki/protocol';
+import {
+  harnessAccountSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
+  type HarnessAccountSourceDefinition, type MediaProviderDefinition, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
+} from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';
 
@@ -9,7 +12,7 @@ import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import type { PluginDiagnostic } from './types';
 
-export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.1';
+export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.2';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
 function checkAborted(signal?: AbortSignal): void {
@@ -128,6 +131,7 @@ export interface PluginExtension {
   readonly tools?: readonly PluginTool[];
   readonly sessionSources?: readonly SessionSourceDefinition[];
   readonly mediaProviders?: readonly MediaProviderDefinition[];
+  readonly harnessAccountSources?: readonly HarnessAccountSourceDefinition[];
   readonly imAdapters?: readonly PluginImAdapterDefinition[];
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly mediaSources?: readonly PluginMediaSourceGroup[];
@@ -161,6 +165,7 @@ export async function parsePluginExtension(
     tools: z.array(toolContributionSchema).optional(),
     sessionSources: z.array(sessionSourceDefinitionSchema).max(20).optional(),
     mediaProviders: z.array(mediaProviderDefinitionSchema).max(1000).optional(),
+    harnessAccountSources: z.array(harnessAccountSourceDefinitionSchema).max(20).optional(),
     imAdapters: z.array(pluginImAdapterDefinitionSchema).max(20).optional(),
     dependencies: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/), z.string().refine((range) => validRange(range) !== null)).optional(),
     mediaSources: z.array(mediaSourceGroupSchema).max(1000).optional(),
@@ -179,7 +184,7 @@ export async function parsePluginExtension(
   }
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
-    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
+    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
     value.entry !== undefined || value.settings !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
@@ -188,10 +193,10 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.imAdapters !== undefined || value.activation !== undefined) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.imAdapters !== undefined || value.activation !== undefined) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
-  for (const definitions of [value.sessionSources, value.mediaProviders, value.imAdapters]) {
+  for (const definitions of [value.sessionSources, value.mediaProviders, value.harnessAccountSources, value.imAdapters]) {
     if (new Set(definitions?.map((item) => item.id)).size !== (definitions?.length ?? 0)) {
       diagnostics.push({ severity: 'error', message: 'Duplicate executable contribution id' });
     }
@@ -282,6 +287,7 @@ export async function parsePluginExtension(
     tools: value.tools,
     sessionSources: value.sessionSources,
     mediaProviders: value.mediaProviders,
+    harnessAccountSources: value.harnessAccountSources,
     imAdapters: value.imAdapters,
     dependencies: value.dependencies,
     mediaSources: value.mediaSources,

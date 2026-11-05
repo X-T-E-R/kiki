@@ -69,6 +69,42 @@ describe('plugin extension compatibility and consent', () => {
     } finally { host.stop(); }
   });
 
+  it('validates harness account source declarations, including required engine and entry', async () => {
+    const root = await temp();
+    const source = { schemaVersion: 1, id: 'accounts', label: 'Accounts', engineIds: ['agy-cli', 'codex'] };
+    const extension = { engines: { kiki: '>=0.4.2' }, entry: './entry.mjs', harnessAccountSources: [source] };
+    for (const [changes, expected] of [
+      [{ engines: undefined }, 'x-kiki.engines.kiki is required'],
+      [{ entry: undefined }, 'x-kiki.entry is required'],
+      [{ harnessAccountSources: [source, source] }, 'Duplicate executable contribution id'],
+      [{ harnessAccountSources: [{ ...source, engineIds: [] }] }, 'Invalid x-kiki extension'],
+      [{ harnessAccountSources: [{ ...source, engineIds: ['codex', 'codex'] }] }, 'Duplicate engine id'],
+    ] as const) {
+      await makeSource(root, { name: 'example', 'x-kiki': { ...extension, ...changes } });
+      expect((await parseManifest(root)).diagnostics.map(({ message }) => message).join(' ')).toContain(expected);
+    }
+    await makeSource(root, { name: 'example', 'x-kiki': extension });
+    expect((await parseManifest(root)).manifest?.kiki?.harnessAccountSources).toEqual([source]);
+  });
+
+  it.each([
+    ['missing', 'incomplete contributions'],
+    ['changed', 'harness account source definition mismatch'],
+    ['undeclared', 'harness account source definition mismatch'],
+    ['duplicate', 'Invalid or duplicate harness account source'],
+  ] as const)('rejects %s harness account registration at the real runner handshake', async (kind, expected) => {
+    const root = await temp();
+    const source = { schemaVersion: 1 as const, id: 'accounts', label: 'Accounts', engineIds: ['agy-cli'] };
+    const registered = kind === 'changed' ? { ...source, engineIds: ['codex'] } : kind === 'undeclared' ? { ...source, id: 'undeclared' } : source;
+    const code = `api.registerHarnessAccountSource(${JSON.stringify(registered)}, { list() {}, prepare() {}, release() {} });`;
+    const entry = path.join(root, 'entry.mjs');
+    await writeFile(entry, `export function register(api) { ${kind === 'missing' ? '' : kind === 'duplicate' ? code.repeat(2) : code} }`);
+    const host = new PluginHost('example', entry, [], [], [], undefined, root, [], [source]);
+    try {
+      await expect(host.listHarnessAccounts('accounts', 'agy-cli', new AbortController().signal, {})).rejects.toThrow(expected);
+    } finally { await host.stopAndWait(); }
+  });
+
   it('accepts a plugin that requires the 0.4.1 home bridge', async () => {
     const root = await temp();
     const data = manifest();

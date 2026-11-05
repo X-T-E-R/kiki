@@ -6,6 +6,19 @@ const [entry] = process.argv.slice(2);
 const tools = new Map();
 const sources = new Map();
 const providers = new Map();
+const harnessAccountSources = new Map();
+const harnessAccountLeases = new Map();
+const harnessAccountWork = new Set();
+const wireString = (value) => typeof value === 'string' ? value : undefined;
+async function releaseHarnessAccount(key) {
+  const lease = harnessAccountLeases.get(key);
+  if (lease === undefined) return;
+  if (lease.releasing !== undefined) return lease.releasing;
+  lease.releasing = Promise.resolve().then(() => lease.adapter.release({ leaseId: lease.leaseId }, {
+    ...lease.context, signal: new AbortController().signal,
+  })).finally(() => harnessAccountLeases.delete(key));
+  return lease.releasing;
+}
 const imAdapters = new Map();
 const imConnections = new Map();
 const imEventCalls = new Map();
@@ -203,6 +216,7 @@ function shutdown() {
   lifetime.abort();
   for (const controller of pending.values()) controller.abort();
   shuttingDown = Promise.resolve().then(async () => {
+    await Promise.allSettled([...harnessAccountWork, ...[...harnessAccountLeases.keys()].map(releaseHarnessAccount)]);
     await Promise.allSettled([...imConnections.keys()].map(stopImAdapter));
     for (const call of imEventCalls.values()) call.reject(new Error('IM adapter stopped'));
     imEventCalls.clear();
@@ -256,6 +270,12 @@ for await (const line of input) {
             typeof adapter?.describe !== 'function' || typeof adapter?.submit !== 'function') throw new Error('Invalid or duplicate media provider');
           providers.set(definition.id, adapter);
           send({ method: 'register-media-provider', params: { version: 1, definition } });
+        },
+        registerHarnessAccountSource(definition, adapter) {
+          if (typeof definition?.id !== 'string' || harnessAccountSources.has(definition.id) ||
+              ['list', 'prepare', 'release'].some((name) => typeof adapter?.[name] !== 'function')) throw new Error('Invalid or duplicate harness account source');
+          harnessAccountSources.set(definition.id, adapter);
+          send({ method: 'register-harness-account-source', params: { version: 1, definition } });
         },
         registerImAdapter(definition, adapter) {
           if (typeof definition?.id !== 'string' || imAdapters.has(definition.id) || typeof adapter?.start !== 'function' || typeof adapter?.stop !== 'function' || (definition.outbound && typeof adapter?.sendText !== 'function') || (definition.supportsEdit && typeof adapter?.editText !== 'function') || (definition.mediaCapabilities?.length && typeof adapter?.sendMedia !== 'function')) throw new Error('Invalid or duplicate IM adapter');
@@ -312,7 +332,53 @@ for await (const line of input) {
     continue;
   }
   if (message.method === 'cancel') {
-    pending.get(message.params?.id)?.abort();
+    const id = message.params?.id;
+    pending.get(id)?.abort();
+    void releaseHarnessAccount(id).catch(() => undefined);
+    continue;
+  }
+  if (message.method === 'harness-account-request') {
+    const { sourceId, action, input, settings, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const context = { settings, kikiHome, signal: controller.signal };
+    const adapter = shuttingDown === undefined ? harnessAccountSources.get(sourceId) : undefined;
+    const work = Promise.resolve().then(async () => {
+      if (adapter === undefined || !['list', 'prepare'].includes(action)) throw new Error('Unsupported harness account source action');
+      controller.signal.throwIfAborted();
+      if (action === 'list') {
+        const accounts = await adapter.list(input, context);
+        return Array.isArray(accounts) ? accounts.map((account) => ({
+          id: wireString(account?.id), label: wireString(account?.label), status: wireString(account?.status),
+        })) : null;
+      }
+      const prepared = await adapter.prepare(input, context);
+      if (typeof prepared?.leaseId !== 'string' || prepared.leaseId.length === 0) return null;
+      harnessAccountLeases.set(message.id, { adapter, leaseId: prepared.leaseId, context });
+      controller.signal.throwIfAborted();
+      const connection = prepared.connection;
+      return {
+        protocol: wireString(connection?.protocol), baseUrl: wireString(connection?.baseUrl), apiKey: wireString(connection?.apiKey),
+        modelIds: Array.isArray(connection?.modelIds) ? connection.modelIds.map(wireString) : undefined,
+      };
+    }).then(
+      (result) => send({ id: message.id, result }),
+      async (error) => {
+        if (action === 'prepare') await releaseHarnessAccount(message.id).catch(() => undefined);
+        send({ id: message.id, error: { code: -32000, message: String(error) } });
+      },
+    ).finally(() => {
+      pending.delete(message.id);
+      harnessAccountWork.delete(work);
+    });
+    if (action === 'prepare') harnessAccountWork.add(work);
+    continue;
+  }
+  if (message.method === 'harness-account-release') {
+    void releaseHarnessAccount(message.params?.prepareId).then(
+      () => send({ id: message.id, result: true }),
+      () => send({ id: message.id, error: { code: -32000, message: 'The adapter could not release the selected account.' } }),
+    );
     continue;
   }
   if (message.method === 'output-result') {

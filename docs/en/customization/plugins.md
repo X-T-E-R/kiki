@@ -448,6 +448,32 @@ Supported fields:
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
+### External harness account sources
+
+An account-source plugin lets users choose one of its accounts for a specific [external harness](../configuration/config-files.md#external-harness-defaults). Install and enable the plugin, sign in through the plugin, then select its source and account for the harness instance. The default AGY CLI bridge keeps its existing login. If a selected account is signed out or the plugin is disabled or missing, restore that account or explicitly choose another one; Kiki does not switch accounts for you.
+
+An optional manager such as Cockpit can reuse its own account store and OAuth code directly; it is not limited to AGY or required to connect through a desktop WebSocket. For plugin authors, declare the source in `x-kiki` and register the same definition with `api.registerHarnessAccountSource(definition, adapter)` in `entry.mjs`. Types are exported from `@kiki/plugin-sdk/harness-account`.
+
+```json
+{
+  "engines": { "kiki": ">=0.4.2" },
+  "entry": "./entry.mjs",
+  "harnessAccountSources": [
+    { "schemaVersion": 1, "id": "accounts", "label": "Example accounts", "engineIds": ["agy-cli"] }
+  ]
+}
+```
+
+A source ID is unique within the plugin and uses lowercase letters, digits, and hyphens. Kiki identifies the source as `plugin:<pluginId>/<sourceId>`. Keep source and account IDs stable across upgrades and renewed sign-ins. List each supported engine ID once in `engineIds`.
+
+| Adapter method | Contract |
+| --- | --- |
+| `list({ engineId }, context)` | Return `{ id, label, status }` for each account, with `status` set to `ready`, `signed_out` or `disabled`. Listing does not start a login or create a connection. |
+| `prepare({ engineId, accountId, instanceId, proxy }, context)` | Open a short-lived connection for the selected account only. `proxy.mode` is `system`, `direct` or `custom`; only `custom` takes a `url`. Return `{ leaseId, connection: { protocol, baseUrl, apiKey, modelIds } }`. `protocol` is `gemini-v1beta`, `openai-responses` or `anthropic-messages`; `baseUrl` is an HTTP(S) URL without embedded credentials. |
+| `release({ leaseId }, context)` | Close the connection and revoke its short-lived key. Release receives the same settings snapshot and a fresh signal. |
+
+Each call receives `{ settings, signal, kikiHome }`. Stop promptly when `signal` aborts, and clean up any partial work before `prepare` throws. Kiki keeps the host alive while a lease is in use and releases any remaining leases when that host shuts down, including on plugin replacement. Keep raw OAuth tokens inside the plugin backend. Account metadata and errors should contain only displayable text, and the short-lived connection must not be exposed through a panel, chat tool, or public API.
+
 ### Chat channels and message delivery
 
 Plugins can connect a platform account to Kiki's existing session bindings and send messages from an admitted tool call. Declare executable contributions in `x-kiki`, then register the same definitions from `entry.mjs`. The SDK contracts are exported from `@kiki/plugin-sdk/im` and `@kiki/plugin-sdk/messages`.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "engineVersion": "0.4.1",
+  "engineVersion": "0.4.2",
   "official": [
     {
       "id": "kiki-cloudflare",

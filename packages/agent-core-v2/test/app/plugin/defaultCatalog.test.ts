@@ -175,7 +175,8 @@ describe('default plugin catalog', () => {
     expect(entryAcceptsEngine({ kiki: '^0.4.0' })).toBe(true);
     expect(entryAcceptsEngine({ kiki: '>=0.4.0' })).toBe(true);
     expect(entryAcceptsEngine({ kiki: '0.4.0' })).toBe(false);
-    expect(entryAcceptsEngine({ kiki: '0.4.1' })).toBe(true);
+    expect(entryAcceptsEngine({ kiki: '0.4.1' })).toBe(false);
+    expect(entryAcceptsEngine({ kiki: '0.4.2' })).toBe(true);
     expect(entryAcceptsEngine({ kiki: '>=0.4.1' })).toBe(true);
     expect(entryAcceptsEngine({ kiki: '>=0.3.0' })).toBe(true);
     expect(entryAcceptsEngine({ kiki: '^0.5.0' })).toBe(false);
@@ -190,7 +191,7 @@ describe('default plugin catalog', () => {
     ['~0.4.9', false], ['~0.4.0', true], ['0.4.x', true],
     ['0.3.0 - 0.4.0', false], ['^0.3.0 || ~0.4.0', true],
     ['>=0.4.0 <0.5.0', true], ['0.4.0-beta.1', false],
-    ['0.4.0', false], ['0.4.1', true], ['>=0.4.1', true],
+    ['0.4.0', false], ['0.4.1', false], ['0.4.2', true], ['>=0.4.1', true], ['>=0.4.2', true],
     ['not-a-range', false], ['^oops', false], ['*', true], ['', false], [' ', true],
   ])('uses installer-compatible semver for %s', async (range, accepted) => {
     const { parsePluginExtension } = await import('#/app/plugin/contributions');
@@ -235,7 +236,7 @@ describe('default plugin catalog', () => {
     const published = parsePluginMarketplace(JSON.stringify(catalog), resolveMarketplaceLocation(join(dir, 'marketplace.json'), dir), true).plugins;
     expect(generated).toEqual({
       version: 1,
-      engineVersion: '0.4.1',
+      engineVersion: '0.4.2',
       official: published.filter((entry) => entry.tier === 'official').toSorted((a, b) => a.id.localeCompare(b.id)),
       curated: published.filter((entry) => entry.tier === 'curated'),
     });
@@ -252,7 +253,7 @@ describe('default plugin catalog', () => {
     const published = parsePluginMarketplace(JSON.stringify(catalog), resolveMarketplaceLocation(join(dir, 'marketplace.json'), dir), true).plugins;
     expect(generated).toEqual({
       version: 1,
-      engineVersion: '0.4.1',
+      engineVersion: '0.4.2',
       official: published.filter((entry) => entry.tier === 'official').toSorted((a, b) => a.id.localeCompare(b.id)),
       curated: published.filter((entry) => entry.tier === 'curated'),
     });

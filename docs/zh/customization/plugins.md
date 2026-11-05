@@ -449,6 +449,32 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
+### 外部 harness 账号来源
+
+账号来源插件可为指定的[外部 harness](../configuration/config-files.md#外部-harness-默认设置)提供账号。安装并启用插件，在插件中登录，然后为 harness 实例选择该来源和账号。默认 AGY CLI 桥仍使用原有登录。如果选定账号已退出登录，或插件已停用、卸载，请恢复该账号或明确另选一个；Kiki 不会自动换号。
+
+Cockpit 这类可选管理器可直接复用自身账号存储和 OAuth 代码，不限于 AGY，也不强制通过桌面 WebSocket 连接。编写插件时，在 `x-kiki` 声明来源，并在 `entry.mjs` 中通过 `api.registerHarnessAccountSource(definition, adapter)` 注册相同的定义。类型从 `@kiki/plugin-sdk/harness-account` 导出。
+
+```json
+{
+  "engines": { "kiki": ">=0.4.2" },
+  "entry": "./entry.mjs",
+  "harnessAccountSources": [
+    { "schemaVersion": 1, "id": "accounts", "label": "示例账号", "engineIds": ["agy-cli"] }
+  ]
+}
+```
+
+来源 ID 在插件内唯一，由小写字母、数字和连字符组成。Kiki 使用 `plugin:<pluginId>/<sourceId>` 标识来源。升级插件或重新登录时，保持来源和账号 ID 不变。在 `engineIds` 中列出支持的引擎，每个 ID 只写一次。
+
+| Adapter 方法 | 合同 |
+| --- | --- |
+| `list({ engineId }, context)` | 为每个账号返回 `{ id, label, status }`；`status` 为 `ready`、`signed_out` 或 `disabled`。列出账号时不发起登录、不建立连接。 |
+| `prepare({ engineId, accountId, instanceId, proxy }, context)` | 只为选中的账号建立短期连接。`proxy.mode` 为 `system`、`direct` 或 `custom`，仅 `custom` 传入 `url`。返回 `{ leaseId, connection: { protocol, baseUrl, apiKey, modelIds } }`。`protocol` 为 `gemini-v1beta`、`openai-responses` 或 `anthropic-messages`；`baseUrl` 为不内嵌凭据的 HTTP(S) URL。 |
+| `release({ leaseId }, context)` | 关闭连接并撤销短期密钥。释放时收到建立连接时的设置快照和新的取消信号。 |
+
+每次调用都收到 `{ settings, signal, kikiHome }`。`signal` 取消时及时停止；如果 `prepare` 失败并抛错，先清理已取得的资源。连接使用期间 Kiki 保留宿主进程；插件更新等操作关闭该宿主时，会释放未结束的连接。原始 OAuth token 留在插件后端。账号元数据和错误只提供可展示的内容，不通过面板、聊天工具或公开 API 返回短期连接。
+
 ### 聊天信道与消息发送
 
 插件可以把平台账号接入 Kiki 已有的会话绑定，并在已准入的工具调用中发送消息。在 `x-kiki` 中声明可执行贡献，再由 `entry.mjs` 注册相同定义。SDK 合同从 `@kiki/plugin-sdk/im` 和 `@kiki/plugin-sdk/messages` 导出。

@@ -85,6 +85,7 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.kiki?.tools ?? []).map((tool) => `tool:${tool.name}`),
     ...(manifest.kiki?.sessionSources ?? []).map((source) => `session-source:${source.id}`),
     ...(manifest.kiki?.imAdapters ?? []).map((adapter) => `im-adapter:${adapter.id}`),
+    ...(manifest.kiki?.harnessAccountSources ?? []).map((source) => `harness-account-source:${source.id}`),
     ...Object.entries(manifest.kiki?.dependencies ?? {}).map(([id, range]) => `dependency:${id}@${range}`),
     ...(manifest.kiki?.panels ?? []).map((panel) => `panel:${panel.id}`),
     ...(manifest.kiki?.commands ?? []).map((command) => `command:${command.name}`),
@@ -110,6 +111,7 @@ export function buildInstallPlan(
     changes.push('tool definitions changed');
   }
   if (previous !== undefined && JSON.stringify(manifest.kiki?.imAdapters ?? []) !== JSON.stringify(previous.kiki?.imAdapters ?? [])) changes.push('IM adapter definitions changed');
+  if (previous !== undefined && JSON.stringify(manifest.kiki?.harnessAccountSources ?? []) !== JSON.stringify(previous.kiki?.harnessAccountSources ?? [])) changes.push('harness account source definitions changed');
   if (previous !== undefined && JSON.stringify(manifest.kiki?.providerPresets ?? []) !== JSON.stringify(previous.kiki?.providerPresets ?? [])) {
     changes.push('provider presets changed');
   }

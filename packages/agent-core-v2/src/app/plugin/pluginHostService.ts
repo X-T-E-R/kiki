@@ -1,6 +1,10 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { MediaProviderDefinition, PluginMediaApi, PluginMessagesApi, MediaConnection } from '@kiki/protocol';
+import {
+  harnessAccountListInputSchema, harnessAccountPrepareInputSchema,
+  type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput,
+  type MediaConnection, type MediaProviderDefinition, type PluginMediaApi, type PluginMessagesApi,
+} from '@kiki/protocol';
 import { satisfies, valid } from 'semver';
 import type { PluginImAdapterRegistration, PluginImAdapterSink } from './imAdapter';
 export type { PluginImAdapterRegistration, PluginImAdapterSink, PluginImConnection } from './imAdapter';
@@ -21,6 +25,7 @@ import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentity
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import { abortable } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
@@ -79,12 +84,26 @@ export interface PluginExecutionScope {
   readonly attachmentStore?: ISessionMediaStore;
 }
 
+export interface PluginHarnessAccountSource {
+  readonly id: string;
+  readonly label: string;
+  readonly engineIds: readonly string[];
+}
+
+export interface PluginHarnessAccountLease {
+  readonly connection: HarnessAccountConnection;
+  release(): Promise<void>;
+}
+
 export interface IPluginHostService {
   readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   stopAll(): Promise<void>;
   list(): Promise<readonly PluginToolRegistration[]>;
   listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]>;
+  listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]>;
+  listHarnessAccounts(source: string, engineId: string, signal: AbortSignal): Promise<readonly HarnessAccount[]>;
+  prepareHarnessAccount(source: string, input: HarnessAccountPrepareInput, signal: AbortSignal): Promise<PluginHarnessAccountLease>;
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown>;
   execute(pluginId: string, tool: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, scope?: PluginExecutionScope, expectedDefinition?: PluginTool): Promise<ExecutableToolResult>;
   installPrerequisite(pluginId: string, prerequisiteId: string, consent: boolean): Promise<string>;
@@ -304,6 +323,48 @@ export class PluginHostService extends Service implements IPluginHostService {
     return info.flatMap((plugin) => (plugin.manifest?.kiki?.tools ?? []).map((definition) => ({ pluginId: plugin.id, definition })));
   }
 
+  async listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]> {
+    const installed = await this.plugins.listPlugins();
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    return infos.filter((info) => info.enabled && info.state === 'ok').flatMap((info) =>
+      (info.manifest?.kiki?.harnessAccountSources ?? []).map(({ id, label, engineIds }) => ({
+        id: `plugin:${info.id}/${id}`, label, engineIds: [...engineIds],
+      })));
+  }
+
+  async listHarnessAccounts(source: string, engineId: string, signal: AbortSignal): Promise<readonly HarnessAccount[]> {
+    if (!harnessAccountListInputSchema.safeParse({ engineId }).success) throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Invalid harness engine id');
+    return this.runHarnessAccountRequest(source, engineId, signal, (host, sourceId, settings) => host.listHarnessAccounts(sourceId, engineId, signal, settings));
+  }
+
+  async prepareHarnessAccount(source: string, input: HarnessAccountPrepareInput, signal: AbortSignal): Promise<PluginHarnessAccountLease> {
+    const parsed = harnessAccountPrepareInputSchema.safeParse(input);
+    if (!parsed.success) throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Invalid harness account preparation input');
+    return this.runHarnessAccountRequest(source, parsed.data.engineId, signal, async (host, sourceId, settings) => {
+      const { connection, release } = await host.prepareHarnessAccount(sourceId, parsed.data, signal, settings);
+      return { connection, release: () => release().catch((error: unknown) => { throw harnessAccountSourceError(source, error); }) };
+    });
+  }
+
+  private async runHarnessAccountRequest<T>(source: string, engineId: string, signal: AbortSignal, action: (host: PluginHost, sourceId: string, settings: Record<string, unknown>) => Promise<T>): Promise<T> {
+    signal.throwIfAborted();
+    const [, pluginId, sourceId] = /^plugin:([a-z0-9][a-z0-9_-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})$/.exec(source) ?? [];
+    if (pluginId === undefined || sourceId === undefined) throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Invalid plugin harness account source id');
+    try {
+      return await this.runRequest(pluginId, (info, settings) => {
+        signal.throwIfAborted();
+        const extension = info.manifest?.kiki;
+        const definition = extension?.harnessAccountSources?.find(({ id }) => id === sourceId);
+        if (!info.enabled || info.state !== 'ok' || extension?.entry === undefined || definition === undefined) throw new Error('The source is not enabled or is no longer available');
+        if (!definition.engineIds.includes(engineId)) throw new Error(`The source does not support engine ${engineId}`);
+        return action(this.getHost(info), sourceId, settings);
+      }, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      throw harnessAccountSourceError(source, error);
+    }
+  }
+
   async listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]> {
     await this.connections?.ready;
     const installed = await this.plugins.listPlugins();
@@ -449,7 +510,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       }
       const filename = `${prerequisiteId}-${prereq.version}${process.platform === 'win32' ? '.exe' : ''}`;
       const destination = path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id, filename);
-      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders);
+      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders, undefined, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources);
       try {
         await host.installPrerequisite(destination);
         await this.settings.update({ pluginId: info.id, values: { [setting]: destination } });
@@ -500,18 +561,20 @@ export class PluginHostService extends Service implements IPluginHostService {
         focusSession: (sessionId) => {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
-        }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters);
+        }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources);
       this.hosts.set(info.id, host);
     }
     return host;
   }
 
-  private runRequest<T>(pluginId: string, action: (info: PluginInfo, settings: Record<string, string | number | boolean>) => Promise<T>): Promise<T> {
+  private runRequest<T>(pluginId: string, action: (info: PluginInfo, settings: Record<string, string | number | boolean>) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.runTracked(pluginId, async () => {
+      signal?.throwIfAborted();
       const info = await this.plugins.getPluginInfo({ id: pluginId.toLowerCase() });
       await this.checkDependencies(info);
       const settings = await this.settings.forExecution(info.id);
       return async () => {
+        signal?.throwIfAborted();
         if (this.closing) throw new Error('Plugin Host is shutting down');
         if (info.enabled && info.state === 'ok' && info.manifest?.kiki?.activation === 'app') {
           if (this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) throw new Error('App plugin lifecycle is not enabled in this Kiki build');
@@ -523,17 +586,23 @@ export class PluginHostService extends Service implements IPluginHostService {
         }
         return action(info, settings);
       };
-    });
+    }, signal);
   }
 
-  private async runTracked<T>(pluginId: string, prepare: () => Promise<() => Promise<T>>): Promise<T> {
+  private async runTracked<T>(pluginId: string, prepare: () => Promise<() => Promise<T>>, signal?: AbortSignal): Promise<T> {
     const id = pluginId.toLowerCase();
     for (;;) {
       const globalGate = this.globalGate;
       const gate = this.gates.get(id);
-      await globalGate;
-      await gate;
+      if (signal === undefined) {
+        await globalGate;
+        await gate;
+      } else {
+        await abortable(Promise.all([globalGate, gate]), signal);
+        signal.throwIfAborted();
+      }
       const action = await prepare();
+      signal?.throwIfAborted();
       if (globalGate !== this.globalGate || gate !== this.gates.get(id)) continue;
       const requests = this.active.get(id) ?? new Set<Promise<unknown>>();
       this.active.set(id, requests);
@@ -554,6 +623,10 @@ export class PluginHostService extends Service implements IPluginHostService {
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined {
     return this.navigationRequest !== undefined && Date.now() - this.navigationRequest.at < 10000 ? this.navigationRequest : undefined;
   }
+}
+
+function harnessAccountSourceError(source: string, error: unknown): Error2 {
+  return new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, `Harness account source ${source}: ${error instanceof Error ? error.message : String(error)}`, { cause: error, details: { source } });
 }
 
 registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnScopeCreated, 'plugin');

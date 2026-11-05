@@ -94,6 +94,7 @@ export * from './rest/appearance';
 export * from './rest/plugin';
 export * from './rest/plugin-import';
 export * from '@kiki/plugin-sdk/media';
+export * from '@kiki/plugin-sdk/harness-account';
 export * from '@kiki/plugin-sdk/im';
 export * from '@kiki/plugin-sdk/messages';
 export * from './media-management';

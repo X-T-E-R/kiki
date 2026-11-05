@@ -5,7 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { mergeChildEnv } from '#/_base/execEnv/childEnv';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
-import { PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS, pluginImDiagnosticReportSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type ImInboundDiagnostic, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import {
+  PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS,
+  harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, mediaProviderDefinitionSchema,
+  pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, sessionSourceDefinitionSchema,
+  type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
+  type ImInboundDiagnostic, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
+} from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
@@ -74,7 +80,77 @@ export class PluginHost {
     private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void; readonly im?: () => PluginImBridge | undefined },
     private readonly kikiHome?: string,
     private readonly imAdapters: readonly PluginImAdapterDefinition[] = [],
+    private readonly harnessAccountSources: readonly HarnessAccountSourceDefinition[] = [],
   ) {}
+
+  private readonly registeredHarnessAccountSources = new Set<string>();
+  private readonly harnessAccountLeases = new Set<number>();
+  private shutdown?: Promise<void>;
+
+  async listHarnessAccounts(sourceId: string, engineId: string, signal: AbortSignal, settings: Record<string, unknown>): Promise<readonly HarnessAccount[]> {
+    const { result } = await this.requestHarnessAccount(sourceId, 'list', { engineId }, signal, settings);
+    signal.throwIfAborted();
+    const parsed = harnessAccountListSchema.safeParse(result);
+    if (!parsed.success) throw new Error('The adapter returned invalid account metadata');
+    return parsed.data;
+  }
+
+  async prepareHarnessAccount(sourceId: string, input: HarnessAccountPrepareInput, signal: AbortSignal, settings: Record<string, unknown>): Promise<{ connection: HarnessAccountConnection; release(): Promise<void> }> {
+    const { id, result, child } = await this.requestHarnessAccount(sourceId, 'prepare', input, signal, settings);
+    if (this.child !== child) throw new Error('The plugin host exited during preparation');
+    this.harnessAccountLeases.add(id);
+    clearTimeout(this.idle);
+    let releasing: Promise<void> | undefined;
+    const release = () => releasing ??= (async () => {
+      try {
+        if (this.shutdown !== undefined) await this.shutdown;
+        else if (this.child === child) await this.lifecycleRequest('harness-account-release', { prepareId: id });
+      } finally {
+        this.harnessAccountLeases.delete(id);
+        if (this.child === child) this.scheduleIdle();
+      }
+    })();
+    const connection = harnessAccountConnectionSchema.safeParse(result);
+    if (!connection.success || signal.aborted || this.stopped) {
+      await release();
+      signal.throwIfAborted();
+      throw new Error(this.stopped ? 'The plugin host was unloaded during preparation' : 'The adapter returned an invalid prepared connection');
+    }
+    return { connection: connection.data, release };
+  }
+
+  private async requestHarnessAccount(sourceId: string, action: 'list' | 'prepare', input: unknown, signal: AbortSignal, settings: Record<string, unknown>): Promise<{ id: number; child: ChildProcessWithoutNullStreams; result: unknown }> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    await this.start();
+    signal.throwIfAborted();
+    const child = this.child;
+    if (child === undefined || this.stopped) throw new Error('The plugin host was withdrawn');
+    if (!this.registeredHarnessAccountSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register harness account source ${sourceId}`);
+    clearTimeout(this.idle);
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(new Error(`Harness account ${action} timed out`));
+      }, 30_000);
+      timer.unref();
+      const finish = (error?: Error, result?: unknown) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        this.scheduleIdle();
+        if (error) reject(error); else resolve({ id, child, result });
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (result) => finish(undefined, result), reject: (error) => finish(error) });
+      this.send({ id, method: 'harness-account-request', params: { sourceId, action, input, settings, kikiHome: this.kikiHome } });
+    });
+  }
 
   async connectImAdapter(adapterId: string, settings: Record<string, unknown>, instanceId: string, listener: (event: PluginImEvent) => Promise<void>, offset?: number): Promise<PluginImConnection> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
@@ -277,9 +353,13 @@ export class PluginHost {
     });
   }
 
-  async stopAndWait(): Promise<void> {
+  stopAndWait(): Promise<void> {
     this.stopped = true;
-    if (this.child !== undefined && this.lifecycle?.resident) {
+    return this.shutdown ??= this.shutdownChild();
+  }
+
+  private async shutdownChild(): Promise<void> {
+    if (this.child !== undefined && (this.lifecycle?.resident || this.harnessAccountSources.length > 0)) {
       try { await this.lifecycleRequest('shutdown', {}); await this.exited; } catch {}
     }
     this.stop();
@@ -367,6 +447,7 @@ export class PluginHost {
       startupTimeout.unref();
       child.stderr.resume();
       createInterface({ input: child.stdout }).on('line', (line) => {
+        if (this.child !== child) return;
         try {
           if (line.length > MAX_RPC_LINE_CHARS) throw new Error(`Plugin ${this.id} RPC response is too large`);
           const message = JSON.parse(line) as { id?: number; method?: string; params?: any; result?: any; error?: { message: string } };
@@ -391,6 +472,12 @@ export class PluginHost {
             const expected = this.providers.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviders.has(definition.id)) throw new Error('Plugin media provider definition mismatch');
             this.registeredProviders.add(definition.id);
+          } else if (message.method === 'register-harness-account-source') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = harnessAccountSourceDefinitionSchema.parse(message.params?.definition);
+            const expected = this.harnessAccountSources.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredHarnessAccountSources.has(definition.id)) throw new Error('Plugin harness account source definition mismatch');
+            this.registeredHarnessAccountSources.add(definition.id);
           } else if (message.method === 'register-im-adapter') {
             if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
             const definition = pluginImAdapterDefinitionSchema.parse(message.params?.definition);
@@ -426,7 +513,7 @@ export class PluginHost {
             }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
               () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length) throw new Error('Plugin registered incomplete contributions');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             resolve();
             this.scheduleIdle();
@@ -492,13 +579,14 @@ export class PluginHost {
           this.terminate(error instanceof Error ? error : new Error(String(error)));
         }
       });
-      child.once('error', (error) => { clearTimeout(startupTimeout); reject(error); this.terminate(error); });
-      child.once('exit', (code) => {
+      const failChild = (error: Error) => {
         clearTimeout(startupTimeout);
-        const failure = new Error(`Plugin ${this.id} host exited (${code ?? 'signal'})`);
-        reject(failure);
-        this.terminate(failure);
-      });
+        reject(error);
+        if (this.child === child) this.terminate(error);
+      };
+      child.once('error', failChild);
+      child.stdin.on('error', () => failChild(new Error(`Plugin ${this.id} host input closed`)));
+      child.once('exit', (code) => failChild(new Error(`Plugin ${this.id} host exited (${code ?? 'signal'})`)));
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'handshake', params: { version: PLUGIN_RPC_VERSION } })}\n`);
     });
     try { await this.ready; }
@@ -544,7 +632,7 @@ export class PluginHost {
   }
 
   private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+    if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.terminate(new Error(`Plugin ${this.id} idle`)), IDLE_MS);
     this.idle.unref();
@@ -562,6 +650,8 @@ export class PluginHost {
     this.registeredSources.clear();
     this.registeredProviders.clear();
     this.registeredImAdapters.clear();
+    this.registeredHarnessAccountSources.clear();
+    this.harnessAccountLeases.clear();
     for (const adapterId of this.imAssemblies.keys()) this.clearImAssembly(adapterId);
     this.imListeners.clear();
     this.imReportOwners.clear();

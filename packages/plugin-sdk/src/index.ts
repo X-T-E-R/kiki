@@ -1,11 +1,14 @@
-import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
-export * from './session-import.js';
-export * from './media.js';
-export * from './im.js';
-export * from './messages.js';
-import type { PluginMessagesApi } from './messages.js';
+import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './harness-account.js';
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
+import type { PluginMessagesApi } from './messages.js';
+import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
+
+export * from './harness-account.js';
+export * from './im.js';
+export * from './media.js';
+export * from './messages.js';
+export * from './session-import.js';
 
 export interface SessionSourceContext {
   readonly signal: AbortSignal;
@@ -67,6 +70,7 @@ export interface PluginRegistrationApi {
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
+  registerHarnessAccountSource(definition: HarnessAccountSourceDefinition, adapter: HarnessAccountAdapter): void;
   registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
 }
 
