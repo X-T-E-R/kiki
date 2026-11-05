@@ -63,6 +63,7 @@ export interface ShellCommandOrigin {
 
 export interface CompactionSummaryOrigin {
   readonly kind: 'compaction_summary';
+  readonly fileReads?: import('./fileReadLedger').FileReadLedger;
 }
 
 export interface SystemTriggerOrigin {

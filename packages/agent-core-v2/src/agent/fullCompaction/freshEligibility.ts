@@ -8,7 +8,7 @@ export { coveredMessageIndex } from '#/session/todo/todoNotes';
 export type ContextStrategy = 'summarize' | 'auto' | 'fresh';
 export type ReasonCode =
   | 'history_unavailable' | 'notes_missing' | 'notes_previous_window' | 'projected_too_large'
-  | 'handoff_unreviewed' | 'notes_directives_budget'
+  | 'handoff_unreviewed' | 'notes_directives_budget' | 'notes_not_advanced'
   | 'manual_instruction' | 'user_input_elided' | 'new_content_large' | 'tool_error'
   | 'non_replayable_result' | 'debug_chain' | 'elided_goal_directives_missing' | 'multiple_sources'
   | 'non_text_result' | 'relay_render_failed' | 'summarize_failed_relay_rescue'
@@ -63,18 +63,22 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (input.instruction?.trim()) reasons.push('manual_instruction');
   if (postWatermarkUsers.length > 0) reasons.push(`user_input_since_notes:${postWatermarkUsers.length}`);
   const newTokens = after.reduce((sum, message) => sum + estimateMessage(message), 0);
-  if (newTokens > Math.max(16_000, input.threshold * 0.2)) reasons.push('new_content_large');
+  if (newTokens > Math.max(16_000, input.threshold * 0.2)) {
+    reasons.push('new_content_large');
+    if (meta !== undefined && meta.windowEpoch < input.windowEpoch) reasons.push('notes_not_advanced');
+  }
   if (after.some((message) => message.role === 'tool' && (message.isError || message.content.some((part) => part.type === 'text' && /(?:exit code|exit status|exit)[: ]+([1-9]\d*)\b/i.test(part.text))))) reasons.push('tool_error');
   if (selection.elided && !input.notes?.goal && !input.notes?.directives) reasons.push('elided_goal_directives_missing');
   if (after.some((message) => message.content.some((part) => (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') && !isContinuableMediaPart(part)))) reasons.push('non_text_result');
   const blocking = reasons.some((reason) => !isDiagnosticReason(reason));
-  return { safe: !blocking, eligible: input.strategy !== 'summarize' && !blocking, reasons };
+  const preferSummary = input.strategy === 'auto' && reasons.includes('notes_not_advanced');
+  return { safe: !blocking, eligible: input.strategy !== 'summarize' && !blocking && !preferSummary, reasons };
 }
 
 function isDiagnosticReason(reason: ReasonCode): boolean {
   return reason.startsWith('user_input_since_notes:') || reason === 'tool_error' || reason === 'new_content_large' ||
     reason === 'notes_missing' || reason === 'notes_previous_window' || reason === 'handoff_unreviewed' ||
-    reason === 'notes_directives_budget' || reason === 'elided_goal_directives_missing';
+    reason === 'notes_directives_budget' || reason === 'elided_goal_directives_missing' || reason === 'notes_not_advanced';
 }
 
 function keptUserText(kept: readonly ContextMessage[], message: ContextMessage): boolean {

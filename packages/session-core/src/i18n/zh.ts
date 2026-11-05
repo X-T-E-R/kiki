@@ -1719,6 +1719,7 @@ export const zh = {
   'transcript.marker.reason.manual_instruction': '这次压缩带有明确的摘要要求。',
   'transcript.marker.reason.user_input_elided': '接力包会漏掉近期的用户消息。',
   'transcript.marker.reason.new_content_large': '笔记写入后产生了太多新内容。',
+  'transcript.marker.reason.notes_not_advanced': '本窗口新增内容较多，但工作笔记内容尚未更新。',
   'transcript.marker.reason.tool_error': '近期工具报错还需要保留在上下文里。',
   'transcript.marker.reason.non_replayable_result': '近期外部结果可能无法从历史中找回。',
   'transcript.marker.reason.debug_chain': '智能体仍在处理不断变化的排查证据。',

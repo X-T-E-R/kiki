@@ -169,6 +169,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
       new ContextApplyCompaction({
         summary: result.summary,
         contextSummary: result.contextSummary,
+        fileReads: input.fileReads,
         compactedCount: result.compactedCount,
         tokensBefore: result.tokensBefore,
         tokensAfter: result.tokensAfter,

@@ -119,6 +119,24 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  it('appends deterministic Read metadata when the model summary omits the file', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'Implement the requested change.', 'Inspecting the target.', 20);
+    ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'read-evidence', name: 'Read', arguments: '{"path":"/project/example.ts","line_offset":20,"n_lines":500}' }] });
+    ctx.context.append({ role: 'tool', toolCallId: 'read-evidence', toolCalls: [], source: { stepId: 't1.2' }, content: [{ type: 'text', text: '20\texport const value = 1;\n<system>1 line read starting at line 20. Total lines in file: 20. End of file.</system>' }] });
+    ctx.appendExchange(2, 'Preserve this user request.', 'Ready to implement.', 80);
+    ctx.mockNextResponse({ type: 'text', text: 'The target is ready for the planned change.' });
+    expect(await beginSummarize(ctx)).toBe(true);
+    const result = await ctx.get(IAgentFullCompactionService).compacting!.promise;
+    expect(result.strategy).toBe('summarize');
+    const summary = ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')!;
+    expect(summary.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('L20/20') });
+    expect(summary.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts', ranges: [[20, 20]], source: expect.objectContaining({ stepId: 't1.2' }) })] } });
+    expect(ctx.compactHistory().some(message => message.text === 'Preserve this user request.')).toBe(true);
+    await ctx.expectResumeMatches();
+    await ctx.dispose();
+  });
   it.each(['relay', 'summarize'] as const)('keeps a committed %s result when cancelled during system prompt refresh', async (strategy) => {
     const refreshing = deferred<void>();
     const release = deferred<void>();

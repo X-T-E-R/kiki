@@ -1736,6 +1736,7 @@ export const en = {
   'transcript.marker.reason.manual_instruction': 'This compaction included an explicit summary instruction.',
   'transcript.marker.reason.user_input_elided': 'A recent user message would be omitted from the handoff.',
   'transcript.marker.reason.new_content_large': 'Too much new content followed the notes.',
+  'transcript.marker.reason.notes_not_advanced': 'Working notes have not advanced in this window despite substantial new content.',
   'transcript.marker.reason.tool_error': 'Recent tool failures need to remain in context.',
   'transcript.marker.reason.non_replayable_result': 'Recent external results may not be recoverable from history.',
   'transcript.marker.reason.debug_chain': 'The agent is still working through changing debug evidence.',

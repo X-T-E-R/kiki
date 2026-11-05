@@ -36,6 +36,7 @@ export interface ContextCompactionShapeInput {
   readonly summary: string;
   readonly legacySummaryMessage?: ContextMessage;
   readonly contextSummary?: string;
+  readonly fileReads?: import('./fileReadLedger').FileReadLedger;
   readonly compactedCount: number;
   readonly tokensBefore: number;
   readonly tokensAfter?: number;
@@ -102,7 +103,9 @@ export function buildContextCompactionShape(
     ? createCompactionElisionMessage(selection.omittedTokens, media.omitted)
     : undefined;
   const keptMessages = retainCompactionSources(media.messages, input.compactedCount, selection, elisionMessage);
-  const summaryMessage = createCompactionSummaryMessage(contextSummary);
+  const summaryMessage = { ...createCompactionSummaryMessage(contextSummary),
+    origin: { kind: 'compaction_summary' as const,
+      fileReads: input.fileReads !== undefined && (input.fileReads.entries.length > 0 || input.fileReads.omitted > 0) ? input.fileReads : undefined } };
   const messages = [...keptMessages, summaryMessage, ...tail];
   const tokensAfter =
     input.tokensAfter ??

@@ -171,6 +171,7 @@ export function readContextCompactionShapeInput(
     summary: readContextCompactionRawSummary(fields),
     legacySummaryMessage: readLegacySummaryMessage(fields),
     contextSummary: readOptionalString(fields, 'contextSummary'),
+    fileReads: fields['fileReads'] as import('./fileReadLedger').FileReadLedger | undefined,
     compactedCount: readContextCompactedCount(fields),
     tokensBefore: readOptionalNumber(fields, 'tokensBefore') ?? 0,
     tokensAfter: readOptionalNumber(fields, 'tokensAfter'),

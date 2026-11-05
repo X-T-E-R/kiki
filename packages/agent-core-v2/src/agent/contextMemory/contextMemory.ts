@@ -9,6 +9,7 @@ import type { ContextMessage } from './types';
 export interface ContextCompactionInput {
   readonly summary: string;
   readonly contextSummary?: string;
+  readonly fileReads?: import('./fileReadLedger').FileReadLedger;
   readonly compactedCount: number;
   readonly tokensBefore: number;
   readonly tokensAfter?: number;

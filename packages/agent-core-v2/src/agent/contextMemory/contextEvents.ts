@@ -5,6 +5,7 @@ import { Event2 } from '#/app/event/event2';
 
 import type { LoopRecordedEvent } from './loopEventFold';
 import type { ContextMessage } from './types';
+import { fileReadLedgerSchema } from './fileReadLedger';
 
 const contextMessageSchema = z.custom<ContextMessage>();
 const loopRecordedEventSchema = z.custom<LoopRecordedEvent>();
@@ -63,6 +64,7 @@ export class ContextClear extends Event2<z.infer<typeof contextClearSchema>> {
 export interface ContextClear extends z.infer<typeof contextClearSchema> {}
 
 const contextCompactionBaseShape = {
+  fileReads: fileReadLedgerSchema.optional(),
   tokensBefore: z.number().optional(),
   tokensAfter: z.number().optional(),
   summaryOutputTokens: z.number().optional(),

@@ -300,6 +300,27 @@ describe('model switch integration with current prompt projections', () => {
     expect(meta).toMatchObject({ rev: 4, writtenStep: 't1.1', reviewedMessageId: 'human-source' });
   });
 
+  it('carries structured reading history through a compact model switch and the next relay', async () => {
+    const { ctx } = await createHost();
+    const context = ctx.get(IAgentContextMemoryService);
+    ctx.appendExchange(1, 'Continue the implementation.', 'Inspecting the file.', 20);
+    context.append({ role: 'assistant', content: [], toolCalls: [{ id: 'read-before-switch', type: 'function', name: 'Read', arguments: '{"path":"/project/example.ts"}' }] });
+    context.append({ role: 'tool', toolCallId: 'read-before-switch', toolCalls: [], source: { stepId: 't1.2' }, content: [{ type: 'text', text: '1\texport const value = 1;\n<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>' }] });
+    ctx.mockNextResponse({ type: 'text', text: 'Apply the investigated change.' });
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'carry-read-history', model: NEW, mode: 'compact' })).toMatchObject({ state: 'completed' });
+    const summary = context.get().find(message => message.origin?.kind === 'compaction_summary')!;
+    expect(summary.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts', ranges: [[1, 1]] })] } });
+    expect(text(ctx)).toContain('## Files read (content not carried)');
+    const record = (await journal(ctx)).find(item => item.type === 'agent.model_switch');
+    expect(record?.['context']).toEqual(context.get());
+    ctx.appendExchange(2, 'Continue after switching.', 'Applying the edit.', 80);
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay' });
+    expect(text(ctx)).toContain('/project/example.ts');
+    expect(context.get().find(message => message.origin?.kind === 'compaction_summary')?.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts' })] } });
+  });
+
   it('settles one outcome only after a real turn persistence failure is recovered', async () => {
     const { ctx } = await createHost();
     const dispatcher = ctx.get(IEventDispatcher);
