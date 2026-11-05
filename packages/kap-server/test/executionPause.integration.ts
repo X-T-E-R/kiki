@@ -10,7 +10,7 @@ import { expect, it, vi } from 'vitest';
 type TaskFrame = { taskId: string; agentId?: string; status: string; startedAt: number; model?: string; thinkingEffort?: string; result?: string };
 type Frame = { type: string; phase?: string; elapsedMs?: number; port?: number; token?: string; pid?: number; count?: number; requestCount?: number; live?: boolean; message?: string; childId?: string;
   prompt?: { phase: string; terminal?: { turnId?: number; state: string; result?: { type: string; steps: number } } }; history?: unknown[];
-  tasks?: TaskFrame[]; task?: TaskFrame };
+  tasks?: TaskFrame[]; task?: TaskFrame; version?: number };
 
 async function waitForFrame(child: ChildProcess, frames: readonly Frame[], type: string): Promise<Frame> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -256,6 +256,8 @@ it('holds an execution across clean process exit and resumes its saved turn expl
     await vi.waitFor(async () => expect(await execution.read()).toMatchObject({ phase: 'paused', agents: [{ agentId: 'main', resumable: true }] }), { timeout: 10_000 });
     const paused = await execution.read();
     const turnId = paused.agents[0]!.turnId;
+    first.child.send({ type: 'checkpoint-format', sessionId: session.id });
+    expect((await first.wait('checkpoint-format')).version).toBe(1);
     timing.paused = Date.now();
     expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(1);
     await cleanExit(first);
@@ -328,6 +330,8 @@ it.each(['background', 'TaskWait', 'AgentRun'] as const)('retains a native child
     await vi.waitFor(async () => expect(await first!.client.session(session.id).execution.read()).toMatchObject({ phase: 'paused',
       agents: expect.arrayContaining([expect.objectContaining({ agentId: childId, resumable: true }),
         ...(observer ? [expect.objectContaining({ agentId: 'main', resumable: true })] : [])]) }));
+    first.child.send({ type: 'checkpoint-format', sessionId: session.id });
+    expect((await first.wait('checkpoint-format')).version).toBe(observer ? 2 : 1);
     const lifecycle = await first.request<{ server_id: string; work_pending: string[] }>('/api/desktop-lifecycle');
     expect(lifecycle.work_pending).toEqual([]);
     await first.request('/api/desktop-lifecycle', { action: 'prepare-update', server_id: lifecycle.server_id, consent: true, interrupt_work: false });

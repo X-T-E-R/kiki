@@ -13,7 +13,7 @@ import { ISessionExecutionControl, type ExecutionControlState, type ExecutionPau
 import { resumeAgentTask } from './resumeAgentTask';
 
 interface ControlDocument {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly checkpointComplete?: boolean;
   readonly state: ExecutionControlState;
   readonly points: Readonly<Record<string, ExecutionResumePoint>>;
@@ -82,7 +82,7 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
   private async load(): Promise<void> {
     const saved = await this.documents.get<ControlDocument>(this.session.scope(), KEY);
     if (saved !== undefined) {
-      if (saved.version !== 1) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unsupported execution pause document');
+      if (saved.version !== 1 && saved.version !== 2) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unsupported execution pause document');
       this.document = saved;
       if (saved.state.phase === 'pausing' || saved.state.phase === 'resuming') {
         await this.save({ ...saved, state: { ...saved.state, phase: 'failed', error: 'The process stopped before the control operation settled. Inspect saved work before resuming.' } });
@@ -259,7 +259,9 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
     this.changed.fire(structuredClone(state));
   }
 
-  private async save(document: ControlDocument): Promise<void> {
+  private async save(input: ControlDocument): Promise<void> {
+    const version = Object.values(input.points).some(point => point.pendingStep !== undefined) ? 2 : 1;
+    const document: ControlDocument = { ...input, version };
     await this.documents.set(this.session.scope(), KEY, document);
     if (document.state.phase !== 'running') this.document = document;
     await this.metadata.update({ executionPhase: document.state.phase });

@@ -4,6 +4,8 @@ import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
 import { ToolProgress } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import { ContinuationStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
 import { startServer } from '../../src/start';
 import { TEST_HOST_IDENTITY } from '../helpers/hostIdentity';
 
@@ -108,6 +110,11 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
     else if (message.type === 'inventory') {
       const session = getLiveSessionById(server.core.accessor, message.sessionId!);
       process.send?.({ type: 'inventory', live: session !== undefined, agents: session?.accessor.get(IAgentLifecycleService).list() ?? [] });
+    } else if (message.type === 'checkpoint-format') {
+      const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;
+      const saved = await session.accessor.get(IAtomicDocumentStore).get<{ version: number }>(
+        session.accessor.get(ISessionContext).scope(), 'execution-control.json');
+      process.send?.({ type: 'checkpoint-format', version: saved?.version });
     } else if (message.type === 'inspect') {
       const main = getLiveSessionById(server.core.accessor, message.sessionId!)!.accessor.get(IAgentLifecycleService).get('main')!;
       const tasks = main.accessor.get(IAgentTaskService);
