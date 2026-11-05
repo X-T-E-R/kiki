@@ -15,6 +15,7 @@ import { contextRevisionKey } from '#/agent/contextMemory/contextOps';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { buildContextCompactionShape, buildCompactionSummaryText } from '#/agent/contextMemory/compactionHandoff';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { budgetFileReads, collectFileReads, fileReadLedgerBudget } from '#/agent/contextMemory/fileReadLedger';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { historyPointer } from '#/agent/fullCompaction/relayPackage';
@@ -161,6 +162,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
           const text = [summaryText, this.textOf(fresh)].filter(Boolean).join('\n\n');
           const remaining = Math.max(0, budget - this.tokens.estimateText(text) - 64);
           messages = buildContextCompactionShape(history, { summary: text, contextSummary: text,
+            fileReads: budgetFileReads(collectFileReads(history), fileReadLedgerBudget(this.compaction.getAutoCompact().tokens), value => this.tokens.estimateText(value)),
             compactedCount: history.length, tokensBefore: this.tokens.get().size,
             legacyTail: false, userBudget: { max: Math.min(20_000, remaining), head: Math.min(2_000, remaining) },
           }, { text: (text) => this.tokens.estimateText(text), message: (message) => this.tokens.estimateMessage(message),

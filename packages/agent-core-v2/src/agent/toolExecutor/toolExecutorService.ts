@@ -1017,6 +1017,7 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
     stopTurn?: boolean;
     truncated?: true;
     note?: string;
+    runtimeId?: string;
     spill?: ToolResultSpill;
     spillExempt?: true;
     readRange?: ToolResult['readRange'];
@@ -1025,6 +1026,7 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
   } = {
     output,
     stopTurn: result.stopTurn,
+    runtimeId: result.runtimeId,
     spill: result.spill,
     spillExempt: result.spillExempt,
     readRange: result.readRange,

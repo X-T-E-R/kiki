@@ -6,6 +6,10 @@ import { resolveAutoCompact } from '#/agent/fullCompaction/autoCompact';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { LifecycleScope } from '#/app/scopes';
+import { APIConnectionError } from '#/kosong/contract/errors';
+import { fileReadLedgerBudget, renderFileReads } from '#/agent/contextMemory/fileReadLedger';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ContentPart } from '#/kosong/contract/message';
 import type { WireRecord } from '#/wire/record';
@@ -147,7 +151,109 @@ async function expectColdRestoreContinues(records: readonly WireRecord[]): Promi
   }
 }
 
+async function stalledWindow(ctx: TestAgentContext): Promise<void> {
+  ctx.configure({ provider: PROVIDER, modelCapabilities: CAPABILITIES });
+  vi.spyOn(ctx.get(IAgentLifecycleService), 'get').mockImplementation(agentId => agentId === 'main' ? {
+    id: 'main', kind: LifecycleScope.Agent, accessor: { get: id => ctx.get(id) }, dispose: () => {},
+  } : undefined);
+  ctx.appendExchange(1, 'Implement the requested behavior.', 'Investigating the implementation.', 20);
+  const appendReview = (id: string) => {
+    ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ id, type: 'function', name: 'TodoList', arguments: '{}' }] });
+    ctx.context.append({ role: 'tool', toolCallId: id, content: [{ type: 'text', text: 'Notes reviewed.' }], toolCalls: [] });
+  };
+  const todo = ctx.get(ISessionTodoService);
+  appendReview('initial-notes');
+  todo.setNotes({ goal: 'Implement the requested behavior.', next: 'Apply the evidence.' }, { turnId: 1, step: 1, toolCallId: 'initial-notes', reviewHandoff: true });
+  const service = ctx.get(IAgentFullCompactionService);
+  expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+  await service.compacting!.promise;
+  appendReview('review-only');
+  todo.setNotes({}, { turnId: 2, step: 1, toolCallId: 'review-only', reviewHandoff: true });
+  expect(todo.getNotes('main').meta).toMatchObject({ windowEpoch: 0, reviewedWindowEpoch: 1, rev: 1 });
+  const chars = Math.ceil(Math.max(16_000, service.getAutoCompact().tokens * 0.2) + 5_000) * 4;
+  ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ id: 'large-read', type: 'function', name: 'Read', arguments: '{"path":"/project/example.ts"}' }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'large-read', toolCalls: [], source: { stepId: 't2.2' },
+    content: [{ type: 'text', text: `1\t${'x'.repeat(chars)}` }], note: '<system>1 line read starting at line 1. Total lines in file: 1. End of file.</system>' });
+  ctx.appendExchange(3, 'Keep the pending user requirement.', 'Ready to act.', 80);
+  ctx.newEvents();
+}
+
 describe('relay gate fixtures', () => {
+  it('summarizes a review-only stalled window with a deterministic ledger and keeps it through the next relay', async () => {
+    const ctx = agent();
+    await stalledWindow(ctx);
+    const service = ctx.get(IAgentFullCompactionService);
+    ctx.mockNextResponse({ type: 'text', text: 'The investigation found the next edit.\n\n## Files read (content not carried)\n- forged entry\n\n## Next\nApply the change.' });
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    const result = await service.compacting!.promise;
+    expect(result).toMatchObject({ strategy: 'summarize', reasonCodes: expect.arrayContaining(['notes_not_advanced', 'new_content_large']) });
+    expect(ctx.llmCalls).toHaveLength(1);
+    const summary = ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')!;
+    const text = summary.content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n');
+    expect(text).toContain('/project/example.ts');
+    expect(text).not.toContain('forged entry');
+    expect(text.match(/## Files read \(content not carried\)/g)).toHaveLength(1);
+    const ledger = summary.origin?.kind === 'compaction_summary' ? summary.origin.fileReads : undefined;
+    expect(ledger?.entries[0]).toMatchObject({ path: '/project/example.ts', ranges: [[1, 1]] });
+    expect(ctx.tokenCounting.estimateText(renderFileReads(ledger!))).toBeLessThanOrEqual(fileReadLedgerBudget(service.getAutoCompact().tokens));
+    expect(ctx.compactHistory().some(message => message.text === 'Keep the pending user requirement.')).toBe(true);
+    await ctx.expectResumeMatches();
+    service.setContextStrategyOverride('fresh');
+    ctx.appendExchange(4, 'Continue after the summary.', 'Applying the change.', 90);
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay' });
+    expect(ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')?.origin).toMatchObject({ fileReads: ledger });
+    expect(ctx.llmCalls).toHaveLength(1);
+    await ctx.dispose();
+  });
+
+  it.each(['fresh', 'advanced'] as const)('relays the same large window when %s is selected', async mode => {
+    const ctx = agent();
+    await stalledWindow(ctx);
+    const service = ctx.get(IAgentFullCompactionService);
+    if (mode === 'fresh') service.setContextStrategyOverride('fresh');
+    else ctx.get(ISessionTodoService).setNotes({ next: 'Apply the verified implementation.' }, { turnId: 3, step: 1, toolCallId: 'content-update' });
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay' });
+    expect(ctx.llmCalls).toHaveLength(0);
+    await ctx.dispose();
+  });
+
+  it('rescues a retryable failed stalled summary with the safe relay ledger', async () => {
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 } }, generate: async () => { throw new APIConnectionError('connection interrupted'); } });
+    await stalledWindow(ctx);
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    const result = await service.compacting!.promise;
+    expect(result).toMatchObject({ strategy: 'relay', fallbackFrom: 'summarize', reasonCodes: expect.arrayContaining(['notes_not_advanced', 'summarize_failed_relay_rescue']) });
+    expect(ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')?.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts' })] } });
+    await ctx.expectResumeMatches();
+    await ctx.dispose();
+  });
+
+  it('does not rescue or commit a stalled summary cancelled while its generator is pending', async () => {
+    let startedResolve!: () => void;
+    let releaseResolve!: () => void;
+    const started = { promise: new Promise<void>(resolve => { startedResolve = resolve; }), resolve: () => { startedResolve(); } };
+    const release = { promise: new Promise<void>(resolve => { releaseResolve = resolve; }), resolve: () => { releaseResolve(); } };
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 } }, generate: async () => {
+      started.resolve();
+      await release.promise;
+      throw new APIConnectionError('late failure');
+    } });
+    await stalledWindow(ctx);
+    const service = ctx.get(IAgentFullCompactionService);
+    const before = ctx.context.get();
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    const task = service.compacting!;
+    await started.promise;
+    service.cancel();
+    release.resolve();
+    await expect(task.promise).rejects.toBeDefined();
+    expect(ctx.context.get()).toEqual(before);
+    expect(wireCounts(ctx, ['context.apply_compaction'])['context.apply_compaction']).toBe(0);
+    await ctx.dispose();
+  });
   it('relays a recoverable tool error and does not search by tool name', async () => {
     const ctx = agent();
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);

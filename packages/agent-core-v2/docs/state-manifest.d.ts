@@ -1206,6 +1206,38 @@ export interface AgentStateSnapshot {
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
+        readonly fileReads?: {
+          entries: {
+            path: string;
+            ranges: [number, number][];
+            staleRanges: [number, number][];
+            chars: number;
+            host?: string;
+            totalLines?: number;
+            minimumTotalLines?: number;
+            source?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+            edited?: {
+              source?: {
+                stepId?: string;
+                turnId?: number;
+                step?: number;
+                ref?: string;
+              };
+              readSource?: {
+                stepId?: string;
+                turnId?: number;
+                step?: number;
+                ref?: string;
+              };
+            };
+          }[];
+          omitted: number;
+        };
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
@@ -1555,6 +1587,38 @@ export interface AgentStateSnapshot {
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
+      readonly fileReads?: {
+        entries: {
+          path: string;
+          ranges: [number, number][];
+          staleRanges: [number, number][];
+          chars: number;
+          host?: string;
+          totalLines?: number;
+          minimumTotalLines?: number;
+          source?: {
+            stepId?: string;
+            turnId?: number;
+            step?: number;
+            ref?: string;
+          };
+          edited?: {
+            source?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+            readSource?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+          };
+        }[];
+        omitted: number;
+      };
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
@@ -1832,6 +1896,38 @@ export interface AgentStateSnapshot {
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
+        readonly fileReads?: {
+          entries: {
+            path: string;
+            ranges: [number, number][];
+            staleRanges: [number, number][];
+            chars: number;
+            host?: string;
+            totalLines?: number;
+            minimumTotalLines?: number;
+            source?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+            edited?: {
+              source?: {
+                stepId?: string;
+                turnId?: number;
+                step?: number;
+                ref?: string;
+              };
+              readSource?: {
+                stepId?: string;
+                turnId?: number;
+                step?: number;
+                ref?: string;
+              };
+            };
+          }[];
+          omitted: number;
+        };
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
@@ -2233,6 +2329,38 @@ export interface AgentStateSnapshot {
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
+      readonly fileReads?: {
+        entries: {
+          path: string;
+          ranges: [number, number][];
+          staleRanges: [number, number][];
+          chars: number;
+          host?: string;
+          totalLines?: number;
+          minimumTotalLines?: number;
+          source?: {
+            stepId?: string;
+            turnId?: number;
+            step?: number;
+            ref?: string;
+          };
+          edited?: {
+            source?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+            readSource?: {
+              stepId?: string;
+              turnId?: number;
+              step?: number;
+              ref?: string;
+            };
+          };
+        }[];
+        omitted: number;
+      };
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
@@ -2327,6 +2455,7 @@ export interface AgentStateSnapshot {
     };
     readonly isError?: boolean;
     readonly note?: string;
+    readonly runtimeId?: string;
     readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
       readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
         readonly path: string;
@@ -3517,7 +3646,7 @@ export interface AgentStateSnapshot {
               mode: 'custom';
               value: string;
             };
-            userAgent?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode' | 'host';
+            userAgent?: 'none' | 'host' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
           };
           request?: {
             logicalId?: 'none' | 'turn';
@@ -3585,7 +3714,7 @@ export interface AgentStateSnapshot {
           mode: 'custom';
           value: string;
         };
-        userAgent: /* RequestIdentityUserAgentMode — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode' | 'host';
+        userAgent: /* RequestIdentityUserAgentMode — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'host' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
       };
       request: {
         logicalId: 'none' | 'turn';
@@ -7660,6 +7789,38 @@ export interface AgentStateSnapshot {
           readonly isError?: boolean;
         } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'compaction_summary';
+          readonly fileReads?: {
+            entries: {
+              path: string;
+              ranges: [number, number][];
+              staleRanges: [number, number][];
+              chars: number;
+              host?: string;
+              totalLines?: number;
+              minimumTotalLines?: number;
+              source?: {
+                stepId?: string;
+                turnId?: number;
+                step?: number;
+                ref?: string;
+              };
+              edited?: {
+                source?: {
+                  stepId?: string;
+                  turnId?: number;
+                  step?: number;
+                  ref?: string;
+                };
+                readSource?: {
+                  stepId?: string;
+                  turnId?: number;
+                  step?: number;
+                  ref?: string;
+                };
+              };
+            }[];
+            omitted: number;
+          };
         } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'system_trigger';
           readonly name: string;
@@ -7754,6 +7915,7 @@ export interface AgentStateSnapshot {
         };
         readonly isError?: boolean;
         readonly note?: string;
+        readonly runtimeId?: string;
         readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
           readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
             readonly path: string;

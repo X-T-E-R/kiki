@@ -9,6 +9,7 @@ import type { ContextMessage } from './types';
 export interface ContextCompactionInput {
   readonly summary: string;
   readonly contextSummary?: string;
+  readonly fileReads?: import('./fileReadLedger').FileReadLedger;
   readonly compactedCount: number;
   readonly tokensBefore: number;
   readonly tokensAfter?: number;
@@ -16,6 +17,8 @@ export interface ContextCompactionInput {
    *  size); preferred over the summary-text estimate in the `tokensAfter`
    *  fallback when present. */
   readonly summaryOutputTokens?: number;
+  /** Estimated deterministic text added after the measured model summary. */
+  readonly summaryAddedTokens?: number;
   /** Estimated fixed request overhead (system prompt + non-deferred tool
    *  schemas) that every post-compaction exchange still carries. Counted into
    *  the `tokensAfter` fallback so the result stays on the same full-request

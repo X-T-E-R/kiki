@@ -63,6 +63,7 @@ export interface ShellCommandOrigin {
 
 export interface CompactionSummaryOrigin {
   readonly kind: 'compaction_summary';
+  readonly fileReads?: import('./fileReadLedger').FileReadLedger;
 }
 
 export interface SystemTriggerOrigin {
@@ -199,6 +200,7 @@ export type ContextMessage = Message & {
   readonly origin?: PromptOrigin | undefined;
   readonly isError?: boolean;
   readonly note?: string;
+  readonly runtimeId?: string;
   readonly fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
   readonly memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
   readonly source?: ContextMessageSource;

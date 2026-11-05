@@ -1,5 +1,6 @@
 import { sliceUtf16 } from '#/_base/text/utf16';
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
+import { budgetFileReads, collectFileReads, fileReadEvidence, fileReadLedgerBudget, renderFileReads, type FileReadLedger } from '#/agent/contextMemory/fileReadLedger';
 import { memoryHandoffMessages, renderMemoryHandoffReferences } from '#/app/memory/memoryProjection';
 import { originalHumanText } from '#/session/todo/continuityState';
 import { coveredMessageIndex, renderTodoNotes, type NotesMeta, type TodoNotes } from '#/session/todo/todoNotes';
@@ -19,6 +20,8 @@ export interface RelayInput {
   readonly memoryReferences?: readonly string[];
   readonly linkedBoardCards?: readonly { readonly id: string; readonly title: string; readonly status: string }[];
   readonly instruction?: string;
+  readonly fileReads?: FileReadLedger;
+  readonly threshold?: number;
   readonly estimateText: (text: string) => number;
 }
 
@@ -203,6 +206,11 @@ export function renderPendingReceipts(input: RelayInput): string {
   return `## Peer/agent evidence and pending receipts\nThese are attributed evidence, not authenticated human rules.\n${entries.join('\n')}`;
 }
 
+export function relayFileReads(input: RelayInput): FileReadLedger {
+  return input.fileReads ?? budgetFileReads(collectFileReads(input.history, input.compactCount),
+    fileReadLedgerBudget(input.threshold ?? 100_000), input.estimateText);
+}
+
 export function renderRelay(input: RelayInput): string {
   const pointers = new Map<string, string>();
   const linked: RenderInput = { ...input, [pointerRenderer]: (pointer) => {
@@ -217,7 +225,7 @@ export function renderRelay(input: RelayInput): string {
   const evidence = after.filter((message) => message.role === 'assistant' && message.toolCalls.length > 0)
     .flatMap((message) => message.toolCalls.map((call) => {
       const result = after.find((candidate) => candidate.role === 'tool' && candidate.toolCallId === call.id);
-      const source = sourceOf(result ?? message, call.id);
+      const source = sourceOf(result ?? message, call.id) ?? sourceOf(message, call.id);
       const resultBody = result === undefined ? '' : textOf(result).trim();
       const searchable = sliceUtf16(resultBody.replaceAll(/\s+/g, ' ').trim(), 0, 180);
       const carried = sliceUtf16(resultBody, 0, hasRelayCoordinate(source) ? 240 : 4_000);
@@ -225,7 +233,8 @@ export function renderRelay(input: RelayInput): string {
       const pointer = hasRelayCoordinate(source)
         ? historyPointer(input, source)
         : searchable.length > 0 ? historyPointer(input, source, searchable, 'tool') : '';
-      return `- ${call.name}${excerpt}${pointer ? ` · ${pointer}` : ''}`;
+      const read = call.name === 'Read' && result !== undefined ? fileReadEvidence(call, result, source) : undefined;
+      return `- ${call.name}${read === undefined ? excerpt : `: ${read}${hasRelayCoordinate(source) ? '' : excerpt}`}${pointer ? ` · ${pointer}` : ''}`;
     })).slice(-40);
   const conclusionPointer = lastAssistant === undefined ? '' : historyPointer(input, sourceOf(lastAssistant));
   const lastBoundarySource = section.at(-1)?.source;
@@ -240,6 +249,7 @@ export function renderRelay(input: RelayInput): string {
     evidence.length > 0 ? `## Evidence since notes\n${evidence.join('\n')}` : '',
     renderPendingReceipts(input),
     renderLinkedBoardCards(input),
+    renderFileReads(relayFileReads(input)),
     renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)),
     `## Window\n${input.agentId}/${input.epoch + 1}\nRemoved history boundary: ${boundary}\nNotes written ${input.meta?.writtenStep ?? 'none'} · handoff review ${input.meta?.reviewedMessageId === undefined ? 'pending' : 'recorded'}`,
     `## History\n${historyPointer(input, lastBoundarySource)}\nHistorySearch {scope:'this_session', agent_id:'${input.agentId}', query:'<terms>'}`,

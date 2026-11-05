@@ -649,21 +649,22 @@ describe('AgentToolExecutorService', () => {
       path: '/workspace/sub/AGENTS.md', runtimeId: 'local', scope: '/workspace/sub', version: 'v1',
     } };
     const memoryReceipt = { action: 'create' as const, id: 'memory-1', revision: 'r1', status: 'active', operationId: 'op1' };
+    const runtimeId = 'local';
     registry.register(new TestTool('ContractResult', {
-      result: { output: 'read and saved', isError, readRange, fileRead, memoryReceipt },
+      result: { output: 'read and saved', isError, runtimeId, readRange, fileRead, memoryReceipt },
     }));
     executor.hooks.onDidExecuteTool.register('metadata-observer', async (ctx, next) => {
-      expect(ctx.result).toMatchObject({ readRange, fileRead, memoryReceipt });
+      expect(ctx.result).toMatchObject({ runtimeId, readRange, fileRead, memoryReceipt });
       ctx.result = { ...ctx.result, output: 'hook retained metadata' };
       await next();
     });
     const [result] = await execute([toolCall('contract-result', 'ContractResult', {})]);
-    expect(result).toMatchObject({ readRange, fileRead, memoryReceipt, output: 'hook retained metadata' });
+    expect(result).toMatchObject({ runtimeId, readRange, fileRead, memoryReceipt, output: 'hook retained metadata' });
     const event = { type: 'tool.result' as const, toolCallId: 'contract-result', result: result! };
     let history = foldLoopEvent([], { type: 'step.begin', uuid: 'step-1' });
     history = foldLoopEvent(history, { type: 'tool.call', stepUuid: 'step-1', toolCallId: 'contract-result', name: 'ContractResult' });
     history = foldLoopEvent(history, event);
-    expect(history.find((message) => message.role === 'tool')?.fileRead).toEqual(fileRead);
+    expect(history.find((message) => message.role === 'tool')).toMatchObject({ runtimeId, fileRead });
     expect(coveredInstructions(history, 'posix').size).toBe(isError ? 0 : 1);
     const clock = advanceContinuityClock(initialContinuityClock(), new ContextAppendLoopEvent({ event }));
     expect(clock.memoryMaintenance?.receipts).toEqual(isError ? [] : [

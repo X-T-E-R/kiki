@@ -25,6 +25,8 @@ import {
   DefaultCompactionStrategy,
 } from '#/agent/fullCompaction/strategy';
 import { COMPACTION_SUMMARY_PREFIX } from '#/agent/contextMemory/compactionHandoff';
+import { collectFileReads } from '#/agent/contextMemory/fileReadLedger';
+import { tagSshResult } from '#/agent/tools/os/sshToolTarget';
 import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { MASTER_ENV } from '#/app/flag/flagService';
@@ -119,6 +121,76 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  it.each(['relay', 'summarize'] as const)('carries folded Read result notes through %s compaction and replay', async (strategy) => {
+    const ctx = testAgent();
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      await ctx.ready;
+      ctx.appendExchange(1, 'Implement the requested change.', 'Inspecting the target.', 20);
+      const output = '20\texport const value = 1;\n21\texport const next = 2;';
+      const note = '<system>2 lines read starting at line 20. Total lines in file: 21. End of file.</system>';
+      ctx.context.appendLoopEvent({ type: 'step.begin', uuid: 'read-step', turnId: '1', step: 2 });
+      ctx.context.appendLoopEvent({ type: 'tool.call', stepUuid: 'read-step', toolCallId: 'read-evidence',
+        name: 'Read', args: { path: '/project/example.ts', line_offset: -100, n_lines: 500 }, turnId: '1', step: 2 });
+      ctx.context.appendLoopEvent({ type: 'tool.result', toolCallId: 'read-evidence', result: tagSshResult({ output, note }, 'local') });
+      ctx.context.appendLoopEvent({ type: 'step.end', uuid: 'read-step', turnId: '1', step: 2, finishReason: 'tool_calls' });
+      await ctx.get(IEventDispatcher).flush();
+      const folded = ctx.context.get().find(message => message.toolCallId === 'read-evidence');
+      expect(folded).toMatchObject({ note, runtimeId: 'local', content: [{ type: 'text', text: output }] });
+      expect(collectFileReads(ctx.context.get()).entries[0]).toMatchObject({ host: 'local', ranges: [[20, 21]], totalLines: 21, chars: output.length });
+      await ctx.expectResumeMatches();
+      ctx.appendExchange(2, 'Preserve this user request.', 'Ready to implement.', 80);
+      ctx.mockNextResponse({ type: 'text', text: 'The target is ready for the planned change.' });
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.begin({ source: 'manual', strategy })).toBe(true);
+      expect(await service.compacting!.promise).toMatchObject({ strategy });
+      const summary = ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')!;
+      expect(summary.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('L20–21/21') });
+      expect(summary.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts',
+        ranges: [[20, 21]], chars: output.length, source: expect.objectContaining({ turnId: 1, step: 2 }) })] } });
+      expect(collectFileReads(ctx.context.get()).entries[0]?.ranges).toEqual([[20, 21]]);
+      expect(ctx.compactHistory().some(message => message.text === 'Preserve this user request.')).toBe(true);
+      await ctx.expectResumeMatches();
+    } finally {
+      await ctx.dispose();
+    }
+  });
+  it.each([true, false])('counts deterministic summary additions in the token anchor with measured output=%s', async (measured) => {
+    const generated = 'Continue the task.';
+    const telemetry: TelemetryRecord[] = [];
+    const ctx = testAgent({ telemetry: recordingTelemetry(telemetry), generate: async () => {
+      const response = textResult(generated);
+      return { ...response, usage: measured ? { ...response.usage!, output: 5 } : null };
+    } });
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      await ctx.ready;
+      ctx.appendExchange(1, 'Implement the requested change.', 'Inspecting files.', 20);
+      for (let index = 0; index < 60; index++) {
+        const id = `read-${index}`;
+        ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id, name: 'Read', arguments: JSON.stringify({ path: `/project/file-${index}.ts`, host: 'local' }) }] });
+        ctx.context.append({ role: 'tool', toolCallId: id, toolCalls: [], source: { turnId: 1, step: index + 1 },
+          content: [{ type: 'text', text: '20\tvalue' }], note: '<system>1 line read starting at line 20. Total lines in file: 20.</system>' });
+      }
+      ctx.appendExchange(2, 'Preserve this user request.', 'Ready to implement.', 80);
+      const apply = vi.spyOn(ctx.context, 'applyCompaction');
+      expect(await beginSummarize(ctx)).toBe(true);
+      const result = await ctx.get(IAgentFullCompactionService).compacting!.promise;
+      const messages = ctx.context.get();
+      const summary = messages.find(message => message.origin?.kind === 'compaction_summary')!;
+      const finalText = summary.content.flatMap(part => part.type === 'text' ? [part.text] : []).join('');
+      expect(finalText).toContain('## Files read (content not carried)');
+      const tokens = ctx.get(IAgentTokenCountingService);
+      const summaryTokens = measured ? 5 + tokens.estimateText(finalText) - tokens.estimateText(generated) : tokens.estimateText(finalText);
+      const committed = apply.mock.calls[0]![0];
+      expect(committed.summaryOutputTokens).toBe(measured ? 5 : undefined);
+      expect(result.tokensAfter).toBe(committed.requestOverheadTokens! + summaryTokens + tokens.estimateMessages(messages.filter(message => message !== summary)));
+      expect(tokens.get().size).toBe(result.tokensAfter);
+      expect(telemetry.find(record => record.event === 'compaction_finished')?.properties?.['output_tokens']).toBe(measured ? 5 : undefined);
+      await ctx.expectResumeMatches();
+    } finally { await ctx.dispose(); }
+  });
+
   it.each(['relay', 'summarize'] as const)('keeps a committed %s result when cancelled during system prompt refresh', async (strategy) => {
     const refreshing = deferred<void>();
     const release = deferred<void>();

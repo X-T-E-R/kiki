@@ -12,6 +12,7 @@ import { renderPrompt } from "#/_base/utils/render-prompt";
 import { buildCompactionSummaryText, buildContextCompactionShape, isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
 import { IAgentContextMemoryService, type ContextCompactionInput } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { budgetFileReads, collectFileReads, fileReadHandoffMessages, fileReadLedgerBudget, renderFileReads, withoutFileReadLedgerText } from '#/agent/contextMemory/fileReadLedger';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
@@ -38,7 +39,7 @@ import { type LoopControl } from '#/agent/loop/configSection';
 import { contextWindowEpochKey } from './windowEpoch';
 import { ContextStrategyOverrideChanged, contextStrategyOverrideKey } from './contextStrategyOps';
 import { evaluateFreshEligibility, type ReasonCode } from './freshEligibility';
-import { renderLinkedBoardCards, renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from './relayPackage';
+import { relayFileReads, renderLinkedBoardCards, renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from './relayPackage';
 import {
   APIContextOverflowError,
   APIEmptyResponseError,
@@ -592,6 +593,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     active.abortController.signal.throwIfAborted();
     if (this._compacting !== active) throw compactionCancelledReason(active);
     if (active.committedResult !== undefined) return active.committedResult;
+    input = { ...input, fileReads: budgetFileReads(collectFileReads(this.context.get(), input.compactedCount),
+      fileReadLedgerBudget(this.getAutoCompact().tokens), text => this.tokenCounting.estimateText(text)) };
     active.phase = 'committing';
     active.appliedInput = input;
     try {
@@ -894,7 +897,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (!history.some((message) => message.role === 'assistant' || message.role === 'tool' || message.origin?.kind === 'compaction_summary')) return undefined;
     const model = this.profile.resolveModelContext();
     const instruction = renderPrompt(compactionInstructionTemplate, { custom_instruction_block: '' }).trimEnd();
-    const messages: Message[] = [...stripDynamicToolContext(memoryHandoffMessages(history)), createUserMessage(instruction)];
+    const messages: Message[] = [...stripDynamicToolContext(fileReadHandoffMessages(memoryHandoffMessages(history))), createUserMessage(instruction)];
     const tokensBefore = this.requestTokens(history);
     const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
     const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([
@@ -903,6 +906,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       this.readLinkedBoardCards(),
     ]);
     const relayInput: RelayInput = {
+      threshold: this.getAutoCompact().tokens,
       history, compactCount: history.length, agentId: this.scope.agentId,
       sessionId: this.session.sessionId, epoch: this.states.get(contextWindowEpochKey),
       notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
@@ -992,7 +996,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       signal.throwIfAborted();
       if (this._compacting !== active) throw compactionCancelledReason(active);
       const memoryEntries = liveEntries.map((entry) => memoryEntryReference(entry, undefined, this.memorySnapshot.workingSet));
+      const autoCompact = this.getAutoCompact();
       const relayInput: RelayInput = {
+        threshold: autoCompact.tokens,
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
         notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
@@ -1035,7 +1041,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         });
         return result;
       }
-      const autoCompact = this.getAutoCompact();
       const projected = relaySummary === undefined ? 0 : buildContextCompactionShape(originalHistory, {
         summary: relaySummary, compactedCount: compactCount, tokensBefore,
         requestOverheadTokens: this.requestTokens([]),
@@ -1088,7 +1093,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       let overflowShrinkCount = 0;
       let leadingDropRounds = 0;
       const selectHistoryForModel = (): readonly ContextMessage[] => {
-        let selected = stripDynamicToolContext(memoryHandoffMessages(originalHistory.slice(0, compactCount)));
+        let selected = stripDynamicToolContext(fileReadHandoffMessages(memoryHandoffMessages(originalHistory.slice(0, compactCount))));
         droppedCount = 0;
         for (let i = 0; i < leadingDropRounds; i++) {
           const reduced = dropOldestMessageAndLeadingToolResults(selected);
@@ -1192,13 +1197,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
       if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
       const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
+      const contextSummary = buildCompactionSummaryText(summary);
       const summarizeReasons = selectionReasons(requestedStrategy, selectionSource, reasons);
       const result = await this.commitCompaction(active, {
         summary,
-        contextSummary: buildCompactionSummaryText(summary),
+        contextSummary,
         compactedCount: compactCount,
         tokensBefore,
         summaryOutputTokens: attempt.usage?.output,
+        summaryAddedTokens: attempt.usage === null ? undefined : Math.max(0,
+          this.tokenCounting.estimateText(contextSummary) - this.tokenCounting.estimateText(attempt.summary)),
         requestOverheadTokens: this.requestTokens([]),
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
         strategy: 'summarize',
@@ -1277,13 +1285,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const todos = this.currentTodos();
     const notes = renderTodoNotes(this.todo.getNotes?.(this.scope.agentId)?.notes);
     const receipts = renderPendingReceipts(input);
-    const candidate = summary.trim().replaceAll(/^## Standing directives[ \t]*$/gm, '## Pending directive review');
+    const candidate = withoutFileReadLedgerText(summary).replaceAll(/^## Standing directives[ \t]*$/gm, '## Pending directive review');
     const extracted = candidate.split(/^## Pending directive review[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
     const budget = extracted && extracted !== '(none)' ? compactionDirectivesBudget(input.notes, extracted) : undefined;
     const notice = extracted ? `Summary candidates have not changed current notes. Reconcile them with original human sources before an explicit TodoList update.${budget?.exceeded ? ` Automatic promotion skipped: budget. Required directives ${budget.sectionChars}/1500 characters, notes total ${budget.totalChars}/7500; notes revision ${input.meta?.rev ?? 0} is unchanged. The complete candidate remains above.` : ''}` : '';
     return [candidate, notice ? `## Directive review status\n${notice}` : '', todos.length ? renderTodoList(todos, '## TODO List') : '',
       notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input),
-      renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)), receipts].filter(Boolean).join('\n\n');
+      renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)), receipts,
+      renderFileReads(relayFileReads(input))].filter(Boolean).join('\n\n');
   }
 
   private currentTodos(): readonly TodoItem[] {
@@ -1326,7 +1335,7 @@ function collectSummary(finish: AgentLLMRequestFinish): CompactionAttemptResult 
     );
   }
 
-  return { summary, usage: finish.usage, traceId: finish.traceId };
+  return { summary, usage: finish.usageKnown === false ? null : finish.usage, traceId: finish.traceId };
 }
 
 function historySafeToCompact(
