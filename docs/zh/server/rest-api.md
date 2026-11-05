@@ -294,11 +294,11 @@ cold 会话从 session index 和持久化 Agent 元数据读取；此接口不�
 
 源码自有更新只在同时满足这些条件时写入：该执行器选中的来源是唯一一条 `node-script`，文件名是 `agy-cli-acp.mjs`，并且路径在展开 `~` 和 `${KIKI_HOME}` 之后是绝对路径。选中的脚本多于一条时，不是这次更新。
 
-安装只替换该脚本旁边的三个文件：`agy-cli-acp.mjs`、`agy-hook-registration.mjs` 和 `agy-permission-hook.mjs`。同目录里的其它文件保留，包括自定义脚本和 `audit/` 记录。这次调用不改写执行器的 env、模型、权限或 `supports_mcp`。`supports_mcp` 保持原值。状态 JSON 含有 `id`、`release`、`active`、`previous` 和 `phase`，不包含 `supports_mcp`。对这个 bundle，`release.source` 是 `bundled:external-harness`，`release.entry` 是 `agy-cli-acp.mjs`，`active.version` 是 `0.4.1`。
+安装只替换该脚本旁边的四个文件：`agy-cli-acp.mjs`、`agy-hook-registration.mjs`、`agy-permission-hook.mjs` 和 `agy-mcp-plugin.mjs`。同目录里的其它文件保留，包括自定义脚本和 `audit/` 记录。这次调用不改写执行器的 env、模型、权限或 `supports_mcp`。`supports_mcp` 保持原值。状态 JSON 含有 `id`、`release`、`active`、`previous` 和 `phase`，不包含 `supports_mcp`。对这个 bundle，`release.source` 是 `bundled:external-harness`，`release.entry` 是 `agy-cli-acp.mjs`，`active.version` 随内置 CLI 版本变化。
 
 替换后的文件在该执行器进程下一次启动时被读取。这次请求不重启已经在运行的进程。
 
-存在上一份安装时，rollback 恢复这三个文件的上一份副本，自定义文件留在原地。再 rollback 一次会把这两份副本对调。安装在替换这三个文件之前先保存它们的当前快照。写入失败时写回原字节，删除原先不存在的新文件，并且调用失败。安装记录保存失败时，安装恢复那份更早的副本，并且调用失败。rollback 记录保存失败时，rollback 恢复当前生效的副本，并且调用失败。若这次恢复也失败，响应是校验码 `40001` 和具体的恢复诊断，已保存的安装记录保持原样，调用不会报成功。
+存在上一份安装时，rollback 恢复这四个文件的上一份副本，自定义文件留在原地。再 rollback 一次会把这两份副本对调。安装在替换这四个文件之前先保存它们的当前快照。写入失败时写回原字节，删除原先不存在的新文件，并且调用失败。安装记录保存失败时，安装恢复那份更早的副本，并且调用失败。rollback 记录保存失败时，rollback 恢复当前生效的副本，并且调用失败。若这次恢复也失败，响应是校验码 `40001` 和具体的恢复诊断，已保存的安装记录保持原样，调用不会报成功。
 
 `GET /api/executors/installations` 也可以列出 `claude-acp`、`codex-acp` 这类固定版本，其 `phase` 为 `idle`，且没有 `active`。列出它们不会安装。
 

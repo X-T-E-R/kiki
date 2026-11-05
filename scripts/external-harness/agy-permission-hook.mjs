@@ -130,7 +130,16 @@ export async function steeringHookOutput(input, env = process.env) {
   return { injectSteps: steps, terminationBehavior: 'force_continue' };
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url && process.argv[2] === '--steering') {
+export function commandGuidanceHookOutput(env = process.env) {
+  if (!env.KIKI_AGY_PERMISSION_ENDPOINT || !env.KIKI_AGY_PERMISSION_TOKEN) return {};
+  return { injectSteps: [{ systemMessage: { systemMessage:
+    'For rg file-content searches, pass an explicit search path (for example: rg -n "pattern" .). With an open non-interactive stdin pipe, rg without a path waits for stdin instead of searching the working directory. Preserve explicit paths and pipelines; when stdin or interactive input is intended, use the explicit - input path.' } }] };
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url && process.argv[2] === '--command-guidance') {
+  for await (const _chunk of process.stdin) {}
+  process.stdout.write(JSON.stringify(commandGuidanceHookOutput()) + '\n');
+} else if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url && process.argv[2] === '--steering') {
   let input = '';
   process.stdin.setEncoding('utf8');
   let output = {};

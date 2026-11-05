@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { registerProjectMcpPlugin, recoverProjectMcpPlugin, recoverDeadProjectMcpPlugins } from './agy-mcp-plugin.mjs';
 import { resolve, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { registerProjectHook, recoverProjectHook, AGY_STEERING_HOOK_KEY } from './agy-hook-registration.mjs';
+import { registerProjectHook, recoverProjectHook, AGY_STEERING_HOOK_KEY, AGY_COMMAND_GUIDANCE_HOOK_KEY } from './agy-hook-registration.mjs';
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { openPermissionChannel, permissionChannelIdentity, requestHookPermission } from './agy-permission-hook.mjs';
@@ -405,23 +405,31 @@ export class AgyBridge {
     session.steeringRegistration ??= await registerProjectHook({ cwd: session.cwd, nodePath: process.execPath,
       handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id,
       key: AGY_STEERING_HOOK_KEY, args: ['--steering'] });
+    if (!session.child && !session.conversationId) {
+      session.commandGuidanceRegistration ??= await registerProjectHook({ cwd: session.cwd, nodePath: process.execPath,
+        handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id,
+        key: AGY_COMMAND_GUIDANCE_HOOK_KEY, args: ['--command-guidance'] });
+    }
   }
 
   /**
-   * Removes this turn's owned PostInvocation key. A failed removal keeps the registration
-   * on the session so the next turn end, cancel or close retries it; the turn result is
-   * never replaced by the cleanup error.
+   * Removes the turn's owned steering and startup guidance keys. A failed removal keeps
+   * its registration for the next turn end, cancel or close; cleanup never replaces the result.
    */
   async closeSteeringHook(session) {
-    const registration = session.steeringRegistration;
-    if (!registration) return;
-    try {
-      await registration.close();
-      if (session.steeringRegistration === registration) session.steeringRegistration = undefined;
-    } catch (error) {
-      this.auditQuietly(session, 'steering_hook_close_failed', { error: error instanceof Error ? error.message : String(error) });
-      throw error;
+    const errors = [];
+    for (const key of ['steeringRegistration', 'commandGuidanceRegistration']) {
+      const registration = session[key];
+      if (!registration) continue;
+      try {
+        await registration.close();
+        if (session[key] === registration) session[key] = undefined;
+      } catch (error) {
+        this.auditQuietly(session, 'steering_hook_close_failed', { registration: key, error: error instanceof Error ? error.message : String(error) });
+        errors.push(error);
+      }
     }
+    if (errors.length) throw errors[0];
   }
 
   auditQuietly(session, type, data) {
@@ -496,6 +504,8 @@ export class AgyBridge {
     let stderr = Buffer.alloc(0);
     let stderrTruncated = false;
     let delivery = Promise.resolve();
+    let ingress = Promise.resolve();
+    let sequence = 0;
     const fail = error => {
       session.broken = true;
       if (session.active) { session.active.reject(error); session.active = undefined; }
@@ -503,17 +513,23 @@ export class AgyBridge {
     };
     child.stdout.on('data', chunk => {
       buffer += decoder.write(chunk);
-      if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) { fail(new Error('AGY stdout frame exceeds 1 MiB')); return; }
       let newline;
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
         if (!line) continue;
+        if (Buffer.byteLength(line) > MAX_FRAME_BYTES) { fail(new Error('AGY stdout frame exceeds 1 MiB')); return; }
+        let event;
+        try { event = JSON.parse(line); } catch { fail(new Error('AGY emitted invalid NDJSON')); return; }
+        const frame = { sequence: ++sequence, receivedAt: new Date().toISOString(), event: event?.event,
+          stepIndex: event?.step_update?.step_index, stepType: event?.step_update?.step_type,
+          state: event?.step_update?.state, status: event?.result?.status };
+        ingress = ingress.then(() => this.audit(session, 'native_frame_received', frame)).catch(fail);
         delivery = delivery.then(async () => {
-          let event;
-          try { event = JSON.parse(line); } catch { throw new Error('AGY emitted invalid NDJSON'); }
           await this.event(session, event);
+          await this.audit(session, 'native_frame_delivered', { sequence: frame.sequence });
         }).catch(fail);
       }
+      if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) fail(new Error('AGY stdout frame exceeds 1 MiB'));
     });
     child.stderr.on('data', chunk => {
       const text = chunk.toString();
@@ -533,7 +549,7 @@ export class AgyBridge {
       stderr = Buffer.alloc(0);
       session.cleanup = (async () => {
         try {
-          await delivery;
+          await Promise.all([ingress, delivery]);
         } finally {
           session.broken = true;
           if (session.active) {

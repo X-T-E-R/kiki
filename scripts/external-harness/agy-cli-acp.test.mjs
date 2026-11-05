@@ -146,6 +146,90 @@ void test('steering audit and owned hook cleanup failures never strand a message
   } finally { process.off('unhandledRejection', onUnhandled); await b.close(); }
 });
 
+void test('one-time native SessionStart guidance explains rg stdin without gating or rewriting tools', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { commandGuidanceHookOutput } = await import('./agy-permission-hook.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-guidance-'));
+  const b = bridge(); let launches = 0;
+  const originalSpawn = b.spawnProcess;
+  b.spawnProcess = (...args) => { launches++; return originalSpawn(...args); };
+  try {
+    assert.deepEqual(commandGuidanceHookOutput({}), {});
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const messages = [];
+    assert.deepEqual(await turn(b, id, 'command-guidance', messages), { stopReason: 'end_turn' });
+    const output = JSON.parse(messages.find(message => message.update.sessionUpdate === 'agent_message_chunk').update.content.text);
+    assert.deepEqual(Object.keys(output), ['injectSteps']);
+    assert.match(output.injectSteps[0].systemMessage.systemMessage, /rg -n "pattern" \./);
+    assert.match(output.injectSteps[0].systemMessage.systemMessage, /explicit - input path/);
+    assert.equal(launches, 1);
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    await turn(b, id, 'same session', []);
+    assert.equal(launches, 1);
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('guidance is absent on continuation, permission restart and exact native load; foreign hook off choices survive', async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-guidance-resume-'));
+  const path = join(root, '.agents', 'hooks.json');
+  await mkdir(join(root, '.agents'));
+  const original = '{\r\n  "foreign": { "enabled": false, "SessionStart": [] }\r\n}\r\n';
+  await writeFile(path, original);
+  const b = bridge('fixture-alpha-high'); b.auditDir = join(root, 'audit');
+  let loaded;
+  const registrations = [];
+  const register = b.registerSteeringHook.bind(b);
+  b.registerSteeringHook = async s => {
+    await register(s);
+    registrations.push(Boolean(s.commandGuidanceRegistration));
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).foreign.enabled, false);
+  };
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await turn(b, id, 'first', []);
+    await turn(b, id, 'continuation', []);
+    await b.setConfig({ sessionId: id, configId: 'permission-mode', value: 'manual' });
+    await turn(b, id, 'same conversation after restart', []);
+    assert.deepEqual(registrations, [true, false, false]);
+    await b.close();
+    assert.equal(await readFile(path, 'utf8'), original);
+    loaded = bridge('fixture-alpha-high'); loaded.auditDir = b.auditDir;
+    await loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] });
+    const resumedRegister = loaded.registerSteeringHook.bind(loaded);
+    loaded.registerSteeringHook = async s => {
+      await resumedRegister(s);
+      assert.equal(s.commandGuidanceRegistration, undefined);
+      assert.equal(JSON.parse(await readFile(path, 'utf8'))['kiki-agy-command-guidance'], undefined);
+    };
+    await turn(loaded, id, 'loaded', []);
+    await loaded.close();
+    assert.equal(await readFile(path, 'utf8'), original);
+  } finally { await b.close(); await loaded?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('an explicit native command-guidance off choice stays off without blocking launch', async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-guidance-off-'));
+  const path = join(root, '.agents', 'hooks.json');
+  await mkdir(join(root, '.agents'));
+  const original = '{"kiki-agy-command-guidance":{"enabled":false}}\n';
+  await writeFile(path, original);
+  const b = bridge();
+  const register = b.registerSteeringHook.bind(b);
+  b.registerSteeringHook = async s => {
+    await register(s);
+    assert.equal(s.commandGuidanceRegistration, undefined);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8'))['kiki-agy-command-guidance'], { enabled: false });
+  };
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    assert.deepEqual(await turn(b, id, 'hello', []), { stopReason: 'end_turn' });
+    assert.equal(await readFile(path, 'utf8'), original);
+    await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-command-guidance-ownership.json')), { code: 'ENOENT' });
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 void test('launch maps engine-default, manual, auto and yolo to exact native argv', () => {
   const base = { model: 'engine-default', effort: 'engine-default', additionalDirectories: [] };
   assert.deepEqual(launchArgs(base), ['--input-format', 'stream-json', '--output-format', 'stream-json']);
@@ -366,6 +450,91 @@ void test('missing-file ERROR is a failed tool receipt, not a failed recovered A
     assert.equal([...b.session(id).toolIds.values()].includes('pending'), false);
     assert.equal(b.session(id).active, undefined);
   } finally { await b.close(); }
+});
+
+void test('later native tool and text events pass an unfinished background tool without replaying commands', async () => {
+  const b = bridge(); const id = await session(b); const messages = [];
+  try {
+    assert.equal((await turn(b, id, 'background-events', messages)).stopReason, 'end_turn');
+    assert.deepEqual(messages.map(message => [message.update.sessionUpdate, message.update.toolCallId, message.update.status]), [
+      ['tool_call', 'agy-fixture-conversation-42', 'in_progress'],
+      ['tool_call', 'agy-fixture-conversation-52', 'in_progress'],
+      ['tool_call_update', 'agy-fixture-conversation-52', 'failed'],
+      ['agent_message_chunk', undefined, undefined],
+      ['tool_call_update', 'agy-fixture-conversation-42', 'completed'],
+    ]);
+    assert.equal(messages[2].update.rawOutput, 'native failure');
+    assert.equal(messages[3].update.content.text, 'native final');
+    assert.equal(messages[4].update.rawOutput, 'native output');
+  } finally { await b.close(); }
+});
+
+void test('ingress audit receives later frames while ACP notification is blocked', { timeout: 10000 }, async () => {
+  const b = bridge(); const id = await session(b);
+  let receivedResult;
+  const received = new Promise(done => { receivedResult = done; });
+  let release;
+  const blocked = new Promise(done => { release = done; });
+  const records = [];
+  b.audit = async (_session, type, data) => {
+    records.push({ type, ...data });
+    if (type === 'native_frame_received' && data.event === 'result') receivedResult();
+  };
+  const messages = [];
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'background-events' }] }, {
+    notify: async (_method, event) => {
+      messages.push(event);
+      if (event.update?.toolCallId === 'agy-fixture-conversation-42' && event.update.sessionUpdate === 'tool_call') await blocked;
+    },
+  });
+  pending.catch(() => {});
+  try {
+    await received;
+    const incoming = records.filter(record => record.type === 'native_frame_received');
+    assert.deepEqual(incoming.map(record => record.sequence), [1, 2, 3, 4, 5, 6, 7]);
+    assert.equal(incoming.at(-1).status, 'SUCCESS');
+    assert.ok(incoming.every(record => typeof record.receivedAt === 'string'));
+    assert.equal(JSON.stringify(incoming).includes('native-owned-background-command'), false);
+    assert.equal(JSON.stringify(incoming).includes('native final'), false);
+    assert.equal(records.some(record => record.type === 'native_frame_delivered' && record.sequence > 1), false);
+    assert.equal(messages.length, 1);
+    release();
+    assert.deepEqual(await pending, { stopReason: 'end_turn' });
+    await new Promise(done => setImmediate(done));
+    assert.deepEqual(records.filter(record => record.type === 'native_frame_delivered').map(record => record.sequence), [1, 2, 3, 4, 5, 6, 7]);
+  } finally { release(); await b.close(); }
+});
+
+void test('stdout limits each NDJSON frame, not a coalesced burst of later events', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough, Writable } = await import('node:stream');
+  for (const size of [600_000, 1_048_577]) {
+    const b = bridge(); const id = await session(b);
+    const child = new EventEmitter();
+    Object.assign(child, { pid: process.pid, exitCode: null, signalCode: null, stdout: new PassThrough(), stderr: new PassThrough() });
+    child.stdin = new Writable({
+      write(_chunk, _encoding, done) {
+        const frames = [
+          { event: 'init', conversation_id: 'fixture-conversation', init: { cwd } },
+          { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'x'.repeat(size) } },
+          { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'y'.repeat(size) } },
+          { event: 'result', result: { status: 'SUCCESS' } },
+        ];
+        queueMicrotask(() => child.stdout.emit('data', Buffer.from(frames.map(JSON.stringify).join('\n') + '\n')));
+        done();
+      },
+      final(done) { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); done(); },
+    });
+    b.spawnProcess = () => child;
+    const messages = [];
+    try {
+      if (size > 1_048_576) await assert.rejects(turn(b, id, 'oversized', messages), /frame exceeds 1 MiB/);
+      else {
+        assert.deepEqual(await turn(b, id, 'burst', messages), { stopReason: 'end_turn' });
+        assert.deepEqual(messages.map(message => message.update.content.text.length), [size, size]);
+      }
+    } finally { await b.close(); }
+  }
 });
 
 void test('SUCCESS does not fabricate a result for an unfinished tool', async () => {
@@ -1087,11 +1256,12 @@ void test('a killed adapter leaves owned keys and plugin; the next session recov
     await mkdir(join(root, '.agents'));
     await writeFile(hookPath, foreign);
     const killedSession = randomUUID();
-    const script = `import { registerProjectHook, AGY_STEERING_HOOK_KEY } from ${JSON.stringify(new URL('./agy-hook-registration.mjs', import.meta.url).href)};
+    const script = `import { registerProjectHook, AGY_STEERING_HOOK_KEY, AGY_COMMAND_GUIDANCE_HOOK_KEY } from ${JSON.stringify(new URL('./agy-hook-registration.mjs', import.meta.url).href)};
       import { registerProjectMcpPlugin } from ${JSON.stringify(new URL('./agy-mcp-plugin.mjs', import.meta.url).href)};
       const base = ${JSON.stringify({ cwd: root, nodePath: process.execPath, handlerPath })};
       await registerProjectHook({ ...base, sessionId: ${JSON.stringify(killedSession)} });
       await registerProjectHook({ ...base, sessionId: ${JSON.stringify(killedSession)}, key: AGY_STEERING_HOOK_KEY, args: ['--steering'] });
+      await registerProjectHook({ ...base, sessionId: ${JSON.stringify(killedSession)}, key: AGY_COMMAND_GUIDANCE_HOOK_KEY, args: ['--command-guidance'] });
       const plugin = await registerProjectMcpPlugin({ cwd: base.cwd, sessionId: ${JSON.stringify(killedSession)}, nodePath: base.nodePath, handlerPath: base.handlerPath, servers: [{ name: 'fixture', command: base.nodePath, args: [], env: [] }] });
       await plugin.beforeLaunch(); await plugin.launched(process.pid);
       process.stdout.write('READY\\n'); setInterval(() => {}, 1000);`;
@@ -1109,6 +1279,8 @@ void test('a killed adapter leaves owned keys and plugin; the next session recov
       const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
       const after = JSON.parse(await readFile(hookPath, 'utf8'));
       assert.equal(Object.hasOwn(after, 'kiki-agy-permission-bridge'), false);
+      assert.equal(Object.hasOwn(after, 'kiki-agy-command-guidance'), false);
+      await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-command-guidance-ownership.json')), { code: 'ENOENT' });
       assert.ok(after[AGY_STEERING_HOOK_KEY], 'the live session lease keeps the shared steering key');
       assert.deepEqual(after.foreign, { PreToolUse: [] });
       await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });

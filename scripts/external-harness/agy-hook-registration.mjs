@@ -4,14 +4,16 @@ import { createHash, randomUUID } from 'node:crypto';
 
 const KEY = 'kiki-agy-permission-bridge';
 const STEERING_KEY = 'kiki-agy-steering-bridge';
+const GUIDANCE_KEY = 'kiki-agy-command-guidance';
 const OWNED = Object.freeze({
   [KEY]: { state: '.kiki-agy-hook-ownership.json', definition: command => ({ PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command, timeout: 86400 }] }] }) },
   [STEERING_KEY]: { state: '.kiki-agy-steering-ownership.json', definition: command => ({ PostInvocation: [{ type: 'command', command, timeout: 30 }] }) },
+  [GUIDANCE_KEY]: { state: '.kiki-agy-command-guidance-ownership.json', definition: command => ({ SessionStart: [{ type: 'command', command, timeout: 30 }] }) },
 });
 const LOCK = '.kiki-agy-hook-ownership.json.lock';
-const ownedKeys = hooks => Object.keys(hooks).filter(key => Object.hasOwn(OWNED, key));
 export const AGY_PERMISSION_HOOK_KEY = KEY;
 export const AGY_STEERING_HOOK_KEY = STEERING_KEY;
+export const AGY_COMMAND_GUIDANCE_HOOK_KEY = GUIDANCE_KEY;
 
 export function hookCommand(nodePath, handlerPath, args = []) {
   if (args.some(arg => !/^--[a-z-]+$/.test(arg))) throw Error('AGY hook arguments must be fixed flags');
@@ -100,7 +102,7 @@ async function locked(lockPath, operation) {
 
 /**
  * Adds one owned key to `.agents/hooks.json` and leases it to this adapter session.
- * `key` selects the permission gate (PreToolUse) or the steering bridge (PostInvocation);
+ * `key` selects legacy permissions, steering or one-time native command guidance;
  * each owned key keeps its own receipt, while the original file bytes come back only
  * after the last owned key and lease are gone.
  */
@@ -114,6 +116,7 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
   const lockPath = join(dir, LOCK);
   const definition = owned.definition(hookCommand(nodePath, handlerPath, args));
   const definitionHash = sha(JSON.stringify(definition));
+  let disabled = false;
   await locked(lockPath, async () => {
     const before = await optional(path);
     const text = before?.toString('utf8') ?? '{}';
@@ -121,6 +124,7 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
     if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) throw Error('Project hooks must be a JSON object');
     const saved = await optional(statePath);
     let state = saved ? JSON.parse(saved.toString('utf8')) : undefined;
+    if (!state && key === GUIDANCE_KEY && hooks[key]?.enabled === false) { disabled = true; return; }
     if (state && (state.version !== 1 || state.definitionHash !== definitionHash)) throw Error('AGY hook registration version differs; recover its owned registration first');
     if (!state) {
       if (Object.hasOwn(hooks, key)) throw Error('Project AGY hook key is already owned; do not overwrite it');
@@ -137,6 +141,7 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
     state.leases.push({ sessionId, pid: process.pid });
     await atomic(statePath, JSON.stringify(state));
   });
+  if (disabled) return undefined;
   let closed = false;
   let closePromise;
   return { path, close() {
@@ -160,7 +165,7 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
         delete hooks[key];
         const current = await optional(path);
         if (!current || sha(current) !== sha(bytes)) throw Error('Project hooks changed during cleanup');
-        if (ownedKeys(hooks).length === 0 && JSON.stringify(hooks) === JSON.stringify(originalHooks)) {
+        if (JSON.stringify(hooks) === JSON.stringify(originalHooks)) {
           if (original) await atomic(path, original); else await unlink(path);
         } else await atomic(path, remaining);
       }
@@ -212,7 +217,7 @@ async function recoverOwnedKey({ cwd, nodePath, handlerPath, key, statePath }) {
       return 'owned-registration-recovered';
     });
   }
-  const args = key === STEERING_KEY ? ['--steering'] : [];
+  const args = key === STEERING_KEY ? ['--steering'] : key === GUIDANCE_KEY ? ['--command-guidance'] : [];
   const registration = await registerProjectHook({ cwd, nodePath, handlerPath, sessionId: `recovery-${randomUUID()}`, key, args });
   await registration.close();
   return await optional(statePath) ? 'owned-session-still-live' : 'owned-registration-recovered';

@@ -3,10 +3,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-async function invokeHook(payload) {
+async function invokeHook(payload, key = 'kiki-agy-steering-bridge', event = 'PostInvocation') {
   const hooks = JSON.parse(await readFile('.agents/hooks.json', 'utf8'));
-  const definition = hooks['kiki-agy-steering-bridge']?.PostInvocation[0];
-  if (!definition) throw Object.assign(Error('No owned steering hook'), { code: 'ENOENT' });
+  const definition = hooks[key]?.[event][0];
+  if (!definition) throw Object.assign(Error('No owned hook'), { code: 'ENOENT' });
   const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', definition.command] : ['-c', definition.command];
   const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
@@ -40,10 +40,29 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conversation,
     init: { model: args.includes('--model') ? model : undefined, agent, cwd: process.cwd(), permission_mode: 'request-review' } }) + '\n');
   turns++;
+  if (input.message.content === 'command-guidance') {
+    const output = await invokeHook({ conversationId: conversation, workspacePaths: [process.cwd()] }, 'kiki-agy-command-guidance', 'SessionStart');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: JSON.stringify(output) } }) + '\n');
+    continue;
+  }
   if (input.message.content === 'hang') continue;
   if (input.message.content === 'tool-hang') {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'background-events') {
+    const tool = (step_index, state, output) => ({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index, state, tool_name: 'run_command',
+        tool_info: { parameters: { CommandLine: 'native-owned-background-command' }, output } } });
+    for (const event of [tool(42, 'ACTIVE'), tool(52, 'ACTIVE'), tool(52, 'ERROR', 'native failure'),
+      { event: 'step_update', step_update: { step_type: 'agent_response', step_index: 197, state: 'DONE', text_delta: 'native final' } }]) {
+      process.stdout.write(JSON.stringify(event) + '\n');
+    }
+    setTimeout(() => {
+      process.stdout.write(JSON.stringify(tool(42, 'DONE', 'native output')) + '\n');
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: 'native final' } }) + '\n');
+    }, 100);
     continue;
   }
   if (input.message.content === 'native-tools') {

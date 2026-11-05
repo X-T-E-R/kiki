@@ -171,6 +171,8 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 
 内置 AGY CLI adapter 通过仅本次会话生效的 `--settings` 应用覆盖，不写引擎全局设置：`manual` 使用 `request-review` 和默认 Agent 模式；`auto` 使用 `request-review` 和 AGY auto Agent 模式；Full access 使用 `always-proceed`、`accept-edits`、允许访问工作区外路径、关闭终端沙箱，并传入 `--dangerously-skip-permissions`。AGY 自己的显式 deny 规则仍然生效。空闲时切换模式，只重启 adapter 自己的 CLI 进程，再以 `--conversation` 延续同一原生对话；运行中的轮次须先结束。Adapter 不安装权限 `PreToolUse` hook，独立的 steering hook 和 MCP 启动绑定仍可使用。
 
+新的 AGY 对话会收到一次原生启动提示：用 `rg` 搜索文件内容时明确传入路径，例如 `rg -n "pattern" .`；要读取 stdin（程序的输入通道）时传入 `-`。输入管道保持开放时，没有路径的 `rg` 可能一直等待输入，而不是搜索文件。这条提示不改写或拒绝命令，续轮或加载已有对话时也不重复注入。若要关闭它，在工作区 `.agents/hooks.json` 中保留 `"kiki-agy-command-guidance": {"enabled": false}` 即可。原生后台命令仍可能延迟 AGY 的事件导出；报告已写完，并不代表等待中的任务已经结束。
+
 通过 `engine:<executor-id>` 启动的 child 在恢复时保留已保存的原生引擎会话合同。原生会话不可用或无法核验时，Kiki 不会静默改开一个新会话，而是按引擎诊断让恢复失败。不同厂商支持的 resume、load 和控制能力并不相同，因此目标能启动不代表支持所有恢复操作。
 
 普通 resume 或 `context_mode: "direct"` 未提供模型覆盖时，会保留已有引擎会话。修改 `effort` 必须显式选择 vendor model；Kiki 不会从引擎默认绑定中推断模型。`context_mode: "compact"`、`context_mode: "fresh"` 和旧参数 `new_window: true` 无法重建外部引擎上下文，会报错而不替换会话。
