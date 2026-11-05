@@ -8,6 +8,7 @@ import {
   IAgentProfileRegistry,
   IAgentExecutorRegistry,
   IAgentExecutorPreflightService,
+  IPluginHostService,
   IManagedAdapterService,
   ILocalSessionCatalog,
   IFlagService,
@@ -54,6 +55,10 @@ import {
   listNamedAgentProfilesResponseSchema,
   listExecutorsResponseSchema,
   executorDiscoveryResponseSchema,
+  executorAccountSourcesResponseSchema,
+  executorAccountsQuerySchema,
+  executorAccountsResponseSchema,
+  supportsExecutorPluginAccount,
   executorDetailResponseSchema,
   executorCheckResponseSchema,
   getExecutorModelsResponseSchema,
@@ -247,6 +252,37 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     discoveryRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
 
   const executorParams = z.object({ id: z.string().min(1) });
+  const accountSourcesRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/account-sources', params: executorParams,
+    success: { data: executorAccountSourcesResponseSchema },
+    description: 'List optional plugin account sources for an explicitly selected engine', tags: ['agents'],
+  }, async (req, reply) => {
+    const descriptor = core.accessor.get(IAgentExecutorRegistry).get(req.params.id);
+    const sources = descriptor !== undefined && supportsExecutorPluginAccount(descriptor)
+      ? await core.accessor.get(IPluginHostService).listHarnessAccountSources() : [];
+    reply.send(okEnvelope({ items: sources.filter((source) => source.engineIds.includes(req.params.id))
+      .map(({ id, label }) => ({ id, label })) }, req.id));
+  });
+  app.get(accountSourcesRoute.path, accountSourcesRoute.options,
+    accountSourcesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const accountsRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/accounts', params: executorParams, querystring: executorAccountsQuerySchema,
+    success: { data: executorAccountsResponseSchema },
+    description: 'List display metadata for the chosen plugin account source without preparing a connection', tags: ['agents'],
+  }, async (req, reply) => {
+    const descriptor = core.accessor.get(IAgentExecutorRegistry).get(req.params.id);
+    if (descriptor === undefined || !supportsExecutorPluginAccount(descriptor)) {
+      reply.send(okEnvelope({ items: [] }, req.id));
+      return;
+    }
+    await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async signal => {
+      const accounts = await core.accessor.get(IPluginHostService).listHarnessAccounts(req.query.source, descriptor.id, signal);
+      reply.send(okEnvelope({ items: accounts.map(({ id, label, status }) => ({ id, label, status })) }, req.id));
+    });
+  });
+  app.get(accountsRoute.path, accountsRoute.options,
+    accountsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
   const executorDetailRoute = defineRoute({
     method: 'GET', path: '/executors/{id}', params: executorParams,
     success: { data: executorDetailResponseSchema },
@@ -1453,8 +1489,8 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       command: selected?.launchArgs?.[0] ?? check?.command ?? descriptor.command,
       source: check?.selectedSource,
       install_hint: descriptor.installHint === undefined ? undefined : expandExecutorText(descriptor.installHint, bootstrap),
-      login_command: descriptor.loginCommand,
-      api_key_env: descriptor.apiKeyEnv,
+      login_command: descriptor.instance?.configuration.kind === 'plugin_account' ? undefined : descriptor.loginCommand,
+      api_key_env: descriptor.instance?.configuration.kind === 'plugin_account' ? undefined : descriptor.apiKeyEnv,
       home_env: descriptor.homeEnv,
       override: executorOverrideProjection(descriptor),
       login_status: check?.loginStatus ?? 'unknown' as const,

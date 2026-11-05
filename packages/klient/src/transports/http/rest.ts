@@ -17,7 +17,8 @@ import { createProviderQuotaFacade } from './provider-quota.js';
 import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
-import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema } from '@kiki/protocol';
+import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema,
+  executorAccountSourcesResponseSchema, executorAccountsResponseSchema } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -637,6 +638,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     executors: {
       discover: async (options) => executorDiscoveryResponseSchema.parse(await transport.json('/executors/discovery', options)),
       list: () => transport.json('/executors'),
+      listAccountSources: async (executorId, options) => executorAccountSourcesResponseSchema.parse(await transport.json(
+        `/executors/${encodeURIComponent(executorId)}/account-sources`, options)),
+      listAccounts: async (executorId, source, options) => executorAccountsResponseSchema.parse(await transport.json(
+        `/executors/${encodeURIComponent(executorId)}/accounts`, { ...options, query: { source } })),
       listInstallations: (options) => transport.json('/executors/installations', options),
       install: (executorId, options) => transport.json(
         `/executors/${encodeURIComponent(executorId)}/install`, { ...options, method: 'POST', body: {} },

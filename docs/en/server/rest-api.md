@@ -262,11 +262,15 @@ The executor catalog and the two discovery views below answer different question
 | `GET /api/agents/references` | Caller-permitted profile and native-engine message-reference candidates; accepts one of the query forms below and does not launch a child |
 | `GET /api/executors` | Registered engines and the latest check for each. This request does not probe. A result older than 60 seconds has `check_stale: true` |
 | `GET /api/executors/{id}` | One engine's capabilities, connection settings, and latest check. This request does not probe |
+| `GET /api/executors/{id}/account-sources` | Optional enabled plugin account sources for AGY CLI or Codex; returns `{ items: [{ id, label }] }` |
+| `GET /api/executors/{id}/accounts?source=<reference>` | Display metadata from the selected plugin source; returns `{ items: [{ id, label, status }] }` without preparing an engine connection |
 | `GET /api/executors/discovery` | Read-only discovery of installed external-engine files and metadata; takes no query or body and does not spawn a process |
 | `POST /api/executors/{id}/check` | Explicitly check that engine's executable sources and its declared authentication hints |
 | `GET /api/executors/installations` | Pinned adapter releases and any selected source-owned adapter. This request does not install. An item with no installation omits `active` |
 | `POST /api/executors/{id}/install` | Explicitly update one selected adapter. The request has no body fields |
 | `POST /api/executors/{id}/rollback` | Restore that adapter's previous installation. The request has no body fields |
+
+Account routes take the base engine ID (`agy-cli` or `codex-app-server`), not an instance ID. Source IDs use `plugin:<plugin-id>/<source-id>`; percent-encode this reference in the `source` query. Accounts expose only `id`, `label`, and `status` (`ready`, `signed_out`, or `disabled`), never credentials. Listing does not prepare a connection. A plugin-account instance's explicit check reads that source and account instead of the engine's global login. The typed Klient methods are `klient.rest.executors.listAccountSources(id, options?)` and `listAccounts(id, source, options?)`.
 
 `GET /api/agents/references` accepts exactly one of these strict query forms; unknown fields are rejected:
 

@@ -94,6 +94,9 @@ export const executorInstanceConfigurationSchema = z.discriminatedUnion('kind', 
   z.strictObject({ kind: z.literal('config_directory'), path: z.string().trim().min(1) }),
   z.strictObject({ kind: z.literal('claude_settings'), path: z.string().trim().min(1) }),
   z.strictObject({ kind: z.literal('credential_env'), name: executorEnvironmentNameSchema }),
+  z.strictObject({ kind: z.literal('plugin_account'),
+    source: z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/),
+    account_id: z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/) }),
 ]);
 export type ExecutorInstanceConfiguration = z.infer<typeof executorInstanceConfigurationSchema>;
 
@@ -115,6 +118,18 @@ export const executorInstanceConfigSchema = z.strictObject({
 });
 export type ExecutorInstanceConfig = z.infer<typeof executorInstanceConfigSchema>;
 export const executorInstancesPatchSchema = z.record(executorInstanceIdSchema, executorInstanceConfigSchema.nullable());
+
+export function supportsExecutorPluginAccount(engine: { readonly id: string; readonly protocol: string }): boolean {
+  return engine.id === 'agy-cli' && engine.protocol === 'acp-v1' || engine.id === 'codex-app-server' && engine.protocol === 'codex-app-server';
+}
+
+export const executorAccountSourceSchema = z.object({ id: z.string(), label: z.string() });
+export const executorAccountSourcesResponseSchema = z.object({ items: z.array(executorAccountSourceSchema) });
+export const executorAccountsQuerySchema = z.object({ source: z.string().min(1).max(136) });
+export const executorAccountSchema = z.object({ id: z.string(), label: z.string(), status: z.enum(['ready', 'signed_out', 'disabled']) });
+export const executorAccountsResponseSchema = z.object({ items: z.array(executorAccountSchema) });
+export type ExecutorAccountSourcesResponse = z.infer<typeof executorAccountSourcesResponseSchema>;
+export type ExecutorAccountsResponse = z.infer<typeof executorAccountsResponseSchema>;
 
 export const executorInstanceIssueSchema = z.enum([
   'instance_source_unavailable', 'instance_configuration_unsupported', 'instance_configuration_path',

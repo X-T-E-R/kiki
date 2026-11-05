@@ -92,6 +92,7 @@ export const AGY_CLI_MODEL_PROBE: AgentExecutorModelProbe = {
  * of the descriptor revision, so it does not invalidate a resumable session.
  */
 export function executorModelProbe(descriptor: AgentExecutorDescriptor): AgentExecutorModelProbe | undefined {
+  if (descriptor.instance?.configuration.kind === 'plugin_account') return undefined;
   if (descriptor.modelProbe !== undefined) return descriptor.modelProbe;
   if (sourceOwnedAdapterScript(descriptor) === undefined) return undefined;
   const configured = descriptor.env?.['AGY_CLI_PATH']?.trim();

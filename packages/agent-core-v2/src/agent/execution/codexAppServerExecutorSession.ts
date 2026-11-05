@@ -18,6 +18,7 @@ import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import { codexAuthObservation, recordExecutorAuth } from './executorAuth';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
+import { CODEX_ACCOUNT_MODEL_PROVIDER, harnessAccountError, harnessAccountProcess } from './harnessAccountProcess';
 import { codexAttachments, externalAttachments } from './externalAttachments';
 import { executorLaunchArgs, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
@@ -159,7 +160,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           command: requiredCommand(context),
           commandArgsPrefix: context.descriptor.launchArgs,
           args: executorLaunchArgs(context.descriptor, context.descriptor.args),
-          ...executorProcessOptions(context.descriptor),
+          ...executorProcessOptions(context.descriptor, processService.redactDiagnostic),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',
@@ -190,9 +191,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#createClient = () => {
       const launchedContext = this.context;
       const cwd = this.#roots().workDir;
-      return clientFactory(processes,
+      return clientFactory(harnessAccountProcess(processes, launchedContext, this.#runtimeLease.runtime.identity.runtimeId).processes,
         (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
         (notification) => {
+          if (launchedContext.descriptor.instance?.configuration.kind === 'plugin_account') return;
           const auth = codexAuthObservation(notification);
           if (auth === undefined) return;
           this.#authUpdates = this.#authUpdates.then(() => recordExecutorAuth(launchedContext, cwd, auth));
@@ -263,7 +265,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     await recordNegotiatedSnapshot(this.context, {
       agentVersion: this.#client.status().agentVersion,
     });
-    const opened = await this.#openThread(roots, controller.signal);
+    const opened = await this.#openThread(roots, controller.signal).catch(async (error: unknown) => {
+      if (this.#accountModelProvider() === undefined) throw error;
+      await this.#client.shutdown(error);
+      controller.signal.throwIfAborted();
+      throw harnessAccountError(this.context.descriptor, error);
+    });
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const priorThreadId = threadIdFromState(prior.sessionRef);
     if (this.#approvalRestore?.threadId !== opened.threadId) this.#approvalRestore = undefined;
@@ -544,9 +551,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         throw toError(turnResult.reason, 'Codex turn was interrupted');
       }
       turn.state = 'failed';
-      await recorder.fail(turnResult.error);
-      result.resolve(turnResult);
-      throw toError(turnResult.error, 'Codex turn failed');
+      const error = harnessAccountError(this.context.descriptor, turnResult.error);
+      await recorder.fail(error);
+      result.resolve({ ...turnResult, error });
+      throw toError(error, 'Codex turn failed');
     } catch (error) {
       if (controller.signal.aborted) {
         const reason = controller.signal.reason ?? error;
@@ -597,11 +605,13 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         const resumed = await this.#client.resumeThread({
           threadId: priorThreadId,
           model: this.context.binding.modelAlias,
+          modelProvider: this.#accountModelProvider(),
           cwd: roots.workDir,
           approvalPolicy: undefined,
           sandbox: undefined,
           ...this.#instructions(),
         }, signal);
+        this.#assertAccountThread(resumed);
         this.#threadId = resumed.thread.id;
         return {
           threadId: resumed.thread.id,
@@ -652,13 +662,26 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   ): Promise<CodexThreadResult> {
     const started = await this.#client.startThread({
       model: this.context.binding.modelAlias,
+      modelProvider: this.#accountModelProvider(),
       cwd: roots.workDir,
       approvalPolicy: undefined,
       sandbox: undefined,
       ...this.#instructions(),
     }, signal);
+    this.#assertAccountThread(started);
     this.#threadId = started.thread.id;
     return started;
+  }
+
+  #accountModelProvider(): string | undefined {
+    return this.context.descriptor.instance?.configuration.kind === 'plugin_account' ? CODEX_ACCOUNT_MODEL_PROVIDER : undefined;
+  }
+
+  #assertAccountThread(thread: CodexThreadResult): void {
+    const expected = this.#accountModelProvider();
+    if (expected !== undefined && thread.modelProvider !== expected) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Codex did not accept the selected account for instance "${this.context.descriptor.label ?? this.context.descriptor.id}".`);
+    }
   }
 
   #instructions(): Readonly<Record<string, string>> {

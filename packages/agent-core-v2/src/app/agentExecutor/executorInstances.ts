@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
-import { executorInstanceConfigSchema, executorInstanceIdSchema, executorProxyUrl, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
+import { executorInstanceConfigSchema, executorInstanceIdSchema, executorProxyUrl, supportsExecutorPluginAccount, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { isPlainObject } from '#/app/config/configPure';
@@ -65,7 +65,10 @@ export function materializeExecutorInstance(
     } else if (base.apiKeyEnv !== undefined) {
       envUnset.add(base.apiKeyEnv);
     }
-    if (configuration.kind === 'config_directory') {
+    if (configuration.kind === 'plugin_account') {
+      if (!supportsExecutorPluginAccount(base)) issue = 'instance_configuration_unsupported';
+      for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'KIKI_HARNESS_API_KEY', 'KIKI_AGY_ACCOUNT_MODELS']) envUnset.add(key);
+    } else if (configuration.kind === 'config_directory') {
       if (base.homeEnv === undefined) issue = 'instance_configuration_unsupported';
       else if (!isAbsolute(configuration.path)) issue = 'instance_configuration_path';
       else {
@@ -106,7 +109,9 @@ export function materializeExecutorInstance(
     protocol: 'unavailable',
     ...base,
     args: base?.args ?? [],
-    modelProbe: base?.modelProbe,
+    modelProbe: configuration.kind === 'plugin_account' ? undefined : base?.modelProbe,
+    versionProbe: configuration.kind === 'plugin_account' && base?.id === 'agy-cli'
+      ? { args: ['--kiki-harness-account-version'] } : base?.versionProbe,
     id,
     label: instance.label,
     instance,

@@ -1,0 +1,15 @@
+{
+  "name": "fixture-account-source",
+  "version": "1.0.0",
+  "x-kiki": {
+    "engines": { "kiki": ">=0.4.2" },
+    "entry": "./entry.mjs",
+    "harnessAccountSources": [
+      { "schemaVersion": 1, "id": "accounts", "label": "Fixture OAuth", "engineIds": ["agy-cli", "codex-app-server"] }
+    ],
+    "settings": {
+      "schemaVersion": 1,
+      "schema": { "type": "object", "properties": { "controlPlane": { "type": "string" } } }
+    }
+  }
+}

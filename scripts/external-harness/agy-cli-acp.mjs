@@ -31,7 +31,12 @@ export function launchArgs(session) {
     : mode === 'auto' ? { toolPermission: 'request-review', agentMode: 'auto' }
       : mode === 'yolo' ? { toolPermission: 'always-proceed', agentMode: 'accept-edits', allowNonWorkspaceAccess: true, enableTerminalSandbox: false }
         : undefined;
-  if (settings !== undefined) args.push('--settings', JSON.stringify(settings));
+  const accountSettings = session.accountBound ? {
+    modelProvider: 'gemini',
+    customModelsConfig: { customModels: { [session.model]: { modelName: `gemini-api://models/${session.model}`,
+      toolFormatterType: 'TOOL_FORMATTER_TYPE_NONE' } } },
+  } : undefined;
+  if (settings !== undefined || accountSettings !== undefined) args.push('--settings', JSON.stringify({ ...settings, ...accountSettings }));
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
   return args;
 }
@@ -139,7 +144,8 @@ export function configOptions(session) {
     options: [{ value: DEFAULT, name: 'Follow AGY settings' }, ...(effort ? [{ value: effort, name: effort }] : [])] }];
   if (Array.isArray(session.modelChoices)) {
     options.push({ id: 'model', name: 'AGY model', category: 'model', type: 'select', currentValue: session.model,
-      options: session.modelChoices.length === 0 ? [] : [{ value: DEFAULT, name: 'Follow AGY settings' },
+      options: session.modelChoices.length === 0 ? [] : [
+        ...session.accountBound ? [] : [{ value: DEFAULT, name: 'Follow AGY settings' }],
         ...session.modelChoices.map(id => ({ value: id, name: id }))] });
   }
   options.push({ id: 'native-agent', name: 'AGY native agent', category: 'native_agent', type: 'select',
@@ -164,11 +170,15 @@ async function terminate(child) {
 }
 
 export class AgyBridge {
-  constructor({ cliPath, cliPrefix = [], auditDir, model = DEFAULT, spawnProcess = spawn, stopProcess = terminate } = {}) {
+  constructor({ cliPath, cliPrefix = [], auditDir, model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit } = {}) {
     this.stopProcess = stopProcess;
     if (!isAbsolute(cliPath ?? '')) throw new Error('Pass the exact absolute AGY executable path');
     if (typeof model !== 'string' || !model || /\s/.test(model)) throw new Error('AGY model must be a nonempty engine ID');
-    this.model = model;
+    if (account && model !== DEFAULT && !account.modelIds.includes(model)) throw new Error('The selected account does not provide the bound AGY model');
+    this.account = account;
+    this.requestedModel = model;
+    this.onAccountExit = onAccountExit;
+    this.model = account && model === DEFAULT ? account.modelIds[0] : model;
     this.cliPath = cliPath;
     this.cliPrefix = cliPrefix;
     this.auditDir = auditDir;
@@ -206,7 +216,7 @@ export class AgyBridge {
     const dirs = params.additionalDirectories ?? [];
     if (!Array.isArray(dirs) || dirs.some(d => typeof d !== 'string' || !isAbsolute(d))) throw new Error('Additional directories must be absolute');
     const session = { id, cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
-      modelChoices: this.modelChoices,
+      modelChoices: this.modelChoices, accountBound: this.account !== undefined,
       mcpServers: structuredClone(mcpServers), mcpPlugin: undefined, mcpBound: new Set(), mcpReady: new Set(),
       permissionIdentity: permissionChannelIdentity(), permissionChannel: undefined,
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map() };
@@ -248,7 +258,10 @@ export class AgyBridge {
     }
     const argValue = name => { const index = launch.args.lastIndexOf(name); return index < 0 ? DEFAULT : launch.args[index + 1]; };
     const model = argValue('--model') === DEFAULT ? init.model : argValue('--model');
-    if (typeof model !== 'string' || !model || this.model !== DEFAULT && model !== this.model) throw new Error('AGY native load model differs from its original binding or was not confirmed');
+    if (typeof model !== 'string' || !model || (this.account ? !this.account.modelIds.includes(model) || this.requestedModel !== DEFAULT && model !== this.requestedModel
+      : this.model !== DEFAULT && model !== this.model)) throw new Error(this.account
+        ? 'AGY native load model differs from its original binding or is unavailable for the selected account'
+        : 'AGY native load model differs from its original binding or was not confirmed');
     const effort = launch.effort ?? argValue('--effort');
     validateEffort(model, effort);
     if (processAlive(launch.pid)) throw new Error('AGY native conversation still has an owned process; close it before loading');
@@ -287,6 +300,10 @@ export class AgyBridge {
   }
 
   async loadVendorModels() {
+    if (this.account) {
+      this.modelChoices = this.account.modelIds;
+      return;
+    }
     try {
       const result = await readVendorModelCatalog({
         cliPath: this.cliPath, cliPrefix: this.cliPrefix, spawnProcess: this.spawnProcess, stopProcess: this.stopProcess,
@@ -300,6 +317,7 @@ export class AgyBridge {
   }
 
   setModel(session, value) {
+    if (session.accountBound && value === DEFAULT) value = this.account.modelIds[0];
     if (typeof value !== 'string' || value.length === 0 || /\s/u.test(value)) throw new Error('AGY model must be a nonempty engine ID');
     if (session.child && session.model !== value) throw new Error('AGY model/effort is frozen after process launch; select a fresh session');
     if (!Array.isArray(session.modelChoices)) throw new Error('AGY model catalog is unavailable; model is selected by argv in its own namespace');
@@ -487,6 +505,9 @@ export class AgyBridge {
     const env = { ...process.env, ...session.permissionIdentity };
     for (const key of Object.keys(env)) if (key.startsWith('KIKI_AGY_MCP_')) delete env[key];
     Object.assign(env, session.mcpPlugin?.env);
+    const account = this.account;
+    if (account) Object.assign(env, { GEMINI_API_KEY: account.apiKey, GOOGLE_GEMINI_BASE_URL: account.baseUrl });
+    const redact = text => account ? text.replaceAll(account.apiKey, '[redacted]').replaceAll(account.baseUrl, '[redacted]') : text;
     let child;
     try {
       await session.mcpPlugin?.beforeLaunch();
@@ -519,7 +540,8 @@ export class AgyBridge {
         if (!line) continue;
         if (Buffer.byteLength(line) > MAX_FRAME_BYTES) { fail(new Error('AGY stdout frame exceeds 1 MiB')); return; }
         let event;
-        try { event = JSON.parse(line); } catch { fail(new Error('AGY emitted invalid NDJSON')); return; }
+        try { event = JSON.parse(line, account ? (_key, value) => typeof value === 'string' ? redact(value) : value : undefined); }
+        catch { fail(new Error('AGY emitted invalid NDJSON')); return; }
         const frame = { sequence: ++sequence, receivedAt: new Date().toISOString(), event: event?.event,
           stepIndex: event?.step_update?.step_index, stepType: event?.step_update?.step_type,
           state: event?.step_update?.state, status: event?.result?.status };
@@ -538,14 +560,14 @@ export class AgyBridge {
       stderrTruncated ||= stderr.length + bytes.length > 8192;
       const tail = Buffer.concat([stderr, bytes.subarray(Math.max(0, bytes.length - 8192))]);
       stderr = tail.subarray(Math.max(0, tail.length - 8192));
-      process.stderr.write(chunk);
+      if (!account) process.stderr.write(chunk);
     });
     child.stdin.on('error', fail);
     child.on('error', fail);
     child.once('close', (code, signal) => {
       const lines = stderr.toString('utf8').split(/\r?\n/u);
       if (stderrTruncated) lines.shift();
-      const diagnostic = lines.map(safeDiagnosticLine).findLast(line => line !== undefined);
+      const diagnostic = lines.map(line => safeDiagnosticLine(redact(line))).findLast(line => line !== undefined);
       stderr = Buffer.alloc(0);
       session.cleanup = (async () => {
         try {
@@ -567,7 +589,11 @@ export class AgyBridge {
           if (!session.restarting) await session.releaseResume?.();
         }
       })();
-      session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
+      const ended = () => { if (account && !session.restarting) this.onAccountExit?.(); };
+      void session.cleanup.then(ended, error => {
+        process.stderr.write(`AGY owned permission cleanup failed: ${redact(error.message)}\n`);
+        ended();
+      });
     });
     try { await session.mcpPlugin?.launched(child.pid); }
     catch (error) { await this.stopProcess(child); await session.cleanup; throw error; }
@@ -845,14 +871,31 @@ export async function runSessionMcp(key) {
   }
 }
 
-export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, model = DEFAULT } = {}) {
+export function consumeAccountEnvironment(env = process.env) {
+  const apiKey = env.GEMINI_API_KEY;
+  const baseUrl = env.GOOGLE_GEMINI_BASE_URL;
+  const rawModels = env.KIKI_AGY_ACCOUNT_MODELS;
+  delete env.GEMINI_API_KEY;
+  delete env.GOOGLE_GEMINI_BASE_URL;
+  delete env.KIKI_AGY_ACCOUNT_MODELS;
+  const modelIds = JSON.parse(rawModels ?? 'null');
+  if (typeof apiKey !== 'string' || !apiKey || typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)
+    || !Array.isArray(modelIds) || modelIds.length === 0
+    || modelIds.some(id => typeof id !== 'string' || !id || /\s/.test(id) || id === DEFAULT)) {
+    throw new Error('The selected account connection is unavailable; no global AGY fallback is allowed');
+  }
+  return { apiKey, baseUrl, modelIds };
+}
+
+export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, model = DEFAULT, account } = {}) {
   if (!isAbsolute(sdkPath ?? '')) throw new Error('Pass an installed ACP SDK absolute path');
   const acp = await import(pathToFileURL(sdkPath).href);
-  const bridge = new AgyBridge({ cliPath, cliPrefix, auditDir, model });
+  const bridge = new AgyBridge({ cliPath, cliPrefix, auditDir, model, account, onAccountExit: () => setImmediate(shutdown) });
   await bridge.loadVendorModels();
   const sessionRequest = handler => async ctx => {
     try { return await handler(ctx); }
     catch (error) {
+      if (account) setImmediate(shutdown);
       throw new acp.RequestError(-32603, error instanceof Error ? error.message : String(error),
         { adapterCode: error?.code, details: error?.details });
     }
@@ -879,7 +922,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv.includes('--version')) console.log('agy-cli-acp 0.2.0');
+  if (process.argv.includes('--version') || (process.argv.length === 3 && process.argv[2] === '--kiki-harness-account-version')) console.log('agy-cli-acp 0.2.0');
   else {
     const args = process.argv.slice(2);
     if (args.length === 2 && args[0] === '--mcp-stdio') {
@@ -896,9 +939,12 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         .then(result => console.log(JSON.stringify(result)))
         .catch(error => { console.error(error.message); process.exitCode = 1; });
     } else {
+      const accountBound = args.at(-1) === '--kiki-harness-account';
+      if (accountBound) args.pop();
       if (args.length && (args.length !== 2 || args[0] !== '--model')) throw new Error('Only --model <AGY model ID> or --recover-project-hook <workspace> is supported');
+      const account = accountBound ? consumeAccountEnvironment() : undefined;
       runBridge({ sdkPath: process.env.AGY_ACP_SDK_PATH, cliPath: process.env.AGY_CLI_PATH,
-        auditDir: process.env.AGY_BRIDGE_AUDIT_DIR, model: args[1] ?? DEFAULT })
+        auditDir: process.env.AGY_BRIDGE_AUDIT_DIR, model: args[1] ?? DEFAULT, account })
         .catch(error => { console.error(error.message); process.exitCode = 1; });
     }
   }

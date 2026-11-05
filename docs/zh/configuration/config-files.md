@@ -188,7 +188,11 @@ proxy = { kind = "url", url = "socks5h://127.0.0.1:1080" }
 
 实例 ID 必须唯一并以 `instance-` 开头，配置路径必须已存在于 Kiki 主机。配置来源包括：`inherit` 跟随引擎；`config_directory` 用于声明了配置目录环境变量的引擎；`claude_settings` 用于官方 Claude 适配器；`credential_env` 用于声明了 API 密钥环境变量的引擎。`credential_env` 只保存主机环境变量名，不保存密钥。Claude 设置文件实例加载指定文件及项目、本地设置，跳过用户级 `settings.json`，登录检查也使用同一文件。
 
-代理 `inherit` 保留主机环境，`direct` 清除该子进程的代理与绕过变量，`url` 接受 HTTP(S) 或 SOCKS 代理地址。代理需要认证时，使用 `proxy = { kind = "env", name = "WORK_PROXY_URL" }`，并在 Kiki 主机环境中设置完整 URL。显式代理仍让本机回环流量直连。这些设置只作用于该实例的子进程，不改变 Kiki 或其他引擎。
+代理 `inherit` 保留主机环境，`direct` 清除该子进程的代理与绕过变量，`url` 接受 HTTP(S) 或 SOCKS 代理地址。代理需要认证时，使用 `proxy = { kind = "env", name = "WORK_PROXY_URL" }`，并在 Kiki 主机环境中设置完整 URL。显式代理仍让本机回环流量直连。这些设置只作用于该实例，不改变 Kiki 或其他引擎。
+
+已启用的 [插件](../customization/plugins.md) 为引擎提供账号时，AGY CLI 和 Codex app-server 的实例还可选择 **插件账号**。在实例表单中选择来源和账号；登录、账号管理和 OAuth 刷新仍由对应插件负责。Cockpit OAuth 这类来源可以使用已有账号库，无需运行桌面应用。配置保存的是 `configuration = { kind = "plugin_account", source = "plugin:cockpit-harness-oauth/cockpit-oauth", account_id = "YOUR_ACCOUNT_ID" }`，不是凭据或连接地址。
+
+插件账号对应的引擎运行在 Kiki 主机上。实例的代理选择以跟随系统、直连或自定义代理交给账号来源，引擎则直连该来源的本机端点。模型目录在引擎启动时从所选账号取得，不使用全局引擎的目录。短期密钥只进入启动环境，在引擎退出或启动失败时释放。账号或来源不可用时，**检查** 和启动错误会指出该实例，不会改用其他账号或全局入口。较旧的 AGY 自有桥需先通过原有适配器安装操作更新，才能使用插件账号。
 
 已有会话保留原实例身份和配置版本。修改实例配置或代理后，新建会话才能使用新版本；旧会话不会静默改用另一账号恢复。在设置中移除实例只删除注册，不删除来源引擎或账号目录。通过 `POST /api/config` 修改时，将 `agent_executor_instances.<instance-id>` 设为 JSON `null` 即可移除该项。
 

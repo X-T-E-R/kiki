@@ -92,7 +92,7 @@
 # [agent_executor_instances."<name>"]
   # source_executor: string
   # label: string
-  # configuration: object | object | object | object
+  # configuration: object | object | object | object | object
   # proxy: object | object | object | object
 
 # ##########################################################################

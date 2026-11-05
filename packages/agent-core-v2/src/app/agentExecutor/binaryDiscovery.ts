@@ -333,7 +333,10 @@ async function probeNodeScript(
       available: false,
       command: node,
       version,
-      diagnostic: probe.available ? `version probe exited with code ${String(probe.code)}` : 'node is not executable',
+      diagnosticCode: descriptor.instance?.configuration.kind === 'plugin_account' && executorSourceId(descriptor) === 'agy-cli' && probe.available
+        ? 'instance_agy_bridge_update' : undefined,
+      diagnostic: probe.available ? descriptor.instance?.configuration.kind === 'plugin_account' && executorSourceId(descriptor) === 'agy-cli'
+        ? 'Update the AGY bridge before using plugin accounts.' : `version probe exited with code ${String(probe.code)}` : 'node is not executable',
     };
   }
   return { ...base, available: true, command: node, version };

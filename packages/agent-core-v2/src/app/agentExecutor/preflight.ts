@@ -5,6 +5,7 @@ import { CodexAppServerClient } from '@kiki/codex-client';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
@@ -92,6 +93,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentExecutorRegistry private readonly registry: IAgentExecutorRegistry,
+    @IPluginHostService private readonly plugins?: IPluginHostService,
   ) {}
 
   async run(ids: readonly string[] = this.registry.list().filter((descriptor) => descriptor.protocol !== 'native').map((descriptor) => descriptor.id)): Promise<readonly AgentExecutorPreflightResult[]> {
@@ -172,7 +174,24 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const program = programRequirement(descriptor, selected !== undefined ? 'ok' : failed !== undefined ? 'failed' : 'missing',
       selected === undefined ? undefined : sourceLocation(selected), selected?.version, this.bootstrap);
     let auth: CredentialResolution = { loginStatus: 'unknown' };
-    if (selected !== undefined) auth = await this.#auth(executable, selected.command);
+    const account = descriptor.instance?.configuration;
+    if (account?.kind === 'plugin_account') {
+      auth = { loginStatus: 'unknown', source: 'external_backend', detail: `${account.source} · ${account.account_id}` };
+      try {
+        if (this.plugins === undefined) throw new Error('Account source host is unavailable');
+        const accounts = await this.plugins.listHarnessAccounts(account.source, executorSourceId(descriptor), AbortSignal.timeout(15_000));
+        const selectedAccount = accounts.find((item) => item.id === account.account_id);
+        if (selectedAccount?.status === 'ready') {
+          auth = { ...auth, loginStatus: 'logged_in', detail: `${account.source} · ${selectedAccount.label}` };
+          diagnostics.push(info(`Selected account source ${account.source}: ${selectedAccount.label}.`, 'instance_account_ready'));
+        } else {
+          auth = { ...auth, loginStatus: 'logged_out' };
+          diagnostics.push(error('The selected account is missing, signed out or disabled. Open the source plugin to reconnect it.', 'instance_account_unavailable'));
+        }
+      } catch {
+        diagnostics.push(error(`Cannot connect to account source ${account.source}. Enable the source plugin and check its connection.`, 'instance_account_source_unavailable'));
+      }
+    } else if (selected !== undefined) auth = await this.#auth(executable, selected.command);
     return resultOf(
       id,
       selected?.command ?? '',
@@ -409,8 +428,8 @@ function firstLine(value: string): string | undefined {
   return value.split(/\r?\n/, 1)[0] || undefined;
 }
 
-function info(message: string): AgentExecutorPreflightDiagnostic {
-  return { severity: 'info', message };
+function info(message: string, code?: string): AgentExecutorPreflightDiagnostic {
+  return { code, severity: 'info', message };
 }
 
 function warning(message: string): AgentExecutorPreflightDiagnostic {

@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { executorInstanceConfigSchema, type ExecutorCatalogItem, type ExecutorInstanceConfig, type ExecutorInstanceConfiguration, type ExecutorInstanceProxy } from '@kiki/protocol';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { executorInstanceConfigSchema, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfig, type ExecutorInstanceConfiguration, type ExecutorInstanceProxy } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -28,16 +28,35 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
   const [proxy, setProxy] = useState<ExecutorInstanceProxy>(current?.proxy ?? { kind: 'inherit' });
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const executors = client.klient?.rest?.executors;
+  const supportedAccounts = source !== undefined && supportsExecutorPluginAccount(source) && executors !== undefined;
+  const account = configuration.kind === 'plugin_account' ? configuration : undefined;
+  const sourceQuery = useQuery({
+    queryKey: ['engine-account-sources', scopeId, meta?.server_id, source?.id],
+    queryFn: ({ signal }) => executors!.listAccountSources(source!.id, { signal }),
+    enabled: supportedAccounts, retry: false,
+  });
+  const accountSources = sourceQuery.data?.items ?? [];
+  const knownSource = accountSources.some((entry) => entry.id === account?.source);
+  const accountsQuery = useQuery({
+    queryKey: ['engine-accounts', scopeId, meta?.server_id, source?.id, account?.source],
+    queryFn: ({ signal }) => executors!.listAccounts(source!.id, account!.source, { signal }),
+    enabled: supportedAccounts && knownSource, retry: false,
+  });
+  const accounts = accountsQuery.data?.items ?? [];
+  const selectedAccount = accounts.find((entry) => entry.id === account?.account_id);
+  const readyAccount = account === undefined || (knownSource && !accountsQuery.isError && selectedAccount?.status === 'ready');
   const configOptions: ExecutorInstanceConfiguration['kind'][] = ['inherit'];
   if (source?.connection?.home_env !== undefined) configOptions.push('config_directory');
   if (source?.supports_claude_settings === true) configOptions.push('claude_settings');
   if (source?.connection?.api_key_env !== undefined) configOptions.push('credential_env');
+  if (supportedAccounts && (accountSources.length > 0 || account !== undefined)) configOptions.push('plugin_account');
   const issue = item?.configuration_issue;
   const sourceLabel = source?.label ?? current?.source_executor ?? '';
   const unsupported = !configOptions.includes(configuration.kind);
 
   const save = async () => {
-    if (saving || source === undefined || unsupported) return;
+    if (saving || source === undefined || unsupported || !readyAccount) return;
     const parsed = executorInstanceConfigSchema.safeParse({ source_executor: source.id, label, configuration, proxy });
     if (!parsed.success) {
       setFeedback({ tone: 'error', text: t('st.engines.instance.invalid') });
@@ -66,6 +85,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
     setFeedback(null);
     if (kind === 'config_directory' || kind === 'claude_settings') setConfiguration({ kind, path: '' });
     else if (kind === 'credential_env') setConfiguration({ kind, name: '' });
+    else if (kind === 'plugin_account') setConfiguration({ kind, source: accountSources[0]?.id ?? '', account_id: '' });
     else setConfiguration({ kind });
   };
   const selectProxy = (kind: ExecutorInstanceProxy['kind']) => {
@@ -107,6 +127,27 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
               required spellCheck={false} disabled={saving || unsupported} value={configuration.name} placeholder="WORK_API_KEY"
               onChange={(event) => setConfiguration({ kind: configuration.kind, name: event.target.value })} />
             <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.config.envHint')}</p>
+          </> : account !== undefined ? <>
+            <label htmlFor={`${id}-account-source`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.source')}</label>
+            <select id={`${id}-account-source`} data-instance-account-source className={INPUT} value={account.source} disabled={saving || unsupported}
+              onChange={(event) => setConfiguration({ kind: 'plugin_account', source: event.target.value, account_id: '' })}>
+              {!knownSource && account.source ? <option value={account.source} disabled>{account.source}</option> : null}
+              {accountSources.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+            </select>
+            <label htmlFor={`${id}-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.label')}</label>
+            <select id={`${id}-account`} data-instance-account className={INPUT} value={account.account_id} disabled={saving || !knownSource || accountsQuery.isPending || accountsQuery.isError}
+              onChange={(event) => setConfiguration({ ...account, account_id: event.target.value })}>
+              <option value="">{t('st.engines.instance.account.choose')}</option>
+              {!selectedAccount && account.account_id ? <option value={account.account_id} disabled>{account.account_id}</option> : null}
+              {accounts.map((entry) => <option key={entry.id} value={entry.id} disabled={entry.status !== 'ready'}>{entry.label}{entry.status !== 'ready' ? ` · ${t(`st.engines.instance.account.${entry.status}`)}` : ''}</option>)}
+            </select>
+            {sourceQuery.isLoading || (knownSource && accountsQuery.isPending)
+              ? <p role="status" className="text-[12px] leading-4 text-ink-soft">{t('st.engines.instance.account.loading')}</p>
+              : sourceQuery.isError || !knownSource || accountsQuery.isError
+                ? <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.engines.instance.account.unavailable')}</p>
+                : accounts.every((entry) => entry.status !== 'ready') || (account.account_id && selectedAccount?.status !== 'ready')
+                  ? <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.engines.instance.account.reconnect')}</p>
+                  : null}
           </> : configOptions.length === 1 ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.config.unsupported')}</p> : null}
         </div>
         <div className="min-w-0 space-y-1.5">
@@ -127,7 +168,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       <div className="space-y-2 border-t border-hairline pt-3">
         <p className="text-[12px] leading-4 text-ink-soft">{t(item === undefined ? 'st.engines.instance.selectHint' : 'st.engines.instance.editHint')}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <button data-instance-save type="submit" className={PRIMARY_BUTTON} disabled={saving || !label.trim() || unsupported || source === undefined} aria-busy={saving}>
+          <button data-instance-save type="submit" className={PRIMARY_BUTTON} disabled={saving || !label.trim() || unsupported || source === undefined || !readyAccount} aria-busy={saving}>
             {t(item === undefined ? 'st.engines.instance.create' : 'st.engines.instance.save')}
           </button>
           {onCancel === undefined ? null : <button type="button" className={SECONDARY_BUTTON} onClick={onCancel} disabled={saving}>{t('common.cancel')}</button>}

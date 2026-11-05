@@ -109,12 +109,26 @@ function scriptedProcess(
 }
 
 describe('CodexAppServerClient limits and observers', () => {
+  it('redacts account capabilities before protocol observers and response consumers', async () => {
+    const fixture = scriptedProcess(undefined, undefined, false, {
+      threadResult: () => ({ thread: { id: 'thread-1', path: 'a"b-secret' } }),
+    });
+    const redactDiagnostic = (value: string) => value.replaceAll('a"b-secret', '[redacted]');
+    const onProtocolFrame = vi.fn();
+    const client = new CodexAppServerClient({ spawn: async () => fixture.process, redactDiagnostic },
+      { id: 'instance-work', command: 'fixture', shutdownGraceMs: 1 }, { onFrame: onProtocolFrame });
+    try {
+      await client.connect();
+      expect(await client.request('thread/start', {})).toMatchObject({ thread: { path: '[redacted]' } });
+      expect(JSON.stringify(onProtocolFrame.mock.calls)).not.toContain('b-secret');
+    } finally { await client.shutdown(); }
+  });
   it('forwards instance environment removal without changing the host', async () => {
     const spawn = vi.fn(async () => { throw new Error('fixture stop'); });
     const envUnset = ['HTTP_PROXY', 'HTTPS_PROXY'];
     const client = new CodexAppServerClient({ spawn }, { id: 'instance-work', command: 'fixture', envUnset });
     await expect(client.connect()).rejects.toThrow('fixture stop');
-    expect(spawn).toHaveBeenCalledWith('fixture', expect.any(Array), expect.objectContaining({ envUnset }));
+    expect(spawn).toHaveBeenCalledWith('fixture', expect.any(Array), expect.objectContaining({ envUnset }), expect.any(AbortSignal));
     await client.shutdown();
   });
   it('isolates state observer failures during startup and shutdown', async () => {

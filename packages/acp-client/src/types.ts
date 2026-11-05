@@ -33,10 +33,12 @@ export interface HostProcessLike {
 }
 
 export interface HostProcessServiceLike {
+  readonly redactDiagnostic?: (text: string) => string;
   spawn(
     command: string,
     args?: readonly string[],
     options?: HostProcessOptionsLike,
+    startupSignal?: AbortSignal,
   ): Promise<HostProcessLike>;
 }
 

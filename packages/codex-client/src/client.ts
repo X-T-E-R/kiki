@@ -113,6 +113,8 @@ export class CodexAppServerClient {
           windowsHide: true,
           mergeStderr: false,
         },
+        signal === undefined ? AbortSignal.timeout(this.descriptor.startupTimeoutMs ?? 30_000)
+          : AbortSignal.any([signal, AbortSignal.timeout(this.descriptor.startupTimeoutMs ?? 30_000)]),
       );
       this.#attachProcess(this.#process);
       this.#setState('initializing');
@@ -422,12 +424,14 @@ export class CodexAppServerClient {
   }
 
   async #consumeLine(raw: string): Promise<void> {
+    const redact = this.processService.redactDiagnostic;
     let payload: unknown;
     try {
-      payload = JSON.parse(raw);
+      payload = JSON.parse(raw, redact === undefined ? undefined : (_key, value: unknown) => typeof value === 'string' ? redact(value) : value);
+      if (redact !== undefined) raw = JSON.stringify(payload);
     } catch (error) {
-      this.#observe('server-to-client', 'malformed', raw);
-      void this.#break(new CodexClientError('protocol', 'Malformed Codex app-server JSONL', error));
+      this.#observe('server-to-client', 'malformed', redact?.(raw) ?? raw);
+      void this.#break(new CodexClientError('protocol', 'Malformed Codex app-server JSONL', redact === undefined ? error : undefined));
       return;
     }
     if (!isObject(payload) || Object.hasOwn(payload, 'jsonrpc')) {

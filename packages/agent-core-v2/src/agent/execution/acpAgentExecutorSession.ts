@@ -29,6 +29,7 @@ import { antigravityProcessService } from '#/app/agentExecutor/antigravityProces
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp } from './harnessMcpLease';
 import { harnessContextProcess } from './harnessContextProcess';
+import { harnessAccountError, harnessAccountProcess, HarnessAccountStartupError } from './harnessAccountProcess';
 import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
@@ -167,7 +168,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           sourceId: executorSourceId(context.descriptor),
           command: requiredCommand(context),
           args: resolveAcpProcessArgs(context),
-          ...executorProcessOptions(context.descriptor),
+          ...executorProcessOptions(context.descriptor, processService.redactDiagnostic),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
@@ -199,9 +200,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
+    const contextProcess = harnessContextProcess(executorSourceId(context.descriptor) === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
+      context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp);
     this.#client = clientFactory(
-      harnessContextProcess(executorSourceId(context.descriptor) === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
-        context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp),
+      harnessAccountProcess(contextProcess, context, this.#runtimeLease.runtime.identity.runtimeId).processes,
       (request, options) => this.#requestPermission(request, options),
       (request, options) => this.#requestElicitation(request, options.signal),
       (request, options) => this.#requestPlanApproval(request, options.signal),
@@ -257,6 +259,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }));
       await this.#dispatcher.flush();
     } }).catch(async (error: unknown) => {
+      if (error instanceof AcpClientError && error.cause instanceof HarnessAccountStartupError) throw error.cause;
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       if (error instanceof AcpClientError && typeof error.details?.['resumeSupported'] === 'boolean' &&
@@ -670,9 +673,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         throw toError(turnResult.reason, 'External ACP turn was cancelled');
       }
       turn.state = 'failed';
-      await recorder.fail(turnResult.error);
-      result.resolve(turnResult);
-      throw toError(turnResult.error, 'External ACP turn failed');
+      const error = harnessAccountError(this.context.descriptor, turnResult.error);
+      await recorder.fail(error);
+      result.resolve({ ...turnResult, error });
+      throw toError(error, 'External ACP turn failed');
     } catch (error) {
       await pump.catch(() => undefined);
       const auth = acpAuthObservation(error);

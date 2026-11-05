@@ -252,9 +252,9 @@ export function executorEnvLookup(
   return (name) => descriptor.envUnset?.includes(name) === true ? undefined : overrides?.[name] ?? host(name);
 }
 
-export function executorProcessOptions(descriptor: AgentExecutorDescriptor) {
+export function executorProcessOptions(descriptor: AgentExecutorDescriptor, redactDiagnostic?: (text: string) => string) {
   return { env: executorProcessEnv(descriptor), envUnset: descriptor.envUnset,
-    redactDiagnostic: descriptor.launchSecrets?.length ? (text: string) => redactExecutorOutput(descriptor, text) : undefined };
+    redactDiagnostic: redactDiagnostic ?? (descriptor.launchSecrets?.length ? (text: string) => redactExecutorOutput(descriptor, text) : undefined) };
 }
 
 export function redactExecutorOutput(descriptor: AgentExecutorDescriptor, text: string): string {

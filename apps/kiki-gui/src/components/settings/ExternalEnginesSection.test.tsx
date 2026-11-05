@@ -166,6 +166,29 @@ describe('external engines connection kind', () => {
     expect(panel.querySelector('[data-engine-diagnostic="warning"]')?.textContent).toContain('auth state was not found');
   });
 
+  it('shows the selected plugin source after Check and directs sign-in back to that plugin', async () => {
+    const source = 'plugin:fixture-accounts/accounts';
+    const instance: ExecutorCatalogItem = {
+      ...codex, id: 'instance-work', label: 'Work', connection: { ...codex.connection!, login_command: undefined },
+      instance: { source_executor: codex.id, label: 'Work', configuration: { kind: 'plugin_account', source, account_id: 'work' }, proxy: { kind: 'direct' } },
+    };
+    client.listExecutors.mockResolvedValue({ items: [codex, instance] });
+    client.checkExecutor.mockResolvedValue({
+      id: instance.id, status: 'unavailable', command: 'codex.exe', resolved_args: [], login_status: 'logged_out', diagnostics: [],
+      credential_source: 'external_backend', credential_detail: `${source} · Work login`,
+      requirements: [{ id: instance.id, label: 'Codex', role: 'program', status: 'ok' }],
+    });
+    await render();
+    const panel = await openEngine(instance.id);
+    await act(async () => panel.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    const signIn = panel.querySelector('[data-engine-step="signin"]');
+    expect(client.checkExecutor).toHaveBeenCalledWith(instance.id);
+    expect(signIn?.querySelector('[data-engine-credential]')?.textContent).toContain(`${source} · Work login`);
+    expect(signIn?.textContent).toContain('Reconnect the account in its source plugin');
+    expect(signIn?.querySelector('[data-engine-route]')).toBeNull();
+  });
+
   it('guides setup step by step from the check requirements', async () => {
     const claude: ExecutorCatalogItem = {
       id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable',

@@ -663,6 +663,8 @@ export interface HttpRestFacade {
   readonly executors: {
     discover(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ExecutorDiscoveryResponse>;
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+    listAccountSources(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ExecutorAccountSourcesResponse>;
+    listAccounts(executorId: string, source: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ExecutorAccountsResponse>;
     listInstallations(options?: HttpRestRequestOptions): Promise<{ readonly items: readonly HttpRestManagedAdapterStatus[] }>;
     install(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
     rollback(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;

@@ -723,6 +723,8 @@ export function ProfileSelect({
                       }
                       const isSelected = choice.executor === item.id && (choice.profile === undefined || choice.profile === '') && !hasFile;
                       const usable = item.status !== 'unavailable';
+                      const configuration = item.instance?.configuration;
+                      const accountSource = configuration?.kind === 'plugin_account' ? configuration.source : undefined;
                       return (
                         <li key={item.id} data-execution-engine={item.id}>
                           <button
@@ -763,6 +765,11 @@ export function ProfileSelect({
                                 <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
                                   {[item.instance === undefined ? item.id : catalog.find(source => source.id === item.instance?.source_executor)?.label ?? item.instance.source_executor,
                                     item.version].filter(Boolean).join(' · ')}
+                                </span>
+                              )}
+                              {accountSource === undefined ? null : (
+                                <span data-execution-account-source className="block truncate text-[11.5px] leading-snug text-ink-faint" title={accountSource}>
+                                  {accountSource.slice('plugin:'.length)}
                                 </span>
                               )}
                             </span>

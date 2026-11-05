@@ -185,7 +185,8 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         source: 'negotiated' as const,
         provenance: 'acp_negotiation' as const,
         observedAt: 0,
-        models: { state: 'unknown' as const, diagnostic: 'Executor has no model catalog probe' },
+        models: { state: 'unknown' as const, diagnostic: descriptor.instance?.configuration.kind === 'plugin_account'
+          ? 'The selected account supplies its model list when the engine starts' : 'Executor has no model catalog probe' },
         thinkingLevels: { state: 'unknown' as const, diagnostic: 'Executor has no model catalog probe' },
         context: unknownContextCapabilities(),
         controls: executorControlCapabilities(descriptor),

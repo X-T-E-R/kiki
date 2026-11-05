@@ -863,6 +863,7 @@ class FixtureServer {
     this.autoCompactOverrides = new Map(); // `${sessionId}:${agentId}` → { [modelId]: tokens }
     this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
     this.providerHealth = null; // persisted /providers/{id}:test results (null = scenario seed)
+    this.accountSourceUnavailable = false; // fixture-only failure toggle for plugin account sources
     this.wsInbound = [];
     this.wsOutbound = [];
     this.http = createServer((req, res) => void this.handleHttp(req, res));
@@ -999,6 +1000,7 @@ class FixtureServer {
     this.shortcutPreferences = null;
     this.providerHealth = null;
     this.executorLogin = null;
+    this.accountSourceUnavailable = data.accountSourceUnavailable === true;
     this.engineDiscoveryReads = 0;
     this.wsInbound = [];
     this.wsOutbound = [];
@@ -3482,6 +3484,24 @@ class FixtureServer {
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
     }
+    const accountSourcesMatch = /^\/executors\/([^/]+)\/account-sources$/.exec(path);
+    if (accountSourcesMatch !== null && method === 'GET') {
+      const executorId = decodeURIComponent(accountSourcesMatch[1]);
+      if (executorId === 'agy-cli' && this.accountSourceUnavailable) {
+        return this.envelope(res, null, 50301, 'fixture.account_source_unavailable');
+      }
+      return this.envelope(res, {
+        items: structuredClone(this.scenario?.data.executorAccountSources?.[executorId] ?? []),
+      });
+    }
+    const accountsMatch = /^\/executors\/([^/]+)\/accounts$/.exec(path);
+    if (accountsMatch !== null && method === 'GET') {
+      const executorId = decodeURIComponent(accountsMatch[1]);
+      const source = query.get('source');
+      return this.envelope(res, {
+        items: structuredClone(this.scenario?.data.executorAccounts?.[executorId]?.[source ?? ''] ?? []),
+      });
+    }
     const removeInstance = /^\/executors\/([^/]+)\/registration:remove$/.exec(path);
     if (removeInstance && method === 'POST') {
       const id = decodeURIComponent(removeInstance[1]);
@@ -5200,6 +5220,9 @@ class FixtureServer {
       case 'plugin_settings_fail_next':
         this.pluginSettingsFailNext = typeof body.plugin_id === 'string' ? body.plugin_id : undefined;
         return this.envelope(res, { armed: this.pluginSettingsFailNext !== undefined });
+      case 'engine_account_source_unavailable':
+        this.accountSourceUnavailable = body.unavailable !== false;
+        return this.envelope(res, { unavailable: this.accountSourceUnavailable });
       case 'cron_fail_next_write':
         // Arms a one-shot refusal of the next cron create/update, so the
         // panel's real-failure path (draft kept, panel open) is walkable

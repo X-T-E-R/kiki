@@ -262,11 +262,15 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 | `GET /api/agents/references` | 列出调用方允许的 profile 与原生引擎消息引用候选；接受下列一种 query 形式，不会启动 child |
 | `GET /api/executors` | 已注册引擎及其最近一次检查。此请求不探测。超过 60 秒的结果带 `check_stale: true` |
 | `GET /api/executors/{id}` | 单个引擎的能力、连接设置及最近一次检查。此请求不探测 |
+| `GET /api/executors/{id}/account-sources` | AGY CLI 或 Codex 可选的已启用插件账号来源；返回 `{ items: [{ id, label }] }` |
+| `GET /api/executors/{id}/accounts?source=<reference>` | 所选插件来源的账号显示元数据；返回 `{ items: [{ id, label, status }] }`，不准备引擎连接 |
 | `GET /api/executors/discovery` | 只读发现已安装的外部引擎文件与元数据；无 query 或 body，不启动进程 |
 | `POST /api/executors/{id}/check` | 显式检查该引擎的可执行程序来源和它声明的认证信息 |
 | `GET /api/executors/installations` | 固定版本的适配器，以及已选中的源码自有适配器。此请求不安装。没有安装记录的条目省略 `active` |
 | `POST /api/executors/{id}/install` | 显式更新一个选中的适配器。请求没有正文字段 |
 | `POST /api/executors/{id}/rollback` | 恢复该适配器的上一份安装。请求没有正文字段 |
+
+账号接口接受基础引擎 ID（`agy-cli` 或 `codex-app-server`），不是实例 ID。来源 ID 形如 `plugin:<plugin-id>/<source-id>`，放入 `source` query 时需百分号编码。账号只返回 `id`、`label` 和 `status`（`ready`、`signed_out` 或 `disabled`），不返回凭据；列举账号不准备连接。插件账号实例的显式检查读取所选来源和账号，不查引擎的全局登录。typed Klient 方法为 `klient.rest.executors.listAccountSources(id, options?)` 和 `listAccounts(id, source, options?)`。
 
 `GET /api/agents/references` 严格接受以下三种 query 形式之一；未知字段会被拒绝：
 

@@ -755,6 +755,7 @@ export class AcpProcessClient {
         windowsHide: true,
         mergeStderr: false,
       },
+      AbortSignal.any([AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...options.signal === undefined ? [] : [options.signal]]),
     );
     let child: HostProcessLike;
     try {

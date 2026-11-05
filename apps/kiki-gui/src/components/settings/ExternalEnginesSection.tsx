@@ -515,7 +515,9 @@ function StepMarker({ state, index }: { state: StepState; index: number }) {
  * an API key instead of a sign-in (`api_key_env`) offers both routes, because
  * Kiki reuses whichever credential the machine already has.
  */
-function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckResult; loginCommand?: string; apiKeyEnv?: string }) {
+function EngineSetup({ check, loginCommand, apiKeyEnv, accountSource }: {
+  check: ExecutorCheckResult; loginCommand?: string; apiKeyEnv?: string; accountSource?: string;
+}) {
   const { t } = useI18n();
   const requirements = check.requirements ?? [];
   const stage = engineSetupStage(check);
@@ -564,12 +566,18 @@ function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckR
             <p className="text-[12.5px] leading-5 text-ink">
               <span className="font-medium">{t('st.engines.login')}</span>
               <span className="text-ink-faint"> · {signInState === 'pending' ? t('st.engines.stepWaiting')
-                : credentialKey !== undefined ? t(credentialKey) : t(`st.engines.login.${check.login_status}`)}</span>
+                : accountSource === undefined && credentialKey !== undefined ? t(credentialKey) : t(`st.engines.login.${check.login_status}`)}</span>
             </p>
+            {accountSource === undefined ? null : (
+              <p data-engine-credential="external_backend" className="break-words text-[12px] leading-4 text-ink-faint">
+                {t('st.engines.instance.account.source')}: {check.credential_detail ?? accountSource}
+              </p>
+            )}
             {needsCredential ? (
               <div className="space-y-1.5">
                 <p className="text-[12px] leading-4 text-ink-soft">
-                  {t(signInState === 'current' ? 'st.engines.loginOrKey' : 'st.engines.loginUnknownBody')}
+                  {t(accountSource !== undefined ? signInState === 'current' ? 'st.engines.instance.account.reconnect' : 'st.engines.instance.account.unavailable'
+                    : signInState === 'current' ? 'st.engines.loginOrKey' : 'st.engines.loginUnknownBody')}
                 </p>
                 {loginCommand !== undefined ? (
                   <div data-engine-route="login" className="flex flex-wrap items-center gap-2">
@@ -1089,6 +1097,8 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
   const credential = shown?.credential_source ?? connection?.credential_source;
   const credentialDetail = shown?.credential_detail ?? connection?.credential_detail;
   const credentialKey = credentialLabel(credential);
+  const instanceConfiguration = item.instance?.configuration;
+  const pluginAccount = instanceConfiguration?.kind === 'plugin_account' ? instanceConfiguration : undefined;
 
   const version = shown === undefined ? item.version : shown.version;
   const programPath = shown?.requirements?.find((requirement) => requirement.role === 'program')?.path;
@@ -1251,7 +1261,8 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
               ) : null}
               {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
                 ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
-              {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
+              {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv}
+                accountSource={pluginAccount?.source} /> : null}
               {/* When discovery reported, its banner already carries the
                   missing reason and the named component; the generic catalog
                   "not found" block would repeat it with a vaguer program. */}
@@ -1306,13 +1317,16 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                 ) : null}
                 {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
                   <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
-                  {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
+                  {pluginAccount !== undefined ? <span data-engine-credential="external_backend" className="block break-words text-[12px] text-ink-faint">
+                    {t('st.engines.instance.account.source')}: {credentialDetail ?? pluginAccount.source}
+                  </span> : credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
                     {t(credentialKey)}
                     {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
                   </span> : null}
                   {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
                   {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">
-                    {t(loginCommand !== undefined && apiKeyEnv !== undefined ? 'st.engines.loginOrKey' : 'st.engines.loginOneRoute')}
+                    {t(pluginAccount !== undefined ? 'st.engines.instance.account.reconnect'
+                      : loginCommand !== undefined && apiKeyEnv !== undefined ? 'st.engines.loginOrKey' : 'st.engines.loginOneRoute')}
                   </span> : null}
                   {loginCommand !== undefined && login !== 'logged_in' ? (
                     <span className="mt-1 flex flex-wrap items-center gap-2">

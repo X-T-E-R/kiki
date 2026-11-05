@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AgyBridge, launchArgs, promptText } from './agy-cli-acp.mjs';
+import { AgyBridge, consumeAccountEnvironment, launchArgs, promptText } from './agy-cli-acp.mjs';
 
 const cwd = fileURLToPath(new URL('.', import.meta.url));
 function bridge(model) {
@@ -246,6 +246,23 @@ void test('launch maps engine-default, manual, auto and yolo to exact native arg
     JSON.stringify({ toolPermission: 'always-proceed', agentMode: 'accept-edits', allowNonWorkspaceAccess: true, enableTerminalSandbox: false }),
   ]);
   assert.deepEqual(launchArgs({ ...base, permissionMode: 'engine-default' }), launchArgs(base));
+});
+
+void test('the shipped bridge advertises plugin-account support without changing its ordinary version', () => {
+  const entry = fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url));
+  for (const flag of ['--version', '--kiki-harness-account-version']) {
+    const result = spawnSync(process.execPath, [entry, flag], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'agy-cli-acp 0.2.0');
+  }
+});
+
+void test('account launch data is consumed once and cannot fall through to the global bridge', () => {
+  const env = { GEMINI_API_KEY: 'fixture-capability', GOOGLE_GEMINI_BASE_URL: 'http://127.0.0.1:9999',
+    KIKI_AGY_ACCOUNT_MODELS: '["fixture-model"]', AGY_CLI_PATH: 'unchanged' };
+  assert.deepEqual(consumeAccountEnvironment(env), { apiKey: 'fixture-capability', baseUrl: 'http://127.0.0.1:9999', modelIds: ['fixture-model'] });
+  assert.deepEqual(env, { AGY_CLI_PATH: 'unchanged' });
+  assert.throws(() => consumeAccountEnvironment(env), /no global AGY fallback/);
 });
 
 void test('review permission mode is explicitly unsupported rather than silently mapped', async () => {
