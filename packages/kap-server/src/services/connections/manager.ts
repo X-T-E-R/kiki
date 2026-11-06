@@ -230,9 +230,10 @@ export class RemoteConnectionManager {
     if (operation === 'spaceSummary') signal = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
     for (const [key, value] of Object.entries(input.query ?? {})) for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, String(item));
     const method = CONNECTION_OPERATIONS[operation][0];
-    const headers = { authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant, 'content-type': contentType ?? 'application/json',
+    const headers = new Headers({ authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant,
       ...input.headers?.ifNoneMatch === undefined ? {} : { 'if-none-match': input.headers.ifNoneMatch },
-      ...input.headers?.range === undefined ? {} : { range: input.headers.range } };
+      ...input.headers?.range === undefined ? {} : { range: input.headers.range } });
+    if (operation !== 'htmlPreviewClose' || rawBody !== undefined || input.body !== undefined) headers.set('content-type', contentType ?? 'application/json');
     try {
       const response = await fetch(url, { method, headers, body: rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)), redirect: 'error', signal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit);
       if (response.status === 401 || response.status === 403) {

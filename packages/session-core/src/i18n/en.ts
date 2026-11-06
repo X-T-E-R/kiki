@@ -1895,6 +1895,8 @@ export const en = {
   'preview.htmlRemoteGrantRequired': 'Remote HTML preview requires target owner authorization. View the source or download the file.',
   'preview.htmlRequiresLocalConnection': 'HTML preview requires a local connection to the server. Open Kiki on the server host or view the source.',
   'preview.htmlPathOutsideRoot': 'This HTML preview tried to load a path outside the document resource root.',
+  'preview.htmlResourceRootLabel': 'Folder path on the remote host',
+  'preview.htmlResourceRootRetry': 'Retry with this folder',
   'preview.htmlExpired': 'HTML preview session expired.',
   'preview.htmlReload': 'Reload',
   'preview.conflictBody': 'This file changed on disk since it was loaded.',

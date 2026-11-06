@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -39,13 +40,13 @@ async function call(s: RunningServer, path: string, body?: unknown, token = s.lo
   if (method !== 'GET' && body !== undefined) options.body = JSON.stringify(body);
   return fetch(endpoint(s) + path, options);
 }
-async function connect(source: RunningServer, target: RunningServer) {
+async function connect(source: RunningServer, target: RunningServer, ownerToken = target.authTokenService.getToken()) {
   const owner = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
   const local = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
   try {
     await owner.rest!.connections.setInbound(true);
     const invitation = await owner.rest!.connections.invite({ source: source.admission.identity, label: 'Source' });
-    const record = await local.rest!.connections.add({ label: 'Target', endpoint: endpoint(target), target: target.admission.identity, ownerToken: target.authTokenService.getToken(), invitation: invitation.invitation, backgroundSummary: true });
+    const record = await local.rest!.connections.add({ label: 'Target', endpoint: endpoint(target), target: target.admission.identity, ownerToken, invitation: invitation.invitation, backgroundSummary: true });
     return { record, grantId: invitation.grant.id };
   } finally { await owner.close(); await local.close(); }
 }
@@ -91,6 +92,44 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     const closed = once(ws, 'close'); ws.send(JSON.stringify({ type: 'stream', id: 'forbidden', scope: 'core', service: 'configService', method: 'set' }));
     expect((await closed)[0]).toBe(1008);
   });
+  it('lets an authorized remote HTML preview retry an outside file with an explicit target root', async () => {
+    const source = await boot(); const target = await boot();
+    const fixture = await mkdtemp(join(tmpdir(), 'kiki-remote-html-')); homes.push(fixture);
+    const workspace = join(fixture, 'workspace'); const root = join(fixture, 'outside');
+    await mkdir(workspace); await mkdir(root);
+    const path = join(root, 'page.html');
+    const html = '<!doctype html><h1>Remote owner preview</h1>';
+    await writeFile(path, html);
+
+    const peer = await connect(source, target);
+    const peerClient = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: peer.record.id });
+    const owner = await connect(source, target, target.localOwnerToken);
+    const ownerClient = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: owner.record.id });
+    const forward = vi.spyOn(source.remoteConnections, 'forward');
+    try {
+      await expect(peerClient.rest!.filesystem.openHtmlPreview({ path, root })).rejects.toThrow('html_preview_target_owner_grant_required');
+      await expect(ownerClient.rest!.filesystem.openHtmlPreview({ path, workspace_root: workspace })).rejects.toThrow('preview_path_outside_root');
+      const opened = await ownerClient.rest!.filesystem.openHtmlPreview({ path, root });
+      try {
+        const url = new URL(opened.url);
+        expect(url.hostname).toBe(`${opened.preview_id.slice(0, 32)}.kiki-document.localhost`);
+        const host = url.host;
+        url.hostname = '127.0.0.1';
+        const document = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+          get(url, { headers: { host } }, (response) => {
+            let body = '';
+            response.setEncoding('utf8').on('data', (chunk: string) => { body += chunk; });
+            response.on('end', () => resolve({ status: response.statusCode, body }));
+            response.on('error', reject);
+          }).on('error', reject);
+        });
+        expect(document).toEqual({ status: 200, body: html });
+      } finally { await ownerClient.rest!.filesystem.closeHtmlPreview(opened.preview_id); }
+      const closed = forward.mock.calls.findIndex(([, call]) => call.operation === 'htmlPreviewClose');
+      expect(await forward.mock.results[closed]?.value).toMatchObject({ status: 200 });
+    } finally { forward.mockRestore(); await ownerClient.close(); await peerClient.close(); }
+  });
+
   it('isolates A/C grants, revokes only A and persists stable home identity over a restart', async () => {
     const a = await boot(); const b = await boot(); const c = await boot();
     const ab = await connect(a, b);

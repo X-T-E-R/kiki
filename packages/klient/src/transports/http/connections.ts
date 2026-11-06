@@ -38,7 +38,8 @@ export function createConnectionTransport(options: ConnectionHttpOptions): { fet
     const url = new URL(input instanceof Request ? input.url : String(input));
     const method = init.method ?? (input instanceof Request ? input.method : 'GET');
     if ((method === 'POST' && url.pathname === '/api/fs:html-preview') || (method === 'DELETE' && /^\/api\/fs:html-preview\/[^/]+$/.test(url.pathname))) {
-      const headers = new Headers({ 'content-type': 'application/json' });
+      const headers = new Headers();
+      if (method === 'POST') headers.set('content-type', 'application/json');
       if (options.token !== undefined) headers.set('authorization', `Bearer ${options.token}`);
       const target = method === 'POST' ? prefix + '/html-preview' : endpoint + url.pathname;
       return fetchImpl(target, { ...init, headers, method, redirect: 'error', credentials: 'same-origin' });

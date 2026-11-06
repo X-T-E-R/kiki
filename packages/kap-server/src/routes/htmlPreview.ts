@@ -138,8 +138,8 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
       }));
     }
     const id = randomBytes(32).toString('hex'); const expiresAt = Date.now() + TTL;
-    const fileOnly = root === parse(root).root || homes.some((home) => relative(home, root) === '') ? path : undefined;
-    local.set(id, { root, fileOnly, excludedRoots: homes.filter((home) => !inside(home, root)), expiresAt });
+    const fileOnly = documentHome !== undefined || root === parse(root).root ? path : undefined;
+    local.set(id, { root, fileOnly, excludedRoots: fileOnly === undefined ? homes : [], expiresAt });
     try {
       const resource = explicitRoot === undefined ? relative(root, path) : relative(resolve(explicitRoot), resolve(input.path));
       const url = await documentUrl(id, resource.split(sep).join('/'));

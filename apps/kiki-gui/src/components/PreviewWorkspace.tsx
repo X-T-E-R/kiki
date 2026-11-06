@@ -1630,6 +1630,14 @@ type HtmlPreviewState =
   | HtmlPreviewActiveState
   | { readonly status: 'error'; readonly error: unknown };
 
+interface HtmlRootDraftState {
+  readonly client: KikiClient | undefined;
+  readonly path: string;
+  readonly workspaceRoot?: string;
+  readonly input: string;
+  readonly override?: string;
+}
+
 function classifyHtmlPreviewError(error: unknown): 'remote_grant_required' | 'local_connection_required' | 'path_outside_root' | 'expired' | 'generic' {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('html_preview_target_owner_grant_required')) return 'remote_grant_required';
@@ -1702,11 +1710,22 @@ function TextTabView({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const remoteScope = connection?.connectionSource === 'remote';
   const html = isHtmlPreviewPath(path);
   const hasRenderedMode = markdown || html;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [reloadKey, setReloadKey] = useState(0);
+  const [htmlRootDraft, setHtmlRootDraft] = useState<HtmlRootDraftState>(() => ({
+    client,
+    path,
+    workspaceRoot,
+    input: workspaceRoot ?? '',
+  }));
+  const htmlRootDraftMatches = htmlRootDraft.client === client &&
+    htmlRootDraft.path === path && htmlRootDraft.workspaceRoot === workspaceRoot;
+  const htmlRootInput = htmlRootDraftMatches ? htmlRootDraft.input : workspaceRoot ?? '';
+  const htmlRootOverride = htmlRootDraftMatches ? htmlRootDraft.override : undefined;
   const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fullMarkdown, setFullMarkdown] = useState<{
@@ -1735,7 +1754,10 @@ function TextTabView({
     let cancelled = false;
     let activePreviewId: string | null = null;
     setHtmlPreviewState({ status: 'loading' });
-    client.openHtmlPreview({ path, workspace_root: workspaceRoot }).then(
+    const request = remoteScope && htmlRootOverride !== undefined
+      ? { path, root: htmlRootOverride }
+      : { path, workspace_root: workspaceRoot };
+    client.openHtmlPreview(request).then(
       (response) => {
         if (cancelled) {
           void client.closeHtmlPreview(response.preview_id);
@@ -1771,7 +1793,7 @@ function TextTabView({
         activePreviewId = null;
       }
     };
-  }, [client, html, path, reloadKey, workspaceRoot]);
+  }, [client, html, path, reloadKey, remoteScope, htmlRootOverride, workspaceRoot]);
 
   useEffect(() => {
     if (client === undefined) {
@@ -1895,6 +1917,40 @@ function TextTabView({
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center" data-html-preview-error={kind}>
         <p className="max-w-md text-[13px] text-danger" role="alert">{message}</p>
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {kind === 'path_outside_root' && remoteScope ? (
+            <form
+              data-html-root-form
+              className="flex min-w-0 w-full max-w-xl flex-wrap items-end justify-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const root = htmlRootInput.trim();
+                if (root.length === 0) return;
+                setHtmlRootDraft({ client, path, workspaceRoot, input: htmlRootInput, override: root });
+                setReloadKey((k) => k + 1);
+              }}
+            >
+              <label className="flex min-w-0 flex-[1_1_14rem] flex-col items-start gap-1 text-left text-[11px] text-ink-faint">
+                <span>{t('preview.htmlResourceRootLabel')}</span>
+                <input
+                  type="text"
+                  data-html-root-input
+                  value={htmlRootInput}
+                  onChange={(event) => { setHtmlRootDraft({ client, path, workspaceRoot, input: event.target.value, override: htmlRootOverride }); }}
+                  aria-label={t('preview.htmlResourceRootLabel')}
+                  autoComplete="off"
+                  className="min-w-0 w-full rounded-full border border-hairline bg-paper px-3 py-1.5 font-mono text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+                />
+              </label>
+              <button
+                type="submit"
+                data-html-root-retry
+                disabled={htmlRootInput.trim().length === 0}
+                className="rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40"
+              >
+                {t('preview.htmlResourceRootRetry')}
+              </button>
+            </form>
+          ) : null}
           {kind === 'expired' || kind === 'generic' ? (
             <button
               type="button"

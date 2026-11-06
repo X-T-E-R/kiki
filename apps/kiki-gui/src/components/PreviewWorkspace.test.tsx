@@ -43,6 +43,7 @@ const writeMock = vi.fn(async (path: string, text: string) => {
 });
 const connectionMock = vi.hoisted(() => ({
   activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
+  connectionSource: 'desktop' as 'desktop' | 'remote' | 'ssh' | null,
 }));
 const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
 const htmlPreviewMock = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn() }));
@@ -77,7 +78,7 @@ vi.mock('../state/connection', async (importOriginal) => {
   connectionMock.defaultClient = fakeClient;
   return {
     ...original,
-    useOptionalConnection: () => ({ client: connectionMock.activeClient, scopeId: connectionMock.scopeId }),
+    useOptionalConnection: () => ({ client: connectionMock.activeClient, scopeId: connectionMock.scopeId, connectionSource: connectionMock.connectionSource }),
   };
 });
 
@@ -250,6 +251,7 @@ describe('PreviewWorkspace', () => {
     FILES['/work/docs/design.md'] = '# Design\n\nSome **notes**.\n';
     connectionMock.activeClient = connectionMock.defaultClient;
     connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
     hostMock.desktop = false;
     hostMock.revealPath.mockClear();
     hostMock.openPath.mockClear();
@@ -1830,6 +1832,8 @@ describe('PreviewWorkspace HTML document preview', () => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
   beforeEach(() => {
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.connectionSource = 'desktop';
     hostMock.desktop = false;
     htmlPreviewMock.open.mockReset();
     htmlPreviewMock.close.mockReset();
@@ -1936,18 +1940,93 @@ describe('PreviewWorkspace HTML document preview', () => {
     expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
   });
 
-  it('reports a path-outside-root refusal without offering directory selection', async () => {
+  it('reports a local path-outside-root refusal without offering a root input', async () => {
     htmlPreviewMock.open.mockRejectedValueOnce(new Error('preview_path_outside_root'));
     const probe = await mountHtmlTab();
     const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="path_outside_root"]');
     expect(error).not.toBeNull();
     expect(error?.textContent).toContain('document resource root');
+    expect(error?.querySelector('[data-html-root-input]')).toBeNull();
   });
 
-  it('reports the remote target-owner refusal as unavailable authorization', async () => {
+  it('allows a remote broker path-outside-root retry with a target-machine root', async () => {
+    connectionMock.connectionSource = 'remote';
+    const path = '/remote/reports/page.html';
+    const workspaceRoot = '/remote/workspace';
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('preview_path_outside_root'));
+    const probe = await mountHtmlTab(path, workspaceRoot);
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="path_outside_root"]');
+    expect(error).not.toBeNull();
+    const input = error!.querySelector<HTMLInputElement>('[data-html-root-input]')!;
+    expect(input.value).toBe(workspaceRoot);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, '/remote/reports');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { error!.querySelector<HTMLButtonElement>('[data-html-root-retry]')!.click(); });
+    await settle();
+    expect(htmlPreviewMock.open).toHaveBeenLastCalledWith({ path, root: '/remote/reports' });
+    expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
+  });
+
+  it('does not reuse an explicit root when the remote client changes for the same path and cwd', async () => {
+    connectionMock.connectionSource = 'remote';
+    const path = '/remote/reports/page.html';
+    const cwd = '/remote/workspace';
+    htmlPreviewMock.open
+      .mockRejectedValueOnce(new Error('preview_path_outside_root'))
+      .mockRejectedValueOnce(new Error('preview_path_outside_root'));
+    const probe = await mountHtmlTab(path, cwd);
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="path_outside_root"]')!;
+    const input = error.querySelector<HTMLInputElement>('[data-html-root-input]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, '/remote/old-root');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { error.querySelector<HTMLButtonElement>('[data-html-root-retry]')!.click(); });
+    await settle();
+    expect(htmlPreviewMock.open).toHaveBeenLastCalledWith({ path, root: '/remote/old-root' });
+
+    const secondOpen = vi.fn(async () => ({
+      preview_id: 'second-client-preview',
+      url: previewUrl,
+      expires_at: Date.now() + 30 * 60 * 1000,
+      sandbox: HTML_PREVIEW_SANDBOX,
+    }));
+    const secondClose = vi.fn(async () => {});
+    connectionMock.activeClient = {
+      ...(connectionMock.defaultClient as object),
+      openHtmlPreview: secondOpen,
+      closeHtmlPreview: secondClose,
+    };
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd={cwd}>
+        <OpenButton path={path} />
+      </MediaPreviewProvider>,
+    );
+    await settle();
+    expect(secondOpen).toHaveBeenCalledWith({ path, workspace_root: cwd });
+  });
+
+  it('does not offer a root input for a direct SSH path-outside-root refusal', async () => {
+    connectionMock.connectionSource = 'ssh';
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('preview_path_outside_root'));
+    const probe = await mountHtmlTab('/ssh/page.html', '/ssh/workspace');
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="path_outside_root"]');
+    expect(error).not.toBeNull();
+    expect(error?.querySelector('[data-html-root-input]')).toBeNull();
+  });
+
+  it('reports the remote target-owner refusal as unavailable authorization without a root input', async () => {
+    connectionMock.connectionSource = 'remote';
     htmlPreviewMock.open.mockRejectedValueOnce(new Error('html_preview_target_owner_grant_required'));
     const probe = await mountHtmlTab();
-    expect(probe.container.querySelector('[data-html-preview-error="remote_grant_required"]')).not.toBeNull();
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="remote_grant_required"]');
+    expect(error).not.toBeNull();
+    expect(error?.querySelector('[data-html-root-input]')).toBeNull();
     expect(probe.container.querySelector('[data-preview-html]')).toBeNull();
   });
 

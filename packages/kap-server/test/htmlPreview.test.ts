@@ -113,6 +113,25 @@ describe('browser document resource tree', () => {
     }
   });
 
+  it.each(['', 'credentials'])('grants only the selected automatic HTML inside a private home subdirectory %s', async (subdirectory) => {
+    const { app, root } = await fixture({ registered: true, privateHome: true });
+    const home = join(root, 'kiki-home');
+    const directory = join(home, subdirectory);
+    await mkdir(directory, { recursive: true });
+    const html = '<!doctype html><script>fetch("./credentials.toml")</script>';
+    const path = join(directory, 'sample.html');
+    await writeFile(path, html);
+    await writeFile(join(directory, 'credentials.toml'), 'token = "fixture-private-credential"');
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path, workspace_root: root } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { url } = opened.json().data as { url: string };
+    expect((await app.inject(url)).body).toBe(html);
+    expect((await app.inject(new URL('./credentials.toml', url).pathname)).statusCode).toBe(403);
+    const explicit = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path, root: directory } });
+    expect(explicit.statusCode, explicit.body).toBe(200);
+    expect((await app.inject(new URL('./credentials.toml', explicit.json().data.url).pathname)).statusCode).toBe(200);
+  });
+
   it('keeps the explicit root contract on SSH-managed servers', async () => {
     const { app, root } = await fixture({ automatic: false });
     const path = join(root, 'slides/index.html');

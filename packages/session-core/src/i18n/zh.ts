@@ -1875,6 +1875,8 @@ export const zh = {
   'preview.htmlRemoteGrantRequired': '远程 HTML 预览需要目标所有者授权。可查看源码或下载文件。',
   'preview.htmlRequiresLocalConnection': 'HTML 预览需要与服务器建立本地连接。请在服务器主机上打开 Kiki 或查看源码。',
   'preview.htmlPathOutsideRoot': '该 HTML 预览尝试加载文档资源根目录之外的路径。',
+  'preview.htmlResourceRootLabel': '远端目录路径',
+  'preview.htmlResourceRootRetry': '使用此目录重试',
   'preview.htmlExpired': 'HTML 预览会话已过期。',
   'preview.htmlReload': '重新加载',
   'preview.conflictBody': '该文件在磁盘上已被修改。',
