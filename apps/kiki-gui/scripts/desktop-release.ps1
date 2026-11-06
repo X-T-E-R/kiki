@@ -325,8 +325,11 @@ function Resolve-LaunchTarget([string]$Root) {
     $releasePath = Get-ReleasePath $rootPath $manifest.releaseId
     $mainPath = Join-Path $releasePath 'kiki-desktop.exe'
     $sidecarPath = Join-Path $releasePath 'kiki-server.exe'
-    Get-ArtifactInfo $mainPath 'Promoted Kiki GUI' | Out-Null
-    Get-ArtifactInfo $sidecarPath 'Promoted Kiki backend' | Out-Null
+    foreach ($path in @($mainPath, $sidecarPath)) {
+        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
+            throw "The selected Kiki executable is missing or empty: $path"
+        }
+    }
     return [pscustomobject]@{
         Root = $rootPath
         ReleasePath = $releasePath
@@ -495,7 +498,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             Show-LaunchError $message
         }
         else {
-            Write-Error "Kiki desktop release failed: $message"
+            [Console]::Error.WriteLine("Kiki desktop release failed: $message")
         }
         if ($WaitForUser) { Read-Host 'Press Enter to close' | Out-Null }
         exit 1

@@ -37,7 +37,7 @@ function Invoke-Controller(
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & $powerShell -NoProfile -ExecutionPolicy Bypass -File $ControllerPath @Arguments 2>&1 | Out-String
+        $output = & $powerShell -NoProfile -ExecutionPolicy Bypass -File $ControllerPath @Arguments 2>&1 | Out-String -Width 4096
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -96,6 +96,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . $ControllerPath -Action Launch
+function Get-Sha256 { throw 'Ordinary launch must not hash executables.' }
 $target = Resolve-LaunchTarget $RuntimePath
 Write-Output $target.MainPath
 Write-Output $target.SidecarPath
@@ -136,7 +137,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $neverCandidate 'kiki-server.exe'), 'sidecar-build-a')
     $neverArgs = @('-Action', 'Promote', '-RuntimeRoot', $neverRoot, '-CandidateRoot', $neverCandidate, '-ExpectedCommit', $expectedCommit)
     $missingReceipt = Invoke-Controller $neverArgs 1
-    Assert-True ($missingReceipt -match 'build receipt is missing') 'Missing receipt was not rejected.'
+    Assert-True ($missingReceipt -match 'build receipt is\s+missing') "Missing receipt was not rejected.`n$missingReceipt"
     Assert-True (-not (Test-Path -LiteralPath $neverRoot)) 'Missing receipt created a runtime root.'
 
     Write-Receipt $neverCandidate $otherCommit
