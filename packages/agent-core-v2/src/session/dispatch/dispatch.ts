@@ -131,7 +131,7 @@ export interface ISessionDispatchService {
   registerPlanStateReader(requesterAgentId: string, read: () => boolean): import('#/_base/di/lifecycle').IDisposable;
   readLaunchPolicy(requesterAgentId: string): import('./launchPolicy').DispatchLaunchPolicy;
   readonly onDidDelegateRun: Event<DispatchDelegatedRunEvent>;
-  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation): () => void;
+  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation, joinAdmission?: boolean): () => void;
   reserveTurnExecution(agentId: string, parentAgentId?: string): () => void;
   launch(input: DispatchLaunchInput): Promise<DispatchRun>;
   resolveOwnedChild(delegator: DelegatorRef, ref: string): Promise<DispatchChild>;

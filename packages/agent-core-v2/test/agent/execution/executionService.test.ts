@@ -100,9 +100,10 @@ function executionService(
   registry: IAgentExecutorRegistry,
   stateService: IAgentStateService,
   reserveExecution: ISessionDispatchService['reserveExecution'] = () => () => {},
+  reserveTurnExecution: ISessionDispatchService['reserveTurnExecution'] = () => () => {},
 ): AgentExecutionService {
   activityDependencies(ix);
-  ix.stub(ISessionDispatchService, { reserveExecution });
+  ix.stub(ISessionDispatchService, { reserveExecution, reserveTurnExecution });
   ix.set(ScopeContextId, scopeContext);
   ix.set(ProfileServiceId, profileService);
   ix.set(ExecutorRegistryId, registry);
@@ -512,6 +513,70 @@ describe('AgentExecutionService', () => {
       next();
     } finally {
       finish({ summary: 'cleanup' });
+      await service.dispose();
+      await ix.dispose();
+    }
+  });
+
+  it('joins an admitted external prompt and still rejects a second live execution', async () => {
+    const ix = new TestInstantiationService();
+    const capacity = new DispatchCapacity();
+    const limits = { maxDirectChildren: 1, maxTotalSubagents: 1 };
+    let releaseTurn!: () => void;
+    const result = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const run = vi.fn(async () => ({
+      agentId: 'child',
+      completion: result.then(() => ({ summary: 'done' })),
+      turn: {
+        id: 7,
+        signal: new AbortController().signal,
+        ready: Promise.resolve(),
+        result,
+        cancel: () => { releaseTurn(); return true; },
+      },
+    }));
+    const registry = { resolveExecutable: async () => ({
+      descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
+      options: {}, provider: { create: () => ({
+        run, status: () => ({ state: 'idle' as const }), cancel: () => false,
+        shutdown: async () => {}, settled: async () => { await result; }, hooks: createHooks(['onWillRun']),
+      }) },
+    }) } as unknown as IAgentExecutorRegistry;
+    const reserveExecution: ISessionDispatchService['reserveExecution'] = (id, owner, reservation, joinAdmission = false) => {
+      if (reservation !== undefined) {
+        reservation.claim(id);
+        return reservation;
+      }
+      if (joinAdmission) {
+        const retained = capacity.retain(id);
+        if (retained !== undefined) return retained;
+      }
+      const slot = capacity.reserve(owner ?? 'main', limits, id);
+      slot.claim(id);
+      return slot;
+    };
+    const service = executionService(ix, { ...scope('child'), parentAgentId: 'main' }, profile({
+      executorId: 'fake', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+    }), registry, states(), reserveExecution, (id, owner) => capacity.retain(id) ?? reserveExecution(id, owner));
+    const admission = deferred<void>();
+    try {
+      service.trackPromptRun(admission.promise, new AbortController().signal);
+      const first = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(first.turn.id).toBe(7);
+      expect(() => capacity.reserve('main', limits, 'child')).toThrow(expect.objectContaining({ code: 'agent.already_running' }));
+      expect(() => capacity.reserve('main', limits, 'other')).toThrow(expect.objectContaining({ code: 'dispatch.limit_exceeded' }));
+      await expect(service.run({ kind: 'prompt', prompt: 'again' }, { signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: 'agent.already_running' });
+      expect(run).toHaveBeenCalledTimes(1);
+      releaseTurn();
+      await result;
+      await Promise.resolve();
+      await service.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal });
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseTurn();
+      admission.resolve();
       await service.dispose();
       await ix.dispose();
     }

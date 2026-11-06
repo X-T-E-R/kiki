@@ -17,6 +17,7 @@ import {
   IAgentProfileRegistry,
   IAgentProfileService,
   IAgentPromptService,
+  IAgentTaskService,
   normalizeAgentProfile,
   IEventBus,
   PromptAborted,
@@ -544,15 +545,32 @@ describe('server-v2 /api prompts', () => {
       const body = { prompt_id: 'external-unknown-once', agent_id: agentId === 'main' ? undefined : agentId,
         delivery_mode: 'steer' as const, content: [{ type: 'text' as const, text: 'Keep the original message.' }] };
       const prompt = agent.accessor.get(IAgentPromptService);
-      if (target === 'main') {
-        expect((await call('POST', `/api/sessions/${id}/prompts`, { ...body, prompt_id: 'external-active',
-          delivery_mode: undefined, profile: 'external-unknown', content: [{ type: 'text', text: 'Active external turn.' }] })).body.code).toBe(0);
-      } else {
-        const active = await prompt.enqueue({ id: 'external-active', message: { role: 'user',
-          content: [{ type: 'text', text: 'Active external turn.' }], toolCalls: [] } });
-        await active.launched;
+      const started = await call('POST', `/api/sessions/${id}/prompts`, { ...body, prompt_id: 'external-active',
+        delivery_mode: undefined, profile: target === 'main' ? 'external-unknown' : undefined,
+        content: [{ type: 'text', text: 'Active external turn.' }] });
+      expect(started.body.code, JSON.stringify(started.body)).toBe(0);
+      await vi.waitFor(() => expect(prompt.list().active?.id, JSON.stringify({
+        receipt: prompt.lookup('external-active'),
+        status: agent.accessor.get(IAgentExecutionService).status(),
+        pending: prompt.list().pending.map((item) => item.id),
+        runs: run.mock.calls.length,
+      })).toBe('external-active'));
+      if (target === 'child') {
+        expect(run).toHaveBeenCalledTimes(1);
+        const tasks = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
+        const visible = () => tasks.list(true).filter((item) => item.kind === 'agent' && item.agentId === agentId);
+        expect(visible()).toHaveLength(1);
+        expect(visible()[0]).toMatchObject({ status: 'running', model: 'grok-raw' });
+        const replay = await call('POST', `/api/sessions/${id}/prompts`, { ...body, prompt_id: 'external-active',
+          delivery_mode: undefined, content: [{ type: 'text', text: 'Active external turn.' }] });
+        expect(replay.body.code, JSON.stringify(replay.body)).toBe(0);
+        expect(replay.body.data).toMatchObject({ prompt_id: 'external-active' });
+        const changed = await call('POST', `/api/sessions/${id}/prompts`, { ...body, prompt_id: 'external-active',
+          delivery_mode: undefined, content: [{ type: 'text', text: 'A different external turn.' }] });
+        expect(changed.body.code).toBe(40938);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(visible()).toHaveLength(1);
       }
-      await vi.waitFor(() => expect(prompt.list().active?.id).toBe('external-active'));
       controller = new SessionController(client.sessions, client.klient.session(id).view, id);
       controller.setFocusedAgent(agentId);
       await controller.open();
@@ -578,6 +596,56 @@ describe('server-v2 /api prompts', () => {
       expect(prompt.abort(body.prompt_id)).toBe(true);
       await agent.accessor.get(IAgentExecutionService).settled();
     } finally { controller?.close(); await client.klient.close(); held.finish(); executor.mockRestore(); }
+  });
+
+  it('cancels an idle external child HTTP prompt from its one parent task', async () => {
+    fixture.server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-cancel-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({ name: 'external-cancel', definitionId: 'fixture:external-cancel',
+        executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_CANCEL' })] } });
+    const registry = fixture.server!.core.accessor.get(IAgentExecutorRegistry);
+    const originalResolve = registry.resolveExecutable.bind(registry);
+    const held = holdExternalSession();
+    const run = vi.fn(held.session.run);
+    const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
+      descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
+      options: registry.resolve(executorId, options ?? {}).options,
+      provider: { id: 'cancel-fixture', protocol: 'acp-v1', validateOptions: value => value as Record<string, string | number | boolean>,
+        validateBinding: binding => ({ ok: true, binding }), create: () => ({ ...held.session, run }) as unknown as AgentExecutorSession },
+    } : originalResolve(executorId, options));
+    try {
+      const created = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: fixture.home! }, ephemeral: true });
+      expect(created.body.code).toBe(0);
+      const id = created.body.data.id;
+      await createMainAgent(id);
+      const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+      const child = await session.accessor.get(IAgentLifecycleService).create({ binding: { profile: 'external-cancel' } });
+      const started = await call('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: child.id, prompt_id: 'external-cancel-active', content: [{ type: 'text', text: 'Stop this external turn.' }],
+      });
+      expect(started.body.code, JSON.stringify(started.body)).toBe(0);
+      const prompt = child.accessor.get(IAgentPromptService);
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe('external-cancel-active'));
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(child.accessor.get(IAgentExecutionService).status().state).toBe('running');
+      const tasks = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
+      const visible = tasks.list(true).filter((item) => item.kind === 'agent' && item.agentId === child.id);
+      expect(visible).toHaveLength(1);
+      expect(visible[0]).toMatchObject({ status: 'running', model: 'grok-raw' });
+      const queued = await call('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: child.id, prompt_id: 'external-cancel-next', content: [{ type: 'text', text: 'Do not start another executor.' }],
+      });
+      expect(queued.body.code, JSON.stringify(queued.body)).toBe(0);
+      expect(queued.body.data).toMatchObject({ prompt_id: 'external-cancel-next', status: 'queued' });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(prompt.abort('external-cancel-next')).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+      await tasks.stopByUser(visible[0]!.taskId);
+      await vi.waitFor(() => expect(tasks.getTask(visible[0]!.taskId)?.status).toBe('killed'));
+      await vi.waitFor(() => expect(prompt.lookup('external-cancel-active')?.terminal?.state).toBe('cancelled'));
+      expect(run).toHaveBeenCalledTimes(1);
+      await child.accessor.get(IAgentExecutionService).settled();
+      await vi.waitFor(() => expect(tasks.list(true).filter((item) => item.kind === 'agent' && item.agentId === child.id && item.status === 'running')).toEqual([]));
+    } finally { held.finish(); executor.mockRestore(); }
   });
 
   it.each(['same-target', 'changed-target', 'unsupported', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {

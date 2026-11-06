@@ -2488,7 +2488,7 @@ export class AgentPromptService implements IAgentPromptService {
 
   private cancelLivePrompt(promptId: string, reason: Error): boolean | undefined {
     this.promptSwitchControllers.get(promptId)?.abort(reason);
-    if (this.active?.id === promptId) return this.loop.cancel(this.active.turn.id, reason);
+    if (this.active?.id === promptId) return this.loop.cancel(this.active.turn.id, reason) || this.active.turn.cancel(reason);
     const flight = this.steeringFlights.get(promptId);
     if (flight !== undefined) {
       if (flight.reason !== undefined) return false;

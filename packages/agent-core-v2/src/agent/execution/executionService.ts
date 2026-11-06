@@ -60,6 +60,8 @@ interface ActiveRun {
   readonly unlink: () => void;
   readonly settled: Promise<void>;
   readonly resolveSettled: () => void;
+  readonly admission?: boolean;
+  settling?: boolean;
   turnId?: number;
 }
 
@@ -129,7 +131,12 @@ export class AgentExecutionService implements IAgentExecutionService {
       (this.profile.data().executorId ?? 'native') === 'native';
     if (control.isHeld() && !settlingNativeLaunch) await waitForExecutionRelease(control, options.signal);
     options.signal.throwIfAborted();
-    const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
+    const release = this.dispatch.reserveExecution(
+      this.agent.id,
+      this.scope.parentAgentId,
+      options.capacityReservation,
+      options.capacityReservation === undefined && !this.executionOccupied(),
+    );
     let activityPermit: RequestPermit | undefined;
     const controller = new AbortController();
     let resolveSettled = (): void => {};
@@ -213,6 +220,8 @@ export class AgentExecutionService implements IAgentExecutionService {
       if ((binding.executorId ?? 'native') !== 'native') await options.onBeforeExternalRun?.();
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
+      const markSettling = (): void => { active.settling = true; };
+      void handle.turn.result.then(markSettling, markSettling);
       this.statusChanged.fire(this.status());
       void handle.completion.then(
         () => { this.finishRunWhenSettled(active, session); },
@@ -262,6 +271,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     const loop = this.loop;
     const active: ActiveRun = {
+      admission: true,
       controller,
       unlink: linkAbortSignal(signal, controller),
       settled,
@@ -395,6 +405,14 @@ export class AgentExecutionService implements IAgentExecutionService {
         localSource: source,
       } },
     }));
+  }
+
+  private executionOccupied(): boolean {
+    for (const run of this.runs) {
+      if (run.admission === true || run.settling === true) continue;
+      return true;
+    }
+    return false;
   }
 
   private async resolveSession(): Promise<AgentExecutorSession> {

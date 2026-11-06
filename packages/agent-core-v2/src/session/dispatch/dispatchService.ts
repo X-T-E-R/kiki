@@ -116,9 +116,17 @@ export class SessionDispatchService implements ISessionDispatchService {
 
   private readonly capacity = new DispatchCapacity();
 
-  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation): () => void {
+  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation, joinAdmission = false): () => void {
     if (agentId === 'main') return () => {};
-    const slot = reservation ?? this.capacity.reserve(parentAgentId ?? 'main', resolveDispatchCapacityLimits(this.config), agentId);
+    if (reservation !== undefined) {
+      reservation.claim(agentId);
+      return reservation;
+    }
+    if (joinAdmission) {
+      const retained = this.capacity.retain(agentId);
+      if (retained !== undefined) return retained;
+    }
+    const slot = this.capacity.reserve(parentAgentId ?? 'main', resolveDispatchCapacityLimits(this.config), agentId);
     slot.claim(agentId);
     return slot;
   }
