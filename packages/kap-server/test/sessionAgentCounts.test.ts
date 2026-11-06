@@ -74,6 +74,15 @@ describe('lightweight metadata roster', () => {
       executor_id: 'native', executor_protocol: undefined, thinking_effort: 'high', thinking_effort_explicit: undefined,
     });
   });
+  it('uses a live committed model while its metadata mirror still holds the previous binding', () => {
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 20, archived: false,
+      agents: { child: { model: 'example/old' } } };
+    const runtime = new Map([['child', { lifecycle: 'ready' as const, background: [], model: 'example/current' }]]);
+    expect(sessionAgentRoster(meta.id, meta, [], runtime)[0]).toMatchObject({
+      model: 'example/current', activity_status: 'idle', status_source: 'runtime',
+    });
+  });
+
   it('uses immutable metadata birth for queued and resumed runs and leaves legacy unknown', () => {
     const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 2, archived: false,
       agents: { child: { createdAt: 100 }, legacy: {} } };

@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 
 import { renderToStaticMarkup } from 'react-dom/server';
-import { act } from 'react';
+import { act, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { PromptItem, Session } from '@kiki/protocol';
+import type { PromptItem, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
+import type { SessionViewFacade } from '@kiki/klient/session-view';
+import type { SessionTransport } from '@kiki/session-core/transport';
 import { submitFirstSessionMessage, readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, type FirstSessionMessageRecord } from '../lib/newSessionCreation';
 import { configureSpaceStorage, spaceStorage } from '../lib/spaceStorage';
 import { resolveComposerModelOverrides, type ComposerModelBindingChange, type PersistedComposerScalars } from '@kiki/session-core/composer';
@@ -18,11 +20,14 @@ import {
   createViewState,
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
+  SessionController,
   type SubagentBlock,
   type Block,
 } from '@kiki/session-core/session';
 import {
   capabilityMatrixSnapshot,
+  emptySnapshot,
+  resetEvent,
   CHILD_AGENT_ID,
   USER_MESSAGE_ID,
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
@@ -2431,6 +2436,91 @@ describe('agent tree chrome', () => {
     expect(html).toContain('provider/child-model');
     expect(html).toContain('effort high');
     expect(html).toContain('2 tools');
+  });
+
+  it('updates parent timeline and right roster from unopened reused child signals without a detail read', async () => {
+    const id = 'summary-session';
+    const session: Session = {
+      id, workspace_id: 'fixture-workspace', title: 'Live summary', busy: false,
+      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', metadata: { cwd: 'C:/fixture' },
+      agent_config: { model: 'example/main' }, permission_rules: [], message_count: 0, last_seq: 10,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0,
+        total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
+    };
+    let row: SnapshotSubagent = { id: 'summary-child', session_id: id, kind: 'subagent', parent_agent_id: 'main',
+      description: 'Summary worker', label: 'Summary worker', status: 'running', activity_status: 'idle',
+      status_source: 'runtime', live: true, model: 'example/old-model', started_at: '2026-01-01T00:00:01.000Z' };
+    let seq = 10;
+    const read = vi.fn(async (): Promise<SessionSnapshotResponse> => ({ as_of_seq: seq, epoch: 'summary-epoch', session,
+      messages: { items: [], has_more: false }, in_flight_turn: null, pending_approvals: [], pending_questions: [], subagents: [row] }));
+    const page = vi.fn();
+    const subscribe = vi.fn<SessionViewFacade['subscribe']>(() => ({ close: vi.fn(), restart: vi.fn(), nudge: vi.fn(),
+      updateSessionCursor: vi.fn(), updateTranscriptCursor: vi.fn(), setTranscriptGrades: vi.fn() }));
+    const view: SessionViewFacade = { snapshot: read, transcript: { page, catchUp: vi.fn() }, subscribe };
+    const controller = new SessionController({} as SessionTransport, view, id);
+    const openAgent = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const subscribeState = (listener: () => void) => controller.subscribe(listener);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Surfaces() {
+      const state = useSyncExternalStore(subscribeState, () => controller.getState());
+      const forest = controller.getForest()!;
+      return <MemoryRouter><QueryClientProvider client={queryClient}><I18nProvider>
+        <Transcript state={state} forest={forest} onOpenAgent={openAgent} onLoadOlder={async () => false}
+          onResolveApproval={async () => {}} onAnswerQuestion={async () => {}} onDismissQuestion={async () => {}} />
+        <RightRail state={state} forest={forest} onOpenSubagent={openAgent} onCancelTask={() => {}} />
+      </I18nProvider></QueryClientProvider></MemoryRouter>;
+    }
+    const card = () => container.querySelector('[data-subagent-id="summary-child"]');
+    const roster = () => container.querySelector('[data-agent-roster] [data-agent-id="summary-child"]');
+    const update = async (patch: Partial<SnapshotSubagent>) => {
+      row = { ...row, ...patch };
+      seq += 1;
+      await act(async () => {
+        controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq, epoch: 'summary-epoch' }, rosterAgentId: row.id, generation: 0 });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(640);
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(960);
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      await controller.open();
+      controller.handleTranscript({ ...resetEvent('main', emptySnapshot({
+        items: [{ kind: 'taskref', refId: 'original-ref', taskId: 'original-run', at: row.started_at }],
+        tasks: [{ taskId: 'original-run', kind: 'subagent', state: 'running', agentId: 'summary-child',
+          name: 'Summary worker', detached: false, model: 'example/old-model', startedAt: row.started_at, outputTail: '' }],
+      }), 1), session_id: id });
+      controller.flushFrames();
+      expect(controller.getState().blocks.some((block) => block.kind === 'subagent')).toBe(true);
+      await act(async () => { root.render(<Surfaces />); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-history-fold] button')?.click(); });
+      expect(card()?.textContent).toContain('Idle');
+      expect(roster()?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('idle');
+      await update({ activity_status: 'running', model: 'example/new-model', started_at: '2026-01-01T00:00:03.000Z' });
+      expect(card()?.textContent).toContain('new-model');
+      expect(card()?.textContent).not.toContain('old-model');
+      expect(roster()?.textContent).toContain('new-model');
+      expect(roster()?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('running');
+      await update({ activity_status: 'suspended' });
+      expect(roster()?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('suspended');
+      await update({ status: 'completed', activity_status: 'completed', completed_at: '2026-01-01T00:00:05.000Z' });
+      expect(card()?.textContent).toContain('Completed');
+      expect(roster()?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('completed');
+      expect(openAgent).not.toHaveBeenCalled();
+      expect(page).not.toHaveBeenCalled();
+      expect(subscribe).toHaveBeenCalledTimes(1);
+      expect(subscribe.mock.calls[0]?.[0]).toMatchObject({ transcriptGrades: { '*': 'off', main: 'delta' } });
+    } finally {
+      await act(async () => { root.unmount(); });
+      controller.close();
+      height.mockRestore();
+      width.mockRestore();
+      container.remove();
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
   });
 
   it('lists settled child names in the rail tree without requiring a click', () => {

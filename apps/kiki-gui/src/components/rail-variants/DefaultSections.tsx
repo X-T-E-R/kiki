@@ -202,7 +202,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
-  const model = profile?.model ?? state?.model ?? (agentId === MAIN_AGENT_ID ? fallbackModel : undefined);
+  const model = state?.model ?? fallbackModel ?? profile?.model;
   const effortText = profileEffortDisplay(profile, t);
   const externalDefault = effortText === undefined && profile?.executor !== undefined
     && profile.executor !== '' && profile.executor !== 'native';

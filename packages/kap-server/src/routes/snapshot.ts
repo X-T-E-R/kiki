@@ -326,7 +326,7 @@ async function assembleSnapshotFromLease(
       const facts = resolveSessionFacts(core, sessionId);
       const model = main === undefined ? undefined : readBoundModel(main);
       const runtime = new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
-        [agent.id, agent.accessor.get(IAgentActivityView).state()] as const));
+        [agent.id, { ...agent.accessor.get(IAgentActivityView).state(), model: readBoundModel(agent) }] as const));
       const [workspace, controls] = await Promise.all([
         timeSessionViewPhase('snapshot_workspace', fields,
           () => core.accessor.get(IWorkspaceService).get(workspaceId), timing),
@@ -422,7 +422,7 @@ function enrichSnapshotSubagents(
       ...subagent,
       description: resolveSubagentDisplayName(userLabel, spawnedName, subagent.id),
       profile: spawnedName,
-      model: firstNonEmpty(meta?.model, subagent.model),
+      model: firstNonEmpty(subagent.model, meta?.model),
       thinking_effort: firstNonEmpty(meta?.thinkingEffort, subagent.thinking_effort),
       thinking_effort_explicit: meta?.thinkingEffort !== undefined ? meta.thinkingEffortExplicit : subagent.thinking_effort_explicit,
       executor_id: firstNonEmpty(meta?.executor, subagent.executor_id),
@@ -536,7 +536,7 @@ export async function readBrowseSnapshotContent(
         capture: field !== 'session' && field !== 'subagents' ? undefined : async () => {
           const meta = metadata.snapshot();
           const runtime = new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
-            [agent.id, agent.accessor.get(IAgentActivityView).state()] as const));
+            [agent.id, { ...agent.accessor.get(IAgentActivityView).state(), model: readBoundModel(agent) }] as const));
           if (field === 'subagents') return { meta, runtime, session: undefined };
           const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
           const facts = resolveSessionFacts(core, sessionId);

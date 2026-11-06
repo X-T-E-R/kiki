@@ -263,6 +263,7 @@ export class SessionController {
   /** Turn-structure paths with a preview already in flight. The replacement read must not preview again. */
   private readonly turnStructureRefreshKeys = new Set<string>();
   private rosterRefreshQueuedCursor: SessionCursor | undefined;
+  private readonly rosterTranscriptBindings = new Map<string, NonNullable<AgentTranscriptSnapshot['meta']['agent']>>();
   /** Agent id → roster reads spent chasing its row (see `requestRosterRows`). */
   private readonly requestedRosterAgents = new Map<string, number>();
   private rosterLeaseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -527,13 +528,13 @@ export class SessionController {
     }
   };
 
-  private async readSnapshot(): Promise<SessionSnapshotResponse> {
+  private async readSnapshot(rosterOnly = false): Promise<SessionSnapshotResponse> {
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
     const attachment = this.viewAttachment;
     try {
       let snapshot = await this.view.snapshot({ signal: controller.signal });
-      if (!this.closed && !controller.signal.aborted && attachment === this.viewAttachment &&
+      if (!rosterOnly && !this.closed && !controller.signal.aborted && attachment === this.viewAttachment &&
         (!this.state.loaded || this.resyncInFlight || (snapshot.epoch === this.state.cursor.epoch && snapshot.as_of_seq >= this.state.cursor.seq))) {
         if (this.latestSnapshot?.epoch === snapshot.epoch) snapshot = mergeContentPreview(this.latestSnapshot, snapshot);
         this.latestSnapshot = snapshot;
@@ -983,7 +984,10 @@ export class SessionController {
           return;
         }
         this.advanceSessionCursor(signal.currentSessionCursor);
-        if (signal.reconnected) this.handleReconnectAck();
+        if (signal.reconnected) {
+          this.handleReconnectAck();
+          if (this.state.snapshotSubagents.length > 0) void this.refreshRoster(signal.currentSessionCursor);
+        }
         return;
       case 'sessionCursorAdvanced':
         this.advanceSessionCursor(signal.cursor);
@@ -1083,20 +1087,40 @@ export class SessionController {
     }
     this.rosterRefreshInFlight = true;
     const attachment = this.viewAttachment;
+    const generation = this.connectionGeneration;
+    const bindings = new Map([...this.agentTranscripts].map(([id, store]) => [id, store.getMeta().agent]));
     try {
-      const snapshot = await this.readSnapshot();
+      const snapshot = await this.readSnapshot(true);
+      const queued = this.rosterRefreshQueuedCursor;
       if (
-        this.closed || this.resyncInFlight || attachment !== this.viewAttachment ||
-        snapshot.epoch !== cursor.epoch ||
-        snapshot.as_of_seq < Math.max(cursor.seq, this.state.cursor.seq) ||
+        this.closed || this.isSuspended || this.resyncInFlight || attachment !== this.viewAttachment ||
+        generation !== this.connectionGeneration || snapshot.epoch !== cursor.epoch || snapshot.epoch !== this.state.cursor.epoch ||
+        snapshot.as_of_seq < cursor.seq || (queued !== undefined && queued.epoch === cursor.epoch && snapshot.as_of_seq < queued.seq) ||
         snapshot.subagents === undefined
       ) return;
+      const previous = this.latestSnapshot;
+      const roster = previous?.epoch === snapshot.epoch ? mergeContentPreview(previous, snapshot) : snapshot;
+      this.latestSnapshot = previous?.epoch === roster.epoch
+        ? carryContentHydration(roster, {
+          ...previous,
+          subagents: roster.subagents,
+          contentRefs: [...(previous.contentRefs ?? []).filter((ref) => ref.path[0] !== 'subagents'),
+            ...(roster.contentRefs ?? []).filter((ref) => ref.path[0] === 'subagents')],
+        }) : roster;
       this.setState({
         ...this.state,
         version: this.state.version + 1,
-        snapshotSubagents: this.mergeRosterRows(snapshot),
+        snapshotSubagents: this.mergeRosterRows(roster),
         agentCounts: snapshot.agent_counts,
+        contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(this.latestSnapshot.contentRefs ?? [])],
       }, false);
+      for (const row of roster.subagents ?? []) {
+        const id = snapshotSubagentAgentId(row);
+        const binding = this.agentTranscripts.get(id)?.getMeta().agent;
+        if (gradeFor(this.transcriptGrades, id) === 'off' && binding !== undefined && binding === bindings.get(id)) {
+          this.rosterTranscriptBindings.set(id, binding);
+        }
+      }
       this.retireRequestedRosterAgents();
       this.publishForest();
       this.notifyMain();
@@ -3449,7 +3473,12 @@ export class SessionController {
     }
     const previous = this.publishedForest;
     const coldAgents = new Set([...this.transcriptCursors].filter(([, cursor]) => cursor.epoch?.startsWith('cold:') === true).map(([agentId]) => agentId));
-    this.publishedForest = this.forestQuery.read(snapshots, this.state.snapshotSubagents, coldAgents);
+    const rosterCurrentAgents = new Set<string>();
+    for (const [agentId, binding] of this.rosterTranscriptBindings) {
+      if (binding === this.agentTranscripts.get(agentId)?.getMeta().agent) rosterCurrentAgents.add(agentId);
+      else this.rosterTranscriptBindings.delete(agentId);
+    }
+    this.publishedForest = this.forestQuery.read(snapshots, this.state.snapshotSubagents, coldAgents, rosterCurrentAgents);
     this.forestPublishCount += 1;
     return previous !== this.publishedForest;
   }

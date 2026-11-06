@@ -220,6 +220,24 @@ describe('SessionViewTarget', () => {
       .toHaveLength(3);
   });
 
+  it('refreshes an unopened child binding without requiring a phase on status updates', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(1);
+    target.finish({ seq: 12, epoch: 'session-epoch' }, false);
+    signals.length = 0;
+    const status = (model: string, thinkingEffort: string, contextTokens = 1) => ({
+      ...durable(12), type: 'agent.status.updated', volatile: true,
+      payload: { type: 'agent.status.updated', agentId: 'child', model, thinkingEffort, contextTokens },
+    });
+    target.send(status('example/old', 'high'));
+    target.send(status('example/new', 'high'));
+    target.send(status('example/new', 'max'));
+    target.send(status('example/new', 'max', 500));
+    expect(signals).toHaveLength(3);
+    expect(signals.every((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toBe(true);
+  });
+
   it('ignores other sessions global fanout while retaining its suppressed durable cursor', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

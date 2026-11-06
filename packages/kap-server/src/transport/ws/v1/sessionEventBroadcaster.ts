@@ -112,6 +112,7 @@ export type BroadcastDelivery = 'subscription' | 'immediate';
 export interface BroadcastTarget {
   send(envelope: EventEnvelope, delivery?: BroadcastDelivery): void;
   sendDurableCursor?(cursor: SessionCursor): void;
+  sendRosterHint?(envelope: EventEnvelope): void;
   sendControl?(frame: unknown): void;
   drain?(): Promise<void>;
 }
@@ -1729,7 +1730,12 @@ export class SessionEventBroadcaster {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
         try {
           if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
-            if (envelope.volatile !== true) target.sendDurableCursor?.({ seq: envelope.seq, epoch: envelope.epoch });
+            if (target.sendRosterHint !== undefined && (
+              event.type === 'agent.status.updated' && event.agentId !== MAIN_AGENT_ID ||
+              event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
+              event.type === 'subagent.completed' || event.type === 'subagent.failed'
+            )) target.sendRosterHint(envelope);
+            else if (envelope.volatile !== true) target.sendDurableCursor?.({ seq: envelope.seq, epoch: envelope.epoch });
             continue;
           }
           target.send(envelope);

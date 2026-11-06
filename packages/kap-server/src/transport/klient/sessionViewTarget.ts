@@ -15,6 +15,7 @@ export class SessionViewTarget implements BroadcastTarget {
   private liveSignals: SessionViewSignal[] = [];
   private latestSessionCursor: SessionCursor | undefined;
   private readonly rosterActivity = new Map<string, string>();
+  private readonly rosterBinding = new Map<string, { model?: string; effort?: string }>();
   private readonly durableSeen = new Set<string>();
 
   constructor(
@@ -40,6 +41,7 @@ export class SessionViewTarget implements BroadcastTarget {
     this.liveSignals = [];
     this.latestSessionCursor = undefined;
     this.rosterActivity.clear();
+    this.rosterBinding.clear();
     this.durableSeen.clear();
   }
 
@@ -113,6 +115,10 @@ export class SessionViewTarget implements BroadcastTarget {
     else this.publishSignal(signal);
   }
 
+  sendRosterHint(envelope: EventEnvelope): void {
+    this.send(envelope);
+  }
+
   sendControl(frame: unknown): void {
     if (frame === null || typeof frame !== 'object') return;
     const record = frame as { type?: unknown; payload?: unknown };
@@ -136,31 +142,40 @@ export class SessionViewTarget implements BroadcastTarget {
     if (this.recoveryRequired) return undefined;
     if (envelope.volatile === true) {
       if (envelope.type !== 'agent.status.updated' || envelope.payload === null || typeof envelope.payload !== 'object') return undefined;
-      const event = envelope.payload as { agentId?: unknown; model?: unknown; thinkingEffort?: unknown; phase?: { kind?: unknown; turnId?: unknown } };
-      if (typeof event.agentId !== 'string' || event.agentId === '' || event.agentId === 'main' || typeof event.phase?.kind !== 'string') return undefined;
-      const kind = event.phase.kind;
-      const status = kind === 'idle' || kind === 'ended' || kind === 'awaiting_approval' ? kind : 'active';
-      const turnId = typeof event.phase.turnId === 'string' || typeof event.phase.turnId === 'number'
-        ? String(event.phase.turnId)
-        : '';
-      const key = JSON.stringify([status, turnId,
-        typeof event.model === 'string' ? event.model : undefined,
-        typeof event.thinkingEffort === 'string' ? event.thinkingEffort : undefined]);
-      if (this.rosterActivity.get(event.agentId) === key) return undefined;
-      this.rosterActivity.set(event.agentId, key);
+      const event = envelope.payload as { agentId?: unknown; model?: unknown; thinkingEffort?: unknown; phase?: { kind?: unknown; turnId?: unknown; reason?: unknown } };
+      if (typeof event.agentId !== 'string' || event.agentId === '' || event.agentId === 'main') return undefined;
+      const kind = typeof event.phase?.kind === 'string' ? event.phase.kind : undefined;
+      let activityChanged = false;
+      if (kind !== undefined) {
+        const terminal = kind === 'ended' || kind === 'interrupted';
+        const status = terminal || kind === 'idle' || kind === 'awaiting_approval' ? kind : 'active';
+        const key = JSON.stringify([status, event.phase?.turnId, terminal ? event.phase?.reason : undefined]);
+        activityChanged = this.rosterActivity.get(event.agentId) !== key;
+        if (activityChanged) this.rosterActivity.set(event.agentId, key);
+      }
+      const previous = this.rosterBinding.get(event.agentId);
+      const model = typeof event.model === 'string' ? event.model : previous?.model;
+      const effort = typeof event.thinkingEffort === 'string' ? event.thinkingEffort : previous?.effort;
+      const bindingChanged = model !== previous?.model || effort !== previous?.effort;
+      if (bindingChanged) this.rosterBinding.set(event.agentId, { model, effort });
+      if (!activityChanged && !bindingChanged) return undefined;
       return { type: 'sessionCursorAdvanced', cursor: { seq: envelope.seq, epoch: envelope.epoch }, generation: this.generation, rosterAgentId: event.agentId };
     }
     const cursor = { seq: envelope.seq, epoch: envelope.epoch };
     if (this.latestSessionCursor === undefined || this.latestSessionCursor.epoch !== cursor.epoch || cursor.seq > this.latestSessionCursor.seq) this.latestSessionCursor = cursor;
     const payload = envelope.payload;
     if (payload !== null && typeof payload === 'object') {
-      const event = payload as { type?: unknown; agentId?: unknown; reason?: unknown; target_message_id?: unknown; title?: unknown; patch?: { title?: unknown } };
+      const event = payload as { type?: unknown; agentId?: unknown; subagentId?: unknown; reason?: unknown; target_message_id?: unknown; title?: unknown; patch?: { title?: unknown } };
       if (event.type === 'session.meta.updated') {
         const title = event.patch?.title ?? event.title;
         if (typeof title === 'string') return { type: 'sessionCursorAdvanced', cursor, title, generation: this.generation };
       }
       if ((event.type === 'agent.created' || event.type === 'agent.disposed') && typeof event.agentId === 'string' && event.agentId !== '') {
         return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: event.agentId };
+      }
+      if ((event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
+          event.type === 'subagent.completed' || event.type === 'subagent.failed') && typeof event.subagentId === 'string' && event.subagentId !== '') {
+        return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: event.subagentId };
       }
       if (event.type === 'event.session.history_rewritten' && (event.reason === 'edit_resend' || event.reason === 'regenerate') && typeof event.target_message_id === 'string') {
         return { type: 'historyRewritten', reason: event.reason, targetMessageId: event.target_message_id, cursor, generation: this.generation };

@@ -845,7 +845,8 @@ describe('ProfileHead inherited external effort', () => {
     await settle();
     expect(readCapabilities).toHaveBeenCalled();
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(line?.textContent).toContain('example-model');
+    expect(line?.textContent).toContain('fallback-model');
+    expect(line?.textContent).not.toContain('example-model');
     expect(line?.textContent).toContain(translate('zh', 'st.engines.defaults.inheritPlaceholder'));
     expect(line?.textContent).not.toContain('off');
   });

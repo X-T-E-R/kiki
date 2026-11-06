@@ -485,6 +485,7 @@ export function sessionAgentForestFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
   snapshotSubagents?: readonly SnapshotSubagent[],
   coldAgents?: ReadonlySet<string>,
+  rosterCurrentAgents?: ReadonlySet<string>,
 ): AgentForest {
   const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromAgentSnapshots(snapshots),
@@ -540,15 +541,16 @@ export function sessionAgentForestFromAgentSnapshots(
     if (node === undefined) continue;
     const row = snapshotRows.get(agentId);
     const meta = snapshot.meta.agent;
-    const model = coldAgents?.has(agentId) === true ? row?.model ?? meta?.model : meta?.model;
-    const thinking = coldAgents?.has(agentId) === true ? row?.thinking_effort ?? meta?.thinkingEffort : meta?.thinkingEffort;
+    const preferRoster = coldAgents?.has(agentId) === true || rosterCurrentAgents?.has(agentId) === true;
+    const model = preferRoster ? row?.model ?? meta?.model : meta?.model;
+    const thinking = preferRoster ? row?.thinking_effort ?? meta?.thinkingEffort : meta?.thinkingEffort;
     if (model !== undefined || thinking !== undefined) {
       node = { ...node, model: model ?? node.model, thinkingEffort: thinking ?? node.thinkingEffort };
       byId[agentId] = node;
     }
     const turn = snapshot.items.findLast((item) => item.kind === 'turn');
     const status = agentStatusFromMeta({ agent_id: agentId, items: snapshot.items, has_more: false, meta: snapshot.meta });
-    const activeLive = coldAgents?.has(agentId) !== true && (status === 'running' || status === 'suspended');
+    const activeLive = !preferRoster && (status === 'running' || status === 'suspended');
     if (activeLive && row?.live !== false && (node.status === 'idle' || node.status === 'unknown')) {
       const phase = meta?.phase;
       const activeAt = phase !== undefined && 'since' in phase ? phase.since
@@ -588,6 +590,7 @@ export class SessionAgentForestQuery {
   private snapshots = new Map<string, AgentState | AgentTranscriptSnapshot>();
   private subagents: readonly SnapshotSubagent[] | undefined;
   private coldAgents = new Set<string>();
+  private rosterCurrentAgents = new Set<string>();
   private forest: AgentForest | undefined;
   private validUntil = Infinity;
 
@@ -595,21 +598,25 @@ export class SessionAgentForestQuery {
     snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
     subagents?: readonly SnapshotSubagent[],
     coldAgents?: ReadonlySet<string>,
+    rosterCurrentAgents?: ReadonlySet<string>,
   ): AgentForest {
     const previousIds = [...this.snapshots.keys()];
     if (this.forest !== undefined && Date.now() < this.validUntil && this.subagents === subagents &&
         this.snapshots.size === snapshots.size && this.coldAgents.size === (coldAgents?.size ?? 0) &&
         [...this.coldAgents].every((id) => coldAgents?.has(id) === true) &&
+        this.rosterCurrentAgents.size === (rosterCurrentAgents?.size ?? 0) &&
+        [...this.rosterCurrentAgents].every((id) => rosterCurrentAgents?.has(id) === true) &&
         [...snapshots].every(([id, next], index) => {
           const previous = this.snapshots.get(id);
           return previousIds[index] === id && previous !== undefined && previous.items === next.items && previous.tasks === next.tasks &&
             previous.meta === next.meta && previous.toolCallCount === next.toolCallCount &&
             canonicalToolCallCountFields(previous).toolCallCountKnown === canonicalToolCallCountFields(next).toolCallCountKnown;
         })) return this.forest;
-    this.forest = stabilizeAgentForest(this.forest, sessionAgentForestFromAgentSnapshots(snapshots, subagents, coldAgents));
+    this.forest = stabilizeAgentForest(this.forest, sessionAgentForestFromAgentSnapshots(snapshots, subagents, coldAgents, rosterCurrentAgents));
     this.snapshots = new Map(snapshots);
     this.subagents = subagents;
     this.coldAgents = new Set(coldAgents);
+    this.rosterCurrentAgents = new Set(rosterCurrentAgents);
     this.validUntil = Infinity;
     const now = Date.now();
     for (const row of subagents ?? []) {

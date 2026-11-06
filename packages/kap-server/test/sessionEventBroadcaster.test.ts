@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events';
 import type { WebSocket } from 'ws';
 import { WsConnectionV1, type WsConnectionV1Options } from '../src/transport/ws/v1/wsConnectionV1';
 import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
+import { SessionViewTarget } from '../src/transport/klient/sessionViewTarget';
+import type { SessionViewSignal } from '@kiki/klient/session-view';
 import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
@@ -4549,6 +4551,41 @@ describe('SessionEventBroadcaster', () => {
         snapshot.items.some((item) => item.kind === 'turn' && (item.steps?.length ?? 0) > 0),
       ).toBe(true);
       expect(JSON.stringify(snapshot)).toContain('redacted detail body');
+    });
+
+    it('delivers reused child roster hints before detail admission and across transcript suppression', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const child = lc.addAgent('child');
+      let model = 'example/old';
+      child.set(IAgentProfileService, { getModel: () => model, getModelCapabilities: () => ({ max_context_tokens: 64000 }), republishStatus: () => {} });
+      child.set(IAgentUsageService, { status: () => ({}) });
+      child.set(IAgentTokenCountingService, { statusSize: () => 0 });
+      sessions.set('s1', lc);
+      bc = makeBroadcasterWithTranscript();
+      const signals: SessionViewSignal[] = [];
+      const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+      target.begin(1);
+      await bc.subscribe('s1', target, undefined, { main: 'delta', '*': 'off' });
+      target.finish(await bc.getCursor('s1'), false);
+      signals.length = 0;
+      main.bus.emit(agentEvent('subagent.spawned', { subagentId: 'child', subagentName: 'worker', parentToolCallId: 'resume-call', runInBackground: true, taskId: 'new-task', model, time: 1000 }));
+      main.bus.emit(agentEvent('subagent.started', { subagentId: 'child', taskId: 'new-task', time: 2000 }));
+      await bc.getCursor('s1');
+      expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(2);
+      expect(signals.filter((signal) => signal.type === 'transcript' && signal.event.agent_id === 'child')).toHaveLength(0);
+      model = 'example/current';
+      child.bus.emit(agentEvent('agent.status.updated', { model }));
+      child.bus.emit(agentEvent('agent.status.updated', { contextTokens: 500 }));
+      await bc.getCursor('s1');
+      expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(3);
+      await bc.subscribe('s1', target, undefined, { main: 'delta', child: 'turn', '*': 'off' });
+      signals.length = 0;
+      model = 'example/next';
+      child.bus.emit(agentEvent('agent.status.updated', { model }));
+      main.bus.emit(agentEvent('subagent.completed', { subagentId: 'child', taskId: 'new-task', resultSummary: 'done', time: 3000 }));
+      await bc.getCursor('s1');
+      expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(2);
     });
 
     it('suppresses transcript-projected session_events on graded connections only', async () => {

@@ -978,6 +978,71 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('publishes an unopened child through roster transitions while unrelated session events advance', async () => {
+    const idle = {
+      id: 'child', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'Child', status: 'running' as const,
+      activity_status: 'idle' as const, status_source: 'runtime' as const, live: true, model: 'example/old',
+    };
+    const running = { ...idle, activity_status: 'running' as const, model: 'example/new', started_at: '2026-01-01T00:00:03.000Z' };
+    const suspended = { ...running, activity_status: 'suspended' as const };
+    const ended = { ...running, status: 'completed' as const, activity_status: 'completed' as const, completed_at: '2026-01-01T00:00:05.000Z' };
+    const firstRefresh = deferred<SessionSnapshotResponse>();
+    const reads = vi.fn().mockResolvedValueOnce(snapshot({ subagents: [idle] }))
+      .mockReturnValueOnce(firstRefresh.promise)
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 20, subagents: [suspended] }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 21, subagents: [ended] }));
+    const page = vi.fn();
+    const subscribe = vi.fn();
+    const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads, getAgentTranscript: page }, { subscribe }), 'session_test');
+    const signal = (seq: number, rosterAgentId?: string) => controller.handleSignal({
+      type: 'sessionCursorAdvanced', cursor: { seq, epoch: 'epoch-1' }, rosterAgentId, generation: 0,
+    });
+    const child = () => controller.getForest()?.byId['child'];
+    try {
+      await controller.open();
+      controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+      controller.flushFrames();
+      expect(child()).toMatchObject({ status: 'idle', model: 'example/old' });
+      signal(11, 'child');
+      signal(20);
+      firstRefresh.resolve(snapshot({ as_of_seq: 11, subagents: [running] }));
+      await waitFor(() => child()?.status === 'running');
+      expect(child()).toMatchObject({ model: 'example/new', busy: true });
+      expect(controller.getState().cursor.seq).toBe(20);
+      signal(20, 'child');
+      await waitFor(() => child()?.status === 'suspended');
+      signal(21, 'child');
+      await waitFor(() => child()?.status === 'completed');
+      expect(child()).toMatchObject({ model: 'example/new', busy: false });
+      expect(subscribe.mock.calls.map((args) => args[2])).toEqual([{ '*': 'off', main: 'delta' }]);
+      expect(page).not.toHaveBeenCalled();
+    } finally {
+      controller.close();
+    }
+  });
+
+  it.each(['runtime', 'metadata'] as const)('lets the current %s roster replace the model of a retained off-grade child transcript', async (statusSource) => {
+    const row = { id: 'child', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'Child', status: 'running' as const, activity_status: 'idle' as const,
+      status_source: statusSource, live: true, model: 'example/old' };
+    const reads = vi.fn().mockResolvedValueOnce(snapshot({ subagents: [row] }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 11, subagents: [{ ...row, model: 'example/current' }] }));
+    const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test');
+    try {
+      await controller.open();
+      controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+      controller.handleTranscript(resetEvent('child', { ...emptySnapshot(), meta: { agent: { model: 'example/old', phase: { kind: 'idle' } } } }, 1));
+      controller.flushFrames();
+      controller.handleSignal({ type: 'sessionCursorAdvanced', rosterAgentId: 'child', generation: 0,
+        cursor: { seq: 11, epoch: 'epoch-1' } });
+      await waitFor(() => controller.getState().snapshotSubagents[0]?.model === 'example/current');
+      expect(controller.getForest()?.byId['child']).toMatchObject({ model: 'example/current', status: 'idle' });
+    } finally {
+      controller.close();
+    }
+  });
+
   it('reads a spawned agent row from the op stream and resolves its injected sender', async () => {
     const spawned = {
       id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent' as const,

@@ -723,7 +723,7 @@ export function Rail({
         sessionId={state.sessionId}
         agentId={focusedAgentId}
         label={focusedNode?.label ?? focusedAgentId}
-        fallbackModel={state.model}
+        fallbackModel={focusedNode?.model ?? (focusedAgentId === MAIN_AGENT_ID ? state.model : undefined)}
         workspaceId={session?.workspace_id}
         cwd={session?.metadata.cwd}
         // Only the main is driven; a sub agent under it runs a real model.

@@ -22,7 +22,7 @@ export function sessionAgentRoster(
   sessionId: string,
   meta: SessionMeta,
   tracked: readonly SnapshotSubagent[] = [],
-  runtime: ReadonlyMap<string, AgentActivityState> = new Map(),
+  runtime: ReadonlyMap<string, AgentActivityState & { readonly model?: string }> = new Map(),
 ): SnapshotSubagent[] {
   const rows = new Map(tracked.map((row) => [row.agent_id ?? row.id, row]));
   const ids = new Set([...Object.keys(meta.agents ?? {}), ...rows.keys(), ...runtime.keys()]);
@@ -84,7 +84,8 @@ export function sessionAgentRoster(
           ? new Date(outcomeAt ?? activityTerminalAt!).toISOString()
           : row?.completed_at,
       parent_agent_id: subagentParentAgentId(registration) ?? row?.parent_agent_id,
-      model: registration?.model ?? row?.model, thinking_effort: registration?.thinkingEffort ?? row?.thinking_effort,
+      model: (current ? activity.model : undefined) ?? registration?.model ?? row?.model,
+      thinking_effort: registration?.thinkingEffort ?? row?.thinking_effort,
       thinking_effort_explicit: registration?.thinkingEffort !== undefined ? registration.thinkingEffortExplicit : row?.thinking_effort_explicit,
       executor_id: registration?.executor ?? row?.executor_id,
       executor_protocol: registration?.executor !== undefined ? registration.executorProtocol : row?.executor_protocol,
