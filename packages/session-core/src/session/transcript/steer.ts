@@ -44,7 +44,7 @@ export function isSteerSettled(blocks: readonly Block[], steer: PendingSteer): b
   return blocks.some((block) => {
     if (block.kind !== 'user' || block.steerStatus !== undefined) return false;
     if (matchesPrompt(block, steer.promptId)) {
-      return block.turnId !== undefined || block.promptStatus === 'running' || block.promptOutcome !== undefined;
+      return block.turnId !== undefined || block.promptStatus === 'running' || block.promptStatus === 'blocked' || block.promptOutcome !== undefined;
     }
     return steer.phase === 'waiting' && block.turnId !== undefined && block.text === steer.text &&
       block.promptId === undefined && Date.parse(block.createdAt) >= since;

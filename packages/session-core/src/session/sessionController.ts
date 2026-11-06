@@ -3972,6 +3972,11 @@ export class SessionController {
       throw error;
     }
     this.unprojectedQueueReceipts.delete(promptId);
+    const settled = this.settledSteerOutcome(MAIN_AGENT_ID, promptId);
+    if (settled === 'failed' || settled === 'cancelled') {
+      this.clearPendingSteer(MAIN_AGENT_ID, promptId);
+      return { outcome: settled };
+    }
     if (delivery.steered || delivery.delivery_state === 'accepted') {
       const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
       if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
@@ -4167,9 +4172,9 @@ export class SessionController {
 
   private settledSteerOutcome(agentId: string, promptId: string): 'steered' | 'started' | 'failed' | 'cancelled' | undefined {
     const canonical = this.agentTranscripts.get(agentId)?.getPrompt(promptId);
-    if (canonical === undefined || canonical.status === 'queued' || canonical.status === 'blocked') return undefined;
+    if (canonical === undefined || canonical.status === 'queued') return undefined;
     if (canonical.status === 'aborted') return 'cancelled';
-    if (canonical.status === 'failed') return 'failed';
+    if (canonical.status === 'failed' || canonical.status === 'blocked') return 'failed';
     if (canonical.steeredAt !== undefined) return 'steered';
     return 'started';
   }
@@ -4225,14 +4230,14 @@ export class SessionController {
     if (steers.length > 0) this.pendingSteers.set(agentId, steers);
   }
 
-  /** Drop echoes whose delivered frame the projection now owns. */
+  /** Drop echoes once the projection owns delivery or refusal. */
   private retireSettledSteers(agentId: string, next: SessionViewState): void {
     const current = this.pendingSteers.get(agentId);
     if (current === undefined) return;
     const store = this.agentTranscripts.get(agentId);
     const live = current.filter(steer => {
       const prompt = store?.getPrompt(steer.promptId);
-      return !(prompt?.status === 'aborted' && prompt.abortedBeforeStart) && !isSteerSettled(next.blocks, steer);
+      return prompt?.status !== 'blocked' && !(prompt?.status === 'aborted' && prompt.abortedBeforeStart) && !isSteerSettled(next.blocks, steer);
     });
     if (live.length === current.length) return;
     if (live.length === 0) this.pendingSteers.delete(agentId);

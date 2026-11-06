@@ -452,6 +452,41 @@ describe('send now (steer) — main agent', () => {
     reopened.controller.close(); controller.close();
   });
 
+  it.each(['accepted first', 'late accepted', 'lost ACK'] as const)('keeps the canonical blocked row when the Send now receipt is %s', async order => {
+    const { controller, client } = await open();
+    const promptId = 'vetoed-queued';
+    const ack = deferred<PromptSteerResult>();
+    const accepted = { steered: false, prompt_ids: [promptId], delivery_state: 'accepted' as const };
+    client.steerPrompt.mockReturnValue(ack.promise);
+    try {
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      const queued = queuedOp(promptId);
+      if (queued.op !== 'prompt.upsert') throw new Error('Expected prompt fixture');
+      await deliver(controller, opsEvent('main', [queued], 2));
+      const sending = controller.steerQueued(promptId);
+      if (order === 'accepted first') {
+        ack.resolve(accepted);
+        await expect(sending).resolves.toEqual({ outcome: 'accepted' });
+      }
+      await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: { ...queued.prompt,
+        status: 'blocked', steerAccepted: true, finishedAt: '2026-01-01T00:00:04.000Z',
+      } }], 3));
+      const blockedRow = () => {
+        expect(controller.getPendingSteers()).toEqual([]);
+        expect(controller.getState().queuedPromptIds).not.toContain(promptId);
+        expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ promptId, promptStatus: 'blocked' })]);
+        expect(steerRows(controller.getState())[0]?.steerStatus).toBeUndefined();
+      };
+      blockedRow();
+      if (order !== 'accepted first') {
+        if (order === 'lost ACK') ack.reject(new ApiError({ code: -1, msg: 'ACK unavailable', source: 'transport', reason: 'timeout', data: null }));
+        else ack.resolve(accepted);
+        await expect(sending).resolves.toEqual({ outcome: 'failed' });
+        blockedRow();
+      }
+    } finally { controller.close(); }
+  });
+
   it.each(['new', 'queued'] as const)('keeps canonical acceptance when a late %s ACK fails', async source => {
     const { controller, client } = await open();
     const promptId = 'late-ack';
@@ -867,6 +902,15 @@ describe('withPendingSteers', () => {
     };
     const next = withPendingSteers(state, [{ promptId: 'p1', text: STEER_TEXT, createdAt: '2026-01-01T00:00:03.000Z', phase: 'waiting' }]);
     expect(next).toBe(state);
+  });
+
+  it('leaves the canonical blocked row in place even without a turn', () => {
+    const createdAt = '2026-01-01T00:00:03.000Z';
+    const state: SessionViewState = {
+      ...createViewState('s'),
+      blocks: [{ kind: 'user', id: 'user-p1', text: STEER_TEXT, createdAt, promptId: 'p1', promptStatus: 'blocked' }],
+    };
+    expect(withPendingSteers(state, [{ promptId: 'p1', text: STEER_TEXT, createdAt, phase: 'waiting' }])).toBe(state);
   });
 
   it('replaces the hidden queued preview and drops it from the queue strip', () => {

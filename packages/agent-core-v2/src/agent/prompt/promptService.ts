@@ -175,6 +175,13 @@ export class PromptSteerAccepted extends Event2<{ readonly promptIds: readonly s
   static override readonly schema = z.object({ promptIds: z.array(z.string().min(1)).min(1) });
 }
 
+export class PromptExternalSteerStarted extends Event2<{ readonly promptIds: readonly string[] }> {
+  declare readonly promptIds: readonly string[];
+  static override readonly type = 'prompt.external_steer_started';
+  static override readonly durable = true;
+  static override readonly schema = PromptSteerAccepted.schema;
+}
+
 export const promptResolutionKey = defineState('promptResolution', (): Map<string, true> => new Map())
   .replayable({ schema: z.map(z.string(), z.literal(true)) })
   .on(PromptCompleted, (state, event) => {
@@ -398,9 +405,11 @@ export interface PromptStarted extends PromptStartedPayload {}
 
 interface PersistedPromptQueueEntry extends PromptEnqueuedPayload {
   readonly originalMessage?: ContextMessage;
+  readonly externalDeliveryReason?: 'executor_deferred' | 'external_retry';
 }
 
 interface PersistedPromptQueueState {
+  readonly deliveryVersion: 1;
   readonly entries: Map<string, unknown>;
   readonly order: string[];
 }
@@ -436,14 +445,16 @@ async function transformPromptQueueState(
       message: { ...entry.message, content: [...content] },
     });
   }
-  return changed ? { entries, order: state.order } : state;
+  return changed ? { ...state, entries } : state;
 }
 
-export const promptQueueKey = defineState<PersistedPromptQueueState>(
+export const promptQueueKey = defineState(
   'prompt.queue',
-  () => ({ entries: new Map(), order: [] }),
+  (): PersistedPromptQueueState => ({ deliveryVersion: 1, entries: new Map(), order: [] }),
 ).replayable({
-  schema: z.custom<PersistedPromptQueueState>(),
+  schema: z.custom<PersistedPromptQueueState>()
+    .refine(state => state.deliveryVersion === 1 || state.entries.size === 0)
+    .transform((state): PersistedPromptQueueState => state.deliveryVersion === 1 ? state : { ...state, deliveryVersion: 1 }),
   blobs: {
     dehydrate: transformPromptRecord,
     rehydrate: transformPromptQueueState,
@@ -454,6 +465,19 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
     const existing = state.order.indexOf(event.promptId);
     if (existing >= 0) state.order.splice(existing, 1);
     state.order.splice(Math.min(event.queueIndex, state.order.length), 0, event.promptId);
+  })
+  .on(PromptExternalSteerStarted, (state, event) => {
+    for (const promptId of event.promptIds) {
+      const entry = state.entries.get(promptId) as PersistedPromptQueueEntry | undefined;
+      if (entry !== undefined) state.entries.set(promptId, { ...entry, externalDeliveryReason: 'external_retry' });
+    }
+  })
+  .on(ExecutorHintDelivery, (state, event) => {
+    const entry = event.promptId === undefined ? undefined : state.entries.get(event.promptId) as PersistedPromptQueueEntry | undefined;
+    if (entry === undefined) return;
+    const externalDeliveryReason = event.status === 'undelivered' ? 'external_retry'
+      : event.status === 'queued' ? 'executor_deferred' : undefined;
+    state.entries.set(entry.promptId, { ...entry, externalDeliveryReason });
   })
   .on(ContextUndo, (state, { replacementPrompt: event }) => {
     if (event === undefined) return;
@@ -1804,6 +1828,7 @@ export class AgentPromptService implements IAgentPromptService {
         alreadyMaterialized: entry.alreadyMaterialized,
         appendTiming: entry.appendTiming,
         revision: entry.revision,
+        deliveryReason: entry.externalDeliveryReason,
         launchedDeferred,
         completionDeferred,
       } as Record;
@@ -1819,6 +1844,7 @@ export class AgentPromptService implements IAgentPromptService {
       record.handle = this.createHandle(record);
       this.pending.push(record);
       this.recoveryPendingIds.add(record.id);
+      if (record.deliveryReason !== undefined) this.queuedExternalSteerIds.add(record.id);
       liveIds.add(record.id);
       recovered += 1;
     }
@@ -2054,10 +2080,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (ids.size === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     if (ids.size !== promptIds.length || selected.length !== ids.size) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     if ((this.profile.data().executorId ?? 'native') !== 'native') {
-      for (const item of selected) {
-        if (this.recoveryPendingIds.has(item.id)) item.deliveryReason = 'external_retry';
-      }
-      const fresh = selected.filter(item => !this.steerAcceptances.has(item.id) && item.deliveryReason === undefined);
+      const fresh = selected.filter(item => !this.steerAcceptances.has(item.id) && item.deliveryReason !== 'external_retry');
       if (fresh.length > 0) {
         const result = this.steerExternal(fresh.map(item => item.id), true).then(() => {}).finally(() => {
           for (const item of fresh) this.steerAcceptances.delete(item.id);
@@ -2339,6 +2362,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const active = this.active;
     let deliveryAttempted = false;
+    let outcome: boolean | 'unknown' = false;
     for (const item of selected) {
       item.deliveryReason = undefined;
       this.steeringPromptIds.add(item.id);
@@ -2349,17 +2373,25 @@ export class AgentPromptService implements IAgentPromptService {
       const message = mergeSteerMessages(selected);
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
       const textOnly = message.content.every((part) => part.type === 'text');
-      deliveryAttempted = active !== undefined && textOnly && execution.steer !== undefined;
-      let outcome: boolean | 'unknown' = false;
       if (active !== undefined && textOnly && execution.steer !== undefined) {
-        try { outcome = await execution.steer(message); }
-        catch (error) {
-          if (!retainUnknown) throw error;
-          outcome = 'unknown';
+        if (retainUnknown) {
+          if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
+          await this.dispatcher.dispatchDurably(new PromptExternalSteerStarted({ promptIds: selected.map(item => item.id) }));
+        }
+        if (this.closing === undefined && this.active === active && selected.every(item => this.pending.includes(item))) {
+          deliveryAttempted = true;
+          try { outcome = await execution.steer(message); }
+          catch (error) {
+            if (!retainUnknown) throw error;
+            outcome = 'unknown';
+          }
         }
       }
-      if (outcome === 'unknown' && selected.every((item) => this.pending.includes(item))) {
-        for (const item of selected) {
+      const remaining = selected.filter(item => this.pending.includes(item));
+      if (remaining.length === 0) return selected.map(item => item.handle);
+      if (outcome === 'unknown') {
+        this.recoveryHold = true;
+        for (const item of remaining) {
           item.deliveryReason = 'external_retry';
           this.recoveryPendingIds.add(item.id);
           this.queuedExternalSteerIds.add(item.id);
@@ -2368,10 +2400,9 @@ export class AgentPromptService implements IAgentPromptService {
             method: 'undelivered', status: 'undelivered',
           }));
         }
-        this.recoveryHold = true;
         this.publishQueueHoldChanged();
-      } else if (outcome === true && active !== undefined && selected.every((item) => this.pending.includes(item))) {
-        for (const item of selected) {
+      } else if (outcome === true && active !== undefined) {
+        for (const item of remaining) {
           const materialized = item.message.origin?.kind === 'agent_message'
             ? hasMailboxMessageInContext(this.context.get(), item.message) : item.alreadyMaterialized;
           if (!materialized) {
@@ -2379,24 +2410,26 @@ export class AgentPromptService implements IAgentPromptService {
             this.appendPrompt(message, captions);
           }
           this.pending.splice(this.pending.indexOf(item), 1);
+          this.recoveryPendingIds.delete(item.id);
+          this.queuedExternalSteerIds.delete(item.id);
           item.state = 'steered';
           item.launchedDeferred.resolve(active.turn);
           this.steeredTurnIds.set(item.id, active.turn.id);
         }
-        this.steered.set(active.id, [...(this.steered.get(active.id) ?? []), ...selected]);
-        for (const item of selected) this.originalPromptMessages.delete(item.id);
+        this.steered.set(active.id, [...(this.steered.get(active.id) ?? []), ...remaining]);
+        for (const item of remaining) this.originalPromptMessages.delete(item.id);
         await this.dispatcher.dispatch(new PromptSteered({
-          activePromptId: active.id, promptIds: selected.map((item) => item.id),
-          content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString(),
+          activePromptId: active.id, promptIds: remaining.map((item) => item.id),
+          content: remaining.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString(),
         }));
-        for (const item of selected) await this.dispatcher.dispatch(new ExecutorHintDelivery({
+        for (const item of remaining) await this.dispatcher.dispatch(new ExecutorHintDelivery({
           turnId: active.turn.id, executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',
           method: 'native_steer', status: 'delivered',
         }));
         this.syncRecoveryHold();
       } else {
-        for (const item of selected) {
-          item.deliveryReason = active === undefined ? 'no_active_turn' : 'executor_deferred';
+        for (const item of remaining) {
+          item.deliveryReason = this.active === undefined ? 'no_active_turn' : 'executor_deferred';
           this.queuedExternalSteerIds.add(item.id);
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',
@@ -2404,9 +2437,11 @@ export class AgentPromptService implements IAgentPromptService {
           }));
         }
       }
+      if (retainUnknown) await this.wire.flush();
       return selected.map((item) => item.handle);
     } catch (error) {
       if (deliveryAttempted && selected.some(item => this.pending.includes(item))) {
+        for (const item of selected) item.deliveryReason = 'external_retry';
         this.recoveryHold = true;
         this.publishQueueHoldChanged();
       }
@@ -3124,6 +3159,7 @@ function snapshot(item: Record): PromptSnapshot {
     appendTiming: item.appendTiming,
     revision: item.revision,
     error: item.error,
+    deliveryReason: item.deliveryReason,
   };
 }
 const MODEL_SWITCH_QUEUE_PREFIX = '\u0000model-switch:';

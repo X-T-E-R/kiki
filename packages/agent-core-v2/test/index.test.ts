@@ -112,6 +112,8 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'prompt.completed',
   'prompt.aborted',
   'prompt.steered',
+  'prompt.steer_accepted',
+  'prompt.external_steer_started',
   'prompt.moved',
   'token_counting.measured',
   'token_counting.truncated',

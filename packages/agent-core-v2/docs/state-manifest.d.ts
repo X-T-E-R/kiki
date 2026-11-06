@@ -8064,8 +8064,9 @@ export interface AgentStateSnapshot {
     };
   }>;
   'prompt.launching': boolean;
-  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
+  // replayable · durable — folds: PromptEnqueued, PromptExternalSteerStarted, ExecutorHintDelivery, ContextUndo, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
   'prompt.queue': /* PersistedPromptQueueState — packages/agent-core-v2/src/agent/prompt/promptService.ts */ {
+    readonly deliveryVersion: 1;
     readonly entries: Map<string, unknown>;
     readonly order: string[];
   };

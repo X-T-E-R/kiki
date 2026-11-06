@@ -514,7 +514,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 通过 `GET /api/sessions/{session_id}/prompts?admission=durable` 读取 `ingress`。将 `ingress_next_cursor` 作为下一页的 `cursor`，直到不再返回游标；即使某一页没有所选 Agent 的条目，也应继续翻页。每页最多扫描 64 个已保存请求，文本预览最长 1024 个字符，并带 `admission_content_truncated: true`。没有文本的已保存请求预览为 `[Attachment]`。原文使用单项读取接口。这两种读取都不加载冷 Agent。目标为子 Agent 时，提交正文及每次查询、操作都须带同一 `agent_id`。
 
-`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。原生立即发送的 `delivery_state: "accepted"` 确认核心已保存立即发送意图，无需等待当前步骤结束。`"steered"` 表示消息已加入目标轮次，`"started"` 表示已启动独立轮次，`"failed"` 和 `"cancelled"` 表示投递终态。外部执行器延后投递时可返回 `"queued"`。这些回执都不证明模型已消费消息；应以转录中的实际投递帧及后续请求为准。较新的 canonical 提示词状态优先于旧回执。
+`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。原生立即发送的 `delivery_state: "accepted"` 确认核心已保存立即发送意图，无需等待当前步骤结束。`"steered"` 表示消息已加入目标轮次，`"started"` 表示已启动独立轮次，`"failed"` 和 `"cancelled"` 表示投递终态。外部执行器延后投递时可返回 `"queued"`。这些回执都不证明模型已消费消息；应以转录中的实际投递帧及后续请求为准。较新的 canonical 提示词状态优先于旧回执。canonical 结果为 `blocked` 时，GUI 结束等待提示并保留被拒绝的消息；旧受理回执晚到也不会恢复等待状态。
 
 可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。`:steer` 响应仅在消息加入轮次后返回 `steered: true`。原生 `delivery_state: "accepted"` 搭配 `steered: false` 表示已成功受理、等待边界，不是拒绝；重试同一 ID 不会创建另一条消息。多 ID 响应在所有选中项状态相同时返回该投递状态。已不在可选队列中的已知提示词返回其原生投递状态或 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。已启动回合及其历史不受影响。普通 `:abort` 仍可停止运行中的提示词。
 
@@ -522,10 +522,10 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | --- | --- |
 | `target_changed` | 投递前活跃轮次或提示词已改变，消息保留在队列中。 |
 | `steer_rejected` | 核心拒绝插入当前轮次，例如执行控制不兼容。 |
-| `executor_deferred` | 外部执行器未将该消息投递到当前运行，消息仍排队等待后续轮次；这不区分操作不受支持或执行器拒绝投递。 |
+| `executor_deferred` | 外部执行器未向当前运行发送该消息，消息仍在队列中。执行器就绪后，可对同一提示词 ID 再次显式调用 `:steer` 重试投递。 |
 | `model_switch_boundary` | 投递正在等待所选模型切换边界。 |
 | `no_active_turn` | 没有可加入的活跃轮次，选中消息沿新轮次路径启动。 |
-| `external_retry` | 已知的外部提交回执被重放，没有重复执行立即投递动作。 |
+| `external_retry` | 没有重复执行立即投递动作：这是重放的外部提交回执，或保留的未知投递结果。 |
 | `prompt_no_longer_pending` | 该提示词已不在可选的待发送队列中；仅凭这一原因既不能确认已投递，也不能认定仍在排队，应读取 canonical 状态。 |
 
 消息等待恢复时，可选的 `restore_progress` 返回 `phase`、`started_at`、`elapsed_ms`；在进程级恢复队列中还返回从 1 开始的 `queue_position`。单次恢复有 60 秒截止时间，包含排队等待；超时后释放恢复槽位，消息保留为 `failed`，并带有 `admission_error`。持久消息在进入核心提交前的准备过程另有 120 秒截止时间。GUI 显示阶段和耗时，并提供 **重试已保存消息**、**取消消息** 操作。
@@ -534,7 +534,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 `failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
 
-外部执行器的立即投递结果未知时，待发送队列会保持恢复确认状态，活跃轮次结束也不会自动启动。`:resume` 会保留请求的 `held` 状态并返回说明错误，不会重复该外部动作。先核对执行器的实际结果，再显式发送或取消保留的提示词。
+外部执行器的立即投递结果未知时，待发送队列会保持恢复确认状态，活跃轮次结束或会话重开后也不会自动启动。再次调用 `:steer` 返回 `external_retry`，不会再次调用执行器；`:resume` 保留持久请求的 `held` 状态并返回说明错误。先核对执行器的实际结果，再显式释放或取消保留的队列。从未尝试外部投递的恢复队列项不是未知结果，仍可选中立即发送。
 
 提交提示词后若响应丢失，重试时保持可选的 `prompt_id` 和完整请求体不变。匹配的重试返回原受理回执，不会重复提交，main agent、附件和内嵌 Skill 提交也遵循此规则。输入改变时须使用新 `prompt_id`；复用已受理 ID 携带不同输入会返回 `40938`。较早的受理请求若没有可重放回执，应检查队列或历史，不要自动再次发送。
 

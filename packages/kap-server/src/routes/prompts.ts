@@ -769,7 +769,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };
           }
           if (replayedSubmission && (resolved.profile.data().executorId ?? 'native') !== 'native') {
-            if (resolved.prompt.list().hold?.reason === 'recovery') {
+            if (resolved.prompt.list().pending.find(item => item.id === result.prompt_id)?.deliveryReason === 'external_retry') {
               throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
             }
             return { ...result, delivery_state: 'queued' as const, delivery_reason: 'external_retry' as const };
@@ -782,17 +782,21 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
               (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
             return { ...result, delivery_state: 'queued' as const, delivery_reason: 'target_changed' as const };
           }
+          let handle: PromptHandle | undefined;
           try {
-            const [handle] = await resolved.prompt.acceptSteer([result.prompt_id], activeTurnId);
-            return { ...result,
-              status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
-              delivery_state: wasSteeredIntoTurn(resolved.prompt, handle, activeTurnId) ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
-              delivery_reason: handle?.deliveryReason };
+            [handle] = await resolved.prompt.acceptSteer([result.prompt_id], activeTurnId);
           } catch (error) {
             if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
             return { ...result, delivery_state: resolved.prompt.list().pending.some(item => item.id === result.prompt_id) ? 'queued' as const : undefined,
               delivery_reason: error.code === ErrorCodes.REQUEST_INVALID ? 'steer_rejected' as const : 'prompt_no_longer_pending' as const };
           }
+          if (handle?.deliveryReason === 'external_retry') {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
+          }
+          return { ...result,
+            status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
+            delivery_state: wasSteeredIntoTurn(resolved.prompt, handle, activeTurnId) ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
+            delivery_reason: handle?.deliveryReason };
         };
         const result = retryPromptId === undefined || retryFingerprint === undefined ? await submitAndDeliver()
           : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submitAndDeliver);

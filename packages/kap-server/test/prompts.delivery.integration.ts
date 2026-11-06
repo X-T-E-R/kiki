@@ -559,6 +559,8 @@ describe('server-v2 /api prompts', () => {
         await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: { admission: 'held' } }));
         expect(steer).toHaveBeenCalledTimes(1);
         expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
+        expect((await call('POST', `${root}/external-now:steer`)).body).toMatchObject({ code: 0, data: { delivery_state: 'queued', delivery_reason: 'external_retry' } });
+        expect(steer).toHaveBeenCalledTimes(1);
         expect((await call('POST', `${root}/external-now:resume?admission=durable`)).body.code).toBe(0);
         await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: {
           admission: 'held', admission_error: { message: expect.stringContaining('external delivery result is unknown') },
@@ -583,9 +585,14 @@ describe('server-v2 /api prompts', () => {
         expect(retried.body.data.delivery_reason).toBe('executor_deferred');
         const explicit = await call<{ delivery_state?: string; delivery_reason?: string }>('POST', `${root}/external-now:steer`);
         expect(explicit.body.data).toMatchObject({ delivery_state: 'queued', delivery_reason: 'executor_deferred' });
+        steer.mockResolvedValueOnce(true);
+        expect((await call('POST', `${root}/external-now:steer`)).body).toMatchObject({ code: 0, data: {
+          steered: true, prompt_ids: ['external-now'], delivery_state: 'steered',
+        } });
+        expect(prompt.lookup('external-now')).toMatchObject({ promptId: 'external-now', steered: true });
       }
-      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : scenario === 'unsupported' ? 2 : 1);
-      expect(prompt.list().pending.some(item => item.id === 'external-now')).toBe(scenario !== 'same-target');
+      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : scenario === 'unsupported' ? 3 : 1);
+      expect(prompt.list().pending.some(item => item.id === 'external-now')).toBe(scenario === 'changed-target');
     } finally { gate.resolve(); resume?.mockRestore(); held.finish(); executor.mockRestore(); }
   });
 

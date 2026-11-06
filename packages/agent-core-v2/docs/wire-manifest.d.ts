@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (94 record types)
+// Index (95 record types)
 //   agent_message.delivered                agentCollaboration.messageReceipts                                                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                     contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed          autoCompactOverride                                                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -36,11 +36,11 @@
 //   context.append_message                 agentCollaboration.materializedMessages.v2, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, subagent.autonomousReceipts, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction               contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                                       src/agent/contextMemory/contextEvents.ts
 //   context.clear                          contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                                                           src/agent/contextMemory/contextEvents.ts
-//   context.undo                           contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                                                     src/agent/contextMemory/contextEvents.ts
+//   context.undo                           contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                                       src/agent/contextMemory/contextEvents.ts
 //   executor.auth.observed                 externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.remove                   externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update                   externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
-//   executor.prompt.delivery               externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
+//   executor.prompt.delivery               externalExecutor, prompt.queue                                                                                                                                                                                       src/agent/execution/externalExecutorOps.ts
 //   executor.runtime.update                externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.session.updated               externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.tool.display                  externalExecutor                                                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
@@ -72,20 +72,21 @@
 //   plugin.session_start                   pluginSessionStartSnapshot                                                                                                                                                                                           src/agent/plugin/agentPluginOps.ts
 //   profile.bind                           profile, profile.activeTools                                                                                                                                                                                         src/agent/profile/profileOps.ts
 //   profile.dynamic_snapshot               profile.dynamicSnapshot                                                                                                                                                                                              src/agent/profile/dynamicPrompt.ts
-//   prompt.aborted                         promptResolution                                                                                                                                                                                                     src/agent/prompt/promptService.ts
+//   prompt.aborted                         prompt.queue, promptResolution                                                                                                                                                                                       src/agent/prompt/promptService.ts
 //   prompt.accepted                        promptAdmission                                                                                                                                                                                                      src/agent/prompt/promptOps.ts
-//   prompt.completed                       promptResolution                                                                                                                                                                                                     src/agent/prompt/promptService.ts
-//   prompt.enqueued                        prompt.identity, promptAdmission, promptRetryReceipt                                                                                                                                                                 src/agent/prompt/promptService.ts
-//   prompt.launch_committed                prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
-//   prompt.model_switch_queued             prompt.modelSwitches                                                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
-//   prompt.model_switch_status             prompt.modelSwitches                                                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
-//   prompt.moved                           (none)                                                                                                                                                                                                               src/agent/prompt/promptService.ts
-//   prompt.outcome_committed               prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptReplay.ts
-//   prompt.replaced                        prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
+//   prompt.completed                       prompt.queue, promptResolution                                                                                                                                                                                       src/agent/prompt/promptService.ts
+//   prompt.enqueued                        prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt                                                                                                                                                   src/agent/prompt/promptService.ts
+//   prompt.external_steer_started          prompt.queue                                                                                                                                                                                                         src/agent/prompt/promptService.ts
+//   prompt.launch_committed                prompt.identity, prompt.queue                                                                                                                                                                                        src/agent/prompt/promptService.ts
+//   prompt.model_switch_queued             prompt.modelSwitches, prompt.queue                                                                                                                                                                                   src/agent/prompt/modelSwitchQueueOps.ts
+//   prompt.model_switch_status             prompt.modelSwitches, prompt.queue                                                                                                                                                                                   src/agent/prompt/modelSwitchQueueOps.ts
+//   prompt.moved                           prompt.queue                                                                                                                                                                                                         src/agent/prompt/promptService.ts
+//   prompt.outcome_committed               prompt.identity, prompt.queue                                                                                                                                                                                        src/agent/prompt/promptReplay.ts
+//   prompt.replaced                        prompt.identity, prompt.queue                                                                                                                                                                                        src/agent/prompt/promptService.ts
 //   prompt.retry_committed                 promptRetryReceipt                                                                                                                                                                                                   src/agent/prompt/promptOps.ts
 //   prompt.steer_accepted                  prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
-//   prompt.steered                         prompt.identity, promptResolution                                                                                                                                                                                    src/agent/prompt/promptService.ts
-//   prompt.timing_changed                  prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
+//   prompt.steered                         prompt.identity, prompt.queue, promptResolution                                                                                                                                                                      src/agent/prompt/promptService.ts
+//   prompt.timing_changed                  prompt.identity, prompt.queue                                                                                                                                                                                        src/agent/prompt/promptService.ts
 //   runtime.set_binding                    runtimeBinding                                                                                                                                                                                                       src/agent/runtimeBinding/runtimeBindingOps.ts
 //   session.delivery                       (none)                                                                                                                                                                                                               src/agent/delivery/deliveryReminder.ts
 //   staleGuard.cleared                     staleGuard                                                                                                                                                                                                           src/features/staleGuard/staleGuardOps.ts
@@ -328,7 +329,7 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, promptRetryReceipt
+ * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, prompt.queue, promptRetryReceipt
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {
@@ -379,7 +380,7 @@ interface ExecutorPlanUpdatePayload {
 }
 
 /**
- * states: externalExecutor
+ * states: externalExecutor, prompt.queue · blobs: prompt.queue
  * owner: src/agent/execution/externalExecutorOps.ts
  */
 interface ExecutorPromptDeliveryPayload {
@@ -913,7 +914,7 @@ interface ProfileDynamicSnapshotPayload {
 }
 
 /**
- * states: promptResolution
+ * states: prompt.queue, promptResolution · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptAbortedPayload {
@@ -933,7 +934,7 @@ interface PromptAcceptedPayload {
 }
 
 /**
- * states: promptResolution
+ * states: prompt.queue, promptResolution · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptCompletedPayload {
@@ -988,7 +989,7 @@ interface PromptCompletedPayload {
 }
 
 /**
- * states: prompt.identity, promptAdmission, promptRetryReceipt · blobs: promptRetryReceipt
+ * states: prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt · blobs: prompt.queue, promptRetryReceipt
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptEnqueuedPayload {
@@ -1061,7 +1062,16 @@ interface PromptEnqueuedPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.queue · blobs: prompt.queue
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptExternalSteerStartedPayload {
+  _name: 'prompt.external_steer_started';
+  promptIds: string[];
+}
+
+/**
+ * states: prompt.identity, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptLaunchCommittedPayload {
@@ -1073,7 +1083,7 @@ interface PromptLaunchCommittedPayload {
 }
 
 /**
- * states: prompt.modelSwitches
+ * states: prompt.modelSwitches, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/modelSwitchQueueOps.ts
  */
 interface PromptModelSwitchQueuedPayload {
@@ -1117,7 +1127,7 @@ interface PromptModelSwitchQueuedPayload {
 }
 
 /**
- * states: prompt.modelSwitches
+ * states: prompt.modelSwitches, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/modelSwitchQueueOps.ts
  */
 interface PromptModelSwitchStatusPayload {
@@ -1145,7 +1155,7 @@ interface PromptModelSwitchStatusPayload {
 }
 
 /**
- * states: (none)
+ * states: prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptMovedPayload {
@@ -1157,7 +1167,7 @@ interface PromptMovedPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.identity, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/promptReplay.ts
  */
 interface PromptOutcomeCommittedPayload {
@@ -1172,7 +1182,7 @@ interface PromptOutcomeCommittedPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.identity, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptReplacedPayload {
@@ -1261,7 +1271,7 @@ interface PromptSteerAcceptedPayload {
 }
 
 /**
- * states: prompt.identity, promptResolution
+ * states: prompt.identity, prompt.queue, promptResolution · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptSteeredPayload {
@@ -1273,7 +1283,7 @@ interface PromptSteeredPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.identity, prompt.queue · blobs: prompt.queue
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptTimingChangedPayload {
@@ -1794,6 +1804,7 @@ interface WirePayloadMap {
   "prompt.accepted": PromptAcceptedPayload;
   "prompt.completed": PromptCompletedPayload;
   "prompt.enqueued": PromptEnqueuedPayload;
+  "prompt.external_steer_started": PromptExternalSteerStartedPayload;
   "prompt.launch_committed": PromptLaunchCommittedPayload;
   "prompt.model_switch_queued": PromptModelSwitchQueuedPayload;
   "prompt.model_switch_status": PromptModelSwitchStatusPayload;

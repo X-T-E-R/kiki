@@ -32,6 +32,7 @@ import {
   PromptAborted,
   PromptCompleted,
   PromptEnqueued,
+  PromptExternalSteerStarted,
   PromptLaunchCommitted,
   PromptMoved,
   PromptQueued,
@@ -261,7 +262,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   let activeTasks: readonly AgentTaskInfo[] = [];
   const taskService = { list: vi.fn(() => activeTasks) };
   const externalTurns: Array<{ finish(): void }> = [];
-  const externalSteer = vi.fn(async () => true);
+  const externalSteer = vi.fn(async (): Promise<boolean | 'unknown'> => true);
   const externalRun = vi.fn(async () => {
     const finished = deferred<{ type: 'completed'; steps: number; truncated: boolean }>();
     const turn = { id: 200 + externalTurns.length, state: 'running' as const,
@@ -546,7 +547,102 @@ describe('AgentPromptService', () => {
     await queued.completion;
   });
 
-  it('holds an unknown external steer until the queue is explicitly released', async () => {
+  it('shares an in-flight external attempt and retries a definite refusal on the same prompt', async () => {
+    const { prompt, setExecutor, externalSteer, externalRun, externalTurns, eventBus, states } = harness();
+    const deliveries: ExecutorHintDelivery[] = [];
+    eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
+    setExecutor('grok-acp');
+    const refused = deferred<boolean>();
+    externalSteer.mockImplementationOnce(() => {
+      expect(states.get(promptQueueKey).entries.get('queued')).toMatchObject({ externalDeliveryReason: 'external_retry' });
+      return refused.promise;
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    await active.launched;
+    const queued = await prompt.enqueue({ id: 'queued', userMessageId: 'logical-queued', message: message('follow up') });
+    const first = prompt.acceptSteer([queued.id]);
+    const duplicate = prompt.acceptSteer([queued.id]);
+    await vi.waitFor(() => expect(externalSteer).toHaveBeenCalledTimes(1));
+    refused.resolve(false);
+    await expect(Promise.all([first, duplicate])).resolves.toEqual([[queued], [queued]]);
+    expect(queued.deliveryReason).toBe('executor_deferred');
+    expect(states.get(promptQueueKey).entries.get(queued.id)).toMatchObject({ externalDeliveryReason: 'executor_deferred' });
+    await expect(prompt.acceptSteer([queued.id])).resolves.toEqual([queued]);
+    expect(queued.state).toBe('steered');
+    expect(queued.userMessageId).toBe('logical-queued');
+    expect(externalSteer).toHaveBeenCalledTimes(2);
+    expect(deliveries).toEqual([
+      expect.objectContaining({ promptId: queued.id, method: 'next_turn_preamble', status: 'queued' }),
+      expect.objectContaining({ promptId: queued.id, method: 'native_steer', status: 'delivered' }),
+    ]);
+    expect(externalRun).toHaveBeenCalledTimes(1);
+    externalTurns[0]!.finish();
+    await Promise.all([active.completion, queued.completion]);
+  });
+
+  it('holds the surviving unknown external prompt when a neighbour in the attempt is cancelled', async () => {
+    const { prompt, setExecutor, externalSteer, externalRun, externalTurns } = harness();
+    setExecutor('grok-acp');
+    const response = deferred<'unknown'>();
+    externalSteer.mockImplementationOnce(() => response.promise);
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    await active.launched;
+    const first = await prompt.enqueue({ id: 'first', message: message('keep') });
+    const second = await prompt.enqueue({ id: 'second', message: message('cancel') });
+    const attempt = prompt.acceptSteer([first.id, second.id]);
+    await vi.waitFor(() => expect(externalSteer).toHaveBeenCalledTimes(1));
+    expect(prompt.abort(second.id)).toBe(true);
+    response.resolve('unknown');
+    await attempt;
+    expect(first.deliveryReason).toBe('external_retry');
+    await prompt.acceptSteer([first.id]);
+    expect(externalSteer).toHaveBeenCalledTimes(1);
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect(externalRun).toHaveBeenCalledTimes(1);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(prompt.abort(first.id)).toBe(true);
+    await Promise.all([first.completion, second.completion]);
+  });
+
+  it.each(['ordinary', 'deferred', 'unknown', 'in-flight'] as const)('restores external delivery evidence separately from a queue recovery hold: %s', async previous => {
+    const unknown = previous === 'unknown' || previous === 'in-flight';
+    const { prompt, setExecutor, dispatcher, externalSteer, externalRun, externalTurns } = harness();
+    setExecutor('grok-acp');
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    await active.launched;
+    await dispatcher.dispatch(new PromptEnqueued({ schemaVersion: 1, promptId: 'restored', userMessageId: 'logical-restored',
+      message: message('restored'), createdAt: new Date(0).toISOString(), appendTiming: 'tasks_done',
+      revision: 0, queueIndex: 0, alreadyMaterialized: false }));
+    if (previous === 'in-flight') await dispatcher.dispatch(new PromptExternalSteerStarted({ promptIds: ['restored'] }));
+    else if (previous !== 'ordinary') await dispatcher.dispatch(new ExecutorHintDelivery({ promptId: 'restored', origin: 'user',
+      method: unknown ? 'undelivered' : 'next_turn_preamble', status: unknown ? 'undelivered' : 'queued' }));
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    const [selected] = await prompt.acceptSteer(['restored']);
+    expect(selected).toMatchObject({ id: 'restored', userMessageId: 'logical-restored', state: unknown ? 'pending' : 'steered' });
+    expect(externalSteer).toHaveBeenCalledTimes(unknown ? 0 : 1);
+    expect(prompt.list().hold).toEqual(unknown ? { reason: 'recovery', count: 1 } : undefined);
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect(externalRun).toHaveBeenCalledTimes(1);
+    if (unknown) {
+      await prompt.acceptSteer(['restored']);
+      expect(externalSteer).not.toHaveBeenCalled();
+      expect(prompt.abort('restored')).toBe(true);
+    }
+    await selected!.completion;
+  });
+
+  it('invalidates older queue checkpoints only if pending entries lack external delivery evidence', () => {
+    const empty = { entries: new Map(), order: [] };
+    const pending = { entries: new Map([['queued', {}]]), order: ['queued'] };
+    expect(promptQueueKey.replayable.schema.parse(empty)).toEqual({ ...empty, deliveryVersion: 1 });
+    expect(promptQueueKey.replayable.schema.safeParse(pending).success).toBe(false);
+    expect(promptQueueKey.replayable.schema.safeParse({ ...pending, deliveryVersion: 1 }).success).toBe(true);
+  });
+
+  it.each(['steer', 'acceptSteer'] as const)('holds an unknown external %s until the queue is explicitly released', async method => {
     const { prompt, setExecutor, externalSteer, externalRun, externalTurns, eventBus } = harness();
     const deliveries: ExecutorHintDelivery[] = [];
     eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
@@ -554,7 +650,9 @@ describe('AgentPromptService', () => {
     externalSteer.mockResolvedValue('unknown' as never);
     const active = await prompt.enqueue({ id: 'active', message: message('work') });
     const queued = await prompt.enqueue({ id: 'queued', message: message('maybe sent') });
-    await prompt.steer([queued.id]);
+    await prompt[method]([queued.id]);
+    await prompt.acceptSteer([queued.id]);
+    expect(externalSteer).toHaveBeenCalledTimes(1);
     expect(queued.state).toBe('pending');
     expect(queued.deliveryReason).toBe('external_retry');
     expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
@@ -1527,7 +1625,7 @@ describe('AgentPromptService', () => {
       entries.set(entry.promptId, entry);
       order.push(entry.promptId);
     }
-    states.set(promptQueueKey, { entries, order });
+    states.set(promptQueueKey, { ...persisted, entries, order });
 
     await dispatcher.hooks.onDidRestore.run({});
     expect(prompt.list().pending).toEqual([]);
