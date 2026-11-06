@@ -822,6 +822,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       }
     };
     try {
+      if (mode === 'preserve-pending') handle.accessor.get(IAgentPromptService).preservePendingForClose();
       await collect(() => handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed'), 'cleanup');
       const reason = abortError('Agent removed');
       let execution: IAgentExecutionService | undefined;

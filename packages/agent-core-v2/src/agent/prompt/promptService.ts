@@ -593,6 +593,7 @@ interface Record extends PromptSnapshot {
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
   detachedForClose?: boolean;
+  releaseSubmissionSignal?: () => void;
   outcomeCommitted?: boolean;
 }
 
@@ -1415,15 +1416,15 @@ export class AgentPromptService implements IAgentPromptService {
         onUnexpectedError(error);
       }
     }
-    if (signal?.aborted) {
-      this.cancelUnlaunched(record, true);
-      throw submissionCancelled(record.id);
-    }
     if (this.closing !== undefined) {
       if (this.closing === 'preserve-pending') this.detachPendingForClose(record);
       else this.cancelUnlaunched(record, true);
       await this.wire.flush();
       return record.handle;
+    }
+    if (signal?.aborted) {
+      this.cancelUnlaunched(record, true);
+      throw submissionCancelled(record.id);
     }
     this.pending.push(record);
     this.bindSubmissionSignal(record, signal);
@@ -1451,9 +1452,11 @@ export class AgentPromptService implements IAgentPromptService {
       this.cancelLivePrompt(record.id, signalReason(signal));
     };
     signal.addEventListener('abort', onAbort, { once: true });
-    void record.completionDeferred.promise.then(() =>
-      signal.removeEventListener('abort', onAbort),
-    );
+    record.releaseSubmissionSignal = () => {
+      signal.removeEventListener('abort', onAbort);
+      record.releaseSubmissionSignal = undefined;
+    };
+    void record.completionDeferred.promise.then(() => record.releaseSubmissionSignal?.());
   }
 
   private findMailboxOriginHandle(messageId: string): PromptHandle | undefined {
@@ -2500,6 +2503,14 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private closing: 'cancel' | 'preserve-pending' | undefined;
+
+  preservePendingForClose(): void {
+    this.closing = 'preserve-pending';
+    for (const item of this.pending) item.releaseSubmissionSignal?.();
+    if (this.launchingPrompt !== undefined && !this.launchingCommitStarted) {
+      for (const item of this.launchingBatch) item.releaseSubmissionSignal?.();
+    }
+  }
 
   private detachPendingForClose(item: Record): void {
     item.detachedForClose = true;

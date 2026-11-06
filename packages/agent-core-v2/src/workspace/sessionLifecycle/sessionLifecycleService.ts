@@ -1121,7 +1121,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.receiptDiscoveries.delete(handle);
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
     const failures: unknown[] = [];
-    for (const agent of agentLifecycle.list()) {
+    const agents = agentLifecycle.list();
+    if (mode === 'preserve-pending') {
+      for (const agent of agents) agent.accessor.get(IAgentPromptService).preservePendingForClose();
+    }
+    for (const agent of agents) {
       try {
         await agentLifecycle.remove(agent.id, mode);
       } catch (error) {

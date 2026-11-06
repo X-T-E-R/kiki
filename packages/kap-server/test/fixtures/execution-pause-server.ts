@@ -108,6 +108,11 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
         role: 'user', content: [{ type: 'text', text: 'observe original child' }], toolCalls: [], origin: { kind: 'user' },
       }, waitForLaunch: false });
       process.send?.({ type: 'observing' });
+    } else if (message.type === 'parked-child') {
+      const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;
+      const child = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'parked-child',
+        delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+      process.send?.({ type: 'parked-child', childId: child.id });
     } else if (message.type === 'child') {
       const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;
       const main = await ensureMainAgent(session);

@@ -437,9 +437,11 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAgentPromptService, {
       _serviceBrand: undefined,
       drain: promptDrain,
+      preservePendingForClose: () => {},
     });
     class StubPromptService {
       declare readonly _serviceBrand: undefined;
+      preservePendingForClose() {}
       drain = promptDrain;
     }
     overrideScopedService<Partial<IAgentPromptService>>(
@@ -682,11 +684,12 @@ describe('AgentLifecycleService', () => {
       ix.stub(ISessionInteractionService, { cancelPendingForTurn: () => {}, listPending: () => [], onDidChangePending: Event.None as ISessionInteractionService['onDidChangePending'] });
       class ReceiptPromptService {
         declare readonly _serviceBrand: undefined;
+        preservePendingForClose() {}
         drain = promptDrain;
         list = () => ({ active: undefined, pending: [] });
       }
       overrideScopedService<Partial<IAgentPromptService>>(LifecycleScope.Agent, IAgentPromptService, ReceiptPromptService, ScopeActivation.OnDemand);
-      ix.stub(IAgentPromptService, { drain: promptDrain, list: () => ({ pending: [] }) } as unknown as IAgentPromptService);
+      ix.stub(IAgentPromptService, { drain: promptDrain, preservePendingForClose: () => {}, list: () => ({ pending: [] }) } as unknown as IAgentPromptService);
       const metadata = ix.get(ISessionMetadata);
       const update = metadata.updateAgent.bind(metadata);
       vi.spyOn(metadata, 'updateAgent').mockImplementation(async (id, change) => {

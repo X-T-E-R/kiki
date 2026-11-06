@@ -87,6 +87,8 @@ describe('RestGateway', () => {
       },
       submitSteer: () => Promise.resolve(undefined),
       steer: () => Promise.resolve([]),
+      acceptSteer: () => Promise.resolve([]),
+      preservePendingForClose: () => {},
       list: () => ({ active: undefined, pending: [] }),
       hasReadyPending: () => false,
       hasQueuedWork: () => false,

@@ -282,6 +282,8 @@ export interface IAgentPromptService {
   abort(promptId: string, reason?: Error): boolean;
   /** Remove an unlaunched queued request without cancelling a turn it has joined. */
   abortQueued(promptId: string): Promise<boolean>;
+  /** Stop admission and unlink unstarted requests from runtime cancellation before closing their task and execution owners. */
+  preservePendingForClose(): void;
   /**
    * Stops admission and settles owned launch preparation and recovery hydration.
    * The default cancels durable pending requests. Normal owner shutdown uses

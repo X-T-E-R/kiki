@@ -1161,8 +1161,9 @@ describe('AgentPromptService', () => {
       { type: 'text', text: 'queued one', presentation },
       { type: 'image_url', imageUrl: { url: 'https://example.test/queued.png', id: 'file-1', name: 'queued.png' } },
     ];
+    const runtime = new AbortController();
     const first = await prompt.enqueue({
-      id: 'request-one', userMessageId: 'logical-one', message: { role: 'user', content, toolCalls: [], origin }, appendTiming: 'tasks_done',
+      id: 'request-one', userMessageId: 'logical-one', message: { role: 'user', content, toolCalls: [], origin }, appendTiming: 'tasks_done', signal: runtime.signal,
     });
     const second = await prompt.enqueue({
       id: 'request-two', userMessageId: 'logical-two', message: { role: 'user', content: [{ type: 'text', text: 'queued two', presentation }], toolCalls: [], origin }, appendTiming: 'tasks_done',
@@ -1170,6 +1171,10 @@ describe('AgentPromptService', () => {
     expect(prompt.list().pending.map((item) => item.id)).toEqual(['request-one', 'request-two']);
 
     const reason = new Error('session closing');
+    prompt.preservePendingForClose();
+    runtime.abort(reason);
+    expect(prompt.list().pending.map(item => item.id)).toEqual(['request-one', 'request-two']);
+    expect(prompt.lookup('request-one')?.phase).toBe('pending');
     const draining = prompt.drain(reason, 'preserve-pending');
     await vi.waitFor(() => expect(loop.cancels).toHaveLength(1));
     loop.settleActive({ type: 'cancelled', steps: 0, reason });

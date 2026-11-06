@@ -13,7 +13,6 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
-import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';

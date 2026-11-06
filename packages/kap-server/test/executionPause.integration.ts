@@ -309,6 +309,58 @@ it('holds an execution across clean process exit and resumes its saved turn expl
   }
 }, 90_000);
 
+it.each(['existing', 'new', 'cancelled'] as const)('retains accepted child Send now across paused process restart (%s)', async source => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-paused-steer-'));
+  await writeFile(join(home, 'config.toml'), 'default_model = "stub"\n[search]\nenabled = false\n[cron]\nmanualTick = true\n');
+  let first: Awaited<ReturnType<typeof boot>> | undefined;
+  let second: Awaited<ReturnType<typeof boot>> | undefined;
+  try {
+    first = await boot(home, true);
+    const session = await first.request<{ id: string }>('/api/sessions', { metadata: { cwd: home }, agent_config: { permission_mode: 'manual' } });
+    first.child.send({ type: 'parked-child', sessionId: session.id });
+    expect((await first.wait('parked-child')).childId).toBe('parked-child');
+    await first.client.session(session.id).execution.pause({ operationId: 'pause-send-now' });
+    await vi.waitFor(async () => expect(await first!.client.session(session.id).execution.read()).toMatchObject({ phase: 'paused' }));
+    const promptId = 'accepted-child-note';
+    const root = `/api/sessions/${session.id}/prompts`;
+    const body = { prompt_id: promptId, agent_id: 'parked-child', content: [{ type: 'text', text: 'Deliver the retained child note once.' }] };
+    if (source === 'existing') {
+      await first.request(`${root}?receipt=true`, body);
+      expect(await first.request(`${root}/${promptId}:steer?agent_id=parked-child`, {})).toMatchObject({ delivery_state: 'accepted', steered: false });
+    } else {
+      expect(await first.request(root, { ...body, admission: 'durable', delivery_mode: 'steer' })).toMatchObject({ admission: 'restoring' });
+      await vi.waitFor(async () => expect(await first!.request(`${root}/${promptId}?agent_id=parked-child&admission=durable`)).toMatchObject({ admission: 'admitted', delivery_state: 'accepted' }));
+    }
+    const waiting = await first.client.session(session.id).view.transcript.page({ agentId: 'parked-child' });
+    expect(waiting.prompts).toContainEqual(expect.objectContaining({ promptId, status: 'queued', steerAccepted: true }));
+    expect(waiting.items.filter(item => item.kind === 'turn')).toHaveLength(0);
+    expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(0);
+    if (source === 'cancelled') expect(await first.client.session(session.id).commands.abort(promptId, 'parked-child', true)).toMatchObject({ aborted: true });
+    await cleanExit(first);
+    second = await boot(home, false);
+    const reopened = await second.client.session(session.id).view.transcript.page({ agentId: 'parked-child' });
+    expect(reopened.prompts).toContainEqual(expect.objectContaining({ promptId, status: source === 'cancelled' ? 'aborted' : 'queued', steerAccepted: true }));
+    expect(reopened.prompts.find(item => item.promptId === promptId)?.abortedBeforeStart).toBe(source === 'cancelled' ? true : undefined);
+    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(0);
+    await second.client.session(session.id).execution.resume({ operationId: 'resume-send-now', pauseOperationId: 'pause-send-now' });
+    await vi.waitFor(async () => {
+      const delivered = await second!.client.session(session.id).view.transcript.page({ agentId: 'parked-child' });
+      expect(delivered.prompts).toContainEqual(expect.objectContaining({ promptId, status: source === 'cancelled' ? 'aborted' : 'completed' }));
+      expect(delivered.items.filter(item => item.kind === 'turn' && item.promptId === promptId)).toHaveLength(source === 'cancelled' ? 0 : 1);
+    }, { timeout: 10_000 });
+    const expectedRequests = source === 'cancelled' ? 0 : 1;
+    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(expectedRequests);
+    await second.client.session(session.id).execution.resume({ operationId: 'resume-send-now', pauseOperationId: 'pause-send-now' });
+    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(expectedRequests);
+    await cleanExit(second);
+  } finally {
+    await first?.client.close(); await second?.client.close();
+    if (first !== undefined) await retireFixtureChild(first.child);
+    if (second !== undefined) await retireFixtureChild(second.child);
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 90_000);
+
 it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch', 'AgentRun completed'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
   const completed = mode === 'AgentRun completed';
   const observer = mode === 'TaskWait' || mode === 'AgentRun' || completed;

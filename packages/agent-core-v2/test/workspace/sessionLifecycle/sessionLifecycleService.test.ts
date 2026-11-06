@@ -628,6 +628,7 @@ describe('SessionLifecycleService unload', () => {
   it('identifies the awaited session tail after agent disposal without announcing premature close', async () => {
     const remove = vi.fn(async () => {});
     const agentAccessor = Object.assign(accessor([
+      [IAgentPromptService, { preservePendingForClose: () => {} }],
       [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
     ]), { remove });
     const fx = fixture(undefined, agentAccessor);
@@ -760,7 +761,7 @@ describe('SessionLifecycleService unload', () => {
     const remove = vi.fn(async () => {});
     const agentAccessor = Object.assign(accessor([
       [IEventDispatcher, { saveReplayCheckpoint: failed }],
-      [IAgentPromptService, { list: () => ({ pending: [] }) }],
+      [IAgentPromptService, { preservePendingForClose: () => {}, list: () => ({ pending: [] }) }],
       [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
       [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
     ]), { remove });
@@ -769,7 +770,7 @@ describe('SessionLifecycleService unload', () => {
     const main = agents.list()[0]!;
     vi.spyOn(agents, 'list').mockReturnValue([main, {
       ...main, id: 'child', accessor: accessor([[IEventDispatcher, { saveReplayCheckpoint: saved }],
-        [IAgentPromptService, { list: () => ({ pending: [] }) }],
+        [IAgentPromptService, { preservePendingForClose: () => {}, list: () => ({ pending: [] }) }],
         [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
         [IAgentExecutionService, { status: () => ({ state: 'idle' }) }]]),
     }]);
@@ -810,7 +811,7 @@ describe('SessionLifecycleService unload', () => {
     try {
       for (let id = 1; id <= 8; id++) await manager.resume(`resident-${id}`);
       await expect(manager.resume('ninth-session')).resolves.toMatchObject({ id: 'ninth-session' });
-      expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 9, evictionAttempts: 8, evictionFailures: 0 });
+      await vi.waitFor(() => expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 9, evictionAttempts: 8, evictionFailures: 0 }));
       expect(saved).toHaveBeenCalledTimes(9);
       expect(fx.service.get('session-1')).toBe(fx.handle);
       await expect(fx.service.archive('session-1')).resolves.toBeUndefined();
@@ -829,6 +830,7 @@ describe('SessionLifecycleService unload', () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Example checkpoint storage is full');
     const remove = vi.fn(async () => {});
     const agentAccessor = Object.assign(accessor([
+      [IAgentPromptService, { preservePendingForClose: () => {} }],
       [IEventDispatcher, { saveReplayCheckpoint: async () => { throw durableFailure; } }],
     ]), { remove });
     const fx = fixture(undefined, agentAccessor);
@@ -855,6 +857,7 @@ describe('SessionLifecycleService unload', () => {
     });
     const remove = vi.fn(async () => {});
     const agentAccessor = Object.assign(accessor([
+      [IAgentPromptService, { preservePendingForClose: () => {} }],
       [IEventDispatcher, { saveReplayCheckpoint: checkpoint }],
     ]), { remove });
     const fx = fixture(undefined, agentAccessor);
@@ -874,6 +877,7 @@ describe('SessionLifecycleService unload', () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
     const remove = vi.fn<() => Promise<void>>().mockRejectedValueOnce(durableFailure).mockResolvedValue(undefined);
     const agentAccessor = Object.assign(accessor([
+      [IAgentPromptService, { preservePendingForClose: () => {} }],
       [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
     ]), { remove });
     const fx = fixture(undefined, agentAccessor);
