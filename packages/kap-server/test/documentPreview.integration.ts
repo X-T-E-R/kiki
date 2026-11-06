@@ -11,6 +11,8 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { startServer, type RunningServer } from '../src/start';
+import { ErrorCode } from '@kiki/protocol';
+import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 interface Envelope<T = unknown> {
@@ -105,7 +107,79 @@ async function createSessionForProof(app: ReturnType<typeof appOf>, cwd: string)
   throw new Error('session creation retry budget exhausted');
 }
 
+function onePagePdf(): Buffer {
+  const text = 'BT /F1 26 Tf 40 136 Td (Local document preview) Tj ET\nBT /F1 12 Tf 40 108 Td (PDF loaded from Downloads outside the session workspace.) Tj ET\n';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 440 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${text.length} >>\nstream\n${text}endstream`,
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = objects.map((object, index) => {
+    const offset = pdf.length;
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${offsets.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  return Buffer.from(pdf + `trailer\n<< /Size ${offsets.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+}
+
 describe('real document preview REST proof', () => {
+  it('renders an explicit local Downloads PDF through authenticated HTTP without granting relative or remote escapes', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'kiki-document-preview-local-'));
+    const workDir = join(fixture, 'workspace');
+    const downloads = join(fixture, 'Downloads', '测试 资料');
+    const name = '报告 预览.pdf';
+    const path = join(downloads, name);
+    const bytes = onePagePdf();
+    const oldPath = process.env['PATH'];
+    let server: RunningServer | undefined;
+    try {
+      await mkdir(workDir);
+      await mkdir(downloads, { recursive: true });
+      await writeFile(path, bytes);
+      await mkdir(join(workDir, '..drafts'));
+      await writeFile(join(workDir, '..drafts', 'notes.txt'), 'Still inside the session workspace.');
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: join(fixture, 'kiki-home'), env: { ...process.env, KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
+      const sessionId = await createSessionForProof(appOf(server), workDir);
+      const base = `http://127.0.0.1:${server.port}`;
+      const route = `/api/sessions/${encodeURIComponent(sessionId)}/document-preview`;
+      const request = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: { kind: 'workspace', path }, page: 1 }) };
+      process.env['PATH'] = fixture;
+      expect((await fetch(base + route, request)).status).toBe(401);
+      const response = await authedFetch(server, base, route, request);
+      const envelope = await response.json() as Envelope<PreviewReady>;
+      expect(response.status, envelope.msg).toBe(200);
+      expect(envelope).toMatchObject({ code: 0, data: { kind: 'ready', format: 'pdf', renderer: 'browser-pdf', source: { name } } });
+      const asset = await authedFetch(server, base, envelope.data!.assets[0]!.url);
+      expect(asset.status).toBe(200);
+      expect(asset.headers.get('content-type')).toBe('application/pdf');
+      const payload = Buffer.from(await asset.arrayBuffer());
+      expect(payload).toEqual(bytes);
+
+      const relativeEscape = await authedFetch(server, base, route, { ...request, body: JSON.stringify({ source: { kind: 'workspace', path: `../Downloads/测试 资料/${name}` } }) });
+      expect(await relativeEscape.json()).toMatchObject({ code: ErrorCode.FS_PATH_ESCAPES_SESSION });
+      const nonLoopback = await appOf(server).inject({ method: 'POST', url: route, remoteAddress: '192.0.2.10', payload: JSON.parse(request.body) });
+      expect(await json(nonLoopback)).toMatchObject({ code: ErrorCode.FS_PATH_ESCAPES_SESSION });
+      const inWorkspace = await authedFetch(server, base, route, { ...request, body: JSON.stringify({ source: { kind: 'workspace', path: '..drafts/notes.txt' } }) });
+      expect(await inWorkspace.json()).toMatchObject({ code: 0, data: { kind: 'text', content: 'Still inside the session workspace.' } });
+      const missing = await authedFetch(server, base, route, { ...request, body: JSON.stringify({ source: { kind: 'workspace', path: join(downloads, '不存在.pdf') } }) });
+      expect(await missing.json()).toMatchObject({ code: ErrorCode.FS_PATH_NOT_FOUND });
+      const output = process.env['KIKI_PREVIEW_PROOF_ARTIFACT_DIR'];
+      if (output !== undefined) {
+        await mkdir(output, { recursive: true });
+        await writeFile(join(output, name), payload);
+      }
+    } finally {
+      process.env['PATH'] = oldPath;
+      await server?.close();
+      await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
   it.skipIf(process.env['KIKI_PREVIEW_PLUGIN_STATE_PROOF'] !== '1' || !pluginStateProofEnabled())('reports not-installed and disabled plugin states without auto-enabling', async () => {
     const docxPath = process.env['KIKI_PREVIEW_DOCX']!;
     const officecliPath = process.env['KIKI_PREVIEW_OFFICECLI']!;

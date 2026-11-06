@@ -4,7 +4,8 @@ export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms
 
 export const htmlPreviewRequestSchema = z.object({
   path: z.string().min(1),
-  root: z.string().min(1),
+  root: z.string().min(1).optional(),
+  workspace_root: z.string().min(1).optional(),
 }).strict();
 export type HtmlPreviewRequest = z.infer<typeof htmlPreviewRequestSchema>;
 

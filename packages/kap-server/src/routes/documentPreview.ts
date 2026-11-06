@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
+import type { FastifyRequest } from 'fastify';
 
 import {
   Error2,
@@ -14,6 +15,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
 import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import type { DocumentPreviewRequest, DocumentPreviewResponse } from '@kiki/protocol';
 import {
@@ -24,8 +26,11 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
 import { acquireSessionOperation } from '../lib/sessionOperationLease';
+import { authenticatedAuthorization } from '../middleware/auth';
 import { defineRoute } from '../middleware/defineRoute';
+import { peerAudience } from '../services/connections/audience';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import {
@@ -89,7 +94,7 @@ interface OpenedPreviewFile {
 const MAX_OFFICE_PNG_BYTES = 8 * 1024 * 1024;
 const PNG_MAGIC = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, core: Scope): void {
+export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, core: Scope, allowExternalHostPaths = true): void {
   let pluginHost: IPluginHostService | undefined;
   try {
     pluginHost = core.accessor.get(IPluginHostService);
@@ -134,20 +139,24 @@ export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, cor
     async (req, reply) => {
       const typedReq = req as unknown as PreviewRequest;
       const typedReply = reply as unknown as PreviewReply;
-      const opened = await openPreviewFile(core, typedReq.params.session_id, typedReq.body);
-      if (!opened.sessionExists) {
-        typedReply.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', typedReq.id));
-        return;
-      }
-      if (opened.file === undefined) {
-        await opened.dispose();
-        typedReply.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', typedReq.id));
-        return;
-      }
+      const request = req as unknown as FastifyRequest;
+      const allowHostPath = allowExternalHostPaths && isLoopbackPreviewClient(request) &&
+        authenticatedAuthorization(request) !== undefined && peerAudience(request) === undefined;
+      let opened: OpenedPreviewFile | undefined;
       try {
+        opened = await openPreviewFile(core, typedReq.params.session_id, typedReq.body, allowHostPath);
+        if (!opened.sessionExists) {
+          typedReply.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', typedReq.id));
+          return;
+        }
+        const file = opened.file;
+        if (file === undefined) {
+          typedReply.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', typedReq.id));
+          return;
+        }
         const result = await withReplyCloseSignal(typedReply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => service.preview(
           typedReq.params.session_id,
-          opened.file!,
+          file,
           {
             page: typedReq.body.page,
             sheet: typedReq.body.sheet,
@@ -159,9 +168,9 @@ export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, cor
         ));
         typedReply.send(okEnvelope(toWireResponse(result, typedReq.params.session_id), typedReq.id));
       } catch (error) {
-        sendPreviewError(typedReply, typedReq.id, opened.file, error);
+        sendPreviewError(typedReply, typedReq.id, opened?.file, error);
       } finally {
-        await opened.dispose();
+        await opened?.dispose();
       }
     },
   );
@@ -345,8 +354,8 @@ export function toWireResponse(value: DocumentPreviewEngineResponse, sessionId: 
   };
 }
 
-function sendPreviewError(reply: PreviewReply, requestId: string, file: DocumentPreviewFile, error: unknown): void {
-  if (error instanceof DocumentPreviewDependencyError) {
+function sendPreviewError(reply: PreviewReply, requestId: string, file: DocumentPreviewFile | undefined, error: unknown): void {
+  if (error instanceof DocumentPreviewDependencyError && file !== undefined) {
     reply.send(okEnvelope(toWireResponse({
       kind: 'missing_dependency', dependency: error.dependency,
       source: { kind: file.sourceKind, name: file.name, mediaType: file.mediaType, size: file.size },
@@ -362,7 +371,8 @@ function sendPreviewError(reply: PreviewReply, requestId: string, file: Document
   }
   if (error instanceof Error2) {
     const code = error.code === ErrorCodes.OS_FS_PERMISSION_DENIED ? ErrorCode.FS_PERMISSION_DENIED :
-      error.code === ErrorCodes.OS_FS_NOT_FOUND ? ErrorCode.FS_PATH_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
+      error.code === ErrorCodes.OS_FS_NOT_FOUND ? ErrorCode.FS_PATH_NOT_FOUND :
+      error.code === ErrorCodes.FS_PATH_ESCAPES ? ErrorCode.FS_PATH_ESCAPES_SESSION : ErrorCode.INTERNAL_ERROR;
     reply.code(code === ErrorCode.INTERNAL_ERROR ? 500 : 400).send(errEnvelope(code, error.message, requestId));
     return;
   }
@@ -376,7 +386,7 @@ export async function settleReleases(releases: readonly (() => void | Promise<vo
   if (errors.length > 1) throw new AggregateError(errors, 'document preview release failed');
 }
 
-async function openPreviewFile(core: Scope, sessionId: string, request: DocumentPreviewRequest): Promise<OpenedPreviewFile> {
+async function openPreviewFile(core: Scope, sessionId: string, request: DocumentPreviewRequest, allowHostPath: boolean): Promise<OpenedPreviewFile> {
   const operation = await acquireSessionOperation(core, sessionId, 'document-preview');
   if (operation.handle === undefined) return { sessionExists: false, dispose: () => operation.dispose() };
   if (request.source.kind === 'session-media') {
@@ -407,17 +417,16 @@ async function openPreviewFile(core: Scope, sessionId: string, request: Document
     const runtime = lease.runtime;
     const fs = runtime.fs;
     if (fs === undefined) throw new Error(`runtime ${runtimeId} has no filesystem capability`);
-    const mapped = runtime.workspace.mapRoots({ workDir: workspace.workDir, additionalDirs: workspace.additionalDirs });
-    const candidate = runtime.path.isAbsolute(request.source.path)
-      ? runtime.path.resolve(request.source.path)
-      : runtime.path.resolve(mapped.workDir, request.source.path);
+    const path = request.source.path;
+    const absolute = runtime.path.isAbsolute(path);
+    const externalHostPath = allowHostPath && runtimeId === 'local' && absolute && runtime.workspace.supportsExternalPaths === true;
+    const view = externalHostPath ? undefined : new RuntimeWorkspaceView(runtime, { workDir: workspace.workDir, additionalDirs: workspace.additionalDirs });
+    const candidate = absolute ? runtime.path.resolve(path) : runtime.path.resolve(view!.workDir, path);
     const resolved = await fs.realpath(candidate);
-    if (!within(runtime, mapped, resolved)) {
-      throw new Error2(ErrorCodes.OS_FS_PERMISSION_DENIED, `path escapes the session workspace: ${request.source.path}`);
-    }
+    view?.assertAllowed(resolved, path);
     const stat = await fs.stat(resolved);
-    if (!stat.isFile) throw new Error2(ErrorCodes.OS_FS_NOT_FOUND, `not a regular file: ${request.source.path}`);
-    const name = basename(resolved);
+    if (!stat.isFile) throw new Error2(ErrorCodes.OS_FS_NOT_FOUND, `not a regular file: ${path}`);
+    const name = runtime.path.basename(resolved);
     const mediaType = mimeOf(name);
     return {
       sessionExists: true,
@@ -445,13 +454,6 @@ async function openPreviewFile(core: Scope, sessionId: string, request: Document
     }
     throw error;
   }
-}
-
-function within(runtime: { readonly path: { resolve(path: string): string; relative(from: string, to: string): string; isAbsolute(path: string): boolean } }, roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] }, target: string): boolean {
-  return [roots.workDir, ...(roots.additionalDirs ?? [])].some((root) => {
-    const rel = runtime.path.relative(runtime.path.resolve(root), target);
-    return rel === '' || (!rel.startsWith('..') && !runtime.path.isAbsolute(rel));
-  });
 }
 
 function mimeOf(name: string): string {

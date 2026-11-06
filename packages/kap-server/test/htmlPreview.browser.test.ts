@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,7 +13,6 @@ import type { IAuthTokenService } from '../src/services/auth/authTokenService';
 
 it.skipIf(process.env['KIKI_HTML_SAMPLE'] === undefined)('compares the original browser document with the real preview resource tree', async () => {
   const source = process.env['KIKI_HTML_SAMPLE']!;
-  const root = process.env['KIKI_HTML_ROOT']!;
   const output = process.env['KIKI_HTML_PROOF']!;
   await mkdir(output, { recursive: true });
   const original = await readFile(source);
@@ -24,12 +22,12 @@ it.skipIf(process.env['KIKI_HTML_SAMPLE'] === undefined)('compares the original 
   app.addHook('onRequest', createAuthHook({ isValid: async (token: string) => token === 'test-owner' } as IAuthTokenService));
   app.get('/api/private', async () => ({ secret: true }));
   app.get('/parent', async (_req, reply) => reply.type('text/html').send('<!doctype html><style>html,body,iframe{margin:0;width:100%;height:100%;border:0;display:block;overflow:hidden}</style><script>window.__TAURI_INTERNALS__={secret:true};localStorage.setItem("test-owner","private")</script><iframe allow="fullscreen" sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"></iframe>'));
-  registerHtmlPreviewRoutes(app, { accessor: { get: (token: { toString(): string }) => token.toString() === 'workspaceService' ? { list: async () => [{ root }] } : hostFs } } as unknown as Scope, {} as RemoteConnectionManager);
+  registerHtmlPreviewRoutes(app, { accessor: { get: () => hostFs } } as unknown as Scope, {} as RemoteConnectionManager);
   const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
   const { chromium } = await import('playwright');
   const context = await chromium.launchPersistentContext(join(output, 'browser-profile'), { executablePath: process.env['KIKI_HTML_BROWSER'], headless: true, viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' }).catch(async (error: unknown) => { await writeFile(join(output, 'launch-error.txt'), String(error)); throw error; });
   try {
-    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', headers: { authorization: 'Bearer test-owner' }, payload: { root, path: source } });
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', headers: { authorization: 'Bearer test-owner' }, payload: { path: source } });
     expect(opened.statusCode, opened.body).toBe(200);
     const preview = opened.json().data as { url: string; preview_id: string; sandbox: string };
     const previewBytes = await app.inject(preview.url);
@@ -63,6 +61,7 @@ it.skipIf(process.env['KIKI_HTML_SAMPLE'] === undefined)('compares the original 
     expect(nested).toBeDefined();
     await nested!.waitForFunction(() => customElements.get('deck-stage') !== undefined);
     const nestedProof = await nested!.evaluate(() => ({ url: location.href, index: (document.querySelector('deck-stage') as HTMLElement & { index: number }).index, slides: document.querySelector('deck-stage')?.children.length }));
+    await embedded.screenshot({ path: join(output, 'preview-nested.png') });
     const isolation = await frame.evaluate(async (endpoint) => {
       let parentReadable = false; let parentBridge = false; let storage = false;
       try { parentReadable = parent.document !== undefined; } catch {}
@@ -76,22 +75,33 @@ it.skipIf(process.env['KIKI_HTML_SAMPLE'] === undefined)('compares the original 
     await app.inject({ method: 'DELETE', url: '/api/fs:html-preview/' + preview.preview_id, headers: { authorization: 'Bearer test-owner' } });
     expect((await app.inject(preview.url)).statusCode).toBe(404);
     expect(await readFile(source)).toEqual(original);
-    await writeFile(join(output, 'proof.json'), JSON.stringify({ sha256: createHash('sha256').update(original).digest('hex'), directInitial, previewInitial, keyboard, nestedProof, isolation, errors }, null, 2));
+    await writeFile(join(output, 'proof.json'), JSON.stringify({ directInitial, previewInitial, keyboard, nestedProof, isolation, errors }, null, 2));
   } finally { await context.close(); await app.close(); }
 }, 60_000);
 
 
 it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browser document origin capabilities without sharing the privileged app origin', async () => {
   const output = process.env['KIKI_HTML_ORIGIN_PROOF']!;
-  const root = join(output, 'fixture'); const source = join(root, 'slides/index.html');
-  await mkdir(join(root, 'slides'), { recursive: true });
-  const html = '<!doctype html><title>Document origin capabilities</title><h1>Document origin capabilities</h1><output id="slide"></output><img alt="Relative diagram" src="../diagram.svg"><iframe title="Nested document" src="../nested.html?slide=3#nested"></iframe><script>localStorage.setItem("visits",String(Number(localStorage.getItem("visits")||0)+1));window.result=Promise.allSettled([import("../app.mjs").then(m=>m.value),fetch("../data.json").then(r=>r.json())]).then(([module,fetch])=>({module,fetch,visits:localStorage.getItem("visits")}));let slide=Number(new URLSearchParams(location.search).get("slide")||location.hash.slice(1)||0);const paint=()=>document.querySelector("output").value=String(slide);paint();addEventListener("keydown",e=>{if(e.key==="ArrowRight"){slide++;paint()}})</script>';
+  const root = join(output, 'fixture'); const source = join(root, 'slides/deck/index.html');
+  const adjacent = join(output, 'adjacent-project');
+  await mkdir(join(root, 'slides/deck'), { recursive: true });
+  await mkdir(join(root, 'styles'), { recursive: true });
+  await mkdir(join(root, '.assay'), { recursive: true });
+  await mkdir(adjacent, { recursive: true });
+  const html = `<!doctype html><title>Document origin capabilities</title><link rel="stylesheet" href="../../styles/theme.css"><h1>Document origin capabilities</h1><div id="css-art">CSS asset</div><output id="slide"></output><img id="direct" alt="Relative diagram" src="../../diagram.svg"><img id="missing" alt="Missing diagram" src="../../missing.svg"><img id="outside" alt="Outside project" src="../../../adjacent-project/secret.svg"><iframe title="Nested document" src="../../nested.html?slide=3#nested"></iframe><script>localStorage.setItem("visits",String(Number(localStorage.getItem("visits")||0)+1));window.result=Promise.allSettled([import("../../app.mjs").then(m=>m.value),fetch("../../data.json").then(r=>r.json()),fetch("../../runtime.json").then(r=>r.json()),fetch("../../missing-resource.json").then(r=>({status:r.status,ok:r.ok}))]).then(([module,fetch,runtime,missing])=>({module,fetch,runtime,missing,visits:localStorage.getItem("visits")}));window.outsideResult=fetch("../../../adjacent-project/secret.json").then(r=>({status:r.status,ok:r.ok})).catch(()=>({status:"blocked"}));window.volumeRootResult=fetch("/volume-root-secret.json").then(r=>({status:r.status,ok:r.ok})).catch(()=>({status:"blocked"}));let slide=Number(new URLSearchParams(location.search).get("slide")||location.hash.slice(1)||0);const paint=()=>document.querySelector("output").value=String(slide);paint();addEventListener("keydown",e=>{if(e.key==="ArrowRight"){slide++;paint()}})</script>`;
   await writeFile(source, html);
   await writeFile(join(root, 'app.mjs'), 'import { value } from "./dep.js"; export { value };');
   await writeFile(join(root, 'dep.js'), 'export const value = "module-relative-ok";');
   await writeFile(join(root, 'data.json'), '{"message":"relative-fetch-ok"}');
+  await writeFile(join(root, 'runtime.json'), '{"message":"runtime-relative-fetch-ok"}');
   await writeFile(join(root, 'diagram.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="48"><rect width="96" height="48" fill="#175e54"/></svg>');
   await writeFile(join(root, 'nested.html'), '<!doctype html><h2>Nested document</h2><output></output><script>document.querySelector("output").value=location.search+location.hash</script>');
+  await writeFile(join(root, 'styles/theme.css'), '@import "./nested.css"; #css-art{width:120px;height:48px;background-image:url("./pattern.svg");background-size:120px 48px}');
+  await writeFile(join(root, 'styles/nested.css'), ':root{--imported-accent:rgb(23,94,84)} #css-art{border:2px solid var(--imported-accent)}');
+  await writeFile(join(root, 'styles/pattern.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="48"><rect width="120" height="48" fill="#b08243"/></svg>');
+  await writeFile(join(root, '.assay/manifest.json'), '{}');
+  await writeFile(join(adjacent, 'secret.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="36"><rect width="72" height="36" fill="#9a4a50"/></svg>');
+  await writeFile(join(adjacent, 'secret.json'), '{"message":"outside-project-secret"}');
   const hostFs = { realpath, stat: async (path: string) => { const s = await stat(path); return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; } };
   const app = Fastify();
   app.addHook('onRequest', createOriginHook({}));
@@ -103,41 +113,89 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
   app.get('/parent', async (_req, reply) => reply.type('text/html').send('<!doctype html><style>html,body,iframe{margin:0;width:100%;height:100%;border:0;display:block;overflow:hidden}</style><script src="/parent.js"></script><iframe></iframe>'));
   app.get('/baseline/*', async (req, reply) => {
     const path = (req.params as { '*': string })['*'];
-    if (!['slides/index.html', 'app.mjs', 'dep.js', 'data.json', 'diagram.svg', 'nested.html'].includes(path)) return reply.code(404).send();
-    return reply.type(path.endsWith('.html') ? 'text/html' : path.endsWith('.json') ? 'application/json' : path.endsWith('.svg') ? 'image/svg+xml' : 'text/javascript').send(await readFile(join(root, path)));
+    if (!['slides/deck/index.html', 'app.mjs', 'dep.js', 'data.json', 'runtime.json', 'diagram.svg', 'nested.html', 'styles/theme.css', 'styles/nested.css', 'styles/pattern.svg'].includes(path)) return reply.code(404).send();
+    const type = path.endsWith('.html') ? 'text/html' : path.endsWith('.json') ? 'application/json' : path.endsWith('.svg') ? 'image/svg+xml' : path.endsWith('.css') ? 'text/css' : 'text/javascript';
+    return reply.type(type).send(await readFile(join(root, path)));
   });
   registerHtmlPreviewRoutes(app, { accessor: { get: () => hostFs } } as unknown as Scope, {} as RemoteConnectionManager);
   const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
   const { chromium } = await import('playwright');
-  const context = await chromium.launchPersistentContext(join(output, 'browser-profile'), { executablePath: process.env['KIKI_HTML_BROWSER'], headless: true });
+  const context = await chromium.launchPersistentContext(join(output, 'browser-profile'), { executablePath: process.env['KIKI_HTML_BROWSER'], headless: true, viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   try {
-    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', headers: { authorization: 'Bearer test-owner' }, payload: { path: source, root } });
-    expect(opened.statusCode, opened.body).toBe(200);
-    const preview = opened.json().data as { url: string; sandbox: string; preview_id: string };
+    const payload = { path: source, workspace_root: root };
+    expect(payload).not.toHaveProperty('root');
+    const unauthorized = await fetch(endpoint + '/api/fs:html-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    expect(unauthorized.status).toBe(401);
+    const openedResponse = await fetch(endpoint + '/api/fs:html-preview', { method: 'POST', headers: { authorization: 'Bearer test-owner', 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    expect(openedResponse.status).toBe(200);
+    const opened = await openedResponse.json() as { data: { url: string; sandbox: string; preview_id: string } };
+    const preview = opened.data;
+    const automaticPayload = { path: source };
+    const automaticResponse = await fetch(endpoint + '/api/fs:html-preview', { method: 'POST', headers: { authorization: 'Bearer test-owner', 'content-type': 'application/json' }, body: JSON.stringify(automaticPayload) });
+    expect(automaticResponse.status).toBe(200);
+    const automaticOpened = await automaticResponse.json() as { data: { url: string; sandbox: string; preview_id: string } };
+    const automatic = automaticOpened.data;
     const file = await context.newPage(); await file.goto(pathToFileURL(source).href);
     const fileProof = await file.evaluate(async () => await Reflect.get(window, 'result'));
     expect(fileProof.visits).toBe('1');
-    expect(fileProof.module.status).toBe('rejected'); expect(fileProof.fetch.status).toBe('rejected');
-    const baseline = await context.newPage(); await baseline.goto(endpoint + '/baseline/slides/index.html');
+    expect(fileProof.module.status).toBe('rejected'); expect(fileProof.fetch.status).toBe('rejected'); expect(fileProof.runtime.status).toBe('rejected'); expect(fileProof.missing.status).toBe('rejected');
+    const baseline = await context.newPage(); await baseline.goto(endpoint + '/baseline/slides/deck/index.html');
     const baselineProof = await baseline.evaluate(async () => await Reflect.get(window, 'result'));
-    const embedded = await context.newPage(); const parentResponse = await embedded.goto(endpoint + '/parent');
+    const automaticPage = await context.newPage(); const automaticResponses: { url: string; status: number }[] = [];
+    automaticPage.on('response', (response) => automaticResponses.push({ url: response.url(), status: response.status() }));
+    await automaticPage.goto(automatic.url + '?mode=automatic&slide=0#2');
+    await automaticPage.locator('h1').waitFor();
+    await automaticPage.waitForFunction(() => Reflect.get(window, 'result') !== undefined && Reflect.get(window, 'outsideResult') !== undefined && Reflect.get(window, 'volumeRootResult') !== undefined);
+    const automaticProof = await automaticPage.evaluate(async () => await Reflect.get(window, 'result'));
+    const automaticOutsideProof = await automaticPage.evaluate(async () => await Reflect.get(window, 'outsideResult'));
+    const automaticVolumeRootProof = await automaticPage.evaluate(async () => await Reflect.get(window, 'volumeRootResult'));
+    expect(automaticProof).toEqual(baselineProof);
+    expect(automaticOutsideProof).toEqual({ status: 404, ok: false });
+    expect(automaticVolumeRootProof).toEqual({ status: 404, ok: false });
+    const embedded = await context.newPage(); const previewResponses: { url: string; status: number }[] = [];
+    embedded.on('response', (response) => previewResponses.push({ url: response.url(), status: response.status() }));
+    const parentResponse = await embedded.goto(endpoint + '/parent');
     const parentFixture = await embedded.evaluate(() => ({ bridge: Reflect.get(window, '__TAURI_INTERNALS__'), storage: localStorage.getItem('owner-secret') }));
     expect(parentFixture).toEqual({ bridge: { secret: true }, storage: 'private' });
     expect(parentResponse?.headers()['content-security-policy']).toContain("frame-src 'self' http://*.kiki-document.localhost:*");
     await embedded.locator('iframe').evaluate((element, preview) => { const frame = element as HTMLIFrameElement; frame.sandbox.value = preview.sandbox; frame.src = preview.url + '?mode=origin&slide=0#2'; }, preview);
     await embedded.frameLocator('iframe').locator('h1').waitFor();
     const frame = embedded.frames().find((frame) => frame.url().startsWith(preview.url))!;
-    await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined);
+    await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined && Reflect.get(window, 'outsideResult') !== undefined && Reflect.get(window, 'volumeRootResult') !== undefined);
     const documentProof = await frame.evaluate(async () => await Reflect.get(window, 'result'));
+    const outsideProof = await frame.evaluate(async () => await Reflect.get(window, 'outsideResult'));
+    const volumeRootProof = await frame.evaluate(async () => await Reflect.get(window, 'volumeRootResult'));
     expect(documentProof).toEqual(baselineProof);
     expect(documentProof.module).toEqual({ status: 'fulfilled', value: 'module-relative-ok' });
     expect(documentProof.fetch).toEqual({ status: 'fulfilled', value: { message: 'relative-fetch-ok' } });
-    const layout = () => ({ width: innerWidth, height: innerHeight, image: { width: document.images[0]?.naturalWidth, height: document.images[0]?.naturalHeight }, slide: document.querySelector('output')?.value });
+    expect(documentProof.runtime).toEqual({ status: 'fulfilled', value: { message: 'runtime-relative-fetch-ok' } });
+    expect(documentProof.missing).toEqual({ status: 'fulfilled', value: { status: 404, ok: false } });
+    expect(outsideProof).toEqual({ status: 404, ok: false });
+    expect(volumeRootProof).toEqual({ status: 404, ok: false });
+    const layout = () => {
+      const css = getComputedStyle(document.querySelector('#css-art') as Element);
+      return { width: innerWidth, height: innerHeight, image: { width: (document.querySelector('#direct') as HTMLImageElement | null)?.naturalWidth, height: (document.querySelector('#direct') as HTMLImageElement | null)?.naturalHeight }, css: { accent: css.getPropertyValue('--imported-accent').trim(), pattern: css.backgroundImage.includes('/styles/pattern.svg') }, slide: document.querySelector('output')?.value };
+    };
     await baseline.waitForFunction(() => document.images[0]?.naturalWidth === 96);
     await frame.waitForFunction(() => document.images[0]?.naturalWidth === 96);
+    await baseline.waitForFunction(() => getComputedStyle(document.querySelector('#css-art') as Element).backgroundImage.includes('/styles/pattern.svg'));
+    await frame.waitForFunction(() => getComputedStyle(document.querySelector('#css-art') as Element).backgroundImage.includes('/styles/pattern.svg'));
     const baselineLayout = await baseline.evaluate(layout);
     const previewLayout = await frame.evaluate(layout);
     expect(previewLayout).toEqual(baselineLayout);
+    expect(previewResponses.find(({ url }) => url.endsWith('/styles/theme.css'))?.status).toBe(200);
+    expect(previewResponses.find(({ url }) => url.endsWith('/styles/nested.css'))?.status).toBe(200);
+    expect(previewResponses.find(({ url }) => url.endsWith('/styles/pattern.svg'))?.status).toBe(200);
+    expect(previewResponses.find(({ url }) => url.endsWith('/diagram.svg'))?.status).toBe(200);
+    expect(previewResponses.find(({ url }) => url.endsWith('/runtime.json'))?.status).toBe(200);
+    expect(previewResponses.find(({ url }) => url.endsWith('/missing-resource.json'))?.status).toBe(404);
+    expect(previewResponses.find(({ url }) => url.endsWith('/missing.svg'))?.status).toBe(404);
+    expect(previewResponses.find(({ url }) => url.endsWith('/adjacent-project/secret.svg'))?.status).toBe(404);
+    expect(previewResponses.find(({ url }) => url.endsWith('/adjacent-project/secret.json'))?.status).toBe(404);
+    expect(previewResponses.find(({ url }) => url.endsWith('/volume-root-secret.json'))?.status).toBe(404);
+    expect(automaticResponses.find(({ url }) => url.endsWith('/adjacent-project/secret.svg'))?.status).toBe(404);
+    expect(automaticResponses.find(({ url }) => url.endsWith('/adjacent-project/secret.json'))?.status).toBe(404);
+    expect(automaticResponses.find(({ url }) => url.endsWith('/volume-root-secret.json'))?.status).toBe(404);
     await baseline.keyboard.press('ArrowRight');
     await frame.locator('h1').click(); await embedded.keyboard.press('ArrowRight');
     const keyboard = { baseline: await baseline.locator('output').textContent(), preview: await frame.locator('output').textContent() };
@@ -161,10 +219,11 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
     await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined);
     const afterReload = await frame.evaluate(async () => await Reflect.get(window, 'result'));
     expect(afterReload.visits).toBe('2');
-    await app.inject({ method: 'DELETE', url: '/api/fs:html-preview/' + preview.preview_id, headers: { authorization: 'Bearer test-owner' } });
+    const closed = await fetch(endpoint + '/api/fs:html-preview/' + preview.preview_id, { method: 'DELETE', headers: { authorization: 'Bearer test-owner' } });
+    expect(closed.status).toBe(200);
     const afterClose = await frame.evaluate(async () => { try { await fetch(location.href); return 'loaded'; } catch { return 'revoked'; } });
     expect(afterClose).toBe('revoked');
     expect(await readFile(source, 'utf8')).toBe(html);
-    await writeFile(join(output, 'proof.json'), JSON.stringify({ fileProof, baselineProof, documentProof, baselineLayout, previewLayout, keyboard, nestedProof, afterReload, parentFixture, parentCsp: parentResponse?.headers()['content-security-policy'], isolation, afterClose, sandbox: preview.sandbox }, null, 2));
+    await writeFile(join(output, 'proof.json'), JSON.stringify({ unauthorizedStatus: unauthorized.status, openedStatus: openedResponse.status, payload, automaticPayload, automaticStatus: automaticResponse.status, fileProof, baselineProof, automaticProof, automaticOutsideProof, automaticVolumeRootProof, documentProof, outsideProof, volumeRootProof, baselineLayout, previewLayout, automaticResponses: automaticResponses.filter(({ url }) => /(?:styles|diagram|runtime|missing|adjacent-project|volume-root)/u.test(url)), previewResponses: previewResponses.filter(({ url }) => /(?:styles|diagram|runtime|missing|adjacent-project|volume-root)/u.test(url)), keyboard, nestedProof, afterReload, parentFixture, parentCsp: parentResponse?.headers()['content-security-policy'], isolation, afterClose, sandbox: preview.sandbox }, null, 2));
   } finally { await context.close(); await app.close(); }
 }, 60_000);

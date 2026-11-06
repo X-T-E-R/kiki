@@ -1,6 +1,13 @@
 import { stat, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
+import { IRuntimeResolver, ISessionContext, ISessionManager, ISessionWorkspaceContext, type Scope } from '@kiki/agent-core-v2';
+import { ErrorCode } from '@kiki/protocol';
+import { describe, expect, it, vi } from 'vitest';
+
+import { createAuthHook } from '../src/middleware/auth';
+import { registerDocumentPreviewRoutes } from '../src/routes/documentPreview';
+import type { IAuthTokenService } from '../src/services/auth/authTokenService';
 
 import { OfficePreviewCleanupError } from '../src/services/documentPreview/officeCliPreview';
 import {
@@ -150,5 +157,48 @@ describe('document preview engine', () => {
   it('rejects binary content in a text-labelled source instead of showing bytes as text', async () => {
     const result = await new DocumentPreviewService().preview('session', file('notes.txt', Uint8Array.from([0, 1, 2, 3]), 'text/plain'), {}, signal);
     expect(result).toMatchObject({ kind: 'unsupported', reason: 'binary_content', recovery: { kind: 'download-original' }, readOnly: true });
+  });
+});
+
+
+describe('document preview host path authority', () => {
+  it.each([
+    ['local', path.win32, 'C:\\workspace', 'C:\\Users\\preview user\\Downloads\\中文 目录\\notes.txt', 0],
+    ['ssh:fixture', path.posix, '/workspace', '/shared/notes.txt', ErrorCode.FS_PATH_ESCAPES_SESSION],
+  ] as const)('uses %s runtime paths without extending another runtime grant', async (runtimeId, paths, workDir, sourcePath, code) => {
+    const bytes = new TextEncoder().encode('Local host file.');
+    const disposeSession = vi.fn();
+    const disposeRuntime = vi.fn();
+    const readBytes = vi.fn(async () => bytes);
+    const mapRoots = vi.fn(() => ({ workDir }));
+    const runtime = {
+      identity: { workspaceId: 'fixture', runtimeId, generation: 'fixture' },
+      path: { ...paths, separator: paths.sep }, workspace: { mapRoots, supportsExternalPaths: true },
+      fs: { realpath: async (value: string) => value, stat: async () => ({ isFile: true, size: bytes.length }), readBytes },
+    };
+    const session = { accessor: { get: (token: unknown) => token === ISessionContext ? { workspaceId: 'fixture' } : token === ISessionWorkspaceContext ? { workDir } : undefined } };
+    const services = new Map<unknown, unknown>([
+      [ISessionManager, { acquire: async () => ({ handle: session, dispose: disposeSession }) }],
+      [IRuntimeResolver, { acquire: () => ({ runtime, dispose: disposeRuntime }) }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => {
+      if (!services.has(token)) throw new Error('unused fixture service');
+      return services.get(token);
+    } } } as unknown as Scope;
+    const app = Fastify();
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    app.addHook('onRequest', createAuthHook({ isValid: async (token: string) => token === 'fixture-owner' } as IAuthTokenService));
+    await app.register(async (api) => { registerDocumentPreviewRoutes(api as unknown as Parameters<typeof registerDocumentPreviewRoutes>[0], core); }, { prefix: '/api' });
+    try {
+      const result = await app.inject({ method: 'POST', url: '/api/sessions/fixture/document-preview', headers: { authorization: 'Bearer fixture-owner' }, payload: { source: { kind: 'workspace', runtime_id: runtimeId, path: sourcePath } } });
+      expect(result.json()).toMatchObject({ code });
+      if (code === 0) {
+        expect(result.json().data).toMatchObject({ kind: 'text', content: 'Local host file.', source: { name: 'notes.txt' } });
+        expect(mapRoots).not.toHaveBeenCalled();
+        expect(readBytes).toHaveBeenCalled();
+      } else expect(readBytes).not.toHaveBeenCalled();
+      expect(disposeSession).toHaveBeenCalledTimes(1);
+      expect(disposeRuntime).toHaveBeenCalledTimes(1);
+    } finally { await app.close(); }
   });
 });

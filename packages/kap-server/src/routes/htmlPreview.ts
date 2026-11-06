@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { extname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { IHostFileSystem, type Scope } from '@kiki/agent-core-v2';
 import { peerAudience } from '../services/connections/audience';
 import { buildEtag, guessMime } from '@kiki/agent-core-v2/_base/utils/fileMeta';
+import { findGitWorkTree } from '@kiki/agent-core-v2/app/git/workTree';
 import { HTML_PREVIEW_SANDBOX, htmlPreviewRequestSchema, htmlPreviewResponseSchema, type HtmlPreviewResponse } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -14,13 +15,31 @@ import { AdmissionError } from '../services/connections/admission';
 import type { RemoteConnectionManager } from '../services/connections/manager';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { stripPort } from '../middleware/hostnames';
+import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
 
 export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; object-src 'none'`;
 export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace('allow-same-origin ', '')}; object-src 'none'`;
 const TTL = 30 * 60 * 1000;
 const resourceOptions = { config: { htmlPreviewResource: true } };
-interface LocalPreview { root: string; expiresAt: number }
+interface LocalPreview { root: string; fileOnly?: string; excludedRoots: readonly string[]; expiresAt: number }
 interface RemotePreview { connectionId: string; remoteId: string; expiresAt: number; dispose(): void }
+interface HtmlPreviewOptions {
+  readonly allowAutomaticRoot?: boolean;
+  readonly registeredRoots?: () => Promise<readonly string[]>;
+  readonly privateHomes?: readonly string[];
+}
+
+async function nearestProjectRoot(fs: IHostFileSystem, directory: string, registeredRoots: Promise<readonly string[]> | undefined): Promise<string> {
+  const [git, registered] = await Promise.all([findGitWorkTree(fs, directory), registeredRoots]);
+  const candidates = [...(registered ?? []), git?.root].filter((root): root is string => root !== undefined && isAbsolute(root));
+  for (let current = directory; dirname(current) !== current; current = dirname(current)) {
+    if (candidates.some((root) => relative(current, root) === '')) return current;
+    const manifest = await fs.stat(join(current, '.assay', 'manifest.json')).catch(() => undefined);
+    if (manifest?.isFile === true) return current;
+  }
+  return directory;
+}
+
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
@@ -49,17 +68,18 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
   return reply.code(status).type('application/json').send(errEnvelope(status === 400 ? 40001 : status === 404 ? 40409 : 40301, message, reply.request.id));
 }
 function requireLocalClient(req: FastifyRequest): void {
-  const host = stripPort(req.headers.host ?? '');
-  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || !(['localhost', '127.0.0.1', '::1', '[::1]'].includes(host))) throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
+  if (!isLoopbackPreviewClient(req)) throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
 }
 
-export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, manager: RemoteConnectionManager): void {
+export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, manager: RemoteConnectionManager, options: HtmlPreviewOptions = {}): void {
+  const allowAutomaticRoot = options.allowAutomaticRoot !== false;
   const local = new Map<string, LocalPreview>();
   const remote = new Map<string, RemotePreview>();
   const active = new Map<string, Set<() => void>>();
   const documents = new Map<string, FastifyInstance>();
   const closing = new Set<Promise<void>>();
   const hostFs = core.accessor.get(IHostFileSystem);
+  const privateHomes = Promise.all((options.privateHomes ?? []).map((home) => hostFs.realpath(home).catch(() => resolve(home))));
   const release = (id: string): void => {
     const entry = remote.get(id);
     local.delete(id); remote.delete(id); entry?.dispose();
@@ -92,25 +112,46 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   const open = async (body: unknown): Promise<HtmlPreviewResponse> => {
     reserve();
     const input = htmlPreviewRequestSchema.parse(body);
-    if (!isAbsolute(input.path) || !isAbsolute(input.root)) throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
-    const root = await hostFs.realpath(input.root);
-    if (root === parse(root).root || !(await hostFs.stat(root)).isDirectory || !inside(resolve(input.root), resolve(input.path))) throw new AdmissionError(403, 'preview_path_outside_root');
+    const explicitRoot = input.root ?? (allowAutomaticRoot ? undefined : input.workspace_root);
+    if (!isAbsolute(input.path) || (!allowAutomaticRoot && explicitRoot === undefined) || (explicitRoot !== undefined && !isAbsolute(explicitRoot))) {
+      throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
+    }
+    if (explicitRoot !== undefined && !inside(resolve(explicitRoot), resolve(input.path))) throw new AdmissionError(403, 'preview_path_outside_root');
     const path = await hostFs.realpath(input.path);
-    if (!inside(root, path)) throw new AdmissionError(403, 'preview_path_outside_root');
+    let root = dirname(path);
+    if (explicitRoot !== undefined) {
+      root = await hostFs.realpath(explicitRoot);
+      if (root === parse(root).root || !inside(root, path) || relative(root, path) === '') throw new AdmissionError(403, 'preview_path_outside_root');
+    }
     if (!(await hostFs.stat(path)).isFile || !/\.(html?|xhtml)$/iu.test(path)) throw new AdmissionError(400, 'html_document_required');
+    const homes = explicitRoot === undefined ? await privateHomes : [];
+    const documentHome = homes.find((home) => inside(home, root));
+    if (explicitRoot === undefined && documentHome === undefined && dirname(root) !== root) {
+      const hint = input.workspace_root;
+      const workspaceRoot = hint !== undefined && isAbsolute(hint) && (inside(hint, root) || inside(hint, input.path))
+        ? await hostFs.realpath(hint).catch(() => undefined)
+        : undefined;
+      if (workspaceRoot !== undefined && workspaceRoot !== parse(workspaceRoot).root && inside(workspaceRoot, root)) root = workspaceRoot;
+      else root = await nearestProjectRoot(hostFs, root, options.registeredRoots?.().catch((error: unknown) => {
+        app.log.warn({ err: error }, 'HTML preview could not read registered workspace roots');
+        return [];
+      }));
+    }
     const id = randomBytes(32).toString('hex'); const expiresAt = Date.now() + TTL;
-    local.set(id, { root, expiresAt });
+    const fileOnly = root === parse(root).root || homes.some((home) => relative(home, root) === '') ? path : undefined;
+    local.set(id, { root, fileOnly, excludedRoots: homes.filter((home) => !inside(home, root)), expiresAt });
     try {
-      const url = await documentUrl(id, relative(resolve(input.root), resolve(input.path)).split(sep).join('/'));
+      const resource = explicitRoot === undefined ? relative(root, path) : relative(resolve(explicitRoot), resolve(input.path));
+      const url = await documentUrl(id, resource.split(sep).join('/'));
       return { preview_id: id, expires_at: expiresAt, sandbox: HTML_PREVIEW_SANDBOX, url };
     } catch (error) { release(id); throw error; }
   };
   const serveLocal = async (id: string, path: string, req: FastifyRequest, reply: FastifyReply) => {
     const entry = entryOf(id);
     const candidate = resolve(entry.root, resourcePath(path));
-    if (!inside(entry.root, candidate)) throw new AdmissionError(403, 'preview_path_outside_root');
+    if (entry.fileOnly !== undefined && candidate !== entry.fileOnly) throw new AdmissionError(403, 'preview_path_outside_root');
     const canonical = await hostFs.realpath(candidate);
-    if (!inside(entry.root, canonical)) throw new AdmissionError(403, 'preview_path_outside_root');
+    if (!inside(entry.root, canonical) || (entry.fileOnly !== undefined && canonical !== entry.fileOnly) || entry.excludedRoots.some((home) => inside(home, canonical))) throw new AdmissionError(403, 'preview_path_outside_root');
     const stat = await hostFs.stat(canonical);
     if (!stat.isFile) throw new AdmissionError(404, 'preview_resource_not_found');
     const etag = buildEtag(stat);
@@ -193,7 +234,10 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     try {
       requireLocalClient(req);
       reserve(); const { connectionId } = req.params as { connectionId: string };
-      const result = htmlPreviewResponseSchema.parse(await forward(connectionId, 'htmlPreviewOpen', htmlPreviewRequestSchema.parse(req.body)));
+      const input = htmlPreviewRequestSchema.parse(req.body);
+      const root = input.root ?? input.workspace_root;
+      if (root === undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
+      const result = htmlPreviewResponseSchema.parse(await forward(connectionId, 'htmlPreviewOpen', { path: input.path, root }));
       id = randomBytes(32).toString('hex');
       const lease = manager.lease(connectionId);
       const previewId = id;

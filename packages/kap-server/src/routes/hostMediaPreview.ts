@@ -14,7 +14,7 @@ import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
 import { createDeferredCleanup, type DeferredCleanup } from '../lib/sessionOperationLease';
 import { AdmissionError } from '../services/connections/admission';
-import { stripPort } from '../middleware/hostnames';
+import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { openSessionMedia } from './sessionMedia';
@@ -166,8 +166,7 @@ async function reportLeaseRelease(req: FastifyRequest, sessionId: string, fileId
 }
 
 function requireLocalClient(req: FastifyRequest): void {
-  const host = stripPort(req.headers.host ?? '');
-  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || !(['localhost', '127.0.0.1', '::1', '[::1]'].includes(host))) {
+  if (!isLoopbackPreviewClient(req)) {
     throw new AdmissionError(403, 'media_preview_requires_local_connection');
   }
 }

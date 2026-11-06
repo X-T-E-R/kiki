@@ -104,6 +104,7 @@ import { WebAccess, webPrincipal, setWebPrincipal, type WebPrincipal } from './s
 import { startWebListener } from './webListener';
 import { registerWebAccessRoutes } from './routes/webAccess';
 import { IBootstrapService } from '@kiki/agent-core-v2';
+import { IWorkspacePersistence } from '@kiki/agent-core-v2/app/workspace/workspacePersistence';
 import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpaceThreadBridgeRequest, type SpaceThreadBridge } from './services/threadBridge/bridge';
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
@@ -1036,6 +1037,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     debugEndpoints,
     enableShutdown,
     enableTerminals,
+    allowExternalHostDocumentPaths: opts.sshManaged !== true && opts.disableAuth !== true,
     guiStore,
     notifications,
     imSessions,
@@ -1112,7 +1114,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessionViewTranscriptService: transcriptService,
   });
   if (opts.disableAuth !== true) {
-    registerHtmlPreviewRoutes(app, core, remoteConnections);
+    const { baseHomeDir } = core.accessor.get(IBootstrapService);
+    registerHtmlPreviewRoutes(app, core, remoteConnections, {
+      allowAutomaticRoot: opts.sshManaged !== true,
+      registeredRoots: async () => (await core.accessor.get(IWorkspacePersistence).load())?.workspaces.map(({ root }) => root) ?? [],
+      privateHomes: baseHomeDir === undefined ? [homeDir] : [homeDir, baseHomeDir],
+    });
     registerHostMediaPreviewRoutes(app, core, transcriptService);
   }
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);

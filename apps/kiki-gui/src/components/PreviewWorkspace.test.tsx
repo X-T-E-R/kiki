@@ -44,7 +44,7 @@ const writeMock = vi.fn(async (path: string, text: string) => {
 const connectionMock = vi.hoisted(() => ({
   activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
 }));
-const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn(), pickDirectory: vi.fn() }));
+const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
 const htmlPreviewMock = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn() }));
 
 vi.mock('../state/connection', async (importOriginal) => {
@@ -86,7 +86,7 @@ vi.mock('../host', () => {
     kind: 'browser',
     writeFileText: (path: string, text: string) => writeMock(path, text),
   };
-  const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath, pickDirectory: hostMock.pickDirectory };
+  const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath };
   return { useHost: () => hostMock.desktop ? desktopHost : host };
 });
 
@@ -190,9 +190,9 @@ async function renderSettled(root: Root, node: ReactNode): Promise<void> {
 
 async function openFile(container: HTMLElement, path: string): Promise<void> {
   await act(async () => {
-    container
-      .querySelector(`[data-open-file="${path}"]`)!
-      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const button = [...container.querySelectorAll<HTMLButtonElement>('[data-open-file]')]
+      .find((candidate) => candidate.dataset['openFile'] === path);
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 }
 
@@ -1831,7 +1831,6 @@ describe('PreviewWorkspace HTML document preview', () => {
   });
   beforeEach(() => {
     hostMock.desktop = false;
-    hostMock.pickDirectory.mockReset();
     htmlPreviewMock.open.mockReset();
     htmlPreviewMock.close.mockReset();
     htmlPreviewMock.open.mockImplementation(async () => ({
@@ -1883,7 +1882,7 @@ describe('PreviewWorkspace HTML document preview', () => {
   it('opens the server-issued isolated document origin in a sandboxed frame, never srcdoc', async () => {
     const probe = await mountHtmlTab();
     expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
-    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path: '/work/page.html', root: '/work' });
+    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path: '/work/page.html', workspace_root: '/work' });
 
     const frame = probe.container.querySelector<HTMLIFrameElement>('[data-preview-html]');
     expect(frame).not.toBeNull();
@@ -1928,19 +1927,21 @@ describe('PreviewWorkspace HTML document preview', () => {
     expect(htmlPreviewMock.close).toHaveBeenCalledWith('late-id');
   });
 
-  it('asks for a resource root outside the workspace and accepts a picked root', async () => {
+  it('opens a Windows HTML path outside the workspace with Chinese and spaces without choosing a directory', async () => {
     hostMock.desktop = true;
-    hostMock.pickDirectory.mockResolvedValueOnce('/outside');
-    const probe = await mountHtmlTab('/outside/page.html');
-    expect(htmlPreviewMock.open).not.toHaveBeenCalled();
-    expect(probe.container.querySelector('[data-html-preview-root-required]')).not.toBeNull();
-
-    await act(async () => {
-      probe.container.querySelector<HTMLButtonElement>('[data-html-pick-root]')!.click();
-    });
-    await settle();
-    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path: '/outside/page.html', root: '/outside' });
+    const path = 'C:\\Users\\测试 用户\\HTML 预览\\page.html';
+    const cwd = 'C:\\workspace\\session';
+    const probe = await mountHtmlTab(path, cwd);
+    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path, workspace_root: cwd });
     expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
+  });
+
+  it('reports a path-outside-root refusal without offering directory selection', async () => {
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('preview_path_outside_root'));
+    const probe = await mountHtmlTab();
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="path_outside_root"]');
+    expect(error).not.toBeNull();
+    expect(error?.textContent).toContain('document resource root');
   });
 
   it('reports the remote target-owner refusal as unavailable authorization', async () => {

@@ -423,7 +423,7 @@ export function PreviewWorkspace({
           <PreviewTabView
             key={key}
             path={tab.path}
-            root={cwd}
+            workspaceRoot={cwd}
             visible={isTabActive && !hidden}
             navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
             onOpenImage={onOpenImage}
@@ -1153,7 +1153,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
 
 function PreviewTabView({
   path,
-  root,
+  workspaceRoot,
   visible,
   navigation,
   onOpenImage,
@@ -1163,8 +1163,8 @@ function PreviewTabView({
   sessionId,
 }: {
   readonly path: string;
-  /** Session workspace cwd — the resource root an HTML preview is opened against. */
-  readonly root?: string;
+  /** Session workspace cwd, used as a resource-resolution hint for HTML preview. */
+  readonly workspaceRoot?: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
@@ -1209,7 +1209,7 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} root={root} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView path={path} workspaceRoot={workspaceRoot} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );
@@ -1626,16 +1626,9 @@ interface HtmlPreviewActiveState {
 
 type HtmlPreviewState =
   | { readonly status: 'idle' }
-  | { readonly status: 'root_required' }
   | { readonly status: 'loading' }
   | HtmlPreviewActiveState
   | { readonly status: 'error'; readonly error: unknown };
-
-function isInsideRoot(root: string, path: string): boolean {
-  const normRoot = root.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
-  const normPath = path.replaceAll('\\', '/').toLowerCase();
-  return normPath === normRoot || normPath.startsWith(`${normRoot}/`);
-}
 
 function classifyHtmlPreviewError(error: unknown): 'remote_grant_required' | 'local_connection_required' | 'path_outside_root' | 'expired' | 'generic' {
   const message = error instanceof Error ? error.message : String(error);
@@ -1690,7 +1683,7 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
  */
 function TextTabView({
   path,
-  root,
+  workspaceRoot,
   visible,
   markdown,
   navigation,
@@ -1698,8 +1691,7 @@ function TextTabView({
   onReadingReady,
 }: {
   readonly path: string;
-  /** Session workspace cwd — the resource root an HTML preview is opened against. */
-  readonly root?: string;
+  readonly workspaceRoot?: string;
   readonly visible: boolean;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
@@ -1714,15 +1706,9 @@ function TextTabView({
   const hasRenderedMode = markdown || html;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
-  const [userRoot, setUserRoot] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const effectiveRoot = useMemo(() => {
-    if (userRoot !== null && isInsideRoot(userRoot, path)) return userRoot;
-    if (root !== undefined && isInsideRoot(root, path)) return root;
-    return null;
-  }, [path, root, userRoot]);
   const [fullMarkdown, setFullMarkdown] = useState<{
     controller: HostFileEditorController; client: KikiClient; path: string;
     generation: number; text: string;
@@ -1746,14 +1732,10 @@ function TextTabView({
       setHtmlPreviewState({ status: 'loading' });
       return undefined;
     }
-    if (effectiveRoot === null) {
-      setHtmlPreviewState({ status: 'root_required' });
-      return undefined;
-    }
     let cancelled = false;
     let activePreviewId: string | null = null;
     setHtmlPreviewState({ status: 'loading' });
-    client.openHtmlPreview({ path, root: effectiveRoot }).then(
+    client.openHtmlPreview({ path, workspace_root: workspaceRoot }).then(
       (response) => {
         if (cancelled) {
           void client.closeHtmlPreview(response.preview_id);
@@ -1789,17 +1771,7 @@ function TextTabView({
         activePreviewId = null;
       }
     };
-  }, [client, effectiveRoot, html, path, reloadKey]);
-
-  const handlePickRoot = useCallback(async () => {
-    if (host.pickDirectory === undefined) return;
-    try {
-      const dir = await host.pickDirectory();
-      if (dir !== null && isInsideRoot(dir, path)) setUserRoot(dir);
-    } catch {
-      // Pick canceled or failed.
-    }
-  }, [host, path]);
+  }, [client, html, path, reloadKey, workspaceRoot]);
 
   useEffect(() => {
     if (client === undefined) {
@@ -1910,38 +1882,12 @@ function TextTabView({
     </p>
   );
 
-  const htmlRootRequiredNotice = (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center" data-html-preview-root-required>
-      <p className="max-w-md text-[13px] text-ink-soft">{t('preview.htmlRootRequired')}</p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-        {host.pickDirectory !== undefined ? (
-          <button
-            type="button"
-            data-html-pick-root
-            onClick={() => { void handlePickRoot(); }}
-            className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
-          >
-            {t('preview.htmlPickRoot')}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          data-html-view-source
-          onClick={() => { setMode('source'); }}
-          className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-soft hover:border-hairline-strong hover:text-ink"
-        >
-          {t('preview.source')}
-        </button>
-      </div>
-    </div>
-  );
-
   const renderHtmlError = (error: unknown) => {
     const kind = classifyHtmlPreviewError(error);
     let message = t('preview.failed');
     if (kind === 'remote_grant_required') message = t('preview.htmlRemoteGrantRequired');
     else if (kind === 'local_connection_required') message = t('preview.htmlRequiresLocalConnection');
-    else if (kind === 'path_outside_root') message = t('preview.htmlRootRequired');
+    else if (kind === 'path_outside_root') message = t('preview.htmlPathOutsideRoot');
     else if (kind === 'expired') message = t('preview.htmlExpired');
     else if (error instanceof Error && error.message) message = error.message;
 
@@ -1957,16 +1903,6 @@ function TextTabView({
               className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
             >
               {t('preview.htmlReload')}
-            </button>
-          ) : null}
-          {kind === 'path_outside_root' && host.pickDirectory !== undefined ? (
-            <button
-              type="button"
-              data-html-pick-root
-              onClick={() => { void handlePickRoot(); }}
-              className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
-            >
-              {t('preview.htmlPickRoot')}
             </button>
           ) : null}
           <button
@@ -2147,7 +2083,6 @@ function TextTabView({
                 {!showEditor && htmlPreviewState.status !== 'ready' ? (
                   <div className="flex min-h-0 flex-1 flex-col">
                     {htmlPreviewState.status === 'loading' ? htmlLoadingNotice : null}
-                    {htmlPreviewState.status === 'root_required' ? htmlRootRequiredNotice : null}
                     {htmlPreviewState.status === 'error' ? renderHtmlError(htmlPreviewState.error) : null}
                   </div>
                 ) : null}

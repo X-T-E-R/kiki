@@ -14,22 +14,27 @@ import type { ConnectionAdmission } from '../src/services/connections/admission'
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).toReversed()) await cleanup(); });
-async function fixture() {
+async function fixture(options: { registered?: boolean; automatic?: boolean; privateHome?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'html-preview-'));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'slides'));
   await mkdir(join(root, 'systems'));
+  if (options.privateHome) await mkdir(join(root, 'kiki-home'));
   await writeFile(join(root, 'slides/index.html'), '<!doctype html><script src="../app.js"></script><iframe src="../systems/index.html?shot=2#slide"></iframe>');
   await writeFile(join(root, 'app.js'), 'window.loaded=true');
   await writeFile(join(root, 'systems/index.html'), '<h1>nested</h1>');
   await writeFile(join(root, 'font.woff2'), new Uint8Array([1, 2, 3, 4]));
   const hostFs = { realpath, stat: async (path: string) => { const s = await stat(path); return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; } };
-  const core = { accessor: { get: (token: { toString(): string }) => token.toString() === 'workspaceService' ? { list: async () => [{ root }] } : hostFs } } as unknown as Scope;
+  const core = { accessor: { get: () => hostFs } } as unknown as Scope;
   const app = Fastify();
   app.addHook('onRequest', createOriginHook({}));
   app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
   app.get('/api/private', async () => ({ secret: true }));
-  registerHtmlPreviewRoutes(app, core, {} as RemoteConnectionManager);
+  registerHtmlPreviewRoutes(app, core, {} as RemoteConnectionManager, {
+    allowAutomaticRoot: options.automatic,
+    registeredRoots: options.registered ? async () => [root] : undefined,
+    privateHomes: options.privateHome ? [join(root, 'kiki-home')] : undefined,
+  });
   cleanups.push(() => app.close());
   const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root, path: join(root, 'slides/index.html') } });
   expect(opened.statusCode, opened.body).toBe(200);
@@ -59,6 +64,87 @@ describe('browser document resource tree', () => {
     const normal = await app.inject('/api/private');
     expect(normal.headers['content-security-policy']).toContain("default-src 'self'");
   });
+  it('uses the automatic workspace root only for a contained document', async () => {
+    const { app, root } = await fixture();
+    const response = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(root, 'slides/index.html'), workspace_root: root } });
+    expect(response.statusCode).toBe(200);
+    const { url } = response.json().data as { url: string };
+    expect((await app.inject(new URL('../app.js', url).pathname)).body).toBe('window.loaded=true');
+  });
+
+  it('uses the actual workspace root when the workspace path is a link', async () => {
+    const { app, root } = await fixture();
+    const outside = await mkdtemp(join(tmpdir(), 'html-linked-workspace-'));
+    cleanups.push(() => rm(outside, { recursive: true, force: true }));
+    const alias = join(outside, 'workspace');
+    await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const response = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(alias, 'slides/index.html'), workspace_root: alias } });
+    expect(response.statusCode, response.body).toBe(200);
+    const { url } = response.json().data as { url: string };
+    expect((await app.inject(new URL('../app.js', url).pathname)).body).toBe('window.loaded=true');
+  });
+
+  it.each(['git', 'assay', 'registered'])('finds a nearby %s project root without scanning document dependencies', async (marker) => {
+    const { app, root } = await fixture({ registered: marker === 'registered' });
+    if (marker === 'git') await mkdir(join(root, '.git'));
+    if (marker === 'assay') {
+      await mkdir(join(root, '.assay'));
+      await writeFile(join(root, '.assay/manifest.json'), '{"__schema":4}');
+    }
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(root, 'slides/index.html') } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { url } = opened.json().data as { url: string };
+    expect((await app.inject(new URL('../app.js', url).pathname)).body).toBe('window.loaded=true');
+    expect((await app.inject(new URL('../systems/index.html?slide=3', url).pathname)).body).toBe('<h1>nested</h1>');
+    expect((await app.inject(new URL('../../other-project/private.js', url).pathname)).statusCode).toBe(404);
+  });
+
+  it('does not include Kiki credentials in an inferred project resource tree', async () => {
+    const { app, root } = await fixture({ registered: true, privateHome: true });
+    const home = join(root, 'kiki-home');
+    await writeFile(join(home, 'server.local-owner'), 'fixture owner credential');
+    await symlink(home, join(root, 'linked-home'), process.platform === 'win32' ? 'junction' : 'dir');
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(root, 'slides/index.html') } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { url } = opened.json().data as { url: string };
+    expect((await app.inject(new URL('../app.js', url).pathname)).statusCode).toBe(200);
+    for (const resource of ['../kiki-home/server.local-owner', '../linked-home/server.local-owner']) {
+      expect((await app.inject(new URL(resource, url).pathname)).statusCode).toBe(403);
+    }
+  });
+
+  it('keeps the explicit root contract on SSH-managed servers', async () => {
+    const { app, root } = await fixture({ automatic: false });
+    const path = join(root, 'slides/index.html');
+    expect((await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path, workspace_root: root } })).statusCode).toBe(200);
+    const outside = await fixture();
+    expect((await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(outside.root, 'slides/index.html'), workspace_root: root } })).statusCode).toBe(403);
+  });
+
+  it('opens an outside HTML file with its own directory, without admitting unrelated files', async () => {
+    const { app, root } = await fixture();
+    const parent = await mkdtemp(join(tmpdir(), 'html-preview-downloads-'));
+    cleanups.push(() => rm(parent, { recursive: true, force: true }));
+    const actual = join(parent, '网页 资源');
+    const alias = join(parent, 'linked');
+    await mkdir(actual);
+    await symlink(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const html = '<!doctype html><script src="./本地 脚本.js"></script>';
+    await writeFile(join(actual, '报告 预览.html'), html);
+    await writeFile(join(actual, '本地 脚本.js'), 'window.previewLoaded=true');
+    await writeFile(join(parent, 'private.js'), 'secret');
+    await symlink(root, join(actual, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path: join(alias, '报告 预览.html'), workspace_root: root } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { url } = opened.json().data as { url: string };
+    expect((await app.inject(url)).body).toBe(html);
+    expect((await app.inject(new URL('./本地 脚本.js', url).pathname)).body).toBe('window.previewLoaded=true');
+    expect((await app.inject(new URL('./missing.js', url).pathname)).json()).toMatchObject({ msg: 'preview_resource_not_found' });
+    expect((await app.inject(new URL('../private.js', url).pathname)).statusCode).toBe(404);
+    expect((await app.inject(new URL('./escape/app.js', url).pathname)).statusCode).toBe(403);
+  });
+
   it('rejects traversal and canonical symlink escapes and revokes tab capability on close', async () => {
     const { app, root, data } = await fixture();
     const outside = await mkdtemp(join(tmpdir(), 'html-outside-'));
