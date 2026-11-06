@@ -265,7 +265,7 @@ describe('PluginService (plugin boundary)', () => {
     }
   }, 30_000);
 
-  it('installs a bundled official ZIP when the caller omits sha256 and rejects an unknown ZIP', async () => {
+  it('installs a bundled official ZIP using its published checksum when the caller omits it', async () => {
     const entry = readBundledPluginCatalog().marketplace.plugins.find((item) => item.id === 'kiki-cloudflare');
     expect(entry?.sha256).toMatch(/^[0-9a-f]{64}$/);
     const bytes = await fixedPublishedArchive(entry!.source, entry!.sha256!);
@@ -288,18 +288,41 @@ describe('PluginService (plugin boundary)', () => {
         state: 'ok',
         zipSha256: entry!.sha256,
       });
-      await expect(svc.previewPlugin({ source: 'https://downloads.example.test/unknown.zip' })).rejects.toThrow(
-        'ZIP plugins require a sha256 checksum',
-      );
       await expect(svc.previewPlugin({ source: entry!.source, sha256: '0'.repeat(64) })).rejects.toThrow(
         'Plugin ZIP sha256 mismatch',
       );
-      expect(fetchArchive.mock.calls.map(([input]) => input instanceof Request ? input.url : String(input)))
-        .not.toContain('https://downloads.example.test/unknown.zip');
     } finally {
       await host.dispose();
     }
   }, 30_000);
+
+  it('previews and installs a chosen ZIP without requiring a publisher checksum', async () => {
+    const source = 'https://downloads.example.test/chosen.zip';
+    const entries = readBundledPluginCatalog().marketplace.plugins;
+    const entry = entries.find((item) => item.id === 'kiki-cloudflare')!;
+    const other = entries.find((item) => item.id === 'kiki-office')!;
+    const bytes = await fixedPublishedArchive(entry.source, entry.sha256!);
+    const changed = await fixedPublishedArchive(other.source, other.sha256!);
+    const download = vi.fn(async () => new Response(new Uint8Array(bytes), { status: 200 }));
+    vi.stubGlobal('fetch', download);
+    const home = await makeHome();
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.previewPlugin({ source, sha256: 'invalid' })).rejects.toThrow('64 hexadecimal characters');
+      expect(download).not.toHaveBeenCalled();
+      const plan = await svc.previewPlugin({ source });
+      await expect(svc.installPlugin({ source })).rejects.toThrow('Preview this plugin');
+      await expect(svc.installPlugin({ source, fingerprint: plan.fingerprint })).rejects.toThrow('Installation consent required');
+      download.mockImplementationOnce(async () => new Response(new Uint8Array(changed), { status: 200 }));
+      await expect(svc.installPlugin({ source, fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('Plugin changed since installation preview');
+      expect(await svc.listPlugins()).toEqual([]);
+      await svc.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+      expect(await svc.getPluginInfo({ id: entry.id })).toMatchObject({ id: entry.id, state: 'ok', originalSource: source });
+      expect((await svc.getPluginInfo({ id: entry.id })).zipSha256).toBeUndefined();
+      await expect(svc.previewPlugin({ source, sha256: '0'.repeat(64) })).rejects.toThrow('Plugin ZIP sha256 mismatch');
+    } finally { await host.dispose(); }
+  });
 
   it('degrades non-blocking consumption reads but rejects hook reads when installed.json is corrupt', async () => {
     const home = await makeHome();

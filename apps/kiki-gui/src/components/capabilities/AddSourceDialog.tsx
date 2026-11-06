@@ -1,6 +1,5 @@
 /**
- * "Add from source" — a local folder, a GitHub repository, or a ZIP URL with
- * its SHA-256. Every path ends in the same preview + consent sheet as the
+ * "Add from source" — a local folder, a GitHub repository, or a ZIP URL. Every path ends in the same preview + consent sheet as the
  * marketplace, so a hand-typed source gets no weaker a review.
  *
  * This dialog is about one install's input. The catalog address is a standing
@@ -38,8 +37,9 @@ export function AddSourceDialog({
   const [source, setSource] = useState('');
   const [sha256, setSha256] = useState('');
   const trimmed = source.trim();
-  const shaValid = /^[0-9a-fA-F]{64}$/.test(sha256.trim());
-  const ready = trimmed !== '' && (kind !== 'zip' || shaValid);
+  const checksum = sha256.trim();
+  const shaInvalid = checksum !== '' && !/^[0-9a-fA-F]{64}$/.test(checksum);
+  const ready = trimmed !== '' && (kind !== 'zip' || !shaInvalid);
 
   const pick = async () => {
     const selected = await host.pickDirectory?.();
@@ -49,7 +49,7 @@ export function AddSourceDialog({
   const submit = () => {
     if (!ready) return;
     const name = trimmed.split(/[\\/]/).filter(Boolean).at(-1)?.replace(/\.zip$/i, '') ?? trimmed;
-    onPreview({ source: trimmed, sha256: kind === 'zip' ? sha256.trim() : undefined, displayName: name });
+    onPreview({ source: trimmed, sha256: kind === 'zip' && checksum !== '' ? checksum : undefined, displayName: name });
   };
 
   return (
@@ -101,11 +101,11 @@ export function AddSourceDialog({
               value={sha256}
               spellCheck={false}
               autoComplete="off"
-              aria-invalid={sha256.trim() !== '' && !shaValid}
+              aria-invalid={shaInvalid}
               onChange={(event) => { setSha256(event.target.value); }}
             />
             <span className="block text-[12px] font-normal leading-4 text-ink-faint">
-              {sha256.trim() !== '' && !shaValid ? t('cap.source.shaInvalid') : t('cap.source.shaHint')}
+              {shaInvalid ? t('cap.source.shaInvalid') : t('cap.source.shaHint')}
             </span>
           </label>
         ) : kind === 'github' ? (

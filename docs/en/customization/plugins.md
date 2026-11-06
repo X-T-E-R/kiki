@@ -30,7 +30,7 @@ You can also use slash commands directly:
 | --- | --- |
 | `/plugins` | Open the interactive plugin manager |
 | `/plugins list` | List installed plugins |
-| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL, or update an already-installed local source by repeating the same path. `--trust` gives the [one-time consent](#installing-a-plugin-that-runs-code) that a plugin running its own code needs, and is only asked on the first install of a source. `--sha256` is the publisher checksum for a ZIP you chose yourself. The market already publishes that checksum, so an Official or Curated install does not ask you to type it |
+| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL, or update an already-installed local source by repeating the same path. `--trust` gives the [one-time consent](#installing-a-plugin-that-runs-code) that a plugin running its own code needs, and is only asked on the first install of a source. For a ZIP you choose yourself, pass `--sha256` if the publisher provides a checksum. When the marketplace publishes a checksum, Kiki uses it automatically |
 | `/plugins marketplace [source]` | Browse the official marketplace, or pass a custom marketplace JSON path or URL |
 | `/plugins info <id>` | View plugin details and diagnostics |
 | `/plugins enable <id>` | Enable a plugin |

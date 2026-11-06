@@ -97,8 +97,10 @@ describe('AddSourceDialog', () => {
     const zip = await render();
     await click(inPanel('[data-segment="zip"]'));
     await setSource('https://example.test/plugin.zip');
-    // Review stays shut until the digest is a real SHA-256: the preview is
-    // the server's, and it checks what was reviewed.
+    expect(inPanel<HTMLButtonElement>('[data-add-source-submit]').disabled).toBe(false);
+    await click(inPanel('[data-add-source-submit]'));
+    expect(zip.onPreview).toHaveBeenCalledWith({ source: 'https://example.test/plugin.zip', sha256: undefined, displayName: 'plugin' });
+    await type(digestInput(), 'invalid');
     expect(inPanel<HTMLButtonElement>('[data-add-source-submit]').disabled).toBe(true);
     await type(digestInput(), 'a'.repeat(64));
     await click(inPanel('[data-add-source-submit]'));

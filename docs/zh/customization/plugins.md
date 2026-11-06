@@ -30,7 +30,7 @@ Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 
 | --- | --- |
 | `/plugins` | 打开交互式 plugin 管理器 |
 | `/plugins list` | 列出已安装 plugins |
-| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问。`--sha256` 是你自行选择的 ZIP 的发布者校验和。市场已经发布这个校验和，从 Official 或 Curated 安装时不必手填 |
+| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问。自行选择 ZIP 时，如果发布者提供了校验和，可以用 `--sha256` 指定。市场发布的校验和由 Kiki 自动使用 |
 | `/plugins marketplace [source]` | 浏览官方 marketplace，或传入自定义 marketplace JSON 的路径或 URL |
 | `/plugins info <id>` | 查看 plugin 详情和 diagnostics |
 | `/plugins enable <id>` | 启用 plugin |
