@@ -724,6 +724,21 @@ function Read-FixtureExecution([object]$Server, [string]$SessionId) {
 }
 
 try {
+    & {
+        $ownerToken = $fixtureToken
+        $ast = [Management.Automation.Language.Parser]::ParseFile($hotSwitch, [ref]$null, [ref]$null)
+        foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Call-Local', 'Execution', 'Lifecycle') }, $false)) {
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        function Invoke-RestMethod {
+            param($Uri, $Headers, $MaximumRedirection, $TimeoutSec, $Method, $ContentType, $Body)
+            return @{ code = 0; data = $TimeoutSec }
+        }
+        $server = @{ port = 1; server_id = 'fixture' }
+        foreach ($method in @('resume', 'cancelPause')) { Assert-Equal 0 (Execution $server 'session' $method) "Cold $method retained a request timeout." }
+        foreach ($method in @('read', 'pause')) { Assert-Equal 60 (Execution $server 'session' $method) "$method lost its request timeout." }
+        Assert-Equal 60 (Lifecycle $server 'update') 'The lifecycle action lost its request timeout.'
+    }
     $cscPath = Resolve-Csc
     [IO.Directory]::CreateDirectory((Join-Path $homePath 'server\instances')) | Out-Null
     [IO.File]::WriteAllText((Join-Path $homePath 'server.local-owner'), $fixtureToken + "`n", (New-Object Text.UTF8Encoding($false)))

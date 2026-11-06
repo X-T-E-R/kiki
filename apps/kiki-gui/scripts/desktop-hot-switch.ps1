@@ -20,13 +20,13 @@ $statePath = Join-Path $runtime 'hot-switch.json'
 $instances = Join-Path $homePath 'server\instances'
 $releases = Join-Path $runtime 'releases'
 
-function Call-Local([object]$Server, [string]$Path, [object]$Body) {
+function Call-Local([object]$Server, [string]$Path, [object]$Body, [int]$TimeoutSeconds = 60) {
     $headers = @{ Authorization = 'Bearer ' + $ownerToken }
     $url = 'http://127.0.0.1:{0}/api/{1}' -f $Server.port, $Path
     if ($null -eq $Body) {
         $reply = Invoke-RestMethod -Uri $url -Headers $headers -MaximumRedirection 0 -TimeoutSec 10
     } else {
-        $reply = Invoke-RestMethod -Uri $url -Headers $headers -MaximumRedirection 0 -TimeoutSec 60 -Method Post `
+        $reply = Invoke-RestMethod -Uri $url -Headers $headers -MaximumRedirection 0 -TimeoutSec $TimeoutSeconds -Method Post `
             -ContentType 'application/json' -Body ($Body | ConvertTo-Json -Depth 6 -Compress)
     }
     if ($reply.code -ne 0) { throw ('{0}: {1} ({2})' -f $Path, $reply.msg, $reply.code) }
@@ -34,10 +34,11 @@ function Call-Local([object]$Server, [string]$Path, [object]$Body) {
 }
 
 function Execution([object]$Server, [string]$Id, [string]$Method, [object[]]$Arguments = @()) {
+    $timeout = if ($Method -in @('resume', 'cancelPause')) { 0 } else { 60 }
     Call-Local $Server 'klient/call' @{
         procedure = @{ scope = 'session'; sessionId = $Id; service = 'sessionExecutionControl'; method = $Method }
         params = $Arguments
-    }
+    } $timeout
 }
 
 function Lifecycle([object]$Server, [string]$Action) {
