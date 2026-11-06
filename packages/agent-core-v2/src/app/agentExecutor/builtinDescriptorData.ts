@@ -35,8 +35,8 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
     supportsMcp: true, mcpTransports: ['stdio'],
     startupTimeoutMs: 150_000, shutdownGraceMs: 3_000, stdinCloseGraceMs: 5_000,
-    installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
-    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. Permission overrides use session-only settings; the official ACP server remains the separate antigravity-acp executor.' }],
+    installHint: 'Install the Antigravity CLI (agy). Kiki uses its headless stream through the bundled adapter; CLI 1.5+ also offers a separate `agy acp` transport.',
+    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. Permission overrides use session-only settings. The separate antigravity-acp executor runs agy_acp_server, not `agy acp`.' }],
     revision: '2026-11-03.1',
   },
   'grok-acp': {

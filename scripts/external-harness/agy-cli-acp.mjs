@@ -159,13 +159,25 @@ export function configOptions(session) {
 }
 
 async function terminate(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const closed = new Promise(resolveClose => child.once('close', resolveClose));
-  if (process.platform === 'win32') {
-    const killer = spawn(resolve(process.env.SystemRoot ?? 'C:/Windows', 'System32/taskkill.exe'),
-      ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-    await new Promise(done => { killer.once('error', done); killer.once('close', done); });
-  } else child.kill('SIGTERM');
+  const running = () => child?.pid !== undefined && child.exitCode === null && child.signalCode === null;
+  if (!running()) return;
+  let onClose;
+  const closed = new Promise(done => { onClose = done; child.once('close', onClose); });
+  try {
+    if (process.platform === 'win32') {
+      const killer = spawn(resolve(process.env.SystemRoot ?? 'C:/Windows', 'System32/taskkill.exe'),
+        ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      await new Promise((done, reject) => {
+        killer.once('error', reject);
+        killer.once('close', (code, signal) => code === 0 ? done() : reject(new Error(`taskkill exited with ${code ?? signal}`)));
+      });
+    } else if (!child.kill('SIGTERM')) throw new Error('SIGTERM was not delivered');
+  } catch (error) {
+    if (running()) {
+      child.off('close', onClose);
+      throw new Error(`Could not stop the owned AGY process: ${error.message}`, { cause: error });
+    }
+  }
   await closed;
 }
 
@@ -527,21 +539,29 @@ export class AgyBridge {
     let delivery = Promise.resolve();
     let ingress = Promise.resolve();
     let sequence = 0;
+    let stdoutFailed = false;
     const fail = error => {
       session.broken = true;
-      if (session.active) { session.active.reject(error); session.active = undefined; }
-      void this.stopProcess(child).catch(() => {});
+      if (!session.cancelling) void this.stopProcess(child).catch(() => {});
+      return this.loseTurn(session, error);
+    };
+    const failFrame = error => {
+      stdoutFailed = true;
+      session.broken = true;
+      if (!session.cancelling) void this.stopProcess(child).catch(() => {});
+      delivery = delivery.then(() => this.loseTurn(session, error));
     };
     child.stdout.on('data', chunk => {
+      if (stdoutFailed) return;
       buffer += decoder.write(chunk);
       let newline;
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
         if (!line) continue;
-        if (Buffer.byteLength(line) > MAX_FRAME_BYTES) { fail(new Error('AGY stdout frame exceeds 1 MiB')); return; }
+        if (Buffer.byteLength(line) > MAX_FRAME_BYTES) { failFrame(new Error('AGY stdout frame exceeds 1 MiB')); return; }
         let event;
         try { event = JSON.parse(line, account ? (_key, value) => typeof value === 'string' ? redact(value) : value : undefined); }
-        catch { fail(new Error('AGY emitted invalid NDJSON')); return; }
+        catch { failFrame(new Error('AGY emitted invalid NDJSON')); return; }
         const frame = { sequence: ++sequence, receivedAt: new Date().toISOString(), event: event?.event,
           stepIndex: event?.step_update?.step_index, stepType: event?.step_update?.step_type,
           state: event?.step_update?.state, status: event?.result?.status };
@@ -551,7 +571,7 @@ export class AgyBridge {
           await this.audit(session, 'native_frame_delivered', { sequence: frame.sequence });
         }).catch(fail);
       }
-      if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) fail(new Error('AGY stdout frame exceeds 1 MiB'));
+      if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) failFrame(new Error('AGY stdout frame exceeds 1 MiB'));
     });
     child.stderr.on('data', chunk => {
       const text = chunk.toString();
@@ -569,19 +589,17 @@ export class AgyBridge {
       if (stderrTruncated) lines.shift();
       const diagnostic = lines.map(line => safeDiagnosticLine(redact(line))).findLast(line => line !== undefined);
       stderr = Buffer.alloc(0);
+      session.broken = true;
       session.cleanup = (async () => {
         try {
           await Promise.all([ingress, delivery]);
         } finally {
-          session.broken = true;
-          if (session.active) {
+          if (session.active && !session.cancelling) {
             const message = `AGY exited before terminal result (code: ${code ?? 'none'}, signal: ${signal ?? 'none'})${diagnostic === undefined ? '' : `: ${diagnostic}`}`;
             const error = new Error(message);
             error.code = 'AGY_EARLY_EXIT';
             error.details = { exitCode: code ?? null, signal: signal ?? null, diagnostic };
-            session.failure = message;
-            session.active.reject(error);
-            session.active = undefined;
+            await this.loseTurn(session, error);
           }
           await session.permissionChannel?.close();
           await this.closeSteeringHook(session).catch(() => {});
@@ -600,15 +618,41 @@ export class AgyBridge {
     return this.audit(session, 'launch', { cliPath: this.cliPath, args, effort: session.effort, pid: child.pid, cwd: session.cwd });
   }
 
-  async settleTool(session, active, toolCallId, status, message) {
-    if (session.toolIds.get(toolCallId) !== 'pending') return;
-    session.toolIds.set(toolCallId, 'settled');
-    await active.client.notify('session/update', { sessionId: session.id,
-      update: { sessionUpdate: 'tool_call_update', toolCallId, status, content: [{ type: 'content', content: { type: 'text', text: message } }] } });
+  unresolvedTools(session) {
+    return [...session.toolIds].filter(([, status]) => status === 'pending')
+      .map(([toolCallId]) => ({ toolCallId, ...session.toolDetails.get(toolCallId) }));
   }
 
-  async settlePendingTools(session, active, status, message) {
-    for (const toolCallId of session.toolIds.keys()) await this.settleTool(session, active, toolCallId, status, message);
+  unknownToolMessage(reason, tools) {
+    return `${reason}: ${tools.map(tool => `${tool.toolCallId} (${tool.name ?? 'unknown tool'}, ${tool.state ?? 'unknown state'})`).join(', ')}; execution state is unknown; do not replay these calls or reuse this session until their native state is reconciled`;
+  }
+
+  async settlePendingTools(session, active, message) {
+    for (const [toolCallId, status] of session.toolIds) {
+      if (status !== 'pending') continue;
+      session.toolIds.set(toolCallId, 'settled');
+      await active.client.notify('session/update', { sessionId: session.id,
+        update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', content: [{ type: 'content', content: { type: 'text', text: message } }] } });
+    }
+  }
+
+  async rejectUnconfirmedTurn(session, active, error, unresolved) {
+    if (unresolved.length) {
+      error.details = { ...error.details, unresolvedTools: unresolved };
+      error.message = this.unknownToolMessage(error.message, unresolved);
+      await this.settlePendingTools(session, active, error.message).catch(() => {});
+    }
+    session.failure = `${error.message}; create a fresh session`;
+    active.reject(error);
+  }
+
+  async loseTurn(session, error) {
+    const active = session.active;
+    if (!active || session.cancelling) return;
+    session.active = undefined;
+    const unresolved = this.unresolvedTools(session);
+    if (unresolved.length) this.auditQuietly(session, 'tool_terminal_missing', { reason: 'stream_lost', tools: unresolved });
+    await this.rejectUnconfirmedTurn(session, active, error, unresolved);
   }
 
   async event(session, event) {
@@ -642,17 +686,18 @@ export class AgyBridge {
       }
       if (step.step_type === 'tool') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
+        const detail = { name: step.tool_name ?? step.tool_info?.name ?? session.toolDetails.get(id)?.name, state: step.state };
+        session.toolDetails.set(id, detail);
         if (!session.toolIds.has(id)) {
           session.toolIds.set(id, 'pending');
           await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call',
-            toolCallId: id, title: step.tool_name ?? step.tool_info?.name ?? 'AGY tool', kind: 'other', status: 'in_progress', rawInput: step.tool_info?.parameters } });
+            toolCallId: id, title: detail.name ?? 'AGY tool', kind: 'other', status: 'in_progress', rawInput: step.tool_info?.parameters } });
         }
-        const detail = { name: step.tool_name ?? step.tool_info?.name ?? session.toolDetails.get(id)?.name, state: step.state };
-        session.toolDetails.set(id, detail);
         await this.audit(session, 'tool_state', { toolCallId: id, ...detail });
-        if ((step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
+        if (session.active === active && (step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
           const failed = step.state === 'ERROR' || Boolean(step.tool_info?.error);
           const error = step.tool_info?.error ?? step.error;
+          session.toolIds.set(id, 'settled');
           const errorText = typeof error === 'string' ? error : error?.message;
           const output = step.tool_info?.output ?? errorText ?? (failed ? 'AGY tool reported an error' : undefined);
           if (failed && /^tool call denied by pre-tool hook:/i.test(String(errorText ?? output ?? '').trimStart())) {
@@ -663,7 +708,6 @@ export class AgyBridge {
             update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: failed ? 'failed' : 'completed',
               rawOutput: output, content: typeof output === 'string'
                 ? [{ type: 'content', content: { type: 'text', text: output } }] : undefined } });
-          session.toolIds.set(id, 'settled');
         }
       }
       return;
@@ -673,50 +717,51 @@ export class AgyBridge {
     await this.audit(session, 'agy_result', { conversationId: result.conversation_id, status: result.status,
       numTurns: result.num_turns, usage: result.usage, deniedActions: result.denied_actions,
       responseSha256: createHash('sha256').update(result.response ?? '').digest('hex') });
+    if (session.active !== active || session.cancelling) return;
     if (result.status === 'SUCCESS' && session.mcpServers.length !== session.mcpReady.size) {
       throw new Error('AGY did not activate and initialize the requested session MCP plugin; preserve native plugin/MCP off settings and review the connection instead of switching agents');
     }
-    const unresolved = [...session.toolIds].filter(([, status]) => status === 'pending')
-      .map(([toolCallId]) => ({ toolCallId, ...session.toolDetails.get(toolCallId) }));
+    const unresolved = this.unresolvedTools(session);
     const unresolvedMessage = unresolved.length
-      ? `AGY terminal result arrived before a tool terminal update: ${unresolved.map(tool => `${tool.toolCallId} (${tool.name ?? 'unknown tool'}, ${tool.state ?? 'unknown state'})`).join(', ')}; execution state is unknown; do not replay these calls or reuse this session until their native state is reconciled`
-      : undefined;
+      ? this.unknownToolMessage('AGY terminal result arrived before a tool terminal update', unresolved) : undefined;
     if (unresolved.length) {
       session.broken = true;
       session.failure = unresolvedMessage;
       await this.audit(session, 'tool_terminal_missing', { conversationId: result.conversation_id, nativeStatus: result.status, tools: unresolved });
     }
+    let error;
+    let stopReason = 'end_turn';
     if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
       const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; ${active.preToolDenied?.size
         ? 'a PreToolUse hook rejected a tool before execution; retain the denial; terminal SUCCESS is not evidence that the requested work ran'
         : 'the native AGY permission policy did not approve the action'}${unresolvedMessage ? `; ${unresolvedMessage}` : ''}`;
-      await this.settlePendingTools(session, active, 'failed', message);
+      await this.settlePendingTools(session, active, message);
       process.stderr.write(`${message}\n`);
-      const error = new Error(message);
+      error = new Error(message);
       error.code = 'AGY_PERMISSION_DENIED';
       error.details = { deniedToolCallIds: [...(active.preToolDenied ?? [])], unresolvedTools: unresolved };
-      active.reject(error);
-    } else if (result.status === 'CANCELED' || result.status === 'INTERRUPTED') {
-      await this.settlePendingTools(session, active, 'failed', unresolvedMessage ?? `AGY turn ${result.status.toLowerCase()}`);
-      active.resolve({ stopReason: 'cancelled' });
+    } else if (result.status === 'CANCELED' || result.status === 'INTERRUPTED' || (result.status === 'ERROR' && result.error === 'interrupted')) {
+      await this.settlePendingTools(session, active, unresolvedMessage ?? `AGY turn ${result.status.toLowerCase()}`);
+      stopReason = 'cancelled';
     } else if (result.status !== 'SUCCESS') {
       const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}`;
-      await this.settlePendingTools(session, active, 'failed', unresolvedMessage ?? message);
-      active.reject(new Error(unresolvedMessage ? `${message}; ${unresolvedMessage}` : message));
+      await this.settlePendingTools(session, active, unresolvedMessage ?? message);
+      error = new Error(unresolvedMessage ? `${message}; ${unresolvedMessage}` : message);
     } else if (unresolvedMessage) {
-      await this.settlePendingTools(session, active, 'failed', unresolvedMessage);
-      const error = new Error(unresolvedMessage);
+      await this.settlePendingTools(session, active, unresolvedMessage);
+      error = new Error(unresolvedMessage);
       error.code = 'AGY_TOOL_TERMINAL_MISSING';
       error.details = { conversationId: result.conversation_id, unresolvedTools: unresolved };
-      active.reject(error);
-    } else {
-      if (!active.text && result.response) await active.client.notify('session/update', { sessionId: session.id,
+    } else if (!active.text && result.response) {
+      await active.client.notify('session/update', { sessionId: session.id,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } } });
-      active.resolve({ stopReason: 'end_turn' });
     }
+    if (session.active !== active || session.cancelling) return;
     session.active = undefined;
+    if (error) active.reject(error);
+    else active.resolve({ stopReason });
   }
 
   async prompt(params, client) {
@@ -760,33 +805,57 @@ export class AgyBridge {
 
   async cancel(params) {
     const session = this.session(params.sessionId);
+    if (session.cancelling) return session.cancelling;
+    session.cancelling = this.cancelOwnedSession(session);
+    try { await session.cancelling; } finally { session.cancelling = undefined; }
+  }
+
+  async cancelOwnedSession(session) {
     const active = session.active;
-    session.active = undefined;
     session.broken = true;
-    if (active) await this.settlePendingTools(session, active, 'failed', 'AGY turn cancelled');
-    await session.preparing?.catch(() => {});
-    await session.permissionChannel?.close();
-    await this.stopProcess(session.child);
-    await session.cleanup;
-    await this.closeSteeringHook(session).catch(() => {});
-    await session.mcpPlugin?.close();
-    await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false });
-    active?.resolve({ stopReason: 'cancelled' });
+    try {
+      await session.preparing?.catch(() => {});
+      await session.permissionChannel?.close();
+      await this.stopProcess(session.child);
+      await session.exited;
+      await session.cleanup;
+      await this.closeSteeringHook(session).catch(() => {});
+      await session.mcpPlugin?.close();
+      const unresolved = this.unresolvedTools(session);
+      if (active && unresolved.length) {
+        await this.settlePendingTools(session, active, this.unknownToolMessage('AGY turn cancelled before a tool terminal update', unresolved));
+      }
+      await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false, unresolvedTools: unresolved });
+      active?.resolve({ stopReason: 'cancelled' });
+    } catch (error) {
+      session.active = undefined;
+      const unresolved = this.unresolvedTools(session);
+      this.auditQuietly(session, 'cancel_failed', { pid: session.child?.pid, unresolvedTools: unresolved });
+      if (active) await this.rejectUnconfirmedTurn(session, active, error, unresolved);
+      throw error;
+    } finally {
+      session.active = undefined;
+    }
   }
 
   close() {
     this.closePromise ??= Promise.all([...this.sessions.values()].map(async session => {
+      if (session.cancelling) await session.cancelling.catch(() => {});
       const active = session.active; session.active = undefined; session.broken = true;
       try {
-        if (active) await this.settlePendingTools(session, active, 'failed', 'ACP connection closed');
+        const unresolved = this.unresolvedTools(session);
+        if (active && unresolved.length) await this.settlePendingTools(session, active, this.unknownToolMessage('ACP connection closed before a tool terminal update', unresolved));
       } finally {
         active?.reject(new Error('ACP connection closed'));
         await session.preparing?.catch(() => {});
         await session.permissionChannel?.close();
         if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
           session.child.stdin.end();
-          const timer = setTimeout(() => { void this.stopProcess(session.child); }, 3000);
-          try { await session.exited; } finally { clearTimeout(timer); }
+          let timer;
+          const stopFailure = new Promise((_, reject) => {
+            timer = setTimeout(() => { void this.stopProcess(session.child).catch(reject); }, 3000);
+          });
+          try { await Promise.race([session.exited, stopFailure]); } finally { clearTimeout(timer); }
         }
         await session.cleanup;
         await this.closeSteeringHook(session).catch(() => {});
@@ -842,7 +911,7 @@ export async function runSessionMcp(key) {
   });
   input.once('close', () => child.stdin.end());
   child.stderr.pipe(process.stderr);
-  const stop = () => { void terminate(child); };
+  const stop = () => { void terminate(child).catch(fail); };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
   try {

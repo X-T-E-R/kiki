@@ -379,9 +379,13 @@ void test('real ACP early exits retain bounded safe diagnostics without mixing s
         truncated: 'password=' + 'z'.repeat(16384),
         hang: 'Cancellation diagnostic must not become an early-exit error.\\n'
       };
-      process.stderr.write(errors[name], () => {
+      const report = () => process.stderr.write(errors[name] ?? '', () => {
         if (name !== 'hang') process.exit(1);
       });
+      if (name === 'hang' || name === 'tool-lost') {
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: name,
+          step_update: { step_type: 'tool', step_index: 1, state: 'ACTIVE', tool_name: 'run_command' } }) + '\\n', report);
+      } else report();
     });
     process.stdin.once('end', () => process.exit(0));
     process.stdin.resume();
@@ -390,12 +394,17 @@ void test('real ACP early exits retain bounded safe diagnostics without mixing s
   const child = spawn(process.execPath, ['--input-type=module', '-e', adapterScript], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
   const responses = new Map();
+  const updates = [];
   let cancellationReady;
   const ready = new Promise(done => { cancellationReady = done; });
-  child.stderr.on('data', bytes => { if (bytes.toString().includes('Cancellation diagnostic')) cancellationReady(); });
+  child.stderr.resume();
   const reader = createInterface({ input: child.stdout });
   reader.on('line', line => {
     const frame = JSON.parse(line);
+    if (frame.method === 'session/update') {
+      updates.push(frame.params);
+      if (frame.params.update.toolCallId === 'agy-hang-1' && frame.params.update.sessionUpdate === 'tool_call') cancellationReady();
+    }
     if (frame.id !== undefined) { responses.get(frame.id)?.(frame); responses.delete(frame.id); }
   });
   let nextId = 0;
@@ -406,8 +415,8 @@ void test('real ACP early exits retain bounded safe diagnostics without mixing s
   try {
     assert.ok((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
     const ids = {};
-    for (const name of ['known', 'secret', 'empty', 'bounded', 'truncated', 'hang']) ids[name] = (await request('session/new', { cwd, mcpServers: [] })).result.sessionId;
-    const failed = await Promise.all(['known', 'secret', 'empty', 'bounded', 'truncated'].map(async name => {
+    for (const name of ['known', 'secret', 'empty', 'bounded', 'truncated', 'hang', 'tool-lost']) ids[name] = (await request('session/new', { cwd, mcpServers: [] })).result.sessionId;
+    const failed = await Promise.all(['known', 'secret', 'empty', 'bounded', 'truncated', 'tool-lost'].map(async name => {
       const frame = await request('session/prompt', { sessionId: ids[name], prompt: [{ type: 'text', text: name }] });
       assert.equal(frame.error.code, -32603);
       assert.equal(frame.error.data.adapterCode, 'AGY_EARLY_EXIT');
@@ -425,10 +434,19 @@ void test('real ACP early exits retain bounded safe diagnostics without mixing s
     assert.equal(errors.bounded.data.details.diagnostic, 'Fixture service unavailable after verbose output.');
     assert.doesNotMatch(JSON.stringify(errors), /fixture-credential|fixture-key|xxxxxxxx|yyyyyyyy|zzzzzzzz|Old leading/);
     assert(JSON.stringify(errors).length < 2000);
+    assert.match(errors['tool-lost'].message, /execution state is unknown; do not replay/);
+    assert.equal(errors['tool-lost'].data.details.unresolvedTools[0].toolCallId, 'agy-tool-lost-1');
     const pending = request('session/prompt', { sessionId: ids.hang, prompt: [{ type: 'text', text: 'hang' }] });
     await ready;
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: ids.hang } }) + '\n');
     assert.equal((await pending).result.stopReason, 'cancelled');
+    for (const name of ['tool-lost', 'hang']) {
+      const terminal = updates.filter(event => event.sessionId === ids[name] && event.update.sessionUpdate === 'tool_call_update');
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0].update.status, 'failed');
+      assert.match(terminal[0].update.content[0].content.text, /execution state is unknown; do not replay/);
+      assert.equal(terminal[0].update.toolCallId, `agy-${name}-1`);
+    }
   } finally { child.stdin.end(); }
   assert.deepEqual(await closed, { code: 0, signal: null });
   reader.close();
@@ -454,6 +472,169 @@ void test('cancel settles the owned session after the injected process stopper a
   assert.notEqual(b.session(id).child.exitCode, null);
   await assert.rejects(turn(b, id, 'again', []), /fresh session/);
   await b.close();
+});
+
+void test('cancellation retains tool terminals already received behind an ACP notification', { timeout: 10000 }, async () => {
+  const b = bridge(); const id = await session(b);
+  let release;
+  const blocked = new Promise(done => { release = done; });
+  let received;
+  const buffered = new Promise(done => { received = done; });
+  b.audit = async (_session, type, data) => {
+    if (type === 'native_frame_received' && data.event === 'result') received();
+  };
+  const messages = [];
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'background-events' }] }, {
+    notify: async (_method, event) => {
+      messages.push(event.update);
+      if (event.update.sessionUpdate === 'tool_call') await blocked;
+    },
+  });
+  pending.catch(() => {});
+  try {
+    await Promise.race([buffered, pending]);
+    const cancelled = b.cancel({ sessionId: id });
+    release();
+    await cancelled;
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    assert.deepEqual(messages.filter(update => update.sessionUpdate === 'tool_call_update').map(update => [update.toolCallId, update.status, update.rawOutput]), [
+      ['agy-fixture-conversation-52', 'failed', 'native failure'],
+      ['agy-fixture-conversation-42', 'completed', 'native output'],
+    ]);
+    assert.deepEqual(messages.filter(update => update.sessionUpdate === 'agent_message_chunk').map(update => update.content.text), ['native final']);
+  } finally { release(); await b.close(); }
+});
+
+void test('cancellation during final message delivery cannot publish terminal success', { timeout: 10000 }, async () => {
+  const b = bridge(); const id = await session(b);
+  let release;
+  const blocked = new Promise(done => { release = done; });
+  let delivering;
+  const ready = new Promise(done => { delivering = done; });
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'command-guidance' }] }, {
+    notify: async () => { delivering(); await blocked; },
+  });
+  pending.catch(() => {});
+  try {
+    await Promise.race([ready, pending]);
+    const cancelled = b.cancel({ sessionId: id });
+    release();
+    await cancelled;
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+  } finally { release(); await b.close(); }
+});
+
+void test('a failed cancellation retains unknown execution and rejects its prompt instead of claiming process exit', async () => {
+  const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] });
+  const id = await session(b);
+  let started;
+  const ready = new Promise(done => { started = done; });
+  const messages = [];
+  const records = [];
+  b.audit = async (_session, type, data) => { records.push({ type, ...data }); };
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => { messages.push(event); if (event.update?.sessionUpdate === 'tool_call') started(); },
+  });
+  pending.catch(() => {});
+  await Promise.race([ready, pending]);
+  const { child, cwd } = b.session(id);
+  const systemRoot = process.env.SystemRoot;
+  const kill = child.kill;
+  let timer;
+  try {
+    if (process.platform === 'win32') process.env.SystemRoot = join(cwd, 'missing-system-root');
+    else child.kill = () => false;
+    const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('stop failure left cancellation pending')), 2000); });
+    await assert.rejects(Promise.race([b.cancel({ sessionId: id }), deadline]), /Could not stop the owned AGY process/);
+    await assert.rejects(pending, error => {
+      assert.match(error.message, /Could not stop the owned AGY process/);
+      assert.equal(error.details.unresolvedTools[0].name, 'run_command');
+      return true;
+    });
+    assert.match(messages.at(-1).update.content[0].content.text, /execution state is unknown; do not replay/);
+    assert.equal(records.some(record => record.type === 'cancel' && record.processEnded), false);
+    assert.equal(records.find(record => record.type === 'cancel_failed').unresolvedTools.length, 1);
+    assert.equal(child.exitCode, null);
+    await assert.rejects(turn(b, id, 'again', []), /do not replay/);
+  } finally {
+    clearTimeout(timer);
+    if (systemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = systemRoot;
+    child.kill = kill;
+    await b.close();
+  }
+});
+
+void test('native disconnect and invalid frames settle pending tools as execution unknown without replay', async () => {
+  for (const [input, expected] of [['tool-disconnect', /exited before terminal result/], ['tool-invalid-frame', /invalid NDJSON/]]) {
+    const b = bridge(); const id = await session(b); const messages = [];
+    try {
+      await assert.rejects(turn(b, id, input, messages), error => {
+        assert.match(error.message, expected);
+        assert.equal(error.details.unresolvedTools[0].name, 'run_command');
+        return true;
+      });
+      const updates = messages.filter(message => message.update?.sessionUpdate === 'tool_call_update');
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0].update.status, 'failed');
+      assert.match(updates[0].update.content[0].content.text, /execution state is unknown; do not replay/);
+      await assert.rejects(turn(b, id, 'again', []), /fresh session/);
+    } finally { await b.close(); }
+  }
+});
+
+void test('the captured native ERROR interrupted result is cancellation with unknown tool execution', async () => {
+  const b = bridge(); const id = await session(b); const messages = [];
+  try {
+    assert.deepEqual(await turn(b, id, 'native-interrupted', messages), { stopReason: 'cancelled' });
+    assert.match(messages.at(-1).update.content[0].content.text, /execution state is unknown; do not replay/);
+    await assert.rejects(turn(b, id, 'again', []), /do not replay/);
+  } finally { await b.close(); }
+});
+
+void test('cancel recovers an export-stalled fixture process without completing or rerunning its native commands', { timeout: 15000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-export-stall-'));
+  const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] });
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    let started;
+    const ready = new Promise(done => { started = done; });
+    const messages = [];
+    const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'export-hang' }] }, {
+      notify: async (_method, event) => { messages.push(event); if (event.update?.sessionUpdate === 'tool_call') started(); },
+    });
+    await Promise.race([ready, pending]);
+    const { earlyPid, response } = JSON.parse(await readFile(join(root, 'native-export-state.json'), 'utf8'));
+    assert.equal(response, 'produced but not exported');
+    process.kill(earlyPid, 0);
+    assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'early\nlater\n');
+    const child = b.session(id).child;
+    const writes = [];
+    const write = child.stdin.write.bind(child.stdin);
+    child.stdin.write = (...args) => { writes.push(args[0]); return write(...args); };
+    await b.cancel({ sessionId: id });
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try { process.kill(earlyPid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
+      await new Promise(done => setTimeout(done, 10));
+    }
+    assert.throws(() => process.kill(earlyPid, 0), { code: 'ESRCH' });
+    assert.deepEqual(writes, []);
+    assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'early\nlater\n');
+    assert.equal(messages.some(message => message.update?.sessionUpdate === 'agent_message_chunk'), false);
+    assert.match(messages.at(-1).update.content[0].content.text, /execution state is unknown; do not replay/);
+    await assert.rejects(turn(b, id, 'again', []), /fresh session/);
+    const nextId = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const next = [];
+    assert.deepEqual(await turn(b, nextId, 'new independent turn', next), { stopReason: 'end_turn' });
+    assert.equal(next.some(message => message.update?.toolCallId), false);
+    assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'early\nlater\n');
+  } finally {
+    await b.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 void test('missing-file ERROR is a failed tool receipt, not a failed recovered AGY turn', async () => {

@@ -69,13 +69,46 @@ Codex uses a custom Responses provider whose `env_key` names its private launch 
 
 For a new native conversation, the adapter leases `kiki-agy-command-guidance` in `.agents/hooks.json` before launching AGY. Its `SessionStart` command returns one persistent `injectSteps:[{systemMessage:{systemMessage}}]` instruction: use an explicit path such as `rg -n "pattern" .` for file-content searches and an explicit `-` when stdin is intended. A piped, open stdin otherwise makes pathless `rg` wait for input. The hook returns nothing outside the adapter's launch environment. Ordinary continuation, permission-mode restarts and exact native load do not register this instruction again. The lease uses the existing owned-key recovery and original-byte restoration; foreign hooks, including disabled entries, remain unchanged. An existing `"kiki-agy-command-guidance": {"enabled": false}` entry disables just this guidance without blocking launch or creating an ownership lease.
 
-This is advisory tool-use guidance through AGY's documented native `SessionStart` contract, not a `PreToolUse` approval gate. It does not inspect or rewrite commands, close the protocol stdin, change the execution host, or rerun tools. AGY retains its native permissions and tool results. AGY 1.5.0's public CLI help and bundled `agy-customizations/docs/hooks.md` document `stream-json`, `--settings` and startup injection, but expose no `run_command` stdin control or stream-export unlock switch. Native head-of-line blocking behind a background command remains a vendor boundary.
+This is advisory tool-use guidance through AGY's documented native `SessionStart` contract. AGY retains its native permissions and tool results. The adapter neither inspects nor rewrites commands and keeps protocol stdin open. The [headless contract](https://antigravity.google/docs/cli/headless) exposes no tool-stdin control or stream-export unlock. [Native `agy acp`](https://antigravity.google/docs/cli/acp) became available in CLI 1.5.0 and reuses the CLI's login, tools and settings; it is separate from both this adapter's headless transport and the `agy_acp_server` executable used by `antigravity-acp`. The [1.5.1 release](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.1) fixes native ACP cancellation and late updates, but does not establish that ACP avoids head-of-line blocking behind an unfinished command. Keep the default route until the isolated comparison below establishes that behavior and its session contracts.
 
 With `AGY_BRIDGE_AUDIT_DIR` set, `native_frame_received` records each parsed stdout frame before the delivery queue: launch-local `sequence`, `receivedAt`, event type, step index/type/state and terminal status. It contains no command, output or assistant text. `native_frame_delivered` records the same sequence after the event handler and awaited ACP notifications finish. Reception has its own audit queue, so a blocked notification cannot hide later frame arrivals. The 1 MiB ceiling applies to each NDJSON frame, not a burst containing several frames.
 
 If a later frame is received while earlier delivery is unfinished, investigate the ACP notification path. If no later frame is received while the native transcript advances, investigate AGY's export path. A later native tool or text frame is forwarded without waiting for an earlier tool's terminal state. The turn still needs AGY's terminal result; a missing tool terminal update remains an explicit unknown-execution failure rather than a fabricated completion.
 
+Cancellation stops the owned CLI and drains received frames before publishing missing-tool receipts. It preserves native tool success and failure even when the updates were queued behind another notification; a queued native result does not replace the cancellation with turn success. A failed stop rejects the prompt and records `cancel_failed` without claiming process exit. Native disconnects and invalid stdout frames retain the original error and add `details.unresolvedTools` when there are pending tools. Valid frames preceding a malformed frame drain first, so an `ACTIVE` update and an invalid frame in the same chunk retain the known tool identity. Visible pending cards become failed receipts whose text says execution is unknown and must not be replayed. Native `ERROR` with `error: "interrupted"`, as captured in Paseo's `sigint-mid-tool` fixture, maps to ACP `cancelled`; a session with unresolved tools does not accept another prompt.
+
 For a stalled live task, preserve its audit and native evidence, then verify the exact command PID, creation time and complete parent chain before an authorized intervention. Releasing a confirmed stdin wait can let the original native events and terminal result drain. A report file or a finished native assistant step alone does not authorize completing the Kiki task or replaying commands. Validate the original task's terminal receipt separately from any new-adapter fixture check.
+
+### Compare native transports offline
+
+`scripts/external-harness/agy-native-export-probe.mjs` drives the actual CLI against a synthetic Gemini endpoint. It requires an isolated Linux container, a previously obtained official AGY 1.5.x Linux binary, a Linux `rg` binary, and a cached Node 24 image. It creates a fresh home, supplies only a synthetic API key, checks that the guest has no external network route or D-Bus sockets, and writes `/out/report.json`. The script is excluded from installed adapter files.
+
+From the repository root, set absolute host paths and choose one case per empty output directory. The output directory must be writable by container UID 1000. In Windows Git Bash, use `ROOT=$(pwd -W)`, Windows-form mount paths and `export MSYS_NO_PATHCONV=1`.
+
+```sh
+IMAGE=YOUR_CACHED_NODE_IMAGE_ID
+AGY=/absolute/path/to/antigravity
+RG=/absolute/path/to/linux-rg
+ROOT=$(pwd)
+TRANSPORT=stream
+CASE=hold
+OUT="$ROOT/.tmp/agy-native-$TRANSPORT-$CASE"
+mkdir -p "$OUT"
+docker run --rm --pull never --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --user 1000:1000 \
+  --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+  --mount "type=bind,source=$AGY,target=/agy,readonly" \
+  --mount "type=bind,source=$RG,target=/rg,readonly" \
+  --mount "type=bind,source=$ROOT/scripts/external-harness/agy-native-export-probe.mjs,target=/probe.mjs,readonly" \
+  --mount "type=bind,source=$OUT,target=/out" \
+  --entrypoint node "$IMAGE" /probe.mjs "$TRANSPORT" "$CASE"
+```
+
+Run `stream hold` and `acp hold` first. The early command waits for stdin with pathless `rg`; a 12-second fixture timeout releases it. The synthetic model then requests a separate real command with an explicit stdin pipeline and produces final text. `beforeRelease.earlyExit` must be absent while the endpoint has already received `needle pipe` from the later command. Compare `laterToolBeforeRelease`, `textBeforeRelease` and `terminalBeforeRelease` to locate withheld events. A zero exit means the fixture completed; only those timing fields establish whether that transport exposes later events during the wait.
+
+Use `explicit` to replace the early search with an explicit file path, `interactive` to send input to an explicit `rg -` through native `manage_task`, and `cancel` to cancel while the synthetic endpoint is holding the next reply. Each case checks that both native commands execute once. Completed turns and native ACP cancellation also exercise a second prompt and reject first-turn leakage. The test has bounded native response waits and terminates only its own child group during cleanup. If startup, a tool declaration or a native response differs, retain the nonzero report and fix the probe from that evidence before drawing a transport conclusion.
+
+The native comparison remains unrun for this candidate: the shared Docker engine was unresponsive, and no alternate isolated runtime was admitted. Before routing production through `agy acp`, obtain the timed comparison plus native model/effort selection, permissions and explicit deny, additional directories, exact recovery, session MCP, account/proxy binding and cancellation evidence. Keep existing headless sessions on their saved route.
 
 ## Verification
 

@@ -46,6 +46,30 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (input.message.content === 'hang') continue;
+  if (input.message.content === 'export-hang') {
+    const { once } = await import('node:events');
+    const early = spawn(process.execPath, ['-e', "require('node:fs').appendFileSync('native-executions.txt', 'early\\n'); process.stdout.write('started'); process.stdin.resume();"], { stdio: ['pipe', 'pipe', 'pipe'] });
+    await once(early.stdout, 'data');
+    const later = spawn(process.execPath, ['-e', "require('node:fs').appendFileSync('native-executions.txt', 'later\\n');"], { stdio: 'ignore' });
+    await once(later, 'close');
+    await writeFile('native-export-state.json', JSON.stringify({ earlyPid: early.pid, response: 'produced but not exported' }));
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: 42, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { CommandLine: 'fixture-owned-stdin-wait' } } } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'tool-disconnect' || input.message.content === 'tool-invalid-frame') {
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE' } }) + '\n');
+    if (input.message.content === 'tool-disconnect') process.exit(9);
+    process.stdout.write('invalid-native-frame\n');
+    continue;
+  }
+  if (input.message.content === 'native-interrupted') {
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', error: 'interrupted' } }) + '\n');
+    continue;
+  }
   if (input.message.content === 'tool-hang') {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');
