@@ -704,6 +704,28 @@ describe('session selection annotations', () => {
     }
   });
 
+  it('keeps an acknowledged external unknown off the main composer instead of restoring a duplicate draft', async () => {
+    submit.persisted = false;
+    try {
+      await withSession(async () => {
+        await act(async () => { composerProps().onChange('already saved externally'); });
+        let sent: Promise<unknown> | undefined;
+        await act(async () => { sent = composerProps().onSendNow('already saved externally', []); });
+        expect(composerProps().value).toBe('already saved externally');
+        await act(async () => {
+          submit.calls[0]!.resolve({ promptId: 'external-original', outcome: 'queued', reason: 'external_retry' });
+          await sent;
+        });
+        expect(composerProps().value).toBe('');
+        expect(readDraft('session-a')).toBe('');
+        expect(currentAnnotations()).toEqual([]);
+        expect(submit.calls).toHaveLength(1);
+        expect(submit.steered).toEqual([]);
+        expect(getToasts().some(toast => toast.text.includes('queue is paused'))).toBe(true);
+      });
+    } finally { submit.persisted = true; }
+  });
+
   it.each([
     ['refused by the running turn', 'refused', true],
     ['never reached the server', 'submit', true],

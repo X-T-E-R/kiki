@@ -765,18 +765,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           if (req.body.delivery_mode !== 'steer') return result;
           const native = nativeSteerState(resolved.prompt, result.prompt_id);
           if (native !== undefined) return projectNativeSteer(result, native);
-          if (!resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) {
+          const queue = resolved.prompt.list();
+          const pending = queue.pending.find(item => item.id === result.prompt_id);
+          if (pending === undefined) {
             return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };
           }
           if (replayedSubmission && (resolved.profile.data().executorId ?? 'native') !== 'native') {
-            if (resolved.prompt.list().pending.find(item => item.id === result.prompt_id)?.deliveryReason === 'external_retry') {
+            if (ingressExecution !== undefined && pending.deliveryReason === 'external_retry') {
               throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
             }
             return { ...result, delivery_state: 'queued' as const, delivery_reason: 'external_retry' as const };
           }
           signal?.throwIfAborted();
           const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
-          const queue = resolved.prompt.list();
           const activePromptId = queue.active?.id ?? queue.launching?.id;
           if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
               (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
@@ -790,7 +791,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             return { ...result, delivery_state: resolved.prompt.list().pending.some(item => item.id === result.prompt_id) ? 'queued' as const : undefined,
               delivery_reason: error.code === ErrorCodes.REQUEST_INVALID ? 'steer_rejected' as const : 'prompt_no_longer_pending' as const };
           }
-          if (handle?.deliveryReason === 'external_retry') {
+          if (ingressExecution !== undefined && handle?.deliveryReason === 'external_retry') {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
           }
           return { ...result,

@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Fix Send now retries for external agents and waiting indicators for refused messages.
+Fix external Send now retries, duplicate draft recovery, and waiting indicators for refused messages.

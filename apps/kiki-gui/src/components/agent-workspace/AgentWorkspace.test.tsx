@@ -663,6 +663,16 @@ it('explains a queued child Send now with the reason the server reported', async
   expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'sv.steerQueuedRejected') });
 });
 
+it('keeps an acknowledged external unknown off the child composer and explains the queue hold', async () => {
+  harness.isNativeAgent.mockResolvedValue(false);
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'external-original', outcome: 'queued', reason: 'external_retry' });
+  const textarea = await sendNowToBusyChild(sendPromptNow);
+  expect(textarea.value).toBe('');
+  expect(sendPromptNow).toHaveBeenCalledTimes(1);
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+  expect(harness.pushToast).toHaveBeenCalledExactlyOnceWith({ tone: 'info', text: translate('en', 'sv.steerQueuedExternalUnknown') });
+});
+
 it('does not guess delivery for a child Send now whose response was lost', async () => {
   const sendPromptNow = vi.fn().mockRejectedValue(new SendNowError('unknown', new Error('response lost')));
   const textarea = await sendNowToBusyChild(sendPromptNow);

@@ -514,6 +514,72 @@ describe('server-v2 /api prompts', () => {
     } finally { gate.resolve(); resume.mockRestore(); prompt.abort('boundary-now'); }
   });
 
+  it.each(['main', 'child'] as const)('acknowledges a non-durable external unknown without returning the %s message to a new draft', async target => {
+    fixture.server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-unknown-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({ name: 'external-unknown', definitionId: 'fixture:external-unknown',
+        executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_UNKNOWN' })] } });
+    const registry = fixture.server!.core.accessor.get(IAgentExecutorRegistry);
+    const originalResolve = registry.resolveExecutable.bind(registry);
+    const held = holdExternalSession();
+    const run = vi.fn(held.session.run);
+    const steer = vi.fn(async () => 'unknown' as const);
+    const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
+      descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
+      options: registry.resolve(executorId, options ?? {}).options,
+      provider: { id: 'unknown-fixture', protocol: 'acp-v1', validateOptions: value => value as Record<string, string | number | boolean>,
+        validateBinding: binding => ({ ok: true, binding }), create: () => ({ ...held.session, run, steer }) as unknown as AgentExecutorSession },
+    } : originalResolve(executorId, options));
+    const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server!) });
+    let controller: SessionController | undefined;
+    try {
+      const created = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: fixture.home! }, ephemeral: true });
+      expect(created.body.code).toBe(0);
+      const id = created.body.data.id;
+      await createMainAgent(id);
+      const lifecycle = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+      const agent = target === 'main' ? lifecycle.get('main')!
+        : await lifecycle.create({ binding: { profile: 'external-unknown' } });
+      const agentId = agent.id;
+      const query = agentId === 'main' ? '' : `?agent_id=${agentId}`;
+      const body = { prompt_id: 'external-unknown-once', agent_id: agentId === 'main' ? undefined : agentId,
+        delivery_mode: 'steer' as const, content: [{ type: 'text' as const, text: 'Keep the original message.' }] };
+      const prompt = agent.accessor.get(IAgentPromptService);
+      if (target === 'main') {
+        expect((await call('POST', `/api/sessions/${id}/prompts`, { ...body, prompt_id: 'external-active',
+          delivery_mode: undefined, profile: 'external-unknown', content: [{ type: 'text', text: 'Active external turn.' }] })).body.code).toBe(0);
+      } else {
+        const active = await prompt.enqueue({ id: 'external-active', message: { role: 'user',
+          content: [{ type: 'text', text: 'Active external turn.' }], toolCalls: [] } });
+        await active.launched;
+      }
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe('external-active'));
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      controller.setFocusedAgent(agentId);
+      await controller.open();
+      const submitted = vi.spyOn(client.sessions, 'submitPrompt');
+      const acknowledged = vi.fn();
+      const sent = await controller.sendPromptNow({ agentId, promptId: body.prompt_id, text: body.content[0]!.text, onAcknowledged: acknowledged });
+      expect(sent).toEqual({ promptId: body.prompt_id, outcome: 'queued', reason: 'external_retry' });
+      expect(acknowledged).toHaveBeenCalledTimes(1);
+      expect(submitted).toHaveBeenCalledWith(id, expect.objectContaining({ prompt_id: body.prompt_id, admission: undefined }));
+      await vi.waitFor(() => {
+        const state = agentId === 'main' ? controller!.getState() : controller!.getAgentState(agentId);
+        expect(state.queuedPromptIds).toContain(body.prompt_id);
+        expect(state.promptQueueHold).toEqual({ reason: 'recovery', count: 1 });
+      });
+      expect(controller.getPendingSteers(agentId)).toEqual([]);
+      expect(await client.submitPrompt(id, body)).toMatchObject({ prompt_id: body.prompt_id, delivery_state: 'queued', delivery_reason: 'external_retry' });
+      expect((await call('POST', `/api/sessions/${id}/prompts/${body.prompt_id}:steer${query}`)).body).toMatchObject({ code: 0, data: { prompt_ids: [body.prompt_id], delivery_reason: 'external_retry' } });
+      expect(steer).toHaveBeenCalledTimes(1);
+      expect(prompt.list().pending.map(item => item.id)).toEqual([body.prompt_id]);
+      held.finish();
+      await vi.waitFor(() => expect(prompt.list().active).toBeUndefined());
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(prompt.abort(body.prompt_id)).toBe(true);
+      await agent.accessor.get(IAgentExecutionService).settled();
+    } finally { controller?.close(); await client.klient.close(); held.finish(); executor.mockRestore(); }
+  });
+
   it.each(['same-target', 'changed-target', 'unsupported', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {
     fixture.server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-immediate-fixture', priority: 50,
       contribution: { profiles: [normalizeAgentProfile({ name: 'external-immediate', definitionId: 'fixture:external-immediate',
