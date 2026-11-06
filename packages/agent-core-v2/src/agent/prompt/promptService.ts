@@ -2071,9 +2071,12 @@ export class AgentPromptService implements IAgentPromptService {
         this.immediatePromptIds.add(item.id);
       }
       const uncommitted = fresh.filter(item => !this.lookup(item.id)?.steerAccepted);
-      const commit = uncommitted.length === 0 ? this.wire.flush()
-        : this.dispatcher.dispatchDurably(new PromptSteerAccepted({ promptIds: uncommitted.map(item => item.id) }));
-      const acceptance = commit.then(() => {
+      const commit = async () => {
+        if (uncommitted.length === 0) { await this.wire.flush(); return; }
+        if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
+        await this.dispatcher.dispatchDurably(new PromptSteerAccepted({ promptIds: uncommitted.map(item => item.id) }));
+      };
+      const acceptance = commit().then(() => {
         for (const item of fresh) void this.deliverAcceptedSteer(item, targetTurnId);
       }).catch(error => {
         for (const item of fresh) {
