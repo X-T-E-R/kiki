@@ -6,7 +6,8 @@ import { networkInterfaces } from 'node:os';
 import { createInterface } from 'node:readline';
 import { setTimeout as pause } from 'node:timers/promises';
 
-const [transport, scenario] = process.argv.slice(2);
+const [transport, scenario, observation] = process.argv.slice(2);
+assert.ok(observation === undefined || observation === 'observe', 'Optional observation must be observe');
 assert.ok(['stream', 'acp'].includes(transport), 'Choose stream or acp');
 assert.ok(['hold', 'pathless', 'explicit', 'interactive', 'cancel', 'account-model'].includes(scenario), 'Choose hold, pathless, explicit, interactive, cancel or account-model');
 assert.equal(process.platform, 'linux');
@@ -32,6 +33,25 @@ await mkdir(appData, { recursive: true });
 await mkdir(cwd);
 await writeFile(`${appData}/settings.json`, JSON.stringify(settings));
 await writeFile(`${cwd}/input.txt`, 'needle explicit path\n');
+if (observation) {
+  await writeFile('/tmp/observe-hook.mjs', `import { appendFile, readFile } from 'node:fs/promises';
+let raw = ''; for await (const chunk of process.stdin) raw += chunk;
+const input = JSON.parse(raw);
+let transcript, transcriptError;
+try { transcript = await readFile(input.transcriptPath, 'utf8'); }
+catch (error) { transcriptError = { code: error.code, message: error.message }; }
+await appendFile('/tmp/agy-workspace/hook-events.ndjson', JSON.stringify({ at: Date.now(), hook: process.argv[2], input, transcript, transcriptError }) + '\\n');
+process.stdout.write(process.argv[2] === 'Stop' ? '{"decision":"stop"}' : '{}');
+`);
+  const handler = hook => ({ type: 'command', command: `node /tmp/observe-hook.mjs ${hook}`, timeout: 5 });
+  await mkdir(`${cwd}/.agents`);
+  await writeFile(`${cwd}/.agents/hooks.json`, JSON.stringify({ 'offline-observation': {
+    SessionStart: [handler('SessionStart')],
+    PostToolUse: [{ matcher: '*', hooks: [handler('PostToolUse')] }],
+    PostInvocation: [handler('PostInvocation')],
+    Stop: [handler('Stop')],
+  } }));
+}
 
 const output = [];
 const start = Date.now();
@@ -156,6 +176,11 @@ try {
   assert.match(await waitFor(() => laterOutput, 8000) ?? '', /needle pipe/u, 'AGY must have executed the later tool before measuring export');
   await pause(300);
   beforeRelease = { ms: Date.now() - start, frameCount: frames.length, earlyCount: await optional('early-count'), earlyExit: await optional('early-exit') };
+  if (observation) {
+    const hooks = await optional('hook-events.ndjson');
+    record('observation_before_release', hooks);
+    assert.ok(hooks, 'no public observation hook ran');
+  }
   assert.equal(beforeRelease.earlyCount, 'x', 'early command must have started once');
   if (scenario === 'hold' || scenario === 'cancel') assert.equal(beforeRelease.earlyExit, undefined, 'early command must still be waiting for input');
   if (scenario === 'interactive') assert.match(await waitFor(async () => {
@@ -225,8 +250,9 @@ finally {
     earlyExitedMs: earlyExit === undefined ? undefined : Math.round((await stat(`${cwd}/early-exit`)).mtimeMs - start),
     earlyToolTerminalMs: output.find(entry => entry.kind === 'stdout' && earlyTerminal(entry.data))?.ms,
   };
-  const summary = { version: version.stdout.trim(), rgVersion: rgVersion.stdout.split('\n')[0], transport, scenario, model, generationPath, beforeRelease, timing, laterToolBeforeRelease, textBeforeRelease, terminalBeforeRelease, earlyExit, first, second, failure, exit, requests };
-  await writeFile('/out/report.json', JSON.stringify({ summary, output }, null, 2));
+  const hooks = observation ? (await optional('hook-events.ndjson'))?.trim().split('\n').map(JSON.parse) : undefined;
+  const summary = { version: version.stdout.trim(), rgVersion: rgVersion.stdout.split('\n')[0], transport, scenario, observation, model, generationPath, beforeRelease, timing, laterToolBeforeRelease, textBeforeRelease, terminalBeforeRelease, earlyExit, first, second, failure, exit, requests };
+  await writeFile('/out/report.json', JSON.stringify({ summary, output, hooks }, null, 2));
   console.log(JSON.stringify(summary));
   if (failure) process.exitCode = 1;
 }
