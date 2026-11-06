@@ -73,6 +73,29 @@ function clock() {
 }
 
 describe('LiveControllerRegistry view cache', () => {
+  it('sets route focus before opening a fresh or resuming a parked subscription', async () => {
+    const registry = new LiveControllerRegistry();
+    const scope = {};
+    const view = fake('a');
+    const controller = view.controller;
+    const attachFocus: (string | undefined)[] = [];
+    let focused: string | undefined;
+    controller.setFocusedAgent = (agentId) => { focused = agentId; };
+    view.open.mockImplementation(async () => { attachFocus.push(focused); });
+    view.resume.mockImplementation(async () => { attachFocus.push(focused); });
+    const first = registry.acquire('a', scope, () => controller, 'child-a');
+    await first.ready;
+    first.release();
+    const second = registry.acquire('a', scope, () => controller, 'child-b');
+    try {
+      await second.ready;
+      expect(attachFocus).toEqual(['child-a', 'child-b']);
+    } finally {
+      second.release();
+      registry.clearParked();
+    }
+  });
+
   it('parks a released view and reuses it on the next acquire without reopening', () => {
     const registry = new LiveControllerRegistry();
     const scope = {};

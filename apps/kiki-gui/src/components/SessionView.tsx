@@ -353,11 +353,11 @@ function useActiveController(
       sessionId,
       client,
       () => new SessionController(client.sessions, client.sessionView(sessionId), sessionId),
+      focusedAgentId ?? MAIN_AGENT_ID,
     );
     const next = lease.controller;
     let activeLease = true;
     next.setPersistenceHint?.(persistenceHint);
-    next.setFocusedAgent(focusedAgentId);
     setActive({ controller: next, leaseReady: false });
     void lease.ready.then(
       () => {

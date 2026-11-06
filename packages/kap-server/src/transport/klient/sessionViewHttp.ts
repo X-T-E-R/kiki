@@ -178,7 +178,7 @@ export class SessionViewHttpConnection {
     }
     this.detached.delete(id);
     const inFlight = this.frames.get(id);
-    if (this.tasks.has(id) && inFlight !== undefined && expandsAttach(inFlight, frame)) {
+    if (this.tasks.has(id) && inFlight !== undefined && expandsSummaryAttach(inFlight, frame)) {
       this.expansions.set(id, frame);
       return true;
     }
@@ -374,7 +374,7 @@ function attachGrades(frame: KlientFrame): { generation: unknown; grades: Transc
   return { generation: data?.generation, grades: grades as TranscriptGradeSpec };
 }
 
-function expandsAttach(current: KlientFrame, next: KlientFrame): boolean {
+function expandsSummaryAttach(current: KlientFrame, next: KlientFrame): boolean {
   if (current.sessionId !== next.sessionId) return false;
   const before = attachGrades(current);
   const after = attachGrades(next);
@@ -384,7 +384,10 @@ function expandsAttach(current: KlientFrame, next: KlientFrame): boolean {
     const previous = GRADE_RANK[gradeFor(before.grades, agentId)];
     const following = GRADE_RANK[gradeFor(after.grades, agentId)];
     if (following < previous) return false;
-    if (following > previous) raised = true;
+    if (following > previous) {
+      if (following > GRADE_RANK.turn) return false;
+      raised = true;
+    }
   }
   return raised;
 }

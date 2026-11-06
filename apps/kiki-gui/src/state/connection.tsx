@@ -167,9 +167,10 @@ export interface ControllerRegistry {
   delete(controller: SessionController): void;
   /**
    * Share by connection identity (e.g. KikiClient) and session; factory returns a fresh, unopened controller.
+   * Set route focus before opening or resuming. Omitted focus leaves the controller's demand unchanged.
    * Lease ownership is separate from legacy add/delete; never borrow an externally owned controller.
    */
-  acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease;
+  acquire(sessionId: string, connectionScope: object, createController: () => SessionController, focusedAgentId?: string): ControllerLease;
   /**
    * Leased or parked on this connection. The live iterator omits parked views
    * so rails do not treat them as open; route admission must not treat that
@@ -267,7 +268,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
     this.clearTimer = options.clearTimer ?? ((handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); });
   }
 
-  acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease {
+  acquire(sessionId: string, connectionScope: object, createController: () => SessionController, focusedAgentId?: string): ControllerLease {
     let sessions = this.retained.get(connectionScope);
     if (sessions === undefined) {
       sessions = new Map();
@@ -279,17 +280,21 @@ export class LiveControllerRegistry implements ControllerRegistry {
       if (controller.sessionId !== sessionId || this.controllers.has(controller)) {
         throw new Error('Controller factory must return a fresh controller for the requested session');
       }
+      if (focusedAgentId !== undefined) controller.setFocusedAgent(focusedAgentId);
       entry = { controller, ready: controller.open(), references: 1, sessions, sessionId };
       sessions.set(sessionId, entry);
       this.add(controller);
-    } else if (entry.parked !== undefined) {
-      // Cache hit: the retained view repaints now and catches up behind it.
-      this.unpark(entry);
-      entry.references = 1;
-      entry.ready = entry.controller.resume();
-      this.add(entry.controller);
     } else {
-      entry.references += 1;
+      if (focusedAgentId !== undefined) entry.controller.setFocusedAgent(focusedAgentId);
+      if (entry.parked !== undefined) {
+        // Cache hit: the retained view repaints now and catches up behind it.
+        this.unpark(entry);
+        entry.references = 1;
+        entry.ready = entry.controller.resume();
+        this.add(entry.controller);
+      } else {
+        entry.references += 1;
+      }
     }
     const acquired = entry;
     let released = false;

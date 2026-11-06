@@ -381,7 +381,7 @@ describe('SessionViewTarget', () => {
     expect(listenerDispose).toHaveBeenCalled();
   });
 
-  it('discards a superseded cold generation even when its read ignores cancellation', async () => {
+  it.each([1, 2])('discards a superseded cold child even when its read ignores cancellation (generation=%s)', async (nextGeneration) => {
     let finishFirst!: (snapshot: AgentTranscriptSnapshot) => void;
     const readSignals: AbortSignal[] = [];
     const service = {
@@ -404,16 +404,18 @@ describe('SessionViewTarget', () => {
     } });
     attach(1, 'old-child');
     await vi.waitFor(() => expect(finishFirst).toBeDefined());
-    attach(2, 'new-child');
+    attach(nextGeneration, 'new-child');
     expect(readSignals[0]?.aborted).toBe(true);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready', generation: nextGeneration }) })));
     finishFirst(new AgentTranscript('old-child').snapshot());
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready', generation: 2 }) })));
-    expect(send.mock.calls.every(([frame]) => frame.data.generation === 2)).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(send.mock.calls.every(([frame]) => frame.data.generation === nextGeneration)).toBe(true);
+    expect(send.mock.calls.filter(([frame]) => frame.data.type === 'transcript').map(([frame]) => frame.data.event.agent_id)).toEqual(['new-child']);
     expect(errors).not.toHaveBeenCalled();
     connection.dispose();
   });
 
-  it('starts a visible cold child without waiting for another visible agent history', async () => {
+  it.each([false, true])('starts a visible cold child without waiting for another visible agent history (preview=%s)', async (preview) => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const service = {
@@ -421,7 +423,10 @@ describe('SessionViewTarget', () => {
       readColdRoster: vi.fn(async () => []),
       readColdPageSnapshot: coldPageReader(async (_sessionId, agentId) => {
         if (agentId === 'slow-child') await blocked;
-        return { ...new AgentTranscript(agentId).snapshot(), toolCallCountKnown: true };
+        return { ...new AgentTranscript(agentId).snapshot(), toolCallCountKnown: true, items: [
+          { kind: 'turn', turnId: 'tail-turn', ordinal: 39, state: 'completed', origin: { kind: 'user' },
+            prompt: 'Latest saved child body', steps: [] },
+        ] };
       }),
     };
     const send = vi.fn();
@@ -429,13 +434,20 @@ describe('SessionViewTarget', () => {
     const broadcaster = { getCursor: vi.fn(async () => ({ seq: 7, epoch: 'session-epoch' })), unsubscribe: vi.fn() };
     const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
       { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    const attach = (transcriptGrades: Record<string, string>) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7 }, transcriptGrades },
+    } });
     try {
-      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
-        generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
-        input: { sessionCursor: { seq: 7 }, transcriptGrades: { 'slow-child': 'delta', 'visible-child': 'delta' } },
-      } });
+      if (preview) {
+        attach({ 'slow-child': 'delta' });
+        await vi.waitFor(() => expect(service.readColdPageSnapshot).toHaveBeenCalled());
+      }
+      attach({ 'slow-child': 'delta', 'visible-child': 'delta' });
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
-        type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child' }),
+        type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child', snapshot: expect.objectContaining({
+          items: [expect.objectContaining({ prompt: 'Latest saved child body' })],
+        }) }),
       }) })));
       expect(send.mock.calls.some(([frame]) => frame.data.type === 'ready')).toBe(false);
       release();
@@ -553,7 +565,7 @@ describe('SessionViewTarget', () => {
     expect(errors).not.toHaveBeenCalled();
   });
 
-  it('opens a newly focused live child without waiting for the superseded seed and drops its late signals', async () => {
+  it.each([false, true])('opens a newly visible live child without waiting for the superseded seed (preview=%s)', async (preview) => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     let firstTarget: SessionViewTarget | undefined;
@@ -570,8 +582,10 @@ describe('SessionViewTarget', () => {
         }
         target.send({ ...durable(7), type: 'transcript.reset', payload: {
           type: 'transcript.reset', session_id: 's1', agent_id: 'visible-child',
-          snapshot: new AgentTranscript('visible-child').snapshot(), grade: 'delta',
-          cursor: { seq: 0, epoch: 'child-epoch' }, coverage: { kind: 'full', hasMoreOlder: false },
+          snapshot: { ...new AgentTranscript('visible-child').snapshot(), items: [
+            { kind: 'turn', turnId: 'visible-turn', ordinal: 39, state: 'running', origin: { kind: 'user' },
+              prompt: 'Latest visible child body', steps: [] },
+          ] }, grade: 'delta', cursor: { seq: 0, epoch: 'child-epoch' }, coverage: { kind: 'full', hasMoreOlder: false },
         } });
         await target.drain();
       }),
@@ -579,14 +593,21 @@ describe('SessionViewTarget', () => {
     const send = vi.fn();
     const errors = vi.fn();
     const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
-    const attach = (agentId: string) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+    const attach = (transcriptGrades: Record<string, string>) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
       generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
-      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { [agentId]: 'delta' } },
+      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades },
     } });
     try {
-      attach('old-child');
+      if (preview) attach({ main: 'delta' });
+      else attach({ 'old-child': 'delta' });
       await vi.waitFor(() => expect(firstTarget).toBeDefined());
-      attach('visible-child');
+      if (preview) attach({ main: 'delta', 'visible-child': 'delta' });
+      else attach({ 'visible-child': 'delta' });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child', snapshot: expect.objectContaining({
+          items: [expect.objectContaining({ prompt: 'Latest visible child body' })],
+        }) }),
+      }) })));
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) })));
       expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript', 'ready']);
       expect(broadcaster.unsubscribe).toHaveBeenCalledWith('s1', firstTarget);
@@ -600,7 +621,7 @@ describe('SessionViewTarget', () => {
     }
   });
 
-  it('keeps an in-flight seed when a re-attach only widens grades and applies the wider grades afterwards', async () => {
+  it('keeps an in-flight seed when a re-attach only adds summaries and applies the wider grades afterwards', async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const seeded: string[][] = [];
@@ -624,8 +645,8 @@ describe('SessionViewTarget', () => {
     try {
       attach({ main: 'delta' });
       await vi.waitFor(() => expect(seeded).toHaveLength(1));
-      attach({ main: 'delta', child: 'delta' });
-      attach({ main: 'delta', child: 'delta', other: 'turn' });
+      attach({ main: 'delta', child: 'turn' });
+      attach({ main: 'delta', child: 'turn', other: 'turn' });
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(broadcaster.unsubscribe).not.toHaveBeenCalled();
       expect(seeded).toHaveLength(1);
