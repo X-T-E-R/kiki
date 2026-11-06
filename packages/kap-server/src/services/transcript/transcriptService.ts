@@ -2778,7 +2778,7 @@ export class TranscriptService {
     const missingWire = info === undefined;
     const bounded = limits !== undefined;
     const shouldVerify = !bounded && !tailFirst && info !== undefined;
-    const sealed = shouldVerify && await this.hasVerifiedWireReceipt(wirePath, info, signal);
+    const sealed = shouldVerify && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
     const liveVerified = shouldVerify && !sealed && await this.hasVerifiedLiveEpoch(sessionId, agentId);
     if (liveVerified) info = await stat(wirePath).catch(() => undefined);
     const verified = sealed || liveVerified;
