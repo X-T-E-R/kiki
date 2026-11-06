@@ -294,7 +294,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
       reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
       reg.define(IAgentPromptService, AgentPromptService);
-      reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer });
+      reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer, waitForPromptRun: async () => {} });
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
       reg.definePartialInstance(ISessionMetadata, metadata);
       reg.definePartialInstance(IEventService, { publish: () => {} });

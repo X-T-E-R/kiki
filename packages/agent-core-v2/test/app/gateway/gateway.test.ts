@@ -61,6 +61,7 @@ describe('RestGateway', () => {
       run: executionRun,
       attachLocalSession: async () => { throw new Error('unexpected local attachment'); },
       trackPromptRun: (_completion, signal) => signal,
+      waitForPromptRun: async () => {},
       status: () => ({ state: 'running', turnId: 7 }),
       canResumeBrokenOriginal: () => false,
       canRetryBrokenExecution: () => false,

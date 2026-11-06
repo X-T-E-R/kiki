@@ -18,6 +18,7 @@ import {
   IAgentProfileService,
   IAgentPromptService,
   IAgentTaskService,
+  IConfigService,
   normalizeAgentProfile,
   IEventBus,
   PromptAborted,
@@ -36,6 +37,9 @@ import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
+import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
+import { createHooks } from '@kiki/agent-core-v2/hooks';
+import type { TurnResult } from '@kiki/agent-core-v2/agent/loop/loop';
 import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
@@ -646,6 +650,121 @@ describe('server-v2 /api prompts', () => {
       await child.accessor.get(IAgentExecutionService).settled();
       await vi.waitFor(() => expect(tasks.list(true).filter((item) => item.kind === 'agent' && item.agentId === child.id && item.status === 'running')).toEqual([]));
     } finally { held.finish(); executor.mockRestore(); }
+  });
+
+  it.each(['run', 'cancel', 'close', 'cleanup-failure'] as const)('waits for the previous external child cleanup before the next HTTP prompt, outcome=%s', async outcome => {
+    const core = fixture.server!.core;
+    await core.accessor.get(IConfigService).set('subagent', { maxDirectChildren: 1, maxTotalSubagents: 1 });
+    core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-queue-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({ name: 'external-queue', definitionId: 'fixture:external-queue',
+        executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_QUEUE' })] } });
+    const result = promiseGate<TurnResult>();
+    const completion = promiseGate<{ summary: string }>();
+    const cleanup = promiseGate<void>();
+    const cleanupError = new Error('External cleanup failed');
+    let failCleanup = false;
+    let childId = '';
+    let turnId = 0;
+    const run = vi.fn<AgentExecutorSession['run']>(async (_request, options) => {
+      const first = ++turnId === 1;
+      return { agentId: childId, completion: first ? completion.promise : Promise.resolve({ summary: 'next completed' }), turn: {
+        id: turnId, signal: options.signal, ready: Promise.resolve(),
+        result: first ? result.promise : Promise.resolve({ type: 'completed', steps: 1, truncated: false }),
+        cancel: (reason) => { result.resolve({ type: 'cancelled', steps: 0, reason }); return true; },
+      } };
+    });
+    const external: AgentExecutorSession = {
+      run, status: () => ({ state: 'idle' }), cancel: () => false, shutdown: async () => {}, hooks: createHooks(['onWillRun']),
+      settled: async () => {
+        if (run.mock.calls.length !== 1) return;
+        await completion.promise;
+        await cleanup.promise;
+        if (failCleanup) throw cleanupError;
+      },
+    };
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const originalResolve = registry.resolveExecutable.bind(registry);
+    const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
+      descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
+      options: registry.resolve(executorId, options ?? {}).options,
+      provider: { id: 'queue-fixture', protocol: 'acp-v1', validateOptions: value => value as Record<string, string | number | boolean>,
+        validateBinding: binding => ({ ok: true, binding }), create: () => external },
+    } : originalResolve(executorId, options));
+    const client = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!) });
+    let closing: Promise<void> | undefined;
+    try {
+      const id = await createSession(fixture.home!);
+      await createMainAgent(id);
+      const session = getLiveSessionById(core.accessor, id)!;
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.create({ binding: { profile: 'external-queue' } });
+      childId = child.id;
+      const prompt = child.accessor.get(IAgentPromptService);
+      const execution = child.accessor.get(IAgentExecutionService);
+      const dispatch = session.accessor.get(ISessionDispatchService);
+      const commands = client.session(id).commands;
+      const firstId = 'external-queue-first';
+      const nextId = 'external-queue-next';
+      await commands.submit({ agent_id: childId, prompt_id: firstId, content: [{ type: 'text', text: 'First external turn.' }] });
+      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(firstId); });
+      expect(run).toHaveBeenCalledTimes(1);
+      const tasks = lifecycle.get('main')!.accessor.get(IAgentTaskService);
+      const firstTaskId = tasks.list(true).find(item => item.kind === 'agent' && item.agentId === childId)!.taskId;
+      const wait = vi.spyOn(execution, 'waitForPromptRun');
+      expect(await commands.submit({ agent_id: childId, prompt_id: nextId, content: [{ type: 'text', text: 'Next external turn.' }] }))
+        .toMatchObject({ prompt_id: nextId, status: 'queued' });
+      result.resolve({ type: 'completed', steps: 1, truncated: false });
+      await vi.waitFor(() => { expect(prompt.list().launching?.id).toBe(nextId); });
+      await vi.waitFor(() => { expect(wait).toHaveBeenCalledTimes(1); });
+      expect(prompt.lookup(nextId)?.phase).toBe('pending');
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(() => dispatch.reserveExecution('capacity-probe', 'main')).toThrow(expect.objectContaining({ code: 'dispatch.limit_exceeded' }));
+      await expect(execution.run({ kind: 'prompt', prompt: 'Unrelated direct run.' }, { signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: 'agent.already_running' });
+      if (outcome === 'cancel') {
+        const nextTask = tasks.list(true).find(item => item.kind === 'agent' && item.agentId === childId && item.taskId !== firstTaskId)!;
+        await tasks.stopByUser(nextTask.taskId);
+        await vi.waitFor(() => { expect(prompt.lookup(nextId)?.terminal?.state).toBe('cancelled'); });
+        await vi.waitFor(() => { expect(prompt.list().launching).toBeUndefined(); });
+        expect(wait.mock.calls[0]![0].aborted).toBe(true);
+      } else if (outcome === 'close') {
+        closing = closeSessionById(core.accessor, id);
+        await vi.waitFor(() => { expect(prompt.list().launching).toBeUndefined(); });
+        expect(wait.mock.calls[0]![0].aborted).toBe(true);
+      }
+      expect(run).toHaveBeenCalledTimes(1);
+      completion.resolve({ summary: 'first completed' });
+      await completion.promise;
+      if (outcome === 'run' || outcome === 'cleanup-failure') {
+        expect(prompt.list().launching?.id).toBe(nextId);
+        expect(run).toHaveBeenCalledTimes(1);
+      }
+      failCleanup = outcome === 'cleanup-failure';
+      cleanup.resolve();
+      if (outcome === 'close') {
+        await closing;
+        const saved = await client.session(id).view.transcript.page({ agentId: childId });
+        expect(saved.prompts).toContainEqual(expect.objectContaining({ promptId: nextId, status: 'queued' }));
+      } else {
+        await vi.waitFor(() => { expect(prompt.lookup(nextId)?.terminal?.state).toBe(outcome === 'run' ? 'completed' : outcome === 'cancel' ? 'cancelled' : 'failed'); });
+        if (outcome === 'cleanup-failure') {
+          expect(JSON.stringify(prompt.lookup(nextId)?.terminal)).toContain(cleanupError.message);
+          failCleanup = false;
+        }
+        await execution.settled();
+        const released = dispatch.reserveExecution('capacity-probe', 'main');
+        released();
+      }
+      expect(run).toHaveBeenCalledTimes(outcome === 'run' ? 2 : 1);
+    } finally {
+      failCleanup = false;
+      result.resolve({ type: 'completed', steps: 1, truncated: false });
+      completion.resolve({ summary: 'cleanup' });
+      cleanup.resolve();
+      await closing;
+      await client.close();
+      executor.mockRestore();
+    }
   });
 
   it.each(['same-target', 'changed-target', 'unsupported', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {

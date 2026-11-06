@@ -518,35 +518,26 @@ describe('AgentExecutionService', () => {
     }
   });
 
-  it('joins an admitted external prompt and still rejects a second live execution', async () => {
+  it('redeems only its own prompt admission once and retains exclusion through external cleanup', async () => {
     const ix = new TestInstantiationService();
     const capacity = new DispatchCapacity();
     const limits = { maxDirectChildren: 1, maxTotalSubagents: 1 };
-    let releaseTurn!: () => void;
-    const result = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const result = deferred<{ type: 'completed'; steps: number; truncated: boolean }>();
+    const completion = deferred<{ summary: string }>();
+    const cleanup = deferred<void>();
     const run = vi.fn(async () => ({
-      agentId: 'child',
-      completion: result.then(() => ({ summary: 'done' })),
-      turn: {
-        id: 7,
-        signal: new AbortController().signal,
-        ready: Promise.resolve(),
-        result,
-        cancel: () => { releaseTurn(); return true; },
-      },
+      agentId: 'child', completion: completion.promise,
+      turn: { id: 7, signal: new AbortController().signal, ready: Promise.resolve(), result: result.promise, cancel: () => false },
     }));
     const registry = { resolveExecutable: async () => ({
       descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
       options: {}, provider: { create: () => ({
         run, status: () => ({ state: 'idle' as const }), cancel: () => false,
-        shutdown: async () => {}, settled: async () => { await result; }, hooks: createHooks(['onWillRun']),
+        shutdown: async () => {}, settled: async () => { await completion.promise; await cleanup.promise; }, hooks: createHooks(['onWillRun']),
       }) },
     }) } as unknown as IAgentExecutorRegistry;
     const reserveExecution: ISessionDispatchService['reserveExecution'] = (id, owner, reservation, joinAdmission = false) => {
-      if (reservation !== undefined) {
-        reservation.claim(id);
-        return reservation;
-      }
+      if (reservation !== undefined) { reservation.claim(id); return reservation; }
       if (joinAdmission) {
         const retained = capacity.retain(id);
         if (retained !== undefined) return retained;
@@ -558,26 +549,46 @@ describe('AgentExecutionService', () => {
     const service = executionService(ix, { ...scope('child'), parentAgentId: 'main' }, profile({
       executorId: 'fake', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
     }), registry, states(), reserveExecution, (id, owner) => capacity.retain(id) ?? reserveExecution(id, owner));
-    const admission = deferred<void>();
+    const firstAdmission = deferred<void>();
+    const nextAdmission = deferred<void>();
     try {
-      service.trackPromptRun(admission.promise, new AbortController().signal);
-      const first = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
-      expect(run).toHaveBeenCalledTimes(1);
+      const firstSignal = service.trackPromptRun(firstAdmission.promise, new AbortController().signal);
+      await expect(service.run({ kind: 'prompt', prompt: 'unrelated' }, { signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: 'agent.already_running' });
+      const first = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal, promptAdmissionSignal: firstSignal });
+      const nextSignal = service.trackPromptRun(nextAdmission.promise, new AbortController().signal);
       expect(first.turn.id).toBe(7);
-      expect(() => capacity.reserve('main', limits, 'child')).toThrow(expect.objectContaining({ code: 'agent.already_running' }));
       expect(() => capacity.reserve('main', limits, 'other')).toThrow(expect.objectContaining({ code: 'dispatch.limit_exceeded' }));
-      await expect(service.run({ kind: 'prompt', prompt: 'again' }, { signal: new AbortController().signal }))
+      result.resolve({ type: 'completed', steps: 1, truncated: false });
+      await first.turn.result;
+      await expect(service.run({ kind: 'prompt', prompt: 'result-only' }, { signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: 'agent.already_running' });
+      let ready = false;
+      const waiting = service.waitForPromptRun(new AbortController().signal).then(() => { ready = true; });
+      completion.resolve({ summary: 'done' });
+      await first.completion;
+      await Promise.resolve();
+      expect(ready).toBe(false);
+      await expect(service.run({ kind: 'prompt', prompt: 'completion-only' }, { signal: new AbortController().signal }))
         .rejects.toMatchObject({ code: 'agent.already_running' });
       expect(run).toHaveBeenCalledTimes(1);
-      releaseTurn();
-      await result;
-      await Promise.resolve();
-      await service.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal });
+      cleanup.resolve();
+      await waiting;
+      await expect(service.run({ kind: 'prompt', prompt: 'reuse' }, { signal: new AbortController().signal, promptAdmissionSignal: firstSignal }))
+        .rejects.toMatchObject({ code: 'agent.already_running' });
+      await service.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal, promptAdmissionSignal: nextSignal });
       expect(run).toHaveBeenCalledTimes(2);
+      firstAdmission.resolve();
+      nextAdmission.resolve();
+      await service.settled();
+      const released = capacity.reserve('main', limits, 'other');
+      released();
     } finally {
-      releaseTurn();
-      admission.resolve();
-      await service.dispose();
+      result.resolve({ type: 'completed', steps: 1, truncated: false });
+      completion.resolve({ summary: 'done' });
+      cleanup.resolve();
+      firstAdmission.resolve();
+      nextAdmission.resolve();
       await ix.dispose();
     }
   });

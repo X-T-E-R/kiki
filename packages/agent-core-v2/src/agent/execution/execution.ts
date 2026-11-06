@@ -17,16 +17,23 @@ export interface AgentExecutionRunContext {
   readonly afterStart?: (callback: () => Promise<void>) => void;
 }
 
+export interface AgentExecutionRunOptions extends RunAgentOptions {
+  /** Redeem this prompt's trackPromptRun signal once instead of reserving another capacity slot. */
+  readonly promptAdmissionSignal?: AbortSignal;
+}
+
 export interface IAgentExecutionService {
   readonly _serviceBrand: undefined;
 
   run(
     request: AgentRunRequest,
-    options: RunAgentOptions,
+    options: AgentExecutionRunOptions,
   ): Promise<AgentRunHandle>;
 
   /** Retain execution capacity until completion; pass the returned cancellation signal to the admitted prompt. */
   trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
+  /** Wait for previous execution cleanup without joining prompt admissions; cancellation stops only this waiter. */
+  waitForPromptRun(signal: AbortSignal): Promise<void>;
   /** Reports cancelling once all tracked runs receive cancellation, until they settle; a stop request alone does not release capacity. */
   status(): AgentExecutionStatus;
   readonly onDidChangeStatus?: Event<AgentExecutionStatus>;

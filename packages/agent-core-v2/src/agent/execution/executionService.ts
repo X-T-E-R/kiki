@@ -5,7 +5,7 @@ import {
   registerScopedService,
   ScopeActivation,
 } from '#/_base/di/scope';
-import { linkAbortSignal } from '#/_base/utils/abort';
+import { abortable, linkAbortSignal } from '#/_base/utils/abort';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -37,10 +37,9 @@ import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type {
   AgentRunHandle,
   AgentRunRequest,
-  RunAgentOptions,
 } from '#/session/subagent/subagent';
 
-import { brokenOriginalResumeRefusal, IAgentExecutionService, type AgentExecutionRunContext } from './execution';
+import { brokenOriginalResumeRefusal, IAgentExecutionService, type AgentExecutionRunContext, type AgentExecutionRunOptions } from './execution';
 import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from './externalExecutorOps';
 import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { localSourceFromRef, type LocalExecutorSessionSource } from '#/app/agentExecutor/localSessionRef';
@@ -61,7 +60,8 @@ interface ActiveRun {
   readonly settled: Promise<void>;
   readonly resolveSettled: () => void;
   readonly admission?: boolean;
-  settling?: boolean;
+  admissionClaimed?: boolean;
+  external?: boolean;
   turnId?: number;
 }
 
@@ -92,6 +92,7 @@ export class AgentExecutionService implements IAgentExecutionService {
   private session: AgentExecutorSession | undefined;
   private sessionBindingKey: string | undefined;
   private broken: unknown;
+  private externalCleanupFailure: { readonly error: unknown } | undefined;
   private cancelling = false;
   private shuttingDown = false;
   private shutdownCompleted = false;
@@ -118,7 +119,7 @@ export class AgentExecutionService implements IAgentExecutionService {
 
   async run(
     request: AgentRunRequest,
-    options: RunAgentOptions,
+    { promptAdmissionSignal, ...options }: AgentExecutionRunOptions,
   ): Promise<AgentRunHandle> {
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
@@ -131,12 +132,18 @@ export class AgentExecutionService implements IAgentExecutionService {
       (this.profile.data().executorId ?? 'native') === 'native';
     if (control.isHeld() && !settlingNativeLaunch) await waitForExecutionRelease(control, options.signal);
     options.signal.throwIfAborted();
-    const release = this.dispatch.reserveExecution(
-      this.agent.id,
-      this.scope.parentAgentId,
-      options.capacityReservation,
-      options.capacityReservation === undefined && !this.executionOccupied(),
-    );
+    const admission = options.capacityReservation === undefined && promptAdmissionSignal !== undefined && !promptAdmissionSignal.aborted
+      ? [...this.runs].find(run => run.admission === true && run.controller.signal === promptAdmissionSignal && run.admissionClaimed !== true)
+      : undefined;
+    if ([...this.runs].some(run => run.admission !== true && (run.external === true || admission !== undefined))) {
+      throw new Error2(ErrorCodes.AGENT_ALREADY_RUNNING, `Agent instance "${this.agent.id}" is already starting or running`, {
+        details: { agentId: this.agent.id },
+      });
+    }
+    if (promptAdmissionSignal !== undefined && this.externalCleanupFailure !== undefined) throw this.externalCleanupFailure.error;
+    const external = (this.profile.data().executorId ?? 'native') !== 'native';
+    const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation, admission !== undefined);
+    if (admission !== undefined) admission.admissionClaimed = true;
     let activityPermit: RequestPermit | undefined;
     const controller = new AbortController();
     let resolveSettled = (): void => {};
@@ -144,6 +151,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       resolveSettled = resolve;
     });
     const active: ActiveRun = {
+      external,
       controller,
       unlink: linkAbortSignal(options.signal, controller),
       settled,
@@ -170,6 +178,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       controller.signal.throwIfAborted();
       await this.profile.preparePromptConfiguration();
       const preparedBinding = this.profile.data();
+      active.external = (preparedBinding.executorId ?? 'native') !== 'native';
       assertResearchExecutor(preparedBinding.executionRestriction, preparedBinding.executorId ?? 'native');
       activityPermit = await acquireAgentActivityPermit(this.agent.accessor, controller.signal, () => {
         if (this.cancelling || controller.signal.aborted) return 'cancelling';
@@ -217,11 +226,10 @@ export class AgentExecutionService implements IAgentExecutionService {
       session = await this.resolveSession();
       controller.signal.throwIfAborted();
       this.broken = undefined;
+      this.externalCleanupFailure = undefined;
       if ((binding.executorId ?? 'native') !== 'native') await options.onBeforeExternalRun?.();
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
-      const markSettling = (): void => { active.settling = true; };
-      void handle.turn.result.then(markSettling, markSettling);
       this.statusChanged.fire(this.status());
       void handle.completion.then(
         () => { this.finishRunWhenSettled(active, session); },
@@ -407,12 +415,14 @@ export class AgentExecutionService implements IAgentExecutionService {
     }));
   }
 
-  private executionOccupied(): boolean {
-    for (const run of this.runs) {
-      if (run.admission === true || run.settling === true) continue;
-      return true;
+  async waitForPromptRun(signal: AbortSignal): Promise<void> {
+    for (;;) {
+      signal.throwIfAborted();
+      if (this.externalCleanupFailure !== undefined) throw this.externalCleanupFailure.error;
+      const active = [...this.runs].find(run => run.external === true);
+      if (active === undefined) return;
+      await abortable(active.settled, signal);
     }
-    return false;
   }
 
   private async resolveSession(): Promise<AgentExecutorSession> {
@@ -494,7 +504,8 @@ export class AgentExecutionService implements IAgentExecutionService {
     if (this.session !== session || this.sessionBindingKey === 'native') return true;
     try {
       await session.shutdown(error);
-    } catch {
+    } catch (cleanupError) {
+      this.externalCleanupFailure ??= { error: cleanupError };
       return false;
     }
     if (this.session === session) {
@@ -561,6 +572,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       return;
     }
     void session.settled().then(() => this.finishRun(active), (error: unknown) => {
+      this.externalCleanupFailure ??= { error };
       this.broken ??= error;
       this.finishRun(active);
     });

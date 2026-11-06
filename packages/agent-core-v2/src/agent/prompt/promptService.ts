@@ -600,6 +600,7 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
 
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
+  readonly submissionSignal?: AbortSignal;
   readonly parentReceiptManaged?: boolean;
   state: PromptState;
   deliveryReason?: PromptHandle['deliveryReason'];
@@ -820,6 +821,7 @@ export class AgentPromptService implements IAgentPromptService {
     readonly record: Record;
     readonly controller: AbortController;
     readonly settled: Promise<void>;
+    waitingForExternalCleanup?: boolean;
     receipt?: EnqueueReceipt;
   } | undefined;
   private readonly promptIds = new KeyReservationRegistry<string>();
@@ -1400,6 +1402,7 @@ export class AgentPromptService implements IAgentPromptService {
       deferredDisabledTools: input.deferredDisabledTools,
       alreadyMaterialized: input.alreadyMaterialized === true,
       parentReceiptManaged: input.parentReceiptManaged,
+      submissionSignal: signal,
       historyMutationLease: input.historyMutationLease,
       launchedDeferred,
       completionDeferred,
@@ -2542,8 +2545,13 @@ export class AgentPromptService implements IAgentPromptService {
   preservePendingForClose(): void {
     this.closing = 'preserve-pending';
     for (const item of this.pending) item.releaseSubmissionSignal?.();
-    if (this.launchingPrompt !== undefined && !this.launchingCommitStarted) {
+    const launching = this.launchingPrompt;
+    if (launching !== undefined && !this.launchingCommitStarted) {
       for (const item of this.launchingBatch) item.releaseSubmissionSignal?.();
+      if (launching.waitingForExternalCleanup) {
+        this.detachPendingForClose(launching.record);
+        launching.controller.abort(abortError('Session closed'));
+      }
     }
   }
 
@@ -2705,6 +2713,13 @@ export class AgentPromptService implements IAgentPromptService {
     const selected = [item];
     this.launchingBatch = selected;
     try {
+      if ((this.profile.data().executorId ?? 'native') !== 'native') {
+        const execution = this.instantiation.invokeFunction(accessor => accessor.get(IAgentExecutionService));
+        launching.waitingForExternalCleanup = true;
+        await execution.waitForPromptRun(controller.signal);
+        launching.waitingForExternalCleanup = false;
+        controller.signal.throwIfAborted();
+      }
       this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
       let bindingCommitted = false;
       await this.timePhase(item.id, 'prompt_launch_binding', () => this.applyPromptExecutionBinding(item, this.resolveExecutionBinding(item.execution), sharedAdmission, () => {
@@ -2808,7 +2823,7 @@ export class AgentPromptService implements IAgentPromptService {
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
         turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin,
           contextMessages: deliverableBatch.filter(candidate => !candidate.alreadyMaterialized).map(candidate => candidate.message) },
-          { signal: controller.signal, parentReceiptManaged: item.parentReceiptManaged })).turn;
+          { signal: controller.signal, parentReceiptManaged: item.parentReceiptManaged, promptAdmissionSignal: item.submissionSignal })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, turnId: turn.id,
