@@ -6,7 +6,7 @@ import * as mediaPreview from '../src/services/mediaPreview';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
-import { IHostFileSystem } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, IHostFileSystem } from '@kiki/agent-core-v2';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { fsSearchResponseSchema, type FsSearchResponse } from '@kiki/protocol';
 
@@ -413,7 +413,30 @@ describe('server-v2 /api fs:content', () => {
       expect(res.status).toBe(304);
       expect(res.headers.get('etag')).toBe(etag);
       expect(await res.text()).toBe('');
-      expect(readBytes).not.toHaveBeenCalled();
+      expect(readBytes.mock.calls).toEqual([[file, 0]]);
+    } finally {
+      readBytes.mockRestore();
+    }
+  });
+
+  it('rejects conditional content reads when data permission is revoked but stat still succeeds', async () => {
+    const file = join(dir as string, 'revoked.txt');
+    await writeFile(file, 'cached body');
+    const first = await getContent(file);
+    const etag = first.headers.get('etag') as string;
+    expect(await first.text()).toBe('cached body');
+    const hostFs = server!.core.accessor.get(IHostFileSystem);
+    const stat = await hostFs.stat(file);
+    const readBytes = vi.spyOn(hostFs, 'readBytes').mockRejectedValue(new Error2(ErrorCodes.OS_FS_PERMISSION_DENIED, 'read access denied'));
+    try {
+      expect(await hostFs.stat(file)).toEqual(stat);
+      const conditional = await getContent(file, { 'if-none-match': etag });
+      expect(conditional.status).toBe(403);
+      expect(conditional.headers.get('etag')).toBeNull();
+      expect((await conditional.json() as Envelope<null>).code).toBe(40411);
+      expect(readBytes.mock.calls).toEqual([[file, 0]]);
+      const ordinary = await getContent(file);
+      expect(ordinary.status).toBe(403);
     } finally {
       readBytes.mockRestore();
     }

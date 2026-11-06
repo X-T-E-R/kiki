@@ -224,9 +224,11 @@ export async function readColdSessionViewBaseline(
   if (source === undefined) return undefined;
   signal.throwIfAborted();
   const transcript = new AgentTranscript(agentId);
-  transcript.apply([{ op: 'reset', agentId, snapshot: service.reconcileQuestionSnapshot(sessionId, source) }]);
+  const verified = source.toolCallCountKnown === true;
+  transcript.apply([{ op: 'reset', agentId, snapshot: service.reconcileQuestionSnapshot(sessionId,
+    verified ? source : { ...source, hasMoreOlder: true }) }]);
   const snapshot = boundedTranscriptSnapshot(redactSnapshotForGrade(grade, transcript.snapshot({ tailTurns: 20 })), agentId);
-  const coverage = coverageForItems(snapshot.items, snapshot.hasMoreOlder ?? false, source.toolCallCountKnown === true);
+  const coverage = coverageForItems(snapshot.items, snapshot.hasMoreOlder ?? false, verified);
   const cursor = { seq: 0, epoch: `cold:${sessionId}:${agentId}` };
   return {
     type: 'transcript.reset', session_id: sessionId, agent_id: agentId,

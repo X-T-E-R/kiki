@@ -253,6 +253,12 @@ async function handleFsContent(
   const etag = req.query.preview === 'media' ? `"preview-v2-${buildEtag(st).replaceAll('"', '')}"` : buildEtag(st);
   const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
   if (ifNoneMatch !== undefined && ifNoneMatch === etag) {
+    try {
+      await hostFs.readBytes(abs, 0);
+    } catch (err) {
+      sendOsFsError(reply, requestId, err, path);
+      return;
+    }
     reply.code(304).header('etag', etag).send('');
     return;
   }

@@ -2016,12 +2016,78 @@ describe('TranscriptService live integration', () => {
       expect((await reader.mock.results[0]!.value).bytesRead).toBe((await fsPromises.stat(path)).size);
       main.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'live after small first screen' }));
       expect(visible?.getTurn('t1')?.prompt).toBe('live after small first screen');
-      const full = await service.readColdSnapshot('s1', 'main');
-      expect(full?.toolCallCountKnown).toBe(false);
+      const full = await service.ensureAgentHistory('s1', 'main', { fullHistory: true });
+      expect(full?.snapshot().toolCallCountKnown).toBe(false);
+      expect(full?.getTurn('t1')?.prompt).toBe('live after small first screen');
       expect(digest).toHaveBeenCalledTimes(1);
       expect(verify).toHaveBeenCalledTimes(1);
     } finally {
       reads.mockRestore(); digest.mockRestore(); service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('verifies explicit full history after an unverified small tail-first opening', async () => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const bytes = await fsPromises.readFile(path);
+    await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+      format: 2, epoch: 'small-full-history', state: 'sealed', trusted: true,
+      wire: { size: bytes.byteLength, tailBytes: bytes.byteLength, tailSha256: transcriptReceipt.wireTailSha256(bytes) },
+    }));
+    const agents = new FakeAgents();
+    const verify = vi.fn(async () => true);
+    agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => true } });
+    const service = new TranscriptService({ homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      service.forSessionLive('s1', { tailFirst: true });
+      const visible = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      expect(visible?.getTurn('t0')?.prompt).toBe('hi');
+      expect(visible?.snapshot().toolCallCountKnown).toBe(false);
+      expect(verify).not.toHaveBeenCalled();
+      const full = await service.ensureAgentHistory('s1', 'main', { fullHistory: true });
+      expect(full?.snapshot()).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      expect(full?.getTurn('t0')?.prompt).toBe('hi');
+      expect(visible?.snapshot().toolCallCountKnown).toBe(false);
+      expect(await service.readFullAgentSnapshot('s1', 'main', visible!)).toMatchObject({ toolCallCountKnown: true });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it.each([true, false])('ends small cold pagination at the file head independently of its seal (%s)', async (sealed) => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    await writeFile(path, [0, 1, 2].map(turnId => JSON.stringify({
+      type: 'turn.prompt', turnId, promptId: `p${turnId}`, time: 1_000 + turnId,
+      input: [{ type: 'text', text: `prompt ${turnId}` }], origin: { kind: 'user' },
+    })).join('\n') + '\n');
+    const bytes = await fsPromises.readFile(path);
+    await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+      format: 2, epoch: 'small-pages', state: sealed ? 'sealed' : 'open', trusted: sealed,
+      wire: sealed ? { size: bytes.byteLength, tailBytes: bytes.byteLength, tailSha256: transcriptReceipt.wireTailSha256(bytes) } : undefined,
+    }));
+    const reader = vi.fn(streamWireRecords);
+    const service = new TranscriptService({ homeDir: home, wireRecordReader: reader, core: coldCore() });
+    const digest = vi.spyOn(transcriptReceipt, 'digestWireBytes');
+    try {
+      const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 2 });
+      expect(first?.items.map(item => item.kind === 'turn' && item.turnId)).toEqual(['t1', 't2']);
+      expect(first?.has_more).toBe(true);
+      expect(first?.next_cursor).toBeDefined();
+      const older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 2, beforeItem: first!.next_cursor });
+      expect(older?.items.map(item => item.kind === 'turn' && item.turnId)).toEqual(['t0']);
+      expect(older?.has_more).toBe(false);
+      expect(older?.next_cursor).toBeUndefined();
+      expect(older?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(older?.tool_call_count).toBeUndefined();
+      expect(reader).toHaveBeenCalledTimes(1);
+      expect(digest).not.toHaveBeenCalled();
+      expect((await service.readColdSnapshot('s1', 'main'))?.toolCallCountKnown).toBe(sealed);
+    } finally {
+      digest.mockRestore(); service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });

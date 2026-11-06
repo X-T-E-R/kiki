@@ -514,6 +514,7 @@ export class TranscriptService {
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
   private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
+  private readonly completeColdReplays = new WeakSet<AgentTranscriptSnapshot>();
   private readonly coldRosterCache = new Map<string, { readonly revision: string; readonly roster: readonly AgentDescriptor[] }>();
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: ReadonlyMap<string, TranscriptTurn>; bytes: number }>();
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
@@ -773,7 +774,8 @@ export class TranscriptService {
     const tailFirst = options.tailFirst === true && options.fullHistory !== true;
     const wait = <T>(promise: Promise<T>): Promise<T> => signal === undefined ? promise : abortable(promise, signal);
     const establish = async (transcript: AgentTranscript | undefined): Promise<AgentTranscript | undefined> => {
-      if (transcript === undefined || !transcript.hasMoreOlder) return transcript;
+      if (transcript === undefined) return undefined;
+      if (!transcript.hasMoreOlder && (!options.fullHistory || transcript.snapshot().toolCallCountKnown === true)) return transcript;
       if (!options.fullHistory && transcript.getItems().some(item => item.kind === 'turn')) return transcript;
       const snapshot = options.fullHistory
         ? await this.readFullAgentSnapshot(sessionId, agentId, transcript, signal)
@@ -2042,7 +2044,7 @@ export class TranscriptService {
       return snapshot;
     }
     this.retainColdTailTurns(wirePath, fingerprint, snapshot);
-    const preview = project(snapshot);
+    const preview = project(this.completeColdReplays.has(snapshot) ? { ...snapshot, hasMoreOlder: false } : snapshot);
     this.admitColdSnapshotCache(wirePath, fingerprint, preview, true);
     return preview;
   }
@@ -2929,6 +2931,7 @@ export class TranscriptService {
       const result = proven
         ? knownSnapshot(snapshot, countToolCallFrames(snapshot.items))
         : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
+      if (complete) this.completeColdReplays.add(result);
       if (proven && preserveOpenTurnIds === undefined && cacheFingerprint !== undefined && !signal.aborted) {
         try { this.admitColdSnapshotCache(wirePath, cacheFingerprint, result); }
         catch { this.deleteColdSnapshotCache(wirePath); }
@@ -3007,7 +3010,10 @@ export class TranscriptService {
   async readFullAgentSnapshot(sessionId: string, agentId: string, transcript: AgentTranscript, signal?: AbortSignal,
     pageProject?: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, beforeTurn?: string,
     pageSource?: AgentTranscriptSnapshot): Promise<AgentTranscriptSnapshot | undefined> {
-    if (!transcript.hasMoreOlder) return transcript.snapshot();
+    if (!transcript.hasMoreOlder) {
+      const resident = transcript.snapshot();
+      if (resident.toolCallCountKnown === true || pageProject !== undefined || pageSource !== undefined) return resident;
+    }
     let cold = pageSource ?? (pageProject === undefined ? await this.readColdSnapshot(sessionId, agentId, undefined, signal)
       : await this.readColdPageSnapshot(sessionId, agentId, pageProject, signal));
     if (cold === undefined) return undefined;
