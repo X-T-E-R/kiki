@@ -15,7 +15,8 @@ interface ReceiptCheckpoint {
 }
 const folds = new Map([...autonomousReceiptsKey.replayable.folds].filter(([event]) => event.durable).map(([event, fold]) => [event.type, { event, fold }]));
 
-export async function readPendingAutonomousReceipts(scope: string, logs: IAppendLogStore, docs: IAtomicDocumentStore): Promise<ReceiptState['pending']> {
+export async function readPendingAutonomousReceipts(scope: string, logs: IAppendLogStore, docs: IAtomicDocumentStore, signal?: AbortSignal): Promise<ReceiptState['pending']> {
+  signal?.throwIfAborted();
   const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
   const saved = await docs.get<ReceiptCheckpoint>(scope, 'autonomous-receipts-v1');
   const checkpoint = saved?.generation === generation ? saved : undefined;
@@ -23,8 +24,9 @@ export async function readPendingAutonomousReceipts(scope: string, logs: IAppend
   let through = checkpoint?.through ?? 0;
   let records = 0;
   for await (const record of logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
-    startOffset: through, chunkBytes: 256 * 1024, onPosition: (offset) => { through = offset; },
+    startOffset: through, chunkBytes: 256 * 1024, onPosition: (offset) => { through = offset; }, signal,
   })) {
+    signal?.throwIfAborted();
     const entry = folds.get(record.type);
     if (entry !== undefined) {
       const event = event2FromRecord(entry.event, record);
@@ -33,8 +35,9 @@ export async function readPendingAutonomousReceipts(scope: string, logs: IAppend
         silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {},
       }));
     }
-    if (++records % 512 === 0) await setImmediate();
+    if (++records % 512 === 0) await setImmediate(undefined, { signal });
   }
+  signal?.throwIfAborted();
   if (checkpoint === undefined || through !== checkpoint.through) {
     await docs.set(scope, 'autonomous-receipts-v1', { generation, through, state });
   }

@@ -196,6 +196,64 @@ describe('SessionManager', () => {
     }
   });
 
+  it.each(['explicit', 'promoted', 'disconnected', 'shutdown'] as const)('keeps one owned execution-control restoration beyond the prompt deadline: %s', async (mode) => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fake = controller();
+    const restore = vi.fn(async () => { await gate; return fake.handle; });
+    Object.assign(fake.service, { resume: restore });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 1 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    let outcome: unknown;
+    const first = manager.resume('session-1', mode === 'explicit' || mode === 'shutdown' ? { forExecutionControl: true } : undefined);
+    void first.then(value => { outcome = value; }, error => { outcome = error; });
+    try {
+      await drainMicrotasks();
+      expect(restore).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      if (mode === 'promoted') expect(manager.resume('session-1', { forExecutionControl: true })).toBe(first);
+      if (mode === 'disconnected') {
+        const waiter = new AbortController();
+        const lease = manager.acquire!('session-1', 'execution-control', { forExecutionControl: true }, waiter.signal);
+        waiter.abort(new Error('Disconnected waiter'));
+        await expect(lease).rejects.toThrow('Disconnected waiter');
+        expect(manager.residencyReport!().pinsByReason).toEqual({});
+      }
+      await vi.advanceTimersByTimeAsync(613_145);
+      expect(outcome).toBeUndefined();
+      expect(manager.resume('session-1', { forExecutionControl: true })).toBe(first);
+      if (mode === 'shutdown') {
+        let closed = false;
+        const disposal = (manager as SessionManager).dispose().then(() => { closed = true; });
+        await drainMicrotasks();
+        expect(closed).toBe(false);
+        release();
+        await disposal;
+        expect(outcome).toMatchObject({ name: 'AbortError' });
+        expect(fake.dispose).toHaveBeenCalledTimes(1);
+        return;
+      }
+      release();
+      await expect(first).resolves.toBe(fake.handle);
+      expect(restore).toHaveBeenCalledTimes(1);
+      await expect(manager.whenResumeSettled('session-1')).resolves.toBeUndefined();
+    } finally {
+      release();
+      await first.catch(() => {});
+      await disposables.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('does not occupy a restore slot while idle-session unload is stalled', async () => {
     const didCreate = new Emitter<SessionCreatedEvent>();
     const didClose = new Emitter<SessionClosedEvent>();

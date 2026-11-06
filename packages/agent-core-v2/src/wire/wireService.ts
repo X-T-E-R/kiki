@@ -170,9 +170,9 @@ export class WireService extends Service implements IWireService {
   async sealTranscriptEpoch(): Promise<void> {
     if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     await this.flush();
-    let digest = await this.readEpochDigest();
+    let digest = this.transcriptEpoch.trusted ? await this.readEpochDigest() : undefined;
     if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
-    if (digest === undefined || (this.transcriptEpoch.trusted && !this.transcriptDigestMatches(digest.state, this.epochAcceptedRecords))) {
+    if (this.transcriptEpoch.trusted && (digest === undefined || !this.transcriptDigestMatches(digest.state, this.epochAcceptedRecords))) {
       await this.flush();
       if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
       digest = await this.readEpochDigest();
@@ -284,12 +284,18 @@ export class WireService extends Service implements IWireService {
   }
 
   async *readJournal(options?: WireJournalReadOptions): AsyncIterable<WireRecord> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     if (options?.startByte !== undefined && options.startByte > 0) {
-      yield* this.readJournalTail(options.startByte);
+      for await (const record of this.readJournalTail(options.startByte)) {
+        signal?.throwIfAborted();
+        yield record;
+      }
       return;
     }
     let truncation: AppendLogTruncation | undefined;
     const source = this.log.read<WireRecord>(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+      signal,
       onTruncate: (info) => {
         truncation = info;
       },
@@ -340,6 +346,7 @@ export class WireService extends Service implements IWireService {
       }
     }
 
+    signal?.throwIfAborted();
     if (!hasRecords) {
       rewrittenRecords = [createWireMetadataRecord()];
     }

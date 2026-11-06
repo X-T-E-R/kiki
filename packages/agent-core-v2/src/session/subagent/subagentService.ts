@@ -1,4 +1,5 @@
 import { Service } from '#/_base/di/service';
+import { withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
 import { AUTONOMOUS_RECEIPT_POLICY_LABEL, observeAutonomousReceipts, type ReceiptDelivery } from './autonomousReceipt';
 import { readPendingAutonomousReceipts } from './autonomousReceiptRecovery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -15,7 +16,7 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
-import { DisposableMap, toDisposable } from '#/_base/di/lifecycle';
+import { DisposableMap, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -31,6 +32,8 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionStateService } from '#/session/state/sessionState';
+import { setImmediate } from 'node:timers/promises';
+import type { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 
 import { SUBAGENT_RELEASE_IDLE_FLAG } from './flag';
 import {
@@ -66,6 +69,9 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     readonly parentId?: string;
   }>();
   private recovery: Promise<void> | undefined;
+  private receiptDiscovery: AbortController | undefined;
+  private receiptRecoverySubscription: IDisposable | undefined;
+  private receiptDiscoveryComplete = false;
   private discoveringReceipts = false;
   private readonly pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly retained = new WeakMap<IAgentScopeHandle, number>();
@@ -143,36 +149,78 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     );
   }
 
-  recoverReceipts(): Promise<void> {
-    this.recovery ??= this.restoreReceipts().finally(() => { this.recovery = undefined; });
-    return this.recovery;
+  override async dispose(): Promise<void> {
+    this.stopped = true;
+    await this.stopReceiptDiscovery();
+    await super.dispose();
+  }
+
+  async stopReceiptDiscovery(): Promise<void> {
+    const subscription = this.receiptRecoverySubscription;
+    this.receiptRecoverySubscription = undefined;
+    this.receiptDiscovery?.abort();
+    await subscription?.dispose();
+    await this.recovery;
+  }
+
+  startReceiptDiscovery(control: ISessionExecutionControl): void {
+    if (this.stopped || this.receiptDiscoveryComplete || this.receiptRecoverySubscription !== undefined) return;
+    const start = () => {
+      if (this.recovery !== undefined || this.receiptDiscoveryComplete || control.isHeld()) return;
+      const discovery = new AbortController();
+      this.receiptDiscovery = discovery;
+      const pauseSignal = control.pauseSignal();
+      const signal = AbortSignal.any([discovery.signal, pauseSignal]);
+      this.discoveringReceipts = true;
+      this.publishPendingReceipts();
+      this.recovery = withoutRestoreAttempt(async () => {
+        try {
+          await setImmediate(undefined, { signal });
+          this.receiptDiscoveryComplete = await this.restoreReceipts(signal);
+        } catch (error) {
+          if (!signal.aborted) this.log.error('autonomous subagent receipt discovery failed', { error });
+        } finally {
+          this.receiptDiscovery = undefined;
+          this.recovery = undefined;
+          this.discoveringReceipts = false;
+          if (!this.stopped) this.publishPendingReceipts();
+          if (pauseSignal.aborted && this.receiptRecoverySubscription !== undefined) start();
+        }
+      });
+    };
+    this.receiptRecoverySubscription = control.onDidChange(start);
+    start();
   }
 
   private publishPendingReceipts(): void {
     this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size + Number(this.discoveringReceipts));
   }
 
-  private async restoreReceipts(): Promise<void> {
-    this.discoveringReceipts = true;
-    this.publishPendingReceipts();
-    try {
-      const meta = await this.metadata.read();
-      for (const [agentId, agent] of Object.entries(meta.agents ?? {})) {
-        if (agentId === MAIN_AGENT_ID || agent.parentAgentId === null ||
-          agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' || this.agentLifecycle.get(agentId) !== undefined) continue;
-        const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents);
+  private async restoreReceipts(signal: AbortSignal): Promise<boolean> {
+    const meta = await this.metadata.read();
+    let complete = true;
+    for (const [agentId, agent] of Object.entries(meta.agents ?? {})) {
+      signal.throwIfAborted();
+      if (agentId === MAIN_AGENT_ID || agent.parentAgentId === null ||
+        agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' || this.agentLifecycle.get(agentId) !== undefined) continue;
+      try {
+        const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);
+        signal.throwIfAborted();
         if (Object.keys(pending).length === 0) continue;
         const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
         if (this.agentLifecycle.get(parentId) === undefined) {
           const parent = meta.agents?.[parentId];
           await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
         }
+        signal.throwIfAborted();
         await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
+      } catch (error) {
+        signal.throwIfAborted();
+        complete = false;
+        this.log.error('autonomous subagent receipt discovery failed', { agentId, error });
       }
-    } finally {
-      this.discoveringReceipts = false;
-      if (!this.stopped) this.publishPendingReceipts();
     }
+    return complete;
   }
 
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle> {

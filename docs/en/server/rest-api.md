@@ -432,8 +432,11 @@ read `error` and `agents` before taking action; the hold remains in place.
 same pause finishes just before cancellation arrives. It does not stop the
 original task or repeat a model request or tool action. A restart retains a
 saved `paused` checkpoint; call `resume` with its `pauseOperationId` to continue
-the original turn and binding. A task with an unknown external outcome is not
-replayed. `operationId` and `pauseOperationId` must be non-empty strings of at
+the original turn and binding. `resume` returns `running` after it releases the
+saved checkpoint. If the connection drops, call `read` first. If the same pause
+is still held, retry with the same `operationId` and `pauseOperationId`.
+A task with an unknown external outcome is not replayed. `operationId` and
+`pauseOperationId` must be non-empty strings of at
 most 256 characters. Use a new `operationId` for each new action; retrying the
 same action with the same ID returns its receipt. Reusing an ID for a different
 action is rejected. Ordinary sends queue while execution is held. Releasing

@@ -204,6 +204,10 @@ class FakeTaskService implements IAgentTaskService {
     return this.getTask(taskId);
   }
 
+  async findPausedAgentTask(agentId: string): Promise<AgentTaskInfo | undefined> {
+    return this.list().find(info => info.kind === 'agent' && info.agentId === agentId && info.status === 'running');
+  }
+
   hasUnfinishedWork(): boolean {
     return this.list().some((info) => info.lifetime !== 'service');
   }

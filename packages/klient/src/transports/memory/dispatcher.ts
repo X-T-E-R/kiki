@@ -468,10 +468,12 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           return wireClone(await readPersistedExecutionControl(root.accessor.get(IAtomicDocumentStore), `sessions/${summary.workspaceId}/${scope.sessionId}`));
         }
         const manager = root.accessor.get(ISessionManager);
-        const lease = await manager.acquire?.(scope.sessionId, 'execution-control', undefined, options?.signal);
-        if (manager.acquire === undefined && live === undefined) await manager.resume(scope.sessionId);
+        const lease = await manager.acquire?.(scope.sessionId, 'execution-control', { forExecutionControl: true }, options?.signal);
+        if (manager.acquire === undefined && live === undefined) await manager.resume(scope.sessionId, { forExecutionControl: true });
         try {
+          options?.signal?.throwIfAborted();
           const resolved = await resolveScope(scope);
+          options?.signal?.throwIfAborted();
           const instance = resolveService(resolved, service);
           const member = instance[method];
           if (typeof member !== 'function') throw new RPCError(REQUEST_INVALID, `method not found: ${service}.${method}`);

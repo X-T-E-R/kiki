@@ -25,6 +25,7 @@ export interface WireJournalIdentity {
 /** `startByte` reads the appended tail without migrating or rewriting the prefix. */
 export interface WireJournalReadOptions {
   readonly startByte?: number;
+  readonly signal?: AbortSignal;
 }
 
 export class JournalTailUnreadableError extends Error {

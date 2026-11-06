@@ -50,6 +50,7 @@ import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { IEventBus } from '#/app/event/eventBus';
+import { Event } from '#/_base/event';
 import { EventBusService } from '#/app/event/eventBusService';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
@@ -91,8 +92,9 @@ const noopBlob: IAgentBlobService = {
   isBlobRef: () => false,
 };
 
-const runningExecution: Pick<ISessionExecutionControl, '_serviceBrand' | 'ready' | 'isHeld' | 'resumePoint' | 'isParked'> = {
+const runningExecution: Pick<ISessionExecutionControl, '_serviceBrand' | 'ready' | 'isHeld' | 'resumePoint' | 'isParked' | 'onDidChange'> = {
   _serviceBrand: undefined,
+  onDidChange: Event.None as ISessionExecutionControl['onDidChange'],
   ready: async () => {},
   isHeld: () => false,
   resumePoint: () => undefined,

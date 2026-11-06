@@ -12,8 +12,14 @@ export interface RestoreProgress {
   readonly queuePosition?: number;
 }
 
+export interface RestoreLifetime {
+  ownerManaged: boolean;
+  readonly signal: AbortSignal;
+}
+
 interface RestoreAttempt {
-  readonly controller: AbortController;
+  readonly signal: AbortSignal;
+  readonly lifetime: RestoreLifetime;
   readonly startedAt: number;
   readonly phases: Map<symbol, string>;
 }
@@ -25,6 +31,10 @@ export function observeRestore<T>(observer: (progress: RestoreProgress) => void,
   return observers.run(observer, action);
 }
 
+export function withoutRestoreAttempt<T>(action: () => T): T {
+  return attempts.exit(() => observers.exit(action));
+}
+
 export function restoreQueueReporter(): (position: number) => void {
   const observer = observers.getStore();
   const startedAt = attempts.getStore()?.startedAt ?? Date.now();
@@ -32,7 +42,7 @@ export function restoreQueueReporter(): (position: number) => void {
 }
 
 export function restoreSignal(): AbortSignal | undefined {
-  return attempts.getStore()?.controller.signal;
+  return attempts.getStore()?.signal;
 }
 
 export function throwIfRestoreAborted(): void {
@@ -41,21 +51,39 @@ export function throwIfRestoreAborted(): void {
 
 export function withRestoreDeadline<T>(action: () => Promise<T>): Promise<T> {
   if (attempts.getStore() !== undefined) return action();
-  const attempt: RestoreAttempt = { controller: new AbortController(), startedAt: Date.now(), phases: new Map() };
+  return withRestoreLifetime({ ownerManaged: false, signal: new AbortController().signal }, action);
+}
+
+export function withRestoreLifetime<T>(lifetime: RestoreLifetime, action: () => Promise<T>): Promise<T> {
+  const deadline = new AbortController();
+  const signal = AbortSignal.any([deadline.signal, lifetime.signal]);
+  const inherited = attempts.getStore();
+  const attempt: RestoreAttempt = { signal, lifetime, startedAt: inherited?.startedAt ?? Date.now(), phases: inherited?.phases ?? new Map() };
   return attempts.run(attempt, async () => {
-    const timeout = setTimeout(() => {
+    const timeout = lifetime.ownerManaged ? undefined : setTimeout(() => {
+      if (lifetime.ownerManaged) return;
       const phase = [...attempt.phases.values()].at(-1) ?? 'restore_queue';
-      attempt.controller.abort(new Error2(ErrorCodes.SESSION_BUSY,
+      deadline.abort(new Error2(ErrorCodes.SESSION_BUSY,
         `Session restoration timed out after ${SESSION_RESTORE_TIMEOUT_MS / 1000}s during ${phase}. Retry the saved message or cancel it.`,
         { details: { phase, elapsedMs: Date.now() - attempt.startedAt } }));
     }, SESSION_RESTORE_TIMEOUT_MS);
-    timeout.unref?.();
+    timeout?.unref?.();
     try {
-      return await abortable(action(), attempt.controller.signal);
+      signal.throwIfAborted();
+      return await awaitRestoreOperation(action(), attempt);
     } finally {
       clearTimeout(timeout);
     }
   });
+}
+
+async function awaitRestoreOperation<T>(promise: Promise<T>, attempt: RestoreAttempt): Promise<T> {
+  try {
+    return await abortable(promise, attempt.signal);
+  } catch (error) {
+    if (attempt.lifetime.ownerManaged && attempt.signal.aborted) await Promise.allSettled([promise]);
+    throw error;
+  }
 }
 
 export async function timeRestorePhase<T>(log: ILogger | undefined, context: LogContext, phase: string, action: () => Promise<T>): Promise<T> {
@@ -72,7 +100,7 @@ export async function timeRestorePhase<T>(log: ILogger | undefined, context: Log
   pending.unref?.();
   try {
     const promise = action();
-    const result = attempt === undefined ? await promise : await abortable(promise, attempt.controller.signal);
+    const result = attempt === undefined ? await promise : await awaitRestoreOperation(promise, attempt);
     throwIfRestoreAborted();
     report('completed');
     return result;
@@ -82,6 +110,6 @@ export async function timeRestorePhase<T>(log: ILogger | undefined, context: Log
   } finally {
     clearTimeout(pending);
     attempt?.phases.delete(token);
-    if (!attempt?.controller.signal.aborted) reportProgress();
+    if (!attempt?.signal.aborted) reportProgress();
   }
 }

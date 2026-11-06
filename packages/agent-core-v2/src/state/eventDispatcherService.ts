@@ -5,7 +5,7 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
-import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
+import { restoreSignal, timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { type CollectionView } from '#/_base/di/collection';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -541,10 +541,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash &&
         saved.wire.storeGeneration === wire.storeGeneration) return true;
       phase = 'journal_digest';
-      const small = wire.size < JOURNAL_HEAD_HASH_BYTES || this.wire.journalBoundarySha256 === undefined;
+      const small = wire.size < JOURNAL_HEAD_HASH_BYTES;
       const digest = small
-        ? this.wire.journalSha256 === undefined ? undefined : await this.wire.journalSha256(wire.size)
-        : await this.wire.journalBoundarySha256!(wire.size);
+        ? await this.wire.journalSha256?.(wire.size)
+        : await this.wire.journalBoundarySha256?.(wire.size);
       const digestAvailable = small ? this.wire.journalSha256 !== undefined : this.wire.journalBoundarySha256 !== undefined;
       if (digestAvailable && digest === undefined) {
         return this.skipReplayCheckpoint('journal_changed');
@@ -626,7 +626,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
             ? sealed.sha256
             : undefined;
         if (boundary === undefined) {
-          if (prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
+          if (envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES || prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
           if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
         }
         if (wire.size > envelope.wire.size) tailByte = envelope.wire.size;
@@ -701,10 +701,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private async replayJournal(startByte?: number): Promise<void> {
     let recordIndex = 0;
-    const source = startByte === undefined
-      ? this.wire.readJournal()
-      : this.wire.readJournal({ startByte });
+    const signal = restoreSignal();
+    const source = this.wire.readJournal({ startByte, signal });
     for await (const record of source) {
+      signal?.throwIfAborted();
       if (record.type === 'metadata') continue;
       const cls = this.folded.events.get(record.type);
       if (cls === undefined) {

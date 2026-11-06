@@ -527,9 +527,11 @@ describe('replay checkpoint tail', () => {
     await first.wire.flush();
     const tailed = harness(storage);
     const reads = watchReads(tailed.wire);
+    storage.streamBytes = 0;
     await tailed.dispatcher.restore();
     expect(reads.full).toBe(0);
     expect(reads.tails).toEqual([size]);
+    expect(storage.streamBytes).toBeLessThan(128 * 1024);
     expect(texts(tailed.state).at(-1)).toBe('after-boundary');
 
     const original = Buffer.from(await bytesOf(storage));
@@ -592,6 +594,24 @@ describe('replay checkpoint tail', () => {
     expect(reads.full).toBe(0);
     expect(reads.tails).toEqual([size]);
     expect(texts(restored.state).at(-1)).toBe('plain-append');
+  });
+
+  it('does not hash a large legacy prefix before replaying it once', async () => {
+    const { storage, size } = await largeCheckpoint();
+    const writer = harness(storage);
+    const saved = await writer.docs.get<{ wire: Record<string, unknown> }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const { boundarySha256: _oldBoundary, ...legacyWire } = saved!.wire;
+    await writer.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, { ...saved, wire: { ...legacyWire, prefixSha256: 'a'.repeat(64) } });
+    writer.wire.appendRecord({ type: 'context.append_message', message: message('user', 'legacy-tail'), time: 99 });
+    await writer.wire.flush();
+    const restored = harness(storage);
+    const digest = vi.spyOn(restored.wire, 'journalSha256');
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(size).toBeGreaterThan(256 * 1024);
+    expect(digest).not.toHaveBeenCalled();
+    expect(reads.full).toBe(1);
+    expect(texts(restored.state).at(-1)).toBe('legacy-tail');
   });
 
   it('does not trust a boundary-only checkpoint that has no store generation', async () => {

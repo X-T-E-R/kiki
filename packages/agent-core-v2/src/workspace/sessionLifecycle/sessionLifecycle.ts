@@ -43,6 +43,7 @@ export interface ForkSessionOptions {
 }
 
 export interface ResumeSessionOptions {
+  readonly forExecutionControl?: true;
   readonly additionalDirs?: readonly string[];
   readonly waitForSessionMs?: number;
   /**

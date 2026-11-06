@@ -74,6 +74,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import '#/wire/wireService';
 import '#/state/eventDispatcherService';
 import { IAgentTaskService } from '#/agent/task/task';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { SessionCronServiceImpl } from '#/session/cron/sessionCronServiceImpl';
@@ -710,6 +711,7 @@ describe('AgentLifecycleService', () => {
         },
       } as unknown as IAgentTaskService);
       executionRuns.push(vi.spyOn(ix.get(IAgentExecutionService), 'run'));
+      ix.stub(ISessionExecutionControl, { ready: async () => {}, isHeld: () => false, pauseSignal: () => new AbortController().signal, onDidChange: Event.None as ISessionExecutionControl['onDidChange'] });
       ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
       ix.get(ISessionSubagentService);
       ix.set(ISessionActivityView, new SyncDescriptor(SessionActivityView));
@@ -749,7 +751,7 @@ describe('AgentLifecycleService', () => {
       await entered;
       expect(ix.get(IAgentLifecycleService).list().map((agent) => agent.id)).toEqual(parentId === 'main' ? ['main', 'receipt-child'] : ['main', parentId, 'receipt-child']);
       expect(runtime.metadata.snapshot().agents?.['receipt-child']?.parentAgentId).toBe(parentId);
-      expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
+      await vi.waitFor(() => expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1));
       expect(ix.get(ISessionActivityView).state()).toMatchObject({ busy: true, executing: false });
       expect(delivered).toEqual([]);
       const expectedId = createHash('sha256').update('receipt-child:7').digest('hex');
@@ -790,8 +792,8 @@ describe('AgentLifecycleService', () => {
       createTestHost();
       runtime = install();
       await runtime.controller.resume(runtime.session.id);
+      await vi.waitFor(() => expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(0));
       expect(ix.get(IAgentLifecycleService).list().map((agent) => agent.id)).toEqual(['main']);
-      expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(0);
       expect(delivered).toEqual([{ taskId, output: 'Original durable child output.' }]);
       await runtime.controller.close(runtime.session.id);
     } finally {

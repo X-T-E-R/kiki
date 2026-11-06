@@ -133,18 +133,24 @@ export class AgentTaskPersistence {
   }
 
   async readTask(taskId: string): Promise<PersistedTask | undefined> {
+    const found = await this.findTask(taskId);
+    return found === undefined ? undefined : this.verifyReceipt(found.info, found.root);
+  }
+
+  async readTaskMetadata(taskId: string): Promise<PersistedTask | undefined> {
+    return (await this.findTask(taskId))?.info;
+  }
+
+  private async findTask(taskId: string): Promise<{ info: PersistedTask; root: AgentTaskPersistenceRoot } | undefined> {
     validateTaskId(taskId);
     const key = `${taskId}${JSON_SUFFIX}`;
-    const task = await this.docs.get<DiskPersistedTask>(this.tasksScope(), key);
-    if (task !== undefined) {
-      return isReadablePersistedTask(task)
-        ? this.verifyReceipt(normalizePersistedTask(task), this.primaryRoot()) : undefined;
-    }
-    const fallbackRoot = this.fallbackRoot;
-    if (fallbackRoot === undefined) return undefined;
-    const fallback = await this.docs.get<DiskPersistedTask>(this.tasksScope(fallbackRoot), key);
-    if (fallback === undefined || !isReadablePersistedTask(fallback)) return undefined;
-    return this.verifyReceipt(normalizePersistedTask(fallback), fallbackRoot);
+    const primary = this.primaryRoot();
+    const task = await this.docs.get<DiskPersistedTask>(this.tasksScope(primary), key);
+    const root = task === undefined ? this.fallbackRoot : primary;
+    if (root === undefined) return undefined;
+    const stored = task ?? await this.docs.get<DiskPersistedTask>(this.tasksScope(root), key);
+    if (stored === undefined || !isReadablePersistedTask(stored)) return undefined;
+    return { info: normalizePersistedTask(stored), root };
   }
 
   async appendTaskOutput(taskId: string, chunk: string): Promise<void> {
@@ -262,12 +268,12 @@ export class AgentTaskPersistence {
     return undefined;
   }
 
-  async listTasks(): Promise<readonly PersistedTask[]> {
-    const primary = await this.listTasksAt(this.primaryRoot());
+  async listTasks(filter?: (info: PersistedTask) => boolean): Promise<readonly PersistedTask[]> {
+    const primary = await this.listTasksAt(this.primaryRoot(), filter);
     const tasks = [...primary.tasks];
     const fallbackRoot = this.fallbackRoot;
     if (fallbackRoot !== undefined) {
-      const fallback = await this.listTasksAt(fallbackRoot);
+      const fallback = await this.listTasksAt(fallbackRoot, filter);
       for (const entry of fallback.tasks) {
         if (!primary.reservedIds.has(entry.keyId)) tasks.push(entry);
       }
@@ -275,7 +281,7 @@ export class AgentTaskPersistence {
     return tasks.map((entry) => entry.task).toSorted((a, b) => a.taskId.localeCompare(b.taskId));
   }
 
-  private async listTasksAt(root: AgentTaskPersistenceRoot): Promise<{
+  private async listTasksAt(root: AgentTaskPersistenceRoot, filter?: (info: PersistedTask) => boolean): Promise<{
     readonly reservedIds: ReadonlySet<string>;
     readonly tasks: readonly ListedTask[];
   }> {
@@ -294,7 +300,9 @@ export class AgentTaskPersistence {
         continue;
       }
       if (task === undefined || !isReadablePersistedTask(task)) continue;
-      tasks.push({ keyId: id, task: await this.verifyReceipt(normalizePersistedTask(task), root) });
+      const info = normalizePersistedTask(task);
+      if (filter?.(info) === false) continue;
+      tasks.push({ keyId: id, task: await this.verifyReceipt(info, root) });
     }
     return { reservedIds, tasks };
   }

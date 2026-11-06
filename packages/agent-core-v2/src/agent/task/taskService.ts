@@ -12,7 +12,7 @@ import { Emitter } from '#/_base/event';
 import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import type { MediaTaskInfo } from './types';
 import { ILogService } from '#/_base/log/log';
-import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
+import { timeRestorePhase, withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
 import { defineState } from '#/state/state';
 import {
   abortable,
@@ -412,6 +412,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         this.activeBackgroundTaskReminder(),
       ),
     );
+    this._register(this.executionControl.onDidChange((state) => {
+      if (state.phase === 'running' && this.restorePending) {
+        void this.resumeRestoration().catch(error => this.log.error('agent task restoration failed', { error }));
+      }
+    }));
   }
 
   private get ghosts(): Map<string, AgentTaskInfo> {
@@ -442,17 +447,20 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   resumeRestoration(): Promise<void> {
     if (this.restoreRecovery !== undefined) return this.restoreRecovery;
-    this.restoreRecovery = (async () => {
-      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
-      if (this.restoreDisposed) return;
-      const context = { agentId: this.scopeContext.agentId };
-      await timeRestorePhase(this.log, context, 'task_load', () => this.loadFromDisk({ replace: false }));
-      if (this.restoreDisposed) return;
-      await timeRestorePhase(this.log, context, 'task_reconcile', () => this.reconcile());
-    })().finally(() => {
-      this.restorePending = false;
-      this.fireWorkChange();
-      if (!this.restoreDisposed) this.eventBus.publish(new TaskRestorationSettled({}));
+    if (this.executionControl.isHeld()) return Promise.resolve();
+    this.restoreRecovery = withoutRestoreAttempt(async () => {
+      try {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+        if (this.restoreDisposed) return;
+        const context = { agentId: this.scopeContext.agentId };
+        await timeRestorePhase(this.log, context, 'task_load', () => this.loadFromDisk({ replace: false }));
+        if (this.restoreDisposed) return;
+        await timeRestorePhase(this.log, context, 'task_reconcile', () => this.reconcile());
+      } finally {
+        this.restorePending = false;
+        this.fireWorkChange();
+        if (!this.restoreDisposed) this.eventBus.publish(new TaskRestorationSettled({}));
+      }
     });
     return this.restoreRecovery;
   }
@@ -483,9 +491,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       autoBackgroundOnTimeout: options.autoBackgroundOnTimeout,
       signal: detached ? undefined : options.signal,
     };
-    this.assertCanRegister(detached);
     const prior = options.taskId === undefined ? undefined : this.ghosts.get(options.taskId);
     const restored = prior?.status === 'running' && prior.kind === task.kind ? prior : undefined;
+    if (restored === undefined) this.assertCanRegister(detached);
     const entry: ManagedTask = {
       taskId: options.taskId ?? generateTaskId(task.idPrefix),
       task,
@@ -731,6 +739,25 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return entry === undefined ? this.ghosts.get(taskId) : entry.visible ? this.toInfo(entry) : undefined;
   }
 
+  async findPausedAgentTask(agentId: string, taskId?: string): Promise<AgentTaskInfo | undefined> {
+    const matches = (info: AgentTaskInfo | undefined) => info?.kind === 'agent' && info.agentId === agentId && info.status === 'running';
+    const active = this.list(true).find(matches);
+    if (active !== undefined) return active;
+    const ghost = [...this.ghosts.values()].find(matches);
+    const id = ghost?.taskId ?? taskId;
+    const saved = id === undefined ? (await this.persistence.listTasks(matches))[0] : await this.persistence.readTaskMetadata(id);
+    const info = saved === undefined ? ghost : ghost === undefined ? saved : newerRestoredTask(ghost, saved);
+    if (info === undefined || !matches(info) || this.restoreDisposed || this.localTaskIds.has(info.taskId)) return undefined;
+    const current = this.ghosts.get(info.taskId);
+    const original = current === undefined ? info : newerRestoredTask(current, info);
+    if (!matches(original)) return undefined;
+    if (original !== current) {
+      this.ghosts.set(original.taskId, original);
+      this.fireWorkChange();
+    }
+    return original;
+  }
+
   async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
     const info = this.getTask(taskId);
     if (info?.receiptVerification !== 'verified' || !isAgentTaskTerminal(info.status)) return info;
@@ -769,7 +796,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   hasWorkPreventingPausedExit(): boolean {
-    return this.restorePending || this.pendingSettlements.size > 0 || this.buildingNotificationKeys.size > 0 ||
+    return this.pendingSettlements.size > 0 || this.buildingNotificationKeys.size > 0 ||
       this.pendingWaitDeliveries.size > 0 ||
       [...this.pendingNotificationRequests.values()].some(request => !request.aborted && !request.recoverableAfterExit) ||
       [...this.tasks.values()].some(entry => entry.options.lifetime !== 'service' && entry.notificationPromise !== undefined) ||

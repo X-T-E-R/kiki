@@ -3,7 +3,7 @@ import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
-import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreDeadline } from '#/session/agentLifecycle/restoreTiming';
+import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, type RestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -69,7 +69,8 @@ export class SessionManager implements ISessionManager {
   private readonly sessions = new Map<string, ISessionScopeHandle>();
   private readonly ephemeral = new Map<string, { workspaceId: string; controller: SessionLifecycleService }>();
   private readonly owners = new Map<string, SessionLifecycleService>();
-  private readonly pendingResumes = new Map<string, Promise<ISessionScopeHandle | undefined>>();
+  private readonly pendingResumes = new Map<string, { promise: Promise<ISessionScopeHandle | undefined>; lifetime: RestoreLifetime }>();
+  private readonly restoreDisposal = new AbortController();
   private readonly resumeFailures = new Map<string, Error>();
   private readonly lifecycleChains = new Map<string, Promise<void>>();
   private readonly controllers = new Map<string, SessionControllerEntry>();
@@ -144,11 +145,17 @@ export class SessionManager implements ISessionManager {
   ): Promise<ISessionScopeHandle | undefined> {
     this.touchResidency(sessionId);
     const inflight = this.pendingResumes.get(sessionId);
-    if (inflight !== undefined) return inflight;
+    if (inflight !== undefined) {
+      if (options?.forExecutionControl) inflight.lifetime.ownerManaged = true;
+      return inflight.promise;
+    }
     this.resumeFailures.delete(sessionId);
-    const promise = this.serializeLifecycle(sessionId, () => withRestoreDeadline(async () => {
+    const lifetime: RestoreLifetime = { ownerManaged: options?.forExecutionControl === true, signal: this.restoreDisposal.signal };
+    const promise = this.serializeLifecycle(sessionId, () => withRestoreLifetime(lifetime, async () => {
       const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
-      if (!this.sessions.has(sessionId)) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
+      const live = this.sessions.get(sessionId);
+      if (live !== undefined) return live;
+      if (!lifetime.ownerManaged) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
       const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
       try {
         const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
@@ -162,7 +169,7 @@ export class SessionManager implements ISessionManager {
         releaseRestore();
       }
     })).finally(() => this.pendingResumes.delete(sessionId));
-    this.pendingResumes.set(sessionId, promise);
+    this.pendingResumes.set(sessionId, { promise, lifetime });
     void promise.then(
       (handle) => {
         if (handle === undefined && !this.sessions.has(sessionId)) this.dropResidency(sessionId);
@@ -304,7 +311,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async whenResumeSettled(sessionId: string): Promise<void> {
-    await this.pendingResumes.get(sessionId);
+    await this.pendingResumes.get(sessionId)?.promise;
     const failure = this.resumeFailures.get(sessionId);
     if (failure !== undefined) throw failure;
     await this.owners.get(sessionId)?.whenResumeSettled(sessionId);
@@ -516,6 +523,8 @@ export class SessionManager implements ISessionManager {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.restoreDisposal.abort();
+    await Promise.allSettled([...this.pendingResumes.values()].map(({ promise }) => promise));
     await this.configSubscription?.dispose();
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
     for (const state of this.residency.values()) await state.activitySubscription?.dispose();

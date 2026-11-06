@@ -17,6 +17,8 @@ import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persis
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { AgentTaskPersistence } from '#/agent/task/persist';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { withRestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -139,6 +141,50 @@ async function receiptPair(maxRunningTasks?: number) {
 }
 
 describe('autonomous child receipt return', () => {
+  it('defers cold receipt discovery while held and cancels its scan without inheriting a restore deadline', async () => {
+    const fx = await receiptPair();
+    const control = fx.parent.get(ISessionExecutionControl);
+    const service = fx.parent.get(ISessionSubagentService);
+    const logs = fx.parent.get(IAppendLogStore);
+    const entered = createControlledPromise<AbortSignal>();
+    let scans = 0;
+    const originalRead = logs.read.bind(logs);
+    const read = vi.spyOn(logs, 'read').mockImplementation((scope, key, options) => {
+      if (!scope.endsWith('agents/agent-child') || key !== 'wire.jsonl') return originalRead(scope, key, options);
+      return (async function* () {
+        scans++;
+        const signal = options!.signal!;
+        entered.resolve(signal);
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      })();
+    });
+    fx.handles.delete('agent-child');
+    try {
+      await control.pause({ operationId: 'initial-pause' });
+      await vi.waitFor(async () => expect((await control.read()).phase).toBe('paused'));
+      service.startReceiptDiscovery(control);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(scans).toBe(0);
+      const restore = new AbortController();
+      await withRestoreLifetime({ ownerManaged: false, signal: restore.signal }, async () => {
+        await control.resume({ operationId: 'release-pause', pauseOperationId: 'initial-pause' });
+      });
+      const discovery = await entered;
+      restore.abort();
+      expect(discovery.aborted).toBe(false);
+      expect(scans).toBe(1);
+      await control.pause({ operationId: 'next-pause' });
+      expect(discovery.aborted).toBe(true);
+      await service.stopReceiptDiscovery();
+      expect(fx.parent.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(0);
+      expect(fx.child.llmCalls).toHaveLength(0);
+      expect(fx.parent.llmCalls).toHaveLength(0);
+    } finally {
+      await service.stopReceiptDiscovery();
+      read.mockRestore();
+      await fx.dispose();
+    }
+  });
   it.each(['metadata', 'task receipt', 'notification admission'] as const)('N052-F1: retains the original receipt through %s ENOSPC and resumes its one delivery', async (fault) => {
     const { parent, child, metadata, dispose } = await receiptPair();
     let recovered = false;

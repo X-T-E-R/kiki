@@ -433,12 +433,20 @@ describe('WireService seal', () => {
     expect(reads).toBe(2);
   });
 
-  it('never upgrades a legacy wire or an interrupted epoch to complete', async () => {
+  it('never upgrades a legacy wire or an interrupted epoch to complete, and seals only its bounded tail', async () => {
     log.append(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, { type: 'turn.prompt', turnId: 0 });
     await log.flush();
     await wire.seal();
     await wire.beginTranscriptEpoch!();
+    wire.appendRecord({ type: 'fixture', text: 'x'.repeat(1024 * 1024) });
+    await wire.flush();
+    let streamed = 0;
+    const original = storage.readStream.bind(storage);
+    storage.readStream = async function* (...args) {
+      for await (const bytes of original(...args)) { streamed += bytes.byteLength; yield bytes; }
+    };
     await wire.sealTranscriptEpoch!();
+    expect(streamed).toBeLessThanOrEqual(4096);
     const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
       (await storage.read(testWireScope(SCOPE, KEY), WIRE_TRANSCRIPT_RECEIPT_KEY))!,
     ).toString('utf8')));

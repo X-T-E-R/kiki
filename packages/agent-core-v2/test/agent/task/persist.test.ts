@@ -113,6 +113,21 @@ describe('AgentTaskPersistence', () => {
     expect((await persistence.listTasks())[0]).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('reads an original running task without inspecting unrelated terminal outputs', async () => {
+    const completed = { taskId: 'agent-11111111', kind: 'agent' as const, agentId: 'agent-1', description: 'Completed report', status: 'completed' as const, startedAt: 1, endedAt: 2 };
+    const running = { ...completed, taskId: 'agent-22222222', agentId: 'agent-2', status: 'running' as const, endedAt: null };
+    await persistence.commitTerminalTask(completed, 'x'.repeat(1024 * 1024));
+    await persistence.writeTask(running);
+    const output = vi.spyOn(bytes, 'read');
+    const roster = vi.spyOn(docs, 'list');
+    const match = (info: AgentTaskInfo) => info.kind === 'agent' && info.agentId === running.agentId && info.status === 'running';
+    const original = await persistence.readTaskMetadata(running.taskId);
+    expect(original).toMatchObject(running);
+    expect(roster).not.toHaveBeenCalled();
+    expect(await persistence.listTasks(match)).toEqual([original]);
+    expect(output.mock.calls.filter(([, key]) => key === 'output.log')).toHaveLength(0);
+  });
+
   it.each([
     { committedAt: 'not-a-date' },
     { committedAt: '2024-13-01T01:00:00Z' },

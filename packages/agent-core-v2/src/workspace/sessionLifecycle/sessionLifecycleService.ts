@@ -58,6 +58,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import {
   sessionEphemeralMcpServersSeed,
@@ -223,6 +224,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly checkpointSaves = new Map<string, Promise<boolean>>();
   private readonly checkpointSubscriptions = new Map<string, IDisposable>();
   private readonly resumePrunes = new Map<string, { at: number; running?: Promise<void> }>();
+  private readonly receiptDiscoveries = new WeakMap<ISessionScopeHandle, ISessionSubagentService>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -279,7 +281,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.checkpointSubscriptions.clear();
     this.checkpointSaves.clear();
     this.resumePrunes.clear();
-    for (const [, handle] of sessions) await handle.dispose();
+    for (const [, handle] of sessions) {
+      await this.receiptDiscoveries.get(handle)?.stopReceiptDiscovery();
+      await handle.dispose();
+    }
     await super.dispose();
   }
 
@@ -629,8 +634,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (agents.get(MAIN_AGENT_ID) === undefined) {
         await phase('main_agent_create', () => agents.create({ agentId: MAIN_AGENT_ID }));
       }
-      await phase('autonomous_receipt_recovery', () => handle.accessor.get(ISessionSubagentService).recoverReceipts());
       await phase('session_announce', () => this.announceCreated({ sessionId, handle, source: 'resume' }));
+      const control = handle.accessor.get(ISessionExecutionControl);
+      await control.ready();
+      const receipts = handle.accessor.get(ISessionSubagentService);
+      receipts.startReceiptDiscovery(control);
+      this.receiptDiscoveries.set(handle, receipts);
     } catch (error) {
       this.sessions.delete(sessionId);
       await handle.dispose();
@@ -1108,6 +1117,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   private async drainAgents(handle: ISessionScopeHandle, mode: AgentRemovalMode = 'cancel'): Promise<void> {
+    await this.receiptDiscoveries.get(handle)?.stopReceiptDiscovery();
+    this.receiptDiscoveries.delete(handle);
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
     const failures: unknown[] = [];
     for (const agent of agentLifecycle.list()) {

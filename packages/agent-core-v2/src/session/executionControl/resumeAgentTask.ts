@@ -8,6 +8,8 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { latestAssistantText } from '#/session/subagent/runAgentTurn';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
 
 export async function resumeAgentTask(child: IAgentScopeHandle, turn: Turn): Promise<void> {
   const parentId = child.accessor.get(IAgentScopeContext).parentAgentId;
@@ -15,8 +17,8 @@ export async function resumeAgentTask(child: IAgentScopeHandle, turn: Turn): Pro
   const parent = child.accessor.get(IAgentLifecycleService).get(parentId);
   if (parent === undefined) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, 'The saved execution task owner is unavailable');
   const tasks = parent.accessor.get(IAgentTaskService);
-  await tasks.resumeRestoration?.();
-  const info = tasks.list(false).find(info => info.kind === 'agent' && info.agentId === child.id && info.status === 'running');
+  const meta = child.accessor.get(ISessionMetadata).snapshot().agents?.[child.id];
+  const info = await tasks.findPausedAgentTask(child.id, meta?.labels?.[COLLABORATION_LATEST_TASK_LABEL]);
   if (info?.kind !== 'agent') return;
   const controller = new AbortController();
   const completion = (turn.durableResult ?? turn.result).then(result => {

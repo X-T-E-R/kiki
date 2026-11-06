@@ -115,6 +115,7 @@ export interface IAgentTaskService {
   rollbackTaskRegistration?(taskId: string, reason?: unknown): Promise<void>;
   getTask(taskId: string): AgentTaskInfo | undefined;
   getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined>;
+  findPausedAgentTask(agentId: string, taskId?: string): Promise<AgentTaskInfo | undefined>;
   list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
   hasUnfinishedWork(): boolean;
   hasWorkPreventingPausedExit?(): boolean;

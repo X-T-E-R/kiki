@@ -423,8 +423,10 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 `cancelPause` 撤回指定的暂停请求，即使同一次暂停在取消请求到达前刚刚完成。它不会
 终止原任务，也不会重放模型请求或工具动作。重启会保留已保存的 `paused` 检查点，带上
-它的 `pauseOperationId` 调用 `resume`，即可按原绑定继续原轮次。外部结果未知的工作
-不会重放。`operationId` 和 `pauseOperationId` 均须为 1–256 字符的非空字符串。新动作
+它的 `pauseOperationId` 调用 `resume`，即可按原绑定继续原轮次。`resume` 会在解除暂停后
+返回 `running`。如果连接中断，先调用 `read`。若仍停在同一次暂停上，用原来的
+`operationId` 和 `pauseOperationId` 重试。外部结果未知的工作不会重放。
+`operationId` 和 `pauseOperationId` 均须为 1–256 字符的非空字符串。新动作
 使用新 `operationId`；用同一 ID 重试同一动作会返回已有回执，改用于其他动作则会被拒绝。
 暂停期间普通消息仍会排队；继续执行不会重新打开用户已暂停的 Goal。
 
