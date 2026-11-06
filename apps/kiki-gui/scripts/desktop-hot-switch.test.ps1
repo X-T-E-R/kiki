@@ -395,6 +395,7 @@ internal static class Program
                 AppendEvent("lifecycle-recoverable-notification|" + TaskId + "|work_pending=0|task=settled");
             }
         }
+        if (File.Exists(Path.Combine(home, "fixture-block-exit")) && !pending.Contains(RunningSessionId)) pending.Add(RunningSessionId);
         StringBuilder ids = new StringBuilder();
         for (int index = 0; index < pending.Count; index++)
         {
@@ -792,6 +793,18 @@ try {
     Assert-Equal 1 $oldShells.Count 'The fixture launcher did not leave its desktop window running.'
     Assert-True ($oldShells[0].MainWindowHandle -ne 0) 'The fixture desktop did not expose its close target.'
 
+    $continuedPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $oldServer 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $continuedPauseId })
+    } | Out-Null
+    $continuedState = [ordered]@{
+        schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = $oldServer.instance.server_id; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $goodReleaseId; targetBuildId = $goodCommit; hadDesktop = $true
+        sessions = @(@{ id = $runningSessionId; pauseId = $continuedPauseId })
+    }
+    [IO.File]::WriteAllText((Join-Path $runtimeRoot 'hot-switch.json'), ($continuedState | ConvertTo-Json -Depth 6))
     $switchOutput = Invoke-Script $hotSwitch @(
         '-RuntimeRoot', $runtimeRoot,
         '-KikiHome', $homePath,
@@ -966,8 +979,21 @@ try {
     Assert-Equal 1 ([int]$pointerExecution.notificationDeliveryCount) 'Prior-pointer recovery duplicated the notification.'
     Assert-Equal $priorPauseId ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).pauseOperationId) 'Prior-pointer recovery changed an unrelated pause.'
 
+    $blockedExit = Join-Path $homePath 'fixture-block-exit'
+    [IO.File]::WriteAllText($blockedExit, 'pending task')
+    $timeoutOutput = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath,
+        '-CandidateRoot', $oldCandidate, '-ExpectedCommit', $oldCommit, '-SettleSeconds', '1') 1
+    Assert-Contains 'Still settling' $timeoutOutput 'The pending exit did not reach its settle deadline.'
+    Assert-Equal 'running' ([string](Read-FixtureExecution $recoveredServer $runningSessionId).phase) 'A failed switch left its session paused.'
+    Assert-Equal 'paused' ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).phase) 'Failed-switch cleanup resumed an earlier pause.'
+    Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Failed-switch cleanup left an unfinished pause record.'
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) 'Failed-switch cleanup changed the release.'
+    Assert-True (!$recoveredServer.process.HasExited) 'Failed-switch cleanup stopped the original service.'
+    Remove-Item -LiteralPath $blockedExit
+    Assert-Equal $continuedPauseId ([string]$successState.sessions[0].pauseId) 'A resumed switch replaced the original saved pause.'
+
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: real Promote/Launch, PID/build switch, durable task receipt, one notification delivery, fresh pause preservation, prior paused preservation, failed launch, Recover, and prior-pointer recovery.'
+    Write-Output 'desktop-hot-switch tests passed: automatic window close, unrelated service preservation, saved-pause continuation, one task receipt, failed launch recovery, prior-pointer recovery, and settle-failure pause cleanup.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome

@@ -167,6 +167,7 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
 }
 
 $lock = [IO.File]::Open((Join-Path $runtime 'hot-switch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+$pauseOwner = $null
 try {
     $ownerPath = Join-Path $homePath 'server.local-owner'
     if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { throw 'The selected home has no local-owner capability. Start its managed desktop normally and verify the home before switching.' }
@@ -195,7 +196,8 @@ try {
         return
     }
 
-    if ($null -ne $state -and $state.phase -ne 'complete') { throw 'A switch is unfinished. Run this command with -Recover first.' }
+    $continuing = $null -ne $state -and $state.phase -eq 'pausing'
+    if ($null -ne $state -and $state.phase -notin @('complete', 'pausing')) { throw 'A switch is unfinished. Run this command with -Recover first.' }
     Assert-FullCommit $commit
     if (!$candidate) { throw 'Pass -CandidateRoot with the verified desktop build directory.' }
     $candidate = Get-FullPath $candidate
@@ -214,22 +216,28 @@ try {
         throw 'Close extra desktop shells; the running shell must match the service being switched.'
     }
     foreach ($shell in $shells) { $shell.EnableRaisingEvents = $true; $null = $shell.Handle }
-    $state = [pscustomobject]@{
-        schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
-        oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
-        priorPointerReleaseId = $current.releaseId; targetReleaseId = $targetRelease; targetBuildId = $commit; hadDesktop = $shells.Count -gt 0
-        sessions = @()
+    if ($continuing) {
+        if ($state.kikiHome -ine $homePath -or $state.oldServerId -cne $old.meta.server_id -or $state.targetReleaseId -cne $targetRelease) {
+            throw 'The pending switch belongs to another service or candidate. Recover it first.'
+        }
+    } else {
+        $state = [pscustomobject]@{
+            schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
+            oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
+            priorPointerReleaseId = $current.releaseId; targetReleaseId = $targetRelease; targetBuildId = $commit; hadDesktop = $shells.Count -gt 0
+            sessions = @()
+        }
+        Save-State
     }
-    Save-State
+    $pauseOwner = $old
     $deadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
     do {
         $lifecycle = Lifecycle $old.instance ''
         foreach ($id in $lifecycle.work_pending) {
-            if (@($state.sessions | Where-Object id -CEQ $id).Count) { continue }
             $control = Execution $old.instance $id 'read'
             if ($control.phase -eq 'running') {
                 $item = [pscustomobject]@{ id = $id; pauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N') }
-                $state.sessions += $item
+                $state.sessions = @($state.sessions | Where-Object id -CNE $id) + @($item)
                 Save-State
                 Execution $old.instance $id 'pause' @(@{ operationId = $item.pauseId }) | Out-Null
                 Write-Host "Pausing $id"
@@ -240,12 +248,8 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw ('Still settling: ' + ($pending -join ', ')) }
         Start-Sleep -Milliseconds 400
     } while ($true)
-    foreach ($item in $state.sessions) {
-        $control = Execution $old.instance $item.id 'read'
-        if ($control.phase -ne 'paused' -or $control.pauseOperationId -cne $item.pauseId) { throw "Pause changed for $($item.id); no version was switched." }
-    }
-    $state.phase = 'stopping'; Save-State
     Lifecycle $old.instance 'update' | Out-Null
+    $state.phase = 'stopping'; Save-State
     Wait-ForExit $old $shells
     $state.phase = 'promoting'; Save-State
     Invoke-Promotion $runtime $candidate $commit | Out-Host
@@ -258,11 +262,19 @@ try {
     $state.phase = 'complete'; Save-State
     Write-Host "Running $targetRelease ($($target.meta.server_id))"
 } catch {
+    $failure = $_
+    if ($null -ne $pauseOwner -and $state.phase -eq 'pausing') {
+        try {
+            Release-OurPauses $pauseOwner $true
+            $state.phase = 'complete'; Save-State
+            Write-Warning 'The version was not switched. This attempt has released its pauses.'
+        } catch { Write-Warning "Pause recovery is still pending: $($_.Exception.Message)" }
+    }
     if (Test-Path -LiteralPath $statePath) {
         Write-Warning "Switch record: $statePath"
         Write-Warning ('Recovery: & ''{0}'' -RuntimeRoot ''{1}'' -KikiHome ''{2}'' -Recover' -f $entryScript.Replace("'", "''"), $runtime.Replace("'", "''"), $homePath.Replace("'", "''"))
     }
-    throw
+    throw $failure
 } finally {
     $lock.Dispose()
 }
