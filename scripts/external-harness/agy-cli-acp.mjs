@@ -306,6 +306,12 @@ export class AgyBridge {
         error.details = { reason: retired.type, unresolvedTools: retired.unresolvedTools ?? retired.tools ?? [] };
         throw error;
       }
+      const turn = latest.findLast(record => record.type === 'native_turn_pending' || record.type === 'native_turn_reconciled');
+      if (turn?.type === 'native_turn_pending') {
+        const error = new Error('AGY native session has an unconfirmed turn; wait for its native outcome to be reconciled before loading; do not replay the interrupted prompt or commands');
+        error.code = 'AGY_SESSION_UNCONFIRMED';
+        throw error;
+      }
       await this.newSession(params, params.sessionId, 'session_loaded');
       const session = this.session(params.sessionId);
       session.model = model;
@@ -777,6 +783,8 @@ export class AgyBridge {
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } } });
     }
     if (session.active !== active || session.cancelling) return;
+    if (!unresolved.length) await this.audit(session, 'native_turn_reconciled', { status: result.status });
+    if (session.active !== active || session.cancelling) return;
     session.active = undefined;
     if (error) active.reject(error);
     else active.resolve({ stopReason });
@@ -802,6 +810,8 @@ export class AgyBridge {
         if (!session.broken && !session.child) await this.start(session);
       })();
       try { await session.preparing; } finally { session.preparing = undefined; }
+      if (session.broken) return await promise;
+      await this.audit(session, 'native_turn_pending');
       if (session.broken) return await promise;
       const frame = JSON.stringify({ event: 'user', message: { content } }) + '\n';
       try {

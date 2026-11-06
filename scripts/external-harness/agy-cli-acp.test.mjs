@@ -1235,7 +1235,8 @@ void test('Claude encoded effort survives exact native load with new and legacy 
       if (legacy) {
         delete launch.effort;
         launch.args.push('--effort', 'high');
-        await writeFile(auditPath, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+        const legacyRecords = records.filter(record => record.type !== 'native_turn_pending' && record.type !== 'native_turn_reconciled');
+        await writeFile(auditPath, legacyRecords.map(record => JSON.stringify(record)).join('\n') + '\n');
       }
       const opened = await loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] });
       assert.equal(opened.configOptions[0].currentValue, 'high');
@@ -1351,6 +1352,46 @@ void test('native load refuses retired or unreconciled sessions across adapter i
       await assert.rejects(loaded.loadSession({ ...params, sessionId: closedId }), refusal);
     } finally { await closing.close(); }
   } finally { release(); await stopping?.catch(() => {}); await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('native load refuses an exited CLI turn until its queued tool events are reconciled', { timeout: 10000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-exit-draining-'));
+  try {
+    for (const input of ['tool-disconnect', 'tool-complete-exit']) {
+      const first = bridge('fixture-alpha-high'); first.auditDir = root;
+      const loaded = bridge('fixture-alpha-high'); loaded.auditDir = root;
+      const params = { cwd: root, mcpServers: [] };
+      const id = (await first.newSession(params)).sessionId;
+      await first.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+      let delivered, release;
+      const ready = new Promise(done => { delivered = done; });
+      const blocked = new Promise(done => { release = done; });
+      const pending = first.prompt({ sessionId: id, prompt: [{ type: 'text', text: input }] }, {
+        notify: async (_method, event) => { if (event.update.sessionUpdate === 'tool_call') { delivered(); await blocked; } },
+      });
+      pending.catch(() => {});
+      try {
+        await Promise.race([ready, pending]);
+        const native = first.session(id);
+        await native.exited;
+        assert.equal(native.child.exitCode, input === 'tool-disconnect' ? 9 : 0);
+        await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), { code: 'AGY_SESSION_UNCONFIRMED' });
+        await assert.rejects(readFile(join(root, `${id}.resume-lock`)), { code: 'ENOENT' });
+        release();
+        if (input === 'tool-disconnect') {
+          await assert.rejects(pending, { code: 'AGY_EARLY_EXIT', message: /execution state is unknown/ });
+          await native.cleanup;
+          await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), { code: 'AGY_SESSION_RETIRED' });
+        } else {
+          assert.deepEqual(await pending, { stopReason: 'end_turn' });
+          await native.cleanup;
+          await loaded.loadSession({ ...params, sessionId: id });
+          assert.deepEqual(launchArgs(loaded.session(id)).slice(4), ['--conversation', 'fixture-conversation', '--model', 'fixture-alpha-high', '--effort', 'high']);
+        }
+      } finally { release(); await first.close(); await loaded.close(); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 void test('real ACP session/load restores exact native argv after adapter EOF without handoff replay', { timeout: 15000 }, async () => {

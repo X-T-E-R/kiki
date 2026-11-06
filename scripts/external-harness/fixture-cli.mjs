@@ -57,10 +57,15 @@ for await (const line of createInterface({ input: process.stdin })) {
       step_update: { step_type: 'tool', step_index: 42, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { CommandLine: 'fixture-owned-stdin-wait' } } } }) + '\n');
     continue;
   }
-  if (input.message.content === 'tool-disconnect' || input.message.content === 'tool-invalid-frame') {
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
-      step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE' } }) + '\n');
+  if (['tool-disconnect', 'tool-invalid-frame', 'tool-complete-exit'].includes(input.message.content)) {
+    const step = { step_type: 'tool', step_index: turns, tool_name: 'run_command' };
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...step, state: 'ACTIVE' } }) + '\n');
     if (input.message.content === 'tool-disconnect') process.exit(9);
+    if (input.message.content === 'tool-complete-exit') {
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...step, state: 'DONE' } }) + '\n');
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS' } }) + '\n', () => process.exit(0));
+      continue;
+    }
     process.stdout.write('invalid-native-frame\n');
     continue;
   }
