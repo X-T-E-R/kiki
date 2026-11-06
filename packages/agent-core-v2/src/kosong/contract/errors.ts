@@ -361,6 +361,7 @@ const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'antigravity_malformed_function_call',
   'antigravity_malformed_response',
   'antigravity_upstream_terminal_error',
+  'gateway_stream_terminal_error',
 ]);
 
 export function isRetryableGenerateError(error: unknown): boolean {

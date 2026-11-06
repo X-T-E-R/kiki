@@ -17,6 +17,7 @@ import {
   APIStatusError,
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
 import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import type { StreamedMessage } from '#/kosong/contract/provider';
@@ -1035,6 +1036,49 @@ describe('stepRetry plugin', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
+
+  it.each([['terminal gateway code', 'gateway_stream_terminal_error', 1], ['unmarked rate limit', undefined, 2]] as const)(
+    'handles a Messages rate limit after an SSE ping: %s', async (_label, code, attempts) => {
+      let requests = 0;
+      const server = createServer((request, response) => {
+        request.resume();
+        request.on('end', () => {
+          requests++;
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write('event: ping\ndata: {"type":"ping"}\n\n');
+          const event = { type: 'error', error: { type: 'rate_limit_error', code, message: 'Fixture rate limit' } };
+          response.end(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
+        });
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const address = server.address();
+        if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+        const provider = new AnthropicChatProvider({ model: 'fixture', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}` });
+        class FixtureRegistry extends ProtocolAdapterRegistry {
+          override createChatProvider() { return provider; }
+        }
+        ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()), { initialConfig: { retry: {
+          policies: [{ match: '.*', retry: true, maxAttempts: 2, backoff: 1 }],
+        } } });
+        void ctx.dispatcher.dispatch(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+        const loop = ctx.get(IAgentLoopService);
+        loop.enqueue(new ContinuationStepRequest());
+        const result = await loop.run({ turnId: 1 });
+
+        expect(result.type).toBe('failed');
+        if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+        expect(toErrorPayload(result.error).details).toMatchObject({ upstreamErrorType: 'rate_limit_error' });
+        if (code !== undefined) expect(toErrorPayload(result.error).details).toMatchObject({ upstreamErrorCode: code });
+        expect(requestDeliveryProvenance(result.error)).toBeUndefined();
+        expect(requests).toBe(attempts);
+        expect(rpcEvents('turn.step.retrying')).toHaveLength(attempts - 1);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    },
+  );
 
   it.each(['before-output', 'partial-tool', 'exhaust', 'partial-off', 'deny', 'cancel'] as const)('handles a forwarded SSE WebSocket 1012 through the native turn: %s', async mode => {
     const bodies: string[] = [];
