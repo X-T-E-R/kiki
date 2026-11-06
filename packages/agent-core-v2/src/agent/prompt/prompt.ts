@@ -243,6 +243,7 @@ export interface IAgentPromptService {
    */
   list(): PromptQueueSnapshot;
   hasReadyPending(): boolean;
+  hasQueuedWork(): boolean;
   resumeRecoveredQueue(): void;
   /** Replaces caller-visible content in place; text-only edits retain attachments unless replaceAttachments is true. */
   replace(promptId: string, content: readonly ContentPart[], replaceAttachments?: boolean): PromptHandle;

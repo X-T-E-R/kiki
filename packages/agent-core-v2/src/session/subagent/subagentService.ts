@@ -8,7 +8,8 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { autonomousReceiptsKey } from './autonomousReceiptOps';
 import { IAgentStateService } from '#/agent/state/agentState';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
+import { StorageErrors } from '#/persistence/interface/storage';
 import { LifecycleScope } from '#/app/scopes';
 import {
   type IAgentScopeHandle,
@@ -32,7 +33,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionStateService } from '#/session/state/sessionState';
-import { setImmediate } from 'node:timers/promises';
+import { setImmediate, setTimeout as delay } from 'node:timers/promises';
 import type { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 
 import { SUBAGENT_RELEASE_IDLE_FLAG } from './flag';
@@ -54,6 +55,20 @@ export function resolveReleaseGraceMs(getEnv: (name: string) => string | undefin
   if (raw === undefined || raw === '') return SUBAGENT_RELEASE_GRACE_MS;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : SUBAGENT_RELEASE_GRACE_MS;
+}
+
+async function retryReceiptDiscovery<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  const delays = [100, 500, 2_000];
+  for (let attempt = 0;; attempt++) {
+    signal.throwIfAborted();
+    try { return await operation(); }
+    catch (error) {
+      const code = isError2(error) ? error.code : error instanceof Error && 'code' in error ? error.code : undefined;
+      const wait = delays[attempt];
+      if (wait === undefined || (code !== StorageErrors.codes.STORAGE_IO_FAILED && code !== StorageErrors.codes.STORAGE_LOCKED && code !== 'EBUSY')) throw error;
+      await delay(wait, undefined, { signal, ref: false });
+    }
+  }
 }
 
 export class SessionSubagentService extends Service implements ISessionSubagentService {
@@ -197,23 +212,25 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   }
 
   private async restoreReceipts(signal: AbortSignal): Promise<boolean> {
-    const meta = await this.metadata.read();
+    const meta = await retryReceiptDiscovery(() => this.metadata.read(), signal);
     let complete = true;
     for (const [agentId, agent] of Object.entries(meta.agents ?? {})) {
       signal.throwIfAborted();
       if (agentId === MAIN_AGENT_ID || agent.parentAgentId === null ||
         agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' || this.agentLifecycle.get(agentId) !== undefined) continue;
       try {
-        const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);
-        signal.throwIfAborted();
-        if (Object.keys(pending).length === 0) continue;
-        const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
-        if (this.agentLifecycle.get(parentId) === undefined) {
-          const parent = meta.agents?.[parentId];
-          await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
-        }
-        signal.throwIfAborted();
-        await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
+        await retryReceiptDiscovery(async () => {
+          const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);
+          signal.throwIfAborted();
+          if (Object.keys(pending).length === 0) return;
+          const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
+          if (this.agentLifecycle.get(parentId) === undefined) {
+            const parent = meta.agents?.[parentId];
+            await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
+          }
+          signal.throwIfAborted();
+          await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
+        }, signal);
       } catch (error) {
         signal.throwIfAborted();
         complete = false;

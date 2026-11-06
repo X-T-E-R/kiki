@@ -3,7 +3,7 @@ import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
-import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, type RestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
+import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, withoutRestoreAttempt, type RestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -80,6 +80,7 @@ export class SessionManager implements ISessionManager {
   private readonly closingWorkspaces = new Set<string>();
   private readonly residency = new Map<string, SessionResidencyEntry>();
   private evictionTimer: ReturnType<typeof setInterval> | undefined;
+  private residencyReclaim: Promise<void> | undefined;
   private disposed = false;
   private activeRestores = 0;
   private readonly restoreQueue: Array<{ wake: () => void; report: (position: number) => void }> = [];
@@ -155,7 +156,7 @@ export class SessionManager implements ISessionManager {
       const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
       const live = this.sessions.get(sessionId);
       if (live !== undefined) return live;
-      if (!lifetime.ownerManaged) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
+      if (!lifetime.ownerManaged) this.startResidencyReclaim(sessionId);
       const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
       try {
         const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
@@ -524,7 +525,7 @@ export class SessionManager implements ISessionManager {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.restoreDisposal.abort();
-    await Promise.allSettled([...this.pendingResumes.values()].map(({ promise }) => promise));
+    await Promise.allSettled([this.residencyReclaim, ...[...this.pendingResumes.values()].map(({ promise }) => promise)]);
     await this.configSubscription?.dispose();
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
     for (const state of this.residency.values()) await state.activitySubscription?.dispose();
@@ -715,11 +716,16 @@ export class SessionManager implements ISessionManager {
     return this.flags?.enabled(SESSION_IDLE_EVICTION_FLAG_ID) === true;
   }
 
+  private startResidencyReclaim(openingSessionId: string): void {
+    if (this.residencyReclaim !== undefined || !this.evictionEnabled()) return;
+    this.residencyReclaim = withoutRestoreAttempt(() => this.reclaimIdleResidency(openingSessionId))
+      .catch(onUnexpectedError).finally(() => { this.residencyReclaim = undefined; });
+  }
+
   private async reclaimIdleResidency(openingSessionId: string): Promise<void> {
-    if (!this.evictionEnabled()) return;
     const config = this.residencyConfig();
     const skipped = new Set<string>();
-    for (;;) {
+    while (!this.disposed) {
       const overHeap = config.maxResidentHeapBytes > 0 && process.memoryUsage().heapUsed >= config.maxResidentHeapBytes;
       const overCapacity = this.sessions.size >= config.maxLiveSessions;
       if (!overHeap && !overCapacity) return;

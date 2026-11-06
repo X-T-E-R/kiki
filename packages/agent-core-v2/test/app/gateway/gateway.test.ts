@@ -89,6 +89,7 @@ describe('RestGateway', () => {
       steer: () => Promise.resolve([]),
       list: () => ({ active: undefined, pending: [] }),
       hasReadyPending: () => false,
+      hasQueuedWork: () => false,
       resumeRecoveredQueue: () => {},
       replace: () => { throw new Error('unexpected prompt replacement'); },
       changeTiming: () => { throw new Error('unexpected prompt timing change'); },

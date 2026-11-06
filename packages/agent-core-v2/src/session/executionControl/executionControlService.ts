@@ -9,12 +9,14 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionExecutionControl, type ExecutionControlState, type ExecutionPauseParticipant, type ExecutionResumePoint } from './executionControl';
 import { resumeAgentTask } from './resumeAgentTask';
 
 interface ControlDocument {
   readonly version: 1 | 2;
   readonly checkpointComplete?: boolean;
+  readonly requiredAgents?: readonly string[];
   readonly state: ExecutionControlState;
   readonly points: Readonly<Record<string, ExecutionResumePoint>>;
   readonly receipts: Readonly<Record<string, { readonly action: string; readonly state: ExecutionControlState }>>;
@@ -98,6 +100,17 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
     return toDisposable(() => { if (this.participants.get(agentId) === participant) this.participants.delete(agentId); });
   }
 
+  retainAgent(agentId: string): Promise<void> {
+    if (!this.isHeld()) return Promise.resolve();
+    return this.serialize(async () => {
+      await this.loaded;
+      if (!this.isHeld() || this.document.requiredAgents === undefined || this.document.requiredAgents.includes(agentId)) return;
+      const document = { ...this.document, requiredAgents: [...this.document.requiredAgents, agentId] };
+      await this.documents.set(this.session.scope(), KEY, document);
+      this.document = document;
+    });
+  }
+
   private serialize<T>(run: () => Promise<T>): Promise<T> {
     const operation = this.tail.then(run, run);
     this.tail = operation.catch(() => undefined);
@@ -119,7 +132,7 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       if (retry && this.document.state.agents.some(agent => !this.participants.has(agent.agentId))) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The interrupted execution has an unconfirmed outcome; inspect its original turn before replacing work');
       }
-      const pending = { ...this.document, checkpointComplete: false, state, points: {}, receipts: { ...this.document.receipts, [input.operationId]: { action: 'pause', state } } };
+      const pending = { ...this.document, checkpointComplete: false, requiredAgents: [], state, points: {}, receipts: { ...this.document.receipts, [input.operationId]: { action: 'pause', state } } };
       try {
         await this.save(pending);
       } catch (error) {
@@ -162,9 +175,13 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
           agents.push({ agentId, state: point === undefined ? 'idle' : 'paused', resumable: point !== undefined, turnId: point?.turnId });
         }
       }
+      const requiredAgents = new Set(this.document.requiredAgents);
       const state: ExecutionControlState = { ...this.document.state, phase: failure === undefined ? 'paused' : 'failed', pausedAt: failure === undefined ? new Date().toISOString() : undefined, agents, error: failure };
       try {
-        await this.save({ ...this.document, checkpointComplete: failure === undefined, state, points, receipts: { ...this.document.receipts, [operationId]: { action: 'pause', state } } });
+        for (const agent of this.lifecycle.list()) {
+          if (agent.accessor.get(IAgentPromptService).hasQueuedWork() || agent.accessor.get(IAgentTaskService).hasUnfinishedWork(false)) requiredAgents.add(agent.id);
+        }
+        await this.save({ ...this.document, checkpointComplete: failure === undefined, requiredAgents: [...requiredAgents], state, points, receipts: { ...this.document.receipts, [operationId]: { action: 'pause', state } } });
       } catch (error) {
         this.retainFailure({ ...this.document, checkpointComplete: false }, error);
       }
@@ -190,10 +207,12 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       if (current.pauseOperationId !== input.pauseOperationId) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Execution control requires the current pause operation');
       }
+      const queuedOwners = this.document.requiredAgents ?? current.agents.map(agent => agent.agentId);
       if (cancel) {
         const alreadyCanceled = current.phase === 'running' && current.cancelPauseOperationId !== undefined;
-        const liveCheckpoint = current.phase === 'paused' && Object.entries(this.document.points).every(([agentId, point]) =>
-          this.resumePoint(agentId) === undefined || (!this.parked.has(agentId) && this.participants.get(agentId)?.turnId?.() === point.turnId));
+        const liveCheckpoint = current.phase === 'paused' && queuedOwners.every(agentId => this.participants.has(agentId)) &&
+          Object.entries(this.document.points).every(([agentId, point]) =>
+            this.resumePoint(agentId) === undefined || (!this.parked.has(agentId) && this.participants.get(agentId)?.turnId?.() === point.turnId));
         if (alreadyCanceled || current.phase === 'pausing' || liveCheckpoint) {
           const state: ExecutionControlState = alreadyCanceled ? current
             : { ...current, phase: 'running', agents: [], cancelPauseOperationId: input.operationId };
@@ -205,9 +224,12 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       if (current.phase !== 'paused' && !(current.phase === 'failed' && this.document.checkpointComplete)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Resume requires the current durably paused operation');
       }
-      for (const { agentId } of current.agents) {
+      const required = this.requiredOwners(this.document.requiredAgents === undefined
+        ? current.agents.map(agent => agent.agentId)
+        : [...this.document.requiredAgents, ...Object.keys(this.document.points)]);
+      for (const agentId of required) {
         if (this.participants.has(agentId)) continue;
-        const point = this.document.points[agentId];
+        const point = this.resumePoint(agentId);
         await this.lifecycle.create({ agentId, restoreBinding: point === undefined ? undefined : {
           profileName: point.binding.profileName, routeId: point.binding.routeId, modelAlias: point.binding.modelAlias,
           thinkingEffort: point.binding.thinkingLevel, thinkingEffortExplicit: point.binding.thinkingEffortExplicit,
@@ -237,6 +259,22 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
         throw error;
       }
     });
+  }
+
+  private requiredOwners(agentIds: readonly string[]): readonly string[] {
+    const agents = this.metadata.snapshot().agents;
+    const visited = new Set<string>();
+    const required: string[] = [];
+    const visit = (agentId: string): void => {
+      if (visited.has(agentId)) return;
+      visited.add(agentId);
+      const meta = agents?.[agentId];
+      const parent = meta?.delegator?.kind === 'agent' ? meta.delegator.agentId : meta?.parentAgentId;
+      if (parent !== undefined && parent !== null) visit(parent);
+      required.push(agentId);
+    };
+    for (const agentId of agentIds) visit(agentId);
+    return required;
   }
 
   private validateId(id: string): void {

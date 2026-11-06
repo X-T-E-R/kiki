@@ -249,6 +249,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (this.activeTurnJob !== undefined) return;
     const existing = this.pendingTurns.find(job => job.turn.id === point.turnId);
     if (existing !== undefined) return existing.turn;
+    for (const tool of point.pendingStep?.tools ?? []) {
+      if (tool.wait?.kind === 'agent') {
+        const tasks = this.instantiation.invokeFunction(accessor => accessor.get(IAgentTaskService));
+        await tasks.restoreExecutionWait(tool.wait.taskId);
+      }
+    }
     const job = this.createPendingTurn(new ResumeStepRequest(point.seed), point.seed, point);
     this.pendingTurns.unshift(job);
     return job.turn;

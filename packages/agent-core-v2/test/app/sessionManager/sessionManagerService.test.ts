@@ -254,13 +254,15 @@ describe('SessionManager', () => {
     }
   });
 
-  it('does not occupy a restore slot while idle-session unload is stalled', async () => {
+  it('finishes the same promoted restore while unrelated idle-session unload remains stalled', async () => {
     const didCreate = new Emitter<SessionCreatedEvent>();
     const didClose = new Emitter<SessionClosedEvent>();
     let heapPressure = true;
     let unloading = false;
     let releaseUnload!: () => void;
     const unloadGate = new Promise<void>(resolve => { releaseUnload = resolve; });
+    let releaseRestore!: () => void;
+    const restoreGate = new Promise<void>(resolve => { releaseRestore = resolve; });
     const entered: string[] = [];
     const fake = controller('warm');
     const service = Object.assign(fake.service, {
@@ -269,6 +271,7 @@ describe('SessionManager', () => {
       create: async () => { didCreate.fire({ sessionId: 'warm', handle: fake.handle, source: 'startup' }); return fake.handle; },
       resume: async (sessionId: string) => {
         entered.push(sessionId);
+        if (sessionId === 'cold-a') await restoreGate;
         const handle = { id: sessionId } as ISessionScopeHandle;
         didCreate.fire({ sessionId, handle, source: 'resume' });
         return handle;
@@ -297,18 +300,20 @@ describe('SessionManager', () => {
     const attempts: Promise<unknown>[] = [];
     try {
       await manager.create({ workDir: '/workspace' });
-      attempts.push(observeRestore(value => progress.push(value), () => manager.resume('cold-a')));
+      const first = observeRestore(value => progress.push(value), () => manager.resume('cold-a'));
+      attempts.push(first);
       await drainMicrotasks();
       expect(unloading).toBe(true);
+      expect(manager.resume('cold-a', { forExecutionControl: true })).toBe(first);
+      releaseRestore();
       heapPressure = false;
       attempts.push(manager.resume('cold-b'));
-      await drainMicrotasks();
-      expect(entered).toEqual(['cold-b']);
-      expect(progress.some(value => value.phase === 'restore_queue')).toBe(false);
-      releaseUnload();
       await Promise.all(attempts);
-      expect(entered).toEqual(['cold-b', 'cold-a']);
+      expect(entered).toEqual(['cold-a', 'cold-b']);
+      expect(progress.some(value => value.phase === 'restore_residency')).toBe(false);
+      releaseUnload();
     } finally {
+      releaseRestore();
       releaseUnload();
       await Promise.allSettled(attempts);
       await disposables.dispose();

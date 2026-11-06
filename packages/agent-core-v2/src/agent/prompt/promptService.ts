@@ -912,6 +912,7 @@ export class AgentPromptService implements IAgentPromptService {
       const originalBinding = { model: this.profile.getModel(), thinking: this.profile.data().thinkingLevel };
       const receipt: ModelSwitchReceipt = { operationId: input.operationId, agentId: this.scopeContext.agentId,
         state: 'pending', fromModel: originalBinding.model, toModel: input.model, mode: input.mode };
+      if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
       await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { input: { ...input }, receipt, revision: 0, originalBinding, placement }, queueIndex: this.queueOrder.length }));
       await this.wire.flush();
     });
@@ -1386,6 +1387,7 @@ export class AgentPromptService implements IAgentPromptService {
       retryStatus: queued || input.waitForLaunch === false ? 'queued' : 'running',
       retryContentRanges: input.retryContentRanges,
     };
+    if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
     if (input.commitHistoryRewrite === undefined) {
       await this.dispatcher.dispatch(new PromptEnqueued(enqueued));
     } else {
@@ -1573,6 +1575,14 @@ export class AgentPromptService implements IAgentPromptService {
       launching: this.launchingPrompt === undefined ? undefined : snapshot(this.launchingPrompt.record),
       hold: this.queueHold(),
     };
+  }
+
+  hasQueuedWork(): boolean {
+    if (this.queueOrder.length > 0) return true;
+    for (const { receipt } of this.states.get(modelSwitchQueueKey).values()) {
+      if (receipt.state === 'pending' || receipt.state === 'preparing') return true;
+    }
+    return false;
   }
 
   hasReadyPending(): boolean {
@@ -2435,6 +2445,7 @@ export class AgentPromptService implements IAgentPromptService {
     const userMessageId = options?.userMessageId ?? options?.promptId;
     const managedMessage = managed && userMessageId !== undefined ? { ...rerouted, id: userMessageId } : rerouted;
     if (managed && options !== undefined && userMessageId !== undefined) {
+      if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
       await this.dispatcher.dispatch(new PromptEnqueued({
         schemaVersion: 1,
         promptId: options.promptId!,

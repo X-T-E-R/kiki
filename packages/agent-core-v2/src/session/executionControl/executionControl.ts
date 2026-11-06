@@ -72,6 +72,7 @@ export interface ISessionExecutionControl {
   park(agentId: string): void;
   isParked(agentId: string): boolean;
   invalidate(agentId: string, turnId: number): Promise<void>;
+  retainAgent(agentId: string): Promise<void>;
 }
 
 export const ISessionExecutionControl = createDecorator<ISessionExecutionControl>('sessionExecutionControl');

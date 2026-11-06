@@ -21,5 +21,6 @@ export function stubExecutionControl(): ISessionExecutionControl {
     park: () => {},
     isParked: () => false,
     invalidate: async () => {},
+    retainAgent: async () => {},
   };
 }

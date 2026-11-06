@@ -36,6 +36,7 @@ import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
+import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
@@ -567,6 +568,43 @@ describe('server-v2 /api prompts', () => {
     } finally {
       gate.resolve({ prompt_id: 'submitting-first', user_message_id: 'submitting-first', status: 'queued', content: [{ type: 'text', text: 'First message' }], created_at: new Date().toISOString() });
       await ingress.close();
+      timers.mockRestore();
+    }
+  });
+
+  it('releases a timed-out HTTP acquire pin while the same explicitly promoted restore finishes without submitting the expired prompt', async () => {
+    const id = await createSession(fixture.home!);
+    await closeSessionById(fixture.server!.core.accessor, id);
+    const core = fixture.server!.core;
+    const manager = core.accessor.get(ISessionManager);
+    const workspaces = core.accessor.get(IWorkspaceInstanceManager);
+    const acquire = workspaces.acquire.bind(workspaces);
+    const entered = promiseGate<void>();
+    const release = promiseGate<void>();
+    const blocked = vi.spyOn(workspaces, 'acquire').mockImplementation(async input => {
+      entered.resolve();
+      await release.promise;
+      return acquire(input);
+    });
+    const originalTimeout = globalThis.setTimeout;
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: Parameters<typeof setTimeout>[0], delay: number | undefined, ...args: unknown[]) =>
+      originalTimeout(handler, delay === 60_000 ? 1000 : delay, ...args)) as typeof setTimeout);
+    let promoted: ReturnType<ISessionManager['resume']> | undefined;
+    try {
+      const request = call('POST', `/api/sessions/${id}/prompts`, { prompt_id: 'expired-http-prompt', content: [{ type: 'text', text: 'Do not submit after this request expires' }] });
+      await entered.promise;
+      promoted = manager.resume(id, { forExecutionControl: true });
+      expect((await request).body).toMatchObject({ code: 40901 });
+      expect(manager.residencyReport!().pinsByReason).toEqual({});
+      release.resolve();
+      const session = await promoted;
+      expect(session).toBeDefined();
+      expect(manager.residencyReport!().pinsByReason).toEqual({});
+      expect(session!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService).lookup('expired-http-prompt')).toBeUndefined();
+    } finally {
+      release.resolve();
+      await promoted;
+      blocked.mockRestore();
       timers.mockRestore();
     }
   });

@@ -51,6 +51,9 @@ import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event } from '#/_base/event';
+import { createTestAgent, sessionService } from '../../harness';
+import { AgentTaskPersistence } from '#/agent/task/persist';
+import { createWireMetadataRecord } from '#/wire/record';
 import { EventBusService } from '#/app/event/eventBusService';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
@@ -70,6 +73,7 @@ import { stubFlag } from '../../app/flag/stubs';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import type { TaskServiceTestManager } from './stubs';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -2453,4 +2457,26 @@ describe('running subagent status', () => {
     expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'zh'))
       .toBe('还有 7 个 subagent 正在运行：worker_1、worker_2、worker_3、worker_4、worker_5 等 2 个');
   });
+});
+
+it('restores the exact completed foreground wait before release without listing the cold task roster', async () => {
+  const fx = createTestAgent(sessionService(ISessionExecutionControl, { ...stubExecutionControl(), isHeld: () => true }));
+  const docs = fx.get(IAtomicDocumentStore);
+  const record = { taskId: 'agent-checkpoint-00000001', kind: 'agent', agentId: 'completed-child', description: 'Original foreground work', detached: false, status: 'completed', startedAt: 1, endedAt: 2 } as const;
+  const tasks = fx.get(IAgentTaskService);
+  const originalList = docs.list.bind(docs);
+  const list = vi.spyOn(docs, 'list').mockImplementation(async (scope, options) => {
+    if (scope.endsWith('/tasks')) throw new Error('Cold task roster must not gate an exact execution wait');
+    return originalList(scope, options);
+  });
+  try {
+    await new AgentTaskPersistence(fx.get(ISessionContext).sessionDir, fx.get(IAgentScopeContext).scope(), docs, fx.get(IFileSystemStorageService)).commitTerminalTask(record, 'original foreground result');
+    await fx.restore([createWireMetadataRecord()]);
+    expect(tasks.getTask(record.taskId)).toBeUndefined();
+    await tasks.restoreExecutionWait(record.taskId);
+    expect(tasks.getTask(record.taskId)).toMatchObject({ ...record, receiptVerification: 'verified' });
+    expect(await tasks.readOutput(record.taskId)).toBe('original foreground result');
+    expect(list.mock.calls.filter(([scope]) => scope.endsWith('/tasks'))).toHaveLength(0);
+    expect(fx.llmCalls).toHaveLength(0);
+  } finally { list.mockRestore(); await fx.dispose(); }
 });

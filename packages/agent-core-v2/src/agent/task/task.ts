@@ -117,9 +117,10 @@ export interface IAgentTaskService {
   getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined>;
   findPausedAgentTask(agentId: string, taskId?: string): Promise<AgentTaskInfo | undefined>;
   list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
-  hasUnfinishedWork(): boolean;
+  hasUnfinishedWork(includeRestoration?: boolean): boolean;
   hasWorkPreventingPausedExit?(): boolean;
   checkpointExecutionWait(taskId: string): Promise<void>;
+  restoreExecutionWait(taskId: string): Promise<void>;
   persistOutput(taskId: string): void;
   getOutputSnapshot(
     taskId: string,

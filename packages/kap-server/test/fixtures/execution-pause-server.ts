@@ -16,6 +16,7 @@ let finiteStarts = 0;
 let finishFinite: (() => Promise<boolean>) | undefined;
 let releaseFiniteReceipt: (() => void) | undefined;
 let observer: 'task' | 'agent' | 'resume' | undefined;
+let releaseTaskRoster: (() => void) | undefined;
 let releaseFirst!: () => void;
 const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
 const model = {
@@ -68,8 +69,8 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
         if (step.step === 1) main.accessor.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
       });
       process.send?.({ type: 'prepared' });
-    } else if (message.type === 'observe' || message.type === 'foreground' || message.type === 'resume-background') {
-      observer = message.type === 'observe' ? 'task' : message.type === 'foreground' ? 'agent' : 'resume';
+    } else if (message.type === 'observe' || message.type === 'foreground' || message.type === 'foreground-completed' || message.type === 'resume-background') {
+      observer = message.type === 'observe' ? 'task' : message.type === 'resume-background' ? 'resume' : 'agent';
       const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;
       const main = await ensureMainAgent(session);
       if (observer === 'task') {
@@ -93,7 +94,7 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
             await firstReleased;
             return run(...args);
           };
-        } else lifecycle.onWillCreate(child => {
+        } else if (message.type === 'foreground') lifecycle.onWillCreate(child => {
           child.accessor.get(IAgentLoopService).hooks.onDidFinishStep.register('child-continuation', async (step, next) => {
             await next();
             if (step.step === 1) child.accessor.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
@@ -158,6 +159,19 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
       process.send?.({ type: 'finite-completed' });
     } else if (message.type === 'release-finite-receipt') releaseFiniteReceipt?.();
     else if (message.type === 'release') releaseFirst();
+    else if (message.type === 'block-task-roster') {
+      const docs = server.core.accessor.get(IAtomicDocumentStore);
+      const list = docs.list.bind(docs);
+      const released = new Promise<void>(resolve => { releaseTaskRoster = resolve; });
+      docs.list = async (scope, ...args) => {
+        if (scope.endsWith('/tasks')) {
+          process.send?.({ type: 'task-roster-blocked' });
+          await released;
+        }
+        return list(scope, ...args);
+      };
+      process.send?.({ type: 'task-roster-armed' });
+    } else if (message.type === 'release-task-roster') releaseTaskRoster?.();
     else if (message.type === 'inventory') {
       const session = getLiveSessionById(server.core.accessor, message.sessionId!);
       process.send?.({ type: 'inventory', live: session !== undefined, agents: session?.accessor.get(IAgentLifecycleService).list() ?? [] });

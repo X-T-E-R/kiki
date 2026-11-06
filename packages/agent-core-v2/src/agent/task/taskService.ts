@@ -803,8 +803,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.list(true).some(info => info.lifetime !== 'service' && !this.hasPausedExecution(info));
   }
 
-  hasUnfinishedWork(): boolean {
-    if (this.restorePending) return true;
+  hasUnfinishedWork(includeRestoration = true): boolean {
+    if (includeRestoration && this.restorePending) return true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
       if (!TERMINAL_STATUSES.has(entry.status)) return true;
@@ -839,6 +839,20 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     await this.restoreAgentTaskNotifications();
+  }
+
+  async restoreExecutionWait(taskId: string): Promise<void> {
+    if (this.tasks.has(taskId)) return;
+    const saved = await this.persistence.readTask(taskId);
+    if (this.restoreDisposed || this.tasks.has(taskId)) return;
+    const projected = this.ghosts.get(taskId);
+    if (saved?.kind !== 'agent' || saved.taskId !== taskId ||
+        (TERMINAL_STATUSES.has(saved.status) ? saved.receiptVerification !== 'verified'
+          : projected !== undefined && TERMINAL_STATUSES.has(projected.status))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original execution wait result is unavailable');
+    }
+    this.ghosts.set(taskId, saved);
+    this.fireWorkChange();
   }
 
   async checkpointExecutionWait(taskId: string): Promise<void> {

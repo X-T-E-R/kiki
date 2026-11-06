@@ -235,7 +235,7 @@ it('executes third-party and Output Layer requests with host identity, credentia
     expect(await completeAccounting(session.id)).toMatchObject({ complete: true, tokens: { input_other: beforeLiveReading.tokens.input_other + 38, output: beforeLiveReading.tokens.output + 8 } });
 
     expect(await client.session(session.id).agent('main').prompt({ input: [{ type: 'text', text: 'Create a saved Assistant body.' }] }, { waitFor: 'terminal' })).toMatchObject({ state: 'completed' });
-    const recovered = vi.spyOn(SessionSubagentService.prototype, 'recoverReceipts');
+    const recovered = vi.spyOn(SessionSubagentService.prototype, 'startReceiptDiscovery');
     const created: string[] = [];
     const creation = manager.onWillCreateSession?.((event) => { created.push(event.sessionId); });
     const probes: unknown[] = [];

@@ -6,6 +6,7 @@ import {
   type Scope,
   type SessionLease,
 } from '@kiki/agent-core-v2';
+import { restoreSignal } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 
 /**
  * A route's hold on one session operation: the resolved session handle plus the
@@ -54,6 +55,8 @@ export async function acquireSessionOperation(
   reason: string,
   signal?: AbortSignal,
 ): Promise<SessionOperationLease> {
+  const deadline = restoreSignal();
+  signal = deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
   signal?.throwIfAborted();
   const manager = core.accessor.get(ISessionManager);
   if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');

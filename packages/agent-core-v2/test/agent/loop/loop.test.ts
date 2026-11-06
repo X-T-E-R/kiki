@@ -526,6 +526,7 @@ describe('Agent loop', () => {
       message: { role: 'user', content: [{ type: 'text', text: 'accepted while paused' }], toolCalls: [], origin: { kind: 'user' } } });
     expect(prompt.state).toBe('pending');
     expect(ctx.llmCalls).toHaveLength(0);
+    expect(await ctx.get(IAtomicDocumentStore).get(ctx.get(ISessionContext).scope(), 'execution-control.json')).toMatchObject({ requiredAgents: ['main'] });
     await control.resume({ operationId: 'queue-resume', pauseOperationId: 'queue-pause' });
     await prompt.completion;
     await loop.settled();

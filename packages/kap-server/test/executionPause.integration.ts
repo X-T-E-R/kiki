@@ -18,7 +18,7 @@ async function waitForFrame(child: ChildProcess, frames: readonly Frame[], type:
   let remove = () => {};
   try {
     return await new Promise<Frame>((resolve, reject) => {
-      const phases = ['imports', 'server.start'];
+      const phases = ['imports', 'server.import', 'server.start'];
       let nextPhase = 0;
       const arm = () => {
         if (timer !== undefined) clearTimeout(timer);
@@ -87,6 +87,8 @@ it('keeps ordered boot progress separate from the thirty-second per-phase stall 
   try {
     child.emit('message', { type: 'phase', phase: 'imports' });
     await vi.advanceTimersByTimeAsync(20_000);
+    child.emit('message', { type: 'phase', phase: 'server.import' });
+    await vi.advanceTimersByTimeAsync(20_000);
     child.emit('message', { type: 'phase', phase: 'server.start' });
     await vi.advanceTimersByTimeAsync(20_000);
     child.emit('message', { type: 'ready', pid: 123 });
@@ -94,22 +96,26 @@ it('keeps ordered boot progress separate from the thirty-second per-phase stall 
   } finally { vi.useRealTimers(); }
 });
 
-it.each([0, 1, 2])('keeps the thirty-second stall bound at boot stage %i despite unrelated frames', async (stage) => {
+it.each(['launch', 'imports', 'server.import', 'server.start'])('keeps the thirty-second stall bound at %s despite unrelated frames', async (stage) => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   const child = new ChildProcess();
   const waiting = waitForFrame(child, [], 'ready');
   const outcome = waiting.then(value => value, error => error as unknown);
   try {
-    if (stage > 0) child.emit('message', { type: 'phase', phase: 'imports' });
-    if (stage > 1) child.emit('message', { type: 'phase', phase: 'server.start' });
+    if (stage !== 'launch') {
+      for (const phase of ['imports', 'server.import', 'server.start']) {
+        child.emit('message', { type: 'phase', phase });
+        if (phase === stage) break;
+      }
+    }
     await vi.advanceTimersByTimeAsync(20_000);
-    child.emit('message', { type: 'phase', phase: stage === 1 ? 'imports' : 'server.start' });
+    child.emit('message', { type: 'phase', phase: stage === 'launch' ? 'server.start' : stage });
     child.emit('message', { type: 'model' });
     child.emit('message', { type: 'heartbeat' });
     await vi.advanceTimersByTimeAsync(10_000);
     const error = await outcome;
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(`ready (phase: ${['launch', 'imports', 'server.start'][stage]})`);
+    expect((error as Error).message).toContain(`ready (phase: ${stage})`);
     expect(child.listenerCount('message')).toBe(0);
   } finally { vi.useRealTimers(); }
 });
@@ -303,8 +309,9 @@ it('holds an execution across clean process exit and resumes its saved turn expl
   }
 }, 90_000);
 
-it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
-  const observer = mode === 'TaskWait' || mode === 'AgentRun';
+it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch', 'AgentRun completed'] as const)('retains a native child task identity through restart and delivers its completion once (%s)', async (mode) => {
+  const completed = mode === 'AgentRun completed';
+  const observer = mode === 'TaskWait' || mode === 'AgentRun' || completed;
   const home = await mkdtemp(join(tmpdir(), 'kiki-execution-pause-child-'));
   await writeFile(join(home, 'config.toml'), 'default_model = "stub"\n[search]\nenabled = false\n[cron]\nmanualTick = true\n');
   let first: Awaited<ReturnType<typeof boot>> | undefined;
@@ -312,16 +319,16 @@ it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('ret
   try {
     first = await boot(home, true);
     const session = await first.request<{ id: string }>('/api/sessions', { metadata: { cwd: home }, agent_config: { permission_mode: 'manual' } });
-    first.child.send({ type: mode === 'AgentRun' ? 'foreground' : mode === 'AgentRun launch' ? 'resume-background' : 'child', sessionId: session.id });
+    first.child.send({ type: completed ? 'foreground-completed' : mode === 'AgentRun' ? 'foreground' : mode === 'AgentRun launch' ? 'resume-background' : 'child', sessionId: session.id });
     if (mode === 'AgentRun launch') {
       await first.wait('launch-blocked');
       expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(1);
       expect(await first.client.session(session.id).execution.pause({ operationId: 'pause-child' })).toMatchObject({ phase: 'pausing' });
       first.child.send({ type: 'release' });
     }
-    const started = await first.wait(mode === 'AgentRun' || mode === 'AgentRun launch' ? 'waiting' : 'child-started');
+    const started = await first.wait(mode.startsWith('AgentRun') ? 'waiting' : 'child-started');
     const { taskId, startedAt } = started.tasks![0]!;
-    const childId = mode === 'AgentRun' || mode === 'AgentRun launch' ? started.childId! : 'paused-child';
+    const childId = mode.startsWith('AgentRun') ? started.childId! : 'paused-child';
     if (mode === 'AgentRun launch') expect(childId).toBe('existing-child');
     expect(startedAt).toBeGreaterThan(0);
     await first.wait('model');
@@ -341,10 +348,17 @@ it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('ret
       first.child.send({ type: 'release' });
     }
     await vi.waitFor(async () => expect(await first!.client.session(session.id).execution.read()).toMatchObject({ phase: 'paused',
-      agents: expect.arrayContaining([expect.objectContaining({ agentId: childId, resumable: true }),
+      agents: expect.arrayContaining([expect.objectContaining({ agentId: childId, resumable: !completed }),
         ...(observer ? [expect.objectContaining({ agentId: 'main', resumable: true })] : [])]) }));
     first.child.send({ type: 'checkpoint-format', sessionId: session.id });
     expect((await first.wait('checkpoint-format')).version).toBe(observer ? 2 : 1);
+    if (completed) {
+      let verification = 0;
+      await vi.waitFor(async () => {
+        first!.child.send({ type: 'inspect', sessionId: session.id, sequence: ++verification, taskId });
+        expect((await first!.wait(`inspect-${verification}`)).task).toMatchObject({ taskId, status: 'completed', receiptVerification: 'verified' });
+      }, { timeout: 10_000 });
+    }
     const lifecycle = await first.request<{ server_id: string; work_pending: string[] }>('/api/desktop-lifecycle');
     expect(lifecycle.work_pending).toEqual([]);
     await first.request('/api/desktop-lifecycle', { action: 'prepare-update', server_id: lifecycle.server_id, consent: true, interrupt_work: false });
@@ -358,6 +372,11 @@ it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('ret
     expect(await handle.execution.read()).toMatchObject({ phase: 'paused' });
     second.child.send({ type: 'inventory', sessionId: session.id });
     expect(await second.wait('inventory')).toMatchObject({ live: false });
+    if (completed) {
+      second.child.send({ type: 'block-task-roster' });
+      await second.wait('task-roster-armed');
+    }
+    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(0);
     await handle.execution.resume({ operationId: 'resume-child', pauseOperationId: 'pause-child' });
     let sequence = 0;
     await vi.waitFor(async () => {
@@ -370,7 +389,7 @@ it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('ret
           (message as { toolCallId?: string }).toolCallId === 'observer-call');
         expect(receipts).toHaveLength(1);
         expect(JSON.stringify(receipts[0])).toContain('completed');
-        if (mode === 'AgentRun') expect(JSON.stringify(receipts[0])).toContain(taskId);
+        if (mode === 'AgentRun' || completed) expect(JSON.stringify(receipts[0])).toContain(taskId);
         expect(snapshot.prompt).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
         expect(notifications).toHaveLength(0);
       } else expect(notifications).toHaveLength(1);
@@ -381,15 +400,19 @@ it.each(['background', 'TaskWait', 'AgentRun', 'AgentRun launch'] as const)('ret
         expect(JSON.stringify(receipts[0])).toContain(taskId);
         expect(snapshot.prompt).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
       }
-      expect(second!.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
+      expect(second!.frames.filter(frame => frame.type === 'model')).toHaveLength(completed ? 1 : 2);
     }, { timeout: 10_000 });
+    if (completed) {
+      await second.wait('task-roster-blocked');
+      second.child.send({ type: 'release-task-roster' });
+    }
     expect(events).toContain('running');
     subscription.dispose();
-    expect(first.frames.filter(frame => frame.type === 'model')).toHaveLength(observer ? 2 : 1);
-    expect(second.frames.filter(frame => frame.type === 'model')).toHaveLength(2);
+    const requestCounts = [first, second].map(server => server.frames.filter(frame => frame.type === 'model').length);
+    expect(requestCounts).toEqual([observer ? 2 : 1, completed ? 1 : 2]);
     await cleanExit(second);
     process.stdout.write(`${JSON.stringify({ executionPauseChildProof: { sessionId: session.id, taskId, childId, mode,
-      firstPid: first.ready.pid, secondPid: second.ready.pid, requestCounts: [observer ? 2 : 1, 2] } })}\n`);
+      firstPid: first.ready.pid, secondPid: second.ready.pid, requestCounts } })}\n`);
   } finally {
     await first?.client.close(); await second?.client.close();
     for (const server of [first, second]) if (server !== undefined && server.child.exitCode === null) server.child.kill();

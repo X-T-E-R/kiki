@@ -141,6 +141,45 @@ async function receiptPair(maxRunningTasks?: number) {
 }
 
 describe('autonomous child receipt return', () => {
+  it('recovers an original cold receipt automatically after one discovery EBUSY without a control change', async () => {
+    const fx = await receiptPair();
+    const service = fx.parent.get(ISessionSubagentService);
+    const control = fx.parent.get(ISessionExecutionControl);
+    const documents = fx.parent.get(IAtomicDocumentStore);
+    const scope = fx.parent.get(ISessionContext).scope('agents/agent-child');
+    const state = { pending: { '7': { turnId: 7, startedAt: 10, endedAt: 12, summary: 'original cold child output' } } };
+    await documents.set(scope, 'autonomous-receipts-v1', { generation: await fx.parent.get(IAppendLogStore).generation(scope, 'wire.jsonl'), through: 0, state });
+    fx.child.get(IAgentStateService).set(autonomousReceiptsKey, state);
+    fx.handles.delete('agent-child');
+    const get = documents.get.bind(documents);
+    let failures = 0;
+    const read = vi.spyOn(documents, 'get').mockImplementation(async (scope, key) => {
+      if (key === 'autonomous-receipts-v1' && failures++ === 0) throw new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'isolated EBUSY');
+      return get(scope, key);
+    });
+    const create = vi.spyOn(fx.parent.get(IAgentLifecycleService), 'create').mockImplementation(async () => {
+      fx.handles.set('agent-child', fx.childHandle);
+      fx.created.fire(fx.childHandle);
+      return fx.childHandle;
+    });
+    try {
+      fx.parent.mockNextResponse({ type: 'text', text: 'Received original cold child output.' });
+      service.startReceiptDiscovery(control);
+      await vi.waitFor(() => expect(notifiedCount(fx.parent)).toBe(1));
+      await fx.parent.get(IAgentLoopService).settled();
+      expect(create).toHaveBeenCalledTimes(1);
+      const task = fx.parent.get(IAgentTaskService).list(false)[0]!;
+      expect(task).toMatchObject({ status: 'completed', receiptVerification: 'verified', agentId: 'agent-child' });
+      expect(await fx.parent.get(IAgentTaskService).readOutput(task.taskId)).toBe('original cold child output');
+      expect(fx.child.llmCalls).toHaveLength(0);
+    } finally {
+      await service.stopReceiptDiscovery();
+      read.mockRestore();
+      create.mockRestore();
+      await fx.dispose();
+    }
+  });
+
   it('defers cold receipt discovery while held and cancels its scan without inheriting a restore deadline', async () => {
     const fx = await receiptPair();
     const control = fx.parent.get(ISessionExecutionControl);

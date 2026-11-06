@@ -227,6 +227,7 @@ class FakeTaskService implements IAgentTaskService {
   }
 
   async checkpointExecutionWait(): Promise<void> {}
+  async restoreExecutionWait(): Promise<void> {}
 
   persistOutput(_taskId: string): void {}
 
