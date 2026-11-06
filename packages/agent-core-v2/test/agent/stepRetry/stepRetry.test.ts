@@ -18,6 +18,7 @@ import {
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
+import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/google-genai';
 import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
 import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import type { StreamedMessage } from '#/kosong/contract/provider';
@@ -25,7 +26,7 @@ import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelays } from '#/_base/utils/retry';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
+import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
@@ -1076,6 +1077,77 @@ describe('stepRetry plugin', () => {
       } finally {
         server.closeAllConnections();
         await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(['terminal', 'bare', 'other-domain', 'other-reason', 'other-type', 'legacy', 'http-terminal'] as const)(
+    'handles a native Google gateway failure through the real SDK: %s', async mode => {
+      const legacyCode = 'antigravity_upstream_terminal_error';
+      const info = {
+        '@type': mode === 'other-type' ? 'example.test/google.rpc.ErrorInfo' : 'type.googleapis.com/google.rpc.ErrorInfo',
+        domain: mode === 'other-domain' ? 'example.gateway' : mode === 'legacy' ? 'sub2api.antigravity' : 'sub2api.gateway',
+        reason: mode === 'other-reason' ? 'gateway_stream_terminal_error' : mode === 'legacy' ? legacyCode : 'GATEWAY_STREAM_TERMINAL_ERROR',
+      };
+      const body = JSON.stringify({ error: {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        message: 'Fixture rate limit',
+        details: [
+          ...(mode === 'bare' ? [] : [info]),
+          { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '0.001s' },
+        ],
+      } });
+      let requests = 0;
+      const server = createServer((request, response) => {
+        request.resume();
+        request.on('end', () => {
+          requests++;
+          if (mode === 'http-terminal') {
+            response.writeHead(429, { 'content-type': 'application/json' });
+            response.end(body);
+          } else {
+            response.writeHead(200, { 'content-type': 'text/event-stream' });
+            response.end(`: keep-alive\n\ndata: ${body}\n\n`);
+          }
+        });
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const address = server.address();
+        if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+        const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}` });
+        class FixtureRegistry extends ProtocolAdapterRegistry {
+          override createChatProvider() { return provider; }
+        }
+        ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()), { initialConfig: { retry: {
+          policies: [{ match: '.*', retry: true, maxAttempts: 2, backoff: 1 }],
+        } } });
+        void ctx.dispatcher.dispatch(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+        const loop = ctx.get(IAgentLoopService);
+        loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Fixture prompt' }], toolCalls: [] }));
+        const result = await loop.run({ turnId: 1 });
+
+        expect(result.type).toBe('failed');
+        if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+        expect(result.error).toMatchObject({ statusCode: 429, retryAfterMs: 1 });
+        expect(requestDeliveryProvenance(result.error)).toBeUndefined();
+        const upstreamCode = mode === 'terminal' ? 'gateway_stream_terminal_error' : mode === 'legacy' ? legacyCode : undefined;
+        const details = toErrorPayload(result.error).details;
+        expect(details?.['execution']).toBeUndefined();
+        expect(details?.['upstreamErrorCode']).toBe(upstreamCode);
+        if (upstreamCode === undefined) {
+          expect(details).toMatchObject({ retry_exhausted: true, retry_attempts: 2 });
+        } else {
+          expect(details).toMatchObject({ errorSource: 'provider_event', retry: false });
+          expect(details?.['retry_exhausted']).toBeUndefined();
+        }
+        const attempts = upstreamCode === undefined ? 2 : 1;
+        expect(requests).toBe(attempts);
+        expect(rpcEvents('turn.step.retrying')).toHaveLength(attempts - 1);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => { resolve(); }));
       }
     },
   );

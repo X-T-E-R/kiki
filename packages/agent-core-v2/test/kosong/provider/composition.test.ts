@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { release as osRelease } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Anthropic, { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import { ApiError as GoogleApiError } from '@google/genai';
 import OpenAI from 'openai';
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
 import { generate, readGenerateFailureFacts } from '#/kosong/contract/generate';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
@@ -3729,5 +3730,201 @@ describe('user stop through the real agent and Anthropic SDK', () => {
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
+  });
+});
+
+
+describe('Google SDK SSE transport contract', () => {
+  const success = {
+    responseId: 'google-fixture',
+    candidates: [{ content: { role: 'model', parts: [{ text: '你好 fixture' }] }, finishReason: 'STOP' }],
+    usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2 },
+  };
+  const terminal = { error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Fixture rate limit', details: [
+    { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', domain: 'sub2api.gateway', reason: 'GATEWAY_STREAM_TERMINAL_ERROR' },
+    { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '17.250s' },
+  ] } };
+  const sse = (body: unknown): string => `data: ${JSON.stringify(body)}\r\n\r\n`;
+
+  async function fixture(
+    respond: RequestListener,
+    run: (baseUrl: string) => Promise<void>,
+  ): Promise<void> {
+    const server = createServer(respond);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+      await run(`http://127.0.0.1:${address.port}`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => { resolve(); }));
+    }
+  }
+
+  it.each(['esm', 'cjs'] as const)('throws the real SDK ApiError before converting an SSE error (%s)', async mode => {
+    const sdk = mode === 'esm' ? await import('@google/genai') : createRequire(import.meta.url)('@google/genai') as typeof import('@google/genai');
+    await fixture((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`: keep-alive\n\n${sse(terminal)}`);
+    }, async baseUrl => {
+      const client = new sdk.GoogleGenAI({ apiKey: 'YOUR_API_KEY', httpOptions: { baseUrl } });
+      const stream = await client.models.generateContentStream({ model: 'gemini-fixture', contents: 'Fixture prompt' });
+      const failure: unknown = await (async () => { for await (const part of stream) void part; })().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(sdk.ApiError);
+      expect(failure).toMatchObject({ status: 429, message: expect.stringContaining('RESOURCE_EXHAUSTED') });
+    });
+  });
+
+  it('keeps the global dispatcher, auth headers and SDK no-timeout transport on a quiet stream', async () => {
+    const original = getGlobalDispatcher();
+    const agent = new Agent({ headersTimeout: 20, bodyTimeout: 20 });
+    const dispatch = vi.spyOn(agent, 'dispatch');
+    setGlobalDispatcher(agent);
+    try {
+      await fixture((request, response) => {
+        request.resume();
+        expect(request.headers['x-goog-api-key']).toBe('fixture-runtime-key');
+        expect(request.headers['x-fixture-auth']).toBe('fixture-header');
+        setTimeout(() => {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write(': keep-alive\n\n');
+          setTimeout(() => response.end(sse(success)), 80);
+        }, 80);
+      }, async baseUrl => {
+        const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl });
+        const result = await generate(provider, '', [], PROBE_HISTORY, undefined, {
+          auth: { apiKey: 'fixture-runtime-key', headers: { 'x-fixture-auth': 'fixture-header' } },
+        });
+        expect(result.finishReason).toBe('completed');
+        expect(dispatch).toHaveBeenCalledOnce();
+        expect(dispatch.mock.calls[0]?.[0]).toMatchObject({ headersTimeout: 0, bodyTimeout: 0 });
+      });
+    } finally {
+      setGlobalDispatcher(original);
+      await agent.close();
+    }
+  });
+
+  it.each(['coalesced', 'split', 'after-stop', 'vertex'] as const)('keeps preceding output and a terminal error (%s)', async mode => {
+    const first = { ...success, candidates: [{ content: success.candidates[0]!.content }] };
+    const wire = Buffer.from(`: keep-alive\r\n\r\n${sse(mode === 'after-stop' ? success : first)}${sse(terminal)}`);
+    await fixture((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (mode === 'split') {
+        let offset = 0;
+        const send = (): void => {
+          if (offset === wire.length) { response.end(); return; }
+          response.write(wire.subarray(offset, ++offset));
+          setImmediate(send);
+        };
+        send();
+      } else response.end(wire);
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl, vertexai: mode === 'vertex' });
+      const parts: unknown[] = [];
+      const failure: unknown = await generate(provider, '', [], PROBE_HISTORY, {
+        onMessagePart: part => { parts.push(part); },
+      }).catch((error: unknown) => error);
+      expect(parts).toEqual([{ type: 'text', text: '你好 fixture' }]);
+      expect(failure).toMatchObject({ statusCode: 429, retryAfterMs: 17250 });
+      const details = toErrorPayload(failure).details;
+      expect(details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: 'gateway_stream_terminal_error', retry: false });
+      expect(details?.['execution']).toBeUndefined();
+      expect(isRetryableGenerateError(failure)).toBe(false);
+    });
+  });
+
+  it.each([true, false])('keeps successful Google data, STOP and usage (stream=%s)', async stream => {
+    await fixture((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': stream ? 'text/event-stream' : 'application/json' });
+      response.end(stream ? `: keep-alive\r\n\r\n${sse(success)}` : JSON.stringify(success));
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl, stream });
+      const result = await generate(provider, '', [], PROBE_HISTORY);
+      expect(result).toMatchObject({ id: 'google-fixture', finishReason: 'completed', rawFinishReason: 'STOP', completionAuthority: 'normal',
+        usage: { inputOther: 7, output: 2 }, message: { content: [{ type: 'text', text: '你好 fixture' }] } });
+    });
+  });
+
+  it.each([true, false])('keeps an uncommitted HTTP 429 retryable (stream=%s)', async stream => {
+    await fixture((request, response) => {
+      request.resume();
+      response.writeHead(429, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(terminal));
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl, stream });
+      const failure: unknown = await provider.generate('', [], PROBE_HISTORY).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ statusCode: 429, retryAfterMs: 17250 });
+      expect(toErrorPayload(failure).details?.['upstreamErrorCode']).toBeUndefined();
+      expect(toErrorPayload(failure).details?.['execution']).toBeUndefined();
+      expect(isRetryableGenerateError(failure)).toBe(true);
+    });
+  });
+
+  it('keeps comment-only EOF as a connection failure, not completion or a marked error', async () => {
+    await fixture((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(': keep-alive\n\n');
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl });
+      const failure: unknown = await generate(provider, '', [], PROBE_HISTORY).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(APIConnectionError);
+      expect(toErrorPayload(failure).details?.['upstreamErrorCode']).toBeUndefined();
+      expect(isRetryableGenerateError(failure)).toBe(true);
+    });
+  });
+
+  it.each(['signal', 'cancel', 'before-headers'] as const)('cancels a silent SDK request and releases its socket (%s)', async mode => {
+    let ready!: () => void;
+    const received = new Promise<void>(resolve => { ready = resolve; });
+    let closed!: () => void;
+    const socketClosed = new Promise<void>(resolve => { closed = resolve; });
+    await fixture((request, response) => {
+      request.resume();
+      response.on('close', closed);
+      if (mode !== 'before-headers') {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(': keep-alive\n\n');
+      }
+      ready();
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl });
+      const controller = new AbortController();
+      if (mode === 'before-headers') {
+        const pending = provider.generate('', [], PROBE_HISTORY, { signal: controller.signal });
+        const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+        await received;
+        controller.abort();
+        await rejected;
+      } else {
+        const stream = await provider.generate('', [], PROBE_HISTORY, { signal: controller.signal });
+        const rejected = expect(drain(stream)).rejects.toMatchObject({ name: 'AbortError' });
+        await received;
+        if (mode === 'signal') controller.abort();
+        else await stream.cancel?.();
+        await rejected;
+      }
+      await socketClosed;
+    });
+  });
+
+  it('releases an open transport when the gateway sends its terminal event', async () => {
+    let closed!: () => void;
+    const socketClosed = new Promise<void>(resolve => { closed = resolve; });
+    await fixture((request, response) => {
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(sse(terminal));
+    }, async baseUrl => {
+      const provider = new GoogleGenAIChatProvider({ model: 'gemini-fixture', apiKey: 'YOUR_API_KEY', baseUrl });
+      await expect(generate(provider, '', [], PROBE_HISTORY)).rejects.toMatchObject({ statusCode: 429, retryAfterMs: 17250 });
+      await socketClosed;
+    });
   });
 });

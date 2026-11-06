@@ -1,0 +1,64 @@
+diff --git a/dist/node/index.cjs b/dist/node/index.cjs
+index fbb0c1bd1131163fa8d356de6e175a368f92d6bf..cf84b8e924f39df824bfbe25207d4d41d6b741f3 100644
+--- a/dist/node/index.cjs
++++ b/dist/node/index.cjs
+@@ -16204,7 +16204,12 @@ class Models extends BaseModule {
+                             _c = apiResponse_1_1.value;
+                             _d = false;
+                             const chunk = _c;
+-                            const resp = generateContentResponseFromVertex((yield __await(chunk.json())), params);
++                            const body = yield __await(chunk.json());
++                            const error = body && body.error;
++                            if (error && typeof error.code === 'number' && error.code >= 400 && error.code < 600) {
++                                throw new ApiError({ message: `got status: ${error.status}. ${JSON.stringify(body)}`, status: error.code });
++                            }
++                            const resp = generateContentResponseFromVertex(body, params);
+                             resp['sdkHttpResponse'] = {
+                                 headers: chunk.headers,
+                             };
+@@ -16246,7 +16251,12 @@ class Models extends BaseModule {
+                             _c = apiResponse_2_1.value;
+                             _d = false;
+                             const chunk = _c;
+-                            const resp = generateContentResponseFromMldev((yield __await(chunk.json())), params);
++                            const body = yield __await(chunk.json());
++                            const error = body && body.error;
++                            if (error && typeof error.code === 'number' && error.code >= 400 && error.code < 600) {
++                                throw new ApiError({ message: `got status: ${error.status}. ${JSON.stringify(body)}`, status: error.code });
++                            }
++                            const resp = generateContentResponseFromMldev(body, params);
+                             resp['sdkHttpResponse'] = {
+                                 headers: chunk.headers,
+                             };
+diff --git a/dist/node/index.mjs b/dist/node/index.mjs
+index 5b39d02e5fdaa370071545bb609c3322ffdeb97b..7f3f1657b2460ee33d7393ee55cf16ddcd74ea83 100644
+--- a/dist/node/index.mjs
++++ b/dist/node/index.mjs
+@@ -16182,7 +16182,12 @@ class Models extends BaseModule {
+                             _c = apiResponse_1_1.value;
+                             _d = false;
+                             const chunk = _c;
+-                            const resp = generateContentResponseFromVertex((yield __await(chunk.json())), params);
++                            const body = yield __await(chunk.json());
++                            const error = body && body.error;
++                            if (error && typeof error.code === 'number' && error.code >= 400 && error.code < 600) {
++                                throw new ApiError({ message: `got status: ${error.status}. ${JSON.stringify(body)}`, status: error.code });
++                            }
++                            const resp = generateContentResponseFromVertex(body, params);
+                             resp['sdkHttpResponse'] = {
+                                 headers: chunk.headers,
+                             };
+@@ -16224,7 +16229,12 @@ class Models extends BaseModule {
+                             _c = apiResponse_2_1.value;
+                             _d = false;
+                             const chunk = _c;
+-                            const resp = generateContentResponseFromMldev((yield __await(chunk.json())), params);
++                            const body = yield __await(chunk.json());
++                            const error = body && body.error;
++                            if (error && typeof error.code === 'number' && error.code >= 400 && error.code < 600) {
++                                throw new ApiError({ message: `got status: ${error.status}. ${JSON.stringify(body)}`, status: error.code });
++                            }
++                            const resp = generateContentResponseFromMldev(body, params);
+                             resp['sdkHttpResponse'] = {
+                                 headers: chunk.headers,
+                             };

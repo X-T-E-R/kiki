@@ -40,6 +40,11 @@ overrides:
   '@vue/server-renderer@>=3.5.0 <3.5.42': 3.5.42
   vue@>=3.5.0 <3.5.42: 3.5.42
 
+patchedDependencies:
+  '@google/genai@2.29.1':
+    hash: bbf6312544a999635fb62f847277a1dd65c146c92a24cc0db10a83cb2dd2db0b
+    path: vendor/google-genai-patches/@google__genai@2.29.1.patch
+
 importers:
 
   .:
@@ -437,7 +442,7 @@ importers:
         version: 0.95.2(zod@4.3.6)
       '@google/genai':
         specifier: ^2.29.1
-        version: 2.29.1(@modelcontextprotocol/sdk@1.32.0(zod@4.3.6))
+        version: 2.29.1(patch_hash=bbf6312544a999635fb62f847277a1dd65c146c92a24cc0db10a83cb2dd2db0b)(@modelcontextprotocol/sdk@1.32.0(zod@4.3.6))
       '@jsquash/webp':
         specifier: ^1.5.0
         version: 1.5.0
@@ -9967,7 +9972,7 @@ snapshots:
 
   '@fontsource/space-grotesk@5.3.0': {}
 
-  '@google/genai@2.29.1(@modelcontextprotocol/sdk@1.32.0(zod@4.3.6))':
+  '@google/genai@2.29.1(patch_hash=bbf6312544a999635fb62f847277a1dd65c146c92a24cc0db10a83cb2dd2db0b)(@modelcontextprotocol/sdk@1.32.0(zod@4.3.6))':
     dependencies:
       google-auth-library: 10.6.2
       p-retry: 4.6.2

@@ -577,6 +577,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     response: AsyncIterable<Record<string, unknown>> | Record<string, unknown>,
     isStream: boolean,
     signal?: AbortSignal,
+    private readonly _streamController?: AbortController,
   ) {
     if (isStream) {
       this._iter = this._convertStreamResponse(
@@ -604,8 +605,14 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     return this._rawFinishReason;
   }
 
+  cancel(): void { this._streamController?.abort(); }
+
   async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
-    yield* this._iter;
+    try {
+      yield* this._iter;
+    } finally {
+      this.cancel();
+    }
   }
 
   private _captureFinishReason(response: Record<string, unknown>): void {
@@ -748,7 +755,10 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
       }
-      throw markProviderEventError(convertGoogleGenAIError(error), error instanceof GoogleApiError ? antigravityErrorInfoReason(error.message) : undefined);
+      this._throwIfAborted(signal);
+      throw error instanceof GoogleApiError
+        ? convertGoogleApiError(error, 'event')
+        : markProviderEventError(convertGoogleGenAIError(error));
     }
   }
 }
@@ -756,42 +766,57 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
 const NETWORK_RE = /network|connection|connect|disconnect|fetch failed/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
-const ANTIGRAVITY_ERROR_DOMAIN = 'sub2api.antigravity';
+interface GoogleRpcDetail {
+  '@type'?: unknown;
+  domain?: unknown;
+  reason?: unknown;
+  retryDelay?: unknown;
+}
 
-function antigravityErrorInfoReason(message: string): string | undefined {
+function googleRpcDetails(message: string): GoogleRpcDetail[] {
   const jsonStart = message.indexOf('{');
-  if (jsonStart < 0) return undefined;
+  if (jsonStart < 0) return [];
   try {
-    const body: unknown = JSON.parse(message.slice(jsonStart));
-    const details = (body as { error?: { details?: unknown } }).error?.details;
-    if (!Array.isArray(details)) return undefined;
-    for (const detail of details) {
-      if (typeof detail !== 'object' || detail === null) continue;
-      const entry = detail as { '@type'?: unknown; domain?: unknown; reason?: unknown };
-      if (typeof entry['@type'] !== 'string' || !entry['@type'].endsWith('google.rpc.ErrorInfo')) continue;
-      if (entry.domain !== ANTIGRAVITY_ERROR_DOMAIN) continue;
-      if (typeof entry.reason !== 'string' || entry.reason.length === 0) continue;
-      return entry.reason;
-    }
-    return undefined;
+    const body = JSON.parse(message.slice(jsonStart)) as { error?: { details?: unknown } };
+    const details = body.error?.details;
+    return Array.isArray(details)
+      ? details.filter((detail): detail is GoogleRpcDetail => typeof detail === 'object' && detail !== null)
+      : [];
   } catch {
-    return undefined;
+    return [];
   }
+}
+
+function isGatewayTerminalErrorInfo(detail: GoogleRpcDetail): boolean {
+  return detail['@type'] === 'type.googleapis.com/google.rpc.ErrorInfo' &&
+    detail.domain === 'sub2api.gateway' &&
+    detail.reason === 'GATEWAY_STREAM_TERMINAL_ERROR';
+}
+
+function antigravityErrorInfoReason(details: GoogleRpcDetail[]): string | undefined {
+  for (const detail of details) {
+    if (typeof detail['@type'] !== 'string' || !detail['@type'].endsWith('google.rpc.ErrorInfo')) continue;
+    if (detail.domain !== 'sub2api.antigravity') continue;
+    if (typeof detail.reason !== 'string' || detail.reason.length === 0) continue;
+    return detail.reason;
+  }
+  return undefined;
+}
+
+function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'): ChatProviderError {
+  const details = googleRpcDetails(error.message);
+  const converted = normalizeAPIStatusError(error.status, error.message, undefined, parseRetryInfoDelayMs(details));
+  if (source === 'event') {
+    return markProviderEventError(converted, details.some(isGatewayTerminalErrorInfo)
+      ? 'gateway_stream_terminal_error'
+      : antigravityErrorInfoReason(details));
+  }
+  return markProviderHttpError(converted, antigravityErrorInfoReason(details));
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {
   if (error instanceof ChatProviderError) return error;
-  if (error instanceof GoogleApiError) {
-    return markProviderHttpError(
-      normalizeAPIStatusError(
-        error.status,
-        error.message,
-        undefined,
-        parseRetryInfoDelayMs(error.message),
-      ),
-      antigravityErrorInfoReason(error.message),
-    );
-  }
+  if (error instanceof GoogleApiError) return convertGoogleApiError(error, 'http');
   if (error instanceof Error) {
     const msg = error.message;
     if (TIMEOUT_RE.test(msg)) {
@@ -809,30 +834,18 @@ export function convertGoogleGenAIError(error: unknown): ChatProviderError {
   return new ChatProviderError(`GoogleGenAI error: ${String(error)}`);
 }
 
-function parseRetryInfoDelayMs(message: string): number | null {
-  const jsonStart = message.indexOf('{');
-  if (jsonStart < 0) return null;
-  try {
-    const body: unknown = JSON.parse(message.slice(jsonStart));
-    if (typeof body !== 'object' || body === null) return null;
-    const details = (body as { error?: { details?: unknown } }).error?.details;
-    if (!Array.isArray(details)) return null;
-    for (const detail of details) {
-      if (typeof detail !== 'object' || detail === null) continue;
-      const type = (detail as { '@type'?: unknown })['@type'];
-      if (typeof type !== 'string' || !type.endsWith('google.rpc.RetryInfo')) continue;
-      const retryDelay = (detail as { retryDelay?: unknown }).retryDelay;
-      if (typeof retryDelay !== 'string') continue;
-      const match = /^(\d+(?:\.\d+)?)s$/.exec(retryDelay.trim());
-      if (match?.[1] === undefined) continue;
-      const seconds = Number.parseFloat(match[1]);
-      if (!Number.isFinite(seconds) || seconds < 0) continue;
-      return Math.round(seconds * 1000);
-    }
-    return null;
-  } catch {
-    return null;
+function parseRetryInfoDelayMs(details: GoogleRpcDetail[]): number | null {
+  for (const detail of details) {
+    const type = detail['@type'];
+    if (typeof type !== 'string' || !type.endsWith('google.rpc.RetryInfo')) continue;
+    if (typeof detail.retryDelay !== 'string') continue;
+    const match = /^(\d+(?:\.\d+)?)s$/.exec(detail.retryDelay.trim());
+    if (match?.[1] === undefined) continue;
+    const seconds = Number.parseFloat(match[1]);
+    if (!Number.isFinite(seconds) || seconds < 0) continue;
+    return Math.round(seconds * 1000);
   }
+  return null;
 }
 
 export class GoogleGenAIChatProvider implements ChatProvider {
@@ -1007,6 +1020,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     };
     applyResponseFormat(config, options?.responseFormat);
 
+    const streamController = this._stream ? new AbortController() : undefined;
     try {
       const requestAuth = mergeProviderRequestAuth(options?.auth, options?.headers);
       const model = this._requestModel(requestAuth);
@@ -1019,15 +1033,19 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       const params = { model, contents, config };
 
       options?.onRequestSent?.();
-      if (this._stream) {
+      if (streamController !== undefined) {
+        const signal = options?.signal === undefined
+          ? streamController.signal
+          : AbortSignal.any([options.signal, streamController.signal]);
         const stream = await Promise.race([
-          models.generateContentStream(params),
-          abortPromise(options?.signal),
+          models.generateContentStream({ ...params, config: { ...config, abortSignal: signal } }),
+          abortPromise(signal),
         ]);
         return new GoogleGenAIStreamedMessage(
           stream as AsyncIterable<Record<string, unknown>>,
           true,
-          options?.signal,
+          signal,
+          streamController,
         );
       }
 
@@ -1041,6 +1059,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
         options?.signal,
       );
     } catch (error: unknown) {
+      streamController?.abort();
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
       }
