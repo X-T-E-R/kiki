@@ -2775,10 +2775,9 @@ export class TranscriptService {
     signal.throwIfAborted();
     const missingWire = info === undefined;
     const bounded = limits !== undefined;
-    const sealed = !bounded && !tailFirst && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
-    const liveVerified = !bounded && !sealed && info !== undefined && (tailFirst
-      ? this.live.get(sessionId)?.agentWires.get(agentId)?.isTranscriptLiveEpochVerified?.() === true
-      : await this.hasVerifiedLiveEpoch(sessionId, agentId));
+    const shouldVerify = !bounded && !tailFirst && info !== undefined;
+    const sealed = shouldVerify && await this.hasVerifiedWireReceipt(wirePath, info, signal);
+    const liveVerified = shouldVerify && !sealed && await this.hasVerifiedLiveEpoch(sessionId, agentId);
     if (liveVerified) info = await stat(wirePath).catch(() => undefined);
     const verified = sealed || liveVerified;
     signal.throwIfAborted();
@@ -2923,8 +2922,7 @@ export class TranscriptService {
       const snapshot = transcript.snapshot();
       const stillVerified = verified && (sealed
         ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
-        : tailFirst ? this.live.get(sessionId)?.agentWires.get(agentId)?.isTranscriptLiveEpochVerified?.() === true
-          : await this.hasVerifiedLiveEpoch(sessionId, agentId));
+        : await this.hasVerifiedLiveEpoch(sessionId, agentId));
       const after = stillVerified ? await stat(wirePath).catch(() => undefined) : undefined;
       const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
       const proven = complete && stillVerified && unchanged;

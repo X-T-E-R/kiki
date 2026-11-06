@@ -1994,7 +1994,10 @@ describe('TranscriptService live integration', () => {
     const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
     const agents = new FakeAgents();
     const verify = vi.fn(async () => false);
-    const main = agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => false } });
+    const main = agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => true } });
+    const original = await fsPromises.stat(path);
+    await writeFixtureFile(path, (await fsPromises.readFile(path, 'utf8')).replace('Hello ', 'Other '));
+    expect((await fsPromises.stat(path)).size).toBe(original.size);
     const reader = vi.fn(streamWireRecords);
     const service = new TranscriptService({ homeDir: home, wireRecordReader: reader,
       core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
@@ -2014,8 +2017,9 @@ describe('TranscriptService live integration', () => {
       main.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'live after small first screen' }));
       expect(visible?.getTurn('t1')?.prompt).toBe('live after small first screen');
       const full = await service.readColdSnapshot('s1', 'main');
-      expect(full?.toolCallCountKnown).toBe(true);
+      expect(full?.toolCallCountKnown).toBe(false);
       expect(digest).toHaveBeenCalledTimes(1);
+      expect(verify).toHaveBeenCalledTimes(1);
     } finally {
       reads.mockRestore(); digest.mockRestore(); service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -2209,7 +2213,9 @@ describe('TranscriptService live integration', () => {
       await writeFixtureFile(join(wireDir, 'wire.jsonl'), (await wireStorage.read('test/open-child', 'wire.jsonl'))!);
       await writeFixtureFile(join(wireDir, WIRE_TRANSCRIPT_RECEIPT_KEY),
         (await wireStorage.read('test/open-child', WIRE_TRANSCRIPT_RECEIPT_KEY))!);
-      await expect(wire.verifyTranscriptLiveEpoch()).resolves.toBe(true);
+      service.forSessionLive('s1');
+      const established = await service.ensureAgentHistory('s1', 'child-open', { fullHistory: true });
+      expect(established?.snapshot().toolCallCountKnown).toBe(true);
       const healthy = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child-open' });
       expect(healthy?.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
       expect(healthy?.items).toEqual([expect.objectContaining({ kind: 'turn', prompt: 'healthy', state: 'completed' })]);
@@ -2764,11 +2770,10 @@ describe('TranscriptService live integration', () => {
       if (source === 'live') {
         service.forSessionLive('s1', { tailFirst: true });
         await service.whenReady('s1');
-        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCountKnown: true, hasMoreOlder: false });
+        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCountKnown: false, hasMoreOlder: false });
         expect(verify).not.toHaveBeenCalled();
-      } else {
-        expect(await service.readColdSnapshot('s1', 'main')).toMatchObject({ items: [], toolCallCountKnown: true });
       }
+      expect(await service.readColdSnapshot('s1', 'main')).toMatchObject({ items: [], toolCallCountKnown: true });
       const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
       expect(baseline).toMatchObject({ snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
     } finally {
