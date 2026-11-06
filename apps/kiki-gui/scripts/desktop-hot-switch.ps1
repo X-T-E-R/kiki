@@ -5,7 +5,6 @@ param(
     [string]$CandidateRoot,
     [string]$ExpectedCommit,
     [switch]$Recover,
-    [switch]$AllowLegacyDesktopQuit,
     [ValidateRange(1, 86400)][int]$SettleSeconds = 300,
     [ValidateRange(1, 3600)][int]$StartupSeconds = 90
 )
@@ -79,15 +78,40 @@ function Find-Shells {
 
 function Save-State { Write-AtomicUtf8Json $statePath $state }
 
-function Wait-ForExit([object]$Old, [object[]]$Shells) {
-    $deadline = [DateTime]::UtcNow.AddSeconds($StartupSeconds)
-    while (!$Old.process.HasExited -or @($Shells | Where-Object { !$_.HasExited }).Count -gt 0) {
-        if ([DateTime]::UtcNow -ge $deadline) { throw 'The original desktop or service has not exited. Close it normally, then run recovery.' }
-        Start-Sleep -Milliseconds 250
+function Close-DesktopShell([object]$Shell) {
+    if ($Shell.HasExited) { return }
+    $prefsPath = Join-Path $homePath 'desktop.json'
+    $hadPrefs = Test-Path -LiteralPath $prefsPath -PathType Leaf
+    $prefs = if ($hadPrefs) { Get-Content -LiteralPath $prefsPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+    $original = $prefs.PSObject.Properties['closeToTray']
+    $previous = if ($null -ne $original) { $original.Value } else { $null }
+    if ($previous -ne $false) {
+        $prefs | Add-Member -NotePropertyName closeToTray -NotePropertyValue $false -Force
+        Write-AtomicUtf8Json $prefsPath $prefs
     }
+    try {
+        $Shell.Refresh()
+        if (!$Shell.HasExited -and (!$Shell.CloseMainWindow() -or !$Shell.WaitForExit($StartupSeconds * 1000))) {
+            throw 'The desktop did not accept its normal window-close request.'
+        }
+    } finally {
+        if ($previous -ne $false) {
+            $prefs = Get-Content -LiteralPath $prefsPath -Raw | ConvertFrom-Json
+            if ((Get-ObjectProperty $prefs 'closeToTray') -eq $false) {
+                if ($null -eq $original) { $prefs.PSObject.Properties.Remove('closeToTray') } else { $prefs.closeToTray = $previous }
+                if (!$hadPrefs -and $prefs.PSObject.Properties.Count -eq 0) { Remove-Item -LiteralPath $prefsPath }
+                else { Write-AtomicUtf8Json $prefsPath $prefs }
+            }
+        }
+    }
+}
+
+function Wait-ForExit([object]$Old, [object[]]$Shells) {
+    if (!$Old.process.WaitForExit($StartupSeconds * 1000)) { throw 'The original service is still shutting down. Its saved switch can be recovered.' }
     if ($Old.process.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $instances ($Old.meta.server_id + '.json')))) {
         throw 'The original service did not confirm a clean shutdown. Inspect its exit before recovering.'
     }
+    foreach ($shell in $Shells) { Close-DesktopShell $shell }
     if (@(Find-Shells).Count -gt 0 -or $null -ne (Find-Server)) { throw 'Another desktop or managed service appeared before launch.' }
 }
 
@@ -189,17 +213,7 @@ try {
     if ($shells.Count -gt 1 -or @($shells | Where-Object { $_.Path -ine (Join-Path (Get-ReleasePath $runtime $old.releaseId) 'kiki-desktop.exe') }).Count) {
         throw 'Close extra desktop shells; the running shell must match the service being switched.'
     }
-    if ($shells.Count -gt 0) {
-        $otherServices = @(Get-CimInstance Win32_Process -Filter "Name = 'kiki-server.exe'" | Where-Object {
-            $_.ProcessId -ne $old.instance.pid -and $_.ExecutablePath -and $_.CommandLine -match '(?:^|\s)serve(?:\s|$)'
-        })
-        if ($otherServices.Count) { throw 'Another local desktop service is running. Quit only after confirming the other spaces are safe; this switch targets one home.' }
-    }
-    $lifecycle = Lifecycle $old.instance ''
-    $supportsPrepare = $null -ne (Get-ObjectProperty $lifecycle 'hot_switch_prepared')
-    if ($shells.Count -gt 0 -and !$supportsPrepare -and !$AllowLegacyDesktopQuit) {
-        throw 'This older desktop needs its tray Quit action. Close other spaces and rerun with -AllowLegacyDesktopQuit when you can confirm the quit yourself.'
-    }
+    foreach ($shell in $shells) { $shell.EnableRaisingEvents = $true; $null = $shell.Handle }
     $state = [pscustomobject]@{
         schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
         oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
@@ -231,12 +245,7 @@ try {
         if ($control.phase -ne 'paused' -or $control.pauseOperationId -cne $item.pauseId) { throw "Pause changed for $($item.id); no version was switched." }
     }
     $state.phase = 'stopping'; Save-State
-    if ($supportsPrepare) { Lifecycle $old.instance 'prepare-update' | Out-Null }
-    if ($shells.Count -gt 0) {
-        Write-Host 'Kiki is paused. In the tray, choose Quit, then Stop services and quit. Closing the window only hides it.'
-    } else {
-        Lifecycle $old.instance 'update' | Out-Null
-    }
+    Lifecycle $old.instance 'update' | Out-Null
     Wait-ForExit $old $shells
     $state.phase = 'promoting'; Save-State
     Invoke-Promotion $runtime $candidate $commit | Out-Host

@@ -135,6 +135,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Windows.Forms;
 
 internal static class Program
 {
@@ -172,6 +173,7 @@ internal static class Program
         internal int NotificationDeliveryCount;
     }
 
+    [STAThread]
     private static void Main()
     {
         string executableName = Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName).ToLowerInvariant();
@@ -199,13 +201,26 @@ internal static class Program
         string executable = Process.GetCurrentProcess().MainModule.FileName;
         string directory = Path.GetDirectoryName(executable);
         string server = Path.Combine(directory, "kiki-server.exe");
-        Process.Start(new ProcessStartInfo
+        string preferences = Path.Combine(Environment.GetEnvironmentVariable("KIKI_HOME"), "desktop.json");
+        using (Form window = new Form { Text = "Kiki hot switch fixture", Width = 300, Height = 120 })
         {
-            FileName = server,
-            WorkingDirectory = directory,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
+            window.FormClosing += delegate(object sender, FormClosingEventArgs args)
+            {
+                args.Cancel = !File.Exists(preferences) || !Regex.IsMatch(File.ReadAllText(preferences), "\"closeToTray\"\\s*:\\s*false");
+            };
+            window.Shown += delegate
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = server,
+                    Arguments = "serve",
+                    WorkingDirectory = directory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+            };
+            Application.Run(window);
+        }
     }
 
     private static void RunServer()
@@ -590,7 +605,7 @@ function Compile-Fixture([string]$BuildId, [bool]$FailLaunch, [string]$OutputPat
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $compilerOutput = (& $cscPath /nologo /target:exe /optimize+ /out:$OutputPath $fixtureSourcePath 2>&1 | Out-String)
+        $compilerOutput = (& $cscPath /nologo /target:winexe /reference:System.Windows.Forms.dll /optimize+ /out:$OutputPath $fixtureSourcePath 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -723,6 +738,14 @@ try {
     $failedReleaseId = Get-ReleaseId (Join-Path $failedCandidate 'kiki-desktop.exe') (Join-Path $failedCandidate 'kiki-server.exe')
     Assert-NotEqual $oldReleaseId $goodReleaseId 'Old and good fixture artifacts were not distinct.'
     Assert-NotEqual $goodReleaseId $failedReleaseId 'Good and failed fixture artifacts were not distinct.'
+    $desktopPrefs = Join-Path $homePath 'desktop.json'
+    [IO.File]::WriteAllText($desktopPrefs, '{"closeToTray":true,"notifications":false}')
+    $otherHome = Join-Path $testRoot 'unrelated-home'
+    [IO.Directory]::CreateDirectory($otherHome) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $otherHome 'server.local-owner'), $fixtureToken)
+    $env:KIKI_HOME = $otherHome
+    try { $unrelated = Start-Process -FilePath (Join-Path $oldCandidate 'kiki-server.exe') -ArgumentList 'serve' -PassThru }
+    finally { $env:KIKI_HOME = $homePath }
 
     Invoke-Script $controller @(
         '-Action', 'Promote',
@@ -766,7 +789,8 @@ try {
 
     $oldShellPath = Join-Path (Join-Path $runtimeRoot 'releases') (Join-Path $oldReleaseId 'kiki-desktop.exe')
     $oldShells = @(Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $oldShellPath })
-    Assert-Equal 0 $oldShells.Count 'The fixture launcher left an old desktop shell running.'
+    Assert-Equal 1 $oldShells.Count 'The fixture launcher did not leave its desktop window running.'
+    Assert-True ($oldShells[0].MainWindowHandle -ne 0) 'The fixture desktop did not expose its close target.'
 
     $switchOutput = Invoke-Script $hotSwitch @(
         '-RuntimeRoot', $runtimeRoot,
@@ -784,6 +808,10 @@ try {
     $goodServer = Wait-ForFixtureServer $goodCommit
     Assert-Equal $goodCommit ([string]$goodServer.meta.build_id) 'Successful hot switch did not start the good build.'
     Assert-NotEqual $oldPid ([int]$goodServer.process.Id) 'Successful hot switch reused the old backend PID.'
+    Assert-True ($oldShells[0].HasExited) 'The original shell did not exit automatically.'
+    Assert-True (!$unrelated.HasExited) 'The switch stopped an unrelated service.'
+    $prefsAfterSwitch = Get-Content -LiteralPath $desktopPrefs -Raw | ConvertFrom-Json
+    Assert-True ($prefsAfterSwitch.closeToTray -and !$prefsAfterSwitch.notifications) 'The switch changed desktop preferences.'
     $oldProcessAfterSwitch = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
     if ($null -ne $oldProcessAfterSwitch) {
         Assert-True $oldProcessAfterSwitch.HasExited 'The old backend process was still running after the successful switch.'
@@ -944,6 +972,9 @@ try {
 finally {
     $env:KIKI_HOME = $originalKikiHome
     Stop-OwnFixtureServer
+    Get-Process -Name 'kiki-desktop','kiki-server' -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and $_.Path.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object { $_.Kill(); $null = $_.WaitForExit(5000) }
     if ($completed) {
         if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
     }
