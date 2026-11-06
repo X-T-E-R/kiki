@@ -565,6 +565,79 @@ void test('a failed cancellation retains unknown execution and rejects its promp
   }
 });
 
+void test('cancel still stops the owned CLI when persisting the cancellation request fails', { timeout: 10000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-cancel-audit-'));
+  try {
+    for (const stopFails of [false, true]) {
+      const first = bridge('fixture-alpha-high'); first.auditDir = root;
+      const loaded = bridge('fixture-alpha-high'); loaded.auditDir = root;
+      const params = { cwd: root, mcpServers: [] };
+      const id = (await first.newSession(params)).sessionId;
+      const diskFull = Object.assign(new Error('cancel_requested append failed'), { code: 'ENOSPC' });
+      const stopFailure = Object.assign(new Error('owned stopper failed'), { code: 'FIXTURE_STOP_FAILED' });
+      const stop = first.stopProcess;
+      let stops = 0;
+      first.stopProcess = async child => {
+        stops++;
+        assert.equal(child, first.session(id).child);
+        if (stopFails) throw stopFailure;
+        await stop(child);
+      };
+      let received, release, writingFailure, releaseAudit;
+      const buffered = new Promise(done => { received = done; });
+      const blocked = new Promise(done => { release = done; });
+      const beforeFailureRecord = new Promise(done => { writingFailure = done; });
+      const blockedAudit = new Promise(done => { releaseAudit = done; });
+      const audit = first.audit.bind(first);
+      first.audit = async (session, type, data) => {
+        if (type === 'cancel_requested') throw diskFull;
+        if (type === 'cancel_failed') { writingFailure(); await blockedAudit; }
+        await audit(session, type, data);
+        if (!stopFails && type === 'native_frame_received' && data.event === 'result') received();
+      };
+      const updates = [];
+      const pending = first.prompt({ sessionId: id, prompt: [{ type: 'text', text: stopFails ? 'tool-hang' : 'background-events' }] }, {
+        notify: async (_method, event) => {
+          updates.push(event.update);
+          if (event.update.sessionUpdate === 'tool_call') { if (stopFails) received(); await blocked; }
+        },
+      });
+      pending.catch(() => {});
+      let cancelled;
+      try {
+        await Promise.race([buffered, pending]);
+        cancelled = first.cancel({ sessionId: id }).catch(error => error);
+        release();
+        await Promise.race([beforeFailureRecord, cancelled]);
+        assert.equal(stops, 1);
+        assert.equal(first.session(id).child.exitCode, stopFails ? null : 0);
+        if (!stopFails) await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), { code: 'AGY_SESSION_UNCONFIRMED' });
+        releaseAudit();
+        assert.equal(await cancelled, diskFull);
+        await assert.rejects(pending, error => {
+          assert.equal(error, diskFull);
+          assert.equal(error.message, 'cancel_requested append failed');
+          assert.equal(error.details.processEnded, !stopFails);
+          assert.equal(error.details.exitCode, stopFails ? null : 0);
+          return true;
+        });
+        const terminals = updates.filter(update => update.sessionUpdate === 'tool_call_update');
+        if (stopFails) {
+          assert.deepEqual(diskFull.details.cancelError, { code: stopFailure.code, message: stopFailure.message });
+          assert.match(terminals[0].content[0].content.text, /execution state is unknown; do not replay/);
+        } else {
+          assert.deepEqual(terminals.map(update => [update.status, update.rawOutput]), [['failed', 'native failure'], ['completed', 'native output']]);
+          await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), { code: 'AGY_SESSION_RETIRED' });
+        }
+        const records = (await readFile(join(root, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+        assert.equal(records.find(record => record.type === 'cancel_failed').processEnded, !stopFails);
+        assert.equal(records.some(record => record.type === 'cancel_requested' || record.type === 'cancel'), false);
+      } finally { release(); releaseAudit(); await cancelled; first.stopProcess = stop; await first.close(); await loaded.close(); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 void test('a failed stop drains queued native tool terminals without waiting for the live child', { timeout: 10000 }, async () => {
   const { EventEmitter } = await import('node:events');
   const { PassThrough, Writable } = await import('node:stream');

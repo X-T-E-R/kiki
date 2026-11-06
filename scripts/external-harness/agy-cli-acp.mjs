@@ -658,13 +658,14 @@ export class AgyBridge {
     }
   }
 
-  async rejectUnconfirmedTurn(session, active, error, unresolved) {
+  async rejectUnconfirmedTurn(session, active, error, unresolved, preserveMessage = false) {
+    const message = unresolved.length ? this.unknownToolMessage(error.message, unresolved) : error.message;
     if (unresolved.length) {
       error.details = { ...error.details, unresolvedTools: unresolved };
-      error.message = this.unknownToolMessage(error.message, unresolved);
-      await this.settlePendingTools(session, active, error.message).catch(() => {});
+      if (!preserveMessage) error.message = message;
+      await this.settlePendingTools(session, active, message).catch(() => {});
     }
-    session.failure = `${error.message}; create a fresh session`;
+    session.failure = `${message}; create a fresh session`;
     active.reject(error);
   }
 
@@ -841,8 +842,10 @@ export class AgyBridge {
   async cancelOwnedSession(session) {
     const active = session.active;
     session.broken = true;
+    let requestAuditError;
     try {
-      await this.audit(session, 'cancel_requested', { pid: session.child?.pid, resumeSupported: false });
+      try { await this.audit(session, 'cancel_requested', { pid: session.child?.pid, resumeSupported: false }); }
+      catch (error) { requestAuditError = error; }
       await session.preparing?.catch(() => {});
       await session.permissionChannel?.close();
       await this.stopProcess(session.child);
@@ -850,6 +853,7 @@ export class AgyBridge {
       await session.cleanup;
       await this.closeSteeringHook(session).catch(() => {});
       await session.mcpPlugin?.close();
+      if (requestAuditError) throw requestAuditError;
       const unresolved = this.unresolvedTools(session);
       if (active && unresolved.length) {
         await this.settlePendingTools(session, active, this.unknownToolMessage('AGY turn cancelled before a tool terminal update', unresolved));
@@ -860,11 +864,17 @@ export class AgyBridge {
       await session.drainReceived?.();
       session.active = undefined;
       const unresolved = this.unresolvedTools(session);
-      await this.audit(session, 'cancel_failed', { pid: session.child?.pid, unresolvedTools: unresolved }).catch(auditError => {
-        error.details = { ...error.details, retirementAuditError: auditError.message };
+      const exitCode = session.child?.exitCode ?? null;
+      const signal = session.child?.signalCode ?? null;
+      const outcome = { processEnded: exitCode !== null || signal !== null, exitCode, signal };
+      const failure = requestAuditError ?? error;
+      const cancelError = failure === error ? undefined : { code: error.code, message: error.message };
+      failure.details = { ...failure.details, ...outcome, cancelError };
+      await this.audit(session, 'cancel_failed', { pid: session.child?.pid, ...outcome, unresolvedTools: unresolved, cancelError }).catch(auditError => {
+        failure.details.retirementAuditError = auditError.message;
       });
-      if (active) await this.rejectUnconfirmedTurn(session, active, error, unresolved);
-      throw error;
+      if (active) await this.rejectUnconfirmedTurn(session, active, failure, unresolved, failure === requestAuditError);
+      throw failure;
     } finally {
       session.active = undefined;
     }
