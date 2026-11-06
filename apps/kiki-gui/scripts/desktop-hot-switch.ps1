@@ -160,7 +160,7 @@ try {
             $launcher = Invoke-Launch $runtime $homePath -PassThru
             $target = Await-Release $state.oldReleaseId $state.oldBuildId $launcher
         } elseif ($target.meta.server_home_id -cne $state.serverHomeId -or $target.meta.current_space_id -cne $state.spaceId -or
-            $target.releaseId -cnotin @($state.oldReleaseId, $state.targetReleaseId)) {
+            $target.releaseId -cnotin @($state.oldReleaseId, $state.targetReleaseId, $state.priorPointerReleaseId)) {
             throw 'Recovery found a different service. Leave it running and inspect the switch record.'
         }
         if ($target.releaseId -ceq $state.oldReleaseId -and $state.phase -in @('stopping', 'promoting', 'starting', 'resuming')) { Restore-OriginalRelease }

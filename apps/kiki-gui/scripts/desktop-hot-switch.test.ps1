@@ -910,8 +910,36 @@ try {
     Assert-Equal $failedPauseId $recoveredResumeParts[3] 'Recovery resumed a pause operation other than the failed switch pause.'
     Assert-True ($recoveredResumeParts[2] -match '^hot-switch:[0-9a-f]{32}:resume$') 'Recovery did not record a fresh resume operation ID.'
 
+    $pointerPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $recoveredServer 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $pointerPauseId })
+    } | Out-Null
+    $pointerState = [ordered]@{
+        schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = $oldServer.instance.server_id; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $failedReleaseId; targetReleaseId = $failedReleaseId; targetBuildId = $failedCommit; hadDesktop = $false
+        sessions = @(@{ id = $runningSessionId; pauseId = $pointerPauseId })
+    }
+    $switchStatePath = Join-Path $runtimeRoot 'hot-switch.json'
+    [IO.File]::WriteAllText($switchStatePath, ($pointerState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $unrecordedOutput = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover') 1
+    Assert-Contains 'Recovery found a different service' $unrecordedOutput 'Recovery accepted an unrecorded running release.'
+    Assert-Equal 'paused' ([string](Read-FixtureExecution $recoveredServer $runningSessionId).phase) 'Rejected recovery changed the pause.'
+    $pointerState.priorPointerReleaseId = $goodReleaseId
+    [IO.File]::WriteAllText($switchStatePath, ($pointerState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $pointerRecoveryOutput = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover')
+    Assert-Contains ("Recovery complete: {0}" -f $goodReleaseId) $pointerRecoveryOutput 'Recovery rejected the recorded prior pointer release.'
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) 'Recovery changed the manually started release.'
+    $pointerExecution = Read-FixtureExecution $recoveredServer $runningSessionId
+    Assert-Equal 'running' ([string]$pointerExecution.phase) 'Prior-pointer recovery did not resume its pause.'
+    Assert-Equal $pointerPauseId ([string]$pointerExecution.pauseOperationId) 'Prior-pointer recovery changed pause ownership.'
+    Assert-Equal 1 ([int]$pointerExecution.taskRunCount) 'Prior-pointer recovery reran the task.'
+    Assert-Equal 1 ([int]$pointerExecution.notificationDeliveryCount) 'Prior-pointer recovery duplicated the notification.'
+    Assert-Equal $priorPauseId ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).pauseOperationId) 'Prior-pointer recovery changed an unrelated pause.'
+
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: real Promote/Launch, PID/build switch, durable task receipt, one notification delivery, fresh pause preservation, prior paused preservation, failed launch, and Recover.'
+    Write-Output 'desktop-hot-switch tests passed: real Promote/Launch, PID/build switch, durable task receipt, one notification delivery, fresh pause preservation, prior paused preservation, failed launch, Recover, and prior-pointer recovery.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome
