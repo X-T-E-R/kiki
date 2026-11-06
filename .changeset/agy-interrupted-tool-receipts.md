@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Mark unfinished AGY tools as execution unknown after cancellation or a lost event stream.
+Preserve received AGY tool outcomes during cancellation and keep cancelled or unconfirmed sessions retired across reconnections.

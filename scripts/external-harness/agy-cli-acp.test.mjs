@@ -565,6 +565,68 @@ void test('a failed cancellation retains unknown execution and rejects its promp
   }
 });
 
+void test('a failed stop drains queued native tool terminals without waiting for the live child', { timeout: 10000 }, async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough, Writable } = await import('node:stream');
+  const child = new EventEmitter();
+  Object.assign(child, { pid: process.pid, exitCode: null, signalCode: null, stdout: new PassThrough(), stderr: new PassThrough() });
+  const tool = (step_index, state, output) => ({ event: 'step_update', conversation_id: 'stop-race',
+    step_update: { step_type: 'tool', step_index, tool_name: 'run_command', state, tool_info: { output } } });
+  const emit = (...frames) => child.stdout.write(frames.map(JSON.stringify).join('\n') + '\n');
+  child.stdin = new Writable({
+    write(_chunk, _encoding, done) {
+      queueMicrotask(() => emit({ event: 'init', conversation_id: 'stop-race', init: { cwd } },
+        tool(1, 'ACTIVE'), tool(1, 'ERROR', 'authoritative native failure'), tool(2, 'ACTIVE'),
+        { event: 'result', result: { conversation_id: 'stop-race', status: 'ERROR', error: 'native turn failure' } }));
+      done();
+    },
+    final(done) { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); done(); },
+  });
+  const b = bridge(); const id = await session(b);
+  b.spawnProcess = () => child;
+  let attempted;
+  const stopAttempt = new Promise(done => { attempted = done; });
+  b.stopProcess = async () => { attempted(); throw new Error('injected stop failure while child is alive'); };
+  let release, received;
+  const blocked = new Promise(done => { release = done; });
+  const buffered = new Promise(done => { received = done; });
+  const records = [];
+  b.audit = async (_session, type, data) => {
+    records.push({ type, ...data });
+    if (type === 'native_frame_received' && data.event === 'result') received();
+  };
+  const messages = [];
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'fixture frame only' }] }, {
+    notify: async (_method, event) => {
+      messages.push(event.update);
+      if (event.update.sessionUpdate === 'tool_call' && event.update.toolCallId === 'agy-stop-race-1') await blocked;
+    },
+  });
+  pending.catch(() => {});
+  try {
+    await Promise.race([buffered, pending]);
+    const cancelled = assert.rejects(b.cancel({ sessionId: id }), /injected stop failure/);
+    await stopAttempt;
+    await new Promise(done => setImmediate(done));
+    emit(tool(2, 'DONE', 'late frame after stop failure'));
+    release();
+    await cancelled;
+    assert.equal(child.exitCode, null);
+    const terminals = messages.filter(update => update.sessionUpdate === 'tool_call_update');
+    assert.deepEqual(terminals.map(update => [update.toolCallId, update.status, update.rawOutput]), [
+      ['agy-stop-race-1', 'failed', 'authoritative native failure'], ['agy-stop-race-2', 'failed', undefined],
+    ]);
+    assert.match(terminals[1].content[0].content.text, /execution state is unknown; do not replay/);
+    await assert.rejects(pending, error => {
+      assert.match(error.message, /injected stop failure/);
+      assert.deepEqual(error.details.unresolvedTools.map(tool => tool.toolCallId), ['agy-stop-race-2']);
+      return true;
+    });
+    assert.deepEqual(records.find(record => record.type === 'cancel_failed').unresolvedTools.map(tool => tool.toolCallId), ['agy-stop-race-2']);
+    assert.equal(records.some(record => record.type === 'cancel'), false);
+  } finally { release(); await b.close(); }
+});
+
 void test('native disconnect and invalid frames settle pending tools as execution unknown without replay', async () => {
   for (const [input, expected] of [['tool-disconnect', /exited before terminal result/], ['tool-invalid-frame', /invalid NDJSON/]]) {
     const b = bridge(); const id = await session(b); const messages = [];
@@ -1223,6 +1285,72 @@ void test('native load uses only exact audited conversation and binding, owns a 
     await assert.rejects(competitor.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /no confirmed native conversation/);
     await assert.rejects(competitor.loadSession({ sessionId: '../../other', cwd: root, mcpServers: [] }), /Invalid.*session ID/);
   } finally { await first.close(); await loaded.close(); await competitor.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('native load refuses retired or unreconciled sessions across adapter instances', { timeout: 10000 }, async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-retired-load-'));
+  const auditDir = join(root, 'audit');
+  const first = bridge('fixture-alpha-high'); first.auditDir = auditDir;
+  const loaded = bridge('fixture-alpha-high'); loaded.auditDir = auditDir;
+  const params = { cwd: root, mcpServers: [] };
+  const id = (await first.newSession(params)).sessionId;
+  let started, writingCancel, release;
+  const ready = new Promise(done => { started = done; });
+  const beforeCancelRecord = new Promise(done => { writingCancel = done; });
+  const blocked = new Promise(done => { release = done; });
+  const audit = first.audit.bind(first);
+  first.audit = async (session, type, data) => {
+    if (type === 'cancel') { writingCancel(); await blocked; }
+    await audit(session, type, data);
+  };
+  const pending = first.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => { if (event.update.sessionUpdate === 'tool_call') started(); },
+  });
+  pending.catch(() => {});
+  const refusal = { code: 'AGY_SESSION_RETIRED', message: /inspect the native outcome.*do not replay/ };
+  const path = join(auditDir, `${id}.ndjson`);
+  let stopping;
+  try {
+    await Promise.race([ready, pending]);
+    stopping = first.cancel({ sessionId: id });
+    await Promise.race([beforeCancelRecord, stopping]);
+    assert.equal(first.session(id).child.exitCode, 0);
+    await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), refusal);
+    release();
+    await stopping;
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    await first.close();
+    await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), refusal);
+    const records = (await readFile(path, 'utf8')).trim().split('\n').map(JSON.parse);
+    const cancellation = records.find(record => record.type === 'cancel');
+    assert.equal(cancellation.resumeSupported, false);
+    assert.equal(cancellation.unresolvedTools.length, 1);
+    const original = records.filter(record => !record.type.startsWith('cancel'));
+    for (const legacy of [cancellation, { type: 'cancel_failed', unresolvedTools: cancellation.unresolvedTools },
+      { type: 'tool_terminal_missing', tools: cancellation.unresolvedTools }]) {
+      await writeFile(path, [...original, legacy].map(record => JSON.stringify(record)).join('\n') + '\n');
+      await assert.rejects(loaded.loadSession({ ...params, sessionId: id }), refusal);
+    }
+    await assert.rejects(readFile(join(auditDir, `${id}.resume-lock`)), { code: 'ENOENT' });
+    assert.equal(loaded.sessions.size, 0);
+    assert.equal(records.filter(record => record.type === 'launch').length, 1);
+    assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
+    const closing = bridge('fixture-alpha-high'); closing.auditDir = auditDir;
+    try {
+      const closedId = (await closing.newSession(params)).sessionId;
+      let delivered;
+      const active = new Promise(done => { delivered = done; });
+      const interrupted = closing.prompt({ sessionId: closedId, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+        notify: async (_method, event) => { if (event.update.sessionUpdate === 'tool_call') delivered(); },
+      });
+      interrupted.catch(() => {});
+      await active;
+      await closing.close();
+      await assert.rejects(interrupted, /ACP connection closed/);
+      await assert.rejects(loaded.loadSession({ ...params, sessionId: closedId }), refusal);
+    } finally { await closing.close(); }
+  } finally { release(); await stopping?.catch(() => {}); await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 void test('real ACP session/load restores exact native argv after adapter EOF without handoff replay', { timeout: 15000 }, async () => {

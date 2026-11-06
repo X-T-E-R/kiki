@@ -249,7 +249,9 @@ export class AgyBridge {
     if (!this.auditDir) throw new Error('AGY native load requires the existing adapter audit directory');
     if (!/^[0-9a-f-]{36}$/i.test(params.sessionId)) throw new Error('Invalid AGY adapter session ID');
     if (this.sessions.has(params.sessionId)) throw new Error('AGY session is already owned by this connection');
-    const records = (await readFile(resolve(this.auditDir, `${params.sessionId}.ndjson`), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const auditPath = resolve(this.auditDir, `${params.sessionId}.ndjson`);
+    const readAudit = async () => (await readFile(auditPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const records = await readAudit();
     const workspace = records.find(record => record.type === 'session_new');
     const launch = records.findLast(record => record.type === 'launch');
     const init = records.findLast(record => record.type === 'agy_init');
@@ -294,6 +296,16 @@ export class AgyBridge {
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     };
     try {
+      const latest = await readAudit();
+      const retired = latest.findLast(record => record.type === 'cancel_requested' || record.type === 'cancel_failed'
+        || record.type === 'cancel' && record.resumeSupported === false
+        || record.type === 'tool_terminal_missing' && record.tools?.length);
+      if (retired) {
+        const error = new Error(`AGY native session is retired or unreconciled (${retired.type}); inspect the native outcome before deciding what to run in a fresh session; do not replay interrupted prompts or commands`);
+        error.code = 'AGY_SESSION_RETIRED';
+        error.details = { reason: retired.type, unresolvedTools: retired.unresolvedTools ?? retired.tools ?? [] };
+        throw error;
+      }
       await this.newSession(params, params.sessionId, 'session_loaded');
       const session = this.session(params.sessionId);
       session.model = model;
@@ -540,6 +552,10 @@ export class AgyBridge {
     let ingress = Promise.resolve();
     let sequence = 0;
     let stdoutFailed = false;
+    session.drainReceived = () => {
+      stdoutFailed = true;
+      return Promise.all([ingress, delivery]);
+    };
     const fail = error => {
       session.broken = true;
       if (!session.cancelling) void this.stopProcess(child).catch(() => {});
@@ -651,7 +667,9 @@ export class AgyBridge {
     if (!active || session.cancelling) return;
     session.active = undefined;
     const unresolved = this.unresolvedTools(session);
-    if (unresolved.length) this.auditQuietly(session, 'tool_terminal_missing', { reason: 'stream_lost', tools: unresolved });
+    if (unresolved.length) await this.audit(session, 'tool_terminal_missing', { reason: 'stream_lost', tools: unresolved }).catch(auditError => {
+      error.details = { ...error.details, retirementAuditError: auditError.message };
+    });
     await this.rejectUnconfirmedTurn(session, active, error, unresolved);
   }
 
@@ -814,6 +832,7 @@ export class AgyBridge {
     const active = session.active;
     session.broken = true;
     try {
+      await this.audit(session, 'cancel_requested', { pid: session.child?.pid, resumeSupported: false });
       await session.preparing?.catch(() => {});
       await session.permissionChannel?.close();
       await this.stopProcess(session.child);
@@ -828,9 +847,12 @@ export class AgyBridge {
       await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false, unresolvedTools: unresolved });
       active?.resolve({ stopReason: 'cancelled' });
     } catch (error) {
+      await session.drainReceived?.();
       session.active = undefined;
       const unresolved = this.unresolvedTools(session);
-      this.auditQuietly(session, 'cancel_failed', { pid: session.child?.pid, unresolvedTools: unresolved });
+      await this.audit(session, 'cancel_failed', { pid: session.child?.pid, unresolvedTools: unresolved }).catch(auditError => {
+        error.details = { ...error.details, retirementAuditError: auditError.message };
+      });
       if (active) await this.rejectUnconfirmedTurn(session, active, error, unresolved);
       throw error;
     } finally {
@@ -844,7 +866,10 @@ export class AgyBridge {
       const active = session.active; session.active = undefined; session.broken = true;
       try {
         const unresolved = this.unresolvedTools(session);
-        if (active && unresolved.length) await this.settlePendingTools(session, active, this.unknownToolMessage('ACP connection closed before a tool terminal update', unresolved));
+        if (active && unresolved.length) {
+          await this.audit(session, 'tool_terminal_missing', { reason: 'connection_closed', tools: unresolved });
+          await this.settlePendingTools(session, active, this.unknownToolMessage('ACP connection closed before a tool terminal update', unresolved));
+        }
       } finally {
         active?.reject(new Error('ACP connection closed'));
         await session.preparing?.catch(() => {});
