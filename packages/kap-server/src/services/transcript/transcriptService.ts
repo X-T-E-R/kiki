@@ -73,7 +73,7 @@ import {
 } from '@kiki/transcript-live';
 
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
-import { openLogicalWire, streamLogicalWireRecords, type LogicalWire } from '../history/logicalWireRead';
+import { openLogicalWire, streamLogicalWireRecords } from '../history/logicalWireRead';
 import { historyNavigationProof, matchesNavigationProof } from '../history/historyNavigationProof';
 import { CanonicalEntityPreparingError, type CanonicalToolLookup, type ResidentTurnProofResult } from '../history/historyCanonicalReader';
 
@@ -1838,6 +1838,7 @@ export class TranscriptService {
     preserveOpenTurnIds?: () => readonly string[],
     signal?: AbortSignal,
     captureReplayState?: (state: TranscriptReplayState) => void,
+    tailFirst = false,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     await this.live.get(sessionId)?.pendingDisposals.get(agentId);
@@ -1852,18 +1853,19 @@ export class TranscriptService {
         undefined,
         undefined,
         captureReplayState,
+        tailFirst,
       );
       this.assertReadableAgent(sessionId, agentId);
       return snapshot;
     }
-    const key = `${sessionId}\0${agentId}`;
+    const key = `${sessionId}\0${agentId}\0${tailFirst}`;
     let flight = this.coldSnapshotFlights.get(key);
     if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
     if (flight === undefined || flight.controller.signal.aborted) {
       const controller = new AbortController();
       let created!: ColdSnapshotFlight;
       const promise = Promise.resolve()
-        .then(() => this.loadColdSnapshot(sessionId, agentId, undefined, controller.signal))
+        .then(() => this.loadColdSnapshot(sessionId, agentId, undefined, controller.signal, undefined, undefined, undefined, tailFirst))
         .finally(() => {
           created.settled = true;
           if (this.coldSnapshotFlights.get(key) === created) this.coldSnapshotFlights.delete(key);
@@ -1898,7 +1900,7 @@ export class TranscriptService {
         this.retainedColdTurns.delete(wirePath);
         this.deleteColdSnapshotCache(wirePath);
       }
-      return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal);
+      return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, tailFirst || boundedPage);
     }
     const retained = this.retainedColdTurns.get(wirePath);
     if (retained !== undefined && retained.fingerprint !== fingerprint) this.retainedColdTurns.delete(wirePath);
@@ -1967,7 +1969,7 @@ export class TranscriptService {
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     if (info.size <= (tailFirst ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
-      return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
+      return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState, tailFirst);
     }
     const opened = signal ?? new AbortController().signal;
     const proof = tailFirst ? await historyNavigationProof(location.wirePath, info.size, opened) : undefined;
@@ -2002,7 +2004,7 @@ export class TranscriptService {
 
   private async readLegacyColdPageSnapshot(sessionId: string, agentId: string,
     project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
-    signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?: AbortSignal, tailFirst = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
@@ -2019,7 +2021,7 @@ export class TranscriptService {
     const cached = this.coldSnapshotCache.get(wirePath);
     if (cached !== undefined) {
       const fresh = cached.fingerprint === fingerprint && cached.expiresAt > Date.now();
-      const reusable = fresh && (cached.pageOnly ||
+      const reusable = fresh && (tailFirst || cached.pageOnly ||
         await this.hasVerifiedWireReceipt(wirePath, info, signal ?? new AbortController().signal) ||
         await this.hasVerifiedLiveEpoch(sessionId, agentId));
       if (reusable) {
@@ -2030,7 +2032,7 @@ export class TranscriptService {
       }
       this.deleteColdSnapshotCache(wirePath);
     }
-    const snapshot = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    const snapshot = await this.readColdSnapshot(sessionId, agentId, undefined, signal, undefined, tailFirst);
     if (snapshot === undefined) return snapshot;
     const after = await stat(wirePath);
     signal?.throwIfAborted();
@@ -2740,8 +2742,8 @@ export class TranscriptService {
     }
   }
 
-  private loadColdSnapshot(...args: Parameters<TranscriptService['loadColdSnapshotInLane']>): Promise<AgentTranscriptSnapshot | undefined> {
-    return this.scheduleHistoryRead(args[3], signal => this.loadColdSnapshotInLane(args[0], args[1], args[2], signal, args[4], args[5], args[6]));
+  private loadColdSnapshot(...[sessionId, agentId, preserve, signal, ...options]: Parameters<TranscriptService['loadColdSnapshotInLane']>): Promise<AgentTranscriptSnapshot | undefined> {
+    return this.scheduleHistoryRead(signal, owned => this.loadColdSnapshotInLane(sessionId, agentId, preserve, owned, ...options));
   }
 
   private async loadColdSnapshotInLane(
@@ -2752,6 +2754,7 @@ export class TranscriptService {
     limits?: TranscriptColdReadLimits,
     stats?: ColdSnapshotStats,
     captureReplayState?: (state: TranscriptReplayState) => void,
+    tailFirst = false,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
@@ -2772,8 +2775,10 @@ export class TranscriptService {
     signal.throwIfAborted();
     const missingWire = info === undefined;
     const bounded = limits !== undefined;
-    const sealed = !bounded && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
-    const liveVerified = !bounded && !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
+    const sealed = !bounded && !tailFirst && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
+    const liveVerified = !bounded && !sealed && info !== undefined && (tailFirst
+      ? this.live.get(sessionId)?.agentWires.get(agentId)?.isTranscriptLiveEpochVerified?.() === true
+      : await this.hasVerifiedLiveEpoch(sessionId, agentId));
     if (liveVerified) info = await stat(wirePath).catch(() => undefined);
     const verified = sealed || liveVerified;
     signal.throwIfAborted();
@@ -2918,7 +2923,8 @@ export class TranscriptService {
       const snapshot = transcript.snapshot();
       const stillVerified = verified && (sealed
         ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
-        : await this.hasVerifiedLiveEpoch(sessionId, agentId));
+        : tailFirst ? this.live.get(sessionId)?.agentWires.get(agentId)?.isTranscriptLiveEpochVerified?.() === true
+          : await this.hasVerifiedLiveEpoch(sessionId, agentId));
       const after = stillVerified ? await stat(wirePath).catch(() => undefined) : undefined;
       const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
       const proven = complete && stillVerified && unchanged;
@@ -3670,28 +3676,16 @@ async function verifySealedWireBytes(wirePath: string, wire: WireTranscriptRecei
     const tail = await readWireTail(wirePath, wire.size, wire.tailBytes, signal);
     return tail.byteLength === wire.tailBytes && tail.at(-1) === 0x0a && wireTailSha256(tail) === wire.tailSha256;
   }
-  const logical = await openLogicalWire(wirePath);
+  const logical = await openLogicalWire(wirePath, signal);
   let digest: Awaited<ReturnType<typeof digestWireBytes>>;
   try {
     digest = logical === undefined
       ? await digestWireBytes(createReadStream(wirePath, { signal }))
-      : await digestWireBytes(logicalWireChunks(logical, signal));
+      : await digestWireBytes(logical.chunks());
   } finally {
     logical?.close();
   }
   return digest.endsWithNewline && digest.size === wire.size && digest.sha256 === wire.sha256;
-}
-
-async function* logicalWireChunks(source: LogicalWire, signal: AbortSignal): AsyncGenerator<Uint8Array> {
-  let position = 0;
-  while (position < source.size) {
-    signal.throwIfAborted();
-    const length = Math.min(64 * 1024, source.size - position);
-    const chunk = await source.readAt(position, length);
-    if (chunk.byteLength === 0) break;
-    position += chunk.byteLength;
-    yield chunk;
-  }
 }
 
 async function readWireTail(wirePath: string, size: number, length: number, signal: AbortSignal): Promise<Buffer> {

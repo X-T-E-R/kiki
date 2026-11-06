@@ -250,6 +250,13 @@ async function handleFsContent(
     return;
   }
 
+  const etag = req.query.preview === 'media' ? `"preview-v2-${buildEtag(st).replaceAll('"', '')}"` : buildEtag(st);
+  const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
+  if (ifNoneMatch !== undefined && ifNoneMatch === etag) {
+    reply.code(304).header('etag', etag).send('');
+    return;
+  }
+
   let isBinary = false;
   try {
     const sampleSize = Math.min(FS_BINARY_SAMPLE_BYTES, st.size);
@@ -259,13 +266,6 @@ async function handleFsContent(
     isBinary = classification.isBinary || classification.encoding !== 'utf-8';
   } catch (err) {
     sendOsFsError(reply, requestId, err, path);
-    return;
-  }
-
-  const etag = req.query.preview === 'media' ? `"preview-v2-${buildEtag(st).replaceAll('"', '')}"` : buildEtag(st);
-  const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
-  if (ifNoneMatch !== undefined && ifNoneMatch === etag) {
-    reply.code(304).header('etag', etag).send('');
     return;
   }
 

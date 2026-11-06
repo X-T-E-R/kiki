@@ -26,10 +26,19 @@ export async function historyNavigationProof(path: string, through: number, sign
   const before = await stat(path, { bigint: true });
   const identity = `${before.dev}:${before.ino}:${before.birthtimeNs}`;
   let opened: LogicalWire | undefined;
-  const digest = async (position: number, size: number): Promise<string> => {
-    const bytes = size === 0 ? new Uint8Array() : await opened!.readAt(position, size);
-    if (bytes.byteLength !== size) throw new Error('history_source_changed');
-    return createHash('sha256').update(bytes).digest('hex');
+  const sample = async (): Promise<{ head: string; tail: string }> => {
+    const size = Math.min(through, PROOF_BYTES);
+    const tailStart = Math.max(0, through - PROOF_BYTES);
+    const read = async (position: number, length: number): Promise<Uint8Array> => {
+      const bytes = length === 0 ? new Uint8Array() : await opened!.readAt(position, length);
+      if (bytes.byteLength !== length) throw new Error('history_source_changed');
+      return bytes;
+    };
+    const shared = through <= PROOF_BYTES * 2 ? await read(0, through) : undefined;
+    const head = createHash('sha256').update(shared?.subarray(0, size) ?? await read(0, size)).digest('hex');
+    const tail = tailStart === 0 ? head : createHash('sha256')
+      .update(shared?.subarray(tailStart) ?? await read(tailStart, size)).digest('hex');
+    return { head, tail };
   };
   const unchangedOrAppended = (info: typeof before, previous: typeof before): void => {
     if (!info.isFile() || `${info.dev}:${info.ino}:${info.birthtimeNs}` !== identity || info.size < previous.size ||
@@ -44,14 +53,12 @@ export async function historyNavigationProof(path: string, through: number, sign
       throw new Error('history_source_changed');
     }
     unchangedOrAppended(await stat(path, { bigint: true }), before);
-    const headSize = Math.min(through, PROOF_BYTES);
-    const tailStart = Math.max(0, through - PROOF_BYTES);
-    const head = await digest(0, headSize);
-    const tail = await digest(tailStart, headSize);
+    const { head, tail } = await sample();
     const after = await stat(path, { bigint: true });
     unchangedOrAppended(after, before);
     if (after.size > before.size) {
-      if (await digest(0, headSize) !== head || await digest(tailStart, headSize) !== tail) {
+      const current = await sample();
+      if (current.head !== head || current.tail !== tail) {
         throw new Error('history_source_changed');
       }
       unchangedOrAppended(await stat(path, { bigint: true }), after);

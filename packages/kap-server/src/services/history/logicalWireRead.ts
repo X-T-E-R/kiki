@@ -15,6 +15,7 @@ import {
 } from '@kiki/transcript-live/wireRecords';
 
 export interface LogicalWire extends WireByteSource {
+  chunks(): AsyncIterable<Uint8Array>;
   close(): void;
 }
 
@@ -44,6 +45,7 @@ export async function openLogicalWire(wirePath: string, signal?: AbortSignal): P
   return {
     size,
     readAt: (position, length) => readPinnedRange(pinned, position, length, signal),
+    chunks: () => pinned.read({ start: 0, end: size - 1 }, { signal }),
     close() {
       if (closed) return;
       closed = true;

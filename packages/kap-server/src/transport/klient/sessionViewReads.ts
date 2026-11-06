@@ -300,9 +300,10 @@ async function readSessionViewTranscriptPageRaw(
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
   const singleBeforeTurn = input.beforeTurn !== undefined && input.pageSize === 1;
   const sourceDirection: 'head' | 'tail' = input.afterTurn !== undefined || input.afterItem !== undefined || (anchored && !singleBeforeTurn) ? 'head' : 'tail';
-  const store = transcriptService.forSessionLive(sessionId);
+  const tailFirst = !anchored;
+  const store = transcriptService.forSessionLive(sessionId, { tailFirst });
   if (store !== undefined) {
-    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { signal: input.signal });
+    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst, signal: input.signal });
     if (transcript === undefined) return undefined;
     const liveVerified = transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId);
     if (!liveVerified) void transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId).catch(() => {});

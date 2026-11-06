@@ -111,13 +111,12 @@ describe('kiki command helpers', () => {
     driver.mockRestore();
   });
 
-  it('installs exit diagnostics on the real foreground serve path and records graceful idle closure', async () => {
+  it('starts the real foreground daemon without a GUI build and records graceful idle closure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-serve-diagnostics-')); roots.push(root);
     await writeFile(join(root, 'config.toml'), '[search]\nenabled = false\n');
-    await writeFile(join(root, 'index.html'), '<!doctype html><title>Serve fixture</title>');
     const record = vi.fn();
     const diagnostics = vi.spyOn(serverDiagnostics, 'installServerDiagnostics').mockReturnValue({ record });
-    const assets = vi.spyOn(webAssets, 'requireServerWebAssetsDir').mockReturnValue(root);
+    const assets = vi.spyOn(webAssets, 'findServerWebAssetsDir').mockReturnValue(undefined);
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const program = new Command(); registerServeCommand(program);
     try {

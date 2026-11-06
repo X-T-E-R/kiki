@@ -79,8 +79,6 @@ function readFileSha256(path: string): string | null {
 }
 
 function ensureFile(path: string, bytes: Buffer, expectedSha256: string): void {
-  if (readFileSha256(path) === expectedSha256) return;
-
   mkdirSync(dirname(path), { recursive: true });
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tempPath, bytes, { mode: 0o644 });
@@ -176,6 +174,8 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
   const cacheRoot = getWebAssetCacheRoot(manifest, options);
   for (const file of manifest.files) {
     assertSafeRelativePath(file.relativePath);
+    const path = join(cacheRoot, file.relativePath);
+    if (readFileSha256(path) === file.sha256) continue;
     const bytes = toBuffer(source.getRawAsset(file.assetKey));
     const actualSha256 = sha256(bytes);
     if (actualSha256 !== file.sha256) {
@@ -183,7 +183,7 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
         `Web asset checksum mismatch for ${file.assetKey}: ${actualSha256} !== ${file.sha256}`,
       );
     }
-    ensureFile(join(cacheRoot, file.relativePath), bytes, file.sha256);
+    ensureFile(path, bytes, file.sha256);
   }
   return cacheRoot;
 }
@@ -194,14 +194,9 @@ export function resolveServerWebAssetsDir(
   return nativeWebAssetsDir ?? join(getHostPackageRoot(), WEB_ASSETS_DIR);
 }
 
-export function requireServerWebAssetsDir(
-  nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
-): string {
-  const assetsDir = resolveServerWebAssetsDir(nativeWebAssetsDir);
-  try {
-    if (statSync(join(assetsDir, 'index.html')).isFile()) return assetsDir;
-  } catch {}
-  throw new Error(
-    `Kiki web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
-  );
+export function findServerWebAssetsDir(): string | undefined {
+  const native = getNativeWebAssetsDir();
+  if (native !== null) return native;
+  const assetsDir = resolveServerWebAssetsDir(null);
+  return statSync(join(assetsDir, 'index.html'), { throwIfNoEntry: false })?.isFile() ? assetsDir : undefined;
 }

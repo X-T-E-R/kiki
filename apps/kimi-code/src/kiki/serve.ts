@@ -20,7 +20,7 @@ import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { parseLogLevel } from '../cli/log-level';
 import { mainHeapEnvironment } from '../native/main-heap';
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
-import { requireServerWebAssetsDir } from '../native/web-assets';
+import { findServerWebAssetsDir } from '../native/web-assets';
 import { getBrowserDriverFile } from '../native/native-assets';
 import { resolveKikiHome } from './home';
 import { installServerDiagnostics } from './server-diagnostics';
@@ -248,7 +248,7 @@ interface ServeStartOptions {
 
 export function startServeServer(
   options: ServeStartOptions,
-  webAssetsDir = requireServerWebAssetsDir(),
+  webAssetsDir = findServerWebAssetsDir(),
   startServerImpl: typeof startServer = startServer,
 ): Promise<RunningServer> {
   const version = getVersion();

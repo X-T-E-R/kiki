@@ -79,7 +79,7 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   if (cursor?.proof !== undefined && !matchesNavigationProof(cursor.proof, proof)) throw new Error('stale_scan_cursor');
   let saved = db.readManifest(input.key);
   if (saved !== undefined && (saved.incarnation !== input.incarnation ||
-      !await historyNavigationProof(input.wirePath, saved.offset, input.signal)
+      !await (saved.offset === asOf ? Promise.resolve(proof) : historyNavigationProof(input.wirePath, saved.offset, input.signal))
         .then((proof) => matchesNavigationProof(saved!.source, proof), (error: unknown) => {
           input.signal?.throwIfAborted();
           if (error instanceof Error && error.message === 'history_source_changed') return false;
@@ -147,8 +147,8 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
           while (received < size) {
             input.signal?.throwIfAborted();
             const count = logical !== undefined
-              ? await readLogicalInto(logical, raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)
-              : (await file!.read(raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)).bytesRead;
+              ? await readLogicalInto(logical, raw, received, size - received, row.anchor.start + received)
+              : (await file!.read(raw, received, size - received, row.anchor.start + received)).bytesRead;
             if (count === 0) throw new Error('stale_scan_cursor');
             received += count;
             bytesRead += count;

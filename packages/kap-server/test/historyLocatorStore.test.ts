@@ -1211,6 +1211,37 @@ describe('history navigation source rows', () => {
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
+  it('uses one short-prefix read per source fence and reuses the same watermark for warm sorted search', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-reads-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const actual = await vi.importActual<typeof logicalWire>('../src/services/history/logicalWireRead');
+    const source = [0, 1, 2].map(turnId => line({ type: 'turn.prompt', turnId, time: 1000 + turnId,
+      input: [{ type: 'text', text: `needle ${turnId} ${'x'.repeat(24_000)}` }], origin: { kind: 'user' } })).join('');
+    const size = Buffer.byteLength(source);
+    await writeFile(wirePath, source);
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    const nav = new HistoryLocatorStore(db, transcript);
+    const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
+      () => transcript, () => nav)[0]![1] as IHistoryArchive;
+    const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const,
+      workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 };
+    const reads: Array<{ start: number; bytes: number }> = [];
+    const gate = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (...args) => {
+      const wire = await actual.openLogicalWire(...args);
+      return wire === undefined ? wire : { ...wire, readAt: (start, bytes) => {
+        reads.push({ start, bytes });
+        return wire.readAt(start, bytes);
+      } };
+    });
+    try {
+      expect((await archive.search(request)).items[0]?.turn).toBe(2);
+      reads.length = 0;
+      expect((await archive.search(request)).items[0]?.turn).toBe(2);
+      expect(reads.filter(read => read.bytes >= (64 << 10))).toEqual([{ start: 0, bytes: size }, { start: 0, bytes: size }]);
+    } finally { gate.mockRestore(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('keeps two serial live searches and their refs on fixed ranges while proof IO races real appends', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-append-'));
     const wirePath = join(dir, 'wire.jsonl');

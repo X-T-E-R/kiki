@@ -396,17 +396,27 @@ describe('server-v2 /api fs:content', () => {
     expect(res.headers.get('content-type')).toContain(mime);
   });
 
-  it('answers If-None-Match with 304 when the etag matches', async () => {
+  it('answers If-None-Match with 304 before reading a classification sample', async () => {
     const file = join(dir as string, 'cached.txt');
     await writeFile(file, 'cache me');
 
-    const first = await getContent(file);
-    const etag = first.headers.get('etag') as string;
+    const hostFs = server!.core.accessor.get(IHostFileSystem);
+    const readBytes = vi.spyOn(hostFs, 'readBytes');
+    try {
+      const first = await getContent(file);
+      const etag = first.headers.get('etag') as string;
+      expect(readBytes).toHaveBeenCalledTimes(1);
+      expect(readBytes.mock.calls[0]?.[0]).toBe(file);
 
-    const res = await getContent(file, { 'if-none-match': etag });
-    expect(res.status).toBe(304);
-    expect(res.headers.get('etag')).toBe(etag);
-    expect(await res.text()).toBe('');
+      readBytes.mockClear();
+      const res = await getContent(file, { 'if-none-match': etag });
+      expect(res.status).toBe(304);
+      expect(res.headers.get('etag')).toBe(etag);
+      expect(await res.text()).toBe('');
+      expect(readBytes).not.toHaveBeenCalled();
+    } finally {
+      readBytes.mockRestore();
+    }
   });
 
   it('honors single-range requests with 206', async () => {

@@ -1,6 +1,6 @@
 # 本地服务与 API
 
-Kiki 的本地服务就是共享 daemon。使用 `kiki serve` 启动、复用或停止交互式 TUI、桌面 GUI 与外部调用方共用的 daemon；它同时挂载浏览器里的 Kiki GUI、REST API（`/api`）和 WebSocket 事件流（`/api/ws`）。需要让另一台设备的浏览器进入这台 Kiki 时，用 `kiki web` 在同一个 daemon 上开启 [Web 访问](#在浏览器里使用-kiki)。Kiki GUI 用于在浏览器里直接使用 Kiki；REST 与 WebSocket API 面向脚本和第三方工具，可以用代码创建会话、提交提示词、实时跟进执行过程——它们与 TUI、Kiki GUI 读写同一份会话数据。
+Kiki 的本地服务就是共享 daemon。使用 `kiki serve` 启动、复用或停止交互式 TUI、桌面 GUI 与外部调用方共用的 daemon；它提供 REST API（`/api`）和 WebSocket 事件流（`/api/ws`）；安装了 GUI 资源时，也提供浏览器界面。需要让另一台设备的浏览器进入这台 Kiki 时，用 `kiki web` 在同一个 daemon 上开启 [Web 访问](#在浏览器里使用-kiki)。Kiki GUI 用于在浏览器里直接使用 Kiki；REST 与 WebSocket API 面向脚本和第三方工具，可以用代码创建会话、提交提示词、实时跟进执行过程——它们与 TUI、Kiki GUI 读写同一份会话数据。
 
 > 开始前请确认 Kiki 已安装并处于可用状态——完成 `/login` 登录（TUI 内或 `kiki login`），或已在 `config.toml` 配置供应商。服务与 CLI 共享同一份登录态与配置，无需为服务单独准备凭证。
 

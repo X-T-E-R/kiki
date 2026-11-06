@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import * as version from '#/cli/version';
 import {
+  findServerWebAssetsDir,
   getNativeWebAssetsDir,
   getWebAssetCacheRoot,
-  requireServerWebAssetsDir,
   resolveServerWebAssetsDir,
   WEB_ASSET_MANIFEST_VERSION,
   type WebAssetManifest,
@@ -22,6 +23,7 @@ function sha256(bytes: Buffer | string): string {
 function fakeWebAssets(files: Record<string, string>): {
   manifest: WebAssetManifest;
   source: WebAssetSource;
+  rawReads: Map<string, number>;
 } {
   const manifest: WebAssetManifest = {
     version: WEB_ASSET_MANIFEST_VERSION,
@@ -40,11 +42,14 @@ function fakeWebAssets(files: Record<string, string>): {
       Buffer.from(content),
     ] as const),
   ]);
+  const rawReads = new Map<string, number>();
   return {
     manifest,
+    rawReads,
     source: {
       getAssetKeys: () => [...assets.keys()],
       getRawAsset: (assetKey) => {
+        rawReads.set(assetKey, (rawReads.get(assetKey) ?? 0) + 1);
         const asset = assets.get(assetKey);
         if (asset === undefined) throw new Error(`missing test asset: ${assetKey}`);
         return asset;
@@ -80,11 +85,12 @@ describe('web assets', () => {
     }
   });
 
-  it('repairs corrupted extracted files on the next lookup', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-web-assets-repair-'));
+  it('does not read embedded assets on a warm cache hit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-web-assets-warm-'));
     try {
-      const { manifest, source } = fakeWebAssets({
+      const { manifest, source, rawReads } = fakeWebAssets({
         'index.html': '<html></html>',
+        'assets/app.js': 'console.log("ok");\n',
       });
 
       const webDir = getNativeWebAssetsDir({
@@ -93,6 +99,35 @@ describe('web assets', () => {
         source,
         version: 'test',
       });
+      rawReads.clear();
+
+      expect(getNativeWebAssetsDir({
+        cacheBase: dir,
+        manifest,
+        source,
+        version: 'test',
+      })).toBe(webDir);
+      expect(rawReads.size).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('repairs corrupted extracted files on the next lookup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-web-assets-repair-'));
+    try {
+      const { manifest, source, rawReads } = fakeWebAssets({
+        'index.html': '<html></html>',
+        'assets/app.js': 'console.log("ok");\n',
+      });
+
+      const webDir = getNativeWebAssetsDir({
+        cacheBase: dir,
+        manifest,
+        source,
+        version: 'test',
+      });
+      rawReads.clear();
       writeFileSync(join(webDir ?? '', 'index.html'), 'broken');
 
       const repairedDir = getNativeWebAssetsDir({
@@ -104,6 +139,8 @@ describe('web assets', () => {
 
       expect(repairedDir).toBe(webDir);
       expect(readFileSync(join(repairedDir ?? '', 'index.html'), 'utf-8')).toBe('<html></html>');
+      expect(rawReads.get('web/test-target/dist/web/index.html')).toBe(1);
+      expect(rawReads.get('web/test-target/dist/web/assets/app.js') ?? 0).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -133,15 +170,16 @@ describe('web assets', () => {
     expect(resolveServerWebAssetsDir(windowsPath)).toBe(windowsPath);
   });
 
-  it('requires the built index before starting a server owner', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kiki-required-web-assets-'));
+  it('keeps the daemon available without an optional package GUI build', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-optional-web-assets-'));
+    const root = vi.spyOn(version, 'getHostPackageRoot').mockReturnValue(dir);
     try {
-      expect(() => requireServerWebAssetsDir(dir)).toThrow(
-        `Kiki web assets were not found at ${dir}`,
-      );
-      writeFileSync(join(dir, 'index.html'), '<html></html>');
-      expect(requireServerWebAssetsDir(dir)).toBe(dir);
+      expect(findServerWebAssetsDir()).toBeUndefined();
+      mkdirSync(join(dir, 'dist', 'web'), { recursive: true });
+      writeFileSync(join(dir, 'dist', 'web', 'index.html'), '<html></html>');
+      expect(findServerWebAssetsDir()).toBe(join(dir, 'dist', 'web'));
     } finally {
+      root.mockRestore();
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
