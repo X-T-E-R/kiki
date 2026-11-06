@@ -389,7 +389,7 @@ function isRetryableProviderFailure(error: unknown, retractableOutput: boolean):
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     const details = providerErrorMetadata(current);
-    if (details['retry'] === false || (!retractableOutput && details['request_output'] === 'observed')) return false;
+    if (details['retry'] === false || details['upstream_retryable'] === false || (!retractableOutput && details['request_output'] === 'observed')) return false;
     const code = details['upstreamErrorCode'];
     if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) return false;
     if (current instanceof ChatProviderError) providerError = current;
@@ -558,6 +558,26 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
+/** Why the same provider request must not be sent again.
+ *
+ * `upstream` is only an explicit boolean `retryable: false`. `budget` is an exhausted
+ * same-request attempt count. Neither forbids appending a new user message. `local` does.
+ * `true`, omission, and non-boolean upstream values are not `upstream` and never clear `local`.
+ */
+export function sameRequestRetryProhibition(
+  details: Readonly<Record<string, unknown>> | undefined,
+): 'local' | 'upstream' | 'budget' | undefined {
+  if (details === undefined) return undefined;
+  const code = details['upstreamErrorCode'];
+  const localCode = typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code);
+  const executed = details['execution'] === 'executed';
+  const localRetry = details['retry'] === false && details['retry_exhausted'] !== true;
+  if (localCode || executed || localRetry) return 'local';
+  if (details['retry'] === false && details['retry_exhausted'] === true) return 'budget';
+  if (details['upstream_retryable'] === false) return 'upstream';
+  return undefined;
+}
+
 /** Marks a parsed provider event's own failure, keeping its exact upstream code.
  *  Only an event the provider itself named qualifies; an HTTP status alone does not. */
 export function markProviderEventError<T>(error: T, upstreamErrorCode?: string | null): T {
@@ -598,6 +618,18 @@ export function readProviderErrorIdentifier(value: unknown): string | null {
   return /^[A-Za-z0-9_.:-]+$/.test(redacted) ? redacted : null;
 }
 
+function explicitUpstreamRetryDenied(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false;
+  const error = readNestedErrorObject(body) ?? body;
+  return (error as Record<string, unknown>)['retryable'] === false;
+}
+
+/** Records an explicit upstream boolean `retryable: false` without writing `retry: false`. */
+export function noteExplicitUpstreamRetryDenial<T>(error: T, body: unknown): T {
+  if (!explicitUpstreamRetryDenied(body)) return error;
+  return attachErrorDetails(error, { upstream_retryable: false });
+}
+
 /** Whitelisted identifiers retained from an SDK stream error without its body or headers. */
 export function providerStreamErrorDetails(
   body: unknown,
@@ -606,13 +638,15 @@ export function providerStreamErrorDetails(
 ): Readonly<Record<string, unknown>> {
   const envelope = typeof body === 'object' && body !== null ? body : undefined;
   const error = envelope === undefined ? undefined : (readNestedErrorObject(envelope) ?? envelope);
-  return {
+  const details: Record<string, unknown> = {
     errorSource: 'provider_stream',
     upstreamErrorType: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'type')),
     upstreamErrorCode: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'code')),
     requestId: readProviderErrorIdentifier(requestId) ?? readProviderErrorIdentifier(envelope === undefined ? undefined : readObjectStringProp(envelope, 'request_id')),
     traceId: readProviderErrorIdentifier(traceId),
   };
+  if (explicitUpstreamRetryDenied(body)) details['upstream_retryable'] = false;
+  return details;
 }
 
 function extractStatusErrorBodyDetail(body: unknown): string | null {

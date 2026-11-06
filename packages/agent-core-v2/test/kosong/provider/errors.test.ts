@@ -9,6 +9,7 @@ import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { attachErrorDetails } from '#/errors';
 
 import {
+  APIConnectionError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   APIStatusError,
@@ -16,6 +17,9 @@ import {
   createAbortError,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
+  markProviderEventError,
+  noteExplicitUpstreamRetryDenial,
+  sameRequestRetryProhibition,
 } from '#/kosong/contract/errors';
 import { safeProviderFailureDetails, safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import type { ProtocolAdapterConfig } from '#/kosong/protocol/protocol';
@@ -301,6 +305,34 @@ describe('non-abort classification still works', () => {
     expect(permanent).toBeInstanceOf(APIStatusError);
     expect(permanent).toMatchObject({ statusCode: 400 });
     expect(isRetryableGenerateError(permanent)).toBe(false);
+  });
+
+  it('keeps an explicit upstream retryable false without writing retry false', () => {
+    const denied = convertAnthropicError(new AnthropicAPIError(undefined, {
+      type: 'error',
+      error: { type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false },
+    }, undefined, new Headers(), 'api_error'));
+    expect(denied.details).toMatchObject({
+      upstream_retryable: false,
+      upstreamErrorCode: 'antigravity_missing_terminal',
+      upstreamErrorType: 'api_error',
+    });
+    expect(denied.details).not.toHaveProperty('retry');
+    expect(isRetryableGenerateError(denied)).toBe(false);
+    expect(sameRequestRetryProhibition(toErrorPayload(denied).details)).toBe('upstream');
+    expect(fromErrorPayload(toErrorPayload(denied)).details).toMatchObject({ upstream_retryable: false });
+  });
+
+  it.each([true, 'false', 0, null, undefined])('ignores upstream retryable %j and does not clear a local veto', (retryable) => {
+    const body = { type: 'error', error: { type: 'api_error', code: 'antigravity_missing_terminal', message: 'again', retryable } };
+    const converted = convertAnthropicError(new AnthropicAPIError(undefined, body, undefined, new Headers(), 'api_error'));
+    expect(converted.details).not.toHaveProperty('upstream_retryable');
+    expect(isRetryableGenerateError(converted)).toBe(true);
+    const local = markProviderEventError(new ChatProviderError('terminal'), 'gateway_stream_terminal_error');
+    noteExplicitUpstreamRetryDenial(local, body);
+    expect(isRetryableGenerateError(local)).toBe(false);
+    expect(sameRequestRetryProhibition(toErrorPayload(local).details)).toBe('local');
+    expect(toErrorPayload(local).details).toMatchObject({ retry: false });
   });
 
   it('redacts labeled plaintext secrets inlined in the Anthropic SDK message', () => {
@@ -693,6 +725,50 @@ describe('convertGoogleGenAIError RetryInfo recovery', () => {
       }),
     );
     expect((error as APIStatusError).retryAfterMs).toBe(5500);
+  });
+
+  it('keeps an ordinary HTTP 429 retryable and honors an explicit false without clearing authentication', () => {
+    const ordinary = convertAnthropicError(new AnthropicAPIError(429, {
+      type: 'error', error: { type: 'rate_limit_error', message: 'slow down' },
+    }, 'slow down', new Headers()));
+    expect(isRetryableGenerateError(ordinary)).toBe(true);
+    expect(ordinary.details).not.toHaveProperty('upstream_retryable');
+
+    const denied = convertAnthropicError(new AnthropicAPIError(429, {
+      type: 'error', error: { type: 'rate_limit_error', message: 'slow down', retryable: false },
+    }, 'slow down', new Headers()));
+    expect(isRetryableGenerateError(denied)).toBe(false);
+    expect(toErrorPayload(denied).details).toMatchObject({ upstream_retryable: false, statusCode: 429 });
+    expect(toErrorPayload(denied).details).not.toHaveProperty('retry');
+
+    const authenticated = convertAnthropicError(new AnthropicAPIError(401, {
+      type: 'error', error: { type: 'authentication_error', message: 'Sign in again', retryable: true },
+    }, 'Sign in again', new Headers(), 'authentication_error'));
+    expect(isRetryableGenerateError(authenticated)).toBe(false);
+    expect(toErrorPayload(authenticated).details).not.toHaveProperty('upstream_retryable');
+
+    const server = convertOpenAIError(new OpenAIAPIError(500, {
+      error: { type: 'api_error', message: 'unavailable', retryable: false },
+    }, 'unavailable', new Headers()));
+    expect(isRetryableGenerateError(server)).toBe(false);
+    expect(toErrorPayload(server).details).toMatchObject({ upstream_retryable: false });
+    expect(sameRequestRetryProhibition(toErrorPayload(server).details)).toBe('upstream');
+  });
+
+  it('keeps a Google explicit retryable false distinct from a gateway terminal and a retry budget', () => {
+    const denied = convertGoogleGenAIError(googleApiError(503, {
+      error: { code: 503, message: 'unavailable', retryable: false },
+    }));
+    expect(isRetryableGenerateError(denied)).toBe(false);
+    expect(sameRequestRetryProhibition(toErrorPayload(denied).details)).toBe('upstream');
+    expect(toErrorPayload(denied).details).not.toHaveProperty('retry');
+
+    const budget = attachErrorDetails(new APIConnectionError('dropped'), {
+      retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5,
+    });
+    expect(isRetryableGenerateError(budget)).toBe(false);
+    expect(sameRequestRetryProhibition(toErrorPayload(budget).details)).toBe('budget');
+    expect(toErrorPayload(budget).details).not.toHaveProperty('upstream_retryable');
   });
 
   it('keeps a 429 without RetryInfo a retryable rate limit with no server delay', () => {

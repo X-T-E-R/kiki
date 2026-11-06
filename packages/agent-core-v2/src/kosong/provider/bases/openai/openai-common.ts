@@ -15,6 +15,7 @@ import {
   ChatProviderError,
   classifyBaseApiError,
   normalizeAPIStatusError,
+  noteExplicitUpstreamRetryDenial,
   markProviderEventError,
   markProviderHttpError,
   parseRetryAfterMs,
@@ -142,16 +143,16 @@ export function convertOpenAIError(
     const retryAfterMs = parseRetryAfterMs(error.headers);
     const traceId = parseTraceId(error.headers);
     if (isOpenAIInsufficientQuotaError(error)) {
-      return new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId);
+      return noteExplicitUpstreamRetryDenial(new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId), error.error);
     }
-    return markProviderHttpError(normalizeAPIStatusError(
+    return noteExplicitUpstreamRetryDenial(markProviderHttpError(normalizeAPIStatusError(
       error.status,
       error.message,
       reqId,
       retryAfterMs,
       traceId,
       error.error,
-    ), error.code);
+    ), error.code), error.error);
   }
   if (
     error instanceof OpenAIAPIError &&

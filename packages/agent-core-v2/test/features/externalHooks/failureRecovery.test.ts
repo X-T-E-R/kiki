@@ -15,7 +15,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { PluginManager } from '#/app/plugin/manager';
 import { writeInstalled } from '#/app/plugin/store';
-import { APIConnectionError, APIStatusError, APIProviderQuotaExhaustedError, ChatProviderError, markProviderEventError } from '#/kosong/contract/errors';
+import { APIConnectionError, APIProviderRateLimitError, APIStatusError, APIProviderQuotaExhaustedError, ChatProviderError, ambiguousRequestDelivery, markProviderEventError, noteExplicitUpstreamRetryDenial } from '#/kosong/contract/errors';
 import type { ChatProvider } from '#/kosong/contract/provider';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
@@ -65,6 +65,12 @@ async function fixture(options: { readonly hooks?: readonly HookDef[]; readonly 
 
 function missingTerminal() {
   return markProviderEventError(new ChatProviderError('Upstream closed without a terminal event'), 'antigravity_missing_terminal');
+}
+
+function deniedMissingTerminal() {
+  return noteExplicitUpstreamRetryDenial(missingTerminal(), {
+    error: { type: 'api_error', code: 'antigravity_missing_terminal', retryable: false },
+  });
 }
 
 function prompt(local: TestAgentContext) {
@@ -176,16 +182,115 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
-  it('does not use fallback recovery to extend an exhausted native retry budget', async () => {
+  it('keeps a new user message available after the native retry budget without another same-request retry', async () => {
     const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: 'APIConnectionError', backoff: 0 }] } } });
     try {
       f.local.mockNextProviderResponse({ error: new APIConnectionError('First failure') });
-      const error = new APIConnectionError('Budget exhausted');
+      f.local.mockNextProviderResponse({ error: new APIConnectionError('Budget exhausted') });
+      f.local.mockNextResponse({ type: 'text', text: 'Continued after the retry budget' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(3);
+      expect(continuations(f.local)).toHaveLength(1);
+      const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[1]?.inputData?.['recoverable']).toBe(true);
+      expect(calls[0]?.[1]?.inputData?.['recoveryAttempts']).toBe(0);
+      const details = (calls[0]?.[1]?.inputData?.['error'] as { details?: Record<string, unknown> } | undefined)?.details;
+      expect(details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 2, retry_max_attempts: 2 });
+      expect(details).not.toHaveProperty('upstream_retryable');
+      expect(JSON.stringify(f.local.llmCalls[2])).toContain('继续');
+    } finally { await f.dispose(); }
+  });
+
+  it('continues one explicit same-request denial and sends no third request when the new message fails', async () => {
+    const f = await fixture();
+    try {
+      f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
+      f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed' });
+      expect(f.local.llmCalls).toHaveLength(2);
+      expect(continuations(f.local)).toHaveLength(1);
+      const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
+      expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
+      expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
+      expect(calls.map(([, args]) => (args?.inputData?.['error'] as { details?: { upstream_retryable?: unknown } }).details?.upstream_retryable)).toEqual([false, false]);
+    } finally { await f.dispose(); }
+  });
+
+  it('does not replay a completed tool after an explicit same-request denial', async () => {
+    const f = await fixture();
+    try {
+      let tools = 0;
+      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
+      f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
+      f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call', arguments: '{}' });
+      f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Continued without replaying the tool' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(tools).toBe(1);
+      expect(continuations(f.local)).toHaveLength(1);
+      expect(f.local.llmCalls).toHaveLength(3);
+    } finally { await f.dispose(); }
+  });
+
+  it('does not continue a gateway terminal error when upstream retryable is true', async () => {
+    const f = await fixture({ hooks: [alwaysContinue] });
+    try {
+      const error = noteExplicitUpstreamRetryDenial(
+        markProviderEventError(new ChatProviderError('terminal'), 'gateway_stream_terminal_error'),
+        { error: { retryable: true, code: 'gateway_stream_terminal_error' } },
+      );
       f.local.mockNextProviderResponse({ error });
       expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
+      expect(f.local.llmCalls).toHaveLength(1);
+      expect(continuations(f.local)).toEqual([]);
+      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(false);
+    } finally { await f.dispose(); }
+  });
+
+  it('retries an explicit ambiguous delivery and does not continue it', async () => {
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
+    try {
+      f.local.mockNextProviderResponse({ error: ambiguousRequestDelivery(new APIConnectionError('read dropped')) });
+      f.local.mockNextProviderResponse({ error: ambiguousRequestDelivery(new APIConnectionError('read dropped again')) });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed' });
       expect(f.local.llmCalls).toHaveLength(2);
       expect(continuations(f.local)).toEqual([]);
-      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toHaveLength(1);
+      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(false);
+    } finally { await f.dispose(); }
+  });
+
+  it('retries an ordinary 429 and does not continue it', async () => {
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
+    try {
+      f.local.mockNextProviderResponse({ error: new APIProviderRateLimitError('slow down') });
+      f.local.mockNextResponse({ type: 'text', text: 'After the rate limit' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(2);
+      expect(continuations(f.local)).toEqual([]);
+      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toEqual([]);
+    } finally { await f.dispose(); }
+  });
+
+  it('does not retry or continue an HTTP 429 explicitly marked non-retryable', async () => {
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { policies: [{ match: '.+', backoff: 0 }] } } });
+    try {
+      const error = noteExplicitUpstreamRetryDenial(new APIProviderRateLimitError('slow down'), { error: { retryable: false } });
+      f.local.mockNextProviderResponse({ error });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
+      expect(f.local.llmCalls).toHaveLength(1);
+      expect(continuations(f.local)).toEqual([]);
+    } finally { await f.dispose(); }
+  });
+
+  it('does not let upstream retryable true recover an authentication failure', async () => {
+    const f = await fixture({ hooks: [alwaysContinue] });
+    try {
+      const error = noteExplicitUpstreamRetryDenial(new APIStatusError(401, 'Sign in again'), { error: { retryable: true } });
+      f.local.mockNextProviderResponse({ error });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
+      expect(f.local.llmCalls).toHaveLength(1);
+      expect(continuations(f.local)).toEqual([]);
     } finally { await f.dispose(); }
   });
 

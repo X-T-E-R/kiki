@@ -1,5 +1,5 @@
 import type { ErrorPayload } from '#/_base/errors/serialize';
-import { readProviderErrorIdentifier } from '#/kosong/contract/errors';
+import { readProviderErrorIdentifier, sameRequestRetryProhibition } from '#/kosong/contract/errors';
 
 export const MAX_FAILURE_RECOVERIES_PER_TURN = 2;
 
@@ -19,7 +19,7 @@ export function permitsFailureContinuation(error: ErrorPayload): boolean {
   if (!chain.some((entry) => ['provider.api_error', 'provider.connection_error', 'provider.overloaded'].includes(entry.code))) return false;
   return !chain.some((entry) => {
     const status = entry.details?.['statusCode'];
-    return entry.details?.['retry'] === false ||
+    return sameRequestRetryProhibition(entry.details) === 'local' ||
       entry.details?.['request_delivery'] === 'ambiguous' ||
       entry.name === 'APIProviderQuotaExhaustedError' ||
       ['provider.auth_error', 'provider.filtered', 'provider.rate_limit', 'context.overflow'].includes(entry.code) ||

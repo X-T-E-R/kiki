@@ -33,6 +33,7 @@ import {
   markProviderHttpError,
   readProviderEventErrorCode,
   normalizeAPIStatusError,
+  noteExplicitUpstreamRetryDenial,
   parseRetryAfterMs,
   parseTraceId,
   providerStreamErrorDetails,
@@ -549,26 +550,26 @@ export function convertAnthropicError(
   }
   if (error instanceof AnthropicAPIError && typeof error.status === 'number') {
     const reqId = error.requestID ?? null;
-    return markProviderHttpError(normalizeAPIStatusError(
+    return noteExplicitUpstreamRetryDenial(markProviderHttpError(normalizeAPIStatusError(
       error.status,
       error.message,
       reqId,
       parseRetryAfterMs(error.headers),
       undefined,
       error.error,
-    ), anthropicStreamErrorCode(error.error));
+    ), anthropicStreamErrorCode(error.error)), error.error);
   }
   if (error instanceof AnthropicAPIError) {
     const permanentStatus = permanentAnthropicStreamStatus(anthropicStreamErrorType(error));
     if (permanentStatus !== undefined) {
-      return normalizeAPIStatusError(
+      return noteExplicitUpstreamRetryDenial(normalizeAPIStatusError(
         permanentStatus,
         error.message,
         error.requestID,
         parseRetryAfterMs(error.headers),
         parseTraceId(error.headers),
         error.error,
-      );
+      ), error.error);
     }
   }
   if (error instanceof AnthropicAPIError && error.error !== undefined) {

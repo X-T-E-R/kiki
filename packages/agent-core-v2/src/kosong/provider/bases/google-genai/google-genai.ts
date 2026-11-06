@@ -8,6 +8,7 @@ import {
   markProviderEventError,
   markProviderHttpError,
   normalizeAPIStatusError,
+  noteExplicitUpstreamRetryDenial,
 } from '#/kosong/contract/errors';
 import type { Message, StreamedMessagePart, ThinkPart, ToolCall } from '#/kosong/contract/message';
 import { isToolDeclarationOnlyMessage } from '#/kosong/contract/message';
@@ -803,15 +804,25 @@ function antigravityErrorInfoReason(details: GoogleRpcDetail[]): string | undefi
   return undefined;
 }
 
+function googleErrorEnvelope(message: string): unknown {
+  const jsonStart = message.indexOf('{');
+  if (jsonStart < 0) return undefined;
+  try {
+    return JSON.parse(message.slice(jsonStart)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'): ChatProviderError {
   const details = googleRpcDetails(error.message);
   const converted = normalizeAPIStatusError(error.status, error.message, undefined, parseRetryInfoDelayMs(details));
-  if (source === 'event') {
-    return markProviderEventError(converted, details.some(isGatewayTerminalErrorInfo)
+  const marked = source === 'event'
+    ? markProviderEventError(converted, details.some(isGatewayTerminalErrorInfo)
       ? 'gateway_stream_terminal_error'
-      : antigravityErrorInfoReason(details));
-  }
-  return markProviderHttpError(converted, antigravityErrorInfoReason(details));
+      : antigravityErrorInfoReason(details))
+    : markProviderHttpError(converted, antigravityErrorInfoReason(details));
+  return noteExplicitUpstreamRetryDenial(marked, googleErrorEnvelope(error.message));
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {

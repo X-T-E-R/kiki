@@ -190,7 +190,7 @@ You can also return a JSON object via stdout to block:
 
 ### Continuing after a model failure
 
-A legacy `StopFailure` script can ask the native agent loop to continue after a model request fails. Native retry and recovery run first; the hook cannot extend an exhausted native retry budget. External executors do not use this recovery path.
+A legacy `StopFailure` script can ask the native agent loop to append a new user message and continue after a model request fails. Automatic retries of that same request run first and stop at their budget; the hook cannot add another retry of the failed request. A new message is a separate decision: exhausting the budget, or an upstream boolean `retryable: false` for that request, does not by itself refuse the new message. External executors do not use this recovery path.
 
 Alongside the base event fields, the script receives:
 
@@ -218,7 +218,7 @@ When `recoverable` is `true` and the structured error matches a case your script
 
 `userMessage` must contain non-whitespace text and fit within 8 KiB of UTF-8. Kiki appends it as a user message with a hook origin and starts the next step in the same turn. Partial assistant output and completed tool results stay in context; this action does not replay the failed request or previous tool calls. There is no `retry` action.
 
-The host permits at most two hook continuations per turn, even when a successful tool step occurs between failures. Cancellation, credentials, billing, quota, safety filtering, context overflow, ambiguous request delivery, and errors explicitly marked non-retryable cannot be recovered this way. Scripts should use narrower, exact error-code matches rather than continuing every permitted failure.
+The host permits at most two hook continuations per turn, even when a successful tool step occurs between failures. Cancellation, credentials, billing, quota, safety filtering, context overflow, ambiguous request delivery, an ordinary HTTP 429, a generic gateway terminal error, and the host's own non-retryable classifications cannot be recovered this way. An upstream boolean `retryable: false` only stops an automatic resend of the same request; `true`, omission, and non-boolean values cannot override a host veto. Scripts should use narrower, exact error-code matches rather than continuing every permitted failure.
 
 Without a continuation request, the original failure ends the turn normally. The same happens if a hook fails, times out, returns invalid output, or requests a different message from another matching hook. A synchronous `StopFailure` invocation is not repeated as a turn-end notification for the same failure; later failures can trigger it again. Return values on observation-only invocations (`recoverable = false`) do not change the outcome.
 

@@ -174,8 +174,10 @@ function hasExplicitRetryVeto(error: unknown): boolean {
   let current = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
-    if (readAttachedErrorDetails(current)?.['retry'] === false ||
-      (current instanceof Error2 && current.details?.['retry'] === false)) return true;
+    const attached = readAttachedErrorDetails(current);
+    const declared = current instanceof Error2 ? current.details : undefined;
+    if (attached?.['retry'] === false || declared?.['retry'] === false ||
+      attached?.['upstream_retryable'] === false || declared?.['upstream_retryable'] === false) return true;
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
