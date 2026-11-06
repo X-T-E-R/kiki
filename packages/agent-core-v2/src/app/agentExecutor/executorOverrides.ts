@@ -208,6 +208,7 @@ export function applyExecutorOverride(
   return {
     ...descriptor,
     sources: override.binPath === undefined ? descriptor.sources : [executorOverrideSource(override.binPath)],
+    source: override.binPath !== undefined && descriptor.source !== undefined ? EXECUTOR_OVERRIDE_SOURCE_ID : descriptor.source,
     env,
     homeDir: override.homeDir,
     extraArgs: override.args,

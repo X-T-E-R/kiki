@@ -1,6 +1,10 @@
 import { Readable, Writable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { HostProcessServiceLike } from '@kiki/acp-client';
 
+import { ILogService } from '#/_base/log/log';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { harnessAccountProcess } from '#/agent/execution/harnessAccountProcess';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
@@ -10,8 +14,10 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
+  executorSourceId,
   IAgentExecutorRegistry,
   registerAgentExecutorProvider,
+  type AgentExecutorContext,
 } from '#/app/agentExecutor/agentExecutor';
 import {
   AgentExecutorRegistryService,
@@ -19,8 +25,7 @@ import {
 } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates, parseModelProbeOutput, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
-import { executorModelProbe } from '#/app/agentExecutor/managedAdapterRegistry';
-import type { AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { executorModelProbe, withManagedAdapterSource } from '#/app/agentExecutor/managedAdapterRegistry';
 import { executorControlCapabilities, modelSelectionPass, resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
   AGENT_EXECUTORS_SECTION,
@@ -35,12 +40,11 @@ import {
   agentExecutorOverridesFromToml,
   agentExecutorOverridesToToml,
   executorProcessEnv,
+  executorProcessOptions,
   redactExecutorOutput,
 } from '#/app/agentExecutor/executorOverrides';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSchema, type AgentExecutorInstances } from '#/app/agentExecutor/executorInstances';
-import { executorSourceId } from '#/app/agentExecutor/agentExecutor';
-import { withManagedAdapterSource } from '#/app/agentExecutor/managedAdapterRegistry';
 
 const processService = { _serviceBrand: undefined } as unknown as IHostProcessService;
 const fs = { _serviceBrand: undefined } as unknown as IHostFileSystem;
@@ -154,6 +158,88 @@ describe('AgentExecutorRegistryService', () => {
     instances = {};
     expect(registry.get(id)).toBeUndefined();
     expect(registry.get('agy-cli')!.revision).toBe(defaultRevision);
+  });
+
+  it('inherits only AGY program dependencies through instance preparation and launch', async () => {
+    const dependencies = { AGY_ACP_SDK_PATH: '/program/acp-sdk.mjs', AGY_CLI_PATH: '/program/agy' };
+    let env = { ...dependencies, GEMINI_API_KEY: 'synthetic-default-account' };
+    const instance = (source_executor: string, kind: 'inherit' | 'plugin_account' = 'inherit') => ({
+      source_executor, label: 'Work', configuration: kind === 'inherit' ? { kind } : {
+        kind, source: 'plugin:example/accounts', account_id: 'work',
+      }, proxy: { kind: 'direct' },
+    });
+    const instances = AgentExecutorInstancesSchema.parse({
+      'instance-work': instance('agy-cli', 'plugin_account'),
+      'instance-inherit': instance('agy-cli'),
+      'instance-other': instance('codex-app-server'),
+    });
+    const config = configWith({});
+    services.set(IConfigService, { ...config, get: <T>(section: string) => {
+      if (section === AGENT_EXECUTOR_INSTANCES_SECTION) return instances as T;
+      if (section === AGENT_EXECUTOR_OVERRIDES_SECTION) return {
+        'agy-cli': { binPath: '/program/agy-cli-acp.mjs', env },
+        'codex-app-server': { binPath: '/program/codex', env },
+      } as T;
+      return config.get<T>(section);
+    } });
+    services.set(IBootstrapService, { homeDir: '/kiki', platform: 'linux', getEnv: () => undefined } as unknown as IBootstrapService);
+    const fakeProcess: HostProcessServiceLike['spawn'] = async () => ({
+      pid: 1, exitCode: 0,
+      stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+      stdout: Readable.from(['agy-cli-acp 1.0\n']), stderr: Readable.from([]),
+      wait: async () => 0, kill: async () => {}, dispose: async () => {},
+    });
+    const probe = vi.fn(fakeProcess);
+    let programExists = true;
+    services.set(IHostProcessService, { spawn: probe } as unknown as IHostProcessService);
+    services.set(IHostFileSystem, { stat: async (path: string) => ({
+      isFile: path !== '/program/agy-cli-acp.mjs' || programExists, isDirectory: false, size: 1,
+    }) } as unknown as IHostFileSystem);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    const original = registry.get('agy-cli')!;
+    const first = registry.get('instance-work')!;
+    expect(executorProcessEnv(original)).toEqual(env);
+    expect(executorProcessEnv(first)).toEqual(dependencies);
+    expect(executorProcessEnv(registry.get('instance-inherit')!)).toEqual(dependencies);
+    const other = registry.get('instance-other')!;
+    expect(executorProcessEnv(other)).toBeUndefined();
+    expect(other.sources).toEqual([{ id: 'override', kind: 'explicit-path', path: '/program/codex' }]);
+    expect(other.source).toBeUndefined();
+    expect(JSON.stringify(first)).not.toContain(env.GEMINI_API_KEY);
+    const resolved = await registry.resolveExecutable('instance-work');
+    expect(resolved.descriptor).toMatchObject({ selectedSource: 'override', launchArgs: ['/program/agy-cli-acp.mjs'] });
+    expect(probe).toHaveBeenCalledWith(expect.any(String), ['/program/agy-cli-acp.mjs', '--kiki-harness-account-version'],
+      expect.objectContaining({ env: dependencies }));
+    const release = vi.fn(async () => {});
+    const prepare = vi.fn(async () => ({ connection: { protocol: 'gemini-v1beta',
+      baseUrl: 'http://127.0.0.1:12345', apiKey: 'synthetic-selected-account', modelIds: ['example-model'] }, release }));
+    const context = { descriptor: resolved.descriptor, binding: {}, agent: { accessor: { get: (service: unknown) => {
+      if (service === IPluginHostService) return { prepareHarnessAccount: prepare };
+      if (service === ILogService) return { warn: vi.fn() };
+      throw new Error('Unexpected launch service');
+    } } } } as unknown as AgentExecutorContext;
+    const spawn = vi.fn(fakeProcess);
+    const launch = harnessAccountProcess({ spawn }, context, 'local');
+    await launch.processes.spawn(resolved.descriptor.command!, resolved.descriptor.launchArgs, executorProcessOptions(resolved.descriptor));
+    expect(prepare).toHaveBeenCalledWith('plugin:example/accounts', { engineId: 'agy-cli', accountId: 'work',
+      instanceId: 'instance-work', proxy: { mode: 'direct', url: undefined } }, expect.any(AbortSignal));
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ env: { ...dependencies, GEMINI_API_KEY: 'synthetic-selected-account' },
+      envUnset: expect.arrayContaining(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'GOOGLE_API_KEY']) });
+    expect(JSON.stringify(spawn.mock.calls)).not.toContain(env.GEMINI_API_KEY);
+    await vi.waitFor(() => { expect(release).toHaveBeenCalledOnce(); });
+    env = { ...env, GEMINI_API_KEY: 'synthetic-other-default-account' };
+    expect(registry.get('instance-work')!.revision).toBe(first.revision);
+    expect(registry.get('agy-cli')!.revision).not.toBe(original.revision);
+    registry.recordNegotiated!('instance-work', undefined, { models: ['example-model'] }, first.revision);
+    env = { ...env, AGY_ACP_SDK_PATH: '/program/updated-sdk.mjs' };
+    expect(registry.get('instance-work')!.revision).not.toBe(first.revision);
+    expect(registry.lastNegotiated!('instance-work')).toBeUndefined();
+    expect(registry.get('instance-other')!.revision).toBe(other.revision);
+    expect(executorProcessEnv(first)).toEqual(dependencies);
+    programExists = false;
+    await expect(registry.resolveExecutable('instance-work')).rejects.toThrow('Configured source "override" is unavailable');
+    expect(probe).toHaveBeenCalledOnce();
   });
 
   it('redacts encoded and decoded authenticated proxy fields from instance diagnostics', () => {
@@ -533,7 +619,7 @@ describe('AgentExecutorRegistryService', () => {
       getEnv: (name: string) => name === 'PATH' ? 'C:/bin' : name === 'PATHEXT' ? '.EXE' : undefined } as IBootstrapService);
     const before = registry.get('agy-cli-909')!;
     expect(before.modelProbe).toBeUndefined();
-    expect(executorModelProbe(before as AgentExecutorDescriptor)?.command).toBe('agy');
+    expect(executorModelProbe(before)?.command).toBe('agy');
     const catalog = await registry.refreshExecutorCapabilityCatalog?.('agy-cli-909');
     expect(registry.get('agy-cli-909')?.revision).toBe(before.revision);
     expect(registry.get('agy-cli-909')?.modelProbe).toBeUndefined();

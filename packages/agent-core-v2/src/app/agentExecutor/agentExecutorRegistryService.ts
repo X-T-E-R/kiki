@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { normalize } from 'pathe';
+import { join, normalize } from 'pathe';
 import type {
   ExecutorBinding,
   ExecutorCapabilityCatalog,
@@ -54,7 +54,6 @@ import { executorModelProbe, MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, ty
 import { wrapWindowsNodeShims } from './windowsNodeShim';
 import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
-import { join } from 'pathe';
 import { readExecutorDiscovery } from './executorDiscovery';
 import { AGENT_EXECUTOR_INSTANCES_SECTION, executorInstanceIssue, INSTANCE_ISSUE_MESSAGE, materializeExecutorInstance, type AgentExecutorInstances } from './executorInstances';
 import type { ExecutorDiscoveryStatus } from '@kiki/protocol';
@@ -115,9 +114,15 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       AGENT_EXECUTOR_OVERRIDES_SECTION,
     )?.[id];
     const parsed = raw === undefined ? undefined : AgentExecutorOverrideSchema.safeParse(raw);
+    const override = parsed?.success === true ? parsed.data : undefined;
+    const programEnv = programOnly && id === 'agy-cli' && override?.env !== undefined
+      ? Object.entries(override.env).filter(([name]) => name === 'AGY_ACP_SDK_PATH' || name === 'AGY_CLI_PATH')
+      : [];
     return applyExecutorOverride(
       descriptorFromConfig(id, entry),
-      parsed?.success === true ? programOnly ? { binPath: parsed.data.binPath } : parsed.data : undefined,
+      programOnly && override !== undefined
+        ? { binPath: override.binPath, env: programEnv.length > 0 ? Object.fromEntries(programEnv) : undefined }
+        : override,
     );
   }
 
