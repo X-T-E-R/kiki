@@ -395,6 +395,12 @@ async function validateProfileSelection(
 
 export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcriptService?: TranscriptService): void {
   const ingress = new PromptIngress(core, {
+    projectDelivery: (sessionId, agentId, result) => {
+      if (result.delivery_state !== 'accepted') return result;
+      const prompt = core.accessor.get(ISessionManager).get(sessionId)?.accessor.get(IAgentLifecycleService).get(agentId)?.accessor.get(IAgentPromptService);
+      const state = prompt === undefined ? undefined : nativeSteerState(prompt, result.prompt_id);
+      return state === undefined ? result : projectNativeSteer(result, state);
+    },
     submit: async (sessionId, execution) => {
       let result: PromptIngressResult | undefined;
       await executeSubmit({ id: execution.body.prompt_id!, params: { session_id: sessionId }, body: execution.body, query: {} },
@@ -633,7 +639,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         );
         const resolvedContent = preparedMedia.content;
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined || req.query.receipt === 'true', retryFingerprint, {
-          waitForLaunch: req.query.receipt === 'true' || ingressExecution !== undefined ? false : undefined,
+          waitForLaunch: req.query.receipt === 'true' || ingressExecution !== undefined || req.body.delivery_mode === 'steer' ? false : undefined,
+          nativeSteer: req.body.delivery_mode === 'steer' && (resolved.profile.data().executorId ?? 'native') === 'native'
+            ? { turnId: steerTarget?.turnId } : undefined,
           contentRanges: preparedMedia.sourceRanges,
           parentReceiptManaged: resolved.agentId !== MAIN_AGENT_ID,
         });
@@ -755,6 +763,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const submitAndDeliver = async () => {
           const result = await phase('prompt_admission', submit);
           if (req.body.delivery_mode !== 'steer') return result;
+          const native = nativeSteerState(resolved.prompt, result.prompt_id);
+          if (native !== undefined) return projectNativeSteer(result, native);
           if (!resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) {
             return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };
           }
@@ -773,7 +783,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             return { ...result, delivery_state: 'queued' as const, delivery_reason: 'target_changed' as const };
           }
           try {
-            const [handle] = await resolved.prompt.steer([result.prompt_id]);
+            const [handle] = await resolved.prompt.acceptSteer([result.prompt_id], activeTurnId);
             return { ...result,
               status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
               delivery_state: wasSteeredIntoTurn(resolved.prompt, handle, activeTurnId) ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
@@ -1060,20 +1070,44 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
 
 async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: readonly string[], activeTurnId?: number): Promise<z.infer<typeof promptSteerResultSchema>> {
   const pending = () => new Set(prompt.list().pending.map((item) => item.id));
+  const disposition = () => {
+    const states = promptIds.map(id => nativeSteerState(prompt, id));
+    const state = states[0];
+    if (state === undefined || !states.every(item => item === state)) return undefined;
+    return { steered: state === 'steered', prompt_ids: [...promptIds], delivery_state: state };
+  };
   const available = pending();
-  if (promptIds.some((id) => !available.has(id))) {
-    if (promptIds.every((id) => prompt.lookup(id) !== undefined)) return { steered: false, prompt_ids: [...promptIds], delivery_reason: 'prompt_no_longer_pending' };
+  if (promptIds.some(id => !available.has(id))) {
+    if (promptIds.every(id => prompt.lookup(id) !== undefined)) {
+      return disposition() ?? { steered: false, prompt_ids: [...promptIds], delivery_reason: 'prompt_no_longer_pending' };
+    }
     throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts were not found');
   }
   try {
-    return projectSteerResult(prompt, await prompt.steer(promptIds), promptIds, activeTurnId);
+    const handles = await prompt.acceptSteer(promptIds, activeTurnId);
+    return disposition() ?? projectSteerResult(prompt, handles, promptIds, activeTurnId);
   } catch (error) {
-    if (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND && promptIds.every((id) => prompt.lookup(id) !== undefined)) {
-      return { steered: false, prompt_ids: [...promptIds], delivery_state: promptIds.every((id) => pending().has(id)) ? 'queued' : undefined,
+    if (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND && promptIds.every(id => prompt.lookup(id) !== undefined)) {
+      return disposition() ?? { steered: false, prompt_ids: [...promptIds], delivery_state: promptIds.every(id => pending().has(id)) ? 'queued' : undefined,
         delivery_reason: 'prompt_no_longer_pending' };
     }
     throw error;
   }
+}
+
+function nativeSteerState(prompt: IAgentPromptService, id: string): 'accepted' | 'steered' | 'started' | 'failed' | 'cancelled' | undefined {
+  const receipt = prompt.lookup(id);
+  if (!receipt?.steerAccepted) return undefined;
+  if (receipt.steered) return 'steered';
+  if (receipt.turnId !== undefined) return 'started';
+  if (receipt.terminal?.state === 'cancelled') return 'cancelled';
+  if (receipt.terminal?.state === 'failed' || receipt.terminal?.state === 'blocked') return 'failed';
+  return 'accepted';
+}
+
+function projectNativeSteer<T extends { readonly status: 'queued' | 'running' | 'blocked' }>(result: T, state: NonNullable<ReturnType<typeof nativeSteerState>>): T & { delivery_state: typeof state } {
+  return { ...result, status: state === 'started' || state === 'steered' ? 'running' : state === 'failed' ? 'blocked' : result.status,
+    delivery_state: state };
 }
 
 function wasSteeredIntoTurn(prompt: IAgentPromptService, handle: PromptHandle | undefined, turnId?: number): boolean {
@@ -1108,6 +1142,7 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     prompt_id: prompt.id,
     user_message_id: prompt.userMessageId,
     status,
+    delivery_state: prompt.deliveryState,
     origin,
     content: projectPromptContentParts(content),
     runtime_controls: prompt.execution === undefined ? undefined : {

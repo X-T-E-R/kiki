@@ -1923,6 +1923,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'prompt.completed',
   'prompt.aborted',
   'prompt.steered',
+  'prompt.steer_accepted',
   'prompt.queued',
   'prompt.queue_hold_changed',
   'prompt.enqueued',

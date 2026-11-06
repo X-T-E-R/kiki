@@ -113,7 +113,6 @@ import {
   SessionRouteView,
   shouldClearModeOverride,
   shouldClearPendingProfileOnSendError,
-  sendNowOwnTurnNotice,
   shouldCloseSessionChromeOnEscape,
   shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
@@ -1613,10 +1612,6 @@ describe('sendNowNotice', () => {
     expect(sendNowQueuedNotice(undefined)).toBe('sv.steerQueued');
   });
 
-  it('explains a Send now that has to open its own turn', () => {
-    expect(sendNowOwnTurnNotice('binding')).toBe('sv.sendNowOwnTurnBinding');
-    expect(sendNowOwnTurnNotice('model')).toBe('sv.sendNowOwnTurnModel');
-  });
 });
 
 describe('nowReceiptDecision', () => {

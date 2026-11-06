@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (93 record types)
+// Index (94 record types)
 //   agent_message.delivered                agentCollaboration.messageReceipts                                                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                     contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed          autoCompactOverride                                                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -83,6 +83,7 @@
 //   prompt.outcome_committed               prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptReplay.ts
 //   prompt.replaced                        prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.retry_committed                 promptRetryReceipt                                                                                                                                                                                                   src/agent/prompt/promptOps.ts
+//   prompt.steer_accepted                  prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.steered                         prompt.identity, promptResolution                                                                                                                                                                                    src/agent/prompt/promptService.ts
 //   prompt.timing_changed                  prompt.identity                                                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                    runtimeBinding                                                                                                                                                                                                       src/agent/runtimeBinding/runtimeBindingOps.ts
@@ -1049,6 +1050,7 @@ interface PromptEnqueuedPayload {
   appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
   revision: number;
   queueIndex: number;
+  steerAccepted?: true;
   retryFingerprint?: string;
   retryStatus?: 'running' | 'queued';
   retryContentRanges?: {
@@ -1247,6 +1249,15 @@ interface PromptRetryCommittedPayload {
     deferredDisabledTools?: string[];
     contentRanges?: object[];
   };
+}
+
+/**
+ * states: prompt.identity
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptSteerAcceptedPayload {
+  _name: 'prompt.steer_accepted';
+  promptIds: string[];
 }
 
 /**
@@ -1790,6 +1801,7 @@ interface WirePayloadMap {
   "prompt.outcome_committed": PromptOutcomeCommittedPayload;
   "prompt.replaced": PromptReplacedPayload;
   "prompt.retry_committed": PromptRetryCommittedPayload;
+  "prompt.steer_accepted": PromptSteerAcceptedPayload;
   "prompt.steered": PromptSteeredPayload;
   "prompt.timing_changed": PromptTimingChangedPayload;
   "runtime.set_binding": RuntimeSetBindingPayload;

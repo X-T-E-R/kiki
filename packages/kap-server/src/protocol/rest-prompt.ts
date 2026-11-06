@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema, promptDeliveryReasonSchema } from '@kiki/protocol';
+import { executionSelectionSchema, promptDeliveryReasonSchema, promptDeliveryStateSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
@@ -77,7 +77,7 @@ export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
   admission: z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']).optional(),
-  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_state: promptDeliveryStateSchema.optional(),
   delivery_reason: promptDeliveryReasonSchema.optional(),
   admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
   admission_content_truncated: z.boolean().optional(),
@@ -166,7 +166,7 @@ export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 export const promptSteerResultSchema = z.object({
   steered: z.boolean(),
   prompt_ids: z.array(z.string().min(1)).min(1),
-  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_state: promptDeliveryStateSchema.optional(),
   delivery_reason: promptDeliveryReasonSchema.optional(),
 });
 export type PromptSteerResult = z.infer<typeof promptSteerResultSchema>;

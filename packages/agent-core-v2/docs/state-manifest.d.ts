@@ -8014,7 +8014,7 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/prompt/promptService.ts
-  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptSteered, PromptOutcomeCommitted
+  // replayable · durable — folds: PromptEnqueued, PromptSteerAccepted, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptSteered, PromptOutcomeCommitted
   'prompt.identity': Map<string, /* PromptIdentity — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
     readonly fingerprint: string;
     readonly currentRequest?: /* PromptRequestFingerprint — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
@@ -8028,6 +8028,8 @@ export interface AgentStateSnapshot {
     readonly promptId: string;
     readonly phase: 'pending' | 'terminal' | 'launched';
     readonly turnId?: number;
+    readonly steerAccepted?: true;
+    readonly steered?: true;
     readonly terminal?: /* PromptTerminalResult — packages/agent-core-v2/src/agent/prompt/prompt.ts */ {
       readonly promptId: string;
       readonly turnId?: number;

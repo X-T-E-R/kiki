@@ -283,7 +283,8 @@ describe('send now (steer) — main agent', () => {
     expect(sent).toEqual({ promptId: 'saved-now', outcome: admission === 'admitted' ? 'steered' : admission });
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({ admission: 'durable', delivery_mode: 'steer', prompt_id: 'saved-now' }));
     expect(client.steerPrompt).not.toHaveBeenCalled();
-    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'saved-now', phase: 'waiting' })]);
+    const phase = admission === 'restoring' ? 'preparing' : admission === 'held' ? 'held' : 'waiting';
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'saved-now', phase })]);
     controller.close();
   });
 
@@ -425,6 +426,68 @@ describe('send now (steer) — main agent', () => {
     expect(controller.getPendingSteers()).toEqual([]);
     expect(client.submitPrompt).not.toHaveBeenCalled();
     controller.close();
+  });
+
+  it('keeps an accepted queue promotion waiting through repeat clicks and a reset, then cancels it silently', async () => {
+    const { controller, client } = await open();
+    const promptId = 'accepted-queued';
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+    client.steerPrompt.mockResolvedValue({ steered: false, prompt_ids: [promptId], delivery_state: 'accepted' });
+    expect(await controller.steerQueued(promptId)).toEqual({ outcome: 'accepted' });
+    expect(await controller.steerQueued(promptId)).toEqual({ outcome: 'accepted' });
+    expect(client.steerPrompt).toHaveBeenCalledTimes(1);
+    const accepted = queuedOp(promptId);
+    if (accepted.op !== 'prompt.upsert') throw new Error('Expected prompt fixture');
+    const snapshot = { ...userTurnSnapshot({ streaming: true }), prompts: [{ ...accepted.prompt, steerAccepted: true as const }] };
+    await deliver(controller, resetEvent('main', snapshot, 3));
+    expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ promptId, steerStatus: 'waiting' })]);
+    const reopened = await open();
+    await deliver(reopened.controller, resetEvent('main', snapshot, 1));
+    expect(steerRows(reopened.controller.getState())).toEqual([expect.objectContaining({ promptId, steerStatus: 'waiting' })]);
+    await reopened.controller.abortPrompt(promptId);
+    expect(reopened.controller.getPendingSteers()).toEqual([]);
+    expect(visibleUsers(reopened.controller.getState()).some(row => row.promptId === promptId)).toBe(false);
+    expect(reopened.client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, undefined, true);
+    reopened.controller.close(); controller.close();
+  });
+
+  it.each(['new', 'queued'] as const)('keeps canonical acceptance when a late %s ACK fails', async source => {
+    const { controller, client } = await open();
+    const promptId = 'late-ack';
+    const ack = deferred<never>();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    if (source === 'queued') await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+    if (source === 'new') client.submitPrompt.mockReturnValue(ack.promise);
+    else client.steerPrompt.mockReturnValue(ack.promise);
+    const sending = source === 'new' ? controller.sendPromptNow({ promptId, text: STEER_TEXT }) : controller.steerQueued(promptId);
+    const queued = queuedOp(promptId);
+    if (queued.op !== 'prompt.upsert') throw new Error('Expected prompt fixture');
+    await deliver(controller, opsEvent('main', [{ ...queued, prompt: { ...queued.prompt, steerAccepted: true as const } }], 3));
+    ack.reject(new ApiError({ code: -1, msg: 'ACK unavailable', source: 'transport', reason: 'timeout', data: null }));
+    await expect(sending).resolves.toMatchObject({ outcome: 'accepted' });
+    expect(controller.getPendingSteers()[0]?.phase).toBe('waiting');
+    controller.close();
+  });
+
+  it('recovers a lost new-message ACK by reading the same durable ID without replay', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    const promptId = 'lost-ack';
+    client.submitPrompt.mockRejectedValue(new ApiError({ code: -1, msg: 'ACK unavailable', source: 'transport', reason: 'timeout', data: null }));
+    const read = vi.fn(async () => ({ ...queuedReceipt(promptId), admission: 'admitted', delivery_state: 'accepted' }));
+    Object.assign(client, { getDurableIngress: read });
+    try {
+      await expect(controller.sendPromptNow({ promptId, text: STEER_TEXT })).rejects.toMatchObject({ reason: 'unknown' });
+      expect(controller.getPendingSteers()[0]?.phase).toBe('unconfirmed');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledExactlyOnceWith('session_test', promptId, 'main');
+      expect(controller.getPendingSteers()[0]?.phase).toBe('waiting');
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
   });
 
   it.each([false, true])('confirms every consecutive send at one response boundary with merged=%s, preserving media and reload order', async (merged) => {
@@ -588,7 +651,9 @@ describe('send now (steer) — main agent', () => {
       permissionMode: 'manual', planMode: true, planGate: 'gated' }))
       .resolves.toEqual({ promptId: 'selected-message', outcome: 'started' });
     expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', {
+      admission: undefined, delivery_mode: 'steer', after_model_switch: undefined,
       content: [{ type: 'text', text: STEER_TEXT }], prompt_id: 'selected-message',
+      model_switch_mode: undefined,
       profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
       permission_mode: 'manual', plan_mode: true, plan_gate: 'gated',
     });
@@ -619,7 +684,7 @@ describe('send now (steer) — main agent', () => {
     expect(error).toBeInstanceOf(SendNowError);
     expect((error as SendNowError).reason).toBe('unknown');
     expect((error as SendNowError).cause).toBe(failure);
-    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'uncertain-now', text: STEER_TEXT, phase: 'waiting' })]);
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'uncertain-now', text: STEER_TEXT, phase: 'unconfirmed' })]);
     expect(onAcknowledged).not.toHaveBeenCalled();
     expect(client.submitPrompt).toHaveBeenCalledTimes(1);
     expect(client.steerPrompt).not.toHaveBeenCalled();

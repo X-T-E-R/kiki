@@ -1753,6 +1753,16 @@ class FixtureServer {
    * fixture emits the canonical `context.append_message` delivery here, as a
    * transcript fact rather than a session event.
    */
+  acceptFixtureSteer(session, agentId, item) {
+    if (session.pendingSteers.some(steer => steer.promptId === item.prompt_id && (steer.agentId ?? 'main') === agentId)) return;
+    const accepted = { type: 'prompt.steer_accepted', payload: { promptIds: [item.prompt_id] } };
+    if (agentId === 'main') this.emitTranscriptFromFrame(session, accepted);
+    else this.emitSideFrame(session, agentId, accepted);
+    session.pendingSteers.push({ agentId, promptId: item.prompt_id, userMessageId: item.user_message_id,
+      content: item.content, origin: { kind: 'user' }, turnId: agentId === 'main' ? session.activeTurnId : session.childTurns?.[agentId] });
+    this.resolveWaiters(session, 'advance');
+  }
+
   deliverPendingSteers(session, boundary) {
     if (session.pendingSteers.length === 0) return;
     const pending = session.pendingSteers;
@@ -1770,6 +1780,12 @@ class FixtureServer {
       const deliver = boundaryAgent === 'main'
         ? (frame) => this.emitTranscriptFromFrame(session, frame)
         : (frame) => this.emitSideFrame(session, boundaryAgent, frame, { promptId: steer.promptId, userMessageId: steer.userMessageId, content: steer.content });
+      const queue = boundaryAgent === 'main' ? session.queuedPrompts : session.childQueues?.[boundaryAgent] ?? [];
+      const index = queue.findIndex(item => item.prompt_id === steer.promptId);
+      if (index < 0) continue;
+      queue.splice(index, 1);
+      deliver({ type: 'prompt.steered', payload: { activePromptId: boundaryAgent === 'main' ? session.activePrompt?.prompt_id : steer.promptId,
+        promptIds: [steer.promptId], content: steer.content, steeredAt: now() } });
       deliver({
         type: 'context.append_message',
         payload: {
@@ -4773,6 +4789,13 @@ class FixtureServer {
         type: 'prompt.queued',
         payload: { promptId, userMessageId: promptId, content: body.content, createdAt },
       }, { promptId, userMessageId: promptId, content: body.content });
+      if (body.delivery_mode === 'steer') {
+        setTimeout(() => {
+          this.acceptFixtureSteer(session, agentId, item);
+          this.envelope(res, { ...item, status: 'queued', delivery_state: 'accepted' });
+        }, this.scenario?.data.steerReplyDelayMs ?? 0);
+        return undefined;
+      }
       return this.envelope(res, { ...item, status: 'queued' });
     }
     if (tail === '/prompts' && body !== undefined) {
@@ -4843,14 +4866,22 @@ class FixtureServer {
               : {}),
           },
         }, { promptId, userMessageId, content: body.content });
-        return this.envelope(res, {
+        const queued = {
           prompt_id: promptId,
           user_message_id: userMessageId,
           status: 'queued',
           content: body.content,
           created_at: createdAt,
           ...(item.append_timing !== undefined ? { append_timing: item.append_timing, revision: item.revision } : {}),
-        });
+        };
+        if (body.delivery_mode === 'steer') {
+          setTimeout(() => {
+            this.acceptFixtureSteer(session, 'main', item);
+            this.envelope(res, { ...queued, delivery_state: 'accepted' });
+          }, this.scenario?.data.steerReplyDelayMs ?? 0);
+          return undefined;
+        }
+        return this.envelope(res, queued);
       }
       this.debug(`prompt "${text}" running as ${promptId}`);
       // Real v2 publishes turn.started before the HTTP reply. Scenarios use this
@@ -4934,54 +4965,12 @@ class FixtureServer {
         return undefined;
       }
       const promptId = steerMatch[1];
-      const steerAgent = query.get('agent_id');
-      if (steerAgent !== null && steerAgent !== 'main') {
-        // Agent-scoped steer: the child's parked prompt joins the child's
-        // running turn at its next step boundary, same as main.
-        const queue = session.childQueues?.[steerAgent] ?? [];
-        const index = queue.findIndex((item) => item.prompt_id === promptId);
-        const turnId = session.childTurns?.[steerAgent];
-        if (index < 0 || turnId === undefined) return this.envelope(res, null, 40402, 'prompt.not_found');
-        const [item] = queue.splice(index, 1);
-        this.emitSideFrame(session, steerAgent, {
-          type: 'prompt.steered',
-          payload: { promptIds: [promptId], content: item.content, steeredAt: now() },
-        });
-        session.pendingSteers.push({
-          agentId: steerAgent,
-          promptId,
-          userMessageId: item.user_message_id,
-          content: item.content,
-          origin: { kind: 'user' },
-          turnId,
-        });
-        this.resolveWaiters(session, 'advance');
-        return this.envelope(res, { steered: true, prompt_ids: [promptId] });
-      }
-      const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
-      if (queuedIndex < 0 || session.activePrompt === null) {
-        return this.envelope(res, null, 40402, 'prompt.not_found');
-      }
-      const [item] = session.queuedPrompts.splice(queuedIndex, 1);
-      this.emit(session.record.id, {
-        type: 'prompt.steered',
-        payload: {
-          activePromptId: session.activePrompt.prompt_id,
-          promptIds: [promptId],
-          content: item.content,
-          steeredAt: now(),
-        },
-      });
-      session.pendingSteers.push({
-        promptId,
-        userMessageId: item.user_message_id,
-        content: item.content,
-        origin: { kind: 'user' },
-        turnId: session.activeTurnId,
-      });
-      // An accepted steer is what opens the running turn's next step.
-      this.resolveWaiters(session, 'advance');
-      return this.envelope(res, { steered: true, prompt_ids: [promptId] });
+      const agentId = query.get('agent_id') ?? 'main';
+      const queue = agentId === 'main' ? session.queuedPrompts : session.childQueues?.[agentId] ?? [];
+      const item = queue.find(candidate => candidate.prompt_id === promptId);
+      if (item === undefined) return this.envelope(res, null, 40402, 'prompt.not_found');
+      this.acceptFixtureSteer(session, agentId, item);
+      return this.envelope(res, { steered: false, prompt_ids: [promptId], delivery_state: 'accepted' });
     }
     const replaceMatch = /^\/prompts\/([^/]+):replace$/.exec(tail);
     if (replaceMatch !== null) {

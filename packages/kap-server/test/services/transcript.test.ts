@@ -4067,7 +4067,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(15);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(16);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4077,7 +4077,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4122,6 +4122,9 @@ describe('TranscriptService live integration', () => {
         { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 2, uuid: 'step-5b' }, time: 26_600 },
         { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5b', uuid: 'boundary-thought', part: { type: 'think', think: 'next' } }, time: 26_700 },
         { type: 'turn.ended', turnId: 5, reason: 'completed', time: 26_800 },
+        { type: 'prompt.enqueued', promptId: 'accepted-not-delivered', userMessageId: 'logical-accepted',
+          message: { origin: { kind: 'user' }, content: [{ type: 'text', text: 'Wait for a step' }] }, time: 26_900 },
+        { type: 'prompt.steer_accepted', promptIds: ['accepted-not-delivered'], time: 26_950 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -4158,7 +4161,10 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(15);
+        const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
+        expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
+        expect(accepted?.steeredAt).toBeUndefined();
+        expect(checkpoint?.format).toBe(16);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary?.kind === 'turn' ? boundary.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)]) : []).toEqual([
           ['step-5a', ['before-boundary']],
@@ -4175,7 +4181,7 @@ describe('TranscriptService live integration', () => {
         const originalWire = await fsPromises.readFile(wirePath);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
-          snapshot: { ...checkpoint!.snapshot, meta: {}, items: [
+          snapshot: { ...checkpoint!.snapshot, meta: {}, prompts: checkpoint!.snapshot.prompts.map(prompt => ({ ...prompt, steerAccepted: undefined })), items: [
             { kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] },
             { kind: 'marker', markerId: 'stale-accounting', marker: 'goal', payload: { type: 'goal.update', tokensUsed: 100 } },
           ] },

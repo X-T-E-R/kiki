@@ -137,6 +137,95 @@ describe('server-v2 /api prompts', () => {
     }
   }, 30_000);
 
+  it.each(['existing', 'new'] as const)('acknowledges %s Send now before the running step is released', async (source) => {
+    const release = promiseGate<void>();
+    const id = await createSession(fixture.home!);
+    await createHeldMainAgent(id, release.promise);
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const loop = main.accessor.get(IAgentLoopService);
+    const client = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!), timeoutMs: 900 });
+    const commands = client.session(id).commands;
+    const body = { prompt_id: 'send-now', content: [{ type: 'text' as const, text: 'Send exactly this message.' }] };
+    try {
+      await commands.submit({ prompt_id: 'active', content: [{ type: 'text', text: 'Hold the first step.' }] });
+      await commands.submit({ prompt_id: 'ordinary', content: [{ type: 'text', text: 'Ordinary queue control.' }] });
+      if (source === 'existing') {
+        await commands.submit(body);
+        expect(await commands.steer(body.prompt_id)).toMatchObject({ steered: false, delivery_state: 'accepted' });
+        expect(await commands.steer(body.prompt_id)).toMatchObject({ steered: false, delivery_state: 'accepted' });
+      } else {
+        expect(await commands.submit({ ...body, admission: 'durable', delivery_mode: 'steer' })).toMatchObject({ admission: 'restoring' });
+        await vi.waitFor(async () => {
+          expect(await client.rest!.sessions.getPrompt(id, body.prompt_id, { admission: 'durable' })).toMatchObject({ admission: 'admitted', delivery_state: 'accepted' });
+        }, { timeout: 900 });
+      }
+      const turn = loop.status().activeTurnId;
+      expect(prompt.list().pending.map(item => item.id)).toEqual(['ordinary', body.prompt_id]);
+      const context = main.accessor.get(IAgentContextMemoryService);
+      expect(context.get().filter(message => message.id === body.prompt_id)).toHaveLength(0);
+      expect(await commands.abort('ordinary')).toMatchObject({ aborted: true });
+      release.resolve();
+      await vi.waitFor(() => expect(context.get().filter(message => message.id === body.prompt_id)).toHaveLength(1));
+      expect(prompt.lookup(body.prompt_id)?.turnId).toBe(turn);
+    } finally {
+      release.resolve();
+      await client.close();
+    }
+  }, 15_000);
+
+  it.each(['deliver', 'cancel'] as const)('reconciles a lost Send now response on reconnect and can %s the same prompt', async outcome => {
+    const release = promiseGate<void>();
+    const id = await createSession(fixture.home!);
+    await createHeldMainAgent(id, release.promise);
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const token = bearerToken(fixture.server!);
+    const promptId = 'accepted-after-lost-response';
+    let lost = false;
+    const client = createHttpKlient({ endpoint: fixture.base, token, fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      if (String(input).includes(`${promptId}:steer`) && !lost) {
+        expect(await response.json()).toMatchObject({ code: 0, data: { delivery_state: 'accepted' } });
+        lost = true;
+        throw new TypeError('Connection lost after acceptance');
+      }
+      return response;
+    } });
+    const reopened = createHttpKlient({ endpoint: fixture.base, token });
+    try {
+      const commands = client.session(id).commands;
+      await commands.submit({ prompt_id: 'active', content: [{ type: 'text', text: 'Hold the first step.' }] });
+      await commands.submit({ prompt_id: promptId, content: [{ type: 'text', text: 'Keep this message identity.' }] });
+      await expect(commands.steer(promptId)).rejects.toThrow();
+      expect(lost).toBe(true);
+      await client.close();
+      const view = reopened.session(id).view;
+      const recovered = await view.transcript.page({ agentId: 'main' });
+      expect(recovered.prompts).toContainEqual(expect.objectContaining({ promptId, status: 'queued', steerAccepted: true }));
+      expect(recovered.prompts.find(item => item.promptId === promptId)?.steeredAt).toBeUndefined();
+      expect(await reopened.session(id).commands.steer(promptId)).toMatchObject({ steered: false, delivery_state: 'accepted' });
+      if (outcome === 'cancel') {
+        expect(await reopened.session(id).commands.abort(promptId, undefined, true)).toMatchObject({ aborted: true });
+        const cancelled = await view.transcript.page({ agentId: 'main' });
+        expect(cancelled.prompts).toContainEqual(expect.objectContaining({ promptId, status: 'aborted', abortedBeforeStart: true }));
+        expect(agentTranscriptToBlocks(cancelled).some(block => block.kind === 'user' && block.userMessageId === promptId)).toBe(false);
+      }
+      const loop = main.accessor.get(IAgentLoopService);
+      loop.hooks.onWillBeginStep.delete('hold-test-turn');
+      release.resolve();
+      await loop.settled();
+      const context = main.accessor.get(IAgentContextMemoryService);
+      expect(context.get().filter(message => message.id === promptId)).toHaveLength(outcome === 'deliver' ? 1 : 0);
+      await closeSessionById(fixture.server!.core.accessor, id);
+      const cold = await view.transcript.page({ agentId: 'main' });
+      expect(agentTranscriptToBlocks(cold).filter(block => block.kind === 'user' && block.userMessageId === promptId)).toHaveLength(outcome === 'deliver' ? 1 : 0);
+    } finally {
+      release.resolve();
+      await client.close();
+      await reopened.close();
+    }
+  }, 15_000);
+
   it.each(['model-stream', 'tool-flight'] as const)('durable send-now preserves the in-flight %s and nonempty queue, then consumes once across reopen and retry', async (phase) => {
     const entered = promiseGate<void>();
     const release = promiseGate<void>();
@@ -202,7 +291,7 @@ describe('server-v2 /api prompts', () => {
       expect(firstResponseClosed).toBe(false);
       expect(toolSignal?.aborted).not.toBe(true);
       expect(main.accessor.get(IAgentContextMemoryService).get().some(message => message.id === 'matrix-now')).toBe(false);
-      expect((await client.submitPrompt(id, body)).admission).toBe('restoring');
+      await vi.waitFor(async () => expect(await client.submitPrompt(id, body)).toMatchObject({ admission: 'admitted', delivery_state: 'accepted' }));
       await client.abortPrompt(id, 'matrix-older');
       release.resolve();
       await vi.waitFor(async () => {
@@ -301,7 +390,9 @@ describe('server-v2 /api prompts', () => {
       const steering = vi.spyOn(prompt, 'steer');
       restore.resolve();
       await vi.waitFor(() => expect(prompt.list().pending.map(item => item.id)).toEqual([sent.promptId]));
-      expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'restoring', status: 'queued' } });
+      await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({
+        data: uncertain ? { admission: 'held' } : { admission: 'admitted', delivery_state: 'accepted' },
+      }));
       expect(loop.status().activeTurnId).toBe(targetTurn);
       expect(main.accessor.get(IAgentContextMemoryService).get().filter(message => message.id === sent.promptId)).toEqual([]);
       await vi.waitFor(() => expect(steering).toHaveBeenCalledWith([sent.promptId]));
@@ -311,7 +402,7 @@ describe('server-v2 /api prompts', () => {
         await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'held' } }));
         expect((await call('POST', `${root}/durable-immediate:resume?admission=durable`)).body.code).toBe(0);
       }
-      await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'queued' } }));
+      await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', delivery_state: 'steered' } }));
       expect(prompt.list().pending).toEqual([]);
       const duplicate = await client.submitPrompt(id, { admission: 'durable', delivery_mode: 'steer', prompt_id: sent.promptId, content: [{ type: 'text', text }] });
       expect(duplicate.admission).toBe('admitted');
@@ -369,8 +460,8 @@ describe('server-v2 /api prompts', () => {
       gate.resolve();
       await vi.waitFor(async () => expect((await call('GET', `${root}/boundary-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'queued' } }));
       const disposition = await call<{ delivery_state?: string; delivery_reason?: string }>('GET', `${root}/boundary-now?admission=durable`);
-      expect(disposition.body.data.delivery_reason).toBe(scenario === 'ordinary' ? undefined : scenario === 'ended-target' ? 'target_changed' : 'steer_rejected');
-      expect(disposition.body.data.delivery_state).toBe(scenario === 'ordinary' ? undefined : 'queued');
+      expect(disposition.body.data.delivery_reason).toBeUndefined();
+      expect(disposition.body.data.delivery_state).toBe(scenario === 'ordinary' ? undefined : 'accepted');
       expect(prompt.list().pending.map(item => item.id)).toContain('boundary-now');
       expect(main.accessor.get(IAgentPermissionModeService).mode).not.toBe('yolo');
       expect(main.accessor.get(IAgentProfileService).data().profileName).toBe('agent');

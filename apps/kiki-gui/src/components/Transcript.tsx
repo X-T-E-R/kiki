@@ -346,7 +346,7 @@ const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_ME
 
 const UserMessage = memo(function UserMessage({
   block,
-  onCancelQueued: _onCancelQueued,
+  onCancelQueued,
   onRetryPending,
   rowActions,
   annotations,
@@ -773,21 +773,27 @@ const UserMessage = memo(function UserMessage({
         </span>
       ) : null}
       {block.steerStatus !== undefined ? (
-        <span
-          role="status"
-          data-steer-line={block.steerStatus}
-          title={block.steerStatus === 'waiting' ? t('transcript.steerWaitingTitle') : undefined}
-          className="mt-1 mr-1 flex items-center gap-1.5 text-[11px]"
-        >
-          <span aria-hidden className="steer-mark" />
-          {block.steerStatus === 'waiting' ? (
-            <>
-              <span className="font-medium text-selected-ink">{t('transcript.steerWaiting')}</span>
-              <span className="text-ink-faint">· {t('transcript.steerWaitingHint')}</span>
-            </>
-          ) : (
-            <span className="text-ink-faint">{t('transcript.steerSending')}</span>
-          )}
+        <span className="mt-1 mr-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+          <span role="status" data-steer-line={block.steerStatus} className="flex items-center gap-1.5"
+            title={block.steerStatus === 'waiting' ? t('transcript.steerWaitingTitle') : undefined}>
+            <span aria-hidden className="steer-mark" />
+            {block.steerStatus === 'waiting' ? (
+              <>
+                <span className="font-medium text-selected-ink">{t('transcript.steerWaiting')}</span>
+                <span className="text-ink-soft">· {t('transcript.steerWaitingHint')}</span>
+              </>
+            ) : (
+              <span className="text-ink-soft">{t(block.steerStatus === 'unconfirmed' ? 'transcript.steerUnconfirmed'
+                : block.steerStatus === 'preparing' ? 'transcript.steerPreparing'
+                : block.steerStatus === 'held' ? 'transcript.admission.held' : 'transcript.steerSending')}</span>
+            )}
+          </span>
+          {onCancelQueued !== undefined && block.promptId !== undefined && block.steerStatus !== 'sending' ? (
+            <button type="button" className="rounded text-ink-soft underline decoration-dotted hover:text-danger focus-visible:outline-2 focus-visible:outline-selected-ink"
+              onClick={() => onCancelQueued(block.promptId!)}>
+              {t('common.cancel')}
+            </button>
+          ) : null}
         </span>
       ) : null}
       {block.promptStatus === 'queued' && admission === undefined && block.optimisticStatus === undefined ? (

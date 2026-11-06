@@ -611,6 +611,7 @@ export const transcriptPromptSchema = z.object({
   finishedAt: z.string().optional(),
   queuePosition: z.number().int().nonnegative().optional(),
   abortedBeforeStart: z.boolean().optional(),
+  steerAccepted: z.literal(true).optional(),
   steeredAt: z.string().optional(),
   appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
   revision: z.number().int().nonnegative().optional(),

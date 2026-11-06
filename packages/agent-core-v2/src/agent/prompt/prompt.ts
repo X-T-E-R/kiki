@@ -73,6 +73,7 @@ export interface PromptInput {
   readonly deferredDisabledTools?: readonly string[];
   /** When false, enqueue returns the accepted handle without awaiting a turn launch. */
   readonly waitForLaunch?: boolean;
+  readonly nativeSteer?: { readonly turnId?: number };
   readonly historyMutationLease?: SessionHistoryMutationLease;
   readonly alreadyMaterialized?: boolean;
   /** Cancels this submission through admission, launch, and its own turn; never a later prompt. */
@@ -105,6 +106,7 @@ export interface PromptSnapshot {
   readonly appendTiming?: DeferredAppendTiming;
   readonly revision?: number;
   readonly error?: import('#/_base/errors/serialize').ErrorPayload;
+  readonly deliveryState?: 'accepted';
 }
 
 export interface PromptHandle extends PromptSnapshot {
@@ -193,6 +195,7 @@ export const promptAdmission = Symbol('promptAdmission');
 
 export interface PromptAdmissionOptions {
   readonly waitForLaunch?: boolean;
+  readonly nativeSteer?: PromptInput['nativeSteer'];
   readonly contentRanges?: readonly PromptContentRange[];
   /** The admission owner publishes this child's task outcome; suppress autonomous duplicate receipts. */
   readonly parentReceiptManaged?: boolean;
@@ -263,6 +266,8 @@ export interface IAgentPromptService {
   setEditHold(promptId: string, held: boolean): void;
   /** Send selected prompts at the next safe boundary; compatible native inputs share one batch and submit hook while keeping their own handles. Timing and recovery holds are bypassed only for selected prompts. */
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
+  /** Durably accepts native delivery intent without waiting for a step boundary. External delivery retains its executor receipt semantics. */
+  acceptSteer(promptIds: readonly string[], targetTurnId?: number): Promise<readonly PromptHandle[]>;
   /**
    * Cancels one prompt and returns whether this call cancelled something.
    * Targeted per state: a pending prompt leaves the queue, a prompt still

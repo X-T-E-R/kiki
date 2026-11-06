@@ -77,7 +77,9 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
     if ((await row.count()) !== 1) throw new Error(`${flow}: delivered message rendered ${await row.count()} times`);
     const deliveredId = await row.getAttribute('data-block-id');
     if (deliveredId !== pendingId) throw new Error(`${flow}: the row was replaced on delivery (${pendingId} → ${deliveredId})`);
-    // Inserted at the tool boundary: after the tool card, before the reply that read it.
+    // Completed tool rows fold under Worked; expand that group before checking placement.
+    const foldedTool = page.locator(`${scope} [data-history-fold]:not([data-history-fold-open]) [data-activity-toggle]`).first();
+    if (await foldedTool.isVisible()) await foldedTool.click();
     const order = await page.evaluate(({ scope, text }) => {
       const rows = [...document.querySelectorAll(`${scope} [data-block-id]`)]
         .filter((node) => node.parentElement?.closest('[data-block-id]') === null);
@@ -99,14 +101,14 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
   async function main(queued = false) {
     const sessionId = queued ? 'session_fixture_steer_queue' : 'session_fixture_steer';
     await page.goto(url(`/s/${sessionId}`), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
-    await page.fill('textarea', 'Run the tests and fix what fails.');
-    await page.press('textarea', 'Enter');
+    await page.waitForSelector('[data-composer-input][aria-disabled="false"]', { timeout: 20_000 });
+    await page.fill('[data-composer-input]', 'Run the tests and fix what fails.');
+    await page.press('[data-composer-input]', 'Enter');
     await page.locator('[role="log"] >> text=Running the suite first.').waitFor({ timeout: 15_000 });
     await page.waitForTimeout(300);
     if (queued) {
-      await page.fill('textarea', STEER_TEXT);
-      await page.press('textarea', 'Enter');
+      await page.fill('[data-composer-input]', STEER_TEXT);
+      await page.press('[data-composer-input]', 'Enter');
       await page.locator('[data-header-toggle="queue"]').click();
       await page.locator('[data-queue-strip]', { hasText: STEER_TEXT }).waitFor();
       await page.locator('[data-queue-item]', { hasText: STEER_TEXT }).hover();
@@ -114,8 +116,8 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
     await proveSteer(queued ? 'queue' : 'main', '[role="log"]', sessionId, async () => {
       if (queued) await page.locator('[data-queue-strip] button[title]').filter({ hasText: /Send now|立即发送/ }).click();
       else {
-        await page.fill('textarea', STEER_TEXT);
-        await page.press('textarea', 'Control+Enter');
+        await page.fill('[data-composer-input]', STEER_TEXT);
+        await page.press('[data-composer-input]', 'Control+Enter');
       }
     });
     if (queued) {
@@ -129,21 +131,20 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
 
   async function child() {
     await page.goto(url('/s/session_fixture_steer_child'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
-    await page.fill('textarea', 'Delegate the test run.');
-    await page.press('textarea', 'Enter');
+    await page.waitForSelector('[data-composer-input][aria-disabled="false"]', { timeout: 20_000 });
+    await page.fill('[data-composer-input]', 'Delegate the test run.');
+    await page.press('[data-composer-input]', 'Enter');
     await page.waitForTimeout(600);
     await page.goto(url('/s/session_fixture_steer_child/agent/agent-helper'), { waitUntil: 'domcontentloaded' });
     const scope = '[data-agent-workspace-target="agent-helper"]';
     await page.waitForSelector('[data-composer-variant="subagent"]', { timeout: 15_000 });
     await page.locator(`${scope} >> text=Running the suite first.`).waitFor({ timeout: 15_000 });
-    const input = page.locator('[data-composer-variant="subagent"] textarea');
+    const input = page.locator('[data-composer-variant="subagent"] [data-composer-input]');
     await input.waitFor({ timeout: 10_000 });
-    // A busy child has no queue strip: its send button sends into the turn.
     await page.locator('[data-composer-variant="subagent"] button[aria-label]').first().waitFor({ timeout: 5000 });
     await proveSteer('child', scope, 'session_fixture_steer_child', async () => {
       await input.fill(STEER_TEXT);
-      await input.press('Enter');
+      await input.press('Control+Enter');
     });
   }
 

@@ -167,6 +167,14 @@ export class PromptSteered extends Event2<PromptSteeredPayload> {
 }
 export interface PromptSteered extends PromptSteeredPayload {}
 
+export class PromptSteerAccepted extends Event2<{ readonly promptIds: readonly string[] }> {
+  declare readonly promptIds: readonly string[];
+  static override readonly type = 'prompt.steer_accepted';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = z.object({ promptIds: z.array(z.string().min(1)).min(1) });
+}
+
 export const promptResolutionKey = defineState('promptResolution', (): Map<string, true> => new Map())
   .replayable({ schema: z.map(z.string(), z.literal(true)) })
   .on(PromptCompleted, (state, event) => {
@@ -222,6 +230,7 @@ export interface PromptEnqueuedPayload {
   readonly appendTiming: DeferredAppendTiming;
   readonly revision: number;
   readonly queueIndex: number;
+  readonly steerAccepted?: true;
   readonly retryFingerprint?: string;
   readonly retryStatus?: 'running' | 'queued';
   readonly retryContentRanges?: readonly import('./prompt').PromptContentRange[];
@@ -240,6 +249,7 @@ const promptEnqueuedSchema = z.object({
   appendTiming: appendTimingSchema,
   revision: z.number().int().nonnegative(),
   queueIndex: z.number().int().nonnegative(),
+  steerAccepted: z.literal(true).optional(),
   retryFingerprint: z.string().optional(),
   retryStatus: z.enum(['running', 'queued']).optional(),
   retryContentRanges: z.array(z.object({ index: z.number().int().nonnegative(), start: z.number().int().nonnegative(), end: z.number().int().nonnegative() })).optional(),
@@ -516,8 +526,14 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
   .replayable({ schema: z.custom<Map<string, PromptIdentity>>().refine((value) =>
     value instanceof Map && [...value.values()].every((identity) => identity.currentRequest !== undefined)) })
   .on(PromptEnqueued, (state, event) => {
-    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending',
+    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending', steerAccepted: event.steerAccepted,
       fingerprint: promptFingerprint(event), currentRequest: promptRequestFingerprint(event) });
+  })
+  .on(PromptSteerAccepted, (state, event) => {
+    for (const id of event.promptIds) {
+      const entry = state.get(id);
+      if (entry?.phase === 'pending') state.set(id, { ...entry, steerAccepted: true });
+    }
   })
   .on(ContextUndo, (state, { replacementPrompt: event }) => {
     if (event === undefined || state.has(event.promptId)) return;
@@ -550,7 +566,7 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
     const turnId = state.get(event.activePromptId)?.turnId ?? event.promptIds.map(id => state.get(id)?.turnId).find(id => id !== undefined);
     for (const promptId of event.promptIds) {
       const entry = state.get(promptId);
-      if (entry !== undefined) state.set(promptId, { ...entry, phase: 'launched', turnId: turnId ?? entry.turnId });
+      if (entry !== undefined) state.set(promptId, { ...entry, phase: 'launched', steered: true, turnId: turnId ?? entry.turnId });
     }
   })
   .on(PromptOutcomeCommitted, (state, event) => {
@@ -1218,7 +1234,7 @@ export class AgentPromptService implements IAgentPromptService {
         }
         if (signal?.aborted) throw submissionCancelled(id);
         const handle = await this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint,
-          waitForLaunch: options?.waitForLaunch, retryContentRanges: options?.contentRanges,
+          waitForLaunch: options?.waitForLaunch, nativeSteer: options?.nativeSteer, retryContentRanges: options?.contentRanges,
           parentReceiptManaged: options?.parentReceiptManaged });
         if (durableAcceptance) await this.wire.flush();
         return handle;
@@ -1248,7 +1264,8 @@ export class AgentPromptService implements IAgentPromptService {
     }
     if (persisted === undefined) return undefined;
     const turnId = this.active?.id === promptId ? this.active.turn.id : persisted.turnId;
-    return { promptId, phase: persisted.phase, turnId, terminal: persisted.terminal };
+    return { promptId, phase: persisted.phase, turnId, terminal: persisted.terminal,
+      steerAccepted: persisted.steerAccepted, steered: persisted.steered };
   }
 
   async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle> {
@@ -1383,6 +1400,7 @@ export class AgentPromptService implements IAgentPromptService {
       appendTiming: record.appendTiming,
       revision: record.revision,
       queueIndex: this.queueOrder.length,
+      steerAccepted: input.nativeSteer === undefined ? undefined : true,
       retryFingerprint: input.retryFingerprint,
       retryStatus: queued || input.waitForLaunch === false ? 'queued' : 'running',
       retryContentRanges: input.retryContentRanges,
@@ -1413,6 +1431,12 @@ export class AgentPromptService implements IAgentPromptService {
     if (queued) {
       this.publishQueued(record);
       if (this.recoveryHold) this.publishQueueHoldChanged();
+    }
+    if (input.nativeSteer !== undefined) {
+      await this.acceptSteer([record.id], input.nativeSteer.turnId);
+      return record.handle;
+    }
+    if (queued) {
       void this.startNext();
       return record.handle;
     }
@@ -1570,7 +1594,8 @@ export class AgentPromptService implements IAgentPromptService {
   list(): PromptQueueSnapshot {
     return {
       active: this.active === undefined ? undefined : snapshot(this.active),
-      pending: this.pending.map((item) => ({ ...snapshot(item), queueIndex: this.queueOrder.indexOf(item.id) })),
+      pending: this.pending.map((item) => ({ ...snapshot(item), queueIndex: this.queueOrder.indexOf(item.id),
+        deliveryState: this.lookup(item.id)?.steerAccepted ? 'accepted' : undefined })),
       modelSwitches: this.states.get(modelSwitchQueueKey).size === 0 ? undefined : this.listModelSwitches(),
       launching: this.launchingPrompt === undefined ? undefined : snapshot(this.launchingPrompt.record),
       hold: this.queueHold(),
@@ -1594,6 +1619,10 @@ export class AgentPromptService implements IAgentPromptService {
       entry.placement === 'setting' && (entry.receipt.state === 'pending' || entry.receipt.state === 'preparing') &&
       (!this.recoveryHold || this.immediateModelSwitchIds.has(entry.input.operationId)));
     if (setting !== undefined) return modelSwitchQueueId(setting.input.operationId);
+    const accepted = this.pending.filter(item => this.lookup(item.id)?.steerAccepted);
+    if (accepted.some(item => this.steeringPromptIds.has(item.id))) return undefined;
+    const readyAccepted = accepted.find(item => this.isReadyPending(item, this.pending.indexOf(item)));
+    if (readyAccepted !== undefined) return readyAccepted.id;
     const priority = this.queueOrder.find((id) => {
       const prompt = this.pending.find((item) => item.id === id);
       return prompt?.message.origin?.kind === 'cron_job' &&
@@ -1609,7 +1638,7 @@ export class AgentPromptService implements IAgentPromptService {
 
   private isReadyPending(item: Record, index: number): boolean {
     if (this.steeringPromptIds.has(item.id) || !this.isDependencyReady(item.execution)) return false;
-    if (this.immediatePromptIds.has(item.id)) return true;
+    if (this.immediatePromptIds.has(item.id) || (!this.recoveryHold && this.lookup(item.id)?.steerAccepted)) return true;
     const cronPriority = item.message.origin?.kind === 'cron_job' &&
       (item.message.origin.deliveryMode === 'idle' || item.message.origin.deliveryMode === 'steer');
     return !this.recoveryHold && (cronPriority || !this.isEditHeld(index)) && this.isTimingReady(item.appendTiming);
@@ -2014,6 +2043,75 @@ export class AgentPromptService implements IAgentPromptService {
     } finally { for (const item of fresh) this.boundaryPromptIds.delete(item.id); }
   }
 
+  private readonly steerAcceptances = new Map<string, Promise<void>>();
+
+  async acceptSteer(promptIds: readonly string[], targetTurnId?: number): Promise<readonly PromptHandle[]> {
+    const ids = new Set(promptIds);
+    const selected = this.pending.filter(item => ids.has(item.id));
+    if (ids.size === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
+    if (ids.size !== promptIds.length || selected.length !== ids.size) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
+    if ((this.profile.data().executorId ?? 'native') !== 'native') {
+      for (const item of selected) {
+        if (this.recoveryPendingIds.has(item.id)) item.deliveryReason = 'external_retry';
+      }
+      const fresh = selected.filter(item => !this.steerAcceptances.has(item.id) && item.deliveryReason === undefined);
+      if (fresh.length > 0) {
+        const result = this.steerExternal(fresh.map(item => item.id), true).then(() => {}).finally(() => {
+          for (const item of fresh) this.steerAcceptances.delete(item.id);
+        });
+        for (const item of fresh) this.steerAcceptances.set(item.id, result);
+      }
+      await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)));
+      return selected.map(item => item.handle);
+    }
+    const fresh = selected.filter(item => !this.steerAcceptances.has(item.id));
+    if (fresh.length > 0) {
+      for (const item of fresh) {
+        this.steeringPromptIds.add(item.id);
+        this.immediatePromptIds.add(item.id);
+      }
+      const uncommitted = fresh.filter(item => !this.lookup(item.id)?.steerAccepted);
+      const commit = uncommitted.length === 0 ? this.wire.flush()
+        : this.dispatcher.dispatchDurably(new PromptSteerAccepted({ promptIds: uncommitted.map(item => item.id) }));
+      const acceptance = commit.then(() => {
+        for (const item of fresh) void this.deliverAcceptedSteer(item, targetTurnId);
+      }).catch(error => {
+        for (const item of fresh) {
+          this.steeringPromptIds.delete(item.id);
+          this.immediatePromptIds.delete(item.id);
+          this.steerAcceptances.delete(item.id);
+        }
+        throw error;
+      });
+      for (const item of fresh) {
+        this.steerAcceptances.set(item.id, acceptance);
+        void item.completionDeferred.promise.then(() => { this.steerAcceptances.delete(item.id); });
+      }
+    }
+    await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)));
+    return selected.map(item => item.handle);
+  }
+
+  private async deliverAcceptedSteer(item: Record, targetTurnId?: number): Promise<void> {
+    try {
+      if (this.closing !== undefined || !this.pending.includes(item)) return;
+      if (targetTurnId === undefined || this.loop.status().activeTurnId !== targetTurnId) return;
+      await this.steer([item.id]);
+    } catch (error) {
+      if (this.closing !== undefined || !this.pending.includes(item)) return;
+      if (this.loop.status().activeTurnId !== targetTurnId || (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND)) return;
+      this.pending.splice(this.pending.indexOf(item), 1);
+      item.state = 'failed'; item.error = toErrorPayload(error);
+      item.launchedDeferred.resolve(undefined);
+      item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'failed' });
+      this.publishCompleted(item, 'failed');
+      this.syncRecoveryHold();
+    } finally {
+      this.steeringPromptIds.delete(item.id);
+      if (this.active === undefined) void this.startNext();
+    }
+  }
+
   private readonly steerBatches = new Map<number, {
     readonly ids: Set<string>;
     readonly calls: { readonly ids: ReadonlySet<string>; readonly result: Deferred<readonly PromptHandle[]> }[];
@@ -2102,16 +2200,20 @@ export class AgentPromptService implements IAgentPromptService {
     for (const item of selected) this.steeringPromptIds.add(item.id);
     try {
       const activeAtEntry = this.active;
-      for (const item of selected) {
-        if (this.hasExecutionBindingChange(item.execution, item.id)) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a different profile, model, thinking, permission or plan gate must run as their own turn');
+      for (const item of allSelected) {
+        const bindingChanged = this.hasExecutionBindingChange(item.execution, item.id);
+        const controlsChanged = !bindingChanged && hasPromptRuntimeControls(item.execution) &&
+          await this.instantiation.invokeFunction(accessor => readPromptRuntimeControlChanges(accessor, item.execution))();
+        if (!bindingChanged && !controlsChanged) continue;
+        if (this.lookup(item.id)?.steerAccepted) {
+          selected.splice(selected.indexOf(item), 1);
+          continue;
         }
-        if (!hasPromptRuntimeControls(item.execution)) continue;
-        const changed = this.instantiation.invokeFunction((accessor) => readPromptRuntimeControlChanges(accessor, item.execution));
-        if (await changed()) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan or goal changes must run as their own turn');
-        }
+        throw new Error2(ErrorCodes.REQUEST_INVALID, bindingChanged
+          ? 'Prompts with a different profile, model, thinking, permission or plan gate must run as their own turn'
+          : 'Prompts with pending plan or goal changes must run as their own turn');
       }
+      if (selected.length === 0) return allSelected.map(item => item.handle);
       for (const item of selected) item.message = await this.prepareReferenceMessage(item.message, item.userMessageId);
       const batch = selected.map(item => this.extractCompressionCaptions({ ...item.message,
         content: this.repairKnownTruncatedImages(item.id, item.message.content) }));
@@ -2219,7 +2321,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
-  private async steerExternal(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
+  private async steerExternal(promptIds: readonly string[], retainUnknown = false): Promise<readonly PromptHandle[]> {
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const ids = new Set(promptIds);
     if (ids.size !== promptIds.length || this.pending.filter((item) => ids.has(item.id)).length !== ids.size) {
@@ -2242,9 +2344,14 @@ export class AgentPromptService implements IAgentPromptService {
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
       const textOnly = message.content.every((part) => part.type === 'text');
       deliveryAttempted = active !== undefined && textOnly && execution.steer !== undefined;
-      const outcome = active !== undefined && textOnly
-        ? await (execution.steer?.(message) ?? false)
-        : false;
+      let outcome: boolean | 'unknown' = false;
+      if (active !== undefined && textOnly && execution.steer !== undefined) {
+        try { outcome = await execution.steer(message); }
+        catch (error) {
+          if (!retainUnknown) throw error;
+          outcome = 'unknown';
+        }
+      }
       if (outcome === 'unknown' && selected.every((item) => this.pending.includes(item))) {
         for (const item of selected) {
           item.deliveryReason = 'external_retry';
@@ -2539,7 +2646,7 @@ export class AgentPromptService implements IAgentPromptService {
     const sharedAdmission = new RefCountedDisposable(admission);
     admission = toDisposable(async () => { await sharedAdmission.release(); });
     const [item] = this.pending.splice(candidateIndex, 1) as [Record];
-    const immediate = this.immediatePromptIds.delete(item.id);
+    const immediate = this.immediatePromptIds.delete(item.id) || this.lookup(item.id)?.steerAccepted === true;
     this.syncRecoveryHold();
     const controller = new AbortController();
     const launchSettled = deferred<void>();

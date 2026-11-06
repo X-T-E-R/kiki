@@ -1388,10 +1388,18 @@ export class SessionController {
 
   private setDurableIngress(records: readonly PromptItem[], agentId = MAIN_AGENT_ID): void {
     for (const record of records) {
-      if (record.admission === 'failed' || record.admission === 'cancelled' ||
+      if (record.admission === 'failed' || record.admission === 'cancelled' || record.delivery_state === 'failed' || record.delivery_state === 'cancelled' ||
           (record.admission === 'admitted' && record.delivery_state === 'queued')) {
         this.reconcileSteerOutcome(agentId, record.prompt_id, this.settledSteerOutcome(agentId, record.prompt_id));
+        continue;
       }
+      const pending = this.findPendingSteer(agentId, record.prompt_id);
+      if (pending === undefined) continue;
+      const phase = record.admission === 'held' ? 'held'
+        : record.admission === 'admitted' ? 'waiting'
+        : record.admission === 'restoring' && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
+      if (phase !== pending.phase) this.setPendingSteer(agentId, { ...pending, phase });
+      if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id);
     }
     const previous = this.state.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
@@ -3447,6 +3455,7 @@ export class SessionController {
       : false;
     const cursor = this.transcriptCursors.get(agentId);
     if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
+    this.adoptAcceptedSteers(agentId, withCoverage);
     this.publishAgentView(agentId, withCoverage);
     if (this.contentReaders.size > 0) void this.pumpContentReads();
     if (forestChanged && agentId !== MAIN_AGENT_ID) {
@@ -3767,8 +3776,16 @@ export class SessionController {
     if (turnId !== undefined) await this.client.abortTurn(this.sessionId, turnId);
   }
 
-  async abortPrompt(promptId: string): Promise<void> {
-    const result = await this.client.abortPrompt(this.sessionId, promptId, undefined, true);
+  async abortPrompt(promptId: string, agentId = MAIN_AGENT_ID): Promise<void> {
+    const result = await this.client.abortPrompt(this.sessionId, promptId, agentId === MAIN_AGENT_ID ? undefined : agentId, true).catch(error => {
+      if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) return { aborted: false };
+      throw error;
+    });
+    this.clearPendingSteer(agentId, promptId);
+    if (agentId !== MAIN_AGENT_ID) {
+      if (!result.aborted) await this.resync();
+      return;
+    }
     this.unprojectedQueueReceipts.delete(promptId);
     const queuedPromptMeta = { ...this.state.queuedPromptMeta };
     delete queuedPromptMeta[promptId];
@@ -3918,13 +3935,15 @@ export class SessionController {
   }
 
   /** Send a parked prompt at the next safe boundary; report its actual disposition. */
-  async steerQueued(promptId: string): Promise<{ readonly outcome: 'steered' | 'queued' | 'not_pending'; readonly reason?: PromptItem['delivery_reason'] }> {
+  async steerQueued(promptId: string): Promise<{ readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'unconfirmed' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.state);
+    if (this.findPendingSteer(MAIN_AGENT_ID, promptId)?.phase === 'waiting') return { outcome: 'accepted' };
     const queued = this.state.blocks.find((block) =>
       block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
     if (queued?.kind === 'user') {
       this.setPendingSteer(MAIN_AGENT_ID, {
         promptId,
+        userMessageId: queued.userMessageId,
         text: queued.text,
         presentation: queued.presentation,
         media: queued.media,
@@ -3936,6 +3955,14 @@ export class SessionController {
     try {
       delivery = await this.client.steerPrompt(this.sessionId, promptId);
     } catch (error) {
+      if (isUnconfirmedTransportError(error)) {
+        const outcome = this.settledSteerOutcome(MAIN_AGENT_ID, promptId);
+        if (outcome !== undefined) return { outcome };
+        const retained = this.findPendingSteer(MAIN_AGENT_ID, promptId);
+        if (retained?.phase === 'waiting') return { outcome: 'accepted' };
+        if (retained !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...retained, phase: 'unconfirmed' });
+        return { outcome: 'unconfirmed' };
+      }
       this.clearPendingSteer(MAIN_AGENT_ID, promptId);
       if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) {
         await this.resync();
@@ -3945,13 +3972,14 @@ export class SessionController {
       throw error;
     }
     this.unprojectedQueueReceipts.delete(promptId);
-    if (delivery.steered) {
+    if (delivery.steered || delivery.delivery_state === 'accepted') {
       const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
       if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
     } else this.clearPendingSteer(MAIN_AGENT_ID, promptId);
+    if (delivery.delivery_state === 'accepted') return { outcome: 'accepted' };
     await this.refreshPrompts();
     if (!delivery.steered && delivery.delivery_state !== 'queued') await this.resync();
-    return { outcome: delivery.steered ? 'steered' : delivery.delivery_state === 'queued' ? 'queued' : 'not_pending', reason: delivery.delivery_reason };
+    return { outcome: delivery.steered ? 'steered' : delivery.delivery_state ?? 'not_pending', reason: delivery.delivery_reason };
   }
 
   /** "Send now" echoes still between the keypress and their delivered frame, per agent. */
@@ -3982,6 +4010,7 @@ export class SessionController {
     readonly content?: MessageContent[];
     readonly media?: PendingSteer['media'];
     readonly promptId?: string;
+    readonly afterModelSwitch?: string;
     readonly profile?: string;
     readonly execution?: ExecutionSelection;
     readonly model?: string;
@@ -3992,7 +4021,7 @@ export class SessionController {
     readonly planGate?: PromptPlanGate;
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
-  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'not_pending' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
+  }): Promise<{ readonly promptId: string; readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.state);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
@@ -4013,7 +4042,8 @@ export class SessionController {
     try {
       result = await this.client.submitPrompt(this.sessionId, {
         admission: durable ? 'durable' : undefined,
-        delivery_mode: durable ? 'steer' : undefined,
+        delivery_mode: 'steer',
+        after_model_switch: input.afterModelSwitch,
         content,
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
@@ -4029,7 +4059,14 @@ export class SessionController {
     } catch (error) {
       if (isUnconfirmedTransportError(error)) {
         const retained = this.findPendingSteer(agentId, promptId);
-        if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+        const outcome = this.settledSteerOutcome(agentId, promptId) ?? (retained?.phase === 'waiting' ? 'accepted' : undefined);
+        if (outcome !== undefined) {
+          preservation.acknowledge();
+          input.onAcknowledged?.();
+          return { promptId, outcome };
+        }
+        if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'unconfirmed' });
+        if (durable) this.observeDurableSteer(agentId, promptId);
         throw new SendNowError('unknown', error);
       }
       this.clearPendingSteer(agentId, promptId);
@@ -4057,16 +4094,16 @@ export class SessionController {
       return { promptId: result.prompt_id, outcome: admission };
     }
     if (admission === 'restoring' || admission === 'held') {
-      const retained = this.findPendingSteer(agentId, promptId);
-      if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
       if (admission === 'restoring') this.observeDurableSteer(agentId, promptId);
       return { promptId: result.prompt_id, outcome: admission };
     }
-    if (durable) {
+    if (durable || result.delivery_state !== undefined) {
+      const outcome = result.delivery_state ?? (result.status === 'queued' ? 'queued' : 'started');
       const retained = this.findPendingSteer(agentId, promptId);
-      if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
-      return { promptId: result.prompt_id, outcome: result.delivery_state === 'steered' ? 'steered'
-        : result.status === 'queued' ? 'queued' : 'started', reason: result.delivery_reason };
+      if (outcome === 'accepted' || outcome === 'steered') {
+        if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+      } else if (outcome !== 'started') this.clearPendingSteer(agentId, promptId);
+      return { promptId: result.prompt_id, outcome, reason: result.delivery_reason };
     }
     if (result.status !== 'queued') {
       // Idle by the time it landed: the prompt opened its own turn, which is
@@ -4168,11 +4205,35 @@ export class SessionController {
     this.republishSteers(agentId);
   }
 
+  private adoptAcceptedSteers(agentId: string, next: SessionViewState): void {
+    const store = this.agentTranscripts.get(agentId);
+    if (store === undefined) return;
+    let steers = this.pendingSteers.get(agentId) ?? [];
+    for (const id of next.queuedPromptIds) {
+      const prompt = store.getPrompt(id);
+      if (!prompt?.steerAccepted || prompt.status !== 'queued') continue;
+      const existing = steers.find(item => item.promptId === prompt.promptId);
+      if (existing !== undefined) {
+        if (existing.phase !== 'waiting') steers = steers.map(item => item === existing ? { ...item, phase: 'waiting' } : item);
+        continue;
+      }
+      const row = next.blocks.find(block => block.kind === 'user' && block.promptId === prompt.promptId && block.promptStatus === 'queued');
+      if (row?.kind !== 'user') continue;
+      steers = [...steers, { promptId: prompt.promptId, userMessageId: row.userMessageId, text: row.text,
+        presentation: row.presentation, media: row.media, createdAt: row.createdAt, phase: 'waiting' }];
+    }
+    if (steers.length > 0) this.pendingSteers.set(agentId, steers);
+  }
+
   /** Drop echoes whose delivered frame the projection now owns. */
   private retireSettledSteers(agentId: string, next: SessionViewState): void {
     const current = this.pendingSteers.get(agentId);
     if (current === undefined) return;
-    const live = current.filter((steer) => !isSteerSettled(next.blocks, steer));
+    const store = this.agentTranscripts.get(agentId);
+    const live = current.filter(steer => {
+      const prompt = store?.getPrompt(steer.promptId);
+      return !(prompt?.status === 'aborted' && prompt.abortedBeforeStart) && !isSteerSettled(next.blocks, steer);
+    });
     if (live.length === current.length) return;
     if (live.length === 0) this.pendingSteers.delete(agentId);
     else this.pendingSteers.set(agentId, live);

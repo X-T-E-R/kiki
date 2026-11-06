@@ -7,6 +7,8 @@ export interface PromptLookup {
   readonly promptId: string;
   readonly phase: 'pending' | 'launched' | 'terminal';
   readonly turnId?: number;
+  readonly steerAccepted?: true;
+  readonly steered?: true;
   readonly terminal?: PromptTerminalResult;
 }
 

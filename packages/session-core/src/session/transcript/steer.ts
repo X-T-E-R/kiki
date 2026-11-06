@@ -2,26 +2,22 @@
  * "Send now" (steer) echo: a message sent into a running turn stays on the
  * timeline from the keypress until its canonical user frame is delivered.
  *
- * The server path has three hops with no transcript row of their own: the
- * submit parks the prompt in the queue (the timeline hides queued prompts),
- * the steer removes it from the queue (the projection drops a steered prompt
- * until a step owns it), and only the next step boundary delivers the frame.
- * This overlay covers exactly that window. It keys the bubble on the prompt id
- * the client chose, which is also the delivered frame's message id, so the
- * delivered block takes over the same row instead of replacing it.
+ * The accepted prompt stays in the server queue until a boundary takes it.
+ * The overlay shows that pending prompt on the timeline instead of in the
+ * queue strip. It uses the original user-message id so the delivered frame
+ * takes over the same row.
  */
 import type { MediaRef } from '../../composer/media';
 import type { Block, SessionViewState, UserBlock } from './types';
 
 export interface PendingSteer {
-  /** Client-chosen prompt id; the delivered user frame carries the same id. */
   readonly promptId: string;
+  readonly userMessageId?: string;
   readonly text: string;
   readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly media?: readonly MediaRef[];
   readonly createdAt: string;
-  /** `sending` until the server accepts the steer, then `waiting` for a step. */
-  readonly phase: 'sending' | 'waiting';
+  readonly phase: NonNullable<UserBlock['steerStatus']>;
 }
 
 /** Client-chosen prompt id for a "send now"; the engine keeps it end to end. */
@@ -59,13 +55,13 @@ export function steerBlock(steer: PendingSteer): UserBlock {
   return {
     kind: 'user',
     // Same id the projection gives the delivered frame (`user-${messageId}`).
-    id: `user-${steer.promptId}`,
+    id: `user-${steer.userMessageId ?? steer.promptId}`,
     text: steer.text,
     presentation: steer.presentation,
     media: steer.media,
     createdAt: steer.createdAt,
     promptId: steer.promptId,
-    userMessageId: steer.promptId,
+    userMessageId: steer.userMessageId ?? steer.promptId,
     steerStatus: steer.phase,
   };
 }

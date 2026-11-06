@@ -39,6 +39,7 @@ import {
   PromptReplaced,
   PromptStarted,
   PromptSteered,
+  PromptSteerAccepted,
   PromptSubmitted,
   promptQueueKey,
   promptResolutionKey,
@@ -1289,6 +1290,30 @@ describe('AgentPromptService', () => {
     await cold.prompt.drain(new Error('cold cleanup'));
   });
 
+  it('restores accepted steer intent with the original queue and delivers it first only after explicit recovery', async () => {
+    const { prompt, dispatcher, loop, context } = harness({ manualTurnResult: true });
+    for (const [queueIndex, promptId] of ['ordinary-first', 'existing-now', 'new-now', 'ordinary-last'].entries()) {
+      await dispatcher.dispatch(new PromptEnqueued({ schemaVersion: 1, promptId, userMessageId: `logical-${promptId}`,
+        message: message(promptId), createdAt: new Date(0).toISOString(), appendTiming: 'tasks_done',
+        revision: 0, queueIndex, alreadyMaterialized: false, steerAccepted: promptId === 'new-now' ? true : undefined }));
+    }
+    await dispatcher.dispatch(new PromptSteerAccepted({ promptIds: ['existing-now'] }));
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(loop.launches).toEqual([]);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 4 });
+    expect(prompt.list().pending.map(item => [item.id, item.deliveryState])).toEqual([
+      ['ordinary-first', undefined], ['existing-now', 'accepted'], ['new-now', 'accepted'], ['ordinary-last', undefined],
+    ]);
+    prompt.resumeRecoveredQueue();
+    for (const id of ['existing-now', 'new-now', 'ordinary-first', 'ordinary-last']) {
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe(id));
+      loop.drainNextBatch(context);
+      loop.settleActive();
+    }
+    await vi.waitFor(() => expect(prompt.list().active).toBeUndefined());
+    expect(context.get().map(item => item.id)).toEqual(['logical-existing-now', 'logical-new-now', 'logical-ordinary-first', 'logical-ordinary-last']);
+  });
+
   it('reconciles a canonical queued cron prompt when a live active runtime prompt already exists', async () => {
     const { prompt, dispatcher, loop, states } = harness({ manualTurnResult: true });
     const entry: PromptEnqueuedPayload = {
@@ -2057,6 +2082,74 @@ describe('AgentPromptService', () => {
     expect(states.get(promptQueueKey).order).toEqual([]);
     await expect(prompt.steer([immediate.id])).rejects.toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
     expect(context.get()).toHaveLength(4);
+  });
+
+  it.each(['deliver', 'cancel', 'ended', 'failed'] as const)('accepts native delivery before a held boundary and preserves original queue identities: %s', async outcome => {
+    const { prompt, loop, context, eventBus } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    const turn = await active.launched;
+    loop.drainNextBatch(context);
+    const older = await prompt.enqueue({ id: 'older', message: message('older') });
+    const content: ContentPart[] = [{ type: 'text', text: 'quoted note', presentation: { spans: [{ start: 0, end: 6, kind: 'quote' }] } },
+      { type: 'image_url', imageUrl: { url: 'https://example.test/note.png' } }];
+    const selected = await prompt.enqueue({ id: 'selected', userMessageId: 'logical-note', message: { ...message(''), content } });
+    const boundary = deferred<void>();
+    const hooks = vi.fn();
+    const completions: unknown[] = [];
+    eventBus.subscribe(PromptCompleted, event => completions.push(event));
+    prompt.hooks.onBeforeSubmitPrompt.register('acceptance-fixture', async (ctx, next) => {
+      hooks(ctx);
+      if (ctx.isSteer && outcome === 'failed') throw new Error('example submit failure');
+      await next();
+    });
+    const atBoundary = vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => {
+      await boundary.promise;
+      if (outcome === 'ended') throw new Error('Turn ended');
+      await run(undefined);
+    });
+    expect(await prompt.acceptSteer([selected.id], turn!.id)).toEqual([selected]);
+    expect(await prompt.acceptSteer([selected.id], turn!.id)).toEqual([selected]);
+    await vi.waitFor(() => expect(atBoundary).toHaveBeenCalledTimes(1));
+    expect(prompt.lookup(selected.id)).toMatchObject({ phase: 'pending', steerAccepted: true });
+    expect(selected.state).toBe('pending');
+    expect(hooks).not.toHaveBeenCalled();
+    expect(prompt.list().pending.map(item => item.id)).toEqual(['older', 'selected']);
+    if (outcome === 'cancel') expect(await prompt.abortQueued(selected.id)).toBe(true);
+    if (outcome === 'ended') {
+      loop.settleActive();
+      await active.completion;
+      expect(older.state).toBe('pending');
+    }
+    boundary.resolve();
+    if (outcome === 'ended') {
+      await selected.launched;
+      expect(older.state).toBe('pending');
+      loop.drainNextBatch(context);
+      expect(context.get().filter(item => item.id === 'logical-note')).toHaveLength(1);
+      loop.settleActive();
+      await selected.completion;
+      await older.launched;
+      loop.settleActive();
+    } else if (outcome === 'deliver') {
+      await vi.waitFor(() => expect(selected.state).toBe('steered'));
+      loop.drainNextBatch(context);
+      expect(context.get().find(item => item.id === 'logical-note')?.content).toEqual(content);
+      expect(hooks).toHaveBeenCalledTimes(1);
+    } else if (outcome === 'failed') {
+      expect((await selected.completion).state).toBe('failed');
+      expect(completions).toContainEqual(expect.objectContaining({ promptId: selected.id, reason: 'failed', error: expect.objectContaining({ message: 'example submit failure' }) }));
+    } else {
+      await vi.waitFor(() => expect(selected.state).toBe('cancelled'));
+      expect(hooks).not.toHaveBeenCalled();
+      expect(context.get().some(item => item.id === 'logical-note')).toBe(false);
+    }
+    if (outcome !== 'ended') {
+      expect(older.state).toBe('pending');
+      prompt.abort(older.id);
+      loop.settleActive();
+    }
+    await active.completion;
+    await selected.completion;
   });
 
   it('delivers a steered prompt as a context message that keeps the prompt id', async () => {

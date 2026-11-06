@@ -55,6 +55,7 @@ export interface TranscriptPrompt extends ContentWindow {
   readonly queuePosition?: number;
   /** True when the prompt was aborted before it ever started. */
   readonly abortedBeforeStart?: boolean;
+  readonly steerAccepted?: true;
   /** Set when the prompt was rerouted by a steer. */
   readonly steeredAt?: string;
   /** Effective deferred-append timing; absent on older projections. */

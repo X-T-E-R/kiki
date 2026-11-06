@@ -53,6 +53,7 @@ export interface PromptIngressExecution {
 interface Consumer {
   submit(sessionId: string, execution: PromptIngressExecution): Promise<PromptIngressResult>;
   cancel(sessionId: string, agentId: string, promptId: string, signal: AbortSignal): Promise<void>;
+  projectDelivery?(sessionId: string, agentId: string, result: PromptItem): PromptItem;
 }
 
 export class PromptIngress {
@@ -128,12 +129,13 @@ export class PromptIngress {
       ? await this.documents().get<PromptSubmitResult>(`${target.scope}/prompt-ingress/results`, `${entry.key}.json`) : entry.result;
     const body = full && result === undefined ? await this.payload(target, entry.key) : entry.body;
     const progress = entry.admission === 'restoring' ? this.progress.get(`${target.scope}/${entry.key}`) ?? entry.restoreProgress : entry.restoreProgress;
-    return { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
+    const item: PromptItem = { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
       admission_duplicate_of: entry.duplicateOf, prompt_id: entry.body.prompt_id!, user_message_id: result?.user_message_id ?? entry.body.prompt_id!,
       status: result?.status ?? 'queued', content: result?.content ?? body.content,
       created_at: result?.created_at ?? entry.createdAt, append_timing: result?.append_timing ?? entry.body.append_timing ?? 'agent_idle',
       revision: result?.revision ?? 0, admission: entry.admission, admission_error: entry.error,
       admission_content_truncated: full ? undefined : true };
+    return entry.admission === 'admitted' ? this.consumer.projectDelivery?.(target.sessionId, entry.agentId, item) ?? item : item;
   }
 
   async submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {

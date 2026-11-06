@@ -258,7 +258,8 @@ export function bindSessionTranscript(
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
     const message = event['message'] as { origin?: { kind?: string } } | undefined;
-    if (event.type === 'prompt.enqueued' && (message?.origin?.kind === 'cron_job' || message?.origin?.kind === 'user' || message?.origin?.kind === undefined)) {
+    if (event.type === 'prompt.steer_accepted' ||
+      event.type === 'prompt.enqueued' && (message?.origin?.kind === 'cron_job' || message?.origin?.kind === 'user' || message?.origin?.kind === undefined)) {
       const facts = wireAdapterFor(agentId).add(event);
       applyFacts(agentId, facts);
       for (const fact of facts) for (const op of fact.operations) {
@@ -534,6 +535,7 @@ function promptFromSnapshot(
   return {
     promptId: snapshot.id,
     status,
+    steerAccepted: snapshot.deliveryState === 'accepted' ? true : undefined,
     runtimeControls: snapshot.execution === undefined ? undefined : {
       execution: snapshot.execution.execution,
       profile: snapshot.execution.profile,

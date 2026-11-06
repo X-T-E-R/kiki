@@ -170,7 +170,8 @@ export function nowReceiptDecision(input: {
   const record = input.ingress.find((item) => item.prompt_id === input.promptId);
   if (record === undefined) return { kind: 'wait' };
   if (record.admission === 'failed' || record.admission === 'cancelled'
-    || record.status === 'running' || record.delivery_state === 'steered') return { kind: 'drop' };
+    || record.status === 'running' || record.delivery_state === 'steered' || record.delivery_state === 'accepted'
+    || record.delivery_state === 'failed' || record.delivery_state === 'cancelled') return { kind: 'drop' };
   if (record.admission !== 'admitted' || record.delivery_state !== 'queued' || record.delivery_reason === undefined) {
     return { kind: 'wait' };
   }
@@ -1463,6 +1464,11 @@ function ChildAgentWorkspace({
         onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
         onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
         onRetryLoad: controller === null ? undefined : () => { void controller.retryOpen(); },
+        onCancelQueued: controller === null ? undefined : promptId => {
+          void controller.abortPrompt(promptId, agentId).catch(error => {
+            pushToast({ tone: 'error', text: t('sv.cancelQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+          });
+        },
         visible: transcriptVisible,
       }}
       dock={<div className="space-y-2 pt-2">

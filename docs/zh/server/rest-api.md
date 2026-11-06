@@ -514,9 +514,9 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 通过 `GET /api/sessions/{session_id}/prompts?admission=durable` 读取 `ingress`。将 `ingress_next_cursor` 作为下一页的 `cursor`，直到不再返回游标；即使某一页没有所选 Agent 的条目，也应继续翻页。每页最多扫描 64 个已保存请求，文本预览最长 1024 个字符，并带 `admission_content_truncated: true`。没有文本的已保存请求预览为 `[Attachment]`。原文使用单项读取接口。这两种读取都不加载冷 Agent。目标为子 Agent 时，提交正文及每次查询、操作都须带同一 `agent_id`。
 
-`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示记录该回执时仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。较新的 canonical 启动、追加或终态事实优先于旧 queued 回执。
+`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。原生立即发送的 `delivery_state: "accepted"` 确认核心已保存立即发送意图，无需等待当前步骤结束。`"steered"` 表示消息已加入目标轮次，`"started"` 表示已启动独立轮次，`"failed"` 和 `"cancelled"` 表示投递终态。外部执行器延后投递时可返回 `"queued"`。这些回执都不证明模型已消费消息；应以转录中的实际投递帧及后续请求为准。较新的 canonical 提示词状态优先于旧回执。
 
-可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；`steered: true` 表示消息已加入当前回合，`steered: false` 表示仍在排队或已离开队列。已不在可选队列中的已知提示词返回 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。多 ID 回执不返回单条提示词字段。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。已启动回合及其历史不受影响。普通 `:abort` 仍可停止运行中的提示词。
+可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。`:steer` 响应仅在消息加入轮次后返回 `steered: true`。原生 `delivery_state: "accepted"` 搭配 `steered: false` 表示已成功受理、等待边界，不是拒绝；重试同一 ID 不会创建另一条消息。多 ID 响应在所有选中项状态相同时返回该投递状态。已不在可选队列中的已知提示词返回其原生投递状态或 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。已启动回合及其历史不受影响。普通 `:abort` 仍可停止运行中的提示词。
 
 | `delivery_reason` | 含义 |
 | --- | --- |
@@ -542,7 +542,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 顶层 `profile`、`model` 与 `thinking` 选择也随提示词保存。与 `model` 一起携带 `model_switch_mode: "direct" | "compact" | "fresh"`，即可将已确认的上下文选择附在同一条消息上：保留当前上下文、先生成摘要，或重建新的上下文窗口。该选择不能同时改变 `profile` 或 `execution`。提示词列表项通过可选的 `runtime_controls` 返回保存的设置，其中模式使用 camelCase `modelSwitchMode`。队列恢复后设置仍保留，不会创建独立的控制队列项；保存的选择或受理回执都不证明真实请求已使用目标模型。
 
-要立即发送新消息，在提交正文中加入 `delivery_mode: "steer"`；省略则保持普通发送。选择持久受理时，服务端会保存这一意图，并在返回 `restoring` 后继续投递，客户端断开也不影响。目标是请求到达时正在运行的轮次；若它在受理前结束、另一轮已经启动，消息仍排队等待独立轮次，不会插入后来的轮次。没有活跃轮次时，沿用原有的新轮次启动路径。需要独立轮次的 profile、execution 或运行控制变更仍保留在队列中。
+要立即发送新消息，在提交正文中加入 `delivery_mode: "steer"`；省略则保持普通发送。选择持久受理时，服务端会保存这一意图，并在返回 `restoring` 后继续投递，客户端断开也不影响。目标是请求到达时正在运行的轮次。原生投递在等待下一安全步骤时保留原队列项和 ID；若目标轮次在投递前结束，已受理消息优先于普通排队消息启动独立轮次，不插入替换轮次。没有活跃轮次，或 profile、execution、运行控制变更需要独立轮次时，也保留这一优先级。
 
 立即发送会在安全步骤边界把普通选中提示词追加到活跃轮次。原生提示词携带模型、思考强度或上下文选择时，会在当前模型响应与工具结果完整落入历史后应用选择，随后消费同一条消息一次。绑定提交前取消或摘要失败不会改变绑定与上下文，也不会用旧模型发送该消息。不支持的外部上下文重建会失败，不会悄悄变成直接切换。main agent 的前台子任务等待可以转入后台，子任务不会被取消。
 

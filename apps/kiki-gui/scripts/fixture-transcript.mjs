@@ -899,6 +899,14 @@ export class TranscriptProjector {
         };
         break;
       }
+      case 'prompt.steer_accepted': {
+        const prompts = this.snapshot(agentId).prompts;
+        projected = { agentId, ops: (payload.promptIds ?? []).flatMap(id => {
+          const previous = prompts.find(item => item.promptId === id);
+          return previous === undefined ? [] : [{ op: 'prompt.upsert', prompt: { ...previous, steerAccepted: true } }];
+        }) };
+        break;
+      }
       case 'prompt.submitted':
       case 'prompt.queued':
       case 'prompt.completed': {

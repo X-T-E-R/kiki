@@ -1462,17 +1462,6 @@ export function shouldClearPendingProfileOnSendError(error: unknown): boolean {
 }
 
 /**
- * A "Send now" that has to open its own turn: a profile/engine switch or an
- * explicit model-switch mode cannot land inside the running turn, so the
- * message takes the ordinary queue and the notice names why.
- */
-export type SendNowOwnTurnReason = 'binding' | 'model';
-
-export function sendNowOwnTurnNotice(reason: SendNowOwnTurnReason): I18nKey {
-  return reason === 'model' ? 'sv.sendNowOwnTurnModel' : 'sv.sendNowOwnTurnBinding';
-}
-
-/**
  * Batch approval resolution: settles every pending card, reporting how many
  * decisions failed to send (individual cards keep their own retry path).
  */
@@ -3249,19 +3238,7 @@ export function SessionView({
           boundExecution,
         });
         pendingSendRef.current = true;
-        // "Send now" into the running turn: the controller's steer ledger
-        // owns the echo from this frame until the delivered frame replaces
-        // it (no local pending bubble, so nothing to clear early). A profile
-        // or engine switch has to open its own turn, so it keeps the ordinary
-        // path: a steered message runs inside the ACTIVE turn, which cannot
-        // change the binding.
         const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
-        // A profile/engine switch or an explicit model-switch mode needs a turn
-        // of its own; the local cause lets the queue notice name it.
-        const ownTurnReason: SendNowOwnTurnReason | undefined = rebindsAgent
-          ? 'binding'
-          : modelControlTouched && modelSwitchMode !== undefined || modelSwitches.dependency !== undefined ? 'model' : undefined;
-        const requiresOwnTurn = ownTurnReason !== undefined;
         const completeControls = () => completeSkillControlSelection({
           controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
             model: profileSwitch.model, thinking: profileSwitch.thinking },
@@ -3278,7 +3255,7 @@ export function SessionView({
           },
           refresh: () => { void controller.refreshSession(); },
         });
-        if (options?.now === true && !requiresOwnTurn) {
+        if (options?.now === true) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
           let compositionReleased = false;
@@ -3304,11 +3281,8 @@ export function SessionView({
               execution: profileSwitch.execution,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
-              modelSwitchMode: modelControlTouched ? modelSwitchMode : undefined,
-              // The steer runs inside the ACTIVE turn, which cannot rebind, so it
-              // takes the same projection as the ordinary path rather than the
-              // raw display value: a bare harness must not have Kiki's approval
-              // mode injected into the message it is already running.
+              modelSwitchMode: modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
+              afterModelSwitch: rebindsAgent ? undefined : modelSwitches.dependency?.input.operationId,
               permissionMode: profileSwitch.permissionMode,
               planMode,
               planGate,
@@ -3550,14 +3524,6 @@ export function SessionView({
             accepted = true;
             releaseComposition();
             setGoalMode(false);
-            // "Send now" (⌘/Ctrl+Enter while busy) reaches this path exactly
-            // when the message cannot join the running turn: a profile/engine
-            // switch or an explicit model-switch mode has to open its own
-            // turn. It stays queued; name that local cause instead of letting
-            // the press look ignored.
-            if (options?.now === true && result.status === 'queued' && ownTurnReason !== undefined) {
-              pushToast({ tone: 'info', text: t(sendNowOwnTurnNotice(ownTurnReason)) });
-            }
             completeControls();
           })
           .catch((error: unknown) => {

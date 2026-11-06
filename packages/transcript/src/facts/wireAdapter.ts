@@ -525,6 +525,13 @@ export class TranscriptWireAdapter {
   }
 
   private promptRecord(record: TranscriptWireRecord): TranscriptOperation[] {
+    if (record.type === 'prompt.steer_accepted') {
+      return stringArrayOf(record['promptIds']).flatMap(id => {
+        if (this.#hiddenPromptIds.has(id)) return [];
+        const previous = this.lookups?.prompt?.(id) ?? this.#prompts.get(id);
+        return previous?.status === 'queued' ? [this.storePrompt({ ...previous, steerAccepted: true })] : [];
+      });
+    }
     const terminal = objectOf(record['terminal']);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']) ?? stringOf(terminal?.['promptId']);
     if (promptId === undefined) return [];
@@ -544,6 +551,7 @@ export class TranscriptWireAdapter {
         originKind: originKind === 'cron_job' ? originKind : undefined,
         originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
+        steerAccepted: record['steerAccepted'] === true ? true : undefined,
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
         createdAt: promptRecordTime(record, ['createdAt']) ?? isoOf(record.time) ?? new Date(0).toISOString(),
@@ -2698,6 +2706,7 @@ function durableRecord(type: string): boolean {
     type === 'turn.ended' ||
     type === 'task.notified' ||
     type === 'prompt.enqueued' ||
+    type === 'prompt.steer_accepted' ||
     type === 'prompt.replaced' ||
     type === 'prompt.timing_changed' ||
     type === 'prompt.moved' ||
