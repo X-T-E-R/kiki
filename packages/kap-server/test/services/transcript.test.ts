@@ -2011,7 +2011,7 @@ describe('TranscriptService live integration', () => {
       expect(visible?.snapshot().toolCallCountKnown).toBe(false);
       expect(verify).not.toHaveBeenCalled();
       expect(digest).not.toHaveBeenCalled();
-      expect(reads.mock.calls.some(([value]) => String(value).endsWith(WIRE_TRANSCRIPT_RECEIPT_KEY))).toBe(false);
+      expect(reads.mock.calls.some(([value]) => typeof value === 'string' && value.endsWith(WIRE_TRANSCRIPT_RECEIPT_KEY))).toBe(false);
       expect(reader).toHaveBeenCalledTimes(1);
       expect((await reader.mock.results[0]!.value).bytesRead).toBe((await fsPromises.stat(path)).size);
       main.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'live after small first screen' }));
