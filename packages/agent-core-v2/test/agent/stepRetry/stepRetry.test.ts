@@ -1154,6 +1154,7 @@ describe('stepRetry plugin', () => {
 
   it.each(['before-output', 'partial-tool', 'exhaust', 'partial-off', 'deny', 'cancel'] as const)('handles a forwarded SSE WebSocket 1012 through the native turn: %s', async mode => {
     const bodies: string[] = [];
+    const partialAnswer = (attempt: number) => `partial answer attempt ${attempt}`;
     const controller = new AbortController();
     const tool = { type: 'function_call', id: 'fc_save', call_id: 'call_save', name: 'SaveWork', arguments: '{}', status: 'completed' };
     const server = createServer((request, response) => {
@@ -1164,7 +1165,7 @@ describe('stepRetry plugin', () => {
         const first = bodies.length === 1 || mode === 'exhaust';
         const events: Record<string, unknown>[] = [];
         if (first) {
-          if (mode !== 'before-output') events.push({ type: 'response.output_text.delta', delta: 'discarded answer' },
+          if (mode !== 'before-output') events.push({ type: 'response.output_text.delta', delta: partialAnswer(bodies.length) },
             { type: 'response.output_item.added', output_index: 0, item: tool });
           events.push({ type: 'error', error: { type: 'websocket_close_error', code: '1012', message: 'websocket closed before terminal event (code 1012)' } });
         } else if (bodies.length === 2) events.push({ type: 'response.output_item.added', output_index: 0, item: tool },
@@ -1196,7 +1197,7 @@ describe('stepRetry plugin', () => {
       ctx.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
       const result = await ctx.get(IAgentLoopService).run({ turnId: 1, signal: controller.signal });
       const recovered = mode === 'before-output' || mode === 'partial-tool';
-      const retainsPartial = mode === 'partial-off' || mode === 'deny';
+      const retainsPartial = mode === 'exhaust' || mode === 'partial-off' || mode === 'deny';
       const history = ctx.contextData().history;
       expect(result.type).toBe(recovered ? 'completed' : mode === 'cancel' ? 'cancelled' : 'failed');
       expect(bodies).toHaveLength(recovered ? 3 : mode === 'exhaust' ? 5 : 1);
@@ -1206,14 +1207,21 @@ describe('stepRetry plugin', () => {
         expect(history).toEqual(expect.arrayContaining([
           expect.objectContaining({
             role: 'assistant',
-            content: [{ type: 'text', text: 'discarded answer' }],
+            content: [{ type: 'text', text: partialAnswer(bodies.length) }],
             toolCalls: [],
             partial: true,
           }),
         ]));
         expect(wireLoopEvents('tool.call')).toHaveLength(0);
       } else {
-        expect(JSON.stringify(history)).not.toContain('discarded answer');
+        expect(JSON.stringify(history)).not.toContain('partial answer attempt');
+      }
+      if (mode === 'exhaust') {
+        const serializedHistory = JSON.stringify(history);
+        expect(serializedHistory.split(partialAnswer(bodies.length))).toHaveLength(2);
+        for (let attempt = 1; attempt < bodies.length; attempt++) {
+          expect(serializedHistory).not.toContain(partialAnswer(attempt));
+        }
       }
       if (recovered) {
         expect(bodies[1]).toBe(bodies[0]);

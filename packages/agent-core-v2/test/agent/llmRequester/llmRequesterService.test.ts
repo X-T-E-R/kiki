@@ -1997,7 +1997,7 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(resolveRetryPolicy(undefined, error).retry).toBe(false);
     expect(toErrorPayload(error).details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 5, retry_max_attempts: 5 });
     expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(4);
-    expect(onAttemptRetry).toHaveBeenCalledTimes(5);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(calls - 1);
     expect(telemetryRecords.filter(record => record.event === 'api_error')).toEqual(Array.from({ length: calls }, () => ({
       event: 'api_error',
       properties: expect.objectContaining({ error_type: 'network', turn_id: 1, request_kind: 'turn' }),
@@ -3066,7 +3066,7 @@ describe.each(['response.failed', 'error'] as const)('Responses SSE upstream con
         expect(bodies).toHaveLength(2);
         expect(parts).toEqual([{ type: 'text', text: 'recovered' }]);
       }
-      expect(onAttemptRetry).toHaveBeenCalledTimes(mode === 'exhaust' ? 5 : bodies.length - 1);
+      expect(onAttemptRetry).toHaveBeenCalledTimes(bodies.length - 1);
       expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(bodies.length - 1);
       expect(bodies.every(body => body === bodies[0])).toBe(true);
       expect(toErrorPayload(failures[0])).toMatchObject({
