@@ -212,7 +212,7 @@ internal static class Program
     {
         home = Environment.GetEnvironmentVariable("KIKI_HOME");
         if (String.IsNullOrWhiteSpace(home)) throw new InvalidOperationException("KIKI_HOME is missing.");
-        token = File.ReadAllText(Path.Combine(home, "server.token")).Trim();
+        token = File.ReadAllText(Path.Combine(home, "server.local-owner")).Trim();
         if (!Regex.IsMatch(token, "^[A-Za-z0-9_-]{43}$")) throw new InvalidOperationException("The fixture token is invalid.");
         Directory.CreateDirectory(Path.Combine(home, "server", "instances"));
         statePath = Path.Combine(home, "fixture-session-state.json");
@@ -710,7 +710,9 @@ function Read-FixtureExecution([object]$Server, [string]$SessionId) {
 try {
     $cscPath = Resolve-Csc
     [IO.Directory]::CreateDirectory((Join-Path $homePath 'server\instances')) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $homePath 'server.token'), $fixtureToken + "`n", (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $homePath 'server.local-owner'), $fixtureToken + "`n", (New-Object Text.UTF8Encoding($false)))
+    $remoteOwnerToken = -join (1..43 | ForEach-Object { 'B' })
+    [IO.File]::WriteAllText((Join-Path $homePath 'server.token'), $remoteOwnerToken + "`n", (New-Object Text.UTF8Encoding($false)))
     $env:KIKI_HOME = $homePath
 
     $oldCandidate = New-Candidate 'candidate-old' $oldCommit $false

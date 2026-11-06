@@ -144,8 +144,10 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
 
 $lock = [IO.File]::Open((Join-Path $runtime 'hot-switch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 try {
-    $ownerToken = [IO.File]::ReadAllText((Join-Path $homePath 'server.token')).Trim()
-    if ($ownerToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The local owner token is invalid.' }
+    $ownerPath = Join-Path $homePath 'server.local-owner'
+    if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { throw 'The selected home has no local-owner capability. Start its managed desktop normally and verify the home before switching.' }
+    $ownerToken = [IO.File]::ReadAllText($ownerPath).Trim()
+    if ($ownerToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The local-owner capability is invalid.' }
     $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
     if ($Recover) {
         if ($null -eq $state -or $state.schemaVersion -ne 1 -or $state.kikiHome -ine $homePath -or $state.phase -eq 'complete') {
