@@ -15,6 +15,7 @@ import {
   APIStatusError,
   ChatProviderError,
   createAbortError,
+  hasExplicitRetryVeto,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
   markProviderEventError,
@@ -432,6 +433,26 @@ describe('classifyKimiQuotaError (Kimi trait classifier)', () => {
     expect(kimiAnthropicTrait.convertError!(source, context)).toBeInstanceOf(
       APIProviderQuotaExhaustedError,
     );
+  });
+});
+
+describe('quota convertError hook retry metadata', () => {
+  it.each(['anthropic', 'openai'] as const)('preserves an explicit SDK retry denial without changing the %s quota classification', (protocol) => {
+    for (const retryable of [false, undefined]) {
+      const body = { type: 'exceeded_current_quota_error', message: 'Example quota exhausted', retryable };
+      const source = protocol === 'anthropic'
+        ? AnthropicAPIError.generate(429, { type: 'error', error: body }, 'Too many requests', new Headers())
+        : new OpenAIAPIError(429, body, 'Too many requests', new Headers());
+      const converted = protocol === 'anthropic'
+        ? convertAnthropicError(source, classifyKimiQuotaError)
+        : convertOpenAIError(source, classifyKimiQuotaError);
+      expect(converted).toBeInstanceOf(APIProviderQuotaExhaustedError);
+      expect(converted).toMatchObject({ statusCode: 429 });
+      expect(isRetryableGenerateError(converted)).toBe(false);
+      expect(hasExplicitRetryVeto(converted)).toBe(retryable === false);
+      if (retryable === false) expect(toErrorPayload(converted).details).toMatchObject({ upstream_retryable: false });
+      else expect(toErrorPayload(converted).details).not.toHaveProperty('upstream_retryable');
+    }
   });
 });
 

@@ -44,6 +44,7 @@ import {
   APIStatusError,
   classifyApiError,
   createAbortError,
+  hasExplicitRetryVeto,
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
@@ -168,20 +169,6 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
 
 export const KIKI_INFINITE_RETRY_ENV = 'KIKI_INFINITE_RETRY';
-
-function hasExplicitRetryVeto(error: unknown): boolean {
-  const visited = new Set<object>();
-  let current = error;
-  while (typeof current === 'object' && current !== null && !visited.has(current)) {
-    visited.add(current);
-    const attached = readAttachedErrorDetails(current);
-    const declared = current instanceof Error2 ? current.details : undefined;
-    if (attached?.['retry'] === false || declared?.['retry'] === false ||
-      attached?.['upstream_retryable'] === false || declared?.['upstream_retryable'] === false) return true;
-    current = current instanceof Error ? current.cause : undefined;
-  }
-  return false;
-}
 
 function responseTransportLogFields(error: unknown): Partial<ResponsesTransportDiagnostics> {
   const visited = new Set<object>();
@@ -798,17 +785,17 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           if (discardedPartialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
           const maxAttempts = Math.min(DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
-          onAttemptRetry?.();
           if (interruptionAttempt >= maxAttempts) {
             const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
             attachErrorDetails(error, details);
             attachErrorDetails(raw, details);
             this.log.warn('upstream interruption retry exhausted', {
               ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
-              maxAttempts, discardedPartialOutput, ...retryErrorFields(raw), ...responseTransportLogFields(error),
+              maxAttempts, retainedPartialOutput: attemptObservedOutput, ...retryErrorFields(raw), ...responseTransportLogFields(error),
             });
             throw error;
           }
+          onAttemptRetry?.();
           this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
           const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
           const fields = retryErrorFields(raw);

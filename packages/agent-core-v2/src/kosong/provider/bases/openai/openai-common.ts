@@ -130,7 +130,7 @@ export function convertOpenAIError(
   }
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
-    return hooked;
+    return error instanceof OpenAIAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error) : hooked;
   }
   if (error instanceof OpenAITimeoutError) {
     return new APITimeoutError(error.message);

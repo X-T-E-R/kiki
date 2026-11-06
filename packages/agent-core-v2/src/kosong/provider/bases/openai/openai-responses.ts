@@ -16,6 +16,7 @@ import {
   markProviderEventError,
   noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
+  noteExplicitUpstreamRetryDenial,
   providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
 import type {
@@ -155,6 +156,10 @@ function transportStatusError(error: unknown): ChatProviderError | undefined {
   return withTransportExecution(attachErrorDetails(markProviderEventError(failure, error.code), {
     errorSource: 'provider_event', nativeCode: error.code,
   }), error.execution);
+}
+
+function withTransportRetryDenial(failure: ChatProviderError, error: unknown): ChatProviderError {
+  return error instanceof ResponsesWebSocketError ? noteExplicitUpstreamRetryDenial(failure, error) : failure;
 }
 
 function withTransportExecution(failure: ChatProviderError, execution: string | undefined): ChatProviderError {
@@ -1402,7 +1407,8 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         !(error instanceof ResponsesWebSocketError) &&
         !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
-      const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error, this._convertErrorHook) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      const converted = transportStatusError(error) ?? transportClosureError(error, this._convertErrorHook) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook);
+      const failure = attachStreamDiagnostics(withTransportRetryDenial(converted, error), diagnostics);
       attachErrorDetails(failure, { responsesTransport: this._transportDiagnostics() });
       if (this._observedOutput) noteExecutedRequestDelivery(failure);
       if (this._continuationBlocked) attachErrorDetails(failure, { retry: false });
@@ -1629,7 +1635,8 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         } catch (error) {
           if (isAbortError(error)) throw error;
           if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) {
-            throw transportStatusError(error) ?? transportLocalError(error) ?? ambiguousRequestDelivery(transportClosureError(error) ?? error);
+            const converted = transportStatusError(error) ?? transportLocalError(error) ?? ambiguousRequestDelivery(transportClosureError(error) ?? error);
+            throw withTransportRetryDenial(converted, error);
           }
           if (fullInput !== undefined) createParams['input'] = fullInput;
         }
@@ -1659,7 +1666,8 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         endSource: isAbortError(error) ? 'cancelled' : error instanceof OpenAIError ? 'sdk_error' : 'local_error',
       } : undefined;
       if (isAbortError(error)) throw attachStreamDiagnostics(createAbortError(), diagnostics);
-      throw attachErrorDetails(attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics), {
+      const converted = transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook);
+      throw attachErrorDetails(attachStreamDiagnostics(withTransportRetryDenial(converted, error), diagnostics), {
         responsesTransport: transportDiagnostics(),
       });
     }

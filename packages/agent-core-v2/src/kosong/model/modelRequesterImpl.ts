@@ -5,6 +5,7 @@ import { Error2 } from '#/_base/errors/errors';
 import {
   APIStatusError,
   CONFIG_INVALID_ERROR_CODE,
+  hasExplicitRetryVeto,
   isAbortError,
   requestDeliveryProvenance,
   VideoUploadUnsupportedError,
@@ -39,7 +40,8 @@ import { isApiDefault } from './parameters';
  *  per-turn variation (including the profile's scalar `requestParams`) onto `GenerateOptions`, turns
  *  per-turn input into the `ModelRequestEvent` stream, measures stream timing, and owns the
  *  auth-refresh replay — a 401 against a refreshable (OAuth) provider triggers one forced token
- *  refresh and exactly one replay, while a surviving 401 surfaces as `provider.auth_error` carrying
+ *  refresh and exactly one replay unless same-request retry is explicitly denied. A surviving
+ *  401 surfaces as `provider.auth_error` carrying
  *  the provider's message. Constructed by `ModelCatalog` with plain constructor args, no DI. */
 export class ModelRequesterImpl implements ModelRequester {
   private cachedChatProvider: ChatProvider | undefined;
@@ -312,7 +314,7 @@ export class ModelRequesterImpl implements ModelRequester {
   }
 
   private shouldForceRefresh(error: unknown): boolean {
-    return requestDeliveryProvenance(error) === undefined && this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
+    return !hasExplicitRetryVeto(error) && requestDeliveryProvenance(error) === undefined && this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
   }
 }
 

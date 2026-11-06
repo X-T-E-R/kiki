@@ -1,5 +1,6 @@
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,20 +21,26 @@ import type { ChatProvider } from '#/kosong/contract/provider';
 import { appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext } from '../../harness';
 import { makeHookRunner } from './runner-stub';
 
-const wirePath = 'E:/kiki-wt/sub2-stream-preheader-20261106/.agent/summary/argon-502-20261107/messages-clean-empty-c-false.sse';
-const httpPath = 'E:/kiki-wt/sub2-stream-preheader-20261106/.agent/summary/argon-502-20261107/messages-clean-empty-c-false.http';
-const pluginRoot = 'C:/Users/xxoy1/.kiki/plugins/managed/argon-error-recovery';
-const scratchRoot = fileURLToPath(new URL('../../../../../.tmp/upstream-retry-continuation/', import.meta.url));
-
-const originalWire = await readFile(wirePath);
-const capturedHttp = await readFile(httpPath);
-const headerEnd = capturedHttp.indexOf(Buffer.from('\r\n\r\n'));
-if (headerEnd < 0 || !capturedHttp.subarray(headerEnd + 4).equals(originalWire)) {
-  throw new Error('The captured HTTP body is not the original SSE wire.');
-}
-if (!originalWire.includes(Buffer.from('"retryable":false'))) {
-  throw new Error('The original wire no longer contains an explicit retryable false.');
-}
+const pluginRoot = fileURLToPath(new URL('../../fixtures/plugins/argon-error-recovery/', import.meta.url));
+const usage = { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 202879 };
+const missingTerminalWire = Buffer.from(sse([
+  ...Array.from({ length: 7 }, () => ['ping', { type: 'ping' }] as const),
+  ['message_start', {
+    type: 'message_start',
+    message: {
+      id: 'msg_missing_terminal', type: 'message', role: 'assistant', model: 'example-model', content: [],
+      stop_reason: null, stop_sequence: null, usage,
+    },
+  }],
+  ['message_delta', { type: 'message_delta', delta: { stop_reason: null, stop_sequence: null }, usage }],
+  ['error', { type: 'error', error: {
+    type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+  } }],
+]));
+const missingTerminalHttp = Buffer.concat([
+  Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n'),
+  missingTerminalWire,
+]);
 
 function sse(events: ReadonlyArray<readonly [string, unknown]>): string {
   return events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
@@ -94,8 +101,7 @@ interface Replay {
 }
 
 async function replay(choose: (requestNumber: number, continued: boolean) => Buffer | string, options: { readonly maxAttempts?: number; readonly tool?: boolean } = {}): Promise<Replay> {
-  await mkdir(scratchRoot, { recursive: true });
-  const home = await mkdtemp(join(scratchRoot, 'case-'));
+  const home = await mkdtemp(join(tmpdir(), 'upstream-retry-continuation-'));
   const requests: Replay['requests'] = [];
   const responseBodies: Buffer[] = [];
   const retryEvents: unknown[] = [];
@@ -185,8 +191,8 @@ describe('upstream retryable false through the real Messages SDK', () => {
     await Promise.all(pending.map(async (replayed) => replayed.close()));
   });
 
-  it('replays the original wire once, appends one continuation, and converges on the new message', async () => {
-    const replayed = await replay((requestNumber, continued) => continued ? terminalSse('Synthetic terminal after continuation.') : requestNumber === 1 ? capturedHttp : capturedHttp);
+  it('receives one missing-terminal wire, appends one continuation, and converges on the new message', async () => {
+    const replayed = await replay((_requestNumber, continued) => continued ? terminalSse('Synthetic terminal after continuation.') : missingTerminalHttp);
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
@@ -194,7 +200,7 @@ describe('upstream retryable false through the real Messages SDK', () => {
     expect(completion).toMatchObject({ state: 'completed' });
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(replayed.responseBodies[0]).toEqual(originalWire);
+    expect(replayed.responseBodies[0]).toEqual(missingTerminalWire);
     expect(continuations(replayed.local)).toHaveLength(1);
     expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
     const call = stops(replayed)[0]?.[1]?.inputData;
@@ -208,7 +214,7 @@ describe('upstream retryable false through the real Messages SDK', () => {
   }, 60_000);
 
   it('does not send a third request when the new message fails with the same wire', async () => {
-    const replayed = await replay(() => capturedHttp);
+    const replayed = await replay(() => missingTerminalHttp);
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
@@ -216,7 +222,7 @@ describe('upstream retryable false through the real Messages SDK', () => {
     expect(completion).toMatchObject({ state: 'failed' });
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(replayed.responseBodies.every((body) => body.equals(originalWire))).toBe(true);
+    expect(replayed.responseBodies.every((body) => body.equals(missingTerminalWire))).toBe(true);
     expect(continuations(replayed.local)).toHaveLength(1);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
@@ -225,7 +231,7 @@ describe('upstream retryable false through the real Messages SDK', () => {
   it('does not replay a tool that already succeeded before the original wire', async () => {
     const replayed = await replay((requestNumber, continued) => {
       if (requestNumber === 1) return toolSse();
-      return continued ? terminalSse('Continued after the saved tool.') : capturedHttp;
+      return continued ? terminalSse('Continued after the saved tool.') : missingTerminalHttp;
     }, { tool: true });
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
@@ -235,10 +241,54 @@ describe('upstream retryable false through the real Messages SDK', () => {
     expect(replayed.tools).toBe(1);
     expect(replayed.requests).toHaveLength(3);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(replayed.responseBodies.filter((body) => body.equals(originalWire))).toHaveLength(1);
+    expect(replayed.responseBodies.filter((body) => body.equals(missingTerminalWire))).toHaveLength(1);
     expect(continuations(replayed.local)).toHaveLength(1);
     expect(JSON.stringify(replayed.requests[2]?.body)).toContain('saved');
     expect(JSON.stringify(replayed.requests[2]?.body).split('继续')).toHaveLength(2);
+  }, 60_000);
+
+  it.each(['upstream-denied', 'retry-exhausted'] as const)('retains the final failed partial answer on a new message: %s', async (mode) => {
+    const replayed = await replay((requestNumber, continued) => {
+      if (continued) return terminalSse('Completed after the retained partial.');
+      const events: Array<readonly [string, unknown]> = [
+        messageStart(`msg_partial_${requestNumber}`),
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `Partial attempt ${requestNumber}` } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ];
+      if (mode === 'upstream-denied') events.push(['error', { type: 'error', error: {
+        type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+      } }]);
+      return sse(events);
+    }, { maxAttempts: 2 });
+    open.push(replayed);
+    replayed.trigger.mockImplementation(async (event) => event === 'StopFailure'
+      ? [{ action: 'allow', recovery: { action: 'continue', userMessage: '继续' } }] : []);
+    const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
+      message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
+    })).completion;
+    const finalAttempt = mode === 'upstream-denied' ? 1 : 2;
+    const finalPartial = `Partial attempt ${finalAttempt}`;
+    expect(completion).toMatchObject({ state: 'completed' });
+    expect(replayed.requests).toHaveLength(finalAttempt + 1);
+    expect(replayed.retryEvents).toHaveLength(finalAttempt - 1);
+    expect(continuations(replayed.local)).toHaveLength(1);
+    const history = replayed.local.contextData().history;
+    const continuationIndex = history.indexOf(continuations(replayed.local)[0]!);
+    expect(history[continuationIndex - 1]).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: finalPartial }] });
+    const wire = await replayed.local.persistedWireRecords();
+    const contentParts = wire.filter((record) => record.type === 'context.append_loop_event')
+      .map((record) => record['event'] as { type: string; part?: { text?: string } })
+      .filter((event) => event.type === 'content.part');
+    expect(contentParts.filter((event) => event.part?.text === finalPartial)).toHaveLength(1);
+    if (finalAttempt === 2) expect(JSON.stringify(contentParts)).not.toContain('Partial attempt 1');
+    expect(JSON.stringify(replayed.requests.at(-1)?.body)).toContain(finalPartial);
+    if (finalAttempt === 2) {
+      expect(JSON.stringify(replayed.requests[1]?.body)).not.toContain('Partial attempt 1');
+      expect(JSON.stringify(replayed.requests[2]?.body)).not.toContain('Partial attempt 1');
+      expect(JSON.stringify(history)).not.toContain('Partial attempt 1');
+    }
+    await replayed.local.expectResumeMatches();
   }, 60_000);
 
   it('retries a real read disconnect and does not append a message for it', async () => {

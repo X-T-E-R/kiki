@@ -248,6 +248,20 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
+  it.each(['unknown', 'not_executed'] as const)('keeps same-request retries but independently gates a new message for execution=%s', async (execution) => {
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
+    try {
+      const error = () => markProviderEventError(new ChatProviderError('Upstream failure', undefined, { details: { execution } }), 'antigravity_missing_terminal');
+      f.local.mockNextProviderResponse({ error: error() });
+      f.local.mockNextProviderResponse({ error: error() });
+      if (execution === 'not_executed') f.local.mockNextResponse({ type: 'text', text: 'Continued after a trusted non-execution' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: execution === 'unknown' ? 'failed' : 'completed' });
+      expect(f.local.llmCalls).toHaveLength(execution === 'unknown' ? 2 : 3);
+      expect(continuations(f.local)).toHaveLength(execution === 'unknown' ? 0 : 1);
+      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(execution !== 'unknown');
+    } finally { await f.dispose(); }
+  });
+
   it('retries an explicit ambiguous delivery and does not continue it', async () => {
     const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
     try {

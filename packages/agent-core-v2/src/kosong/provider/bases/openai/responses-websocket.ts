@@ -3,7 +3,7 @@ import { ResponsesWS } from 'openai/resources/responses/ws';
 import { getWebSocketEventPayload } from 'openai/resources/responses/ws-base';
 import type { ResponsesOutputProjection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
 
-import { createAbortError } from '#/kosong/contract/errors';
+import { createAbortError, noteExplicitUpstreamRetryDenial } from '#/kosong/contract/errors';
 
 type RawObject = Record<string, unknown>;
 type SDKStreamRecord = {
@@ -20,6 +20,7 @@ type GatewayError = {
   param: string | null | undefined;
   status: number | undefined;
   execution: string | undefined;
+  retryable: boolean | undefined;
   retirementNotExecuted: boolean;
 };
 
@@ -353,7 +354,8 @@ function readGatewayError(error: unknown): GatewayError {
     Number.isInteger(event['status'])
     ? readString(event['execution']) : undefined;
   const retirementNotExecuted = execution === 'not_executed' && nested?.['code'] === 'connection_retiring';
-  return { code, message, param, status, execution, retirementNotExecuted };
+  const retryable = (nested ?? event)?.['retryable'];
+  return { code, message, param, status, execution, retirementNotExecuted, retryable: typeof retryable === 'boolean' ? retryable : undefined };
 }
 
 function completedResponse(event: RawObject): { responseId: string; output: readonly unknown[] } | undefined {
@@ -579,6 +581,7 @@ export class ResponsesWebSocketError extends Error {
   readonly status: number | undefined;
   readonly param: string | null | undefined;
   readonly execution: string | undefined;
+  readonly retryable: boolean | undefined;
 
   constructor(
     message: string,
@@ -589,15 +592,18 @@ export class ResponsesWebSocketError extends Error {
       readonly status?: number;
       readonly param?: string | null;
       readonly execution?: string;
+      readonly retryable?: boolean;
     },
   ) {
     super(message, { cause: options?.cause });
     this.name = 'ResponsesWebSocketError';
     this.code = code;
-    this.safeHttpFallback = options?.safeHttpFallback === true;
+    this.safeHttpFallback = options?.safeHttpFallback === true && options.retryable !== false;
     this.status = options?.status;
     this.param = options?.param;
     this.execution = options?.execution;
+    this.retryable = options?.retryable;
+    noteExplicitUpstreamRetryDenial(this, this);
   }
 }
 
@@ -967,6 +973,7 @@ export class ResponsesWebSocketTransport {
       status: details.status,
       param: details.param,
       execution: details.execution,
+      retryable: details.retryable,
     });
   }
 
@@ -1010,7 +1017,8 @@ export class ResponsesWebSocketTransport {
           delta &&
           !retriedStateMiss &&
           error.code === 'previous_response_not_found' &&
-          error.execution === 'not_executed'
+          error.execution === 'not_executed' &&
+          error.retryable !== false
         ) {
           retriedStateMiss = true;
           delta = false;
@@ -1161,7 +1169,8 @@ export class ResponsesWebSocketTransport {
             !sawResponseEvent &&
             !retriedStateMiss &&
             error.code === 'previous_response_not_found' &&
-            error.execution === 'not_executed'
+            error.execution === 'not_executed' &&
+            error.retryable !== false
           ) {
             retriedStateMiss = true;
             delta = false;

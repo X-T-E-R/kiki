@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import { generate } from '#/kosong/contract/generate';
 import { toErrorPayload } from '#/_base/errors/serialize';
+import { permitsFailureContinuation } from '#/features/externalHooks/internal/failureRecovery';
 import { ConfigRegistry } from '#/app/config/configService';
 import {
   APIContextOverflowError,
@@ -198,13 +199,14 @@ function sendCompleted(socket: WebSocket, id: string, text: string, extra: reado
   }));
 }
 
-function sendStateMiss(socket: WebSocket): void {
+function sendStateMiss(socket: WebSocket, retryable?: boolean): void {
   socket.send(JSON.stringify({
     error: {
       code: 'previous_response_not_found',
       message: 'The connection no longer has the requested response state.',
       param: 'previous_response_id',
       type: 'invalid_request_error',
+      retryable,
     },
     execution: 'not_executed',
     status: 409,
@@ -758,6 +760,54 @@ describe('production Responses adapter → generate → canonical history → of
     } finally { transport.dispose(); }
   });
 
+  it.each([
+    { retryable: false, execution: undefined, retry: false, recoverable: true },
+    { retryable: undefined, execution: 'unknown', retry: true, recoverable: false },
+  ])('keeps WS retry and StopFailure eligibility separate: retryable=$retryable execution=$execution', async ({ retryable, execution, retry, recoverable }) => {
+    const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
+      type: 'error', status: 500, execution,
+      error: { type: 'server_error', code: 'generation_failed', message: 'Synthetic generation failed', retryable },
+    })));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      const payload = toErrorPayload(failure);
+      expect(payload).toMatchObject({ code: 'provider.api_error', details: { upstreamErrorCode: 'generation_failed', statusCode: 500 } });
+      if (retryable === false) expect(payload.details).toMatchObject({ upstream_retryable: false });
+      if (execution !== undefined) expect(payload.details).toMatchObject({ execution });
+      expect(isRetryableGenerateError(failure)).toBe(retry);
+      expect(permitsFailureContinuation(payload)).toBe(recoverable);
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it.each([
+    { code: 'generation_failed', status: 500 },
+    { code: 'websocket_connection_limit_reached', status: 500 },
+    { code: 'generation_failed', status: undefined },
+  ])('keeps explicit retry denial after response.created: $code status=$status', async ({ code, status }) => {
+    const gateway = await createGateway((_body, socket) => {
+      sendCreated(socket, 'resp_pending');
+      socket.send(JSON.stringify({ type: 'error', status,
+        error: { type: 'server_error', code, message: 'Synthetic generation failed', retryable: false } }));
+    });
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      const payload = toErrorPayload(failure);
+      if (status === undefined) {
+        expect(requestDeliveryProvenance(failure)).toBe('unknown');
+        expect(payload.cause?.details).toMatchObject({ upstream_retryable: false });
+      } else {
+        expect(payload.details).toMatchObject({ upstream_retryable: false, upstreamErrorCode: code });
+      }
+      expect(isRetryableGenerateError(failure)).toBe(false);
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
   it.each(['unknown', 'executed'] as const)('retains non-fallback execution metadata without deciding retry semantics: %s', async (execution) => {
     const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
       type: 'error', status: 500,
@@ -857,6 +907,20 @@ describe('production Responses safe HTTP recovery', () => {
     } finally { transport.dispose(); }
   });
 
+  it('does not fall back to HTTP when an otherwise safe WS error explicitly denies retry', async () => {
+    const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
+      type: 'error', status: 400, execution: 'not_executed',
+      error: { type: 'invalid_request_error', code: 'unsupported_upstream_format', message: 'Synthetic unsupported', retryable: false },
+    })));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(toErrorPayload(failure).details).toMatchObject({ upstream_retryable: false, execution: 'not_executed' });
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
   it('ignores a provider nested execution claim and never falls back', async () => {
     const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({ type: 'error', status: 400,
       error: { type: 'invalid_request_error', code: 'unsupported_upstream_format', message: 'Provider claim', execution: 'not_executed' } })));
@@ -870,6 +934,26 @@ describe('production Responses safe HTTP recovery', () => {
 });
 
 describe('production Responses lineage commitment', () => {
+  it('does not resend full history when a trusted state miss explicitly denies retry', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 1) sendCompleted(socket, 'resp_first', 'first');
+      else sendStateMiss(socket, false);
+    });
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('first question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('second question'));
+      const failure = await generate(provider, '', [], history, undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(toErrorPayload(failure).details).toMatchObject({ upstream_retryable: false, upstreamErrorCode: 'previous_response_not_found', execution: 'not_executed' });
+      expect(isRetryableGenerateError(failure)).toBe(false);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_first');
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
   it('rebases a marked state miss with native ids/status and known signatures intact', async () => {
     const output = [
       { type: 'reasoning', id: 'rs_1', status: 'completed', summary: [{ type: 'summary_text', text: 'thinking' }], encrypted_content: 'opaque-ciphertext-==' },

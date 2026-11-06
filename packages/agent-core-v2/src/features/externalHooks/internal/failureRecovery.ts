@@ -21,6 +21,7 @@ export function permitsFailureContinuation(error: ErrorPayload): boolean {
     const status = entry.details?.['statusCode'];
     return sameRequestRetryProhibition(entry.details) === 'local' ||
       entry.details?.['request_delivery'] === 'ambiguous' ||
+      entry.details?.['execution'] === 'unknown' ||
       entry.name === 'APIProviderQuotaExhaustedError' ||
       ['provider.auth_error', 'provider.filtered', 'provider.rate_limit', 'context.overflow'].includes(entry.code) ||
       typeof status === 'number' && status >= 400 && status < 500;

@@ -540,7 +540,7 @@ export function convertAnthropicError(
   }
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
-    return hooked;
+    return error instanceof AnthropicAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error) : hooked;
   }
   if (error instanceof AnthropicTimeoutError) {
     return new APITimeoutError(error.message);

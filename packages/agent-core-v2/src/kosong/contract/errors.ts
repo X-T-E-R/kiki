@@ -364,6 +364,21 @@ const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'gateway_stream_terminal_error',
 ]);
 
+/** Checks explicit same-request retry denials on the original error and its cause chain. */
+export function hasExplicitRetryVeto(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const attached = readAttachedErrorDetails(current);
+    const declared = current instanceof Error2 ? current.details : undefined;
+    if (attached?.['retry'] === false || declared?.['retry'] === false ||
+      attached?.['upstream_retryable'] === false || declared?.['upstream_retryable'] === false) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export function isRetryableGenerateError(error: unknown): boolean {
   return isRetryableProviderFailure(error, false);
 }

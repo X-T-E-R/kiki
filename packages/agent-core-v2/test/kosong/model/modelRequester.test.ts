@@ -1,4 +1,7 @@
+import { createServer } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { TestInstantiationService } from '#/_base/di/test';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { IConfigService } from '#/app/config/config';
@@ -10,6 +13,7 @@ import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/open
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 
 import { isError2 } from '#/_base/errors/errors';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import { APIStatusError, createAbortError } from '#/kosong/contract/errors';
 import type { Message, StreamedMessagePart } from '#/kosong/contract/message';
 import type {
@@ -536,6 +540,48 @@ describe('ModelRequesterImpl request execution', () => {
     expect(provider.calls[0]?.options?.headers).toEqual(provider.calls[1]?.options?.headers);
     expect(provider.calls[0]?.options?.cacheKey).toBe(provider.calls[1]?.options?.cacheKey);
     expect(authCalls).toEqual([{}, { force: true }]);
+  });
+
+  it.each([false, undefined])('respects an HTTP 401 retryable=%s through the real Messages SDK before forcing auth refresh', async (retryable) => {
+    const requests: Array<{ body: string; apiKey: string | undefined }> = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push({ body: Buffer.concat(chunks).toString('utf8'), apiKey: request.headers['x-api-key'] as string | undefined });
+      response.writeHead(401, { 'Content-Type': 'application/json', Connection: 'close' });
+      response.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'Example auth rejection', retryable } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('No loopback port');
+      const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}` });
+      const getAuth = vi.fn(async (options?: { force?: boolean }) => ({ apiKey: options?.force ? 'example-refreshed-key' : 'example-initial-key' }));
+      const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+      const events: ModelRequestEvent[] = [];
+      const failure = await (async () => {
+        for await (const event of requester.request({
+          ...INPUT,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] }],
+        })) events.push(event);
+      })().catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: 'provider.auth_error', details: { statusCode: 401 } });
+      if (retryable === false) {
+        expect(toErrorPayload(failure).details).toMatchObject({ upstream_retryable: false });
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.apiKey).toBe('example-initial-key');
+        expect(getAuth.mock.calls).toEqual([[]]);
+        expect(events).toEqual([]);
+      } else {
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.body).toBe(requests[0]?.body);
+        expect(requests.map((request) => request.apiKey)).toEqual(['example-initial-key', 'example-refreshed-key']);
+        expect(getAuth.mock.calls).toEqual([[], [{ force: true }]]);
+        expect(events).toEqual([{ type: 'attempt.discarded', responseInstanceId: expect.any(String) }]);
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
   });
 
   it('surfaces a replay-surviving 401 as provider.auth_error', async () => {
