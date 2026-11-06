@@ -8,7 +8,9 @@ import { APIStatusError } from '#/kosong/contract/errors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
-import { TestInstantiationService } from '#/_base/di/test';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { SessionExecutionControl } from '#/session/executionControl/executionControlService';
 import { IAgentConversationUndoParticipantRegistry } from '#/agent/contextMemory/conversationUndoParticipants';
 import {
   IAgentContextInjectorService,
@@ -23,7 +25,7 @@ import {
 import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
-import { TaskNotified, TaskWaitDelivered } from '#/agent/task/taskOps';
+import { TaskNotified, TaskStarted, TaskTerminated, TaskWaitDelivered } from '#/agent/task/taskOps';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -1776,6 +1778,106 @@ describe('AgentTaskService', () => {
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
     return ix;
   }
+
+  it('retains a replayed terminal result owner and parent for cold pause release and delivers the original result once', async () => {
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    const roster = vi.spyOn(docs, 'list');
+    const session = makeSessionContext({
+      sessionId: 'test-session', workspaceId: 'test-ws', sessionDir: '/tmp/test-session',
+      sessionScope: 'sessions/test-ws/test-session', cwd: '/tmp/test-session',
+    });
+    let control!: ISessionExecutionControl;
+    const registerOwner = (agentId: string) => {
+      const agent = buildWiredAgentIx(agentId, docs, bytes, stubContextMemory());
+      agent.stub(ISessionExecutionControl, control);
+      agent.stub(IAgentPromptService, { hasQueuedWork: () => false });
+      const tasks = agent.get(IAgentTaskService);
+      agentHandles.set(agentId, { kind: 'agent', id: agentId, accessor: agent, dispose: () => agent.dispose() });
+      const registration = control.register(agentId, { pause: async () => undefined, resume: async () => undefined });
+      return { agent, tasks, registration };
+    };
+    const create = vi.fn(async ({ agentId }: { agentId?: string }) => {
+      if (agentId === undefined) throw new Error('The original owner identity is required');
+      const owner = registerOwner(agentId);
+      await owner.agent.get(IEventDispatcher).restore();
+      return agentHandles.get(agentId)!;
+    });
+    const controlServices = () => createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IAtomicDocumentStore, docs);
+      reg.definePartialInstance(ISessionContext, session);
+      reg.definePartialInstance(ISessionMetadata, { update: async () => {}, snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents: { 'receipt-owner': { parentAgentId: 'main' }, main: { parentAgentId: null }, idle: { parentAgentId: null } } }) });
+      reg.definePartialInstance(IAgentLifecycleService, { list: () => [...agentHandles.values()], get: id => agentHandles.get(id), create });
+      reg.define(ISessionExecutionControl, SessionExecutionControl);
+    } });
+    control = controlServices().get(ISessionExecutionControl);
+    await control.ready();
+    const warm = registerOwner('receipt-owner');
+    const idle = registerOwner('idle');
+    const info = { taskId: 'task-12345678', kind: 'process', command: 'isolated fixture', pid: 1, exitCode: 0,
+      description: 'original undelivered result', detached: true, status: 'completed', startedAt: 1, endedAt: 2 } as const;
+    const persistence = new AgentTaskPersistence('/tmp/test-session/agents/receipt-owner', warm.agent.get(IAgentScopeContext).scope(), docs, bytes);
+    const receipt = await persistence.commitTerminalTask(info, 'original finite result');
+    warm.agent.get(IWireService).appendRecord(new TaskTerminated({ info: { ...info, receipt, receiptVerification: 'verified' } }).serialize());
+    await warm.agent.get(IEventDispatcher).restore();
+    expect(warm.tasks.list(false)).toEqual([expect.objectContaining({ taskId: info.taskId, receiptVerification: 'verified' })]);
+    expect(warm.tasks.hasUnfinishedWork(false)).toBe(true);
+    await control.pause({ operationId: 'pause-terminal-owner' });
+    await vi.waitFor(async () => expect((await control.read()).phase).toBe('paused'));
+    expect(await docs.get(session.scope(), 'execution-control.json')).toMatchObject({ requiredAgents: ['receipt-owner'], points: {} });
+    expect(roster).not.toHaveBeenCalled();
+    expect((warm.agent.get(IAgentLoopService) as StubLoop).launches).toEqual([]);
+    warm.registration.dispose();
+    idle.registration.dispose();
+    await warm.agent.dispose();
+    await idle.agent.dispose();
+    agentHandles.clear();
+    control = controlServices().get(ISessionExecutionControl);
+    await control.ready();
+    await expect(control.resume({ operationId: 'release-terminal-owner', pauseOperationId: 'pause-terminal-owner' })).resolves.toMatchObject({ phase: 'running' });
+    expect(create.mock.calls.map(([input]) => input.agentId)).toEqual(['main', 'receipt-owner']);
+    const cold = agentHandles.get('receipt-owner')!;
+    const tasks = cold.accessor.get(IAgentTaskService);
+    await tasks.resumeRestoration!();
+    const loop = cold.accessor.get(IAgentLoopService) as StubLoop;
+    const context = cold.accessor.get(IAgentContextMemoryService) as StubContextMemory;
+    expect(loop.launches).toHaveLength(1);
+    loop.drainNextBatch(context);
+    await runWillBeginStepHooks(loop, true);
+    expect(loop.drainNextBatch(context)).toBeUndefined();
+    expect(loop.launches).toHaveLength(1);
+    expect(context.messages).toEqual([expect.objectContaining({ origin: { kind: 'task', taskId: info.taskId, status: 'completed', notificationId: `task:${info.taskId}:completed` } })]);
+    expect(JSON.stringify(context.messages)).toContain('original finite result');
+    expect(tasks.hasUnfinishedWork(false)).toBe(false);
+    await cold.accessor.get(IEventDispatcher).flush();
+    await cold.dispose();
+    const replay = buildWiredAgentIx('receipt-owner', docs, bytes, stubContextMemory());
+    const replayedTasks = replay.get(IAgentTaskService);
+    await replay.get(IEventDispatcher).restore();
+    expect(replayedTasks.hasUnfinishedWork(false)).toBe(false);
+    await replayedTasks.resumeRestoration!();
+    expect((replay.get(IAgentLoopService) as StubLoop).launches).toEqual([]);
+  });
+
+  it.each(['delivered', 'suppressed', 'service', 'foreground', 'legacy', 'running'] as const)('does not retain replayed %s task history as a pending finite result owner', async mode => {
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    const agent = buildWiredAgentIx('receipt-owner', docs, bytes, stubContextMemory());
+    const tasks = agent.get(IAgentTaskService);
+    const info: AgentTaskInfo = { taskId: 'task-12345678', kind: 'process', command: 'isolated fixture', pid: 1, exitCode: 0,
+      description: 'replayed history', detached: mode !== 'foreground', status: mode === 'running' ? 'running' : 'completed',
+      startedAt: 1, endedAt: mode === 'running' ? null : 2,
+      lifetime: mode === 'service' ? 'service' : 'finite', terminalNotificationSuppressed: mode === 'suppressed' };
+    const persistence = new AgentTaskPersistence('/tmp/test-session/agents/receipt-owner', agent.get(IAgentScopeContext).scope(), docs, bytes);
+    const receipt = mode === 'legacy' || mode === 'running' ? undefined : await persistence.commitTerminalTask(info, 'original finite result');
+    const event = mode === 'running' ? new TaskStarted({ info }) : new TaskTerminated({ info: { ...info, receipt } });
+    agent.get(IWireService).appendRecord(event.serialize());
+    if (mode === 'delivered') agent.get(IWireService).appendRecord(new TaskWaitDelivered({ keys: [info.taskId] }).serialize());
+    await agent.get(IEventDispatcher).restore();
+    expect(tasks.hasUnfinishedWork()).toBe(true);
+    expect(tasks.hasUnfinishedWork(false)).toBe(false);
+    expect((agent.get(IAgentLoopService) as StubLoop).launches).toEqual([]);
+  });
 
   it('finishes replay before task inventory recovery and keeps recovery single-flight', async () => {
     const docs = mapBackedDocs();

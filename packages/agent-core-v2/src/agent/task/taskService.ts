@@ -812,8 +812,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         !this.deliveredNotificationKeys.has(entry.taskId)) return true;
     }
     for (const info of this.ghosts.values()) {
-      if (this.localTaskIds.has(info.taskId) && info.lifetime !== 'service' && info.detached !== false &&
-        !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId)) return true;
+      if (info.lifetime !== 'service' && this.hasUndeliveredTaskNotification(info)) return true;
     }
     return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
       this.pendingWaitDeliveries.size > 0;
@@ -1938,15 +1937,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return restore;
   }
 
+  private hasUndeliveredTaskNotification(info: AgentTaskInfo): boolean {
+    return isAgentTaskTerminal(info.status) && info.detached !== false &&
+      (info.receipt !== undefined || info.receiptVerification === 'invalid' || this.localTaskIds.has(info.taskId)) &&
+      !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId);
+  }
+
   private async restoreAgentTaskNotificationsNow(): Promise<void> {
     const delivery = {};
-    const candidates = this.list(false).filter((info) =>
-      isAgentTaskTerminal(info.status) && (info.receipt !== undefined || info.receiptVerification === 'invalid' || this.localTaskIds.has(info.taskId)) &&
-      info.detached !== false && info.terminalNotificationSuppressed !== true &&
-      !this.deliveredNotificationKeys.has(notificationKey({
-        taskId: info.taskId, status: info.status, notificationId: taskNotificationId(info.taskId, info.status),
-      })),
-    );
+    const candidates = this.list(false).filter(info => this.hasUndeliveredTaskNotification(info));
     const ordinaryCount = candidates.filter((info) => info.kind !== 'question').length;
     notificationPreviewBudgets.set(delivery, {
       remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES,
