@@ -165,6 +165,42 @@ try {
     Assert-True (-not (Test-Path -LiteralPath $shortcutDesktop)) 'Shortcut installation without ExpectedCommit created a desktop directory.'
 
     Write-Receipt $candidateRoot $expectedCommit
+    $verifiedRunner = Join-Path $testRoot 'verified-promotion.ps1'
+    [IO.File]::WriteAllText($verifiedRunner, @'
+param([string]$Controller, [string]$Candidate, [string]$Runtime, [string]$Commit, [switch]$Mutate)
+$ErrorActionPreference = 'Stop'
+. $Controller -Action Launch
+$originalHash = ${function:Get-Sha256}
+$hashReads = @{}
+function Get-Sha256([string]$Path) {
+    $hashReads[$Path] = 1 + [int]$hashReads[$Path]
+    & $originalHash $Path
+}
+$verified = Read-PromotionCandidate $Candidate $Commit
+$desktop = $verified.Desktop.Path
+$server = $verified.Sidecar.Path
+if ($Mutate) {
+    $saved = [IO.File]::ReadAllBytes($desktop)
+    try {
+        [IO.File]::WriteAllText($desktop, 'changed-after-verification')
+        $rejected = $false
+        try { Invoke-Promotion $Runtime $verified | Out-Null }
+        catch {
+            if ($_.Exception.Message -notmatch 'failed copy verification') { throw }
+            $rejected = $true
+        }
+        if (!$rejected) { throw 'A changed candidate was promoted.' }
+        if (Test-Path -LiteralPath (Join-Path $Runtime 'current.json')) { throw 'A changed candidate selected a release.' }
+        if (Test-Path -LiteralPath (Join-Path $Runtime 'cli\kiki.exe')) { throw 'A changed candidate published a CLI.' }
+    } finally { [IO.File]::WriteAllBytes($desktop, $saved) }
+} else {
+    Invoke-Promotion $Runtime $verified | Out-Null
+    if ((Read-CurrentManifest $Runtime).releaseId -cne $verified.ReleaseId) { throw 'Verified promotion selected another release.' }
+}
+if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate executables were hashed more than once.' }
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-Controller', $controller, '-Candidate', $candidateRoot, '-Runtime', (Join-Path $testRoot 'verified-runtime'), '-Commit', $expectedCommit) 0 $verifiedRunner | Out-Null
+    Invoke-Controller @('-Controller', $controller, '-Candidate', $candidateRoot, '-Runtime', (Join-Path $testRoot 'mutated-runtime'), '-Commit', $expectedCommit, '-Mutate') 0 $verifiedRunner | Out-Null
     $common = @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $candidateRoot, '-ExpectedCommit', $expectedCommit)
     $initialOutput = Invoke-Controller $common
     Assert-True ($initialOutput -match 'cli\\kiki\.exe') 'Promotion output did not report the published CLI path.'

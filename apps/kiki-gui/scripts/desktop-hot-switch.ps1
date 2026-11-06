@@ -142,7 +142,7 @@ function Restore-OriginalRelease {
     if (('{0}-{1}' -f $desktop.Hash.Substring(0,24), $server.Hash.Substring(0,24)) -cne $state.oldReleaseId) {
         throw 'The original binaries no longer match their installed release. Restore the original release files before continuing.'
     }
-    Publish-CliExecutable $runtime $server | Out-Host
+    Publish-CliExecutable $runtime $server.Path $server | Out-Host
     Write-AtomicUtf8Json (Join-Path $runtime 'current.json') ([ordered]@{
         schemaVersion = 1; releaseId = $state.oldReleaseId; gitSha = $state.oldBuildId; promotedAtUtc = [DateTime]::UtcNow.ToString('o')
         files = @{ 'kiki-desktop.exe' = @{ sha256 = $desktop.Hash; bytes = $desktop.Length }; 'kiki-server.exe' = @{ sha256 = $server.Hash; bytes = $server.Length } }
@@ -198,15 +198,9 @@ try {
 
     $continuing = $null -ne $state -and $state.phase -eq 'pausing'
     if ($null -ne $state -and $state.phase -notin @('complete', 'pausing')) { throw 'A switch is unfinished. Run this command with -Recover first.' }
-    Assert-FullCommit $commit
     if (!$candidate) { throw 'Pass -CandidateRoot with the verified desktop build directory.' }
-    $candidate = Get-FullPath $candidate
-    $receipt = Read-BuildReceipt $candidate
-    $null = Assert-ReceiptIdentity $receipt $commit
-    $main = Get-ArtifactInfo (Join-Path $candidate 'kiki-desktop.exe') 'Candidate Kiki GUI'
-    $sidecar = Get-ArtifactInfo (Join-Path $candidate 'kiki-server.exe') 'Candidate Kiki backend'
-    Assert-ReceiptFiles $receipt $main $sidecar
-    $targetRelease = '{0}-{1}' -f $main.Hash.Substring(0,24), $sidecar.Hash.Substring(0,24)
+    $verified = Read-PromotionCandidate $candidate $commit
+    $targetRelease = $verified.ReleaseId
     $old = Find-Server
     if ($null -eq $old) { throw 'No authenticated managed service is running from this runtime and home.' }
     if ($old.releaseId -ceq $targetRelease) { Write-Host "Already running $targetRelease"; return }
@@ -252,7 +246,7 @@ try {
     $state.phase = 'stopping'; Save-State
     Wait-ForExit $old $shells
     $state.phase = 'promoting'; Save-State
-    Invoke-Promotion $runtime $candidate $commit | Out-Host
+    Invoke-Promotion $runtime $verified | Out-Host
     if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) { throw 'Promotion did not select the verified candidate.' }
     $state.phase = 'starting'; Save-State
     $launcher = Invoke-Launch $runtime $homePath -PassThru

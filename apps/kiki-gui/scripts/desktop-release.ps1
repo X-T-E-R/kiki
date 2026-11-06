@@ -219,24 +219,32 @@ function Write-SourceDiagnostic([string]$Candidate, [string]$PublishedSha) {
     }
 }
 
-function Invoke-Promotion([string]$Root, [string]$Candidate, [string]$ExpectedCommit) {
+function Read-PromotionCandidate([string]$Candidate, [string]$ExpectedCommit) {
     Assert-FullCommit $ExpectedCommit
-    $rootPath = Get-FullPath $Root
-    $candidatePath = Get-FullPath $Candidate
-    $receipt = Read-BuildReceipt $candidatePath
+    $path = Get-FullPath $Candidate
+    $receipt = Read-BuildReceipt $path
     $gitSha = Assert-ReceiptIdentity $receipt $ExpectedCommit
-    $mainSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki-desktop.exe') 'Kiki GUI build artifact'
-    $sidecarSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki-server.exe') 'Kiki backend build artifact'
-    Assert-ReceiptFiles $receipt $mainSource $sidecarSource
+    $desktop = Get-ArtifactInfo (Join-Path $path 'kiki-desktop.exe') 'Kiki GUI build artifact'
+    $sidecar = Get-ArtifactInfo (Join-Path $path 'kiki-server.exe') 'Kiki backend build artifact'
+    Assert-ReceiptFiles $receipt $desktop $sidecar
+    return [pscustomobject]@{
+        Path = $path; GitSha = $gitSha; Desktop = $desktop; Sidecar = $sidecar
+        ReleaseId = '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $sidecar.Hash.Substring(0, 24)
+    }
+}
 
+function Invoke-Promotion([string]$Root, [object]$Verified) {
+    $rootPath = Get-FullPath $Root
+    $mainSource = $Verified.Desktop
+    $sidecarSource = $Verified.Sidecar
+    $gitSha = $Verified.GitSha
+    $releaseId = $Verified.ReleaseId
     [IO.Directory]::CreateDirectory($rootPath) | Out-Null
     $releasesPath = Join-Path $rootPath 'releases'
     [IO.Directory]::CreateDirectory($releasesPath) | Out-Null
-    $releaseId = '{0}-{1}' -f $mainSource.Hash.Substring(0, 24), $sidecarSource.Hash.Substring(0, 24)
     $releasePath = Get-ReleasePath $rootPath $releaseId
     $mainDestination = Join-Path $releasePath 'kiki-desktop.exe'
     $sidecarDestination = Join-Path $releasePath 'kiki-server.exe'
-    $buildInfoDestination = Join-Path $releasePath 'build-info.txt'
 
     if (Test-Path -LiteralPath $releasePath) {
         if (-not (Test-Path -LiteralPath $releasePath -PathType Container)) {
@@ -256,9 +264,6 @@ function Invoke-Promotion([string]$Root, [string]$Candidate, [string]$ExpectedCo
             Assert-ArtifactMatches $mainSource $stagedMain 'Promoted Kiki GUI'
             Assert-ArtifactMatches $sidecarSource $stagedSidecar 'Promoted Kiki backend'
 
-            # A build that changes while it is being copied is not a successful candidate.
-            Assert-ArtifactMatches $mainSource $mainSource.Path 'Kiki GUI source artifact'
-            Assert-ArtifactMatches $sidecarSource $sidecarSource.Path 'Kiki backend source artifact'
             Write-BuildInfo (Join-Path $stagingPath 'build-info.txt') $gitSha
             [IO.Directory]::Move($stagingPath, $releasePath)
         }
@@ -269,11 +274,11 @@ function Invoke-Promotion([string]$Root, [string]$Candidate, [string]$ExpectedCo
         }
     }
 
-    Publish-CliExecutable $rootPath $sidecarSource
+    Publish-CliExecutable $rootPath $sidecarDestination $sidecarSource
 
     $current = Read-CurrentManifest $rootPath -AllowMissing
     if ($null -ne $current -and $current.releaseId -eq $releaseId) {
-        Write-SourceDiagnostic $candidatePath $gitSha
+        Write-SourceDiagnostic $Verified.Path $gitSha
         Write-Output "Kiki release is already current: $releasePath"
         return
     }
@@ -289,7 +294,7 @@ function Invoke-Promotion([string]$Root, [string]$Candidate, [string]$ExpectedCo
         }
     }
     Write-AtomicUtf8Json (Join-Path $rootPath 'current.json') $manifest
-    Write-SourceDiagnostic $candidatePath $gitSha
+    Write-SourceDiagnostic $Verified.Path $gitSha
     Write-Output "Promoted Kiki release: $releasePath"
 }
 
@@ -298,7 +303,7 @@ function Write-BuildInfo([string]$Path, [string]$GitSha) {
     [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($false)))
 }
 
-function Publish-CliExecutable([string]$Root, [object]$Sidecar) {
+function Publish-CliExecutable([string]$Root, [string]$SourcePath, [object]$Sidecar) {
     # Mirror the NSIS installer, which copies kiki-server.exe to
     # $INSTDIR\cli\kiki.exe. Placing the same layout at the runtime root makes
     # the packaged CLI reachable from the promoted build. Adding that directory
@@ -313,7 +318,7 @@ function Publish-CliExecutable([string]$Root, [object]$Sidecar) {
             return
         }
     }
-    Copy-Item -LiteralPath $Sidecar.Path -Destination $cliPath -Force
+    Copy-Item -LiteralPath $SourcePath -Destination $cliPath -Force
     Assert-ArtifactMatches $Sidecar $cliPath 'Published Kiki CLI'
     Write-Output "Published Kiki CLI: $cliPath"
     Write-Output "Add '$cliDirectory' to PATH to run 'kiki' from any terminal (the Kiki installer does this automatically)."
@@ -478,7 +483,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         switch ($Action) {
             'Promote' {
-                Invoke-Promotion $RuntimeRoot (Resolve-CandidateRoot) $ExpectedCommit
+                $verified = Read-PromotionCandidate (Resolve-CandidateRoot) $ExpectedCommit
+                Invoke-Promotion $RuntimeRoot $verified
                 if ($WaitForUser) { Read-Host 'Promotion succeeded. Press Enter to close' | Out-Null }
             }
             'Launch' {
