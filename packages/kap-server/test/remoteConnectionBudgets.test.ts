@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
+import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
 import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';

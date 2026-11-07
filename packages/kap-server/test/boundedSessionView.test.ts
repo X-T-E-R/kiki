@@ -7,6 +7,7 @@ import { createKlient } from '@kiki/klient/http';
 import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp';
+import { registerTranscriptRoutes } from '../src/routes/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { readColdSessionViewBaseline, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
@@ -1003,9 +1004,25 @@ describe('bounded session-view canonical reads', () => {
     await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'marker:missing' })).rejects.toThrow('invalid transcript detail cursor');
   });
 
-  it('consumes a server-segmented Klient+KAP transcript page above 1114112 bytes and continues its exact body', async () => {
+  it('consumes server-segmented Klient+KAP transcript responses above 1114112 bytes (short-ID multi-entity todo page and oversized skeleton) and continues their exact bodies', async () => {
+    const fullNote = '长笔记段落😀'.repeat(10_000);
+    const todos = Array.from({ length: 18 }, (_, index) => ({
+      todoId: `todo-${String(index).padStart(2, '0')}`,
+      items: Array.from({ length: 160 }, (_, itemIndex) => ({
+        title: `任务项 ${index}-${itemIndex} ${'说明内容'.repeat(24)}`,
+        status: (itemIndex % 3 === 0 ? 'done' : itemIndex % 3 === 1 ? 'in_progress' : 'pending') as 'done' | 'in_progress' | 'pending',
+      })),
+      notes: {
+        goal: index === 0 ? fullNote : `目标 ${index}`,
+        directives: `指令 ${index}`,
+        decided: `决定 ${index}`,
+        evidence: `证据 ${index}`,
+        next: `下一步 ${index}`,
+      },
+      updatedAt: '2026-11-07T00:00:00.000Z',
+    }));
     const fullText = '段落😀'.repeat(15_000);
-    const turn: TranscriptTurn = {
+    const skeletonTurn: TranscriptTurn = {
       kind: 'turn',
       turnId: 't0',
       ordinal: 0,
@@ -1026,20 +1043,42 @@ describe('bounded session-view canonical reads', () => {
         })),
       })),
     };
-    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turn] };
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [skeletonTurn], todos };
     const service = canonicalService(snapshot);
     Object.assign(service, {
       forSessionLive: () => ({ ensureAgent: () => { const t = new AgentTranscript('main'); t.apply([{ op: 'reset', agentId: 'main', snapshot }]); return t; }, getAgent: () => { const t = new AgentTranscript('main'); t.apply([{ op: 'reset', agentId: 'main', snapshot }]); return t; }, agents: () => [] }),
       verifyTranscriptLiveCoverage: async () => true,
       isTranscriptLiveCoverageVerified: () => true,
       getTranscriptCursor: () => ({ seq: 1, epoch: 'oversized-header-epoch' }),
-      readCanonicalEntity: async () => turn,
+      readCanonicalEntity: async () => skeletonTurn,
     });
     const app = Fastify({ forceCloseConnections: true });
     registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+    await app.register(async (api) => {
+      registerTranscriptRoutes(api as unknown as Parameters<typeof registerTranscriptRoutes>[0], { core: {} as Scope, transcriptService: service });
+    }, { prefix: '/api' });
     const endpoint = await app.listen({ port: 0, host: '127.0.0.1' });
     const klient = createKlient({ endpoint });
     try {
+      const rawTodos = await fetch(`${endpoint}/api/sessions/fixture-session/transcript/details?agent_id=main&kind=todo&limit=18`);
+      expect(rawTodos.status).toBe(200);
+      const rawTodosText = await rawTodos.text();
+      expect(Buffer.byteLength(rawTodosText, 'utf8')).toBeGreaterThan(940 * 1024);
+      expect(Buffer.byteLength(rawTodosText, 'utf8')).toBeLessThan(1024 * 1024 + 64 * 1024);
+
+      const todoPage = await klient.session('fixture-session').view.transcript.entities!({ agentId: 'main', kind: 'todo', limit: 18 });
+      if (todoPage.kind !== 'todo') throw new Error('Expected todo page');
+      expect(todoPage.items.length).toBeGreaterThan(1);
+      let firstTodo = todoPage.items[0]!;
+      expect(firstTodo.todoId).toBe('todo-00');
+      expect(firstTodo.notes?.goal?.length).toBeLessThan(fullNote.length);
+      while (firstTodo.contentRefs?.length) {
+        const segment = await klient.session('fixture-session').view.transcript.content!({ agentId: 'main', ref: firstTodo.contentRefs[0]! });
+        firstTodo = applyContentSegment(firstTodo, segment);
+      }
+      expect(firstTodo.notes?.goal).toBe(fullNote);
+      expect(firstTodo.items).toHaveLength(160);
+
       const raw = await fetch(`${endpoint}/api/klient/session-view/fixture-session/transcript?agent_id=main&page_size=1&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`);
       expect(raw.status).toBe(200);
       const rawText = await raw.text();
