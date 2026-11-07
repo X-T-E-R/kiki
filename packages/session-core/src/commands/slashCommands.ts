@@ -188,7 +188,7 @@ export function classifySlashSubmission(
   text: string,
 ): SlashSubmission | null {
   const parsed = parseSlashDraft(text);
-  if (parsed === null || parsed.query === '') return null;
+  if (parsed === null || parsed.query === '' || parsed.query.includes('/')) return null;
   // A pasted GUI route (`/s/<session>`, `/settings/…`) is a link, not a
   // command name: it goes out as prompt text without the typo guard.
   if (isAppRouteLink(`/${parsed.query}`)) return null;

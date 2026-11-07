@@ -2050,7 +2050,8 @@ export function Composer({
       return;
     }
     setMenu(null);
-    if (text.trim().startsWith('/') && skillCatalogReady && !skillsQuery.isSuccess) {
+    const localSlash = classifySlashSubmission(slashItems, text.trim());
+    if (localSlash !== null && localSlash.kind !== 'resolved' && skillCatalogReady && !skillsQuery.isSuccess) {
       const owner = sendOwnerKey(sessionId);
       const generation = slashGenerationRef.current + 1;
       slashGenerationRef.current = generation;
@@ -2067,6 +2068,7 @@ export function Composer({
         if (current.text !== text || current.skillScope !== skillScope) return;
         if (result.data === undefined) {
           setAttachmentError(t('composer.slash.submitCatalogFailed'));
+          submitWithSlashItems(slashItems, true);
           return;
         }
         setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);

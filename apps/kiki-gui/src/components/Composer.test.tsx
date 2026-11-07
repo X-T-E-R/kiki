@@ -2985,7 +2985,7 @@ describe('Composer slash skill catalog', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('keeps an unsent slash draft recoverable when its catalog fails, then retries activation', async () => {
+  it('keeps an unsent slash draft recoverable with Send anyway when its catalog fails, and still retries activation', async () => {
     listWorkspaceSkills.mockRejectedValue(new Error('catalog offline'));
     const onActivateSkill = vi.fn();
     const onSend = vi.fn();
@@ -2998,7 +2998,7 @@ describe('Composer slash skill catalog', () => {
     const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
     await click(sendButton);
     await settle();
-    expect(container.querySelector('[data-slash-confirm]')).toBeNull();
+    expect(container.querySelector('[data-slash-confirm]')).not.toBeNull();
     expect(container.textContent).toContain('Could not load skills. Please try sending again.');
     expect(composerInput(container).value).toBe('/kiki-ops Help me get started.');
     expect(onSend).not.toHaveBeenCalled();
@@ -3008,6 +3008,54 @@ describe('Composer slash skill catalog', () => {
     await click(sendButton);
     await settle();
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', [], '/kiki-ops Help me get started.');
+
+    listWorkspaceSkills.mockRejectedValue(new Error('catalog offline'));
+    const fallbackSend = vi.fn();
+    const offline = await renderComposer({
+      value: '/unknown-cmd ship as text',
+      workspaceId: 'wd_fixture_9876543210fe',
+      onActivateSkill,
+      onSend: fallbackSend,
+    });
+    await click(offline.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    await settle();
+    const sendAnyway = [...offline.container.querySelectorAll<HTMLButtonElement>('[data-slash-confirm] button')]
+      .find((button) => button.textContent?.includes('Send anyway'))!;
+    expect(sendAnyway).toBeDefined();
+    await click(sendAnyway);
+    expect(fallbackSend).toHaveBeenCalledExactlyOnceWith('/unknown-cmd ship as text', []);
+  });
+
+  it('sends leading file paths and runs builtin actions without waiting on a pending or failed skills catalog', async () => {
+    listSessionSkills.mockReturnValue(new Promise(() => {}));
+    const onSend = vi.fn();
+    const onChangePlanMode = vi.fn();
+    const onSideQuestion = vi.fn();
+
+    const pathRender = await renderComposer({
+      value: '/etc/hosts maps to the wrong loopback',
+      sessionId: 'session_pending_skills',
+      onSend,
+    });
+    await click(pathRender.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('/etc/hosts maps to the wrong loopback', []);
+
+    listSessionSkills.mockRejectedValue(new Error('skills rpc down'));
+    const planRender = await renderComposer({
+      value: '/plan',
+      sessionId: 'session_failed_skills',
+      onChangePlanMode,
+    });
+    await click(planRender.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onChangePlanMode).toHaveBeenCalledExactlyOnceWith(true);
+
+    const btwRender = await renderComposer({
+      value: '/btw check port 8080',
+      sessionId: 'session_failed_skills_btw',
+      onSideQuestion,
+    });
+    await click(btwRender.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onSideQuestion).toHaveBeenCalledExactlyOnceWith('check port 8080');
   });
 
   it('activates the built-in first-run command from the global catalog without a workspace', async () => {

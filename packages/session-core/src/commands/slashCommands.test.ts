@@ -202,7 +202,9 @@ describe('classifySlashSubmission', () => {
     if (classified?.kind === 'resolved') expect(classified.item.action).toBe('plan');
   });
 
-  it('treats GUI route links as plain text, not an unknown command', () => {
+  it('treats leading file paths and GUI route links as plain text, not an unknown command', () => {
+    expect(classifySlashSubmission(items, '/etc/hosts has a stale entry')).toBeNull();
+    expect(classifySlashSubmission(items, '/Users/example/src/index.ts:42')).toBeNull();
     expect(classifySlashSubmission(items, '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b 看一下这个线程')).toBeNull();
     expect(classifySlashSubmission(items, '/settings/models')).toBeNull();
     // A real typo still asks.
