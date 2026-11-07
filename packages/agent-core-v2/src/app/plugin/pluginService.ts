@@ -110,6 +110,7 @@ export class PluginService extends Service implements IPluginService {
     this._register({ dispose: async () => {
       this.previewController.abort();
       await Promise.allSettled(this.previews);
+      await this.manager.dispose();
     } });
   }
 

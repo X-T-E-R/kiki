@@ -362,6 +362,122 @@ describe('PluginManager', () => {
       await rm(zipPath, { force: true });
     }
   });
+  it('reuses the staged remote GitHub preview on confirm without re-resolving a moving branch or re-fingerprinting', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-github-stage-source-'));
+    const zipPathV1 = join(tmpdir(), `plugin-github-v1-${Date.now()}.zip`);
+    const zipPathV2 = join(tmpdir(), `plugin-github-v2-${Date.now()}.zip`);
+    const spyFingerprint = vi.spyOn(installPlan, 'fingerprintDirectory');
+    const spyExtract = vi.spyOn(archive, 'extractZip');
+    try {
+      await writeFile(
+        join(sourceRoot, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'github-plugin', version: '1.0.0', hooks: [{ event: 'Stop', command: 'echo v1' }] }),
+        'utf8',
+      );
+      execFileSync('zip', ['-qr', zipPathV1, '.'], { cwd: sourceRoot });
+      await writeFile(
+        join(sourceRoot, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'github-plugin', version: '2.0.0', hooks: [{ event: 'Stop', command: 'echo v2' }] }),
+        'utf8',
+      );
+      execFileSync('zip', ['-qr', zipPathV2, '.'], { cwd: sourceRoot });
+      const zipV1 = await readFile(zipPathV1);
+      const zipV2 = await readFile(zipPathV2);
+      const sha1 = '1111111111111111111111111111111111111111';
+      const sha2 = '2222222222222222222222222222222222222222';
+      let currentBranchSha = sha1;
+      const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith('/commits/main.atom')) {
+          return new Response(`<entry><id>tag:github.com,2008:Grit::Commit/${currentBranchSha}</id></entry>`);
+        }
+        if (url.endsWith(sha1)) return new Response(zipV1);
+        if (url.endsWith(sha2)) return new Response(zipV2);
+        throw new Error(`Unexpected url: ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock as typeof fetch);
+      const manager = new PluginManager({ kimiHomeDir: home });
+      const plan = await manager.preview('https://github.com/owner/repo/tree/main');
+      expect(plan.version).toBe('1.0.0');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(spyExtract).toHaveBeenCalledTimes(1);
+      expect(spyFingerprint).toHaveBeenCalledTimes(1);
+      currentBranchSha = sha2;
+      const record = await manager.install('https://github.com/owner/repo/tree/main', { fingerprint: plan.fingerprint, consent: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(spyExtract).toHaveBeenCalledTimes(1);
+      expect(spyFingerprint).toHaveBeenCalledTimes(1);
+      expect(record.manifest?.version).toBe('1.0.0');
+      expect(record.github?.installedSha).toBe(sha1);
+      await expect(manager.install('https://github.com/owner/repo/tree/main', { fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('Plugin changed since installation preview');
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      spyFingerprint.mockRestore();
+      spyExtract.mockRestore();
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(zipPathV1, { force: true });
+      await rm(zipPathV2, { force: true });
+    }
+  });
+  it('rolls back a staged remote update and cleans up expired or disposed staged previews', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-zip-stage-rollback-'));
+    const zipV1Path = join(tmpdir(), `plugin-stage-v1-${Date.now()}.zip`);
+    const zipV2Path = join(tmpdir(), `plugin-stage-v2-${Date.now()}.zip`);
+    try {
+      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'stage-plugin', version: '1.0.0', hooks: [{ event: 'Stop', command: 'echo v1' }] }), 'utf8');
+      execFileSync('zip', ['-qr', zipV1Path, '.'], { cwd: sourceRoot });
+      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'stage-plugin', version: '2.0.0', hooks: [{ event: 'Stop', command: 'echo v2' }, { event: 'PreToolUse', command: 'echo pre' }] }), 'utf8');
+      execFileSync('zip', ['-qr', zipV2Path, '.'], { cwd: sourceRoot });
+      const bytesV1 = await readFile(zipV1Path);
+      const bytesV2 = await readFile(zipV2Path);
+      const url = 'https://downloads.example.test/stage-plugin.zip';
+      let currentBytes = bytesV1;
+      const fetchMock = vi.fn(async () => new Response(new Uint8Array(currentBytes)));
+      vi.stubGlobal('fetch', fetchMock as typeof fetch);
+      const manager = new PluginManager({ kimiHomeDir: home });
+      await manager.load();
+      const plan1 = await manager.preview(url);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await manager.install(url, { fingerprint: plan1.fingerprint, consent: true });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(manager.get('stage-plugin')?.manifest?.version).toBe('1.0.0');
+      currentBytes = bytesV2;
+      const plan2 = await manager.preview(url);
+      expect(plan2.changes).toContain('added hook:1:PreToolUse');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await manager.install(url, { fingerprint: plan2.fingerprint, consent: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(manager.get('stage-plugin')?.manifest?.version).toBe('2.0.0');
+      const rolledBack = await manager.rollback('stage-plugin');
+      expect(rolledBack.manifest?.version).toBe('1.0.0');
+      const plan3 = await manager.preview(url);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await manager.dispose();
+      await manager.install(url, { fingerprint: plan3.fingerprint, consent: true });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(zipV1Path, { force: true });
+      await rm(zipV2Path, { force: true });
+    }
+  });
+
+  it('re-validates mutable local directory sources during install and rejects post-preview tampering', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-local-mutable-'));
+    const spyFingerprint = vi.spyOn(installPlan, 'fingerprintDirectory');
+    try {
+      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'mutable-local', version: '1.0.0', hooks: [{ event: 'Stop', command: 'echo safe' }] }), 'utf8');
+      const manager = new PluginManager({ kimiHomeDir: home });
+      const plan = await manager.preview(sourceRoot);
+      expect(spyFingerprint).toHaveBeenCalledTimes(1);
+      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'mutable-local', version: '1.0.0', hooks: [{ event: 'Stop', command: 'echo tampered' }] }), 'utf8');
+      await expect(manager.install(sourceRoot, { fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('Plugin changed since installation preview');
+      expect(spyFingerprint).toHaveBeenCalledTimes(2);
+    } finally {
+      spyFingerprint.mockRestore();
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 
   it('checks github plugin updates against latest release', async () => {
     await writeFile(

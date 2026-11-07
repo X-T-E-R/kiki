@@ -833,7 +833,7 @@ describe('server-v2 /api plugins', () => {
     const installed = await call<{ root: string; state: string }>('GET', '/api/plugins/kiki-office');
     expect(installed.body.data).toMatchObject({ root: join(home, 'plugins/managed/kiki-office'), state: 'ok' });
     const externalRequests = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => !url.startsWith(base));
-    expect(externalRequests).toContain(pinnedOffice.source);
+    expect(externalRequests.filter((url) => url === pinnedOffice.source)).toHaveLength(1);
     expect(externalRequests.every((url) => url === pinnedOffice.source || url === 'https://x-t-e-r.github.io/kiki-plugins/marketplace.json')).toBe(true);
   });
 

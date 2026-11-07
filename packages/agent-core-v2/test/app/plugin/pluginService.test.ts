@@ -282,6 +282,7 @@ describe('PluginService (plugin boundary)', () => {
       const plan = await svc.previewPlugin({ source: entry!.source });
       expect(plan).toMatchObject({ id: 'kiki-cloudflare', consentRequired: true });
       await svc.installPlugin({ source: entry!.source, fingerprint: plan.fingerprint, consent: true });
+      expect(fetchArchive).toHaveBeenCalledTimes(1);
       expect(await svc.getPluginInfo({ id: 'kiki-cloudflare' })).toMatchObject({
         id: 'kiki-cloudflare',
         version: entry!.version,
