@@ -191,6 +191,20 @@ test('model fixture separates catalog projections and persists protocol override
     const restored = await models.updateModel(id, { base_revision: inherited.revision, protocol: 'google-genai' });
     assert.equal(restored.revision, original.revision);
     assert.equal((await models.listModels()).find((item) => item.id === id).effective_protocol, 'google-genai');
+    const billed = await models.updateModel(id, { base_revision: restored.revision, pricing_model: 'billing-spec-argon' });
+    assert.equal(billed.pricing_model, 'billing-spec-argon');
+    assert.equal(billed.remote_id, original.remote_id);
+    assert.equal(billed.protocol, 'google-genai');
+    assert.notEqual(billed.revision, restored.revision);
+    const billedRead = await models.readModel(id);
+    assert.equal(billedRead.pricing_model, 'billing-spec-argon');
+    assert.equal(billedRead.revision, billed.revision);
+    assert.equal((await models.listModels()).find((item) => item.id === id).pricing_model, 'billing-spec-argon');
+    const cleared = await models.updateModel(id, { base_revision: billedRead.revision, pricing_model: null });
+    assert.equal(cleared.pricing_model, undefined);
+    assert.equal(cleared.revision, restored.revision);
+    assert.equal((await models.readModel(id)).pricing_model, undefined);
+    assert.equal((await models.listModels()).find((item) => item.id === id).pricing_model, undefined);
   } finally { await client.close(); await fixture.stop(); }
 });
 

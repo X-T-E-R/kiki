@@ -1194,6 +1194,10 @@ export class FixtureKlient {
           if (patch.auto_compact === null) delete next.auto_compact;
           else next.auto_compact = patch.auto_compact;
         }
+        if (patch.pricing_model !== undefined) {
+          if (patch.pricing_model === null) delete next.pricing_model;
+          else next.pricing_model = patch.pricing_model;
+        }
         if (patch.protocol !== undefined) {
           if (patch.protocol === null) delete next.protocol;
           else next.protocol = patch.protocol;

@@ -1329,4 +1329,66 @@ describe('explicit billing name', () => {
     expect(JSON.stringify(posts)).not.toMatch(/gemini\/gemini-4-argon|-flex|-batch/);
     expect(f.store.ack(d.id, later?.bucket_id ?? '')?.revision).toBe(1);
   });
+
+  it('drops a budget-sliced billing stage when pricing_model changes, then publishes only the later name', async () => {
+    const pricingHome = await mkdtemp(join(tmpdir(), 'kiki-billing-slice-'));
+    cleanup.push(() => rm(pricingHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const boron = { input: 5e-6, output: 6e-6, read: 5e-7, write: 7e-6 };
+    await writeFile(join(pricingHome, 'prices.json'), JSON.stringify({
+      'gpt-5': price(rates.gpt), 'claude-sonnet-4-5': price(rates.gpt),
+      'billing-spec-argon': price(rates.spec), 'billing-spec-boron': price(boron),
+    }));
+    const models: Record<string, ModelRecord> = {
+      'my-argon': { provider: 'proxy', model: 'wire-remote-argon', pricingModel: 'billing-spec-argon' },
+    };
+    const pricing = new ModelPricingService(
+      { homeDir: pricingHome } as unknown as Bootstrap,
+      stubLog(),
+      new TomlAtomicDocumentStore(new FileStorageService(pricingHome)),
+      { ready: Promise.resolve(), get: () => models } as unknown as IConfigService,
+      { scheduleRefresh: false, minimumKeys: 1, vendoredPath: join(pricingHome, 'prices.json') },
+    );
+    cleanup.push(async () => { pricing.dispose(); await drainModelPricingDisposals(); });
+    await pricing.ready;
+    const f = await fixture({ wireRecordBudget: 2 }, undefined, undefined, undefined, undefined, pricing);
+    const usage = { output: tokens.output, inputCacheRead: tokens.inputCacheRead, inputCacheCreation: tokens.inputCacheCreation };
+    const row = (time: number) => ({ ...record(time, tokens.inputOther, usage, 'my-argon'), modelAlias: 'my-argon' });
+    f.add('slice');
+    await f.write('slice', 'main', [row(T + 1)]);
+    const wireSize = () => stat(join(f.home, 'sessions/work/slice/agents/main', AGENT_WIRE_RECORD_KEY)).then((info) => info.size);
+    const d = await destination(f.service);
+    const names = () => f.store.preview(d.id).items.map((item) => item.bucket?.model);
+    const summed = () => {
+      const total = emptyTokens();
+      for (const item of f.store.preview(d.id).items) if (item.bucket !== null) addTokens(total, item.bucket.tokens);
+      return total.input_other;
+    };
+    await f.service.scan();
+    const firstRevision = pricing.pricingRevision();
+    expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
+    expect(names()).toEqual(['billing-spec-argon']);
+    expect(summed()).toBe(tokens.inputOther);
+    expect(f.store.meta('pricing-revision')).toBe(firstRevision);
+    await f.storage.append('sessions/work/slice/agents/main', AGENT_WIRE_RECORD_KEY, Buffer.from([row(T + 2), row(T + 3), row(T + 1_800_001)].map((value) => JSON.stringify(value)).join('\n') + '\n'));
+    const wires = await wireSize();
+    await f.service.scan();
+    expect(f.service.status().scan_error).toBe('record_budget');
+    expect(names()).toEqual(['billing-spec-argon']);
+    expect(summed()).toBe(tokens.inputOther);
+    expect(f.store.meta('pricing-revision')).toBe(firstRevision);
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: 'billing-spec-boron' };
+    for (let slice = 0; slice < 4 && (f.service.status().scan_error === 'record_budget' || f.service.status().scan_complete !== true); slice += 1) {
+      await f.service.scan();
+      const published = names();
+      expect(published.includes('billing-spec-argon') && published.includes('billing-spec-boron')).toBe(false);
+    }
+    expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
+    expect(names()).toHaveLength(2);
+    expect(names().every((model) => model === 'billing-spec-boron')).toBe(true);
+    expect(summed()).toBe(tokens.inputOther * 4);
+    expect(f.store.meta('pricing-revision')).toBe(pricing.pricingRevision());
+    expect(f.store.meta('pricing-revision')).not.toBe(firstRevision);
+    expect(await wireSize()).toBe(wires);
+    expect(models['my-argon']?.model).toBe('wire-remote-argon');
+  });
 });

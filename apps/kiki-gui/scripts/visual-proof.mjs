@@ -78,6 +78,7 @@ const MATRIX = {
   'context-compact': ['theme', 'width'],
   'models-page': ['theme', 'width'],
   'models-page-empty': ['theme', 'width'],
+  'models-billing': ['width'],
   'native-ssh': ['theme', 'width'],
   'profile-editor': ['theme', 'width'],
   'question-card': ['width'],
@@ -6797,6 +6798,7 @@ const modelsPageWalker = () => createModelsPageWalker({
   webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: job().view.locale,
 });
 async function scenarioModelsPage() { await modelsPageWalker().populated(); }
+async function scenarioModelsBilling() { await modelsPageWalker().billing(); }
 
 /** Worktree isolation: /new opt-in, branch marks, Worktrees card, archive option (scripts/visual-proof-worktrees.mjs). */
 async function scenarioWorktrees() {
@@ -7764,6 +7766,7 @@ const ENTRY_EXTRA = {
   'sidebar-workspace-activity': { fixture: 'sidebar-workspace-groups' },
   'question-reconnect': { fixture: 'question-card' },
   'question-dismiss': { fixture: 'question-dismiss' },
+  'models-billing': { fixture: 'models-page' },
   'execution-pause': { fixture: 'usage-dashboard' },
   'live-agents-compact': { fixture: 'live-agents-compact' },
   'live-agents-attention': { fixture: 'live-agents-attention' },
@@ -7854,6 +7857,7 @@ const BODIES = [
   ['context-compact', scenarioContextCompact],
   ['models-page', scenarioModelsPage],
   ['models-page-empty', scenarioModelsPageEmpty],
+  ['models-billing', scenarioModelsBilling],
   ['worktrees', scenarioWorktrees],
   ['native-ssh', scenarioNativeSsh],
   ['plugin-import', scenarioPluginImport],

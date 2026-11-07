@@ -178,5 +178,42 @@ export function createModelsPageWalker({ page, shot, resizeViewport, setProofThe
     await shot(name('defaults', theme, width));
   }
 
-  return { empty, populated };
+  async function billing() {
+    const { theme, width } = view;
+    await open('/settings/ai?tab=models', '[data-connection-row]');
+    await page.click('[data-connection-row="managed:github-copilot"] > summary');
+    await page.waitForSelector('[data-connection-row="managed:github-copilot"] [data-provider-models] [data-model-row]', { timeout: 10_000 });
+    await page.click('[data-model-row="managed:github-copilot/gemini-2.5-pro"] button[aria-expanded]');
+    const editor = '[data-model-row-editor="managed:github-copilot/gemini-2.5-pro"]';
+    const field = `${editor} [data-model-pricing-model] input`;
+    await page.waitForSelector(field, { timeout: 10_000 });
+    const label = (await page.locator(`${editor} [data-model-pricing-model]`).innerText())?.trim() ?? '';
+    const expectedLabel = locale === 'zh' ? '按此模型计价' : 'Priced as';
+    if (!label.includes(expectedLabel)) throw new Error(`expected billing label "${expectedLabel}", saw "${label}"`);
+    if (await page.locator(field).inputValue() !== '') throw new Error('billing field must start empty');
+    const remoteBefore = await page.locator(`${editor} input`).first().inputValue();
+    const value = 'billing-spec-argon';
+    await page.fill(field, value);
+    await page.locator(`${editor} [data-model-editor-actions] > button`).first().click();
+    await page.waitForSelector(`${editor} [data-saved-tick]`, { timeout: 5_000 });
+    await page.locator(`${editor} [data-model-pricing-model]`).evaluate((el) => { el.scrollIntoView({ block: 'center', inline: 'nearest' }); });
+    await shot(name('billing-saved', theme, width));
+    await page.locator(`${editor} [data-model-editor-actions] button`).nth(2).click();
+    await page.locator(editor).waitFor({ state: 'detached' });
+    const row = '[data-model-row="managed:github-copilot/gemini-2.5-pro"] button[aria-expanded]';
+    if (!(await page.locator(row).isVisible())) {
+      await page.click('[data-connection-row="managed:github-copilot"] > summary');
+    }
+    await page.locator(row).scrollIntoViewIfNeeded();
+    await page.click(row);
+    await page.waitForSelector(field, { timeout: 10_000 });
+    const stored = await page.locator(field).inputValue();
+    if (stored !== value) throw new Error(`expected stored billing name ${value}, saw "${stored}"`);
+    const remoteAfter = await page.locator(`${editor} input`).first().inputValue();
+    if (remoteAfter !== remoteBefore) throw new Error(`remote id changed from "${remoteBefore}" to "${remoteAfter}"`);
+    await page.locator(`${editor} [data-model-pricing-model]`).evaluate((el) => { el.scrollIntoView({ block: 'center', inline: 'nearest' }); });
+    await shot(name('billing-reopened', theme, width));
+  }
+
+  return { empty, populated, billing };
 }
