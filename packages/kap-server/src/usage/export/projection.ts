@@ -4,9 +4,11 @@ import { usageExportBucketDataSchema, usageExportQualitySchema, usageExportToken
 import type { IModelPricingService } from '../../pricing/modelPricingService';
 import type { UsageExportSource } from '../usageAggregationService';
 
+const PUBLIC_MODEL_PROTOCOL = /^[A-Za-z0-9._:/-]+$/;
 export const HALF_HOUR_MS = 1_800_000;
 export const contributionSchema = z.object({
   start: z.number().int().nonnegative(), model_alias: z.string().max(8192), upstream_model_id: z.string().max(8192).nullable(),
+  billing_model: z.string().min(1).max(160).regex(PUBLIC_MODEL_PROTOCOL).nullable().optional(),
   tokens: usageExportTokensSchema, quality: usageExportQualitySchema, cost: z.number().finite().nonnegative().nullable(), pricing_version: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 export type Contribution = z.infer<typeof contributionSchema>;
@@ -36,6 +38,26 @@ export function normalizePublicModel(model: string): string | undefined {
   for (;;) { const slash = id.indexOf('/'); if (slash <= 0 || !PUBLIC_MODEL_ROUTES.has(id.slice(0, slash))) break; id = id.slice(slash + 1); }
   return id.length <= 160 && PUBLIC_MODEL_PATTERNS.some((pattern) => pattern.test(id)) ? id : undefined;
 }
+export function protocolPublicModel(model: string): string | undefined {
+  return model.length >= 1 && model.length <= 160 && PUBLIC_MODEL_PROTOCOL.test(model) ? model : undefined;
+}
+export function contributionPublicModel(bucket: Contribution, identitySecret: string): { model: string; mapped: boolean } {
+  const explicit = bucket.billing_model ?? undefined;
+  if (explicit !== undefined) return { model: explicit, mapped: true };
+  const canonical = normalizePublicModel(bucket.upstream_model_id ?? bucket.model_alias);
+  if (canonical !== undefined) return { model: canonical, mapped: true };
+  const raw = bucket.upstream_model_id ?? bucket.model_alias;
+  return { model: `custom-${opaqueId(identitySecret, `model\0${raw}`).slice(0, 32)}`, mapped: false };
+}
+function configuredBilling(pricing: IModelPricingService, alias: string, model: string): { key: string; name: string } | undefined {
+  const lookup = pricing.billingName;
+  if (lookup === undefined) return undefined;
+  for (const key of alias === model ? [model] : [alias, model]) {
+    const name = lookup.call(pricing, key);
+    if (name !== undefined) return { key, name };
+  }
+  return undefined;
+}
 export function emptyTokens(): UsageExportTokens { return { input_other: 0, input_cache_read: 0, input_cache_creation: 0, output: 0 }; }
 export function emptyQuality(): UsageExportQuality { return { known_records: 0, missing_records: 0, legacy_zero_records: 0, invalid_records: 0, estimated_records: 0, mapping_unknown: false, price_unknown: false, complete: true }; }
 function addTokenCounts(target: UsageExportTokens, inputOther: number, cacheRead: number, cacheCreation: number, output: number): void {
@@ -61,11 +83,13 @@ export function projectSource(source: UsageExportSource, pricing: IModelPricingS
     const upstream = record.upstreamModelId ?? null;
     const key = JSON.stringify([start, alias, upstream]);
     let bucket = buckets.get(key);
-    const priceModel = upstream ?? normalizePublicModel(record.model) ?? record.model;
+    const explicit = configuredBilling(pricing, alias, record.model);
+    const priceModel = explicit?.key ?? upstream ?? normalizePublicModel(record.model) ?? record.model;
+    const billingModel = explicit === undefined ? undefined : protocolPublicModel(explicit.name);
     if (bucket === undefined) {
       const price = pricing.resolve(priceModel);
       const pricingVersion = digest(price === undefined ? { unknown: true } : { model: price.catalogModel, prices: price.prices, currency: price.currency ?? 'USD' });
-      bucket = { start, model_alias: alias, upstream_model_id: upstream, tokens: emptyTokens(), quality: emptyQuality(), cost: 0, pricing_version: pricingVersion }; buckets.set(key, bucket);
+      bucket = { start, model_alias: alias, upstream_model_id: upstream, ...(billingModel === undefined ? {} : { billing_model: billingModel }), tokens: emptyTokens(), quality: emptyQuality(), cost: 0, pricing_version: pricingVersion }; buckets.set(key, bucket);
     }
     const input = record.usage?.inputOther; const read = record.usage?.inputCacheRead;
     const creation = record.usage?.inputCacheCreation; const output = record.usage?.output;
@@ -85,14 +109,13 @@ export function projectSource(source: UsageExportSource, pricing: IModelPricingS
 }
 export function publicBucket(contributions: readonly Contribution[], identitySecret: string): UsageExportBucketData {
   const first = contributions[0]; if (first === undefined) throw new Error('empty-contribution');
-  const canonical = normalizePublicModel(first.upstream_model_id ?? first.model_alias);
-  const model = canonical ?? `custom-${opaqueId(identitySecret, `model\0${first.upstream_model_id ?? first.model_alias}`).slice(0, 32)}`;
+  const named = contributionPublicModel(first, identitySecret);
   const tokens = emptyTokens(); const quality = emptyQuality(); let cost: number | null = 0;
   const prices = new Set<string>();
   for (const contribution of contributions) {
     addTokens(tokens, contribution.tokens); addQuality(quality, contribution.quality); prices.add(contribution.pricing_version);
     if (contribution.cost === null) cost = null; else if (cost !== null) cost += contribution.cost;
   }
-  quality.mapping_unknown = canonical === undefined;
-  return usageExportBucketDataSchema.parse({ start_at: new Date(first.start).toISOString(), end_at: new Date(first.start + HALF_HOUR_MS).toISOString(), source: 'kiki', model, mapping_version: 'kiki-public-model-v1', tokens, quality, cost: { usd_estimated: cost, currency: 'USD', source: 'kiki-local-estimate', pricing_version: digest([...prices].sort()) } });
+  quality.mapping_unknown = !named.mapped;
+  return usageExportBucketDataSchema.parse({ start_at: new Date(first.start).toISOString(), end_at: new Date(first.start + HALF_HOUR_MS).toISOString(), source: 'kiki', model: named.model, mapping_version: 'kiki-public-model-v1', tokens, quality, cost: { usd_estimated: cost, currency: 'USD', source: 'kiki-local-estimate', pricing_version: digest([...prices].sort()) } });
 }

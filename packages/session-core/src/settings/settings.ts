@@ -340,6 +340,11 @@ export interface ProviderModelDraft extends RequestIdentityLayerDraft, ImagePoli
   /** Absolute positive integer tokens; omitted means inherit the existing compaction policy. */
   autoCompact?: number;
   displayName: string;
+  /**
+   * Canonical billing name for local cost and content-free usage export.
+   * Empty keeps the current inference and does not change the remote id.
+   */
+  pricingModel?: string;
   capabilities: string[];
   supportEfforts: string[];
   behavior?: ModelBehaviorWire;
@@ -1483,6 +1488,7 @@ export function providerModelDraftFromCatalog(
     maxContextSize: model.max_context_size ?? 0,
     autoCompact: model.auto_compact,
     displayName: model.display_name ?? '',
+    pricingModel: model.pricing_model ?? '',
     capabilities: configured === undefined ? [...DEFAULT_MODEL_CAPABILITIES] : [...configured],
     supportEfforts: [...(model.support_efforts ?? [])],
     behavior: model.behavior,
@@ -1685,6 +1691,7 @@ export function providerModelDraftsEqual(
     && model.maxContextSize === other.maxContextSize
     && model.autoCompact === other.autoCompact
     && model.displayName === other.displayName
+    && (model.pricingModel ?? '') === (other.pricingModel ?? '')
     && JSON.stringify(model.behavior) === JSON.stringify(other.behavior)
     && model.requestIdentityChoice === other.requestIdentityChoice
     && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
@@ -1796,6 +1803,9 @@ export function modelPatchBody(
   if (draft.displayName !== baseline.displayName) {
     patch.display_name = draft.displayName.trim() || null;
   }
+  const nextPricing = (draft.pricingModel ?? '').trim();
+  const previousPricing = (baseline.pricingModel ?? '').trim();
+  if (nextPricing !== previousPricing) patch.pricing_model = nextPricing === '' ? null : nextPricing;
   if (draft.maxContextSize !== baseline.maxContextSize) {
     patch.max_context_size = draft.maxContextSize > 0 ? draft.maxContextSize : null;
   }
@@ -1833,6 +1843,7 @@ export function modelCreateBody(
     provider_id: providerId,
     remote_id: row.remoteId.trim(),
     display_name: row.displayName.trim() || undefined,
+    pricing_model: row.pricingModel?.trim() || undefined,
     max_context_size: row.maxContextSize > 0 ? row.maxContextSize : undefined,
     auto_compact: row.autoCompact,
     capabilities: row.capabilities.length > 0 ? [...row.capabilities] : undefined,

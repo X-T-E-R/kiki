@@ -319,6 +319,28 @@ describe('user model pricing', () => {
     expect(catalog.resolve('axon/unpublished-model')).toBeUndefined();
   });
 
+  it('names an explicit billing model and revises only when that name changes', () => {
+    const home = tempDir();
+    const vendoredPath = join(home, 'vendored.json');
+    writeFileSync(vendoredPath, fixture({ 'billing-spec-argon': price(3, 4) }));
+    const models: Record<string, ModelRecord> = { alias: { provider: 'proxy', model: 'remote' } };
+    const { service } = createService({ vendoredPath }, models, home);
+    expect(service.billingName('alias')).toBeUndefined();
+    expect(service.billingName('remote')).toBeUndefined();
+    const empty = service.pricingRevision();
+    models['alias'] = { provider: 'proxy', model: 'remote', displayName: 'Shown', pricingModel: 'billing-spec-argon' };
+    expect(service.billingName('alias')).toBe('billing-spec-argon');
+    expect(service.billingName('missing')).toBeUndefined();
+    const named = service.pricingRevision();
+    expect(named).not.toBe(empty);
+    models['alias'] = { provider: 'proxy', model: 'remote', displayName: 'Other', pricingModel: 'billing-spec-argon' };
+    expect(service.pricingRevision()).toBe(named);
+    delete models['alias']!.pricingModel;
+    expect(service.billingName('alias')).toBeUndefined();
+    expect(service.pricingRevision()).toBe(empty);
+    service.dispose();
+  });
+
   it('persists overrides atomically, patches without losing neighbors, restores catalog pricing and reports provenance', async () => {
     const home = tempDir();
     const vendoredPath = join(home, 'vendored.json');

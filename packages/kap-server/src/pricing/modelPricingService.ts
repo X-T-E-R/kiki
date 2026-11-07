@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -137,6 +137,8 @@ export interface IModelPricingService {
   calculate(model: string, usage: ModelTokenUsage): number | undefined;
   refreshNow(): Promise<boolean>;
   status(): ModelPricingStatus;
+  billingName?(model: string): string | undefined;
+  pricingRevision?(): string;
 }
 
 export const IModelPricingService =
@@ -529,6 +531,20 @@ export class ModelPricingService implements IModelPricingService {
 
   calculate(model: string, usage: ModelTokenUsage): number | undefined {
     return calculateMatch(this.resolve(model), usage);
+  }
+
+  billingName(model: string): string | undefined {
+    const name = this.configuredModel(model)?.record.pricingModel?.trim();
+    return name === undefined || name.length === 0 ? undefined : name;
+  }
+
+  pricingRevision(): string {
+    const models = this.config.get<Record<string, ModelRecord>>('models') ?? {};
+    const entries = Object.entries(models).flatMap(([id, record]) => {
+      const name = record.pricingModel?.trim();
+      return name === undefined || name.length === 0 ? [] : [[id, name] as const];
+    }).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
   }
 
   async getPricing(models: readonly string[] = []): Promise<UsagePricingResponse> {

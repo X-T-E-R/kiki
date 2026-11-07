@@ -917,6 +917,14 @@ describe('settings persistence and validation', () => {
       modelPatchBody({ ...baseline, requestIdentityChoice: 'none' }, baseline),
     ).toEqual({ request_identity: { preset: 'none' } });
     expect(modelPatchBody({ ...baseline, remoteId: '' }, baseline)).toBeNull();
+    expect(modelPatchBody({ ...baseline, pricingModel: 'billing-spec-argon' }, baseline)).toEqual({
+      pricing_model: 'billing-spec-argon',
+    });
+    expect(modelPatchBody({ ...baseline, pricingModel: '' }, { ...baseline, pricingModel: 'billing-spec-argon' })).toEqual({
+      pricing_model: null,
+    });
+    expect(modelCreateBody('example', { ...baseline, pricingModel: 'billing-spec-argon' }).pricing_model).toBe('billing-spec-argon');
+    expect(modelCreateBody('example', baseline).pricing_model).toBeUndefined();
   });
 
   it('serializes each model autoCompact independently and keeps omission as inheritance', () => {

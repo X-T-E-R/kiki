@@ -5,10 +5,10 @@ import { createServer } from 'node:http';
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
+import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, type IBootstrapService as Bootstrap, type IConfigService, type ModelRecord, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
-import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { JsonAtomicDocumentStore, TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 import { OPERATION_USAGE_KEY } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsage';
 import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
@@ -28,8 +28,8 @@ import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import type { UsageExportAdapter } from '../src/usage/export/adapter';
 import { canonicalExportHome } from '../src/usage/export/handoffFile';
-import { IModelPricingService, type IModelPricingService as Pricing } from '../src/pricing/modelPricingService';
-import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { IModelPricingService, ModelPricingService, drainModelPricingDisposals, type IModelPricingService as Pricing } from '../src/pricing/modelPricingService';
+import { UsageAggregationService, UsagePageTokenMismatchError } from '../src/usage/usageAggregationService';
 import { UsageExportStore } from '../src/usage/export/store';
 import { UsageExportSecretStore, type ExportKeyring } from '../src/usage/export/secrets';
 import { UsageExportService } from '../src/usage/export/service';
@@ -54,7 +54,7 @@ const priced: Pricing = {
 function record(time: number, inputOther: number, other = { output: 3, inputCacheRead: 4, inputCacheCreation: 5 }, model = 'gpt-5'): WireRecord {
   return { type: 'usage.record', time, model, usageKnown: true, usage: { inputOther, ...other }, prompt: SENTINEL, reply: SENTINEL, reasoning: SENTINEL, profileName: SENTINEL, tool: { args: SENTINEL }, attachments: [SENTINEL], custom: { sentinel: SENTINEL } };
 }
-async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest, aggregationNow = Date.now) {
+async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest, aggregationNow = Date.now, pricing: Pricing = priced) {
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
   const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
   const bootstrap = { homeDir: home, scope: (name: string) => name, credentialsHomeDir: home, cacheDir: join(home, 'cache') } as Bootstrap;
@@ -67,15 +67,15 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   const model = ix.get(IUsageReadModel); cleanup.push(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); });
   const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
-  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
+  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, pricing], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
   const reader = new UsageAggregationService(core, aggregationNow, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
   const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
   const secrets = secretStore();
-  let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
+  let service = new UsageExportService(store, reader, pricing, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => append.rewrite(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, records);
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, aggregationNow, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, aggregationNow, limits), pricing, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -1005,5 +1005,151 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     expect((await f.service.vibeAuth.poll(recovered.flow_id)).state).toBe('connected');
     expect(f.store.get(d.id).credential_storage).toBe('keyring'); expect(stored).toBe(key);
     await expect(stat(join(f.home, 'credentials/usage-export', `${d.id}.secret`))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('explicit billing name', () => {
+  const rates = {
+    gpt: { input: 1e-6, output: 2e-6, read: 1e-7, write: 1.25e-6 },
+    spec: { input: 3e-6, output: 4e-6, read: 3e-7, write: 3.75e-6 },
+    upstream: { input: 9e-6, output: 8e-6, read: 9e-7, write: 1.125e-5 },
+  };
+  const tokens = { inputOther: 10, output: 3, inputCacheRead: 4, inputCacheCreation: 5 };
+  const costOf = (rate: { input: number; output: number; read: number; write: number }) =>
+    tokens.inputOther * rate.input + tokens.output * rate.output + tokens.inputCacheRead * rate.read + tokens.inputCacheCreation * rate.write;
+  const price = (rate: { input: number; output: number; read: number; write: number }) => ({
+    input_cost_per_token: rate.input, output_cost_per_token: rate.output,
+    cache_read_input_token_cost: rate.read, cache_creation_input_token_cost: rate.write,
+  });
+
+  it('prices and names history from the configured billing name, then restores inference', async () => {
+    const pricingHome = await mkdtemp(join(tmpdir(), 'kiki-billing-name-'));
+    cleanup.push(() => rm(pricingHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    await writeFile(join(pricingHome, 'prices.json'), JSON.stringify({
+      'gpt-5': price(rates.gpt), 'claude-sonnet-4-5': price(rates.gpt),
+      'billing-spec-argon': price(rates.spec), 'private-upstream': price(rates.upstream),
+    }));
+    const models: Record<string, ModelRecord> = { 'my-argon': { provider: 'proxy', model: 'wire-remote-argon' } };
+    const pricing = new ModelPricingService(
+      { homeDir: pricingHome } as unknown as Bootstrap,
+      stubLog(),
+      new TomlAtomicDocumentStore(new FileStorageService(pricingHome)),
+      { ready: Promise.resolve(), get: () => models } as unknown as IConfigService,
+      { scheduleRefresh: false, minimumKeys: 1, vendoredPath: join(pricingHome, 'prices.json') },
+    );
+    cleanup.push(async () => { pricing.dispose(); await drainModelPricingDisposals(); });
+    await pricing.ready;
+    const f = await fixture({}, undefined, undefined, undefined, undefined, pricing);
+    const usage = { output: tokens.output, inputCacheRead: tokens.inputCacheRead, inputCacheCreation: tokens.inputCacheCreation };
+    f.add('argon'); f.add('stable');
+    await f.write('argon', 'main', [{ ...record(T + 1, tokens.inputOther, usage, 'my-argon'), modelAlias: 'my-argon', upstreamModelId: 'private-upstream' }]);
+    await f.write('stable', 'main', [{ ...record(T + 2, tokens.inputOther, usage, 'gpt-5'), modelAlias: 'gpt-5' }]);
+    const wireSize = async (session: string) => (await stat(join(f.home, 'sessions/work', session, 'agents/main', AGENT_WIRE_RECORD_KEY))).size;
+    const wires = [await wireSize('argon'), await wireSize('stable')];
+    const d = await destination(f.service);
+    await enable(f.service, d.id);
+    const projected = () => f.store.preview(d.id);
+    const named = (model: string) => projected().items.find((item) => item.bucket?.model === model);
+    const summed = () => {
+      const total = emptyTokens();
+      for (const item of projected().items) if (item.bucket !== null) addTokens(total, item.bucket.tokens);
+      return total;
+    };
+    const expectedTokens = { input_other: 20, output: 6, input_cache_read: 8, input_cache_creation: 10 };
+    const stableIdentity = () => {
+      const item = named('gpt-5');
+      return { revision: item?.revision, hash: item?.payload_hash, tokens: item?.bucket?.tokens, cost: item?.bucket?.cost.usd_estimated };
+    };
+    expect(normalizePublicModel('billing-spec-argon')).toBeUndefined();
+    expect(normalizePublicModel('gpt-5')).toBe('gpt-5');
+    expect(pricing.billingName('private-upstream')).toBeUndefined();
+    const inferred = projected().items.find((item) => item.bucket?.model.startsWith('custom-'));
+    expect(inferred?.bucket).toMatchObject({ mapping_version: 'kiki-public-model-v1', quality: { mapping_unknown: true, price_unknown: false } });
+    expect(inferred?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(rates.upstream), 12);
+    const inferredId = inferred?.bucket?.model;
+    const stable = stableIdentity();
+    expect(summed()).toEqual(expectedTokens);
+    expect(projected().total).toBe(2);
+    expect(f.store.meta('pricing-revision')).toBe(pricing.pricingRevision());
+    const before = await f.reader.query({ dimension: 'model', page_size: 1 });
+    expect(before.summary.tokens).toEqual(expectedTokens);
+    expect(before.summary.cost_unknown).toBe(true);
+    expect(before.summary.cost_usd_estimated).toBeCloseTo(costOf(rates.gpt), 12);
+    expect(before.reliability.unknown_price_models).toContain('my-argon');
+    const groups = before.trend.flatMap((bucket) => bucket.groups.map((group) => group.key));
+    expect(groups).toEqual(expect.arrayContaining(['my-argon', 'gpt-5']));
+    expect(groups).not.toContain('billing-spec-argon');
+    const firstToken = before.sessions.next_page_token;
+    expect(firstToken).toEqual(expect.any(String));
+    const firstPage = JSON.parse(Buffer.from(firstToken ?? '', 'base64url').toString('utf8')) as { p?: string };
+
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: 'billing-spec-argon' };
+    await f.service.scan();
+    expect([await wireSize('argon'), await wireSize('stable')]).toEqual(wires);
+    const spec = named('billing-spec-argon');
+    expect(spec?.bucket).toMatchObject({ model: 'billing-spec-argon', quality: { mapping_unknown: false, price_unknown: false } });
+    expect(spec?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(rates.spec), 12);
+    expect(spec?.bucket?.cost.usd_estimated).not.toBeCloseTo(costOf(rates.upstream), 12);
+    expect(stableIdentity()).toEqual(stable);
+    expect(summed()).toEqual(expectedTokens);
+    expect(projected().total).toBe(2);
+    expect(f.store.meta('pricing-revision')).toBe(pricing.pricingRevision());
+    expect(pricing.billingName('my-argon')).toBe('billing-spec-argon');
+    expect(pricing.billingName('private-upstream')).toBeUndefined();
+    const pricedUsage = await f.reader.query({ dimension: 'model', page_size: 1 });
+    expect(pricedUsage.summary.tokens).toEqual(expectedTokens);
+    expect(pricedUsage.summary.cost_unknown).toBe(false);
+    expect(pricedUsage.summary.cost_usd_estimated).toBeCloseTo(costOf(rates.spec) + costOf(rates.gpt), 12);
+    expect(pricedUsage.reliability.unknown_price_models).not.toContain('my-argon');
+    expect(pricedUsage.reliability.unknown_price_models).not.toContain('billing-spec-argon');
+    const pricedGroups = pricedUsage.trend.flatMap((bucket) => bucket.groups.map((group) => group.key));
+    expect(pricedGroups).toEqual(expect.arrayContaining(['my-argon', 'gpt-5']));
+    expect(pricedGroups).not.toContain('billing-spec-argon');
+    const nextToken = pricedUsage.sessions.next_page_token;
+    const nextPage = JSON.parse(Buffer.from(nextToken ?? '', 'base64url').toString('utf8')) as { p?: string };
+    expect(nextPage.p).not.toBe(firstPage.p);
+    await expect(f.reader.query({ dimension: 'model', page_size: 1, page_token: firstToken ?? '' })).rejects.toBeInstanceOf(UsagePageTokenMismatchError);
+
+    delete models['my-argon']!.pricingModel;
+    await f.service.scan();
+    expect(named('billing-spec-argon')).toBeUndefined();
+    expect(named(inferredId ?? '')?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(rates.upstream), 12);
+    expect(stableIdentity()).toEqual(stable);
+    expect(summed()).toEqual(expectedTokens);
+
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: 'billing-spec-argon' };
+    await f.service.scan();
+    await f.restart();
+    expect(f.store.preview(d.id).items.some((item) => item.bucket?.model === 'billing-spec-argon')).toBe(true);
+    expect(summed()).toEqual(expectedTokens);
+
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: 'bad name' };
+    await f.service.scan();
+    expect(projected().items.map((item) => item.bucket?.model)).not.toContain('bad name');
+    expect(named(inferredId ?? '')?.bucket?.quality.price_unknown).toBe(true);
+    const longName = `billing-spec-${'a'.repeat(108)}`;
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: longName };
+    await f.service.scan();
+    expect(longName.length).toBeGreaterThan(100);
+    expect(longName.length).toBeLessThanOrEqual(160);
+    expect(normalizePublicModel(longName)).toBeUndefined();
+    expect(named(longName)?.bucket?.model).toBe(longName);
+    const tooLong = 'b'.repeat(161);
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: tooLong };
+    await f.service.scan();
+    expect(projected().items.map((item) => item.bucket?.model)).not.toContain(tooLong);
+    expect(named(inferredId ?? '')).toBeDefined();
+
+    delete models['my-argon'];
+    await f.service.scan();
+    expect(Object.keys(models)).toEqual([]);
+    expect(named('billing-spec-argon')).toBeUndefined();
+    expect(named(inferredId ?? '')?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(rates.upstream), 12);
+    expect(summed()).toEqual(expectedTokens);
+    expect(stableIdentity()).toEqual(stable);
+    const removed = await f.reader.query({ dimension: 'model', page_size: 1 });
+    expect(removed.summary.tokens).toEqual(expectedTokens);
+    expect(removed.reliability.unknown_price_models).toContain('my-argon');
+    expect(removed.trend.flatMap((bucket) => bucket.groups.map((group) => group.key))).not.toContain('billing-spec-argon');
   });
 });

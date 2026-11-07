@@ -55,6 +55,7 @@ import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { SettingHelp } from './SettingHelp';
 import { effortLabel } from './profileEditor/profileDraft';
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
@@ -1807,6 +1808,21 @@ function ModelCatalogRowEditor({
                 value={draft.displayName}
                 onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
                 placeholder={entity.remote_id}
+              />
+            </label>
+            <label className={`${FORM_LABEL} min-w-0 sm:col-span-2`} data-model-pricing-model={entity.id}>
+              <span className="inline-flex items-center gap-1.5">
+                {t('usage.pricing.billingModel')}
+                <SettingHelp>{t('st.models.pricingModelHelp')}</SettingHelp>
+              </span>
+              <input
+                className={`${INPUT} mt-1 font-mono font-normal`}
+                aria-label={t('st.models.pricingModelAria', { model: entity.id })}
+                value={draft.pricingModel ?? ''}
+                spellCheck={false}
+                placeholder={t('st.models.pricingModelPlaceholder')}
+                disabled={saving}
+                onChange={(event) => { setDraft({ ...draft, pricingModel: event.target.value }); }}
               />
             </label>
             <div className="min-w-0 space-y-1">

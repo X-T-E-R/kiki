@@ -336,7 +336,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | --- | --- | --- | --- |
 | `provider` | `string` | Yes | Name of the provider to use; must be defined in `providers` |
 | `model` | `string` | Yes | Model identifier sent to the server when calling the API |
-| `pricing_model` | `string` | No | Canonical model used to estimate usage cost, independent of the upstream model ID; for example, a proxy alias can bill as `gpt-6-sol`. An unavailable price remains unknown; this never changes the model sent to the provider |
+| `pricing_model` | `string` | No | Canonical billing name for local usage cost and the content-free usage export model name. Letters, digits, and `.` `_` `:` `/` `-`, up to 160 characters, are used even outside the built-in public model list. Empty keeps the current inference. This does not change the model sent to the provider, the alias, or the display name. Recorded usage for a removed model stays and falls back without adding a model entry |
 | `max_context_size` | `integer` | Yes | Maximum context length in tokens; must be at least 1 |
 | `max_input_size` | `integer` | No | Declared per-request input limit when it sits below the total window (e.g. gpt-5: 400k window, 272k input). Compaction, context-overflow checks, and usage ratios prefer it; completion budgeting keeps the total window. Resolution clamps it to `max_context_size` |
 | `max_output_size` | `integer` | No | Per-request output token cap (maps to `max_tokens`). Currently only the `anthropic` provider honors it. When set for a Claude model, this explicit value overrides the built-in server-side maximum |

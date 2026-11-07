@@ -25,6 +25,7 @@ export class UsageExportService {
   private readonly random: () => number;
   private scanFlight: Promise<void> | undefined;
   private scanRun: string | undefined;
+  private scanPricingRevision: string | null | undefined;
   private continuationTimer: NodeJS.Timeout | undefined;
   private timer: NodeJS.Timeout | undefined;
   private electionTimer: NodeJS.Timeout | undefined;
@@ -154,6 +155,14 @@ export class UsageExportService {
     const flight = (async () => {
       await this.pricing.ready;
       if (this.closing) return;
+      const revision = this.pricing.pricingRevision?.() ?? null;
+      if (this.scanRun !== undefined && this.scanPricingRevision !== revision) {
+        await this.reader.resetExportRead();
+        this.store.discardStage(this.scanRun);
+        this.scanRun = undefined;
+      }
+      if (this.scanRun === undefined && revision !== null && this.store.meta('pricing-revision') !== revision) await this.reader.resetExportRead();
+      this.scanPricingRevision = revision;
       if (force) { await this.reader.invalidateExportCheckpoints(); if (this.scanRun !== undefined) this.store.discardStage(this.scanRun); this.scanRun = undefined; }
       const run = this.scanRun ?? randomUUID(); this.scanRun = run;
       try {
@@ -169,7 +178,16 @@ export class UsageExportService {
           if (this.store.meta('scan-complete') === 'true') await this.store.publishStageAsync(run, false, result.reason, result.operationsComplete); else this.store.discardStage(run);
           this.scanRun = undefined; return;
         }
-        await this.store.publishStageAsync(run, true, null, result.operationsComplete); this.scanRun = undefined;
+        const endRevision = this.pricing.pricingRevision?.() ?? null;
+        if (endRevision !== revision) {
+          await this.reader.resetExportRead();
+          this.store.discardStage(run);
+          this.scanRun = undefined;
+          return;
+        }
+        await this.store.publishStageAsync(run, true, null, result.operationsComplete);
+        if (revision !== null) this.store.setMeta('pricing-revision', revision);
+        this.scanRun = undefined;
       } catch (error) {
         await this.reader.resetExportRead(); if (this.closing) return;
         this.store.discardStage(run); this.scanRun = undefined; const category = error instanceof Error && error.message === 'export-queue-full' ? 'queue-full' : 'scan-failed';

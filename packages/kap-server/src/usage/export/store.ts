@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { usageExportDestinationSchema, usageExportItemSchema, usageExportReceiptSchema, type UsageExportBatch, type UsageExportDestination, type UsageExportItem, type UsageExportQueue, type UsageExportReceipt } from '@kiki/protocol';
-import { contributionSchema, digest, normalizePublicModel, opaqueId, publicBucket, addTokens, addQuality, type Contribution, type SourceContribution } from './projection';
+import { contributionSchema, contributionPublicModel, digest, opaqueId, publicBucket, addTokens, addQuality, type Contribution, type SourceContribution } from './projection';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 interface Row { [key: string]: string | number | null }
@@ -180,8 +180,7 @@ export class UsageExportStore {
     for (const value of buckets) {
       const bucket = contributionSchema.parse(value);
       if (bucket.start < destination.scope.start_at || (destination.scope.end_at !== null && bucket.start >= destination.scope.end_at)) continue;
-      const rawModel = bucket.upstream_model_id ?? bucket.model_alias;
-      const model = normalizePublicModel(rawModel) ?? `custom-${opaqueId(identityKey, `model\0${rawModel}`).slice(0, 32)}`;
+      const model = contributionPublicModel(bucket, identityKey).model;
       const key = opaqueId(identityKey, JSON.stringify(['kiki-public-model-v1', bucket.start, model]));
       const group = groups.get(key);
       if (group === undefined) groups.set(key, { contribution: { ...bucket, tokens: { ...bucket.tokens }, quality: { ...bucket.quality } }, pricingVersions: new Set([bucket.pricing_version]) });

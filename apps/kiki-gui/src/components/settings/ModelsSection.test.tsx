@@ -539,6 +539,45 @@ describe('ProviderModelList row editor', () => {
     });
   });
 
+  it('saves a billing name without changing the remote id or display name', async () => {
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const billing = container.querySelector<HTMLInputElement>('input[aria-label="Billing name for kimi-code/kimi-k2"]')!;
+    expect(billing.value).toBe('');
+    expect(billing.placeholder).toBe('Keep current inference');
+    expect(container.querySelector('[data-model-pricing-model="kimi-code/kimi-k2"]')?.textContent).toContain('Priced as');
+    await act(async () => { setInputValue(billing, 'billing-spec-argon'); });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      pricing_model: 'billing-spec-argon',
+      base_revision: 'rev-7',
+    });
+  });
+
+  it('clears a saved billing name without changing the remote id or display name', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, pricing_model: 'billing-spec-argon' });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const filled = container.querySelector<HTMLInputElement>('input[aria-label="Billing name for kimi-code/kimi-k2"]')!;
+    expect(filled.value).toBe('billing-spec-argon');
+    await act(async () => { setInputValue(filled, ''); });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      pricing_model: null,
+      base_revision: 'rev-7',
+    });
+  });
+
   it('saves engine fields as a sparse patch, clears emptied ones with null and blocks bad JSON', async () => {
     getModel.mockResolvedValue({ ...ENTITY, aliases: ['old-k2'], context_budget: 90_000, request_params: { store: false } });
     const container = await renderCard();
