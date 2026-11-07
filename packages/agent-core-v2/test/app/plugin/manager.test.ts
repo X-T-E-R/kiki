@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -406,7 +406,7 @@ describe('PluginManager', () => {
       const record = await manager.install('https://github.com/owner/repo/tree/main', { fingerprint: plan.fingerprint, consent: true });
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(spyExtract).toHaveBeenCalledTimes(1);
-      expect(spyFingerprint).toHaveBeenCalledTimes(1);
+      expect(spyFingerprint).toHaveBeenCalledTimes(2);
       expect(record.manifest?.version).toBe('1.0.0');
       expect(record.github?.installedSha).toBe(sha1);
       await expect(manager.install('https://github.com/owner/repo/tree/main', { fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('Plugin changed since installation preview');
@@ -476,6 +476,73 @@ describe('PluginManager', () => {
     } finally {
       spyFingerprint.mockRestore();
       await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+  it('rejects a staged remote preview whose entry script was modified on disk before confirmation', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-staged-tamper-'));
+    const zipPath = join(tmpdir(), `plugin-staged-tamper-${Date.now()}.zip`);
+    const spyFingerprint = vi.spyOn(installPlan, 'fingerprintDirectory');
+    try {
+      await writeFile(join(sourceRoot, 'entry.mjs'), 'export function register() { return 1; }', 'utf8');
+      await writeFile(
+        join(sourceRoot, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'tampered-stage', version: '1.0.0', 'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs' } }),
+        'utf8',
+      );
+      execFileSync('zip', ['-qr', zipPath, '.'], { cwd: sourceRoot });
+      const zipBytes = await readFile(zipPath);
+      const url = 'https://downloads.example.test/tampered-stage.zip';
+      const fetchMock = vi.fn(async () => new Response(new Uint8Array(zipBytes)));
+      vi.stubGlobal('fetch', fetchMock as typeof fetch);
+      const manager = new PluginManager({ kimiHomeDir: home });
+      await manager.load();
+      const plan = await manager.preview(url);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(spyFingerprint).toHaveBeenCalledTimes(1);
+      const stagingBase = join(home, 'plugins', '.preview-staging');
+      const stagedEntries = await readdir(stagingBase);
+      expect(stagedEntries).toHaveLength(1);
+      const stagedEntryScript = join(stagingBase, stagedEntries[0]!, 'entry.mjs');
+      await writeFile(stagedEntryScript, 'export function register() { return 999; }', 'utf8');
+      await expect(manager.install(url, { fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('Plugin changed since installation preview');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(spyFingerprint).toHaveBeenCalledTimes(2);
+      expect(manager.get('tampered-stage')).toBeUndefined();
+      await expect(stat(join(home, 'plugins', 'managed', 'tampered-stage'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      spyFingerprint.mockRestore();
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(zipPath, { force: true });
+    }
+  });
+
+  it('isolates staged preview directories across concurrent same-key previews and separate PluginManager loads', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-shared-stage-'));
+    const zipPath = join(tmpdir(), `plugin-shared-stage-${Date.now()}.zip`);
+    try {
+      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'shared-stage', version: '1.0.0', hooks: [{ event: 'Stop', command: 'echo ok' }] }), 'utf8');
+      execFileSync('zip', ['-qr', zipPath, '.'], { cwd: sourceRoot });
+      const zipBytes = await readFile(zipPath);
+      const url = 'https://downloads.example.test/shared-stage.zip';
+      const fetchMock = vi.fn(async () => new Response(new Uint8Array(zipBytes)));
+      vi.stubGlobal('fetch', fetchMock as typeof fetch);
+      const managerA = new PluginManager({ kimiHomeDir: home });
+      const managerB = new PluginManager({ kimiHomeDir: home });
+      await managerA.load();
+      const [plan1, plan2] = await Promise.all([managerA.preview(url), managerA.preview(url)]);
+      expect(plan1.fingerprint).toBe(plan2.fingerprint);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const stagingBase = join(home, 'plugins', '.preview-staging');
+      expect(await readdir(stagingBase)).toHaveLength(1);
+      await managerB.load();
+      expect(await readdir(stagingBase)).toHaveLength(1);
+      const installed = await managerA.install(url, { fingerprint: plan1.fingerprint, consent: true });
+      expect(installed.id).toBe('shared-stage');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(await readdir(stagingBase)).toEqual([]);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(zipPath, { force: true });
     }
   });
 

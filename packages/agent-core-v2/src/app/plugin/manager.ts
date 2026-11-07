@@ -76,7 +76,6 @@ export class PluginManager {
 
   async load(): Promise<void> {
     await this.dispose();
-    await rm(path.join(this.kimiHomeDir, 'plugins', '.preview-staging'), { recursive: true, force: true }).catch(() => undefined);
     const file = await readInstalled(this.kimiHomeDir);
     const next = new Map<string, PluginRecord>();
     const renamed = file.plugins.some((entry) => currentPluginId(entry.id) !== entry.id);
@@ -142,41 +141,32 @@ export class PluginManager {
   async dispose(): Promise<void> {
     const entries = [...this.stagedPreviews.values()];
     this.stagedPreviews.clear();
-    await Promise.all(entries.map(async (entry) => {
-      clearTimeout(entry.timer);
-      if (entry.candidate.tempDir !== undefined) {
-        await rm(entry.candidate.tempDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }));
+    await Promise.all(entries.map((entry) => this.releaseStagedPreviewEntry(entry)));
   }
 
-  private async evictStagedPreview(key: string): Promise<void> {
-    const existing = this.stagedPreviews.get(key);
-    if (existing === undefined) return;
-    this.stagedPreviews.delete(key);
-    clearTimeout(existing.timer);
-    if (existing.candidate.tempDir !== undefined) {
-      await rm(existing.candidate.tempDir, { recursive: true, force: true }).catch(() => undefined);
+  private async releaseStagedPreviewEntry(entry: StagedRemotePreview): Promise<void> {
+    clearTimeout(entry.timer);
+    if (entry.candidate.tempDir !== undefined) {
+      await rm(entry.candidate.tempDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  private async evictStagedPreviewEntry(entry: StagedRemotePreview): Promise<void> {
+    if (this.stagedPreviews.get(entry.key) === entry) {
+      this.stagedPreviews.delete(entry.key);
+    }
+    await this.releaseStagedPreviewEntry(entry);
   }
 
   private async sweepExpiredStagedPreviews(now = Date.now()): Promise<void> {
-    for (const [key, entry] of this.stagedPreviews) {
-      if (entry.expiresAt <= now) await this.evictStagedPreview(key);
-    }
+    const expired = [...this.stagedPreviews.values()].filter((entry) => entry.expiresAt <= now);
+    await Promise.all(expired.map((entry) => this.evictStagedPreviewEntry(entry)));
   }
 
   private async stageRemotePreview(candidate: PreparedPluginSource, id: string, fingerprint: string, signal?: AbortSignal): Promise<void> {
     if (candidate.tempDir === undefined || candidate.source === 'local-path') return;
     await this.sweepExpiredStagedPreviews();
     signal?.throwIfAborted();
-    const key = stagedPreviewKey(candidate.originalSource, fingerprint);
-    await this.evictStagedPreview(key);
-    while (this.stagedPreviews.size >= MAX_STAGED_PREVIEWS) {
-      const oldest = this.stagedPreviews.keys().next().value;
-      if (oldest === undefined) break;
-      await this.evictStagedPreview(oldest);
-    }
     const previewDir = path.join(this.kimiHomeDir, 'plugins', '.preview-staging');
     await mkdir(previewDir, { recursive: true });
     const stagedDir = await mkdtemp(path.join(previewDir, id + '-'));
@@ -191,22 +181,37 @@ export class PluginManager {
       await rm(stagedDir, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
+    const key = stagedPreviewKey(candidate.originalSource, fingerprint);
+    const replaced: StagedRemotePreview[] = [];
+    const previous = this.stagedPreviews.get(key);
+    if (previous !== undefined) {
+      this.stagedPreviews.delete(key);
+      replaced.push(previous);
+    }
+    while (this.stagedPreviews.size >= MAX_STAGED_PREVIEWS) {
+      const oldestKey = this.stagedPreviews.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.stagedPreviews.get(oldestKey);
+      this.stagedPreviews.delete(oldestKey);
+      if (oldest !== undefined) replaced.push(oldest);
+    }
     const stagedCandidate: PreparedPluginSource = {
       ...candidate,
       root: stagedDir,
       tempDir: stagedDir,
     };
-    const timer = setTimeout(() => {
-      void this.evictStagedPreview(key);
-    }, STAGED_PREVIEW_TTL_MS);
-    timer.unref?.();
-    this.stagedPreviews.set(key, {
+    const entry: StagedRemotePreview = {
       key,
       candidate: stagedCandidate,
       fingerprint,
       expiresAt: Date.now() + STAGED_PREVIEW_TTL_MS,
-      timer,
-    });
+      timer: setTimeout(() => {
+        void this.evictStagedPreviewEntry(entry);
+      }, STAGED_PREVIEW_TTL_MS),
+    };
+    entry.timer.unref?.();
+    this.stagedPreviews.set(key, entry);
+    await Promise.all(replaced.map((item) => this.releaseStagedPreviewEntry(item)));
   }
 
   private async takeStagedPreview(source: string, sha256: string | undefined, fingerprint: string | undefined): Promise<{
@@ -227,16 +232,12 @@ export class PluginManager {
     clearTimeout(entry.timer);
     const expectedSha = resolved.kind === 'zip-url' ? sha256?.toLowerCase() : undefined;
     if (expectedSha !== undefined && entry.candidate.archiveSha256 !== expectedSha) {
-      if (entry.candidate.tempDir !== undefined) {
-        await rm(entry.candidate.tempDir, { recursive: true, force: true }).catch(() => undefined);
-      }
+      await this.releaseStagedPreviewEntry(entry);
       throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin ZIP sha256 mismatch');
     }
     const exists = await stat(entry.candidate.root).then((info) => info.isDirectory()).catch(() => false);
     if (!exists) {
-      if (entry.candidate.tempDir !== undefined) {
-        await rm(entry.candidate.tempDir, { recursive: true, force: true }).catch(() => undefined);
-      }
+      await this.releaseStagedPreviewEntry(entry);
       return undefined;
     }
     return {
@@ -266,7 +267,6 @@ export class PluginManager {
       if (candidate.tempDir !== undefined) await rm(candidate.tempDir, { recursive: true, force: true });
     }
   }
-
   async install(source: string, options: {
     readonly sha256?: string;
     readonly fingerprint?: string;
@@ -307,7 +307,7 @@ export class PluginManager {
         throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, 'Unmanaged plugin directory already exists for ' + id);
       }
       await beforeReplace?.(id);
-      managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, candidate.root, trustedOwnCopy);
+      managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, candidate.root, trustedOwnCopy, staged !== undefined ? options.fingerprint : undefined);
       const normalizedRoot = managedCopy.root;
       if (options.fingerprint !== undefined && !trustedOwnCopy && await fingerprintDirectory(normalizedRoot) !== options.fingerprint) {
         throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed while copying the installation');
@@ -928,6 +928,7 @@ async function copyPluginToManagedRoot(
   id: string,
   sourceRoot: string,
   moveOwnedSource = false,
+  expectedFingerprint?: string,
 ): Promise<ManagedPluginCopy> {
   const managedRoot = path.join(kimiHomeDir, 'plugins', 'managed', id);
   const managedDir = path.dirname(managedRoot);
@@ -945,6 +946,9 @@ async function copyPluginToManagedRoot(
       });
     } else {
       await cp(sourceRoot, stagingRoot, { recursive: true });
+    }
+    if (expectedFingerprint !== undefined && await fingerprintDirectory(stagingRoot) !== expectedFingerprint) {
+      throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
     }
     try {
       await rename(managedRoot, previousRoot);
