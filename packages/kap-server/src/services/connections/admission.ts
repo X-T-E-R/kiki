@@ -1,18 +1,30 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
-import { connectionGrantSchema, type ConnectionIdentity, type ConnectionGrant, type InboundStatus } from '@kiki/protocol';
+import { PAIRING_CODE_ALPHABET, connectionGrantSchema, normalizePairingCode, type ConnectionIdentity, type ConnectionGrant, type InboundStatus } from '@kiki/protocol';
 import { generateServerToken } from '../auth/persistentToken';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
 interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string }
-interface State { enabled: boolean; grants: StoredGrant[] }
+interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean; failures: number; consumed: boolean; label: string }
+interface State { enabled: boolean; grants: StoredGrant[]; pairingCodes: PairingCode[] }
+export interface AdmittedPeer { id: string; revision: number; source: ConnectionIdentity }
+export interface PeerApproval { grantId: string; revision: number; peerToken: string; target: ConnectionIdentity; allowBridge: boolean }
 export class AdmissionError extends Error {
   constructor(readonly status: number, readonly reason: string) { super(reason); }
 }
 function digest(value: string): string { return createHash('sha256').update(value).digest('hex'); }
+function readPairingCodes(value: unknown): PairingCode[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('Invalid pairing code store');
+  return value.map((entry) => {
+    const code = entry as Partial<PairingCode>;
+    if (typeof code.digest !== 'string' || !/^[a-f0-9]{64}$/.test(code.digest) || typeof code.expiresAt !== 'number' || typeof code.allowBridge !== 'boolean' || typeof code.failures !== 'number' || typeof code.consumed !== 'boolean' || typeof code.label !== 'string') throw new Error('Invalid pairing code');
+    return { digest: code.digest, expiresAt: code.expiresAt, allowBridge: code.allowBridge, failures: code.failures, consumed: code.consumed, label: code.label };
+  });
+}
 export function sameIdentity(a: ConnectionIdentity, b: ConnectionIdentity): boolean { return a.homeId === b.homeId && a.hostId === b.hostId && a.protocol === b.protocol; }
 export class ConnectionAdmission {
-  private state: State = { enabled: false, grants: [] };
+  private state: State = { enabled: false, grants: [], pairingCodes: [] };
   private readonly leases = new Map<string, Set<() => void>>();
   private tail: Promise<unknown> = Promise.resolve();
   private readonly path: string;
@@ -38,7 +50,8 @@ export class ConnectionAdmission {
         return { ...grant, digest: entry.digest };
       });
       if (new Set(grants.map((entry) => entry.id)).size !== grants.length) throw new Error('Duplicate admission grant');
-      this.state = { enabled: state.enabled, grants };
+      const pairingCodes = readPairingCodes((state as { pairingCodes?: unknown }).pairingCodes);
+      this.state = { enabled: state.enabled, grants, pairingCodes };
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   status(): InboundStatus {
@@ -86,6 +99,67 @@ export class ConnectionAdmission {
     entry.lastConnectedAt = Date.now();
     return entry;
   }
+  matchBearer(secret: string): AdmittedPeer | undefined {
+    const entry = this.find(secret);
+    if (entry === undefined) return undefined;
+    if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
+    if (!this.state.enabled) throw new AdmissionError(403, 'inbound_disabled');
+    if (entry.status !== 'approved') throw new AdmissionError(401, 'connection_not_approved');
+    if (!sameIdentity(entry.target, this.identity)) throw new AdmissionError(403, 'identity_changed');
+    entry.lastConnectedAt = Date.now();
+    return { id: entry.id, revision: entry.revision, source: entry.source };
+  }
+  createPairCode(input: { label?: string; expiresInMs?: number; allowBridge?: boolean } = {}): Promise<{ code: string; expiresAt: number; allowBridge: boolean }> {
+    return this.change(async () => {
+      if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
+      const enabled = this.state.enabled;
+      this.state.enabled = true;
+      if (!enabled) this.emit({ kind: 'enabled', enabled: this.status().enabled });
+      const bytes = randomBytes(8);
+      let compact = '';
+      for (const byte of bytes) compact += PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length];
+      const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
+      const expiresAt = Date.now() + (input.expiresInMs ?? 600_000);
+      for (const entry of this.state.pairingCodes) if (!entry.consumed) entry.consumed = true;
+      this.state.pairingCodes.push({ digest: digest(code), expiresAt, allowBridge: input.allowBridge !== false, failures: 0, consumed: false, label: input.label ?? '' });
+      if (this.state.pairingCodes.length > 32) this.state.pairingCodes = this.state.pairingCodes.slice(-32);
+      return { code, expiresAt, allowBridge: input.allowBridge !== false };
+    });
+  }
+  claimPair(raw: string, source: ConnectionIdentity, sourceLabel: string): Promise<PeerApproval> {
+    return this.change(async () => {
+      if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
+      if (!this.state.enabled) throw new AdmissionError(403, 'inbound_disabled');
+      const now = Date.now();
+      const code = normalizePairingCode(raw);
+      const match = code === undefined ? undefined : this.pairingMatch(code);
+      if (match === undefined || match.consumed || match.expiresAt <= now || match.failures >= 5) {
+        this.notePairingFailure(now);
+        throw new AdmissionError(401, 'invalid_pairing_code');
+      }
+      if (sameIdentity(source, this.identity)) {
+        match.failures += 1;
+        if (match.failures >= 5) match.consumed = true;
+        throw new AdmissionError(409, 'identity_changed');
+      }
+      match.consumed = true;
+      const peerToken = generateServerToken();
+      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken) };
+      this.state.grants.push(entry);
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge: match.allowBridge };
+    });
+  }
+  approvePeer(source: ConnectionIdentity, label: string): Promise<PeerApproval> {
+    return this.change(async () => {
+      if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
+      this.state.enabled = true;
+      if (sameIdentity(source, this.identity)) throw new AdmissionError(409, 'identity_changed');
+      const peerToken = generateServerToken();
+      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken) };
+      this.state.grants.push(entry);
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge: true };
+    });
+  }
   attach(id: string, close: () => void): () => void {
     if (!this.status().enabled || this.state.grants.find((entry) => entry.id === id)?.status !== 'approved') { close(); return () => {}; }
     const set = this.leases.get(id) ?? new Set<() => void>(); set.add(close); this.leases.set(id, set);
@@ -97,6 +171,17 @@ export class ConnectionAdmission {
   private find(secret: string): StoredGrant | undefined {
     const candidate = Buffer.from(digest(secret));
     return this.state.grants.find((entry) => { const expected = Buffer.from(entry.digest); return expected.length === candidate.length && timingSafeEqual(candidate, expected); });
+  }
+  private pairingMatch(code: string): PairingCode | undefined {
+    const candidate = Buffer.from(digest(code));
+    return this.state.pairingCodes.find((entry) => { const expected = Buffer.from(entry.digest); return expected.length === candidate.length && timingSafeEqual(candidate, expected); });
+  }
+  private notePairingFailure(now: number): void {
+    for (const entry of this.state.pairingCodes) {
+      if (entry.consumed || entry.expiresAt <= now) continue;
+      entry.failures += 1;
+      if (entry.failures >= 5) entry.consumed = true;
+    }
   }
   private change<T>(fn: () => Promise<T>): Promise<T> {
     const result = this.tail.then(async () => { const value = await fn(); await writePrivateFile(this.path, JSON.stringify(this.state)); return value; });

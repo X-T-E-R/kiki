@@ -19,7 +19,7 @@
 import { useQuery } from '@tanstack/react-query';
 
 import type { ConnectionsFacade } from '@kiki/klient/http';
-import type { ConnectionIdentity, RemoteConnection, SshRemoteProfile } from '@kiki/protocol';
+import { isDirectConnectionHost, normalizePairingCode, type ConnectionIdentity, type RemoteConnection, type SshRemoteProfile } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { KikiClient } from './client';
@@ -281,6 +281,15 @@ export function sshRemoteHomeLabel(profile: SshRemoteProfile): string {
 // Field checks the server would also make, said before the round trip.
 // ---------------------------------------------------------------------------
 
+/** Adds http:// for a direct host and https:// otherwise, when the scheme was left off. */
+export function completeConnectionEndpoint(raw: string): string {
+  const text = raw.trim();
+  if (text === '' || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return text;
+  const host = text.split('/')[0] ?? text;
+  const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0] ?? host;
+  return `${isDirectConnectionHost(name) ? 'http' : 'https'}://${text}`;
+}
+
 /** Mirrors the server's endpoint rules so the answer arrives while typing. */
 export function endpointIssue(raw: string): I18nKey | null {
   const text = raw.trim();
@@ -295,12 +304,25 @@ export function endpointIssue(raw: string): I18nKey | null {
       url.search !== '' || url.hash !== '' || (url.pathname !== '/' && url.pathname !== '')) {
     return 'st.remote.endpoint.invalid';
   }
-  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return 'st.remote.endpoint.tls';
+  if (url.protocol !== 'https:' && !isDirectConnectionHost(url.hostname)) return 'st.remote.endpoint.tls';
   return null;
 }
 
 export function labelIssue(raw: string): I18nKey | null {
   const text = raw.trim();
-  if (text === '') return 'st.remote.label.required';
+  if (text === '') return null;
   return text.length > 128 ? 'st.remote.label.tooLong' : null;
+}
+
+/** The 4+4 code, after trimming, case folding and an optional hyphen. */
+export function pairingCodeIssue(raw: string): I18nKey | null {
+  const text = raw.trim();
+  if (text === '') return 'st.remote.code.required';
+  return normalizePairingCode(text) === undefined ? 'st.remote.code.invalid' : null;
+}
+
+/** Uppercase and insert the hyphen as the eight characters arrive. */
+export function formatPairingCode(raw: string): string {
+  const compact = raw.toUpperCase().replace(/[^23456789ABCDEFGHJKLMNPQRSTUVWXYZ]/g, '').slice(0, 8);
+  return compact.length <= 4 ? compact : `${compact.slice(0, 4)}-${compact.slice(4)}`;
 }

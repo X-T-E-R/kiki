@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { ConnectionSecretStore } from './secrets';
 import { join } from 'node:path';
 import {
-  CONNECTION_OPERATIONS, connectionHandshakeSchema, connectionOperationPath, connectionProvisionResultSchema, remoteConnectionSchema, spaceSummarySchema,
+  CONNECTION_OPERATIONS, bridgeGrantSchema, connectionHandshakeSchema, connectionIdentitySchema, connectionOperationPath, connectionProvisionResultSchema, isDirectConnectionHost, remoteConnectionSchema, spaceSummarySchema,
   type ConnectionAddInput, type ConnectionBrokerInput, type ConnectionIdentity, type ConnectionOperation, type RemoteConnection, type SshConnectionRegisterInput, type SshRemoteProfile,
 } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
@@ -12,6 +13,9 @@ import { isPeerProcedureAllowed } from './audience';
 import { parseKlientCallRequest } from '@kiki/klient/host';
 
 interface Credential { ownerToken: string; grant: string; grantId: string; revision: number }
+const peerBundleSchema = z.object({ grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict();
+const peerGrantResultSchema = z.object({ peerToken: z.string().min(32).max(128), grantId: z.string().uuid(), revision: z.number().int().positive(), target: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), bridge: z.array(peerBundleSchema).optional() }).strict();
+export interface SshPairBridge { sourceWorkspaces: readonly string[]; install(connectionId: string, bundle: { grant: { id: string }; credential: string }): Promise<void> }
 export type ConnectionTransport = Pick<RemoteConnection, 'id' | 'endpoint' | 'target'>;
 export interface ConnectionSshConnector {
   acquire(record: Pick<RemoteConnection, 'id' | 'target'> & { transport: { kind: 'ssh'; profile: SshRemoteProfile } }, signal: AbortSignal, purpose: 'gui' | 'bridge'): Promise<Omit<ConnectionTransport, 'id'>>;
@@ -84,26 +88,49 @@ export class RemoteConnectionManager {
     const record: RemoteConnection = { id, label: input.label, endpoint, target: { ...input.target }, transport: input.transport, credentialRef: id, purposes: ['bridge'], enabled: true, backgroundSummary: false, state: 'offline', activeLeases: 0 };
     return this.change(async () => { this.records.push(record); return { ...record }; });
   }
-  async registerSsh(input: SshConnectionRegisterInput, signal: AbortSignal): Promise<RemoteConnection> {
+  async registerSsh(input: SshConnectionRegisterInput, signal: AbortSignal, bridge?: SshPairBridge): Promise<RemoteConnection> {
     if (this.ssh === undefined) throw new AdmissionError(503, 'ssh_transport_unavailable');
     return this.ssh.withOwner(input.planId, async (owner) => {
       signal.throwIfAborted();
       const transport = { kind: 'ssh', profile: owner.profile } as const;
       if (input.purpose === 'bridge') return this.registerBridgeTarget({ label: input.label, endpoint: sshEndpoint(owner.profile), target: owner.target, transport });
-      const envelope = await this.jsonRequest(owner.endpoint + '/api/remote-connections/provision', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ source: this.identity, target: owner.target, label: input.label, enableInbound: input.enableInbound }), signal }, 8192) as { code: number; data: unknown };
-      if (envelope.code !== 0) throw new AdmissionError(409, 'connection_provision_failed');
-      const credential = connectionProvisionResultSchema.parse(envelope.data);
-      if (!sameIdentity(credential.target, owner.target)) throw new AdmissionError(409, 'identity_changed');
       const id = randomUUID();
-      const record: RemoteConnection = { id, label: input.label, endpoint: sshEndpoint(owner.profile), transport, target: owner.target, credentialRef: id, enabled: true, purposes: ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0 };
-      try { return await this.storeGui(record, credential); }
+      const base = { id, label: input.label, endpoint: sshEndpoint(owner.profile), transport, target: owner.target, credentialRef: id, enabled: true, backgroundSummary: input.backgroundSummary, state: 'online' as const, lastConnectedAt: Date.now(), activeLeases: 0 };
+      if (bridge !== undefined) {
+        const envelope = await this.jsonRequest(owner.endpoint + '/api/remote-connections/inbound/peer-grant', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ source: this.identity, label: input.label, sourceWorkspaces: bridge.sourceWorkspaces, requestBridge: true }), signal }, 65536) as { code: number; data: unknown };
+        if (envelope.code !== 0) throw new AdmissionError(409, 'connection_provision_failed');
+        const issued = peerGrantResultSchema.parse(envelope.data);
+        if (!sameIdentity(issued.target, owner.target)) throw new AdmissionError(409, 'identity_changed');
+        const bundles = issued.bridge ?? [];
+        const record: RemoteConnection = { ...base, purposes: bundles.length > 0 ? ['gui', 'bridge'] : ['gui'] };
+        let stored = false;
+        try {
+          const saved = await this.storeGui(record, { ownerToken: issued.peerToken, grant: issued.peerToken, grantId: issued.grantId, revision: issued.revision });
+          stored = true;
+          for (const bundle of bundles) await bridge.install(saved.id, bundle);
+          return saved;
+        } catch (error) {
+          if (stored) await this.remove(id).catch(() => undefined);
+          try {
+            await this.jsonRequest(owner.endpoint + '/api/remote-connections/inbound/grants/' + issued.grantId + '/revoke', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}` }, signal }, 8192);
+            for (const bundle of bundles) await this.jsonRequest(owner.endpoint + '/api/thread-bridges/inbound/' + bundle.grant.id + '/revoke', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}` }, signal }, 8192);
+          } catch { throw new AdmissionError(500, `connection_store_failed_revoke_remote_grant:${issued.grantId}`); }
+          throw error instanceof AdmissionError ? error : new AdmissionError(500, 'connection_store_failed_new_grant_revoked');
+        }
+      }
+      const envelope = await this.jsonRequest(owner.endpoint + '/api/remote-connections/provision', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ source: this.identity, target: owner.target, label: input.label, enableInbound: input.enableInbound }), signal }, 65536) as { code: number; data: unknown };
+      if (envelope.code !== 0) throw new AdmissionError(409, 'connection_provision_failed');
+      const issued = connectionProvisionResultSchema.parse(envelope.data);
+      if (!sameIdentity(issued.target, owner.target)) throw new AdmissionError(409, 'identity_changed');
+      try { return await this.storeGui({ ...base, purposes: ['gui'] }, { ownerToken: issued.ownerToken, grant: issued.grant, grantId: issued.grantId, revision: issued.revision }); }
       catch {
-        try { await this.jsonRequest(owner.endpoint + '/api/remote-connections/inbound/grants/' + credential.grantId + '/revoke', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}` }, signal }, 8192); }
-        catch { throw new AdmissionError(500, `connection_store_failed_revoke_remote_grant:${credential.grantId}`); }
+        try { await this.jsonRequest(owner.endpoint + '/api/remote-connections/inbound/grants/' + issued.grantId + '/revoke', { method: 'POST', headers: { authorization: `Bearer ${owner.localOwnerToken}` }, signal }, 8192); }
+        catch { throw new AdmissionError(500, `connection_store_failed_revoke_remote_grant:${issued.grantId}`); }
         throw new AdmissionError(500, 'connection_store_failed_new_grant_revoked');
       }
     }, signal);
   }
+  async storePeer(record: RemoteConnection, credential: Credential): Promise<RemoteConnection> { return this.storeGui(record, credential); }
   private async storeGui(record: RemoteConnection, credential: Credential): Promise<RemoteConnection> {
     try { return await this.change(async () => { await this.secrets.write({ connectionId: record.id, purpose: 'gui' }, credential); this.records.push(record); return { ...record }; }); }
     catch (error) { this.records = this.records.filter((entry) => entry !== record); await this.secrets.remove({ connectionId: record.id, purpose: 'gui' }).catch(() => {}); throw error; }
@@ -268,7 +295,7 @@ function sshEndpoint(profile: SshRemoteProfile): string { return `ssh://${encode
 export function validateEndpoint(raw: string): string {
   const url = new URL(raw);
   if (url.username || url.password || url.search || url.hash || !['http:', 'https:'].includes(url.protocol) || (url.pathname !== '/' && url.pathname !== '')) throw new AdmissionError(400, 'invalid_connection_endpoint');
-  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new AdmissionError(400, 'connection_requires_tls');
+  if (url.protocol !== 'https:' && !isDirectConnectionHost(url.hostname)) throw new AdmissionError(400, 'connection_requires_tls');
   return url.origin;
 }
 

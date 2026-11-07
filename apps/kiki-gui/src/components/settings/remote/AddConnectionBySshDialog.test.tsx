@@ -12,7 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONNECTION_PROTOCOL } from '@kiki/protocol';
-import type { RemoteConnection, SshHost, SshRemotePlan } from '@kiki/protocol';
+import type { RemoteConnection, SshHost } from '@kiki/protocol';
 import type { UserBlock } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../../i18n';
@@ -20,10 +20,8 @@ import { AddConnectionBySshDialog } from './AddConnectionBySshDialog';
 import { BridgedOriginLine } from '../../message/BridgedOriginLine';
 import { registerScopeNavigation } from '../../../lib/navScope';
 
-const sshPlan = vi.fn();
-const sshExecute = vi.fn();
-const sshRegister = vi.fn();
-const connections = { sshPlan, sshExecute, sshRegister, list: vi.fn(), add: vi.fn() };
+const sshConnect = vi.fn();
+const connections = { sshConnect, list: vi.fn(), add: vi.fn() };
 const client = { klient: { rest: { connections } } } as never;
 const host = { kind: 'tauri' as 'tauri' | 'browser' };
 
@@ -36,18 +34,6 @@ const SOURCE_HOME = '1a5b2f0e-6c1d-4a2f-9b3e-2f0c1d2e3f40';
 const PROFILE: SshHost = {
   id: 'ssh-1', name: 'acme-box', source: 'kiki', hostname: '10.0.0.9', user: 'kiki', port: 22,
 } as SshHost;
-
-function plan(state: SshRemotePlan['state']): SshRemotePlan {
-  return {
-    id: 'plan-1',
-    profile: { id: 'profile-1', label: 'acme-box', target: { kind: 'alias', alias: 'ssh-1' }, releaseChannel: 'stable', remoteHome: 'C:/kiki', remoteExecutable: 'kiki', remoteShell: 'posix' },
-    state,
-    target: { homeId: SOURCE_HOME, hostId: 'acme-box', protocol: CONNECTION_PROTOCOL },
-    serverId: state === 'attach' ? undefined : 'srv-1',
-    expiresAt: Date.now() + 600_000,
-    effects: { startsServer: state === 'ensure_required', serverLifetime: state === 'attach' ? 'existing' : 'until_explicit_stop', opensInbound: false, installsSoftware: false },
-  };
-}
 
 function record(purposes: readonly ('gui' | 'bridge')[]): RemoteConnection {
   return {
@@ -91,54 +77,36 @@ afterEach(async () => { for (const root of roots.splice(0)) await act(async () =
 describe('adding a remote space over SSH', () => {
   beforeEach(() => {
     host.kind = 'tauri';
-    sshPlan.mockReset();
-    sshExecute.mockReset();
-    sshRegister.mockReset();
+    sshConnect.mockReset().mockResolvedValue(record(['gui']));
   });
 
-  it('offers attach for a Kiki already running there, and starts nothing', async () => {
-    sshPlan.mockResolvedValue(plan('attach'));
+  it('connects in one action and says the remote server stays up when started', async () => {
     const onAdded = vi.fn();
     const { container } = render(
       <AddConnectionBySshDialog client={client} profiles={[PROFILE]} defaultHome="C:/kiki" onClose={vi.fn()} onAdded={onAdded} />,
     );
     await act(async () => { await Promise.resolve(); });
-    await act(async () => { await Promise.resolve(); });
-    expect(container.querySelector('[data-remote-ssh-state]')?.textContent).toContain('already running');
+    const note = container.querySelector('[data-remote-ssh-note]')?.textContent ?? '';
+    expect(note).toContain('until it is stopped');
     const submit = container.querySelector('[data-remote-ssh-submit]') as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
-    expect(container.querySelector('[data-remote-ssh-effects]')?.textContent).toContain('keeps whatever lifetime it already has');
     await act(async () => { submit.click(); });
-    expect(sshExecute).not.toHaveBeenCalled();
-    expect(sshRegister).toHaveBeenCalledTimes(1);
-    expect(sshRegister.mock.calls[0]?.[0]).toMatchObject({ purpose: 'gui', planId: 'plan-1' });
+    expect(sshConnect).toHaveBeenCalledWith(expect.objectContaining({
+      label: 'acme-box',
+      backgroundSummary: true,
+      profile: expect.objectContaining({ remoteHome: 'C:/kiki' }),
+    }));
     expect(onAdded).toHaveBeenCalledTimes(1);
   });
 
-  it('says the started server runs on until it is stopped explicitly', async () => {
-    sshPlan.mockResolvedValue(plan('ensure_required'));
-    const { container } = render(
-      <AddConnectionBySshDialog client={client} profiles={[PROFILE]} defaultHome="C:/kiki" onClose={vi.fn()} onAdded={vi.fn()} />,
-    );
-    await act(async () => { await Promise.resolve(); });
-    await act(async () => { await Promise.resolve(); });
-    const effects = container.querySelector('[data-remote-ssh-effects]')?.textContent ?? '';
-    expect(effects).toContain('until it is stopped explicitly');
-    expect(effects).toContain('after you close this window');
-    const submit = container.querySelector('[data-remote-ssh-submit]') as HTMLButtonElement;
-    await act(async () => { submit.click(); });
-    expect(sshExecute).toHaveBeenCalledWith('plan-1', { ensure: true });
-  });
-
-  it('keeps the form and says what failed when planning fails', async () => {
-    sshPlan.mockRejectedValue(new Error('the other Kiki did not answer'));
+  it('keeps the form and says what failed when connecting fails', async () => {
+    sshConnect.mockRejectedValue(new Error('the other Kiki did not answer'));
     const onAdded = vi.fn();
     const { container } = render(
       <AddConnectionBySshDialog client={client} profiles={[PROFILE]} defaultHome="C:/kiki" onClose={vi.fn()} onAdded={onAdded} />,
     );
     await act(async () => { await Promise.resolve(); });
-    await act(async () => { await Promise.resolve(); });
-    expect(container.querySelector('[data-remote-ssh-state]')).toBeNull();
+    await act(async () => { (container.querySelector('[data-remote-ssh-submit]') as HTMLButtonElement).click(); });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('the other Kiki did not answer');
     expect(onAdded).not.toHaveBeenCalled();
   });

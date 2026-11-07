@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createKlient } from '@kiki/klient/http';
-import { connectionAddInputSchema, connectionInviteInputSchema, sshRemoteProfileSchema, sshConnectionRegisterInputSchema } from '@kiki/protocol';
+import { connectionAddInputSchema, connectionInviteInputSchema, connectionPairInputSchema, sshRemoteProfileSchema, sshConnectionRegisterInputSchema } from '@kiki/protocol';
 import type { Command } from 'commander';
 import { ensureServer } from './serve';
 import { resolveKikiHome } from './home';
@@ -39,4 +39,22 @@ export function registerConnectionsCommand(program: Command): void {
   ssh.command('execute <planId>').option('--ensure', 'Start remote Kiki only if needed; it stays running until explicitly stopped.').description('Attach to the planned server, or confirm a persistent background start with --ensure.').action(async (id: string, options: { ensure?: boolean }, command: Command) => run(command, (c) => c.sshExecute(id, { ensure: options.ensure === true })));
   ssh.command('register').requiredOption('--input <file>', 'JSON {purpose,planId,label}; gui also requires enableInbound and may set backgroundSummary.').description('Register the ready plan for one purpose; GUI credentials stay in this backend, bridge policy is approved separately.').action(async (options: { input: string }, command: Command) => run(command, async (c) => c.sshRegister(sshConnectionRegisterInputSchema.parse(await inputJson(options.input)))));
   ssh.command('status').description('Show only this source backend’s SSH lease state.').action(async (_options, command: Command) => run(command, (c) => c.sshStatus()));
+  program.command('pair [endpoint] [code]').description('Print a 10-minute pairing code, or connect to one with an address and that code.').option('--home <dir>', 'Local source/provider home.').option('--label <name>', 'Name for the connection on this Kiki.').action(async (endpoint: string | undefined, code: string | undefined, options: { label?: string; home?: string }, command: Command) => {
+    const homeDir = resolveKikiHome((options.home ?? command.optsWithGlobals()['home']) as string | undefined);
+    const connection = await ensureServer({ homeDir });
+    const client = createKlient({ endpoint: connection.url, token: connection.token });
+    try {
+      const connections = client.rest!.connections;
+      if (endpoint === undefined && code === undefined) {
+        const created = await connections.createPairCode({});
+        const minutes = Math.max(1, Math.round((created.expiresAt - Date.now()) / 60_000));
+        const addresses = created.suggestedEndpoints.length > 0 ? created.suggestedEndpoints.join('\n') : '(no direct address found)';
+        process.stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n`);
+        return;
+      }
+      if (endpoint === undefined || code === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
+      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint, code, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true }));
+      process.stdout.write(`Connected to ${record.label} at ${record.endpoint}.\n`);
+    } finally { await client.close(); }
+  });
 }

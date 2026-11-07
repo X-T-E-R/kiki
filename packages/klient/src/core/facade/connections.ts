@@ -1,4 +1,4 @@
-import type { ConnectionIdentity, ConnectionAddInput, ConnectionGrant, ConnectionHandshake, InboundStatus, RemoteConnection, SpaceSummary, SshRemoteProfile, SshRemotePlan, SshRemoteStatus, SshConnectionRegisterInput } from '@kiki/protocol';
+import type { ConnectionIdentity, ConnectionAddInput, ConnectionGrant, ConnectionHandshake, ConnectionPairInput, InboundStatus, PairCodeCreateOutput, RemoteConnection, SpaceSummary, SshConnectionConnectInput, SshRemoteProfile, SshRemotePlan, SshRemoteStatus, SshConnectionRegisterInput } from '@kiki/protocol';
 import type { HttpRestRequestOptions } from './http-rest.js';
 export interface ConnectionsFacade {
   list(): Promise<RemoteConnection[]>;
@@ -12,6 +12,9 @@ export interface ConnectionsFacade {
   retry(connectionId: string): Promise<RemoteConnection>;
   summary(connectionId: string, options?: HttpRestRequestOptions): Promise<SpaceSummary>;
   handshake(): Promise<ConnectionHandshake>;
+  createPairCode(input?: { label?: string; expiresInMs?: number; allowBridge?: boolean }): Promise<PairCodeCreateOutput>;
+  pair(input: ConnectionPairInput): Promise<RemoteConnection>;
+  sshConnect(input: SshConnectionConnectInput, options?: HttpRestRequestOptions): Promise<RemoteConnection>;
   sshPlan(profile: SshRemoteProfile, options?: HttpRestRequestOptions): Promise<SshRemotePlan>;
   sshExecute(planId: string, input: { ensure: boolean }, options?: HttpRestRequestOptions): Promise<SshRemotePlan>;
   sshRegister(input: SshConnectionRegisterInput, options?: HttpRestRequestOptions): Promise<RemoteConnection>;

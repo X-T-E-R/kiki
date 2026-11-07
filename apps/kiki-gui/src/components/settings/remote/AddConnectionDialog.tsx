@@ -1,19 +1,18 @@
 /**
- * Adding one outbound connection: the invitation the other Kiki's owner sent,
- * a name and address, and the owner token. The token is written straight to
- * this home's connection layer through its own API and is cleared from this
- * form afterwards; it never lands in this window's storage or state.
+ * Adding one outbound connection from an address and a pairing code. The code
+ * is single-use; the credential it returns stays in this home's connection
+ * layer and never lands in this window's storage.
  */
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
-import type { ConnectionAddInput, RemoteConnection, SshHost } from '@kiki/protocol';
+import type { RemoteConnection, SshHost } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
-import { connectionsApi, endpointIssue, fingerprint, labelIssue, readInvitationBlock } from '../../../lib/remoteConnections';
+import { completeConnectionEndpoint, connectionsApi, endpointIssue, formatPairingCode, labelIssue, pairingCodeIssue } from '../../../lib/remoteConnections';
 import { useNativeSshEnabled, useSshHosts } from '../../../lib/ssh';
 import { MAIN_SPACE_ID, useSpaces } from '../../../lib/spaces';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
@@ -21,7 +20,6 @@ import { SidePanel } from '../../SidePanel';
 import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
-import { SecretField } from '../SecretField';
 import { SetupSteps } from '../SetupSteps';
 import { connectionFailureText } from './parts';
 import { AddConnectionBySshDialog } from './AddConnectionBySshDialog';
@@ -55,41 +53,33 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
   // Read before the SSH way returns, so the tabs below still know which way is shown.
   const onUrlWay = way === 'url';
   const [profileId] = useState(initial?.kind === 'ssh' ? initial.profileId : '');
-  const [paste, setPaste] = useState('');
+  const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
   const [endpoint, setEndpoint] = useState('');
-  const [token, setToken] = useState('');
-  const [background, setBackground] = useState(false);
+  const [background, setBackground] = useState(true);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<Feedback>(null);
-  const [touched, setTouched] = useState<{ label: boolean; endpoint: boolean }>({ label: false, endpoint: false });
+  const [touched, setTouched] = useState<{ label: boolean; endpoint: boolean; code: boolean }>({ label: false, endpoint: false, code: false });
 
-  const parsed = useMemo(() => (paste.trim() === '' ? null : readInvitationBlock(paste)), [paste]);
-  const invitation = parsed?.ok === true ? parsed : null;
-  const pasteProblem = parsed !== null && parsed.ok === false ? t(parsed.problem) : null;
+  const completedEndpoint = completeConnectionEndpoint(endpoint);
   const labelProblem = labelIssue(label);
-  const endpointProblem = endpointIssue(endpoint);
-  // The address is typed, so a TLS mistake is worth a word before saving; the
-  // paste and the token have nothing to check locally.
-  const blocked = invitation === null || labelProblem !== null || endpointProblem !== null || token.trim() === '' || saving;
+  const endpointProblem = endpointIssue(completedEndpoint);
+  const codeProblem = pairingCodeIssue(code);
+  const blocked = codeProblem !== null || labelProblem !== null || endpointProblem !== null || saving;
 
   const submit = async (event?: React.FormEvent) => {
     event?.preventDefault();
-    if (blocked || invitation === null) return;
+    setTouched({ label: true, endpoint: true, code: true });
+    if (blocked) return;
     setSaving(true);
     setFailure(null);
-    const input: ConnectionAddInput = {
-      label: label.trim(),
-      endpoint: endpoint.trim(),
-      target: invitation.target,
-      ownerToken: token.trim(),
-      invitation: invitation.invitation,
-      backgroundSummary: background,
-    };
     try {
-      const record = await connectionsApi(client).add(input);
-      // The token has left this form for the home's own store; nothing here keeps it.
-      setToken('');
+      const record = await connectionsApi(client).pair({
+        endpoint: completedEndpoint,
+        code: code.trim(),
+        ...label.trim() === '' ? {} : { label: label.trim() },
+        backgroundSummary: background,
+      });
       onAdded(record);
     } catch (error) {
       const reason = connectionFailureText(error instanceof Error ? error.message : '');
@@ -151,50 +141,32 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
         <SetupSteps data={{ 'data-remote-add-steps': '' }}
           steps={[t('st.remote.guide.step1'), t('st.remote.guide.step2'), t('st.remote.guide.step3')]} />
 
-        <SettingField label={t('st.remote.invitation')} htmlFor="remote-connection-invitation" layout="stack"
-          help={invitation === null ? t('st.remote.invitationHint') : undefined}>
-          <textarea id="remote-connection-invitation" data-remote-invitation rows={3} spellCheck={false}
-            className="w-full resize-y rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[11.5px] leading-[1.6] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-            placeholder={t('st.remote.invitationPlaceholder')}
-            value={paste}
-            onChange={(event) => { setPaste(event.target.value); }} />
-          {pasteProblem !== null ? (
-            <p className="text-[12px] text-danger" role="alert" data-remote-invitation-problem>{pasteProblem}</p>
-          ) : null}
-          {invitation !== null ? (
-            <p className="text-[12px] text-ink-soft" data-remote-target>
-              {t('st.remote.targetLine', {
-                home: fingerprint(invitation.target.homeId),
-                host: fingerprint(invitation.target.hostId),
-              })}
-              {invitation.label !== undefined ? ` · ${t('st.remote.invitationNamed', { name: invitation.label })}` : ''}
-            </p>
-          ) : null}
+        <SettingField label={t('st.remote.endpointField')} htmlFor="remote-connection-endpoint" layout="stack"
+          help={t('st.remote.endpointHint')}>
+          <input id="remote-connection-endpoint" data-remote-endpoint className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
+            value={endpoint} spellCheck={false} placeholder="http://192.168.1.20:58627"
+            onChange={(event) => { setEndpoint(event.target.value); }}
+            onBlur={() => { setEndpoint((value) => completeConnectionEndpoint(value)); setTouched((state) => ({ ...state, endpoint: true })); }} />
+          {touched.endpoint && endpointProblem !== null ? <p className="text-[12px] text-danger" role="alert" data-remote-endpoint-problem>{t(endpointProblem)}</p> : null}
         </SettingField>
 
-        <SettingField label={t('st.remote.labelField')} htmlFor="remote-connection-label" layout="stack">
+        <SettingField label={t('st.remote.codeField')} htmlFor="remote-connection-code" layout="stack"
+          help={t('st.remote.codeHint')}>
+          <input id="remote-connection-code" data-remote-code className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[18px] tracking-[0.14em] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
+            value={code} spellCheck={false} autoCapitalize="characters" autoCorrect="off" placeholder="XXXX-XXXX"
+            onChange={(event) => { setCode(formatPairingCode(event.target.value)); }}
+            onBlur={() => { setTouched((state) => ({ ...state, code: true })); }} />
+          {touched.code && codeProblem !== null ? <p className="text-[12px] text-danger" role="alert" data-remote-code-problem>{t(codeProblem)}</p> : null}
+        </SettingField>
+
+        <SettingField label={t('st.remote.labelField')} htmlFor="remote-connection-label" layout="stack"
+          help={t('st.remote.labelOptional')}>
           <input id="remote-connection-label" data-remote-label className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 text-[13px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
             value={label} maxLength={128} spellCheck={false}
             onChange={(event) => { setLabel(event.target.value); }}
             onBlur={() => { setTouched((state) => ({ ...state, label: true })); }} />
           {touched.label && labelProblem !== null ? <p className="text-[12px] text-danger" role="alert">{t(labelProblem)}</p> : null}
         </SettingField>
-
-        <SettingField label={t('st.remote.endpointField')} htmlFor="remote-connection-endpoint" layout="stack"
-          help={t('st.remote.endpointHint')}>
-          <input id="remote-connection-endpoint" data-remote-endpoint className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-            value={endpoint} spellCheck={false} placeholder="https://"
-            onChange={(event) => { setEndpoint(event.target.value); }}
-            onBlur={() => { setTouched((state) => ({ ...state, endpoint: true })); }} />
-          {touched.endpoint && endpointProblem !== null ? <p className="text-[12px] text-danger" role="alert">{t(endpointProblem)}</p> : null}
-        </SettingField>
-
-        <div data-remote-token>
-          <SecretField id="remote-connection-token" label={t('st.remote.tokenField')} source="none"
-            sourceText={t('st.remote.tokenHint')} clearable={false}
-            draft={{ mode: 'set', value: token }} onChange={(draft) => { setToken(draft.mode === 'set' ? draft.value : ''); }} />
-          <p className="mt-1 text-[12px] text-ink-faint">{t('st.remote.tokenStored')}</p>
-        </div>
 
         <SettingField label={t('st.remote.background')} help={t('st.remote.backgroundHint')}>
           <Toggle id="remote-connection-background" label={t('st.remote.background')} layout="bare"

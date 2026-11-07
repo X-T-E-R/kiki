@@ -99,6 +99,8 @@ export function CopyField({ id, label, value, copyLabel, copiedLabel, hint, data
 const FAILURE_KEYS: readonly (readonly [string, I18nKey])[] = [
   ['inbound_disabled', 'st.remote.fail.inboundDisabled'],
   ['dangerous_auth_bypass', 'st.remote.fail.devRuntime'],
+  ['invalid_pairing_code', 'st.remote.fail.pairingCode'],
+  ['pairing_rate_limited', 'st.remote.fail.pairingRate'],
   ['invalid_invitation', 'st.remote.fail.invitation'],
   ['connection_claim_failed', 'st.remote.fail.invitation'],
   ['identity_changed', 'st.remote.fail.identity'],

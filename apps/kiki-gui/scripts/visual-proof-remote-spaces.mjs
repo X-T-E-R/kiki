@@ -14,9 +14,10 @@
  * Asserted, not just captured: only a `gui`-purpose connection becomes a space;
  * an offline one keeps its last reading and says when it was taken; browsing
  * one is not offered for a thread-message-only connection; the inbound gate is
- * off by default and allows nobody on its own; an invitation is shown once and
- * gone after the dialog closes; a revoke reads back as revoked; the add form
- * keeps its drafts on refusal and clears the token after a save.
+ * off by default; a pairing code can be shown while the gate is off and turns
+ * the gate on; the code is shown once and is gone after the dialog closes; a
+ * revoke reads back as revoked; the add form accepts a LAN address plus a
+ * pairing code and refuses public http.
  * Output: KIKI_PROOF_OUTPUT_DIR (default .tmp/visual-proof/<run>), build under
  * KIKI_PROOF_DIST_DIR.
  */
@@ -46,8 +47,8 @@ const MINUTE = 60_000;
 /** Text assertions follow the locale the runner asked for; ids and counts do not. */
 const STALE = { en: 'as of', zh: '截至' };
 const REMOVE_BODY = { en: 'does not shut that Kiki down', zh: '不会关掉对方的 Kiki' };
-const GATE_BODY = { en: 'nobody on its own', zh: '并不放行任何人' };
-const ONCE = { en: 'hown once', zh: '只显示一次' };
+const GATE_BODY = { en: 'Each Kiki still needs its own row', zh: '还需在下方单独允许' };
+const ONCE = { en: 'Valid once', zh: '有效一次' };
 const NOT_SAVED = { en: 'not saved', zh: '不会保存' };
 const REVOKE_BODY = { en: 'Other Kikis are unaffected', zh: '不影响其他 Kiki' };
 
@@ -141,6 +142,25 @@ async function serveConnections(page, state) {
       state.inbound = { ...state.inbound, enabled: body.enabled, configuredEnabled: body.enabled };
       return reply(state.inbound);
     }
+    if (method === 'POST' && path === '/inbound/pair-code') {
+      state.inbound = { ...state.inbound, enabled: true, configuredEnabled: true };
+      return reply({
+        code: 'K9F2-7X4M',
+        expiresAt: Date.now() + 10 * MINUTE,
+        target: state.inbound.identity,
+        suggestedEndpoints: ['http://192.168.1.40:5523'],
+      });
+    }
+    if (method === 'POST' && path === '/pair') {
+      const record = {
+        id: 'aa63f7a8-b9c0-4d1e-9f20-b9c0d1e2f315', label: body.label || 'gpu-box', endpoint: body.endpoint,
+        target: identity(HOME_B, 'gpu-box'), credentialRef: 'aa63f7a8-b9c0-4d1e-9f20-b9c0d1e2f315',
+        purposes: ['gui', 'bridge'], enabled: true, backgroundSummary: body.backgroundSummary,
+        state: 'online', lastConnectedAt: Date.now(), activeLeases: 0,
+      };
+      state.records = [...state.records, record];
+      return reply(record);
+    }
     if (method === 'POST' && path === '/inbound/invitations') {
       const grant = {
         id: 'ff42e5f6-a7b8-4c9d-8e0f-a7b8c9d0e114', source: body.source,
@@ -202,7 +222,9 @@ async function boot({ page, webUrl, fixtureUrl }, state) {
 }
 
 async function openSpaces({ page, webUrl, fixtureUrl }, selector) {
-  await page.goto(deepLink(webUrl, fixtureUrl, '/settings/spaces'), { waitUntil: 'domcontentloaded' });
+  // Inbound and outbound connections live on Access from elsewhere → Other Kiki.
+  // The default tab is web, which does not mount either list.
+  await page.goto(deepLink(webUrl, fixtureUrl, '/settings/connection-services?tab=kiki'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(selector, { timeout: 30_000 });
   await page.waitForTimeout(300);
 }
@@ -284,42 +306,32 @@ async function outbound(context) {
   await page.locator('[data-remote-connections]').scrollIntoViewIfNeeded();
   await shot('remote-outbound-list');
 
-  // The add form: a pasted invitation carries the real target identity.
+  // The add form: an address plus a pairing code. Public http is refused;
+  // a LAN address is not.
   await page.click('[data-remote-add]');
   await page.waitForSelector('[data-remote-add-form]');
-  const invitation = JSON.stringify({
-    kiki: 'kiki.connection-invitation/1', invitation: 'kiki-invitation-token-0000000000000000000000',
-    target: identity(HOME_B, 'gpu-box'), label: 'Home laptop',
-  });
-  await page.fill('[data-remote-invitation]', invitation);
-  await page.waitForSelector('[data-remote-target]');
-  const target = await page.textContent('[data-remote-target]');
-  expect(target?.includes('0f4c6e1a') === true && target?.includes('host') === true, `the real target fingerprint shows: ${target}`);
-  expect(target?.includes('Home laptop') === true, 'the name the other Kiki uses is shown, not retyped');
-  // A bare code cannot name the target, and the form says so instead of guessing.
-  await page.fill('[data-remote-invitation]', 'kiki-invitation-token-0000000000000000000000');
-  await page.waitForSelector('[data-remote-invitation-problem]');
-  await page.fill('[data-remote-invitation]', invitation);
+  await page.fill('[data-remote-code]', 'k9f27x4m');
+  expect(await page.inputValue('[data-remote-code]') === 'K9F2-7X4M', 'the code uppercases and gains its hyphen');
   await page.fill('[data-remote-label]', 'Renderer box');
-  await page.fill('[data-remote-endpoint]', 'http://192.168.1.40:5523');
-  await page.fill('#remote-connection-token', 'owner-token-fixture-value');
-  // Leaving the field is what asks the question: the address rule is said where
-  // the address is typed, and the save stays blocked until it holds.
+  await page.fill('[data-remote-endpoint]', 'http://b.example.test');
   await page.locator('[data-remote-endpoint]').press('Tab');
   await page.waitForTimeout(150);
   const tls = await page.textContent('[data-remote-add-form]');
   expect(tls?.includes('https://') === true, `the TLS rule is said in place: ${tls}`);
   expect(await page.isDisabled('[data-remote-add-submit]') === true, 'an address the server would refuse cannot be saved');
-  expect(state.calls.filter((call) => call.method === 'POST' && call.path === '').length === 0, 'nothing is sent while the address is refused');
+  expect(state.calls.filter((call) => call.method === 'POST' && call.path === '/pair').length === 0, 'nothing is sent while the address is refused');
   await shot('remote-add-invalid');
-  await page.fill('[data-remote-endpoint]', 'https://b2.example.test');
+  await page.fill('[data-remote-endpoint]', 'http://192.168.1.40:5523');
+  await page.locator('[data-remote-endpoint]').press('Tab');
+  await page.waitForTimeout(100);
+  expect(await page.isDisabled('[data-remote-add-submit]') === false, 'a LAN address with a code can be saved');
   await page.click('[data-remote-add-submit]');
   await page.waitForSelector('[data-remote-add-form]', { state: 'detached' });
   await page.waitForSelector('[data-remote-connection="aa63f7a8-b9c0-4d1e-9f20-b9c0d1e2f315"]');
-  const saved = state.calls.filter((call) => call.method === 'POST' && call.path === '');
+  const saved = state.calls.filter((call) => call.method === 'POST' && call.path === '/pair');
   expect(saved.length === 1, `exactly one save: ${JSON.stringify(saved)}`);
-  expect(saved[0].body.target.homeId === HOME_B && saved[0].body.invitation.includes('kiki-invitation-token'), 'the typed target and invitation are what got saved');
-  expect(saved[0].body.ownerToken === 'owner-token-fixture-value', 'the owner token is sent to the local owner API');
+  expect(saved[0].body.endpoint === 'http://192.168.1.40:5523' && saved[0].body.code === 'K9F2-7X4M', 'the address and code are what got saved');
+  expect(saved[0].body.ownerToken === undefined && saved[0].body.label === 'Renderer box', 'no owner token is typed; the label is the one entered');
   await page.locator('[data-remote-connections]').scrollIntoViewIfNeeded();
   await shot('remote-outbound-saved');
 
@@ -340,55 +352,40 @@ async function outbound(context) {
   expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 }
 
-/** Settings → Spaces: the inbound gate, the allow list and one invitation. */
+/** Settings → Spaces: the inbound gate, the allow list and one pairing code. */
 async function inbound(context) {
   const { page, shot, state, errors } = context;
   await boot(context, state);
   await openSpaces(context, '[data-inbound-connections]');
   await page.waitForSelector('[data-inbound-list]');
   expect(await page.isChecked('#inbound-connections-enabled') === false, 'the inbound gate starts off');
-  expect(await page.isDisabled('[data-inbound-invite]') === true, 'no invitation can be created while the gate is off');
+  expect(await page.isDisabled('[data-inbound-invite]') === false, 'a pairing code can be created while the gate is off');
   expect(await page.locator('[data-inbound-grant]').count() === 3, 'the allow list reads back all lines');
   expect(await page.getAttribute('[data-inbound-grant="be20c3d4-e5f6-4a7b-9c8d-e5f6a7b8c902"]', 'data-inbound-status') === 'invited', 'an invited line reads invited');
   expect(await page.locator('[data-inbound-status-chip="revoked"]').count() === 1, 'a revoked line stays visible as revoked');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
   await shot('remote-inbound-off');
 
-  // Opening the gate allows nobody on its own.
-  await page.click('[data-inbound-gate] label');
-  await page.waitForSelector('[data-inbound-invite]:not([disabled])');
-  expect(await page.locator('[data-inbound-grant]').count() === 3, 'opening the gate must not add or remove allow-list lines');
   expect((await page.textContent('[data-inbound-connections]'))?.includes(GATE_BODY[await locale(page)]) === true, 'the gate says what it does and does not do');
-
-  // One invitation, shown once.
   await page.click('[data-inbound-invite]');
-  await page.waitForSelector('[data-inbound-invite-form]');
-  await page.fill('[data-inbound-source]', JSON.stringify({
-    kiki: 'kiki.identity/1', identity: identity('d2f7a0c5-8e41-4b73-a9c2-71e5d0b3f807', 'peer-laptop'), label: 'Peer laptop',
-  }));
-  await page.waitForSelector('[data-inbound-source-target]');
-  await page.fill('[data-inbound-name]', 'Peer laptop');
-  await page.click('[data-inbound-invite-submit]');
-  await page.waitForSelector('[data-inbound-invitation]');
-  const block = await page.textContent('[data-inbound-invitation]');
-  expect(block?.includes('0f4c6e1a') === false && block?.includes('77aa11bb') === true, `the invitation carries the real target identity: ${block}`);
-  expect(block?.includes('Peer laptop') === true, 'the invitation names the Kiki it is for');
-  // The once-only fact lives in the hint beside the copy box, not repeated in
-  // the dialog body (F-RS-01), and it must still say it is not saved.
-  const hint = await page.textContent('[data-copy-field="inbound-invitation"]');
-  expect(hint?.includes(ONCE[await locale(page)]) === true, `the invitation says it is shown once: ${hint}`);
+  await page.waitForSelector('[data-inbound-code]');
+  expect(await page.textContent('[data-inbound-code]') === 'K9F2-7X4M', 'the code is the one the server issued');
+  expect(await page.locator('[data-inbound-code-address]').count() === 1, 'a direct address is shown with the code');
+  const hint = await page.textContent('[data-copy-field="inbound-pair-code"]');
+  expect(hint?.includes(ONCE[await locale(page)]) === true, `the code says it is single use: ${hint}`);
   expect(hint?.includes(NOT_SAVED[await locale(page)]) === true, `and that it is not saved: ${hint}`);
   const body = await page.textContent('[data-inbound-invite-body]');
-  expect(body?.includes(ONCE[await locale(page)]) === false, `the body no longer repeats it: ${body}`);
+  expect(body?.includes(ONCE[await locale(page)]) === false, `the body does not repeat the once-only line: ${body}`);
   await shot('remote-inbound-invitation');
   await page.click('[data-inbound-invite-done]');
-  await page.waitForSelector('[data-inbound-invitation]', { state: 'detached' });
-  expect(await page.locator('[data-inbound-invitation]').count() === 0, 'the invitation must not persist in the interface');
-  await page.waitForSelector('[data-inbound-grant="ff42e5f6-a7b8-4c9d-8e0f-a7b8c9d0e114"]');
-  expect(await page.locator('[data-inbound-grant]').count() === 4, 'the new line reads back');
+  await page.waitForSelector('[data-inbound-pair-code]', { state: 'detached' });
+  expect(await page.isChecked('#inbound-connections-enabled') === true, 'showing a code opens the inbound gate');
+  expect(await page.locator('[data-inbound-grant]').count() === 3, 'a code does not add an allow-list line by itself');
 
-  // Revoking is confirmed and reads back as revoked.
-  await page.click('[data-inbound-revoke="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"]');
+  // Revoking is in the row menu, then confirmed, and reads back as revoked.
+  await page.click('[data-inbound-grant-menu="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"]');
+  await page.waitForSelector('[data-space-menu-item="revoke"]');
+  await page.click('[data-space-menu-item="revoke"]');
   await page.waitForSelector('[data-confirm-action="confirm"]');
   const revokeText = await page.textContent('[role="alertdialog"]');
   expect(revokeText?.includes(REVOKE_BODY[await locale(page)]) === true, `the revoke confirmation is scoped: ${revokeText}`);
@@ -396,7 +393,7 @@ async function inbound(context) {
   await page.waitForSelector('[data-inbound-grant="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"][data-inbound-status="revoked"]');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
   await shot('remote-inbound-revoked');
-  expect(state.calls.some((call) => call.path === '/inbound' && call.method === 'PUT' && call.body.enabled === true), 'the gate change was saved through the typed API');
+  expect(state.calls.some((call) => call.path === '/inbound/pair-code' && call.method === 'POST'), 'showing a code asks this Kiki to issue one');
   expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 }
 

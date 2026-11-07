@@ -109,6 +109,7 @@ import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpa
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
+import type { PairingHooks } from './services/connections/pairing';
 import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
 import { registerHostMediaPreviewRoutes } from './routes/hostMediaPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
@@ -650,6 +651,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('onRequest', async (request, reply) => {
     let path: string;
     try { path = decodeURIComponent(request.url.split('?', 1)[0]!); } catch { return authHook(request, reply); }
+    if (request.method === 'POST' && path === '/api/remote-connections/pair/claim') {
+      reply.header('cache-control', 'no-store');
+      return;
+    }
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
@@ -1125,8 +1130,18 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     });
     registerHostMediaPreviewRoutes(app, core, transcriptService);
   }
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
+  const pairingHooks: { current?: PairingHooks } = {};
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
+  const pairedBridge = threadBridge;
+  pairingHooks.current = {
+    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
+    issueBridges: (input) => pairedBridge.issuePairingBridges(input),
+    installBridge: async (connectionId, grant, credential) => { await pairedBridge.install({ connectionId, grant, credential }); },
+    revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),
+    enableThreads: () => pairedBridge.enableThreads(),
+    webUrl: () => { const status = web.status(); return status.enabled && status.url !== null ? status.url : undefined; },
+  };
   registerUsageExportRoutes(app, usageExport.service);
   const providerQuota = createProviderQuotaService(core);
   registerProviderQuotaRoutes(app, providerQuota);

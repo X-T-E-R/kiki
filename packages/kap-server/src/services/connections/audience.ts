@@ -159,25 +159,53 @@ export class ConnectionAudience {
   async authorize(token: string, request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
     try {
       if (matchesLocalOwner(token, this.localOwnerToken)) return true;
+      const bearer = this.admission.matchBearer(token);
+      if (bearer !== undefined) return this.authorizePeer(bearer, request, reply);
       if (!(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
       const path = request.url.split('?', 1)[0]!;
       if (/^\/api\/usage-export(?:\/|$)/.test(path)) throw new AdmissionError(403, 'local_owner_required');
       if (this.admission.unavailableReason === undefined && ((path === '/api/remote-connections/handshake' && request.method === 'GET') || (path === '/api/remote-connections/claim' && request.method === 'POST'))) return true;
       const peer = this.admission.authorize(peerGrant(request.headers));
-      const operation = matchConnectionOperation(request.method, path);
-      if (operation === undefined || (operation.params['spaceId'] !== undefined && operation.params['spaceId'] !== this.currentSpaceId())) throw new AdmissionError(403, 'local_owner_required');
-      const audience = { grantId: peer.id, revision: peer.revision };
-      peers.set(request, audience); peers.set(request.raw, audience);
-      const detach = this.admission.attach(peer.id, () => { request.raw.destroy(); reply.raw.destroy(); });
-      reply.raw.once('close', detach);
-      return true;
+      return this.bindPeer({ id: peer.id, revision: peer.revision }, request, reply);
     } catch (error) {
       if (!(error instanceof AdmissionError)) throw error;
       await reply.code(error.status).send(errEnvelope(40101, error.reason, request.id)); return false;
     }
   }
+  private authorizePeer(peer: { id: string; revision: number }, request: FastifyRequest, reply: FastifyReply): boolean {
+    const path = request.url.split('?', 1)[0]!;
+    const header = peerGrant(request.headers);
+    if (header !== undefined && header !== '') {
+      const presented = this.admission.matchBearer(header);
+      if (presented === undefined || presented.id !== peer.id) throw new AdmissionError(401, 'connection_not_approved');
+    }
+    if (path === '/api/remote-connections/handshake' && request.method === 'GET') return true;
+    if (request.method === 'POST' && (path === `/api/remote-connections/inbound/grants/${peer.id}/revoke` || path === '/api/remote-connections/pair/cancel')) {
+      const audience = { grantId: peer.id, revision: peer.revision };
+      peers.set(request, audience); peers.set(request.raw, audience);
+      return true;
+    }
+    return this.bindPeer(peer, request, reply);
+  }
+  private bindPeer(peer: { id: string; revision: number }, request: FastifyRequest, reply: FastifyReply): boolean {
+    const path = request.url.split('?', 1)[0]!;
+    const operation = matchConnectionOperation(request.method, path);
+    if (operation === undefined || (operation.params['spaceId'] !== undefined && operation.params['spaceId'] !== this.currentSpaceId())) throw new AdmissionError(403, 'local_owner_required');
+    const audience = { grantId: peer.id, revision: peer.revision };
+    peers.set(request, audience); peers.set(request.raw, audience);
+    const detach = this.admission.attach(peer.id, () => { request.raw.destroy(); reply.raw.destroy(); });
+    reply.raw.once('close', detach);
+    return true;
+  }
   async authorizeSocket(token: string | null, request: IncomingMessage): Promise<PeerAudience | 'local'> {
     if (token !== null && matchesLocalOwner(token, this.localOwnerToken)) return 'local';
+    if (token !== null) {
+      const bearer = this.admission.matchBearer(token);
+      if (bearer !== undefined) {
+        if (request.url?.split('?', 1)[0] !== '/api/klient/events') throw new AdmissionError(403, 'local_owner_required');
+        const audience = { grantId: bearer.id, revision: bearer.revision }; peers.set(request, audience); return audience;
+      }
+    }
     if (token === null || !(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
     const peer = this.admission.authorize(peerGrant(request.headers));
     if (request.url?.split('?', 1)[0] !== '/api/klient/events') throw new AdmissionError(403, 'local_owner_required');

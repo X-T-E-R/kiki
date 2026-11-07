@@ -33,19 +33,17 @@ export class SshRemoteConnector {
     this.process = options.process ?? new SystemSshProcess(); this.fetch = options.fetch ?? globalThis.fetch;
     this.timer = setInterval(() => { for (const [id, entry] of this.plans) if (entry.public.expiresAt <= Date.now()) this.plans.delete(id); }, 30000); this.timer.unref();
   }
-  private validateBootstrap(value: unknown, profile: SshRemoteProfile): Bootstrap {
+  private validateBootstrap(value: unknown): Bootstrap {
     const parsed = bootstrapSchema.safeParse(value);
     if (!parsed.success) throw new AdmissionError(409, 'ssh_bootstrap_protocol_mismatch');
     const data = parsed.data; const url = new URL(data.url);
     if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== '/' || Number(url.port) < 1) throw new AdmissionError(409, 'ssh_bootstrap_endpoint_invalid');
-    if (data.buildChannel !== undefined && data.buildChannel !== profile.releaseChannel) throw new AdmissionError(409, 'ssh_release_channel_mismatch');
-    if (this.options.serverVersion !== undefined && data.serverVersion !== this.options.serverVersion) throw new AdmissionError(409, 'ssh_server_version_mismatch');
     return data;
   }
   private async query(profile: SshRemoteProfile, ensure: boolean, signal: AbortSignal): Promise<Bootstrap | undefined> {
     const value = await this.process.query(profile, ensure, AbortSignal.any([this.lifetime.signal, signal]));
     if (!ensure && typeof value === 'object' && value !== null && Object.keys(value).length === 1 && (value as { running?: unknown }).running === false) return undefined;
-    return this.validateBootstrap(value, profile);
+    return this.validateBootstrap(value);
   }
   async plan(raw: SshRemoteProfile, signal: AbortSignal = this.lifetime.signal): Promise<SshRemotePlan> {
     signal.throwIfAborted(); this.lifetime.signal.throwIfAborted();
@@ -106,8 +104,9 @@ export class SshRemoteConnector {
       return { id: record.id, endpoint: current.tunnel.endpoint, target: { ...record.target } };
     }
     if (current.pending === undefined) current.pending = (async () => {
-      const bootstrap = await this.query(profile, false, current.lifetime.signal);
-      if (bootstrap === undefined) throw new AdmissionError(409, 'ssh_ensure_confirmation_required');
+      let bootstrap = await this.query(profile, false, current.lifetime.signal);
+      if (bootstrap === undefined) bootstrap = await this.query(profile, true, current.lifetime.signal);
+      if (bootstrap === undefined) throw new AdmissionError(409, 'ssh_remote_not_running');
       if (!sameIdentity(bootstrap.identity, record.target)) throw new AdmissionError(409, 'identity_changed');
       const tunnel = await this.open(profile, bootstrap, current.lifetime.signal);
       if (this.slots.get(record.id) !== current || current.lifetime.signal.aborted) { await tunnel.close(); throw new AdmissionError(499, 'ssh_operation_cancelled'); }
@@ -126,7 +125,7 @@ export class SshRemoteConnector {
       if (!metaResponse.ok) { await metaResponse.body?.cancel(); throw new AdmissionError(metaResponse.status, 'ssh_meta_rejected'); }
       const meta = await readBoundedJsonBody(metaResponse, 65536) as { code: number; data: { server_home_id: string; server_id: string; server_version: string; dangerous_bypass_auth: boolean } };
       if (meta.code !== 0 || meta.data.server_home_id !== bootstrap.identity.homeId || meta.data.server_id !== bootstrap.serverId) throw new AdmissionError(409, 'identity_changed');
-      if (meta.data.dangerous_bypass_auth !== false || meta.data.server_version !== bootstrap.serverVersion) throw new AdmissionError(409, 'ssh_server_version_mismatch');
+      if (meta.data.dangerous_bypass_auth !== false) throw new AdmissionError(409, 'dangerous_auth_bypass');
       const helloResponse = await this.fetch(tunnel.endpoint + '/api/remote-connections/handshake', { headers, signal: fetchSignal, redirect: 'error' });
       if (!helloResponse.ok) { await helloResponse.body?.cancel(); throw new AdmissionError(helloResponse.status, 'ssh_handshake_rejected'); }
       const hello = await readBoundedJsonBody(helloResponse, 8192) as { code: number; data: { identity: unknown; serverId: string } };

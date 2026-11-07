@@ -161,8 +161,8 @@ export function InboundConnectionsSection() {
   return (
     <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
       <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-        disabled={!effective || api === null}
-        title={!effective ? t('st.inbound.inviteNeedsGate') : undefined}
+        disabled={api === null || status.data?.unavailableReason === 'dangerous_auth_bypass'}
+        title={status.data?.unavailableReason === 'dangerous_auth_bypass' ? t('st.inbound.devRuntime') : undefined}
         onClick={() => { setDialog({ kind: 'invite' }); }}>
         <Icon name="plus" size={12} />{t('st.inbound.invite')}
       </button>
@@ -178,7 +178,7 @@ export function InboundConnectionsSection() {
             <div className="space-y-1.5" data-inbound-gate>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <p className="mr-auto text-[13px] text-ink">{t('st.inbound.gate')}</p>
-                <Toggle layout="bare" label={t('st.inbound.gate')}
+                <Toggle id="inbound-connections-enabled" layout="bare" label={t('st.inbound.gate')}
                   checked={effective}
                   disabled={saving || status.data.unavailableReason === 'dangerous_auth_bypass'}
                   dataAttr="data-inbound-gate-switch"

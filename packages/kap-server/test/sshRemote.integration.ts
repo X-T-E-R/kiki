@@ -142,12 +142,12 @@ describe('system OpenSSH source lifecycle (isolated executable, real loopback HT
     const rejectedKey = await failed.connector.plan(profile()).catch((error: unknown) => error);
     expect(String(rejectedKey)).toContain('ssh_host_key_rejected'); expect(String(rejectedKey)).not.toContain('fixture-private-secret-not-for-log');
   });
-  it('fails unsupported version/channel before forwarding and isolates purpose-specific stop', async () => {
+  it('allows a different version and channel before forwarding and isolates purpose-specific stop', async () => {
     const f = await fixture();
     await writeFile(f.configPath, JSON.stringify({ ...f.config, bootstrap: { ...f.config.bootstrap, serverVersion: 'other-version' } }));
-    await expect(f.connector.plan(profile())).rejects.toThrow('ssh_server_version_mismatch'); expect(f.requests).toEqual([]);
+    await expect(f.connector.plan(profile())).resolves.toMatchObject({ state: 'attach' }); expect(f.requests).toEqual([]);
     await writeFile(f.configPath, JSON.stringify({ ...f.config, bootstrap: { ...f.config.bootstrap, buildChannel: 'beta' } }));
-    await expect(f.connector.plan(profile())).rejects.toThrow('ssh_release_channel_mismatch'); expect(f.requests).toEqual([]);
+    await expect(f.connector.plan(profile())).resolves.toMatchObject({ state: 'attach' }); expect(f.requests).toEqual([]);
     await writeFile(f.configPath, JSON.stringify(f.config));
     const gui = new AbortController(); const bridge = new AbortController();
     const target = await f.connector.acquire(f.record, gui.signal, 'gui');
@@ -156,6 +156,16 @@ describe('system OpenSSH source lifecycle (isolated executable, real loopback HT
     f.connector.stop(f.record.id, 'gui'); expect(f.connector.status(f.record.id)).toMatchObject({ guiLeases: 0, bridgeLeases: 1 });
     expect(await alive(target.endpoint)).toBe(true);
     f.connector.stop(f.record.id, 'bridge'); await eventuallyClosed(target.endpoint);
+  });
+  it('starts a registered SSH target that is down without a separate confirmation', async () => {
+    const f = await fixture({ running: false });
+    const signal = new AbortController();
+    const resolved = await f.connector.acquire(f.record, signal.signal, 'gui');
+    expect(resolved.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect((await f.events()).filter((event) => event.kind === 'ensure')).toHaveLength(1);
+    const plan = await f.connector.plan(profile());
+    expect(plan.state).toBe('attach');
+    signal.abort();
   });
 });
 

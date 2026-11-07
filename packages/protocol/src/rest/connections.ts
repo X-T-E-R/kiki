@@ -8,7 +8,7 @@ export const sshRemoteProfileSchema = z.object({
     z.object({ kind: z.literal('alias'), alias: safeText(255).regex(/^[^-\s][^\s]*$/) }).strict(),
     z.object({ kind: z.literal('host'), hostname: safeText(255).regex(/^[a-zA-Z0-9.:_][a-zA-Z0-9.\-:_]*$/), username: safeText(64).regex(/^[a-zA-Z0-9_.][a-zA-Z0-9._-]*$/).optional(), port: z.number().int().min(1).max(65535).optional() }).strict(),
   ]),
-  identityFile: safeText(4096).optional(), releaseChannel: z.enum(['stable', 'beta']),
+  identityFile: safeText(4096).optional(), releaseChannel: z.enum(['stable', 'beta']).optional(),
   remoteHome: safeText(4096), remoteExecutable: safeText(4096).default('kiki'),
   remoteShell: z.enum(['posix', 'powershell']).default('posix'),
 }).strict();
@@ -41,6 +41,63 @@ export const connectionAddInputSchema = z.object({
   invitation: z.string().min(32).max(128), backgroundSummary: z.boolean().default(false),
 }).strict();
 export type ConnectionAddInput = z.infer<typeof connectionAddInputSchema>;
+export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+export function normalizePairingCode(raw: string): string | undefined {
+  const compact = raw.trim().toUpperCase().replace(/[\s-]/g, '');
+  if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(compact)) return undefined;
+  return `${compact.slice(0, 4)}-${compact.slice(4)}`;
+}
+export function isDirectConnectionHost(hostname: string): boolean {
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  const name = bare.toLowerCase();
+  if (name === 'localhost' || name.endsWith('.local') || name.endsWith('.ts.net')) return true;
+  if (name === '::1' || name.startsWith('fe80:')) return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
+  if (match === null) return false;
+  const parts = match.slice(1).map(Number);
+  if (parts.some((part) => part > 255)) return false;
+  const a = parts[0]!; const b = parts[1]!;
+  if (a === 127 || a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+export const pairCodeCreateInputSchema = z.object({
+  label: z.string().max(128).optional(),
+  expiresInMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
+  allowBridge: z.boolean().default(true),
+}).strict();
+export type PairCodeCreateInput = z.infer<typeof pairCodeCreateInputSchema>;
+export const pairCodeCreateOutputSchema = z.object({
+  code: z.string().regex(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$/),
+  expiresAt: z.number().int().positive(),
+  target: connectionIdentitySchema,
+  suggestedEndpoints: z.array(z.string()),
+}).strict();
+export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
+export const connectionPairInputSchema = z.object({
+  endpoint: z.string().min(1).max(2048),
+  code: z.string().min(8).max(16),
+  label: z.string().max(128).optional(),
+  backgroundSummary: z.boolean().default(true),
+}).strict();
+export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
+export const pairClaimInputSchema = z.object({
+  code: z.string().min(8).max(16),
+  source: connectionIdentitySchema,
+  sourceLabel: z.string().min(1).max(128),
+  requestBridge: z.boolean().optional(),
+  sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(),
+}).strict();
+export type PairClaimInput = z.infer<typeof pairClaimInputSchema>;
+export const sshConnectionConnectInputSchema = z.object({
+  profile: sshRemoteProfileSchema,
+  label: z.string().max(128).optional(),
+  backgroundSummary: z.boolean().default(true),
+}).strict();
+export type SshConnectionConnectInput = z.infer<typeof sshConnectionConnectInputSchema>;
 export const connectionProvisionInputSchema = z.object({ source: connectionIdentitySchema, target: connectionIdentitySchema, label: z.string().min(1).max(128), enableInbound: z.boolean() }).strict();
 export const connectionProvisionResultSchema = z.object({ ownerToken: z.string().min(1).max(4096), grant: z.string().min(32).max(128), grantId: z.string().uuid(), revision: z.number().int().positive(), target: connectionIdentitySchema }).strict();
 export const sshConnectionRegisterInputSchema = z.discriminatedUnion('purpose', [

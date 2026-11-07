@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { RemoteConnection } from '@kiki/protocol';
 
 import {
-  browsableRemote, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, identityBlock,
+  browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, formatPairingCode, identityBlock, pairingCodeIssue,
   invitationBlock, labelIssue, readIdentityBlock, readInvitationBlock, remoteSpaceKey, remoteSpaceScope,
   remoteSummaryView, purposeKeys,
 } from './remoteConnections';
@@ -131,18 +131,28 @@ describe('field checks', () => {
     expect(endpointIssue('https://b.example.test')).toBeNull();
     expect(endpointIssue('http://127.0.0.1:5523')).toBeNull();
     expect(endpointIssue('http://localhost:5523')).toBeNull();
-    expect(endpointIssue('http://192.168.1.40:5523')).toBe('st.remote.endpoint.tls');
+    expect(endpointIssue('http://192.168.1.40:5523')).toBeNull();
+    expect(endpointIssue('http://100.64.1.8:5523')).toBeNull();
+    expect(endpointIssue('http://host.tailnet.ts.net:5523')).toBeNull();
+    expect(endpointIssue('http://b.example.test')).toBe('st.remote.endpoint.tls');
     expect(endpointIssue('https://user:pass@b.example.test')).toBe('st.remote.endpoint.invalid');
     expect(endpointIssue('https://b.example.test/api')).toBe('st.remote.endpoint.invalid');
     expect(endpointIssue('https://b.example.test?x=1')).toBe('st.remote.endpoint.invalid');
     expect(endpointIssue('b.example.test')).toBe('st.remote.endpoint.invalid');
     expect(endpointIssue('')).toBe('st.remote.endpoint.required');
+    expect(completeConnectionEndpoint('192.168.1.40:5523')).toBe('http://192.168.1.40:5523');
+    expect(completeConnectionEndpoint('b.example.test')).toBe('https://b.example.test');
   });
 
-  it('requires a name the connection can carry', () => {
+  it('accepts a blank name and a 4+4 pairing code', () => {
     expect(labelIssue('Workstation B')).toBeNull();
-    expect(labelIssue('   ')).toBe('st.remote.label.required');
+    expect(labelIssue('   ')).toBeNull();
     expect(labelIssue('x'.repeat(129))).toBe('st.remote.label.tooLong');
+    expect(formatPairingCode('k9f27x4m')).toBe('K9F2-7X4M');
+    expect(pairingCodeIssue('K9F2-7X4M')).toBeNull();
+    expect(pairingCodeIssue('k9f2 7x4m')).toBeNull();
+    expect(pairingCodeIssue('')).toBe('st.remote.code.required');
+    expect(pairingCodeIssue('K9F2-7X4')).toBe('st.remote.code.invalid');
   });
 });
 
@@ -152,6 +162,8 @@ describe('server refusals in the person’s terms', () => {
     expect(connectionFailureText('identity_changed')).toBe('st.remote.fail.identity');
     expect(connectionFailureText('connection_requires_tls')).toBe('st.remote.endpoint.tls');
     expect(connectionFailureText('gui_connection_required')).toBe('st.remote.fail.guiRequired');
+    expect(connectionFailureText('invalid_pairing_code')).toBe('st.remote.fail.pairingCode');
+    expect(connectionFailureText('pairing_rate_limited')).toBe('st.remote.fail.pairingRate');
   });
 
   it('leaves an unknown reason for the caller to pass through', () => {

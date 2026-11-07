@@ -1,32 +1,28 @@
 /**
- * Issuing one invitation. The person pastes the other Kiki's own identity, so
- * the allow-list line carries the real home/host rather than a typed name, and
- * the invitation itself is shown once — the server keeps only its digest, so
- * there is nothing to show again later.
+ * The pairing code this Kiki shows. Creating it opens inbound access. The
+ * code is single-use and expires; the server keeps only its digest.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { errorText } from '@kiki/session-core/i18n';
-import type { ConnectionGrant } from '@kiki/protocol';
+import type { PairCodeCreateOutput } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
-import { connectionsApi, fingerprint, invitationBlock, labelIssue, readIdentityBlock } from '../../../lib/remoteConnections';
+import { connectionsApi } from '../../../lib/remoteConnections';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
 import { CopyField } from './parts';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { SettingField } from '../fields';
-import { SettingsSelect } from '../SettingsPrimitives';
-import { SetupSteps } from '../SetupSteps';
 import { connectionFailureText } from './parts';
 
-const EXPIRY_CHOICES = [
-  { value: '600000', labelKey: 'st.inbound.expiry.tenMinutes' },
-  { value: '1800000', labelKey: 'st.inbound.expiry.thirtyMinutes' },
-  { value: '3600000', labelKey: 'st.inbound.expiry.oneHour' },
-] as const;
+function remainingLabel(expiresAt: number, now: number): string {
+  const remaining = Math.max(0, expiresAt - now);
+  const minutes = Math.floor(remaining / 60_000);
+  const seconds = Math.floor((remaining % 60_000) / 1000);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
 export function InviteSourceDialog({ client, onClose, onInvited }: {
   client: KikiClient;
@@ -34,95 +30,80 @@ export function InviteSourceDialog({ client, onClose, onInvited }: {
   onInvited: () => void;
 }) {
   const { t, locale } = useI18n();
-  const [paste, setPaste] = useState('');
-  const [name, setName] = useState('');
-  const [expiry, setExpiry] = useState<string>('600000');
+  const invited = useRef(onInvited);
+  invited.current = onInvited;
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<Feedback>(null);
-  const [issued, setIssued] = useState<{ grant: ConnectionGrant; invitation: string } | null>(null);
+  const [issued, setIssued] = useState<PairCodeCreateOutput | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [generation, setGeneration] = useState(0);
 
-  const parsed = useMemo(() => (paste.trim() === '' ? null : readIdentityBlock(paste)), [paste]);
-  const source = parsed?.ok === true ? parsed.identity : null;
-  const pasteProblem = parsed !== null && parsed.ok === false ? t(parsed.problem) : null;
-  const nameProblem = labelIssue(name);
-  const blocked = source === null || nameProblem !== null || saving;
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (blocked || source === null) return;
+  useEffect(() => {
+    let live = true;
     setSaving(true);
     setFailure(null);
-    try {
-      const result = await connectionsApi(client).invite({ source, label: name.trim(), expiresInMs: Number(expiry) });
-      setIssued(result);
-      onInvited();
-    } catch (error) {
-      const reason = connectionFailureText(error instanceof Error ? error.message : '');
-      setFailure({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
-    } finally {
-      setSaving(false);
-    }
-  };
+    void connectionsApi(client).createPairCode({}).then(
+      (created) => {
+        if (!live) return;
+        setIssued(created);
+        setNow(Date.now());
+        invited.current();
+      },
+      (error: unknown) => {
+        if (!live) return;
+        const reason = connectionFailureText(error instanceof Error ? error.message : '');
+        setFailure({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
+      },
+    ).finally(() => { if (live) setSaving(false); });
+    return () => { live = false; };
+  }, [client, generation, locale, t]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { setNow(Date.now()); }, 1000);
+    return () => { window.clearInterval(timer); };
+  }, []);
 
+  const expired = issued !== null && issued.expiresAt <= now;
   return (
     <Dialog onClose={onClose} overlayId="remote-inbound-invite" ariaLabel={t('st.inbound.inviteTitle')}
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-      {issued === null ? (
-        <form className="space-y-5" onSubmit={(event) => { void submit(event); }} data-inbound-invite-form>
-          <div>
-            <h2 className="text-[14px] font-medium text-ink">{t('st.inbound.inviteTitle')}</h2>
-            <p className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.inbound.inviteBody')}</p>
-          </div>
-          {/* Rule 16: where the identity block comes from, before the paste box. */}
-          <SetupSteps data={{ 'data-inbound-invite-steps': '' }}
-            steps={[t('st.inbound.guide.step1'), t('st.inbound.guide.step2')]} />
-          <SettingField label={t('st.inbound.sourceField')} htmlFor="inbound-source-identity" layout="stack"
-            help={t('st.inbound.sourceHint')}>
-            <textarea id="inbound-source-identity" data-inbound-source rows={3} spellCheck={false}
-              className="w-full resize-y rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[11.5px] leading-[1.6] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-              placeholder={t('st.inbound.sourcePlaceholder')}
-              value={paste} onChange={(event) => { setPaste(event.target.value); }} />
-            {pasteProblem !== null ? <p className="text-[12px] text-danger" role="alert" data-inbound-source-problem>{pasteProblem}</p> : null}
-            {source !== null ? (
-              <p className="text-[12px] text-ink-soft" data-inbound-source-target>
-                {t('st.remote.targetLine', { home: fingerprint(source.homeId), host: fingerprint(source.hostId) })}
-              </p>
-            ) : null}
-          </SettingField>
-          <SettingField label={t('st.inbound.nameField')} htmlFor="inbound-source-name" layout="stack">
-            <input id="inbound-source-name" data-inbound-name className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 text-[13px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-              value={name} maxLength={128} spellCheck={false}
-              onChange={(event) => { setName(event.target.value); }} />
-            {nameProblem !== null && name !== '' ? <p className="text-[12px] text-danger" role="alert">{t(nameProblem)}</p> : null}
-          </SettingField>
-          <SettingField label={t('st.inbound.expiry')} htmlFor="inbound-source-expiry" help={t('st.inbound.expiryHint')}>
-            <SettingsSelect id="inbound-source-expiry" value={expiry} onChange={setExpiry} ariaLabel={t('st.inbound.expiry')}
-              choices={EXPIRY_CHOICES.map((choice) => ({ value: choice.value, label: t(choice.labelKey) }))} />
-          </SettingField>
-          <FeedbackLine feedback={failure} />
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
-            <button type="submit" data-inbound-invite-submit className={PRIMARY_BUTTON} disabled={blocked}>
-              {saving ? t('st.inbound.inviting') : t('st.inbound.invite')}
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div className="space-y-5" data-inbound-invitation>
-          <div>
-            <h2 className="text-[14px] font-medium text-ink">{t('st.inbound.invitationTitle', { name: name.trim() })}</h2>
-            <p data-inbound-invite-body className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.inbound.invitationBody', { name: name.trim() })}</p>
-          </div>
-          <CopyField id="inbound-invitation-value" dataAttr="inbound-invitation"
-            label={t('st.inbound.invitationLabel')}
-            value={invitationBlock({ invitation: issued.invitation, target: issued.grant.target, label: name.trim() })}
-            copyLabel={t('st.inbound.invitationCopy')} copiedLabel={t('st.inbound.invitationCopied')}
-            hint={t('st.inbound.invitationOnce')} />
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <button type="button" data-inbound-invite-done className={PRIMARY_BUTTON} onClick={onClose}>{t('st.inbound.invitationDone')}</button>
-          </div>
+      <div className="space-y-5" data-inbound-pair-code>
+        <div>
+          <h2 className="text-[14px] font-medium text-ink">{t('st.inbound.inviteTitle')}</h2>
+          <p data-inbound-invite-body className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.inbound.inviteBody')}</p>
         </div>
-      )}
+        {issued === null && saving ? <p className="text-[12px] text-ink-faint">{t('st.inbound.codeWorking')}</p> : null}
+        {issued !== null ? (
+          <>
+            <p data-inbound-code className="font-mono text-[1.75rem] leading-none tracking-[0.14em] text-ink">{issued.code}</p>
+            <CopyField id="inbound-pair-code-value" dataAttr="inbound-pair-code"
+              label={t('st.inbound.codeLabel')} value={issued.code}
+              copyLabel={t('st.inbound.codeCopy')} copiedLabel={t('st.inbound.codeCopied')}
+              hint={t('st.inbound.codeOnce')} />
+            <p className="text-[12px] text-ink-soft" data-inbound-code-remaining>
+              {expired ? t('st.inbound.codeExpired') : t('st.inbound.codeRemaining', { time: remainingLabel(issued.expiresAt, now) })}
+            </p>
+            <div data-inbound-code-addresses>
+              <p className="text-[13px] text-ink">{t('st.inbound.codeAddresses')}</p>
+              {issued.suggestedEndpoints.length === 0 ? (
+                <p className="mt-1 text-[12px] text-ink-faint">{t('st.inbound.codeNoAddress')}</p>
+              ) : (
+                <ul className="mt-1.5 space-y-1">
+                  {issued.suggestedEndpoints.map((address) => (
+                    <li key={address} className="break-all font-mono text-[12px] text-ink-soft" data-inbound-code-address>{address}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        ) : null}
+        <FeedbackLine feedback={failure} />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button type="button" className={SECONDARY_BUTTON} data-inbound-code-regenerate disabled={saving} onClick={() => { setGeneration((value) => value + 1); }}>
+            {t('st.inbound.codeRegenerate')}
+          </button>
+          <button type="button" data-inbound-invite-done className={PRIMARY_BUTTON} onClick={onClose}>{t('st.inbound.invitationDone')}</button>
+        </div>
+      </div>
     </Dialog>
   );
 }

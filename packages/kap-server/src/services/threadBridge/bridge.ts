@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
-  IBootstrapService, ISessionIndex, ISessionManager, ISessionActivityView, IThreadCommunicationService, IThreadMailboxStore,
+  IBootstrapService, ICapabilitySnapshotService, IConfigService, ISessionIndex, ISessionManager, ISessionActivityView, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService,
   spaceThreadCapability, SPACE_THREAD_ROUTER, RECHECK_BRIDGED_THREADS, ACCEPT_BRIDGED_THREAD_MESSAGE,
   Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type Scope, type ThreadRef, type AcceptedThreadMessage,
   type SpaceThreadConnector, type SendPeerThreadMessageInput, type SendThreadMessageResult,
@@ -11,7 +11,7 @@ import {
 } from '@kiki/agent-core-v2';
 import {
   bridgePolicySchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema,
-  type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation,
+  type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation, type ConnectionIdentity,
 } from '@kiki/protocol';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { okEnvelope, errEnvelope } from '../../envelope';
@@ -22,6 +22,7 @@ import type { TranscriptService } from '../transcript/transcriptService';
 import { readSessionViewTranscriptPage, readSessionViewTranscriptContent } from '../../transport/klient/sessionViewReads';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
 import { bridgeTargetInputSchema, localBridgePolicySchema } from '@kiki/protocol';
+import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { provisionLocalBridge } from './localProvision';
 
 interface Inbound { grant: BridgeGrant; digest: string }
@@ -78,6 +79,32 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     if (cursor !== undefined && offset === 0) throw new AdmissionError(409, 'receipt_cursor_expired');
     const page = this.state.outbox.slice(offset, offset + count);
     return { items: page.map((entry) => ({ ...entry.receipt })), nextCursor: offset + count < this.state.outbox.length ? page.at(-1)?.receipt.id : undefined };
+  }
+  async issuePairingBridges(input: { source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[] }): Promise<{ grant: BridgeGrant; credential: string }[]> {
+    const sourceWorkspace = input.sourceWorkspaces[0];
+    if (sourceWorkspace === undefined || !this.admission.status().enabled) return [];
+    await this.enableThreads();
+    const workspaces = [...await this.core.accessor.get(IWorkspaceService).list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    let targetWorkspace: string | undefined;
+    for (const workspace of workspaces) if (await this.threads.isWorkspaceEnabled(workspace.id)) { targetWorkspace = workspace.id; break; }
+    if (targetWorkspace === undefined) return [];
+    const label = input.sourceLabel.trim().slice(0, 128) || 'Kiki';
+    return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: sourceWorkspace }, targetScope: { workspaceId: targetWorkspace }, operations: ['read', 'send', 'wait', 'wake'], expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label })];
+  }
+  async revokeInboundFrom(id: string, source: ConnectionIdentity): Promise<void> {
+    const entry = this.state.inbound.find((value) => value.grant.id === id);
+    if (entry === undefined || entry.grant.revoked) return;
+    if (!sameIdentity(entry.grant.source, source)) throw new AdmissionError(403, 'bridge_identity_mismatch');
+    await this.revoke(id, 'inbound');
+  }
+  async enableThreads(): Promise<void> {
+    const config = this.core.accessor.get(IConfigService);
+    if (config.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled !== true) await config.set(THREAD_COMMUNICATION_SECTION, { enabled: true });
+    try {
+      const page = await this.core.accessor.get(ISessionIndex).listRecent({ limit: 200 });
+      const snapshot = this.core.accessor.get(ICapabilitySnapshotService);
+      for (const item of page.items) snapshot.refresh(item.workspaceId, item.id);
+    } catch { return; }
   }
   async approve(policy: BridgePolicy) {
     if (!this.admission.status().enabled) denied('inbound_disabled');
