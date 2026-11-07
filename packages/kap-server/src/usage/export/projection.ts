@@ -58,6 +58,11 @@ function configuredBilling(pricing: IModelPricingService, alias: string, model: 
   }
   return undefined;
 }
+function explicitPublicModel(pricing: IModelPricingService, name: string): string | undefined {
+  const derived = pricing.publicBillingName?.(name);
+  if (derived !== undefined) { const published = protocolPublicModel(derived); if (published !== undefined) return published; }
+  return protocolPublicModel(name);
+}
 export function emptyTokens(): UsageExportTokens { return { input_other: 0, input_cache_read: 0, input_cache_creation: 0, output: 0 }; }
 export function emptyQuality(): UsageExportQuality { return { known_records: 0, missing_records: 0, legacy_zero_records: 0, invalid_records: 0, estimated_records: 0, mapping_unknown: false, price_unknown: false, complete: true }; }
 function addTokenCounts(target: UsageExportTokens, inputOther: number, cacheRead: number, cacheCreation: number, output: number): void {
@@ -85,7 +90,7 @@ export function projectSource(source: UsageExportSource, pricing: IModelPricingS
     let bucket = buckets.get(key);
     const explicit = configuredBilling(pricing, alias, record.model);
     const priceModel = explicit?.key ?? upstream ?? normalizePublicModel(record.model) ?? record.model;
-    const billingModel = explicit === undefined ? undefined : protocolPublicModel(explicit.name);
+    const billingModel = explicit === undefined ? undefined : explicitPublicModel(pricing, explicit.name);
     if (bucket === undefined) {
       const price = pricing.resolve(priceModel);
       const pricingVersion = digest(price === undefined ? { unknown: true } : { model: price.catalogModel, prices: price.prices, currency: price.currency ?? 'USD' });

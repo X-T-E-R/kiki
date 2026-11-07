@@ -1152,4 +1152,106 @@ describe('explicit billing name', () => {
     expect(removed.reliability.unknown_price_models).toContain('my-argon');
     expect(removed.trend.flatMap((bucket) => bucket.groups.map((group) => group.key))).not.toContain('billing-spec-argon');
   });
+
+  it('exports the model id from a provider-prefixed catalog key and keeps other explicit names', async () => {
+    const pricingHome = await mkdtemp(join(tmpdir(), 'kiki-billing-prefix-'));
+    cleanup.push(() => rm(pricingHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const argon = { input: 2e-6, output: 1e-5, read: 1e-7, write: 4e-6 };
+    const nested = { input: 5e-6, output: 6e-6, read: 5e-7, write: 7e-6 };
+    const kept = { input: 8e-6, output: 9e-6, read: 8e-7, write: 1e-5 };
+    const catalogKey = 'gemini/gemini-4-argon';
+    const nestedKey = 'fireworks_ai/accounts/fireworks/models/minimax-m3';
+    const keptKey = 'proxy/gemini-4-argon';
+    const customKey = 'not/a-catalog-key';
+    await writeFile(join(pricingHome, 'prices.json'), JSON.stringify({
+      'gpt-5': price(rates.gpt), 'claude-sonnet-4-5': price(rates.gpt), 'private-upstream': price(rates.upstream),
+      [catalogKey]: { ...price(argon), litellm_provider: 'gemini' },
+      [nestedKey]: { ...price(nested), litellm_provider: 'fireworks_ai' },
+      [keptKey]: { ...price(kept), litellm_provider: 'other' },
+    }));
+    const models: Record<string, ModelRecord> = {
+      'my-argon': { provider: 'proxy', model: 'wire-remote-argon', pricingModel: catalogKey },
+      'my-nested': { provider: 'proxy', model: 'wire-remote-nested', pricingModel: nestedKey },
+      'my-kept': { provider: 'proxy', model: 'wire-remote-kept', pricingModel: keptKey },
+      'my-custom': { provider: 'proxy', model: 'wire-remote-custom', pricingModel: customKey },
+    };
+    const pricing = new ModelPricingService(
+      { homeDir: pricingHome } as unknown as Bootstrap,
+      stubLog(),
+      new TomlAtomicDocumentStore(new FileStorageService(pricingHome)),
+      { ready: Promise.resolve(), get: () => models } as unknown as IConfigService,
+      { scheduleRefresh: false, minimumKeys: 1, vendoredPath: join(pricingHome, 'prices.json') },
+    );
+    cleanup.push(async () => { pricing.dispose(); await drainModelPricingDisposals(); });
+    await pricing.ready;
+    const f = await fixture({}, undefined, undefined, undefined, undefined, pricing);
+    const usage = { output: tokens.output, inputCacheRead: tokens.inputCacheRead, inputCacheCreation: tokens.inputCacheCreation };
+    f.add('argon'); f.add('nested'); f.add('kept'); f.add('custom'); f.add('stable');
+    await f.write('argon', 'main', [{ ...record(T + 1, tokens.inputOther, usage, 'my-argon'), modelAlias: 'my-argon', upstreamModelId: 'private-upstream' }]);
+    await f.write('nested', 'main', [{ ...record(T + 2, tokens.inputOther, usage, 'my-nested'), modelAlias: 'my-nested', upstreamModelId: 'nested-upstream' }]);
+    await f.write('kept', 'main', [{ ...record(T + 3, tokens.inputOther, usage, 'my-kept'), modelAlias: 'my-kept', upstreamModelId: 'kept-upstream' }]);
+    await f.write('custom', 'main', [{ ...record(T + 4, tokens.inputOther, usage, 'my-custom'), modelAlias: 'my-custom', upstreamModelId: 'custom-upstream' }]);
+    await f.write('stable', 'main', [{ ...record(T + 5, tokens.inputOther, usage, 'gpt-5'), modelAlias: 'gpt-5' }]);
+    const wireSize = async (session: string) => (await stat(join(f.home, 'sessions/work', session, 'agents/main', AGENT_WIRE_RECORD_KEY))).size;
+    const wires = [await wireSize('argon'), await wireSize('nested'), await wireSize('kept'), await wireSize('custom'), await wireSize('stable')];
+    const d = await destination(f.service);
+    await enable(f.service, d.id);
+    const projected = () => f.store.preview(d.id);
+    const named = (model: string) => projected().items.find((item) => item.bucket?.model === model);
+    const summed = () => {
+      const total = emptyTokens();
+      for (const item of projected().items) if (item.bucket !== null) addTokens(total, item.bucket.tokens);
+      return total;
+    };
+    const expectedTokens = { input_other: 50, output: 15, input_cache_read: 20, input_cache_creation: 25 };
+    expect(normalizePublicModel('gemini-4-argon')).toBeUndefined();
+    expect(pricing.billingName('my-argon')).toBe(catalogKey);
+    expect(pricing.publicBillingName(catalogKey)).toBe('gemini-4-argon');
+    expect(pricing.publicBillingName(nestedKey)).toBeUndefined();
+    expect(pricing.publicBillingName(keptKey)).toBeUndefined();
+    expect(pricing.publicBillingName(customKey)).toBeUndefined();
+    expect(pricing.resolve('my-argon')?.catalogModel).toBe(catalogKey);
+    const spec = named('gemini-4-argon');
+    expect(spec?.bucket).toMatchObject({ model: 'gemini-4-argon', quality: { mapping_unknown: false, price_unknown: false } });
+    expect(spec?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(argon), 12);
+    expect(spec?.bucket?.cost.usd_estimated).not.toBeCloseTo(costOf(rates.upstream), 12);
+    expect(named(catalogKey)).toBeUndefined();
+    expect(named(nestedKey)?.bucket).toMatchObject({ model: nestedKey, quality: { mapping_unknown: false, price_unknown: false } });
+    expect(named(nestedKey)?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(nested), 12);
+    expect(named(keptKey)?.bucket).toMatchObject({ model: keptKey, quality: { mapping_unknown: false, price_unknown: false } });
+    expect(named(keptKey)?.bucket?.cost.usd_estimated).toBeCloseTo(costOf(kept), 12);
+    expect(named(customKey)?.bucket).toMatchObject({ model: customKey, quality: { mapping_unknown: false, price_unknown: true } });
+    expect(summed()).toEqual(expectedTokens);
+    expect(projected().total).toBe(5);
+    expect(f.store.meta('pricing-revision')).toBe(pricing.pricingRevision());
+    expect(models['my-argon']?.pricingModel).toBe(catalogKey);
+    const stable = { revision: named('gpt-5')?.revision, hash: named('gpt-5')?.payload_hash, tokens: named('gpt-5')?.bucket?.tokens, cost: named('gpt-5')?.bucket?.cost.usd_estimated };
+    const argonIdentity = { revision: spec?.revision, hash: spec?.payload_hash };
+    const pricedUsage = await f.reader.query({ dimension: 'model', page_size: 1 });
+    expect(pricedUsage.summary.tokens).toEqual(expectedTokens);
+    expect(pricedUsage.summary.cost_unknown).toBe(true);
+    expect(pricedUsage.summary.cost_usd_estimated).toBeCloseTo(costOf(argon) + costOf(nested) + costOf(kept) + costOf(rates.gpt), 12);
+    expect(pricedUsage.reliability.unknown_price_models).toContain('my-custom');
+    expect(pricedUsage.reliability.unknown_price_models).not.toContain('my-argon');
+    expect(pricedUsage.reliability.unknown_price_models).not.toContain('gemini-4-argon');
+    const groups = pricedUsage.trend.flatMap((bucket) => bucket.groups.map((group) => group.key));
+    expect(groups).toEqual(expect.arrayContaining(['my-argon', 'my-nested', 'my-kept', 'my-custom', 'gpt-5']));
+    expect(groups).not.toContain('gemini-4-argon');
+    expect(groups).not.toContain(catalogKey);
+
+    await f.restart();
+    expect(f.store.preview(d.id).items.some((item) => item.bucket?.model === 'gemini-4-argon')).toBe(true);
+    expect(f.store.preview(d.id).items.some((item) => item.bucket?.model === catalogKey)).toBe(false);
+    expect(summed()).toEqual(expectedTokens);
+
+    models['my-custom'] = { provider: 'proxy', model: 'wire-remote-custom', pricingModel: 'still/not-a-key' };
+    await f.service.scan();
+    expect([await wireSize('argon'), await wireSize('nested'), await wireSize('kept'), await wireSize('custom'), await wireSize('stable')]).toEqual(wires);
+    expect({ revision: named('gpt-5')?.revision, hash: named('gpt-5')?.payload_hash, tokens: named('gpt-5')?.bucket?.tokens, cost: named('gpt-5')?.bucket?.cost.usd_estimated }).toEqual(stable);
+    expect({ revision: named('gemini-4-argon')?.revision, hash: named('gemini-4-argon')?.payload_hash }).toEqual(argonIdentity);
+    expect(named(customKey)).toBeUndefined();
+    expect(named('still/not-a-key')?.bucket).toMatchObject({ model: 'still/not-a-key', quality: { mapping_unknown: false, price_unknown: true } });
+    expect(summed()).toEqual(expectedTokens);
+    expect(models['my-argon']?.model).toBe('wire-remote-argon');
+  });
 });

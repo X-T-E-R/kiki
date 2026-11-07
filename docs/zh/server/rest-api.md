@@ -1027,7 +1027,7 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 
 ### 用量计价
 
-`GET /api/usage/pricing` 返回配置中的模型 ID、已保存的覆盖，以及通过重复 `model` 查询参数指定的 ID。每个 `items` 项包含 `model`、配置的 `pricing_model`（未设时为 `null`）、`matched_key`、`source`（`override`、`litellm-cache`、`vendored` 或 `unknown`）和 `prices`（未知时为 `null`）。带路由前缀的模型按价格目录中的规范名匹配；价格是估算，不是代理的实际账单。服务器在 `<home>/model-pricing` 下刷新 LiteLLM 缓存，随包附带的 MIT 许可快照用于离线兜底。符合协议的 `pricing_model`（字母、数字和 `.` `_` `:` `/` `-`，最长 160 个字符）同时作为不含内容的用量导出模型名，包括内置公开模型列表之外的名称。留空则沿用原来的推断，也不会改变发给供应商的模型。已删除模型的历史用量仍保留，导出回退到推断，不会新增模型条目。
+`GET /api/usage/pricing` 返回配置中的模型 ID、已保存的覆盖，以及通过重复 `model` 查询参数指定的 ID。每个 `items` 项包含 `model`、配置的 `pricing_model`（未设时为 `null`）、`matched_key`、`source`（`override`、`litellm-cache`、`vendored` 或 `unknown`）和 `prices`（未知时为 `null`）。带路由前缀的模型按价格目录中的规范名匹配；价格是估算，不是代理的实际账单。服务器在 `<home>/model-pricing` 下刷新 LiteLLM 缓存，随包附带的 MIT 许可快照用于离线兜底。符合协议的 `pricing_model`（字母、数字和 `.` `_` `:` `/` `-`，最长 160 个字符）作为不含内容的用量导出模型名，包括内置公开模型列表之外的名称。当它与价格目录键完全一致，且第一段等于该条目的厂商、前缀后只剩一个模型 ID 时，导出使用这个模型 ID（`gemini/gemini-4-argon` 导出为 `gemini-4-argon`）。其他显式名称按所填内容导出。留空则沿用原来的推断，也不会改变发给供应商的模型。已删除模型的历史用量仍保留，导出回退到推断，不会新增模型条目。
 
 `PUT /api/usage/pricing` 按键修改覆盖：未发出的键保持不变，`null` 删除该键的覆盖。所有单价均为**每 token**，不是每百万 token。提交每百万 token 报价前，先除以 1,000,000。输入、输出单价必填；缓存读、缓存写单价未知时可省略，但使用了未定价类别的请求仍是部分估算。
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -330,14 +331,63 @@ describe('user model pricing', () => {
     const empty = service.pricingRevision();
     models['alias'] = { provider: 'proxy', model: 'remote', displayName: 'Shown', pricingModel: 'billing-spec-argon' };
     expect(service.billingName('alias')).toBe('billing-spec-argon');
+    expect(service.publicBillingName('billing-spec-argon')).toBeUndefined();
     expect(service.billingName('missing')).toBeUndefined();
     const named = service.pricingRevision();
+    expect(named).toBe(createHash('sha256').update(JSON.stringify([['alias', 'billing-spec-argon']])).digest('hex'));
     expect(named).not.toBe(empty);
     models['alias'] = { provider: 'proxy', model: 'remote', displayName: 'Other', pricingModel: 'billing-spec-argon' };
     expect(service.pricingRevision()).toBe(named);
     delete models['alias']!.pricingModel;
     expect(service.billingName('alias')).toBeUndefined();
     expect(service.pricingRevision()).toBe(empty);
+    service.dispose();
+  });
+
+  it('publishes the model id after a catalog provider prefix and leaves every other billing name unchanged', () => {
+    const home = tempDir();
+    const vendoredPath = join(home, 'vendored.json');
+    const argon = { input_cost_per_token: 2e-6, output_cost_per_token: 1e-5, cache_read_input_token_cost: 1e-7, cache_creation_input_token_cost: 4e-6, litellm_provider: 'gemini' };
+    writeFileSync(vendoredPath, fixture({
+      'gpt-5': { ...price(), litellm_provider: 'openai' },
+      'billing-spec-argon': price(3, 4),
+      'gemini/gemini-4-argon': argon,
+      'moonshot/kimi-k3': { ...price(), litellm_provider: 'moonshot' },
+      'minimax/MiniMax-M3': { ...price(), litellm_provider: 'minimax' },
+      'zai/glm-5.3': { ...price(), litellm_provider: 'zai' },
+      'opencode_go/minimax-m3.1-flash': { ...price(), litellm_provider: 'opencode_go' },
+      'fireworks_ai/accounts/fireworks/models/minimax-m3': { ...price(), litellm_provider: 'fireworks_ai' },
+      'proxy/gemini-4-argon': { ...price(), litellm_provider: 'other' },
+      'Qwen/Qwen3-Coder': { ...price(), litellm_provider: 'dashscope' },
+    }));
+    const models: Record<string, ModelRecord> = { alias: { provider: 'proxy', model: 'remote', pricingModel: 'gemini/gemini-4-argon' } };
+    const { service } = createService({ vendoredPath }, models, home);
+    expect(service.billingName('alias')).toBe('gemini/gemini-4-argon');
+    expect(service.publicBillingName('gemini/gemini-4-argon')).toBe('gemini-4-argon');
+    expect(service.publicBillingName('moonshot/kimi-k3')).toBe('kimi-k3');
+    expect(service.publicBillingName('minimax/MiniMax-M3')).toBe('MiniMax-M3');
+    expect(service.publicBillingName('zai/glm-5.3')).toBe('glm-5.3');
+    expect(service.publicBillingName('opencode_go/minimax-m3.1-flash')).toBe('minimax-m3.1-flash');
+    expect(service.publicBillingName('kimi-k3')).toBeUndefined();
+    expect(service.publicBillingName('billing-spec-argon')).toBeUndefined();
+    expect(service.publicBillingName('gpt-5')).toBeUndefined();
+    expect(service.publicBillingName('gemini-4-argon')).toBeUndefined();
+    expect(service.publicBillingName('not/a-catalog-key')).toBeUndefined();
+    expect(service.publicBillingName('fireworks_ai/accounts/fireworks/models/minimax-m3')).toBeUndefined();
+    expect(service.publicBillingName('proxy/gemini-4-argon')).toBeUndefined();
+    expect(service.publicBillingName('Qwen/Qwen3-Coder')).toBeUndefined();
+    expect(service.resolve('gemini-4-argon')).toBeUndefined();
+    expect(service.resolve('kimi-k3')?.catalogModel).toBe('moonshot/kimi-k3');
+    expect(service.resolve('alias')).toMatchObject({ catalogModel: 'gemini/gemini-4-argon', strategy: 'exact' });
+    const usage = { inputOther: 10, output: 3, inputCacheRead: 4, inputCacheCreation: 5 };
+    expect(service.calculate('alias', usage)).toBeCloseTo(10 * 2e-6 + 3 * 1e-5 + 4 * 1e-7 + 5 * 4e-6, 12);
+    expect(service.pricingRevision()).toBe(createHash('sha256').update(JSON.stringify([['alias', 'gemini/gemini-4-argon', 'gemini-4-argon']])).digest('hex'));
+    models['alias'] = { provider: 'proxy', model: 'remote', displayName: 'Shown', pricingModel: 'gemini/gemini-4-argon' };
+    expect(service.pricingRevision()).toBe(createHash('sha256').update(JSON.stringify([['alias', 'gemini/gemini-4-argon', 'gemini-4-argon']])).digest('hex'));
+    models['alias'] = { provider: 'proxy', model: 'remote', pricingModel: 'not/a-catalog-key' };
+    expect(service.billingName('alias')).toBe('not/a-catalog-key');
+    expect(service.publicBillingName('not/a-catalog-key')).toBeUndefined();
+    expect(service.pricingRevision()).toBe(createHash('sha256').update(JSON.stringify([['alias', 'not/a-catalog-key']])).digest('hex'));
     service.dispose();
   });
 

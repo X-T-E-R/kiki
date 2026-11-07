@@ -138,6 +138,7 @@ export interface IModelPricingService {
   refreshNow(): Promise<boolean>;
   status(): ModelPricingStatus;
   billingName?(model: string): string | undefined;
+  publicBillingName?(model: string): string | undefined;
   pricingRevision?(): string;
 }
 
@@ -309,6 +310,11 @@ export class ModelPriceCatalog {
     const stripped = requestedModel.replace(DATE_SUFFIX_PATTERN, '');
     if (stripped.length === 0 || stripped === requestedModel) return undefined;
     return this.matchChain(requestedModel, modelCandidates(stripped));
+  }
+
+  providerOf(catalogModel: string): string | undefined {
+    const provider = this.entries.get(catalogModel)?.['litellm_provider'];
+    return typeof provider === 'string' && provider.length > 0 ? provider : undefined;
   }
 
   private resolveOverride(
@@ -538,11 +544,28 @@ export class ModelPricingService implements IModelPricingService {
     return name === undefined || name.length === 0 ? undefined : name;
   }
 
+  publicBillingName(model: string): string | undefined {
+    const requested = model.trim();
+    const catalog = this.active?.catalog;
+    if (requested.length === 0 || catalog === undefined) return undefined;
+    const match = catalog.resolve(requested);
+    if (match?.strategy !== 'exact') return undefined;
+    const provider = catalog.providerOf(match.catalogModel);
+    if (provider === undefined) return undefined;
+    const prefix = `${provider}/`;
+    if (!match.catalogModel.startsWith(prefix)) return undefined;
+    const rest = match.catalogModel.slice(prefix.length);
+    if (rest.length === 0 || rest.includes('/') || rest.length > 160 || !/^[A-Za-z0-9._:/-]+$/.test(rest)) return undefined;
+    return rest;
+  }
+
   pricingRevision(): string {
     const models = this.config.get<Record<string, ModelRecord>>('models') ?? {};
     const entries = Object.entries(models).flatMap(([id, record]) => {
       const name = record.pricingModel?.trim();
-      return name === undefined || name.length === 0 ? [] : [[id, name] as const];
+      if (name === undefined || name.length === 0) return [];
+      const published = this.publicBillingName(name) ?? name;
+      return [published === name ? [id, name] as const : [id, name, published] as const];
     }).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
     return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
   }
