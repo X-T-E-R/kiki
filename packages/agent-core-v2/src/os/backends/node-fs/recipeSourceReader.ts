@@ -55,7 +55,8 @@ export class RecipeSourceReader implements IRecipeSourceReader {
     return result;
   }
   async catalog(url: string): Promise<unknown> { return JSON.parse((await download(url)).toString('utf8')); }
-  async open(source: RecipeSource, baseDir?: string): Promise<RecipePackageReader> {
+  async open(rawSource: RecipeSource, baseDir?: string): Promise<RecipePackageReader> {
+    const source: RecipeSource = rawSource.sha256 === undefined ? rawSource : { ...rawSource, sha256: rawSource.sha256.toLowerCase() };
     const locator = source.locator.trim();
     if (isRecipeFileReference(locator)) return this.readLocal(source, resolveRecipeFileLocator(locator, baseDir));
     if (/^https?:/u.test(locator)) await publicUrl(locator);

@@ -4387,7 +4387,7 @@ boundExecution,
           }
           const loaded = await loadMessageEditAttachments({ queuedContent: [...content] }, abort.signal).catch((error: unknown) => {
             abort.signal.throwIfAborted();
-            if (ownsEdit()) pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+            if (ownsEdit()) pushToast({ tone: 'info', text: t('transcript.editAttachmentsLoadFailed'), detail: error instanceof Error ? error.message : String(error) });
             return undefined;
           });
           if (loaded !== undefined && ownsEdit()) setQueueEdit((current) => current?.owner !== edit.owner ? current : {

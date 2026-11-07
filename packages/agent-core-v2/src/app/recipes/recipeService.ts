@@ -140,7 +140,8 @@ export class RecipeService extends Disposable implements IRecipeService {
     }
     return hooks.length === 0 ? [] : this.sources.materializeHooks(hooks);
   }
-  private async prepare(source: RecipeSource, chain: string[] = [], files?: Record<string, string>, forkParent?: RecipeSnapshot, baseDir?: string, persist = true): Promise<RecipeSnapshot> {
+  private async prepare(rawSource: RecipeSource, chain: string[] = [], files?: Record<string, string>, forkParent?: RecipeSnapshot, baseDir?: string, persist = true): Promise<RecipeSnapshot> {
+    const source: RecipeSource = rawSource.sha256 === undefined ? rawSource : { ...rawSource, sha256: rawSource.sha256.toLowerCase() };
     let reader: RecipePackageReader;
     if (files !== undefined) reader = this.fileReader(source, files);
     else if (source.locator.startsWith('installation:')) {

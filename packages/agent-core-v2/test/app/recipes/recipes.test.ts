@@ -815,9 +815,13 @@ describe('Recipe package boundaries', () => {
     fetchMock.mockResolvedValueOnce(new Response(bytes));
     const withoutChecksum = await reader.open({ locator });
     expect(await withoutChecksum.read('recipe.toml')).toBe('schema_version = 1');
+    const upperDigest = createHash('sha256').update(bytes).digest('hex').toUpperCase();
+    fetchMock.mockResolvedValueOnce(new Response(bytes));
+    const withUpperChecksum = await reader.open({ locator, sha256: upperDigest });
+    expect(withUpperChecksum.source.sha256).toBe(upperDigest.toLowerCase());
     fetchMock.mockResolvedValueOnce(new Response('not a ZIP'));
     await expect(reader.open({ locator, sha256: '0'.repeat(64) })).rejects.toThrow('checksum mismatch');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
   it('delegates redirects to guarded-fetch while retaining the Recipe subtree and credential boundaries', async () => {
     const source = 'https://93.184.216.34/package/recipe.toml';

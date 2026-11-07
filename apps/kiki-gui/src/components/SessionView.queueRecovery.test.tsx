@@ -698,7 +698,7 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
   fixture.readPreview.mockRejectedValue(new ApiError({ code: 40407, msg: "Original unavailable", data: null }));
   await act(async () => edit().click());
   for (let i = 0; i < 3; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error", text: expect.stringContaining("Original unavailable") }));
+  expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "info", text: "This message's attachments did not load.", detail: expect.stringContaining("Original unavailable") }));
   expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.disabled).toBe(false);
   expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain("saved.png");
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
