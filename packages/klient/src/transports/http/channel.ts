@@ -225,15 +225,14 @@ export class HttpChannel implements KlientChannel {
   }
 
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {
-    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
+    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops|plan|user-messages))?$/.test(path);
     const callOptions = reading ? { ...options, timeoutMs: options.timeoutMs ?? this.readingTimeoutMs() } : options;
-    return this.performFetch(path, callOptions, async (response, acceptRequestId) => {
+    return this.performFetch(path, callOptions, async (response, acceptRequestId, signal) => {
       if (response.status === 404 && options.allowMissingRoute === true) {
         await response.body?.cancel();
         return undefined as T;
       }
-      const boundedSession = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
-      const envelope = await this.readEnvelope(response, options.signal, boundedSession ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
+      const envelope = await this.readEnvelope(response, signal, reading ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
       acceptRequestId(envelope.request_id);
       const okCodes = options.okCodes ?? [0];
       if (response.ok === false || !okCodes.includes(envelope.code)) {
@@ -256,13 +255,13 @@ export class HttpChannel implements KlientChannel {
     consume: (response: Response) => Promise<T>,
   ): Promise<T> {
     const requestOptions = options ?? {};
-    return this.performFetch(path, requestOptions, async (response, acceptRequestId) => {
+    return this.performFetch(path, requestOptions, async (response, acceptRequestId, signal) => {
       const contentType = response.headers.get('content-type') ?? '';
       if ((response.ok || (response.status === 304 && requestOptions.headers?.['if-none-match'] !== undefined)) &&
           !(requestOptions.jsonErrorOnSuccess === true && contentType.includes('json'))) {
         return consume(response);
       }
-      const envelope = await this.readEnvelope(response, requestOptions.signal);
+      const envelope = await this.readEnvelope(response, signal);
       acceptRequestId(envelope.request_id);
       const okCodes = requestOptions.okCodes ?? [0];
       throw new RPCError(
@@ -279,7 +278,7 @@ export class HttpChannel implements KlientChannel {
   private async performFetch<T>(
     path: string,
     options: HttpRestJsonOptions,
-    consume: (response: Response, acceptRequestId: (value: string | undefined) => void) => Promise<T>,
+    consume: (response: Response, acceptRequestId: (value: string | undefined) => void, signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (this.closed) throw new Error('http closed');
     if (this.suspended) throw new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport');
@@ -374,7 +373,7 @@ export class HttpChannel implements KlientChannel {
       phase = 'body';
       if (timedOutPhase !== undefined) throw timeoutError();
       try {
-        const result = await consume(response, acceptRequestId);
+        const result = await consume(response, acceptRequestId, controller.signal);
         ensureCurrent();
         if (timedOutPhase !== undefined) throw timeoutError();
         return result;
@@ -409,7 +408,7 @@ export class HttpChannel implements KlientChannel {
   private async readEnvelope(response: Response, signal?: AbortSignal, maxBytes = 4 * 1024 * 1024): Promise<Envelope<unknown>> {
     let envelope: Envelope<unknown> | null;
     try {
-      envelope = await readBoundedJsonBody(response, maxBytes) as Envelope<unknown> | null;
+      envelope = await readBoundedJsonBody(response, maxBytes, signal) as Envelope<unknown> | null;
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true || !(error instanceof SyntaxError)) throw error;
       throw new RPCError(response.status, `HTTP ${response.status} — non-JSON response`);

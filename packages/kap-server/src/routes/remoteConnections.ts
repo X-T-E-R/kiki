@@ -72,11 +72,11 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
     reply.raw.once('close', stop);
     try {
-      const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation);
+      const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps', 'transcriptPlan', 'userMessages'].includes(input.operation);
       const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       const cap = reading ? SESSION_READ_BODY_BYTES : BROKER_BODY_BYTES;
-      const body = await readBoundedJsonBody(response, cap);
+      const body = await readBoundedJsonBody(response, cap, lease.signal);
       return await reply.code(response.status).send(body);
     } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
     finally { reply.raw.off('close', stop); release(); }

@@ -13,7 +13,7 @@ import {
   bridgePolicySchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema,
   type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation,
 } from '@kiki/protocol';
-import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
+import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { okEnvelope, errEnvelope } from '../../envelope';
 import { AdmissionError, sameIdentity, type ConnectionAdmission } from '../connections/admission';
 import type { RemoteConnectionManager } from '../connections/manager';
@@ -354,7 +354,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
       const { credential } = await this.connections.secrets.read<{ credential: string }>({ connectionId: link.grant.id, purpose: 'bridge' });
       const response = await fetch(new URL(`/api/thread-bridge/${operation}`, transport.endpoint), { method: 'POST', redirect: 'error', signal: lease.signal,
         headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      const envelope = await readBoundedJsonBody(response, operation === 'read' ? 128 * 1024 : operation === 'list' ? 128 * 1024 : 16 * 1024) as RemoteEnvelope<T>;
+      const envelope = await readBoundedJsonBody(response, operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'list' ? 128 * 1024 : 16 * 1024, lease.signal) as RemoteEnvelope<T>;
       if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, envelope.msg ?? 'bridge_request_rejected');
       if (!sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
       return envelope.data.result;

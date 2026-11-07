@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import type { Scope } from '@kiki/agent-core-v2';
 import { AgentTranscript, applyContentSegment, jsonBytes, TRANSCRIPT_COVERAGE_VERSION, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import { sessionViewTranscriptPageInputSchema } from '@kiki/klient';
+import { createKlient } from '@kiki/klient/http';
 import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp';
@@ -1000,5 +1001,69 @@ describe('bounded session-view canonical reads', () => {
     });
     await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: `~${'ab'.repeat(32)}.11` })).rejects.toThrow('invalid transcript detail cursor');
     await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'marker:missing' })).rejects.toThrow('invalid transcript detail cursor');
+  });
+
+  it('consumes a server-segmented Klient+KAP transcript page above 1114112 bytes and continues its exact body', async () => {
+    const fullText = '段落😀'.repeat(15_000);
+    const turn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: fullText,
+      steps: Array.from({ length: 8 }, (_, stepOrdinal) => ({
+        kind: 'step' as const,
+        stepId: `s${stepOrdinal}`,
+        turnId: 't0',
+        ordinal: stepOrdinal,
+        state: 'completed' as const,
+        frames: Array.from({ length: 8 }, (_, frameOrdinal) => ({
+          kind: 'text' as const,
+          frameId: `f-${stepOrdinal}-${frameOrdinal}-${stepOrdinal === 7 && frameOrdinal === 7 ? 'x'.repeat(1_200_000) : 'short'}`,
+          role: 'assistant' as const,
+          text: stepOrdinal === 7 && frameOrdinal === 7 ? fullText : `reply-${stepOrdinal}-${frameOrdinal}`,
+        })),
+      })),
+    };
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turn] };
+    const service = canonicalService(snapshot);
+    Object.assign(service, {
+      forSessionLive: () => ({ ensureAgent: () => { const t = new AgentTranscript('main'); t.apply([{ op: 'reset', agentId: 'main', snapshot }]); return t; }, getAgent: () => { const t = new AgentTranscript('main'); t.apply([{ op: 'reset', agentId: 'main', snapshot }]); return t; }, agents: () => [] }),
+      verifyTranscriptLiveCoverage: async () => true,
+      isTranscriptLiveCoverageVerified: () => true,
+      getTranscriptCursor: () => ({ seq: 1, epoch: 'oversized-header-epoch' }),
+      readCanonicalEntity: async () => turn,
+    });
+    const app = Fastify({ forceCloseConnections: true });
+    registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+    const endpoint = await app.listen({ port: 0, host: '127.0.0.1' });
+    const klient = createKlient({ endpoint });
+    try {
+      const raw = await fetch(`${endpoint}/api/klient/session-view/fixture-session/transcript?agent_id=main&page_size=1&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`);
+      expect(raw.status).toBe(200);
+      const rawText = await raw.text();
+      expect(Buffer.byteLength(rawText, 'utf8')).toBeGreaterThan(1024 * 1024 + 64 * 1024);
+
+      const page = await klient.session('fixture-session').view.transcript.page({ agentId: 'main', pageSize: 1 });
+      let current = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't0')!;
+      expect(current).toBeDefined();
+      expect(current.prompt!.length).toBeLessThan(fullText.length);
+      while (current.contentRefs?.length) {
+        const segment = await klient.session('fixture-session').view.transcript.content!({ agentId: 'main', ref: current.contentRefs[0]! });
+        current = applyContentSegment(current, segment);
+      }
+      expect(current.prompt).toBe(fullText);
+      let lastFrame = current.steps.at(-1)!.frames.at(-1)!;
+      if (lastFrame.kind !== 'text') throw new Error('Expected text frame');
+      while (lastFrame.contentRefs?.length) {
+        const segment = await klient.session('fixture-session').view.transcript.content!({ agentId: 'main', ref: lastFrame.contentRefs[0]! });
+        lastFrame = applyContentSegment(lastFrame, segment);
+      }
+      expect(lastFrame.text).toBe(fullText);
+    } finally {
+      await klient.close();
+      await app.close();
+    }
   });
 });

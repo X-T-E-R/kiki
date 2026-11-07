@@ -288,7 +288,11 @@ contain a marker, so follow advancing `next_cursor` values until the turn appear
 Rebind backward reads to the new window. Restart forward structure reads at offset
 zero under the refreshed revision, merging children by identity to preserve loaded
 content. An unchanged page cursor or a second structure conflict stops recovery
-and leaves the displayed content available for an explicit retry.
+and leaves the displayed content available for an explicit retry. Session-view and
+transcript HTTP reads rely on the server's window, entity, and continuation
+segmentation (`SESSION_READ_BODY_BYTES = Number.POSITIVE_INFINITY`) while keeping
+request cancellation active through response-body consumption; non-session and
+brokered operations retain their explicit decoded-byte limits.
 
 Close the subscription when leaving the view. `restart()` reconnects the shared
 socket and therefore also invalidates ordinary-event observations and in-flight

@@ -61,15 +61,12 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     expect(await response.json()).toMatchObject({ code: 40101, msg: 'connection_not_approved' });
     expect(writes).toBe(2); expect(f.manager.get(record.id).state).not.toBe('online');
   });
-  it('forwards a legal history response over the former HTTP cap and cancels an unfinished read', async () => {
+  it('forwards a legal history response over the former 1114112 HTTP cap and cancels an unfinished read', async () => {
     const f = await fixture(); let producerClosed = false;
     const envelope = (prompt: string) => ({ code: 0, msg: 'success', data: { items: [{ prompt }] } });
-    const overhead = Buffer.byteLength(JSON.stringify(envelope('')));
-    const expected = envelope('x'.repeat(SESSION_READ_BODY_BYTES - overhead));
-    const oversized = envelope('界'.repeat(400000));
+    const expected = envelope('界'.repeat(400000));
     f.target.get('/api/klient/session-view/:sessionId/snapshot', async (request, reply) => {
       const sessionId = (request.params as { sessionId: string }).sessionId;
-      if (sessionId === 'over') return oversized;
       if (sessionId !== 'slow') return expected;
       return reply.type('application/json').send(Readable.from((async function* () {
         try { yield '{"code":0,"msg":"success","data":"';
@@ -80,11 +77,8 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     });
     const { call } = await f.start();
     const response = await call('call', { operation: 'snapshot', params: { sessionId: 'fixture' } });
-    expect(Buffer.byteLength(JSON.stringify(expected))).toBe(SESSION_READ_BODY_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(expected))).toBeGreaterThan(1024 * 1024 + 64 * 1024);
     expect(response.status).toBe(200); expect(await response.json()).toEqual(expected);
-    const refused = await call('call', { operation: 'snapshot', params: { sessionId: 'over' } });
-    expect(refused.status).toBe(500);
-    expect(await refused.text()).toContain(`exceeded ${SESSION_READ_BODY_BYTES} decoded bytes`);
     const controller = new AbortController();
     const pending = call('call', { operation: 'snapshot', params: { sessionId: 'slow' } }, controller.signal);
     const failure = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
