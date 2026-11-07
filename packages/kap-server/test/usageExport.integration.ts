@@ -1254,4 +1254,79 @@ describe('explicit billing name', () => {
     expect(summed()).toEqual(expectedTokens);
     expect(models['my-argon']?.model).toBe('wire-remote-argon');
   });
+
+  it('delivers an undelivered later window under the public billing id while an acknowledged rename stays local', async () => {
+    const pricingHome = await mkdtemp(join(tmpdir(), 'kiki-billing-ack-'));
+    cleanup.push(() => rm(pricingHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const catalogKey = 'gemini/gemini-4-argon';
+    await writeFile(join(pricingHome, 'prices.json'), JSON.stringify({
+      'gpt-5': price(rates.gpt), 'claude-sonnet-4-5': price(rates.gpt), 'private-upstream': price(rates.upstream),
+      [catalogKey]: { ...price({ input: 2e-6, output: 1e-5, read: 1e-7, write: 4e-6 }), litellm_provider: 'gemini' },
+    }));
+    const models: Record<string, ModelRecord> = { 'my-argon': { provider: 'proxy', model: 'wire-remote-argon' } };
+    const pricing = new ModelPricingService(
+      { homeDir: pricingHome } as unknown as Bootstrap,
+      stubLog(),
+      new TomlAtomicDocumentStore(new FileStorageService(pricingHome)),
+      { ready: Promise.resolve(), get: () => models } as unknown as IConfigService,
+      { scheduleRefresh: false, minimumKeys: 1, vendoredPath: join(pricingHome, 'prices.json') },
+    );
+    cleanup.push(async () => { pricing.dispose(); await drainModelPricingDisposals(); });
+    await pricing.ready;
+    const f = await fixture({}, undefined, undefined, undefined, undefined, pricing);
+    const usage = { output: tokens.output, inputCacheRead: tokens.inputCacheRead, inputCacheCreation: tokens.inputCacheCreation };
+    const wire = (time: number) => ({ ...record(time, tokens.inputOther, usage, 'my-argon'), modelAlias: 'my-argon', upstreamModelId: 'private-upstream' });
+    const startA = new Date(T).toISOString();
+    const startB = new Date(T + 1_800_000).toISOString();
+    f.add('argon');
+    await f.write('argon', 'main', [wire(T + 1)]);
+    const posts: { buckets: { model: string; bucketStart: string; inputTokens: number; source: string }[] }[] = [];
+    const adapter = createVibeUsageAdapter();
+    f.service.registerAdapter({ ...adapter, send: (batch, context) => adapter.send(batch, { ...context, post: async (request) => { posts.push(JSON.parse(gunzipSync(request.body).toString('utf8'))); return { status: 200, body: JSON.stringify({ ingested: 1, sessions: 0 }) }; } }) });
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://example.test/api/usage/ingest' }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    await enable(f.service, d.id);
+    await f.service.syncNow(d.id);
+    const acknowledged = f.store.preview(d.id).items.find((item) => item.bucket?.start_at === startA);
+    expect(posts).toEqual([{ buckets: [expect.objectContaining({ source: 'kiki', bucketStart: startA, inputTokens: 15 })] }]);
+    expect(posts[0]!.buckets[0]!.model.startsWith('custom-')).toBe(true);
+    expect(f.store.ack(d.id, acknowledged?.bucket_id ?? '')?.revision).toBe(1);
+
+    models['my-argon'] = { provider: 'proxy', model: 'wire-remote-argon', pricingModel: catalogKey };
+    await f.write('argon', 'main', [wire(T + 1), wire(T + 2), wire(T + 1_800_000 + 1)]);
+    await f.service.syncNow(d.id);
+    expect(pricing.billingName('my-argon')).toBe(catalogKey);
+    expect(pricing.publicBillingName(catalogKey)).toBe('gemini-4-argon');
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.buckets).toEqual([expect.objectContaining({ source: 'kiki', model: 'gemini-4-argon', bucketStart: startB, inputTokens: 15, cachedInputTokens: 4, outputTokens: 3, totalTokens: 18 })]);
+    expect(posts[1]!.buckets[0]!.model).toBe('gemini-4-argon');
+    expect(posts.flatMap((post) => post.buckets.map((bucket) => bucket.model))).not.toContain(catalogKey);
+    expect(JSON.stringify(posts)).not.toMatch(/-flex|-batch/);
+    expect(posts.filter((post) => post.buckets.some((bucket) => bucket.bucketStart === startA))).toHaveLength(1);
+    const renamed = f.store.preview(d.id).items.find((item) => item.bucket?.start_at === startA);
+    const later = f.store.preview(d.id).items.find((item) => item.bucket?.start_at === startB);
+    expect(renamed?.bucket?.model).toBe('gemini-4-argon');
+    expect(f.store.ack(d.id, acknowledged?.bucket_id ?? '')?.revision).toBe(1);
+    expect(f.store.ack(d.id, renamed?.bucket_id ?? '')).toBeUndefined();
+    expect(f.store.ack(d.id, later?.bucket_id ?? '')?.revision).toBe(1);
+    expect(f.store.exportQueue(d.id).some((item) => item.bucket_id === acknowledged?.bucket_id && item.operation === 'delete')).toBe(true);
+    expect(f.store.get(d.id).state).toBe('remote-diverged');
+    expect(models['my-argon']?.model).toBe('wire-remote-argon');
+
+    delete models['my-argon']!.pricingModel;
+    const startC = new Date(T + 3_600_000).toISOString();
+    await f.write('argon', 'main', [wire(T + 1), wire(T + 2), wire(T + 1_800_000 + 1), wire(T + 3_600_000 + 1)]);
+    await f.service.syncNow(d.id);
+    expect(pricing.billingName('my-argon')).toBeUndefined();
+    const postedAt = (start: string) => posts.filter((post) => post.buckets.some((bucket) => bucket.bucketStart === start));
+    expect(postedAt(startB)).toHaveLength(1);
+    expect(postedAt(startB)[0]!.buckets[0]!.model).toBe('gemini-4-argon');
+    expect(postedAt(startA).every((post) => post.buckets[0]!.model.startsWith('custom-') && post.buckets[0]!.model !== 'gemini-4-argon')).toBe(true);
+    const restored = postedAt(startA).at(-1)!;
+    expect(restored.buckets[0]).toEqual(expect.objectContaining({ source: 'kiki', bucketStart: startA, inputTokens: 30 }));
+    expect(postedAt(startC)).toEqual([expect.objectContaining({ buckets: [expect.objectContaining({ source: 'kiki', bucketStart: startC, inputTokens: 15 })] })]);
+    expect(postedAt(startC)[0]!.buckets[0]!.model.startsWith('custom-')).toBe(true);
+    expect(postedAt(startC)[0]!.buckets[0]!.model).not.toBe('gemini-4-argon');
+    expect(JSON.stringify(posts)).not.toMatch(/gemini\/gemini-4-argon|-flex|-batch/);
+    expect(f.store.ack(d.id, later?.bucket_id ?? '')?.revision).toBe(1);
+  });
 });
