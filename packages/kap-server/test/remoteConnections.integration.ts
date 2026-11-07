@@ -413,6 +413,10 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     expect((await procedure('modelResolver', 'setDefaultModel', ['synthetic-model'])).code).toBe(0);
     const sessionRead = await call(b, '/api/klient/call', { procedure: { scope: 'session', sessionId: victim.id, service: 'sessionMetadata', method: 'read' }, params: [] }, credential.ownerToken, credential.grant);
     expect(await sessionRead.json() as Promise<{ code: number }>).toMatchObject({ code: 0 });
+    const executorRead = await call(b, '/api/klient/call', { procedure: { scope: 'session', sessionId: victim.id, service: 'sessionMetadata', method: 'getAgentExecutor' }, params: ['main'] }, credential.ownerToken, credential.grant);
+    expect(await executorRead.json() as Promise<{ code: number }>).toMatchObject({ code: 0 });
+    const ungrantedExecutorRead = await call(b, '/api/klient/call', { procedure: { scope: 'session', sessionId: victim.id, service: 'sessionMetadata', method: 'getAgentExecutor' }, params: ['main'] }, credential.ownerToken);
+    expect(ungrantedExecutorRead.status).toBe(401);
     for (const [service, method, params] of [
       ['modelService', 'list', []], ['modelService', 'get', ['synthetic-model']], ['modelService', 'set', ['synthetic-model', { apiKey: 'SYNTHETIC_REPLACED' }]],
       ['modelService', 'delete', ['synthetic-model']], ['providerService', 'get', ['synthetic-model']], ['providerService', 'list', []],

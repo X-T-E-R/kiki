@@ -1927,4 +1927,43 @@ describe('live agent status during partial history recovery', () => {
         .toMatchObject({ status: 'running', busy: true });
     }
   });
+
+  it("carries subagent task executor metadata into live sources and forest nodes without a roster row", () => {
+    const parentWithExecutor = snapshot({
+      tasks: [{
+        taskId: "nested-dispatch",
+        kind: "subagent",
+        state: "completed",
+        agentId: "grandchild",
+        detached: false,
+        startedAt,
+        endedAt,
+        executorId: "example-acp",
+        executorProtocol: "acp",
+        model: "acp/model",
+        thinkingEffort: "high",
+        thinkingEffortExplicit: true,
+        outputTail: "",
+      }],
+    });
+    const snapshots = new Map([["child", parentWithExecutor]]);
+    expect(liveSourcesFromAgentSnapshots(snapshots)).toEqual([
+      expect.objectContaining({
+        subagentId: "grandchild",
+        executorId: "example-acp",
+        executorProtocol: "acp",
+        model: "acp/model",
+        thinkingEffort: "high",
+        thinkingEffortExplicit: true,
+      }),
+    ]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId["grandchild"]).toMatchObject({
+      executorId: "example-acp",
+      executorProtocol: "acp",
+      model: "acp/model",
+      thinkingEffort: "high",
+      thinkingEffortExplicit: true,
+      status: "completed",
+    });
+  });
 });

@@ -20,7 +20,7 @@ export function peerGrant(headers: IncomingMessage['headers']): string | undefin
 }
 const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['sessionIndex', new Set(['listRecent', 'get', 'count'])],
-  ['sessionMetadata', new Set(['read', 'setTitle', 'update', 'setArchived', 'registerAgent'])],
+  ['sessionMetadata', new Set(['read', 'getAgentExecutor', 'setTitle', 'update', 'setArchived', 'registerAgent'])],
   ['sessionTitleService', new Set(['generateTitle'])],
   ['sessionManager', new Set(['resume', 'restore', 'close', 'archive', 'fork', 'createChild'])],
   ['sessionActivityView', new Set(['state'])],

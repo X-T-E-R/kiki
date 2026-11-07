@@ -2308,6 +2308,32 @@ it('settles a loaded partial empty target as unavailable and never enables conti
 });
 
 
+it('enables continuation immediately for a known child before its initial transcript reset arrives', async () => {
+  const forest = testForest('running', true, { executorId: 'native' });
+  const unreadyState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: false,
+    historyCoverageKind: 'unknown' as const,
+  };
+  const controller = Object.assign(
+    controllerStub({ forest, agentStates: { child: unreadyState } }),
+    { retainAgentView: vi.fn(), releaseAgentView: vi.fn(), updateAgentView: vi.fn() },
+  );
+  await renderWorkspace({ controller, forest });
+  await settle();
+
+  expect(agentContinuationAvailable({ controller, node: forest.byId['child'], subagent: undefined, state: unreadyState })).toBe(true);
+  expect(composerInput(dock).disabled).toBe(false);
+  expect(harness.getAgentExecutor).not.toHaveBeenCalled();
+
+  const unknownNode: AgentTreeNode = {
+    agentId: 'child', parentAgentId: 'main', name: 'child', label: 'child', status: 'unknown',
+    busy: false, toolCallCount: 0, childIds: [],
+  };
+  expect(agentContinuationAvailable({ controller, node: unknownNode, subagent: undefined, state: unreadyState })).toBe(false);
+});
+
 it('keeps a known legacy child editable when its executor metadata is absent', async () => {
   harness.getAgentExecutor.mockResolvedValue(undefined);
   await renderWorkspace({ forest: testForest('completed', false) });

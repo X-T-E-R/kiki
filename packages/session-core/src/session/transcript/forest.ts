@@ -273,6 +273,9 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       label: source.label ?? snapshot.label,
       model: source.model ?? snapshot.model,
       thinkingEffort: source.thinkingEffort ?? snapshot.thinkingEffort,
+      thinkingEffortExplicit: source.thinkingEffortExplicit ?? snapshot.thinkingEffortExplicit,
+      executorId: source.executorId ?? snapshot.executorId,
+      executorProtocol: source.executorProtocol ?? snapshot.executorProtocol,
       status: snapshot.statusSource === 'runtime'
         ? snapshot.status ?? source.status
         : source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
@@ -335,6 +338,9 @@ function overlayForestDisplayFields(
       label: nextLabel,
       model: node.model ?? source.model,
       thinkingEffort: node.thinkingEffort ?? source.thinkingEffort,
+      thinkingEffortExplicit: node.thinkingEffortExplicit ?? source.thinkingEffortExplicit,
+      executorId: node.executorId ?? source.executorId,
+      executorProtocol: node.executorProtocol ?? source.executorProtocol,
       toolCallCount: nextToolCallCount,
       toolCallCountKnown: nextToolCallCountKnown,
       startedAt: presentSnapshotText(node.startedAt) ?? source.startedAt,
@@ -346,6 +352,9 @@ function overlayForestDisplayFields(
     if (
       next.model !== node.model ||
       next.thinkingEffort !== node.thinkingEffort ||
+      next.thinkingEffortExplicit !== node.thinkingEffortExplicit ||
+      next.executorId !== node.executorId ||
+      next.executorProtocol !== node.executorProtocol ||
       next.toolCallCount !== node.toolCallCount ||
       next.toolCallCountKnown !== node.toolCallCountKnown ||
       next.label !== node.label ||
@@ -440,6 +449,11 @@ export function liveSourcesFromAgentSnapshots(
         parentAgentId,
         parentToolCallId: existing?.parentToolCallId,
         name: task.name ?? task.subagentName ?? existing?.name ?? task.agentId,
+        model: task.model ?? existing?.model,
+        thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,
+        thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+        executorId: task.executorId ?? existing?.executorId,
+        executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
         status: task.state,
         description: task.description ?? existing?.description,
         summary: task.resultSummary,
