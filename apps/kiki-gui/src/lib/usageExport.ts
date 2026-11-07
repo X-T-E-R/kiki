@@ -79,7 +79,7 @@ const STATE_KEY: Record<UsageExportDestination['state'], I18nKey> = {
  */
 const CATEGORY_KEYS = [
   'adapter_unavailable', 'network', 'http_auth', 'http_rate_limited', 'http_too_large', 'invalid_protocol',
-  'partial_receipt', 'remote_diverged', 'cached_only_unsupported', 'vibe_partial_receipt', 'vibe_protected',
+  'partial_receipt', 'remote_diverged', 'cached_only_unsupported', 'vibe_zero_bucket_unsupported', 'vibe_usage_unknown', 'vibe_partial_receipt', 'vibe_protected',
   'vibe_unknown_source', 'vibe_unknown_model', 'vibe_implausible', 'script_timeout', 'script_output_limit',
   'script_spawn_failed', 'script_nonzero_exit', 'script_invalid_receipt', 'script_protocol_error', 'generic',
   'queue-full', 'scan_failed', 'scan-incomplete', 'consent-preview-changed', 'destination-not-found',

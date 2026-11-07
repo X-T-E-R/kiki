@@ -761,6 +761,24 @@ describe('a destination failure stays inside its own row', () => {
     expect(recovery).toContain('asked Kiki to slow down');
   });
 
+  it.each(['vibe_zero_bucket_unsupported', 'vibe_usage_unknown', 'cached_only_unsupported', 'invalid_protocol'] as const)('shows the retained-data reason and recovery actions for %s', async (category) => {
+    usageExport.status.mockResolvedValue({
+      ...status(),
+      destinations: [{
+        destination: destination({ state: 'quarantined', error_category: category }),
+        queue: { pending: 0, inflight: 0, quarantined: 1, bytes: 1024, limit_bytes: 52_428_800, warning: false, oldest_at: START },
+      }],
+    });
+    await render(); await click(row(ID_A));
+    const recovery = q('[data-usage-export-recovery]')!.textContent;
+    expect(recovery).toContain(translate('en', `usage.export.category.${category}`));
+    expect(recovery).toContain('Retry checks them again');
+    expect(recovery).not.toContain('PRIVATE');
+    expect(translate('zh', `usage.export.category.${category}`)).not.toBe(`usage.export.category.${category}`);
+    await click(q('[data-usage-export-retry]'));
+    expect(usageExport.retry).toHaveBeenCalledWith(ID_A);
+  });
+
   it('names a category it has no sentence for rather than hiding it', async () => {
     const unknown = 'some_future_failure';
     usageExport.status.mockResolvedValue({

@@ -866,6 +866,56 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     expect(f.store.queue(d.id).pending).toBe(0);
   });
 
+  it.each([
+    { usageKnown: true, cached: 0, category: 'vibe_zero_bucket_unsupported' },
+    { usageKnown: false, cached: 0, category: 'vibe_usage_unknown' },
+    { usageKnown: undefined, cached: 0, category: 'vibe_usage_unknown' },
+    { usageKnown: true, cached: 9, category: 'cached_only_unsupported' },
+  ])('retains $category locally across retry/restart, delivers healthy buckets once and recovers a corrected revision', async ({ usageKnown, cached, category }) => {
+    const f = await fixture(); f.add('zero-recovery');
+    const zero = { ...record(T + 1, 0, { output: 0, inputCacheRead: cached, inputCacheCreation: 0 }), usageKnown };
+    const healthy = record(T + 1_800_001, 7);
+    await f.write('zero-recovery', 'main', [zero, healthy]);
+    let ingested = 1; const posted: UsageExportBatch[] = []; const adapter = createVibeUsageAdapter();
+    const register = () => { f.service.registerAdapter({ ...adapter, send: async (batch, context) => adapter.send(batch, { ...context, post: async () => { posted.push(structuredClone(batch)); return { status: 200, body: JSON.stringify({ ingested, sessions: 0 }) }; } }) }); };
+    register();
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://example.test/api/usage/ingest' }, schedule_minutes: 120, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    const preview = await enable(f.service, d.id);
+    const retained = preview.items.find((item) => Date.parse(item.bucket!.start_at) === T)!;
+    await f.service.syncNow(d.id);
+    expect(f.store.get(d.id)).toMatchObject({ state: 'quarantined', error_category: category, enabled: true, schedule_minutes: 120 });
+    expect(f.store.exportQueue(d.id)).toEqual([retained]); expect(f.store.ack(d.id, retained.bucket_id)).toBeUndefined();
+    expect(posted).toHaveLength(1); const healthyAck = posted[0]!.items[0]!;
+    expect(f.store.ack(d.id, healthyAck.bucket_id)?.revision).toBe(1);
+    await f.restart(); register(); f.service.retry(d.id); await f.service.syncNow(d.id);
+    expect(posted).toHaveLength(1); expect(f.store.exportQueue(d.id)).toEqual([retained]);
+    expect(f.store.get(d.id)).toMatchObject({ state: 'quarantined', error_category: category });
+    await f.write('zero-recovery', 'main', [record(T + 1, 5), healthy]);
+    ingested = 0; await f.service.syncNow(d.id);
+    expect(posted).toHaveLength(2);
+    expect(posted[1]!.items).toEqual([expect.objectContaining({ bucket_id: retained.bucket_id, revision: 2 })]);
+    expect(f.store.exportQueue(d.id)).toContainEqual(retained); expect(f.store.ack(d.id, retained.bucket_id)).toBeUndefined();
+    ingested = 1; await f.service.deliver(d.id, true);
+    expect(posted[2]).toEqual(posted[1]); expect(f.store.ack(d.id, retained.bucket_id)?.revision).toBe(2);
+    expect(f.store.ack(d.id, healthyAck.bucket_id)?.revision).toBe(1);
+    expect(f.store.exportQueue(d.id)).toEqual([]); expect(f.store.get(d.id)).toMatchObject({ state: 'ready', error_category: null });
+    f.service.retry(d.id); await f.service.syncNow(d.id); expect(posted).toHaveLength(3);
+  });
+
+  it('keeps a malformed Vibe receipt retryable and reuses its original batch until a real compatible receipt arrives', async () => {
+    const f = await fixture(); f.add('vibe-response'); await f.write('vibe-response', 'main', [record(T + 1, 10)]);
+    let body = '{"success":true}'; const posted: UsageExportBatch[] = []; const adapter = createVibeUsageAdapter();
+    f.service.registerAdapter({ ...adapter, send: (batch, context) => { posted.push(structuredClone(batch)); return adapter.send(batch, { ...context, post: async () => ({ status: 200, body }) }); } });
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://example.test/api/usage/ingest' }, schedule_minutes: 120, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    await enable(f.service, d.id); await f.service.syncNow(d.id);
+    expect(f.store.get(d.id)).toMatchObject({ state: 'retrying', error_category: 'invalid_protocol', last_success_at: null });
+    const original = posted[0]!;
+    expect(f.store.ack(d.id, original.items[0]!.bucket_id)).toBeUndefined(); expect(f.store.queue(d.id).inflight).toBe(1);
+    body = '{"ingested":1,"sessions":0}'; await f.service.syncNow(d.id);
+    expect(posted).toEqual([original, original]); expect(f.store.ack(d.id, original.items[0]!.bucket_id)?.revision).toBe(1);
+    await f.service.syncNow(d.id); expect(posted).toHaveLength(2); expect(f.store.exportQueue(d.id)).toEqual([]);
+  });
+
   it.each(['keyring', 'private-file'] as const)('automatically persists to %s, cold-restores and sends the recovered bearer only after consent', async (expectedStorage) => {
     let now = T;
     const key = 'vbu_SYNTHETIC_COLD_KEY';

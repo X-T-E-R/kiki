@@ -157,6 +157,17 @@ The response carries `flow_id`, `state`, `user_code`, `verification_uri`, `expir
 
 To import an existing Vibe config without exposing its key, use the local-owner [`connect-vibe` command](../reference/command.md#kiki-usage-export).
 
+The Vibe adapter retains unsupported buckets in `queue.quarantined`, with their original items available through `GET /api/usage-export/destinations/{id}/export`. Other compatible buckets continue sending. Its local checks distinguish these reasons:
+
+| `error_category` | Meaning |
+| --- | --- |
+| `vibe_zero_bucket_unsupported` | All token counters are zero; this adapter cannot send the bucket. |
+| `vibe_usage_unknown` | All counters are zero and the bucket includes missing or legacy-zero usage. Recover its metering before retrying. |
+| `cached_only_unsupported` | Only cached input is present; this adapter requires non-cached input or output. |
+| `invalid_protocol` | The outgoing payload or the service response violates the destination protocol. A malformed response remains retryable with the same batch. |
+
+`quality.complete` reports source coverage; `missing_records` and `legacy_zero_records` retain unknown metering even for a fully scanned source. Unsupported buckets stay local without a receipt. `POST /api/usage-export/destinations/{id}/retry` checks quarantined items again. A compatible corrected revision can send normally; only its confirmed receipt retires older queued revisions of that bucket. Already acknowledged buckets are not sent again by retry.
+
 #### Provider and external-service quotas
 
 `GET /api/usage/provider-quotas` lists connected sources and cached official quotas without querying remote services. To query one source explicitly, the local owner sends `POST /api/usage/provider-quotas/refresh` with `{ "source_id": "provider:example" }`. Disable quota collection with `PUT /api/usage/provider-quotas/enabled` and `{ "source_id": "provider:example", "enabled": false }`; enabling does not query or log in, and refreshing an off source never enables it. The typed client exposes these operations as `klient.rest.providerQuotas.snapshot()`, `.refresh(sourceId)` and `.setEnabled(sourceId, enabled)`.

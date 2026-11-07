@@ -157,6 +157,17 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 
 要导入已有 Vibe 配置且不暴露密钥，本地所有者可使用 [`connect-vibe` 命令](../reference/command.md#kiki-usage-export)。
 
+Vibe 适配器把不支持的桶保留在 `queue.quarantined`，可通过 `GET /api/usage-export/destinations/{id}/export` 下载原始 item。其他兼容的桶继续发送。本地检查区分以下原因：
+
+| `error_category` | 含义 |
+| --- | --- |
+| `vibe_zero_bucket_unsupported` | 所有 token 计数均为零，当前适配器无法发送。 |
+| `vibe_usage_unknown` | 所有计数均为零，且桶包含缺失用量或旧格式的未知零值。恢复计量后可以重试。 |
+| `cached_only_unsupported` | 只有缓存读取，当前适配器要求存在非缓存输入或输出。 |
+| `invalid_protocol` | 待发载荷或服务方响应不符合目的端协议。响应格式错误时保留同一批次重试。 |
+
+`quality.complete` 表示来源覆盖情况；即使来源已完整扫描，`missing_records` 和 `legacy_zero_records` 仍保留未知计量状态。不支持的桶留在本地，不生成回执。`POST /api/usage-export/destinations/{id}/retry` 重新检查隔离项。修正后的兼容版本可以正常发送；只有收到该版本的确认回执后，才移除这个桶在队列中的较旧版本。重试不会重新发送已确认的桶。
+
 #### 供应商与外部服务剩余额度
 
 `GET /api/usage/provider-quotas` 列出已连接来源及缓存的官方额度，不向远端服务发请求。要明确查询一个来源，由 local owner 向 `POST /api/usage/provider-quotas/refresh` 发送 `{ "source_id": "provider:example" }`。向 `PUT /api/usage/provider-quotas/enabled` 发送 `{ "source_id": "provider:example", "enabled": false }` 可关闭额度采集；开启本身不查询、不登录，刷新已关闭来源也不会自动开启。类型客户端对应方法为 `klient.rest.providerQuotas.snapshot()`、`.refresh(sourceId)` 和 `.setEnabled(sourceId, enabled)`。

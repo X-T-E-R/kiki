@@ -61,8 +61,13 @@ export function requiresVibeRemoteRebuild(previous: UsageExportItem, next: Usage
 export function mapVibeUsageBatch(batch: UsageExportBatch): z.infer<typeof vibeUsagePayloadSchema> {
   const parsed = usageExportBatchSchema.parse(batch);
   if (parsed.items.length !== 1) throw new Error('vibe_single_bucket_required');
-  const bucket = mapVibeUsageBucket(parsed.items[0]!);
-  if (bucket.totalTokens === 0) throw new Error(bucket.cachedInputTokens > 0 ? 'cached_only_unsupported' : 'vibe_zero_bucket_unsupported');
+  const item = parsed.items[0]!;
+  const bucket = mapVibeUsageBucket(item);
+  if (bucket.totalTokens === 0) {
+    if (bucket.cachedInputTokens > 0) throw new Error('cached_only_unsupported');
+    if (item.bucket!.quality.missing_records > 0 || item.bucket!.quality.legacy_zero_records > 0) throw new Error('vibe_usage_unknown');
+    throw new Error('vibe_zero_bucket_unsupported');
+  }
   return vibeUsagePayloadSchema.parse({ buckets: [bucket] });
 }
 
@@ -111,7 +116,8 @@ export function createVibeUsageAdapter(): UsageExportAdapter {
         if (previous !== undefined && (item.operation === 'delete' || requiresVibeRemoteRebuild(previous, item, previousMapping))) return { outcome: 'remote-diverged', errorCategory: 'remote_diverged' };
         payload = mapVibeUsageBatch(parsed);
       } catch (error) {
-        return { outcome: 'invalid', errorCategory: error instanceof Error && error.message === 'cached_only_unsupported' ? 'cached_only_unsupported' : 'invalid_protocol' };
+        const category = error instanceof Error ? error.message : undefined;
+        return { outcome: 'invalid', errorCategory: category === 'cached_only_unsupported' || category === 'vibe_zero_bucket_unsupported' || category === 'vibe_usage_unknown' ? category : 'invalid_protocol' };
       }
       const result = await postVibe(payload, context);
       if (result.outcome !== 'delivered') return result;

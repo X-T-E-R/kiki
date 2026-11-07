@@ -75,6 +75,20 @@ describe('vibe bucket adapter', () => {
     const cached = batch(); cached.items[0]!.bucket!.tokens = { input_other: 0, input_cache_read: 9, input_cache_creation: 0, output: 0 };
     expect(await createVibeUsageAdapter().send(cached, vibeContext({ ingested: 1 }))).toEqual({ outcome: 'invalid', errorCategory: 'cached_only_unsupported' });
   });
+  it.each([
+    { known: 1, missing: 0, legacy: 0, cached: 0, category: 'vibe_zero_bucket_unsupported' },
+    { known: 0, missing: 5, legacy: 0, cached: 0, category: 'vibe_usage_unknown' },
+    { known: 0, missing: 0, legacy: 1, cached: 0, category: 'vibe_usage_unknown' },
+    { known: 1, missing: 0, legacy: 0, cached: 9, category: 'cached_only_unsupported' },
+  ])('keeps zero-compatible local facts intact and classifies $category before posting ($known/$missing/$legacy/$cached)', async ({ known, missing, legacy, cached, category }) => {
+    const b = batch();
+    b.items[0]!.bucket!.tokens = { input_other: 0, input_cache_read: cached, input_cache_creation: 0, output: 0 };
+    Object.assign(b.items[0]!.bucket!.quality, { known_records: known, missing_records: missing, legacy_zero_records: legacy });
+    const before = structuredClone(b); const context = vibeContext({ ingested: 1 });
+    expect(() => mapVibeUsageBatch(b)).toThrow(category);
+    expect(await createVibeUsageAdapter().send(b, context)).toEqual({ outcome: 'invalid', errorCategory: category });
+    expect(context.post).not.toHaveBeenCalled(); expect(b).toEqual(before);
+  });
   it('preflights persisted ACK mapped reductions/key changes with zero POST, not local quality/price-only changes', async () => {
     const previousAcknowledged = batch().items;
     for (const change of [

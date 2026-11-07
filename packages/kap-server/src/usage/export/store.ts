@@ -285,7 +285,7 @@ export class UsageExportStore {
           const sourceRow = this.db.prepare('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?').get(id, item.bucket_id, item.revision) as Row | undefined;
           const origins = String(sourceRow?.['origins'] ?? (this.db.prepare('SELECT origins FROM acknowledgements WHERE dest=? AND bucket=?').get(id, item.bucket_id) as Row | undefined)?.['origins'] ?? '[]');
           this.db.prepare('INSERT INTO acknowledgements(dest,bucket,revision,hash,confirmed,item,origins,mapping_version) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,confirmed=excluded.confirmed,item=excluded.item,origins=excluded.origins,mapping_version=excluded.mapping_version WHERE excluded.revision>=acknowledgements.revision').run(id, ack.bucket_id, ack.revision, ack.payload_hash, now, JSON.stringify(item), origins, mappingVersion);
-          this.db.prepare('DELETE FROM outbox WHERE dest=? AND bucket=? AND revision=?').run(id, ack.bucket_id, item.revision); acknowledged++;
+          this.db.prepare('DELETE FROM outbox WHERE dest=? AND bucket=? AND revision<=?').run(id, ack.bucket_id, item.revision); acknowledged++;
         } else if (['conflict', 'rejected', 'remote_diverged', 'stale'].includes(ack.status)) {
           this.db.prepare("UPDATE outbox SET state='quarantined' WHERE dest=? AND bucket=? AND revision=?").run(id, ack.bucket_id, item.revision); rejected++;
           this.update(id, { state: ack.status === 'remote_diverged' ? 'remote-diverged' : 'quarantined', error_category: `receipt-${ack.status}` });
