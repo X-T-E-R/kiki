@@ -47,7 +47,7 @@ export async function postUsageExport(
   if (signal.aborted || !permit()) throw new Error('export-dispatch-revoked');
   return new Promise((resolve, reject) => {
     const transport = plan.url.protocol === 'https:' ? httpsRequest : httpRequest;
-    const req = transport({ hostname: plan.url.hostname, port: plan.url.port, path: plan.url.pathname, method: 'POST', headers, agent: false, family: plan.family, signal, lookup: (_host, _options, callback) => callback(null, plan.ip, plan.family) }, (res) => {
+    const req = transport({ hostname: plan.url.hostname, port: plan.url.port, path: plan.url.pathname, method: 'POST', headers, agent: false, family: plan.family, signal, lookup: (_host, _options, callback) => { queueMicrotask(() => { callback(null, plan.ip, plan.family); }); } }, (res) => {
       const chunks: Buffer[] = []; let bytes = 0;
       res.on('data', (value: Buffer) => { bytes += value.length; if (bytes > 65_536) req.destroy(new Error('export-response-too-large')); else chunks.push(value); });
       res.on('aborted', () => reject(new Error('export-response-aborted'))); res.on('error', reject);

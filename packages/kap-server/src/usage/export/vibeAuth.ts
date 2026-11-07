@@ -118,7 +118,7 @@ export const requestVibeAuth: VibeAuthRequest = async (path, input, signal) => {
   const plan = await planHttpConnection({ url: `${VIBE_CAFE_ORIGIN}${path}`, body: '', content_type: 'application/json' });
   const body = Buffer.from(JSON.stringify(input));
   return new Promise((resolve, reject) => {
-    const req = request({ hostname: plan.url.hostname, path, port: plan.url.port, method: 'POST', agent: false, family: plan.family, signal, lookup: (_host, _options, callback) => callback(null, plan.ip, plan.family), headers: { 'content-type': 'application/json', 'content-length': body.length } }, (res) => {
+    const req = request({ hostname: plan.url.hostname, path, port: plan.url.port, method: 'POST', agent: false, family: plan.family, signal, lookup: (_host, _options, callback) => { queueMicrotask(() => { callback(null, plan.ip, plan.family); }); }, headers: { 'content-type': 'application/json', 'content-length': body.length } }, (res) => {
       const chunks: Buffer[] = []; let bytes = 0;
       res.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 16384) req.destroy(new Error('vibe-auth-invalid-response')); else chunks.push(chunk); });
       res.on('error', reject); res.on('aborted', () => reject(new Error('vibe-auth-network')));

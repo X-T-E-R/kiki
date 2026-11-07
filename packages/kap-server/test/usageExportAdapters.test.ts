@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import type { IModelPricingService } from '../src/pricing/modelPricingService';
 import { projectSource } from '../src/usage/export/projection';
@@ -39,6 +41,41 @@ const scriptPath = fileURLToPath(new URL('./fixtures/usage-export-script.mjs', i
 function scriptContext(mode = 'success', timeout_ms = 5000, signal = new AbortController().signal): UsageExportAdapterContext {
   return { target: { kind: 'script', command: `"${process.execPath}" "${scriptPath}" ${mode}`, timeout_ms, output_limit_bytes: 4096 }, signal, post: vi.fn(async () => { throw new Error('No HTTP from script adapter'); }) };
 }
+
+describe('pinned usage HTTPS connection errors', () => {
+  it.each(['export', 'auth'])('rejects %s ENOBUFS without an uncaught socket error', async (surface) => {
+    const script = `
+      import { registerHooks } from 'node:module';
+      const uv = process.binding('uv');
+      const { TCP } = process.binding('tcp_wrap');
+      let connections = 0;
+      TCP.prototype.connect = function () { connections++; return uv.UV_ENOBUFS; };
+      registerHooks({
+        resolve(specifier, context, next) {
+          if (specifier === '@nb-im/core') return { url: 'data:text/javascript,' + encodeURIComponent(
+            'export const validateHttpEndpoint = (url) => new URL(url);' +
+            'export const planHttpConnection = async () => ({ url: new URL("https://example.test/ingest"), ip: "192.0.2.1", family: 4 });'
+          ), shortCircuit: true };
+          return next(specifier, context);
+        }
+      });
+      let caught;
+      const signal = new AbortController().signal;
+      if (process.argv[1] === 'export') {
+        const { postUsageExport } = await import(${JSON.stringify(new URL('../src/usage/export/transport.ts', import.meta.url).href)});
+        await postUsageExport({ id: 'test', credential_storage: 'none', target: { kind: 'webhook', endpoint: 'https://example.test/ingest', authentication: 'none' } },
+          { body: Buffer.from('{}'), contentType: 'application/json' }, { read: async () => undefined }, 'batch', signal, () => true).catch(error => { caught = error.code; });
+      } else {
+        const { requestVibeAuth } = await import(${JSON.stringify(new URL('../src/usage/export/vibeAuth.ts', import.meta.url).href)});
+        await requestVibeAuth('/api/usage/device/code', {}, signal).catch(error => { caught = error.code; });
+      }
+      console.log(JSON.stringify({ caught, connections }));
+    `;
+    const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script, surface], { timeout: 15_000 });
+    expect(result.stdout.trim()).toBe(JSON.stringify({ caught: 'ENOBUFS', connections: 1 }));
+    expect(result.stderr).not.toContain("Unhandled 'error' event");
+  });
+});
 
 describe('vibe bucket adapter', () => {
   it('preserves four-counter mapped total, opaque namespace and known slash model without TTL/cost/content', async () => {
