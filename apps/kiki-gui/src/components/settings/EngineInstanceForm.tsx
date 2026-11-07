@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { executorInstanceConfigSchema, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfig, type ExecutorInstanceConfiguration, type ExecutorInstanceProxy } from '@kiki/protocol';
+import { executorInstancePatchSchema, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfiguration, type ExecutorInstanceResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -10,6 +10,8 @@ import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { executorCatalogQueryKey } from './profileEditor/engines';
 
 const PROXY_KINDS = ['inherit', 'direct', 'url', 'env'] as const;
+type Proxy = ExecutorInstanceResponse['proxy'];
+type AuthorizationDraft = { mode: 'keep' | 'clear' } | { mode: 'set'; username: string; password: string };
 
 export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved }: {
   item?: ExecutorCatalogItem;
@@ -25,7 +27,9 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
   const current = item?.instance;
   const [label, setLabel] = useState(current?.label ?? '');
   const [configuration, setConfiguration] = useState<ExecutorInstanceConfiguration>(current?.configuration ?? { kind: 'inherit' });
-  const [proxy, setProxy] = useState<ExecutorInstanceProxy>(current?.proxy ?? { kind: 'inherit' });
+  const [proxy, setProxy] = useState<Proxy>(current?.proxy ?? { kind: 'inherit' });
+  const [authorization, setAuthorization] = useState<AuthorizationDraft>({ mode: 'keep' });
+  const hasAuthorization = proxy.kind === 'url' && proxy.has_authorization === true;
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const executors = client.klient?.rest?.executors;
@@ -57,7 +61,12 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
 
   const save = async () => {
     if (saving || source === undefined || unsupported || !readyAccount) return;
-    const parsed = executorInstanceConfigSchema.safeParse({ source_executor: source.id, label, configuration, proxy });
+    const proxyPatch = proxy.kind === 'url' ? {
+      kind: proxy.kind, url: proxy.url,
+      authorization: authorization.mode === 'clear' ? null : authorization.mode === 'set'
+        ? { username: authorization.username, password: authorization.password } : undefined,
+    } : proxy;
+    const parsed = executorInstancePatchSchema.safeParse({ source_executor: source.id, label, configuration, proxy: proxyPatch });
     if (!parsed.success) {
       setFeedback({ tone: 'error', text: t('st.engines.instance.invalid') });
       return;
@@ -66,8 +75,10 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
     setFeedback(null);
     try {
       const instanceId = item?.id ?? `instance-${globalThis.crypto.randomUUID()}`;
-      const next: ExecutorInstanceConfig = parsed.data;
-      await client.patchConfig({ agent_executor_instances: { [instanceId]: next } });
+      const echoed = await client.patchConfig({ agent_executor_instances: { [instanceId]: parsed.data } });
+      const saved = echoed.agent_executor_instances?.[instanceId];
+      if (saved !== undefined) setProxy(saved.proxy);
+      setAuthorization({ mode: 'keep' });
       await Promise.all([
         queries.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) }),
         queries.invalidateQueries({ queryKey: ['engine-discovery', scopeId, meta?.server_id ?? ''] }),
@@ -88,9 +99,10 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
     else if (kind === 'plugin_account') setConfiguration({ kind, source: accountSources[0]?.id ?? '', account_id: '' });
     else setConfiguration({ kind });
   };
-  const selectProxy = (kind: ExecutorInstanceProxy['kind']) => {
+  const selectProxy = (kind: Proxy['kind']) => {
     setFeedback(null);
-    if (kind === 'url') setProxy({ kind, url: '' });
+    setAuthorization({ mode: 'keep' });
+    if (kind === 'url') setProxy(current?.proxy.kind === 'url' ? current.proxy : { kind, url: '' });
     else if (kind === 'env') setProxy({ kind, name: '' });
     else setProxy({ kind });
   };
@@ -153,16 +165,48 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
         <div className="min-w-0 space-y-1.5">
           <label htmlFor={`${id}-proxy`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy')}</label>
           <select id={`${id}-proxy`} data-instance-proxy className={INPUT} value={proxy.kind} disabled={saving}
-            onChange={(event) => selectProxy(event.target.value as ExecutorInstanceProxy['kind'])}>
+            onChange={(event) => selectProxy(event.target.value as Proxy['kind'])}>
             {PROXY_KINDS.map((kind) => <option key={kind} value={kind}>{t(`st.engines.instance.proxy.${kind}`)}</option>)}
           </select>
           {proxy.kind === 'url' || proxy.kind === 'env' ? <>
             <input data-instance-proxy-value aria-label={t(`st.engines.instance.proxy.${proxy.kind}`)} className={`${INPUT} font-mono`}
               required spellCheck={false} disabled={saving} value={proxy.kind === 'url' ? proxy.url : proxy.name}
               placeholder={proxy.kind === 'url' ? 'http://127.0.0.1:8080' : 'WORK_PROXY_URL'}
-              onChange={(event) => setProxy(proxy.kind === 'url' ? { kind: 'url', url: event.target.value } : { kind: 'env', name: event.target.value })} />
+              onChange={(event) => setProxy(proxy.kind === 'url' ? { ...proxy, url: event.target.value } : { kind: 'env', name: event.target.value })} />
             <p className="text-[12px] leading-4 text-ink-faint">{t(proxy.kind === 'url' ? 'st.engines.instance.proxy.urlHint' : 'st.engines.instance.proxy.envHint')}</p>
           </> : null}
+          {proxy.kind === 'url' ? <div className="space-y-2 pt-1" data-instance-authorization={authorization.mode}>
+            {authorization.mode === 'set' ? <>
+              <div className="space-y-1">
+                <label htmlFor={`${id}-proxy-user`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy.username')}</label>
+                <input id={`${id}-proxy-user`} data-instance-proxy-username className={INPUT} autoComplete="off"
+                  required spellCheck={false} disabled={saving} value={authorization.username}
+                  onChange={(event) => setAuthorization({ ...authorization, username: event.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor={`${id}-proxy-password`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy.password')}</label>
+                <input id={`${id}-proxy-password`} data-instance-proxy-password className={INPUT} type="password" autoComplete="new-password"
+                  required disabled={saving} value={authorization.password}
+                  onChange={(event) => setAuthorization({ ...authorization, password: event.target.value })} />
+              </div>
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-undo
+                onClick={() => setAuthorization({ mode: 'keep' })}>{t('common.cancel')}</button>
+            </> : authorization.mode === 'clear' ? <>
+              <p className="text-[12px] leading-4 text-ink-soft" role="status">{t('st.engines.instance.proxy.clearPending')}</p>
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-undo
+                onClick={() => setAuthorization({ mode: 'keep' })}>{t('st.secret.undoClear')}</button>
+            </> : <>
+              {hasAuthorization ? <p className="text-[12px] leading-4 text-ink-soft" role="status">{t('st.engines.instance.proxy.saved')}</p> : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-auth-edit
+                  onClick={() => setAuthorization({ mode: 'set', username: '', password: '' })}>
+                  {t(hasAuthorization ? 'st.engines.instance.proxy.replace' : 'st.engines.instance.proxy.add')}
+                </button>
+                {hasAuthorization ? <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-auth-clear
+                  onClick={() => setAuthorization({ mode: 'clear' })}>{t('st.engines.instance.proxy.clear')}</button> : null}
+              </div>
+            </>}
+          </div> : null}
         </div>
       </div>
       <div className="space-y-2 border-t border-hairline pt-3">

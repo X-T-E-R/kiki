@@ -2855,7 +2855,11 @@ class FixtureServer {
         const instances = { ...this.config.agent_executor_instances };
         for (const [id, entry] of Object.entries(instancesPatch)) {
           if (entry === null) delete instances[id];
-          else instances[id] = structuredClone(entry);
+          else if (entry.proxy.kind === 'url') {
+            const { authorization, ...proxy } = entry.proxy;
+            const hasAuthorization = authorization === undefined ? instances[id]?.proxy.has_authorization : authorization !== null;
+            instances[id] = { ...entry, proxy: { ...proxy, has_authorization: hasAuthorization || undefined } };
+          } else instances[id] = structuredClone(entry);
         }
         this.config.agent_executor_instances = instances;
       }

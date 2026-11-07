@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { IAgentExecutorRegistry, IAgentLifecycleService, IPluginService, IPluginSettingsService, ISessionManager } from '@kiki/agent-core-v2';
 import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
-import type { ExecutorInstanceConfig, GetExecutorModelsResponse, ListExecutorsResponse } from '@kiki/protocol';
+import { createKlient as createHttpKlient } from '@kiki/klient/http';
+import type { ExecutorInstancePatch, GetExecutorModelsResponse, ListExecutorsResponse } from '@kiki/protocol';
 
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
@@ -29,10 +30,19 @@ async function listen(server: Server): Promise<number> {
   return address.port;
 }
 
-it('uses only the selected plugin account through the HTTP-to-harness execution path', async () => {
+it('uses only the selected plugin account and saved proxy through HTTP-to-harness execution', async () => {
   const home = await mkdtemp(join(tmpdir(), 'kiki-plugin-accounts-'));
   const audit = join(home, 'agy-audit');
+  const credentialFile = join(home, 'credentials', 'credentials.toml');
   const codexPath = process.env['KIKI_TEST_CODEX_PATH'];
+  const auth = { username: 'fixture-proxy@user', password: 'fixture-proxy%:password' };
+  const replacement = { ...auth, password: 'fixture-proxy@replacement' };
+  const httpUrl = 'http://127.0.0.1:54320';
+  const socksUrl = 'socks5h://127.0.0.1:54321';
+  const expectedProxy = new Map<string, string>([
+    ['work', 'http://fixture-proxy%40user:fixture-proxy%25%3Apassword@127.0.0.1:54320/'],
+    ['personal', 'socks5h://fixture-proxy%40user:fixture-proxy%25%3Apassword@127.0.0.1:54321'],
+  ]);
   const leaseEvents: Array<{ action: string; accountId?: string; instanceId?: string; proxy?: unknown }> = [];
   const observations: Array<{ account: string; path?: string; keyMatches: boolean; body: Record<string, unknown> }> = [];
   const leases = new Map<string, string>();
@@ -75,7 +85,9 @@ it('uses only the selected plugin account through the HTTP-to-harness execution 
     }
     const { accountId, instanceId, proxy, engineId } = input;
     leaseEvents.push({ action: 'prepare', accountId, instanceId, proxy });
-    if (!endpoints.has(accountId)) { res.writeHead(403); res.end('{}'); return; }
+    if (!endpoints.has(accountId) || engineId === 'agy-cli' && proxy.url !== expectedProxy.get(accountId)) {
+      res.writeHead(403); res.end('{}'); return;
+    }
     const leaseId = `fixture-lease-${++nextLease}`;
     leases.set(leaseId, accountId);
     const codex = engineId === 'codex-app-server';
@@ -140,15 +152,35 @@ it('uses only the selected plugin account through the HTTP-to-harness execution 
     expect(leaseEvents).toEqual([]);
     const listed = await ok(`/executors/agy-cli/accounts?source=${encodeURIComponent(sourceId)}`);
     expect(listed).toEqual({ items: accounts.map(({ id, label, status }) => ({ id, label, status })) });
-    const instance = (account_id: string, proxy: ExecutorInstanceConfig['proxy'], source_executor = 'agy-cli'): ExecutorInstanceConfig => ({
+    const instance = (account_id: string, proxy: ExecutorInstancePatch['proxy'], source_executor = 'agy-cli'): ExecutorInstancePatch => ({
       source_executor, label: `Fixture ${account_id}`, configuration: { kind: 'plugin_account', source: sourceId, account_id }, proxy,
     });
-    await ok('/config', 'POST', { agent_executor_instances: {
-      'instance-work': instance('work', { kind: 'direct' }),
-      'instance-personal': instance('personal', { kind: 'url', url: 'socks5://127.0.0.1:54321' }),
+    const client = createHttpKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
+    const saved = await client.rest!.config.patch({ agent_executor_instances: {
+      'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: auth }),
+      'instance-personal': instance('personal', { kind: 'url', url: socksUrl, authorization: auth }),
       'instance-signed-out': instance('signed-out', { kind: 'inherit' }),
       ...(codexPath === undefined ? {} : { 'instance-codex': instance('work', { kind: 'direct' }, 'codex-app-server') }),
     } });
+    expect(saved.agent_executor_instances?.['instance-work']?.proxy).toEqual({ kind: 'url', url: httpUrl, has_authorization: true });
+    expect(saved.raw?.['agent_executor_instances']).toEqual(saved.agent_executor_instances);
+    const publicViews = [saved, await client.rest!.config.get(), await client.rest!.executors.list(),
+      await ok('/executors/instance-work'), await readFile(join(home, 'config.toml'), 'utf8')];
+    expect(JSON.stringify(publicViews)).not.toMatch(/fixture-proxy|"authorization"\s*:/);
+    expect(await readFile(credentialFile, 'utf8')).toContain(auth.password);
+    const firstRevision = executors().get('instance-work')!.revision;
+    await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl }) } });
+    expect(executors().get('instance-work')!.revision).toBe(firstRevision);
+    await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: replacement }) } });
+    expect(executors().get('instance-work')!.instanceProxyUrl).toContain('fixture-proxy%40replacement');
+    expect(executors().get('instance-work')!.env?.['HTTPS_PROXY']).toBeUndefined();
+    expect(executors().get('instance-work')!.revision).not.toBe(firstRevision);
+    await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: null }) } });
+    expect(executors().get('instance-work')!.env?.['HTTPS_PROXY']).toBe(httpUrl);
+    expect(await readFile(credentialFile, 'utf8')).not.toContain(replacement.password);
+    await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: auth }) } });
+    expect(executors().get('instance-work')!.revision).toBe(firstRevision);
+    await client.close();
     expect(await ok('/executors/instance-work/check', 'POST')).toMatchObject({ status: 'ready', credential_source: 'external_backend', credential_detail: expect.stringContaining('Work login') });
     expect(await ok('/executors/instance-signed-out/check', 'POST')).toMatchObject({ status: 'unavailable', login_status: 'logged_out' });
     const initialModels = await ok<GetExecutorModelsResponse>('/executors/instance-work/models:refresh', 'POST');
@@ -157,8 +189,8 @@ it('uses only the selected plugin account through the HTTP-to-harness execution 
     const [a, b, defaultAgy, unavailable] = await Promise.all(['instance-work', 'instance-personal', 'agy-cli', 'instance-signed-out'].map(create));
     expect((await Promise.all([send(a!, 'work request'), send(b!, 'personal request'), send(defaultAgy!, 'default request')])).map(({ code }) => code)).toEqual([0, 0, 0]);
     expect(leaseEvents.filter(({ action }) => action === 'prepare').toSorted((x, y) => x.accountId!.localeCompare(y.accountId!))).toEqual([
-      { action: 'prepare', accountId: 'personal', instanceId: 'instance-personal', proxy: { mode: 'custom', url: 'socks5://127.0.0.1:54321' } },
-      { action: 'prepare', accountId: 'work', instanceId: 'instance-work', proxy: { mode: 'direct' } },
+      { action: 'prepare', accountId: 'personal', instanceId: 'instance-personal', proxy: { mode: 'custom', url: expectedProxy.get('personal') } },
+      { action: 'prepare', accountId: 'work', instanceId: 'instance-work', proxy: { mode: 'custom', url: expectedProxy.get('work') } },
     ]);
     expect(observations.toSorted((x, y) => x.account.localeCompare(y.account))).toMatchObject(['personal', 'work'].map((account) => ({
       account, keyMatches: true, path: `/v1beta/models/${account}-fixture-model:streamGenerateContent?alt=sse`, body: {
@@ -189,9 +221,27 @@ it('uses only the selected plugin account through the HTTP-to-harness execution 
       expect((await send(codex, 'codex fixture request')).code).toBe(0);
       expect(observations.at(-1)).toMatchObject({ account: 'work', path: '/v1/responses', keyMatches: true, body: { model: 'gpt-5.4' } });
     }
+    await manager().close(a!);
+    await ok('/config', 'POST', { agent_executor_instances: {
+      'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: replacement }),
+    } });
+    const previousPrepares = leaseEvents.filter(({ action }) => action === 'prepare').length;
+    expect((await send(a!, 'existing binding')).code).not.toBe(0);
+    expect(leaseEvents.filter(({ action }) => action === 'prepare')).toHaveLength(previousPrepares);
+    const observationCount = observations.length;
+    const denied = await send(await create('instance-work'), 'wrong proxy password');
+    expect(denied.code).not.toBe(0);
+    expect(denied.msg).toContain(sourceId);
+    const attempts = leaseEvents.filter(({ action }) => action === 'prepare').slice(previousPrepares);
+    expect(attempts.length).toBeGreaterThan(0);
+    for (const attempt of attempts) expect(attempt).toEqual({
+      action: 'prepare', accountId: 'work', instanceId: 'instance-work',
+      proxy: { mode: 'custom', url: 'http://fixture-proxy%40user:fixture-proxy%40replacement@127.0.0.1:54320/' },
+    });
+    expect(observations).toHaveLength(observationCount);
     const config = await ok('/config');
     const auditContent = await Promise.all((await readdir(audit)).filter((name) => name.endsWith('.ndjson')).map((name) => readFile(join(audit, name), 'utf8')));
-    expect(JSON.stringify([listed, config, await list(), ...auditContent])).not.toMatch(/fixture-capability|fixture-lease|fixture-oauth/);
+    expect(JSON.stringify([listed, config, await list(), denied, ...auditContent])).not.toMatch(/fixture-capability|fixture-lease|fixture-oauth|fixture-proxy/);
     expect(executors().get('agy-cli')!.revision).toBe(defaultRevision);
     await plugins().setPluginEnabled({ id: 'fixture-account-source', enabled: false });
     expect(await ok('/executors/agy-cli/account-sources')).toEqual({ items: [] });

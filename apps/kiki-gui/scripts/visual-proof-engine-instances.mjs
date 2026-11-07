@@ -122,9 +122,27 @@ async function walk({ page, link, shot, view, control }) {
   await agyCreate.locator('[data-instance-name]').fill('AGY Work account');
   await agyCreate.locator('[data-instance-proxy]').selectOption('url');
   await agyCreate.locator('[data-instance-proxy-value]').fill('http://127.0.0.1:8080');
+  await agyCreate.locator('[data-instance-proxy-auth-edit]').click();
+  const auth = { username: 'fixture-proxy-user', password: 'fixture-proxy-password' };
+  const enterAuth = async (form, value) => {
+    await form.locator('[data-instance-proxy-username]').fill(value.username);
+    const password = form.locator('[data-instance-proxy-password]');
+    assert.equal(await password.getAttribute('type'), 'password');
+    await password.fill(value.password);
+  };
+  const saveInstance = async (form) => {
+    const response = page.waitForResponse((result) => new URL(result.url()).pathname === '/api/config' && result.request().method() === 'POST');
+    await form.locator('[data-instance-save]').click();
+    const saved = await response;
+    const payload = await saved.json();
+    assert.equal(payload.code, 0);
+    assert.doesNotMatch(JSON.stringify(payload.data), /fixture-proxy-(user|password)/);
+    return Object.values(saved.request().postDataJSON().agent_executor_instances)[0].proxy;
+  };
+  await enterAuth(agyCreate, auth);
   await agyCreate.scrollIntoViewIfNeeded();
   await shot(`agy-account-create-${view.locale}-${view.width}`);
-  await agyCreate.locator('[data-instance-save]').click();
+  assert.deepEqual((await saveInstance(agyCreate)).authorization, auth);
 
   const agyEdit = page.locator('[data-engine-instance-form="edit"]');
   await agyEdit.waitFor();
@@ -136,6 +154,26 @@ async function walk({ page, link, shot, view, control }) {
   assert.equal(await agyEdit.locator('[data-instance-proxy-value]').inputValue(), 'http://127.0.0.1:8080');
   await agyEdit.scrollIntoViewIfNeeded();
   await shot(`agy-account-edit-${view.locale}-${view.width}`);
+  assert.equal(await agyEdit.locator('[data-instance-proxy-password]').count(), 0);
+  await agyEdit.locator('[data-instance-proxy]').selectOption('direct');
+  await agyEdit.locator('[data-instance-proxy]').selectOption('url');
+  assert.equal(await agyEdit.locator('[data-instance-proxy-value]').inputValue(), 'http://127.0.0.1:8080');
+  assert.equal(await agyEdit.locator('[data-instance-proxy-auth-clear]').count(), 1);
+  assert.equal((await saveInstance(agyEdit)).authorization, undefined);
+  await agyEdit.locator('[data-instance-proxy-auth-edit]').click();
+  assert.equal(await agyEdit.locator('[data-instance-proxy-username]').inputValue(), '');
+  assert.equal(await agyEdit.locator('[data-instance-proxy-password]').inputValue(), '');
+  const replacement = { ...auth, password: 'fixture-proxy-password-replaced' };
+  await enterAuth(agyEdit, replacement);
+  assert.deepEqual((await saveInstance(agyEdit)).authorization, replacement);
+  await agyEdit.locator('[data-instance-proxy-auth-clear]').click();
+  await agyEdit.locator('[data-instance-proxy-undo]').click();
+  assert.equal((await saveInstance(agyEdit)).authorization, undefined);
+  await agyEdit.locator('[data-instance-proxy-auth-clear]').click();
+  assert.equal((await saveInstance(agyEdit)).authorization, null);
+  await agyEdit.locator('[data-instance-proxy-auth-edit]').click();
+  await enterAuth(agyEdit, auth);
+  assert.deepEqual((await saveInstance(agyEdit)).authorization, auth);
 
   await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
   const profileTrigger = page.locator('[data-profile-trigger]').first();

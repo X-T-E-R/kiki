@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ExecutionBinding, ExecutorInstanceConfig, ExecutorInstanceIssue } from '@kiki/protocol';
+import type { ExecutionBinding, ExecutorInstanceResponse, ExecutorInstanceIssue } from '@kiki/protocol';
 
 import {
   createDecorator,
@@ -141,7 +141,8 @@ export type AgentExecutorDiagnosticRule =
 
 export interface AgentExecutorDescriptor {
   readonly id: string;
-  readonly instance?: ExecutorInstanceConfig;
+  readonly instance?: ExecutorInstanceResponse;
+  readonly instanceProxyUrl?: string;
   readonly instanceIssue?: ExecutorInstanceIssue;
   readonly registryRevision?: string;
   readonly envUnset?: readonly string[];

@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
+import { executorInstanceProxyPatchSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostProcessServiceLike } from '@kiki/acp-client';
 
@@ -254,6 +256,44 @@ describe('AgentExecutorRegistryService', () => {
     expect(descriptor.instanceIssue).toBeUndefined();
     expect(redactExecutorOutput(descriptor, 'socks5h://example-user:p%40ssword@127.0.0.1:1080 example-user p%40ssword p@ssword'))
       .toBe('[redacted] [redacted] [redacted] [redacted]');
+  });
+
+  it('encodes stored proxy authentication without treating literal percent escapes as decoded text', () => {
+    const authorization = { username: 'example@user', password: 'example%40:password' };
+    const instances = AgentExecutorInstancesSchema.parse({ 'instance-work': {
+      source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' },
+      proxy: { kind: 'url', url: 'socks5h://127.0.0.1:1080', authorization },
+    } });
+    const config = configWith({});
+    services.set(IConfigService, { ...config, get: <T>(section: string) => section === AGENT_EXECUTOR_INSTANCES_SECTION ? instances as T : config.get<T>(section) });
+    services.set(IBootstrapService, { getEnv: () => undefined } as unknown as IBootstrapService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const descriptor = services.get(IAgentExecutorRegistry).get('instance-work')!;
+    expect(descriptor.env?.['HTTPS_PROXY']).toBe('socks5h://example%40user:example%2540%3Apassword@127.0.0.1:1080');
+    expect(descriptor.instance?.proxy).toEqual({ kind: 'url', url: 'socks5h://127.0.0.1:1080', has_authorization: true });
+    const raw = `${authorization.username} ${authorization.password} example%40user example%2540%3Apassword ${Buffer.from(`${authorization.username}:${authorization.password}`).toString('base64')}`;
+    expect(redactExecutorOutput(descriptor, raw)).toBe('[redacted] [redacted] [redacted] [redacted] [redacted]');
+    expect(executorInstanceProxyPatchSchema.safeParse({ kind: 'url', url: 'http://user:password@example.test:8080' }).success).toBe(false);
+    expect(executorInstanceProxyPatchSchema.safeParse({ kind: 'direct', authorization }).success).toBe(false);
+    expect(executorInstanceProxyPatchSchema.safeParse({ kind: 'url', url: 'http://example.test:8080', authorization: { username: 'example', password: '\uD800' } }).success).toBe(false);
+  });
+
+  it.each(['inherit', 'direct', 'url', 'env'] as const)('preserves the existing %s proxy binding revision', (kind) => {
+    const proxy = kind === 'url' ? { kind, url: 'http://127.0.0.1:8080' } : kind === 'env' ? { kind, name: 'WORK_PROXY' } : { kind };
+    const instances = AgentExecutorInstancesSchema.parse({ 'instance-work': {
+      source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' }, proxy,
+    } });
+    const config = configWith({});
+    services.set(IConfigService, { ...config, get: <T>(section: string) => section === AGENT_EXECUTOR_INSTANCES_SECTION ? instances as T : config.get<T>(section) });
+    services.set(IBootstrapService, { getEnv: () => 'socks5h://example:password@127.0.0.1:1080' } as unknown as IBootstrapService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    const base = registry.get('agy-cli')!;
+    const expected = createHash('sha256').update(JSON.stringify([
+      base.id, base.revision, base.homeEnv, base.apiKeyEnv, { kind: 'inherit' }, proxy, undefined,
+      kind === 'url' ? 'http://127.0.0.1:8080' : kind === 'env' ? 'socks5h://example:password@127.0.0.1:1080' : undefined,
+    ])).digest('hex');
+    expect(registry.get('instance-work')!.revision).toBe(expected);
   });
 
   it('discovers installed files without executing adapters, reading credentials or changing preferences', async () => {

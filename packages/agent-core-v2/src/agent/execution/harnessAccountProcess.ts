@@ -43,7 +43,7 @@ export function harnessAccountProcess(processes: HostProcessServiceLike, context
       if (runtimeId !== 'local') throw fail('A plugin account connection requires an engine running on the Kiki host.');
       const signal = startupSignal ?? AbortSignal.timeout(30_000);
       const proxy = instance.proxy;
-      const proxyUrl = proxy.kind === 'url' ? proxy.url : descriptor.env?.['HTTPS_PROXY'];
+      const proxyUrl = descriptor.instanceProxyUrl;
       const mode = proxy.kind === 'inherit' ? 'system' : proxy.kind === 'direct' ? 'direct' : 'custom';
       if (mode === 'custom' && proxyUrl === undefined) throw fail('The configured proxy is unavailable.');
       const hosts = context.agent.accessor.get(IPluginHostService);

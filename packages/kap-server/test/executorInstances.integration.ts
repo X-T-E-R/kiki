@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { IAgentExecutorRegistry, IAgentLifecycleService, IAgentProfileService, ISessionManager } from '@kiki/agent-core-v2';
 import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
-import type { ExecutorCheckResponse, ExecutorInstanceConfig, ListExecutorsResponse } from '@kiki/protocol';
+import { publicExecutorInstance, type ExecutorCheckResponse, type ExecutorInstanceConfig, type ListExecutorsResponse } from '@kiki/protocol';
 
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
@@ -63,7 +63,15 @@ it('launches named harnesses through separate HTTP and SOCKS proxies, then resto
       session: String(req.headers['x-fixture-session']), pid: detail.pid, noProxy: detail.noProxy, hostMarker: detail.inherited });
     res.end(`fixture-${route}-ok`);
   };
-  const http = createServer(observe('A'));
+  const authorization = { username: 'fixture-http@user', password: 'fixture-http@user%:password' };
+  const basic = `Basic ${Buffer.from(`${authorization.username}:${authorization.password}`).toString('base64')}`;
+  const workRequest = observe('A');
+  const http = createServer((req, res) => {
+    if (req.headers['proxy-authorization'] !== basic) {
+      res.writeHead(407); res.end(); return;
+    }
+    workRequest(req, res);
+  });
   const origin = createServer(observe('B'));
   const inherited = createServer(observe('host'));
   let socks: TcpServer | undefined;
@@ -114,20 +122,22 @@ it('launches named harnesses through separate HTTP and SOCKS proxies, then resto
     const registry = server.core.accessor.get(IAgentExecutorRegistry);
     const defaultRevision = registry.get(source)!.revision;
     const agyRevision = registry.get('agy-cli')!.revision;
-    const work: ExecutorInstanceConfig = { source_executor: source, label: 'Work', configuration: { kind: 'config_directory', path: workHome }, proxy: { kind: 'url', url: `http://127.0.0.1:${httpPort}` } };
+    const work: ExecutorInstanceConfig = { source_executor: source, label: 'Work', configuration: { kind: 'config_directory', path: workHome }, proxy: { kind: 'url', url: `http://127.0.0.1:${httpPort}`, authorization } };
     const personal: ExecutorInstanceConfig = { source_executor: source, label: 'Personal', configuration: { kind: 'config_directory', path: personalHome }, proxy: { kind: 'env', name: 'INSTANCE_SOCKS_PROXY' } };
     const patch = (entries: Record<string, ExecutorInstanceConfig>) => ok('/config', 'POST', { agent_executor_instances: entries });
     await patch({ [a]: work, [b]: personal, [unsupported]: { ...work, source_executor: 'agy-cli' } });
     const items = await list();
     expect(items.filter((item) => item.instance !== undefined).map((item) => item.id)).toEqual([b, unsupported, a]);
-    expect(items.find((item) => item.id === a)).toMatchObject({ label: 'Work', protocol: 'acp-v1', instance: work, model_binding: 'mapped' });
+    expect(items.find((item) => item.id === a)).toMatchObject({ label: 'Work', protocol: 'acp-v1', instance: publicExecutorInstance(work), model_binding: 'mapped' });
     expect(items.find((item) => item.id === unsupported)).toMatchObject({ status: 'unavailable', configuration_issue: 'instance_configuration_unsupported' });
     const checked = await ok<ExecutorCheckResponse>(`/executors/${b}/check`, 'POST');
-    expect(checked).toMatchObject({ id: b, version: 'instance-fixture 1.0.0', selected_source: 'fixture', status: 'ready' });
+    const maskedVersion = 'instance-fixture 1.0.0 [redacted] [redacted] [redacted] [redacted] [redacted]';
+    expect(checked).toMatchObject({ id: b, version: maskedVersion, selected_source: 'fixture', status: 'ready' });
+    expect(await ok<ExecutorCheckResponse>(`/executors/${a}/check`, 'POST')).toMatchObject({ id: a, version: maskedVersion, status: 'ready' });
     expect(await ok<ExecutorCheckResponse>(`/executors/${unsupported}/check`, 'POST')).toMatchObject({ status: 'unavailable', diagnostics: [{ code: 'instance_configuration_unsupported' }] });
     const models = await ok(`/executors/${b}/models:refresh`, 'POST');
     expect(models).toMatchObject({ executor_id: b, effective: { models: { state: 'ready', values: ['fixture-model'] } } });
-    expect(JSON.stringify([items, checked, models, await ok('/config'), await readFile(join(home, 'config.toml'), 'utf8')])).not.toMatch(/fixture-proxy-secret|fixture-key-personal/);
+    expect(JSON.stringify([items, checked, models, await ok('/config'), await readFile(join(home, 'config.toml'), 'utf8')])).not.toMatch(/fixture-proxy-secret|fixture-key-personal|fixture-http-/);
     expect(registry.get(source)!.revision).toBe(defaultRevision);
     expect(registry.get('agy-cli')!.revision).toBe(agyRevision);
     const create = async (executor: string) => (await ok<{ id: string }>('/sessions', 'POST', { metadata: { cwd: home }, agent_config: { execution: { executor } } })).id;

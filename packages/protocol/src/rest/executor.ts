@@ -76,7 +76,7 @@ export type ExecutorDiscoveryResponse = z.infer<typeof executorDiscoveryResponse
 
 const executorEnvironmentNameSchema = z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Enter an environment variable name');
 
-/** Parses a proxy origin, not a URL for a resource. Credentials are allowed only when read from the host environment. */
+/** Parses a proxy origin, not a URL for a resource. Stored origins keep authentication in a separate field. */
 export function executorProxyUrl(value: string, allowCredentials = false): URL | undefined {
   try {
     const url = new URL(value);
@@ -100,14 +100,30 @@ export const executorInstanceConfigurationSchema = z.discriminatedUnion('kind', 
 ]);
 export type ExecutorInstanceConfiguration = z.infer<typeof executorInstanceConfigurationSchema>;
 
-export const executorInstanceProxySchema = z.discriminatedUnion('kind', [
+const executorProxyAuthorizationSchema = z.strictObject({
+  username: z.string().regex(/^[^:\p{Cc}\p{Cs}]+$/u, 'Enter a proxy username without colons or control characters'),
+  password: z.string().regex(/^[^\p{Cc}\p{Cs}]+$/u, 'Enter a proxy password without control characters'),
+});
+const executorProxyOriginSchema = z.string().trim().refine((value) => executorProxyUrl(value) !== undefined,
+  'Enter an HTTP(S) or SOCKS proxy origin without credentials; enter authentication separately');
+const executorProxyOtherSchemas = [
   z.strictObject({ kind: z.literal('inherit') }),
   z.strictObject({ kind: z.literal('direct') }),
-  z.strictObject({ kind: z.literal('url'), url: z.string().trim().refine((value) => executorProxyUrl(value) !== undefined,
-    'Enter an HTTP(S) or SOCKS proxy origin without credentials; use an environment reference for authentication') }),
   z.strictObject({ kind: z.literal('env'), name: executorEnvironmentNameSchema }),
+] as const;
+export const executorInstanceProxySchema = z.discriminatedUnion('kind', [
+  ...executorProxyOtherSchemas,
+  z.strictObject({ kind: z.literal('url'), url: executorProxyOriginSchema, authorization: executorProxyAuthorizationSchema.optional() }),
 ]);
 export type ExecutorInstanceProxy = z.infer<typeof executorInstanceProxySchema>;
+export const executorInstanceProxyPatchSchema = z.discriminatedUnion('kind', [
+  ...executorProxyOtherSchemas,
+  z.strictObject({ kind: z.literal('url'), url: executorProxyOriginSchema, authorization: executorProxyAuthorizationSchema.nullable().optional() }),
+]);
+export const executorInstanceProxyResponseSchema = z.discriminatedUnion('kind', [
+  ...executorProxyOtherSchemas,
+  z.strictObject({ kind: z.literal('url'), url: executorProxyOriginSchema, has_authorization: z.boolean().optional() }),
+]);
 
 export const executorInstanceIdSchema = z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/);
 export const executorInstanceConfigSchema = z.strictObject({
@@ -117,7 +133,18 @@ export const executorInstanceConfigSchema = z.strictObject({
   proxy: executorInstanceProxySchema,
 });
 export type ExecutorInstanceConfig = z.infer<typeof executorInstanceConfigSchema>;
-export const executorInstancesPatchSchema = z.record(executorInstanceIdSchema, executorInstanceConfigSchema.nullable());
+export const executorInstancePatchSchema = executorInstanceConfigSchema.extend({ proxy: executorInstanceProxyPatchSchema });
+export type ExecutorInstancePatch = z.infer<typeof executorInstancePatchSchema>;
+export const executorInstancesPatchSchema = z.record(executorInstanceIdSchema, executorInstancePatchSchema.nullable());
+export const executorInstanceResponseSchema = executorInstanceConfigSchema.extend({ proxy: executorInstanceProxyResponseSchema });
+export type ExecutorInstanceResponse = z.infer<typeof executorInstanceResponseSchema>;
+export const executorInstancesResponseSchema = z.record(executorInstanceIdSchema, executorInstanceResponseSchema);
+
+export function publicExecutorInstance(instance: ExecutorInstanceConfig): ExecutorInstanceResponse {
+  if (instance.proxy.kind !== 'url') return instance;
+  const { authorization, ...proxy } = instance.proxy;
+  return { ...instance, proxy: { ...proxy, has_authorization: authorization === undefined ? undefined : true } };
+}
 
 export function supportsExecutorPluginAccount(engine: { readonly id: string; readonly protocol: string }): boolean {
   return engine.id === 'agy-cli' && engine.protocol === 'acp-v1' || engine.id === 'codex-app-server' && engine.protocol === 'codex-app-server';
@@ -142,7 +169,7 @@ export const executorCatalogItemSchema = z.object({
   label: z.string().min(1),
   protocol: z.string().min(1),
   status: z.enum(['ready', 'unavailable', 'unknown']),
-  instance: executorInstanceConfigSchema.optional(),
+  instance: executorInstanceResponseSchema.optional(),
   supports_claude_settings: z.boolean().optional(),
   configuration_issue: executorInstanceIssueSchema.optional(),
   /** Last explicit check, kept after the 60s freshness window. Absent until that engine has been checked. */

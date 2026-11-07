@@ -5,7 +5,9 @@ import { request } from 'node:http';
 import { SocksClient } from 'socks';
 
 if (process.argv.includes('--version')) {
-  process.stdout.write('instance-fixture 1.0.0\n');
+  const proxy = process.env.HTTP_PROXY ? new URL(process.env.HTTP_PROXY) : undefined;
+  const diagnostic = proxy?.username ? ` ${[proxy.href, proxy.username, proxy.password, decodeURIComponent(proxy.username), decodeURIComponent(proxy.password)].join(' ')}` : '';
+  process.stdout.write(`instance-fixture 1.0.0${diagnostic}\n`);
   process.exit(0);
 }
 if (process.argv.includes('models')) {

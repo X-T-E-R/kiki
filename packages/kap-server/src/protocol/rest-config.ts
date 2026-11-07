@@ -25,7 +25,7 @@ import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/wor
 import { RequestCompressionWireSchema, ResponsesWebSocketWireSchema } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, retryConfigResponseSchema, retryConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
-import { executorInstancesPatchSchema } from '@kiki/protocol';
+import { executorInstancesPatchSchema, executorInstancesResponseSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -166,6 +166,7 @@ export { permissionReviewerResponseSchema, permissionConfigResponseSchema, permi
 export const configResponseSchema = z.object({
   model_switch: modelSwitchConfigSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
+  agent_executor_instances: executorInstancesResponseSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),

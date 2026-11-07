@@ -15,9 +15,10 @@ import {
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
+import { AGENT_EXECUTOR_INSTANCES_SECTION } from '@kiki/agent-core-v2/app/agentExecutor/executorInstances';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { describeDecisionSource } from '@kiki/agent-core-v2/kosong/model/decision';
-import { decisionSourceSchema, modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
+import { decisionSourceSchema, publicExecutorInstance, type ExecutorInstanceConfig, modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_COMPRESSION_SECTION, REQUEST_IDENTITY_SECTION, RESPONSES_WEB_SOCKET_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
@@ -483,6 +484,9 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       continue;
     } else if (domain === 'providers') {
       wire['providers'] = toProviderResponses(value);
+    } else if (domain === AGENT_EXECUTOR_INSTANCES_SECTION && isPlainObject(value)) {
+      wire['agent_executor_instances'] = Object.fromEntries(Object.entries(value)
+        .map(([id, instance]) => [id, publicExecutorInstance(instance as ExecutorInstanceConfig)]));
     } else if (domain === MODEL_SWITCH_SECTION) {
       wire['model_switch'] = modelSwitchPreferencesToToml(value, {});
     } else if (domain === REQUEST_IDENTITY_SECTION) {

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
-import { executorInstanceConfigSchema, executorInstanceIdSchema, executorProxyUrl, supportsExecutorPluginAccount, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
+import { executorInstanceConfigSchema, executorInstanceIdSchema, executorInstancesPatchSchema, executorProxyUrl, publicExecutorInstance, supportsExecutorPluginAccount, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-import { isPlainObject } from '#/app/config/configPure';
+import { isPlainObject, withoutUndefined } from '#/app/config/configPure';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import type { AgentExecutorDescriptor } from './agentExecutor';
@@ -16,15 +16,21 @@ export type AgentExecutorInstances = z.infer<typeof AgentExecutorInstancesSchema
 
 registerConfigSection(AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSchema, {
   fromToml: (value) => value,
-  toToml: (value) => value,
+  toToml: (value) => withoutUndefined(value),
   merge: (base, patch) => {
     if (!isPlainObject(patch)) return patch as AgentExecutorInstances;
-    const result = { ...base } as Record<string, unknown>;
-    for (const [id, entry] of Object.entries(patch)) {
+    const result = { ...base };
+    for (const [id, entry] of Object.entries(executorInstancesPatchSchema.parse(patch))) {
       if (entry === null) delete result[id];
-      else result[id] = entry;
+      else if (entry.proxy.kind === 'url') {
+        const { url, authorization } = entry.proxy;
+        const previous = result[id]?.proxy;
+        const next = authorization === null ? undefined
+          : authorization ?? (previous?.kind === 'url' ? previous.authorization : undefined);
+        result[id] = { ...entry, proxy: { kind: 'url', url, authorization: next } };
+      } else result[id] = { ...entry, proxy: entry.proxy };
     }
-    return result as AgentExecutorInstances;
+    return result;
   },
 });
 
@@ -54,6 +60,7 @@ export function materializeExecutorInstance(
   let issue: ExecutorInstanceIssue | undefined;
   let credential: string | undefined;
   let proxyValue: string | undefined;
+  let instanceProxyUrl: string | undefined;
   const proxySecrets: string[] = [];
   const claude = base?.id === 'claude-acp' || base?.claudeSettingsFile !== undefined;
   if (base === undefined || base.protocol === 'native') {
@@ -98,10 +105,24 @@ export function materializeExecutorInstance(
     if (proxyValue === undefined || address === undefined) {
       issue ??= 'instance_proxy_unavailable';
     } else {
-      for (const key of PROXY_URL_ENV) env[key] = proxyValue;
-      for (const key of PROXY_BYPASS_ENV) env[key] = LOOPBACK_BYPASS;
-      if (proxy.kind === 'env') proxySecrets.push(proxyValue, address.username, address.password,
-        decodeURIComponent(address.username), decodeURIComponent(address.password));
+      if (proxy.kind === 'url' && proxy.authorization !== undefined) {
+        address.username = encodeURIComponent(proxy.authorization.username);
+        address.password = encodeURIComponent(proxy.authorization.password);
+        proxyValue = address.href;
+      }
+      if (configuration.kind === 'plugin_account') instanceProxyUrl = proxyValue;
+      if (configuration.kind === 'plugin_account' && proxy.kind === 'url' && proxy.authorization !== undefined) {
+        for (const key of [...PROXY_URL_ENV, ...PROXY_BYPASS_ENV]) envUnset.add(key);
+      } else {
+        for (const key of PROXY_URL_ENV) env[key] = proxyValue;
+        for (const key of PROXY_BYPASS_ENV) env[key] = LOOPBACK_BYPASS;
+      }
+      if (proxy.kind === 'env' || address.username || address.password) {
+        const username = decodeURIComponent(address.username);
+        const password = decodeURIComponent(address.password);
+        proxySecrets.push(proxyValue, address.username, address.password, username, password);
+        if (address.username || address.password) proxySecrets.push(Buffer.from(`${username}:${password}`).toString('base64'));
+      }
     }
   }
   for (const key of envUnset) delete env[key];
@@ -114,14 +135,15 @@ export function materializeExecutorInstance(
       ? { args: ['--kiki-harness-account-version'] } : base?.versionProbe,
     id,
     label: instance.label,
-    instance,
+    instance: publicExecutorInstance(instance),
+    instanceProxyUrl,
     instanceIssue: issue,
     defaultProfile: false,
     homeDir,
     claudeSettingsFile,
     env,
     envUnset: [...envUnset],
-    launchSecrets: [credential, ...proxySecrets].filter((value): value is string => Boolean(value)),
+    launchSecrets: [credential, ...proxySecrets].filter((value): value is string => Boolean(value)).sort((a, b) => b.length - a.length),
     revision: createHash('sha256').update(JSON.stringify([
       base?.id, base?.revision, base?.homeEnv, base?.apiKeyEnv, configuration, proxy, credential, proxyValue,
     ])).digest('hex'),

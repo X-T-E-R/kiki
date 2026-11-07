@@ -8,7 +8,7 @@ import { hooksConfigSchema } from './hooksConfig';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
 import { requestGovernanceConfigPatchSchema } from './requestGovernance';
 import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
-import { executorInstancesPatchSchema } from './executor';
+import { executorInstancesPatchSchema, executorInstancesResponseSchema } from './executor';
 
 export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
@@ -343,6 +343,7 @@ export const configResponseSchema = z.object({
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
+  agent_executor_instances: executorInstancesResponseSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),

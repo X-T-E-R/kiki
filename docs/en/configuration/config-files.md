@@ -188,9 +188,30 @@ proxy = { kind = "url", url = "socks5h://127.0.0.1:1080" }
 
 Use a unique ID beginning with `instance-`. Configuration paths must already exist on the Kiki host. The configuration choices are `inherit`, `config_directory` for a harness with a declared configuration-home variable, `claude_settings` for the official Claude adapter, and `credential_env` for a harness with a declared API-key variable. `credential_env` stores a host environment-variable name, not the key. A Claude settings-file instance loads that file plus project and local settings, skipping the user-level `settings.json`; its login check uses the same file.
 
-Proxy `inherit` keeps the host environment, `direct` clears proxy and bypass variables for that child, and `url` accepts an HTTP(S) or SOCKS proxy origin. For an authenticated proxy, use `proxy = { kind = "env", name = "WORK_PROXY_URL" }` and set the full URL in the Kiki host's environment. Explicit proxies keep loopback traffic local. These settings affect only that instance, not Kiki or other engines.
+Proxy `inherit` keeps the host environment, `direct` clears proxy and bypass variables for that child, and `url` accepts an HTTP(S) or SOCKS proxy origin without credentials in the address. Choose **Add proxy authentication** in the instance form to save its username and password. Kiki stores both in `credentials/credentials.toml`, separately from `config.toml`, and loads changes without restarting the service. Explicit proxies keep loopback traffic local. These settings affect only that instance, not Kiki or other engines. The existing `proxy = { kind = "env", name = "WORK_PROXY_URL" }` option still reads a full proxy URL, including credentials, from the Kiki host's environment.
 
-AGY CLI and Codex app-server also accept **Account from a plugin** when an enabled [plugin](../customization/plugins.md) supplies accounts for that engine. Select a source and account in the instance form. Sign-in, account management and OAuth refresh remain in that plugin; a source such as Cockpit OAuth can use its existing account store without its desktop app running. The saved reference is `configuration = { kind = "plugin_account", source = "plugin:cockpit-harness-oauth/cockpit-oauth", account_id = "YOUR_ACCOUNT_ID" }`, not a credential or connection URL.
+To save authentication through `POST /api/config`, send the complete instance entry with `proxy.authorization`:
+
+```json
+{
+  "agent_executor_instances": {
+    "instance-work": {
+      "source_executor": "agy-cli",
+      "label": "Work",
+      "configuration": { "kind": "inherit" },
+      "proxy": {
+        "kind": "url",
+        "url": "http://127.0.0.1:8080",
+        "authorization": { "username": "YOUR_PROXY_USERNAME", "password": "YOUR_PROXY_PASSWORD" }
+      }
+    }
+  }
+}
+```
+
+When updating a URL-proxy instance, omit `authorization` to keep the saved authentication, send a new username/password object to replace it, or send JSON `null` to remove it. Switching to `inherit`, `direct` or `env` also removes its saved URL authentication. Public config and executor responses expose only `proxy.has_authorization = true`, never the saved username or password; the form offers replacement and removal without fetching them.
+
+AGY CLI and Codex app-server also accept **Account from a plugin** when an enabled [plugin](../customization/plugins.md) supplies accounts for that engine. Select a source and account in the instance form. Sign-in, account management and OAuth refresh remain in that plugin. The saved reference is `configuration = { kind = "plugin_account", source = "plugin:example-accounts/accounts", account_id = "YOUR_ACCOUNT_ID" }`, not a credential or connection URL.
 
 Plugin-account engines run on the Kiki host. Their proxy choice is passed to the account source as system, direct or custom; the engine connects directly to the source's local endpoint. Models come from the selected account when the engine starts, not from the global engine's catalog. Short-lived keys stay in the launch environment and are released when the engine exits or startup fails. If an account or source becomes unavailable, **Check** and startup report that instance; Kiki does not switch to another account or the global entry. Update an older source-owned AGY bridge through its existing adapter installation action before using plugin accounts.
 
