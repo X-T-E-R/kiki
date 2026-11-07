@@ -905,6 +905,8 @@ export const transcriptUserMessagesResponseSchema = z.object({
       next_cursor: z.string().min(1).optional(),
     }),
   ),
+  has_more: z.boolean().optional(),
+  next_cursor: z.string().min(1).optional(),
 });
 export type TranscriptUserMessagesResponse = z.infer<typeof transcriptUserMessagesResponseSchema>;
 

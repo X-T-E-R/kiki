@@ -173,32 +173,84 @@ export function createSessionViewFacade(
     ...(channel?.userMessages === undefined ? {} : {
       async userMessages(input?: SessionViewUserMessagesInput, options?: CallOptions) {
         const read = async (cursor?: string, agentId?: string) => {
-          const output = await channel.userMessages!(sessionId, { agentId: agentId ?? input?.agentId, cursor }, options);
+          const output = await channel.userMessages!(sessionId, { agentId, cursor }, options);
           return validate
             ? parse('output', 'session.view.userMessages', transcriptUserMessagesResponseSchema, output)
             : output as TranscriptUserMessagesResponse;
         };
-        const first = await read(input?.cursor, input?.agentId);
-        const agents = [];
-        for (const agent of first.agents) {
-          let messages = agent.messages;
-          let attachments = agent.attachments;
-          let cursor = agent.next_cursor;
-          const seen = new Set<string>();
-          while (cursor !== undefined && !seen.has(cursor) && seen.size < 1000) {
-            seen.add(cursor);
-            const page = await read(cursor, agent.agent_id);
-            const older = page.agents.find((entry) => entry.agent_id === agent.agent_id) ?? page.agents[0];
-            if (older === undefined) break;
-            messages = mergeBy(older.messages, messages, (message) => message.turn_id);
-            attachments = mergeBy(older.attachments, attachments, (attachment) => attachment.attachmentId);
-            cursor = older.next_cursor;
+        const seen = new Set<string>();
+        const merged = new Map<string, { messages: TranscriptUserMessagesResponse['agents'][number]['messages']; attachments: TranscriptUserMessagesResponse['agents'][number]['attachments'] }>();
+        const order: string[] = [];
+        const absorb = (agent: TranscriptUserMessagesResponse['agents'][number], olderFirst: boolean) => {
+          const prior = merged.get(agent.agent_id);
+          if (prior === undefined) {
+            order.push(agent.agent_id);
+            merged.set(agent.agent_id, { messages: [...agent.messages], attachments: [...agent.attachments] });
+            return;
           }
+          prior.messages = olderFirst
+            ? mergeBy(agent.messages, prior.messages, (message) => message.turn_id)
+            : mergeBy(prior.messages, agent.messages, (message) => message.turn_id);
+          prior.attachments = olderFirst
+            ? mergeBy(agent.attachments, prior.attachments, (attachment) => attachment.attachmentId)
+            : mergeBy(prior.attachments, agent.attachments, (attachment) => attachment.attachmentId);
+        };
+        const finishAgent = async (agentId: string) => {
+          const agent = merged.get(agentId);
+          if (agent === undefined) return undefined;
           const hydrated = [];
-          for (const message of messages.sort((left, right) => left.ordinal - right.ordinal || compareTurnIds(left.turn_id, right.turn_id))) {
-            hydrated.push(await hydrateWindow(message, (ref) => readContent(channel, sessionId, agent.agent_id, ref, options, validate, parse)));
+          for (const message of agent.messages.sort((left, right) => left.ordinal - right.ordinal || compareTurnIds(left.turn_id, right.turn_id))) {
+            hydrated.push(await hydrateWindow(message, (ref) => readContent(channel, sessionId, agentId, ref, options, validate, parse)));
           }
-          agents.push({ agent_id: agent.agent_id, messages: hydrated, attachments });
+          return { agent_id: agentId, messages: hydrated, attachments: agent.attachments };
+        };
+        if (input?.agentId !== undefined) {
+          let cursor = input.cursor;
+          let agentId = input.agentId;
+          do {
+            if (cursor !== undefined) {
+              if (seen.has(cursor) || seen.size >= 1000) break;
+              seen.add(cursor);
+            }
+            const page = await read(cursor, agentId);
+            const agent = page.agents.find((entry) => entry.agent_id === agentId) ?? page.agents[0];
+            if (agent === undefined) break;
+            agentId = agent.agent_id;
+            absorb(agent, cursor !== undefined);
+            cursor = agent.next_cursor;
+          } while (cursor !== undefined);
+        } else {
+          let cursor = input?.cursor;
+          do {
+            if (cursor !== undefined) {
+              if (seen.has(cursor) || seen.size >= 1000) break;
+              seen.add(cursor);
+            }
+            const page = await read(cursor, undefined);
+            for (const agent of page.agents) absorb(agent, cursor !== undefined);
+            if (page.next_cursor !== undefined) {
+              cursor = page.next_cursor;
+              continue;
+            }
+            cursor = undefined;
+            for (const agent of page.agents) {
+              let olderCursor = agent.next_cursor;
+              const agentSeen = new Set<string>();
+              while (olderCursor !== undefined && !agentSeen.has(olderCursor) && agentSeen.size < 1000) {
+                agentSeen.add(olderCursor);
+                const olderPage = await read(olderCursor, agent.agent_id);
+                const older = olderPage.agents.find((entry) => entry.agent_id === agent.agent_id) ?? olderPage.agents[0];
+                if (older === undefined) break;
+                absorb(older, true);
+                olderCursor = older.next_cursor;
+              }
+            }
+          } while (cursor !== undefined);
+        }
+        const agents = [];
+        for (const agentId of order) {
+          const hydrated = await finishAgent(agentId);
+          if (hydrated !== undefined) agents.push(hydrated);
         }
         const assembled = { agents };
         return validate

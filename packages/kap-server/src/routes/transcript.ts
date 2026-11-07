@@ -31,6 +31,7 @@ import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProj
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { boundedEntity } from '../transport/klient/boundedContent';
 import {
+  readPlanInteractions,
   readSessionViewTranscriptCatchUp,
   readSessionViewTranscriptDetails,
   readSessionViewTranscriptDetail,
@@ -108,7 +109,7 @@ const userMessagesQueryCoercion = z
         params: { code: ErrorCode.VALIDATION_FAILED },
       });
     }
-    if (value.cursor !== undefined && value.agent_id === undefined) {
+    if (value.cursor !== undefined && value.agent_id === undefined && decodeListCursor(value.cursor)?.list !== 'roster') {
       ctx.addIssue({
         code: 'custom',
         message: 'agent_id is required when cursor is set',
@@ -313,62 +314,29 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         [ErrorCode.SESSION_NOT_FOUND]: {},
       },
       description:
-        'Turn-opening inputs ("user messages") of a session, grouped per agent: every turn with a defined prompt (real user text, user-slash skill/plugin commands, cron prompts — distinguish via origin), plus attachment-only prompts projected with an empty prompt string. agent_id optional: present reads one agent, absent reads every rostered agent. Each response is the newest unread window for that agent, chronological inside the window; has_more and next_cursor are omitted when the window is complete. cursor continues that agent toward older history and requires agent_id. A long prompt is a preview plus contentRefs. Live sessions answer from the in-memory store (history backfill awaited per agent), cold sessions read a wire page. Attachment entities referenced by the returned messages ride along (metadata only)',
+        'Turn-opening inputs ("user messages") of a session, grouped per agent: every turn with a defined prompt (real user text, user-slash skill/plugin commands, cron prompts — distinguish via origin), plus attachment-only prompts projected with an empty prompt string. agent_id optional: present reads one agent, absent reads the roster through one shared 64 KiB page rather than one page per agent. Each page stays chronological; has_more and next_cursor are omitted when it is complete. A cursor for one agent requires that agent_id. A cursor from an all-agent page names the agent to resume and is sent on its own. A long prompt is a preview plus contentRefs. Live sessions answer from the in-memory store (history backfill awaited per agent), cold sessions read a wire page. Attachment entities referenced by the returned messages ride along (metadata only)',
       tags: ['transcript'],
     },
     async (req, reply) => {
       const { session_id } = req.params;
       const { agent_id, cursor } = req.query;
-
-      const store = transcriptService.forSessionLive(session_id);
-      if (store !== undefined) {
-        await transcriptService.whenReady(session_id);
-        const agentIds = agent_id !== undefined ? [agent_id] : store.agents().map((descriptor) => descriptor.agentId);
-        const agents = [];
-        for (const agentId of agentIds) {
-          let window;
-          try {
-            window = await readUserMessageWindow(transcriptService, session_id, agentId, agent_id === undefined ? undefined : cursor, undefined);
-          } catch (error) {
-            if (!(error instanceof TranscriptDetailCursorError)) throw error;
-            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
-            return;
-          }
-          if (window === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
-          agents.push(window);
-        }
-        reply.send(okEnvelope({ agents }, req.id));
-        return;
-      }
-
-      let agents;
+      const live = transcriptService.forSessionLive(session_id) !== undefined;
+      if (live) await transcriptService.whenReady(session_id);
+      let page;
       try {
-        agents = await withReplyCloseSignal(replySignalSource(reply), async (signal) => {
-          const roster = await transcriptService.readColdRoster(session_id);
-          signal.throwIfAborted();
-          if (roster === undefined) return undefined;
-          const agentIds = agent_id !== undefined ? [agent_id] : roster.map((descriptor) => descriptor.agentId);
-          if (agent_id === undefined && !agentIds.includes(MAIN_AGENT_ID)) {
-            agentIds.unshift(MAIN_AGENT_ID);
-          }
-          const projected = [];
-          for (const agentId of agentIds) {
-            const window = await readUserMessageWindow(transcriptService, session_id, agentId, agent_id === undefined ? undefined : cursor, signal);
-            if (window === undefined) return undefined;
-            projected.push(window);
-          }
-          return projected;
-        });
+        page = live
+          ? await readUserMessageAgents(transcriptService, session_id, agent_id, cursor, undefined)
+          : await withReplyCloseSignal(replySignalSource(reply), (signal) => readUserMessageAgents(transcriptService, session_id, agent_id, cursor, signal));
       } catch (error) {
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;
       }
-      if (agents === undefined) {
+      if (page === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      reply.send(okEnvelope({ agents }, req.id));
+      reply.send(okEnvelope(page, req.id));
     },
   );
   app.get(
@@ -390,7 +358,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         [ErrorCode.TOOL_CALL_NOT_FOUND]: {},
       },
       description:
-        'Plan information of an agent\'s ExitPlanMode tool calls: the reviewed plan content, plan file path, offered options, and the review outcome, in timeline order. agent_id required; tool_call_id optional — present narrows the read to that one call (unknown id or non-ExitPlanMode call → 40416), absent lists the newest window of calls with recoverable plan content. has_more and next_cursor are omitted when nothing older remains; cursor continues toward older history. A long plan is a preview plus contentRefs. Content is projected from the linked approval interaction (interactive reviews, live or cold), the tool frame display (auto mode), or the tool result output text. Live sessions read the in-memory store (history backfill awaited), cold sessions read a wire page',
+        'Plan information of an agent\'s ExitPlanMode tool calls: the reviewed plan content, plan file path, offered options, and the review outcome, in timeline order. agent_id required; tool_call_id optional — present narrows the read to that one call (unknown id or non-ExitPlanMode call → 40416), absent lists the newest window of calls with recoverable plan content. has_more and next_cursor are omitted when nothing older remains. cursor continues toward older history, and a page that stops inside one turn resumes at the next older plan in that turn. A long plan or review is a preview plus contentRefs. Content is projected from the linked approval interaction (interactive reviews, live or cold), the tool frame display (auto mode), or the tool result output text. Live sessions read the in-memory store (history backfill awaited), cold sessions read a wire page',
       tags: ['transcript'],
     },
     async (req, reply) => {
@@ -450,6 +418,92 @@ interface ListedPage {
 function listedPage(hasMore: boolean, cursor: string | undefined): ListedPage {
   if (!hasMore) return {};
   return cursor === undefined ? { has_more: true } : { has_more: true, next_cursor: cursor };
+}
+
+interface ListCursor {
+  readonly v: 2;
+  readonly agentId: string;
+  readonly source: 'live' | 'cold' | 'derived';
+  readonly anchor: string;
+  readonly list?: 'roster' | 'plan';
+  readonly frameId?: string;
+}
+
+function decodeListCursor(cursor: string | undefined): ListCursor | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<ListCursor>;
+    if (parsed.v !== 2 || typeof parsed.agentId !== 'string' || !isPlainAgentId(parsed.agentId)) return undefined;
+    if (typeof parsed.anchor !== 'string' || parsed.anchor.length === 0) return undefined;
+    if (parsed.source !== 'live' && parsed.source !== 'cold' && parsed.source !== 'derived') return undefined;
+    if (parsed.list !== undefined && parsed.list !== 'roster' && parsed.list !== 'plan') return undefined;
+    if (parsed.frameId !== undefined && (typeof parsed.frameId !== 'string' || parsed.frameId.length === 0)) return undefined;
+    return parsed as ListCursor;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeListCursor(agentId: string, anchor: string, source: ListCursor['source'], extra?: { readonly list?: ListCursor['list']; readonly frameId?: string }): string {
+  return Buffer.from(JSON.stringify({ v: 2, agentId, source, anchor, ...extra } satisfies ListCursor)).toString('base64url');
+}
+
+function agentCursor(cursor: string | undefined, agentId: string): string | undefined {
+  const parsed = decodeListCursor(cursor);
+  if (parsed?.list === 'roster' && parsed.agentId === agentId) return parsed.anchor === '*' ? undefined : parsed.anchor;
+  return cursor;
+}
+
+async function readUserMessageAgents(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string | undefined,
+  cursor: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<{ agents: Array<{ agent_id: string; messages: UserMessageEntry[]; attachments: TranscriptAttachment[] } & ListedPage> } & ListedPage | undefined> {
+  const store = transcriptService.forSessionLive(sessionId);
+  const source: ListCursor['source'] = store !== undefined ? 'live' : 'cold';
+  let agentIds: string[];
+  if (store !== undefined) {
+    agentIds = agentId !== undefined ? [agentId] : store.agents().map((descriptor) => descriptor.agentId);
+  } else {
+    const roster = await transcriptService.readColdRoster(sessionId);
+    signal?.throwIfAborted();
+    if (roster === undefined) return undefined;
+    agentIds = agentId !== undefined ? [agentId] : roster.map((descriptor) => descriptor.agentId);
+    if (agentId === undefined && !agentIds.includes(MAIN_AGENT_ID)) agentIds.unshift(MAIN_AGENT_ID);
+  }
+  if (agentId !== undefined) {
+    const window = await readUserMessageWindow(transcriptService, sessionId, agentId, agentCursor(cursor, agentId), signal);
+    return window === undefined ? undefined : { agents: [window] };
+  }
+  const parsed = cursor === undefined ? undefined : decodeListCursor(cursor);
+  if (cursor !== undefined && parsed?.list !== 'roster') throw new TranscriptDetailCursorError();
+  let index = 0;
+  let before = parsed === undefined || parsed.anchor === '*' ? undefined : parsed.anchor;
+  if (parsed !== undefined) {
+    index = agentIds.indexOf(parsed.agentId);
+    if (index < 0) throw new TranscriptDetailCursorError();
+  }
+  const agents: Array<{ agent_id: string; messages: UserMessageEntry[]; attachments: TranscriptAttachment[] }> = [];
+  let used = 0;
+  for (; index < agentIds.length; index += 1) {
+    const id = agentIds[index]!;
+    const window = await readUserMessageWindow(transcriptService, sessionId, id, before, signal);
+    before = undefined;
+    if (window === undefined) return undefined;
+    const entry = { agent_id: window.agent_id, messages: window.messages, attachments: window.attachments };
+    const size = jsonBytes(entry);
+    if (agents.length > 0 && used + size > LIST_PAGE_BYTES) {
+      return { agents, ...listedPage(true, encodeListCursor(id, '*', source, { list: 'roster' })) };
+    }
+    agents.push(entry);
+    used += size;
+    if (window.has_more === true) {
+      return { agents, ...listedPage(true, window.next_cursor === undefined ? undefined : encodeListCursor(id, window.next_cursor, source, { list: 'roster' })) };
+    }
+  }
+  return { agents };
 }
 
 function fitNewest<T>(entries: readonly T[], sizeOf: (subset: readonly T[]) => number): { kept: T[]; trimmed: boolean } {
@@ -570,11 +624,6 @@ async function readUserMessageWindow(
   return { agent_id: agentId, messages: [], attachments: [] };
 }
 
-function liveInteractions(transcriptService: TranscriptService, sessionId: string, agentId: string): TranscriptInteraction[] {
-  const values = transcriptService.forSessionLive(sessionId)?.getAgent(agentId)?.getInteractions();
-  return values === undefined ? [] : [...values.values()];
-}
-
 function turnHidesPlan(turn: TranscriptTurn): boolean {
   const refs = turn.contentRefs ?? [];
   if (refs.some((ref) => ref.path[0] === 'steps' || ref.path.includes('output') || ref.path.includes('display') || ref.path.includes('input'))) return true;
@@ -607,7 +656,7 @@ interface ListedPlan extends PlanInfo {
 }
 
 function boundPlan(info: PlanInfo, frameId: string, stepId: string): ListedPlan {
-  if (jsonBytes(info.plan) <= PROMPT_INLINE_BYTES) return info;
+  if (jsonBytes(info) <= PROMPT_INLINE_BYTES) return info;
   const bounded = boundedEntity({ ...info }, { kind: 'frame', id: frameId, turnId: info.turn_id, stepId }, PROMPT_INLINE_BYTES);
   const { contentRefs, ...rest } = bounded;
   return contentRefs === undefined ? rest : { ...rest, contentRefs: [...contentRefs] };
@@ -621,18 +670,54 @@ async function plansOnPage(
   interactions: readonly TranscriptInteraction[],
   toolCallId: string | undefined,
   signal: AbortSignal | undefined,
-): Promise<Array<{ plan: ListedPlan; turnId: string }>> {
-  const live = liveInteractions(transcriptService, sessionId, agentId);
-  const usable = live.length > 0 ? live : interactions;
-  const plans: Array<{ plan: ListedPlan; turnId: string }> = [];
+): Promise<PlanEntry[]> {
+  const saved = await readPlanInteractions(transcriptService, sessionId, agentId, signal);
+  const usable = saved.length > 0 ? saved : interactions;
+  const plans: PlanEntry[] = [];
   for (const item of items) {
     if (item.kind !== 'turn') continue;
     const turn = await completeTurn(transcriptService, sessionId, agentId, item, signal);
     for (const projected of projectTurnPlans(turn, usable, toolCallId)) {
-      plans.push({ plan: boundPlan(projected.info, projected.frameId, projected.stepId), turnId: turn.turnId });
+      plans.push({ plan: boundPlan(projected.info, projected.frameId, projected.stepId), turnId: turn.turnId, frameId: projected.frameId });
     }
   }
   return plans;
+}
+
+interface PlanEntry {
+  readonly plan: ListedPlan;
+  readonly turnId: string;
+  readonly frameId: string;
+}
+
+async function loadListedTurn(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  turnId: string,
+  signal: AbortSignal | undefined,
+): Promise<TranscriptTurn | undefined> {
+  const resident = transcriptService.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(turnId);
+  if (resident !== undefined) return resident;
+  if (typeof transcriptService.readProjectedColdTurn === 'function') {
+    const cold = await transcriptService.readProjectedColdTurn(sessionId, agentId, turnId, signal);
+    if (cold !== undefined) return cold;
+  }
+  if (typeof transcriptService.readCanonicalEntity === 'function') {
+    const entity = await transcriptService.readCanonicalEntity(sessionId, agentId, { kind: 'turn', id: turnId }, signal);
+    if (entity !== undefined && (entity as TranscriptTurn).kind === 'turn') return entity as TranscriptTurn;
+  }
+  return undefined;
+}
+
+function planContinuation(agentId: string, source: ListCursor['source'], entries: readonly PlanEntry[], fitted: { kept: PlanEntry[]; trimmed: boolean }, pageCursor: string | undefined): string | undefined {
+  if (!fitted.trimmed) return pageCursor;
+  const oldest = fitted.kept[0];
+  if (oldest === undefined) return pageCursor;
+  const kept = new Set(fitted.kept.map((entry) => entry.frameId));
+  const inside = entries.some((entry) => entry.turnId === oldest.turnId && !kept.has(entry.frameId));
+  if (inside) return encodeListCursor(agentId, `turn:${oldest.turnId}`, source, { list: 'plan', frameId: oldest.frameId });
+  return `turn:${oldest.turnId}`;
 }
 
 async function readPlanWindow(
@@ -643,21 +728,37 @@ async function readPlanWindow(
   cursor: string | undefined,
   signal: AbortSignal | undefined,
 ): Promise<{ plans: ListedPlan[]; page: ListedPage; missingTool?: boolean } | undefined> {
-  let beforeItem = cursor;
+  const parsed = decodeListCursor(cursor);
+  if (parsed?.frameId !== undefined && parsed.agentId !== agentId) throw new TranscriptDetailCursorError();
+  const frameResume = parsed?.frameId !== undefined && parsed.anchor.startsWith('turn:')
+    ? { turnId: parsed.anchor.slice(5), frameId: parsed.frameId }
+    : undefined;
+  let beforeItem = frameResume === undefined ? cursor : `turn:${frameResume.turnId}`;
+  let pending: PlanEntry[] = [];
+  if (frameResume !== undefined) {
+    const turn = await loadListedTurn(transcriptService, sessionId, agentId, frameResume.turnId, signal);
+    if (turn !== undefined) {
+      const projected = await plansOnPage(transcriptService, sessionId, agentId, [turn], [], toolCallId, signal);
+      const index = projected.findIndex((entry) => entry.frameId === frameResume.frameId);
+      pending = index < 0 ? [] : projected.slice(0, index);
+    }
+  }
+  const source: ListCursor['source'] = transcriptService.forSessionLive(sessionId) !== undefined ? 'live' : 'cold';
   const seen = new Set<string>();
   for (let guard = 0; guard < 1000; guard += 1) {
     const page = await readSessionViewTranscriptPage(transcriptService, sessionId, {
       agentId, beforeItem, pageSize: LIST_TURN_PAGE, signal,
     });
     if (page === undefined) return undefined;
-    const plans = await plansOnPage(transcriptService, sessionId, agentId, page.items, page.interactions, toolCallId, signal);
+    const pagePlans = await plansOnPage(transcriptService, sessionId, agentId, page.items, page.interactions, toolCallId, signal);
+    const plans = [...pagePlans, ...pending];
+    pending = [];
     if (toolCallId !== undefined) {
       if (plans.length > 0) return { plans: plans.map((entry) => entry.plan), page: {} };
     } else if (plans.length > 0 || page.has_more !== true) {
       const fitted = fitNewest(plans, (subset) => jsonBytes(subset.map((entry) => entry.plan)));
-      const oldest = fitted.kept[0];
       const hasMore = fitted.trimmed || page.has_more === true;
-      const next = fitted.trimmed && oldest !== undefined ? `turn:${oldest.turnId}` : page.next_cursor;
+      const next = planContinuation(agentId, source, plans, fitted, page.next_cursor);
       return { plans: fitted.kept.map((entry) => entry.plan), page: listedPage(hasMore, next) };
     }
     if (page.has_more !== true || page.next_cursor === undefined || seen.has(page.next_cursor)) {

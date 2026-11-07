@@ -65,17 +65,28 @@ export async function readSessionViewTranscriptContent(
   return entity === undefined ? undefined : readContentSegment(await planReadableEntity(service, sessionId, input.agentId, entity, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
 }
 
+const PLAN_ENTRY_FIELDS = new Set(['plan', 'path', 'options', 'review', 'source', 'tool_call_id', 'turn_id']);
+
 async function planReadableEntity(service: TranscriptService, sessionId: string, agentId: string, entity: object, ref: ContentRef, signal?: AbortSignal): Promise<object> {
-  if (ref.path[0] !== 'plan' || ref.source.kind !== 'frame') return entity;
+  const head = ref.path[0];
+  if (ref.source.kind !== 'frame' || typeof head !== 'string' || !PLAN_ENTRY_FIELDS.has(head)) return entity;
   const frame = entity as Partial<ToolCallFrame>;
-  if (frame.kind !== 'tool' || typeof frame.toolCallId !== 'string') return entity;
-  const interactions = await planInteractions(service, sessionId, agentId, signal);
+  if (frame.kind !== 'tool' || frame.name !== 'ExitPlanMode' || typeof frame.toolCallId !== 'string') return entity;
+  const interactions = await readPlanInteractions(service, sessionId, agentId, signal);
   const turnId = ref.source.turnId ?? '';
-  const preferred = projectPlanFrame(turnId, frame as ToolCallFrame, interactions)?.plan;
-  const fallback = interactions.length === 0 ? undefined : projectPlanFrame(turnId, frame as ToolCallFrame, [])?.plan;
-  const candidates = [preferred, fallback].filter((value): value is string => value !== undefined);
-  const plan = candidates.find((value) => contentRevision(value) === ref.revision) ?? candidates[0];
-  return plan === undefined ? entity : { plan };
+  const preferred = projectPlanFrame(turnId, frame as ToolCallFrame, interactions);
+  const fallback = interactions.length === 0 ? undefined : projectPlanFrame(turnId, frame as ToolCallFrame, []);
+  const matched = [preferred, fallback].find((info) => info !== undefined && contentRevision(planField(info, ref.path)) === ref.revision);
+  return matched ?? entity;
+}
+
+function planField(info: object, path: ContentRef['path']): unknown {
+  let current: unknown = info;
+  for (const key of path) {
+    if (current === null || typeof current !== 'object') return undefined;
+    current = (current as Record<string | number, unknown>)[key];
+  }
+  return current;
 }
 
 function liveInteractions(service: TranscriptService, sessionId: string, agentId: string): TranscriptInteraction[] {
@@ -83,7 +94,7 @@ function liveInteractions(service: TranscriptService, sessionId: string, agentId
   return values === undefined ? [] : [...values.values()];
 }
 
-async function planInteractions(service: TranscriptService, sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly TranscriptInteraction[]> {
+export async function readPlanInteractions(service: TranscriptService, sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly TranscriptInteraction[]> {
   const live = liveInteractions(service, sessionId, agentId);
   if (live.length > 0 || typeof service.readColdPageSnapshot !== 'function') return live;
   try {
