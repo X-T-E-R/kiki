@@ -1105,4 +1105,102 @@ describe('bounded session-view canonical reads', () => {
       await app.close();
     }
   });
+
+  it('pages user-messages and plans above 1114112 bytes without assembling the full list response', async () => {
+    const userTexts = Array.from({ length: 4 }, (_, index) => `${'m'.repeat(400_000)}ENDMARK-user-${index}`);
+    const singleUser = `${'u'.repeat(1_200_000)}ENDMARK-single-user`;
+    const planTexts = Array.from({ length: 4 }, (_, index) => `${'p'.repeat(400_000)}ENDMARK-plan-${index}`);
+    const singlePlan = `${'q'.repeat(1_200_000)}ENDMARK-single-plan`;
+    const planBody = (text: string) => ({ kind: 'plan_review', plan: text, path: '/tmp/plan.md' });
+    const turns: TranscriptTurn[] = [
+      ...userTexts.map((prompt, index): TranscriptTurn => ({
+        kind: 'turn', turnId: `t${index}`, ordinal: index, state: 'completed', origin: { kind: 'user' }, prompt, steps: [],
+      })),
+      { kind: 'turn', turnId: 't4', ordinal: 4, state: 'completed', origin: { kind: 'user' }, prompt: singleUser, steps: [] },
+      ...planTexts.map((plan, index): TranscriptTurn => ({
+        kind: 'turn', turnId: `t${index + 5}`, ordinal: index + 5, state: 'completed', origin: { kind: 'user' }, prompt: `plan ${index}`,
+        steps: [{ kind: 'step', stepId: `s${index}`, turnId: `t${index + 5}`, ordinal: 0, state: 'completed', frames: [{
+          kind: 'tool', frameId: `frame-${index}`, toolCallId: `call_plan_${index}`, name: 'ExitPlanMode', state: 'done',
+          display: planBody(plan),
+          output: `Plan saved to: /tmp/plan.md\n\n## Approved Plan:\n${plan}`,
+        }] }],
+      })),
+      { kind: 'turn', turnId: 't9', ordinal: 9, state: 'completed', origin: { kind: 'user' }, prompt: 'single plan',
+        steps: [{ kind: 'step', stepId: 's-single', turnId: 't9', ordinal: 0, state: 'completed', frames: [{
+          kind: 'tool', frameId: 'frame-single', toolCallId: 'call_plan_single', name: 'ExitPlanMode', state: 'done',
+          display: planBody(singlePlan),
+          output: `Plan saved to: /tmp/plan.md\n\n## Approved Plan:\n${singlePlan}`,
+        }] }] },
+    ];
+    const interactions = [
+      ...planTexts.map((plan, index) => ({
+        interactionId: `apr-${index}`, interactionKind: 'approval' as const, toolCallId: `call_plan_${index}`, state: 'approved' as const,
+        request: { display: planBody(plan) }, response: { decision: 'approved', selectedLabel: 'Go' },
+      })),
+      {
+        interactionId: 'apr-single', interactionKind: 'approval' as const, toolCallId: 'call_plan_single', state: 'approved' as const,
+        request: { display: planBody(singlePlan) }, response: { decision: 'approved', selectedLabel: 'Go' },
+      },
+    ];
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: turns, interactions };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot }]);
+    const readFullAgentSnapshot = vi.fn();
+    const readColdSnapshot = vi.fn();
+    const service = {
+      forSessionLive: () => ({
+        ensureAgent: () => transcript,
+        getAgent: () => transcript,
+        agents: () => [{ agentId: 'main', type: 'main' as const }],
+      }),
+      whenReady: async () => {},
+      ensureAgentHistory: async () => transcript,
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      verifyTranscriptLiveCoverage: async () => true,
+      isTranscriptLiveCoverageVerified: () => true,
+      getTranscriptCursor: () => ({ seq: 1, epoch: 'listed-epoch' }),
+      readFullAgentSnapshot,
+      readColdSnapshot,
+    } as unknown as TranscriptService;
+    const app = Fastify({ forceCloseConnections: true });
+    registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+    await app.register(async (api) => {
+      registerTranscriptRoutes(api as unknown as Parameters<typeof registerTranscriptRoutes>[0], { core: {} as Scope, transcriptService: service });
+    }, { prefix: '/api' });
+    const endpoint = await app.listen({ port: 0, host: '127.0.0.1' });
+    const klient = createKlient({ endpoint });
+    try {
+      const rawUsers = await fetch(`${endpoint}/api/sessions/fixture-session/transcript/user-messages?agent_id=main`);
+      expect(rawUsers.status).toBe(200);
+      const rawUserText = await rawUsers.text();
+      expect(Buffer.byteLength(rawUserText, 'utf8')).toBeLessThan(256 * 1024);
+      expect(rawUserText).not.toContain('ENDMARK-user-0');
+      expect(rawUserText).not.toContain('ENDMARK-single-user');
+      const users = await klient.session('fixture-session').view.userMessages!({ agentId: 'main' });
+      expect(users.agents[0]?.messages.map((message) => message.prompt)).toEqual([
+        ...userTexts,
+        singleUser,
+        ...planTexts.map((_, index) => `plan ${index}`),
+        'single plan',
+      ]);
+      expect(singleUser.length).toBeGreaterThan(1_114_112);
+      expect(userTexts.join('').length + singleUser.length).toBeGreaterThan(1_114_112);
+
+      const rawPlans = await fetch(`${endpoint}/api/sessions/fixture-session/transcript/plan?agent_id=main`);
+      expect(rawPlans.status).toBe(200);
+      const rawPlanText = await rawPlans.text();
+      expect(Buffer.byteLength(rawPlanText, 'utf8')).toBeLessThan(256 * 1024);
+      expect(rawPlanText).not.toContain('ENDMARK-plan-0');
+      expect(rawPlanText).not.toContain('ENDMARK-single-plan');
+      const plans = await klient.session('fixture-session').view.plans!({ agentId: 'main' });
+      expect(plans.plans.map((plan) => plan.plan)).toEqual([...planTexts, singlePlan]);
+      expect(plans.plans.every((plan) => plan.source === 'interaction')).toBe(true);
+      expect(singlePlan.length).toBeGreaterThan(1_114_112);
+      expect(readFullAgentSnapshot).not.toHaveBeenCalled();
+      expect(readColdSnapshot).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      await app.close();
+    }
+  });
 });

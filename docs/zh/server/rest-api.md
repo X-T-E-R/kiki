@@ -482,8 +482,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | 按最新终态 Assistant 消息对应的用户输入重新运行 |
 | `GET /api/sessions/{session_id}/transcript` | 转录按轮次分页（需 `agent_id` 和 `transcript_coverage_version=2`），全局状态不分页随响应返回 |
 | `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（需 `agent_id`、`since_seq` 和 `transcript_coverage_version=2`），`complete: false` 时需全量刷新 |
-| `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，不分页 |
-| `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
+| `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，先返回最新一窗（`cursor` 继续读更早的历史） |
+| `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果，先返回最新一窗 |
 | `GET /api/sessions/{session_id}/transcript/detail` | 读取一条 canonical 实体（`agent_id`、`kind`、`id`） |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | 从一条 `contentRefs` 继续读取被截断的字段 |
 
@@ -500,6 +500,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 已在内存中覆盖完整的会话直接返回实时工具调用，`read.source` 为 `live`，`readiness` 为 `ready`。已定位的冷会话返回 `cold` 和 `ready`，正文从这份源历史回放。旧格式消息与内容块的 `provenance` 在已知时携带绝对 `recordOrdinal`。有界冷窗口尚未验证文件前缀时，改为携带逻辑 wire 中的绝对字节范围 `recordSpan: { startByteOffset, endByteOffset }`，省略 `recordOrdinal`。不要把缺失的序号当作零，也不要从分页位置推算。实体 ID 是不透明标识；历史导航就绪后，仍应原样提交返回的引用。
 
 转录页把大字段留在 `contentRefs` 里。每条引用包含 `source`、`revision`、`path`、`kind`（`text`、`array` 或 `object`）、`offset` 和 `total`。用 `POST /api/klient/session-view/{session_id}/transcript/content` 继续读取，JSON 为 `{ "agentId", "ref" }`，`ref` 原样送回。HTTP 状态保持 200，结果在信封里。`code: 0` 返回 `value`；字段还有剩余时带 `next`。把这份 `next` 原样作为下一次的 `ref` 提交，直到响应不再带 `next`。再次提交同一条 `ref` 读到的仍是这一段；`"range": true` 不会推进 `offset`。对文本引用，它只限制已经放在 `offset` 上的那段切片（大约 4096 个字符，且仍在字段预算内），快照引用会忽略 `range`。单页预算为 64 KiB，每个字段切片瞄准其中一半，即 32 KiB。
+
+`GET /api/sessions/{session_id}/transcript/user-messages` 和 `GET /api/sessions/{session_id}/transcript/plan` 使用同一套续读。可选的 `cursor` 是上一次响应的 `next_cursor`，用来继续读取更早的历史；一旦带上 `cursor`，user-messages 也必须带同一个 `agent_id`。每一页内部仍按时间正序排列。这一窗已经覆盖全部内容时，响应省略 `has_more` 和 `next_cursor`，短会话因此保持原来的形状。把更早的页接在前面，或按用户消息的 `ordinal` 排序，得到完整列表。过长的 `prompt` 或 `plan` 只保留预览并带上 `contentRefs`；用上面的 POST 按 `next` 续读，直到响应不再带 `next`。plan 路由的 `tool_call_id` 仍然只返回这一条计划；找不到，或该调用不是 ExitPlanMode 时，返回 `40416`。
 
 源历史仍在定位时，同一次调用返回 `code: 40923` 和 `msg: "history_canonical_preparing"`，用同一请求体重试。字段已与引用不一致时，返回 `code: 40922` 和 `msg: "Content changed; reload its preview before continuing."`。重新加载转录预览，再从新的引用继续。未知引用返回 `code: 40401` 和 `msg: "content unavailable"`。其他路由也会使用 `40922` 和 `40923`；以这条 `msg` 为准。请求体无效时返回 `code: 40001` 和 `msg: "invalid content reference"`。
 

@@ -160,6 +160,16 @@ export class HttpChannel implements KlientChannel {
       `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/content`, {},
       { method: 'POST', body: input, signal: options?.signal, timeoutMs: options?.timeoutMs },
     ),
+    userMessages: (sessionId, input, options) => this.viewRequest(
+      `/api/sessions/${encodeURIComponent(sessionId)}/transcript/user-messages`,
+      { agent_id: input.agentId, cursor: input.cursor },
+      { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
+    plans: (sessionId, input, options) => this.viewRequest(
+      `/api/sessions/${encodeURIComponent(sessionId)}/transcript/plan`,
+      { agent_id: input.agentId, tool_call_id: input.toolCallId, cursor: input.cursor },
+      { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
     subscribe: (sessionId, input, handler) => {
       if (this.closed) throw new Error('http closed');
       return this.socket.sessionViews.subscribe(sessionId, input, handler);
@@ -225,7 +235,7 @@ export class HttpChannel implements KlientChannel {
   }
 
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {
-    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
+    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops|user-messages|plan))?$/.test(path);
     const callOptions = reading ? { ...options, timeoutMs: options.timeoutMs ?? this.readingTimeoutMs() } : options;
     return this.performFetch(path, callOptions, async (response, acceptRequestId, signal) => {
       if (response.status === 404 && options.allowMissingRoute === true) {

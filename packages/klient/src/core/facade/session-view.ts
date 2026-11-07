@@ -1,6 +1,18 @@
 import type { SessionSnapshotResponse } from '@kiki/protocol';
 import type { z } from 'zod';
-import { transcriptDetailListQuerySchema, transcriptDetailListResponseSchema, type TranscriptDetailListResponse } from '@kiki/transcript';
+import {
+  applyContentSegment,
+  compareTurnIds,
+  transcriptDetailListQuerySchema,
+  transcriptDetailListResponseSchema,
+  transcriptPlanResponseSchema,
+  transcriptUserMessagesResponseSchema,
+  type ContentRef,
+  type ContentSegment,
+  type TranscriptDetailListResponse,
+  type TranscriptPlanResponse,
+  type TranscriptUserMessagesResponse,
+} from '@kiki/transcript';
 import type { SessionViewTranscriptEntitiesInput } from '../../contract/session/view.js';
 import type {
   TranscriptCursor,
@@ -54,9 +66,22 @@ export interface SessionViewTranscriptFacade {
   entities?(input: SessionViewTranscriptEntitiesInput, options?: CallOptions): Promise<TranscriptDetailListResponse>;
 }
 
+export interface SessionViewUserMessagesInput {
+  readonly agentId?: string;
+  readonly cursor?: string;
+}
+
+export interface SessionViewPlansInput {
+  readonly agentId: string;
+  readonly toolCallId?: string;
+  readonly cursor?: string;
+}
+
 export interface SessionViewFacade {
   snapshot(options?: CallOptions): Promise<SessionSnapshotResponse>;
   readonly transcript: SessionViewTranscriptFacade;
+  userMessages?(input?: SessionViewUserMessagesInput, options?: CallOptions): Promise<TranscriptUserMessagesResponse>;
+  plans?(input: SessionViewPlansInput, options?: CallOptions): Promise<TranscriptPlanResponse>;
   bootstrap?(
     input: Omit<SessionViewSubscribeInput, 'sessionCursor' | 'bootstrap'>,
     onSignal: (signal: SessionViewSignal) => void,
@@ -145,6 +170,79 @@ export function createSessionViewFacade(
         },
       }),
     },
+    ...(channel?.userMessages === undefined ? {} : {
+      async userMessages(input?: SessionViewUserMessagesInput, options?: CallOptions) {
+        const read = async (cursor?: string, agentId?: string) => {
+          const output = await channel.userMessages!(sessionId, { agentId: agentId ?? input?.agentId, cursor }, options);
+          return validate
+            ? parse('output', 'session.view.userMessages', transcriptUserMessagesResponseSchema, output)
+            : output as TranscriptUserMessagesResponse;
+        };
+        const first = await read(input?.cursor, input?.agentId);
+        const agents = [];
+        for (const agent of first.agents) {
+          let messages = agent.messages;
+          let attachments = agent.attachments;
+          let cursor = agent.next_cursor;
+          const seen = new Set<string>();
+          while (cursor !== undefined && !seen.has(cursor) && seen.size < 1000) {
+            seen.add(cursor);
+            const page = await read(cursor, agent.agent_id);
+            const older = page.agents.find((entry) => entry.agent_id === agent.agent_id) ?? page.agents[0];
+            if (older === undefined) break;
+            messages = mergeBy(older.messages, messages, (message) => message.turn_id);
+            attachments = mergeBy(older.attachments, attachments, (attachment) => attachment.attachmentId);
+            cursor = older.next_cursor;
+          }
+          const hydrated = [];
+          for (const message of messages.sort((left, right) => left.ordinal - right.ordinal || compareTurnIds(left.turn_id, right.turn_id))) {
+            hydrated.push(await hydrateWindow(message, (ref) => readContent(channel, sessionId, agent.agent_id, ref, options, validate, parse)));
+          }
+          agents.push({ agent_id: agent.agent_id, messages: hydrated, attachments });
+        }
+        const assembled = { agents };
+        return validate
+          ? parse('output', 'session.view.userMessages', transcriptUserMessagesResponseSchema, assembled)
+          : assembled;
+      },
+    }),
+    ...(channel?.plans === undefined ? {} : {
+      async plans(input: SessionViewPlansInput, options?: CallOptions) {
+        const read = async (cursor?: string) => {
+          const output = await channel.plans!(sessionId, { agentId: input.agentId, toolCallId: input.toolCallId, cursor }, options);
+          return validate
+            ? parse('output', 'session.view.plans', transcriptPlanResponseSchema, output)
+            : output as TranscriptPlanResponse;
+        };
+        if (input.toolCallId !== undefined) {
+          const page = await read();
+          const plans = [];
+          for (const plan of page.plans) plans.push(await hydrateWindow(plan, (ref) => readContent(channel, sessionId, input.agentId, ref, options, validate, parse)));
+          const assembled = { agent_id: page.agent_id, plans };
+          return validate ? parse('output', 'session.view.plans', transcriptPlanResponseSchema, assembled) : assembled;
+        }
+        let plans: TranscriptPlanResponse['plans'] = [];
+        let cursor = input.cursor;
+        let agentId = input.agentId;
+        const seen = new Set<string>();
+        do {
+          if (cursor !== undefined) {
+            if (seen.has(cursor) || seen.size >= 1000) break;
+            seen.add(cursor);
+          }
+          const page = await read(cursor);
+          agentId = page.agent_id;
+          plans = mergeBy(page.plans, plans, (plan) => plan.tool_call_id);
+          cursor = page.next_cursor;
+        } while (cursor !== undefined);
+        const hydrated = [];
+        for (const plan of plans.sort((left, right) => compareTurnIds(left.turn_id, right.turn_id))) {
+          hydrated.push(await hydrateWindow(plan, (ref) => readContent(channel, sessionId, agentId, ref, options, validate, parse)));
+        }
+        const assembled = { agent_id: agentId, plans: hydrated };
+        return validate ? parse('output', 'session.view.plans', transcriptPlanResponseSchema, assembled) : assembled;
+      },
+    }),
     subscribe(input, onSignal) {
       const wireInput = validate
         ? parse('input', 'session.view.subscribe', sessionViewSubscribeInputSchema, input)
@@ -168,6 +266,47 @@ export function createSessionViewFacade(
     },
   };
   return facade;
+}
+
+function mergeBy<T>(older: readonly T[], newer: readonly T[], id: (value: T) => string): T[] {
+  const merged = new Map<string, T>();
+  for (const value of [...older, ...newer]) {
+    if (!merged.has(id(value))) merged.set(id(value), value);
+  }
+  return [...merged.values()];
+}
+
+async function hydrateWindow<T extends { readonly contentRefs?: readonly ContentRef[] }>(
+  entity: T,
+  read: (ref: ContentRef) => Promise<ContentSegment>,
+): Promise<T> {
+  let current = entity;
+  const seen = new Set<string>();
+  while (current.contentRefs !== undefined && current.contentRefs.length > 0) {
+    const ref = current.contentRefs[0]!;
+    const key = JSON.stringify(ref);
+    if (seen.has(key) || seen.size > 10000) break;
+    seen.add(key);
+    current = applyContentSegment(current, await read(ref));
+  }
+  const { contentRefs: _contentRefs, ...rest } = current;
+  return (current.contentRefs === undefined || current.contentRefs.length === 0 ? rest : current) as T;
+}
+
+async function readContent(
+  channel: SessionViewChannel,
+  sessionId: string,
+  agentId: string,
+  ref: ContentRef,
+  options: CallOptions | undefined,
+  validate: boolean,
+  parse: <T>(phase: 'input' | 'output' | 'event', name: string, schema: z.ZodType<T>, value: unknown) => T,
+): Promise<ContentSegment> {
+  if (channel.transcriptContent === undefined) throw new Error('session view content continuation is unavailable');
+  const output = await channel.transcriptContent(sessionId, { agentId, ref }, options);
+  return validate
+    ? parse('output', 'session.view.transcript.content', sessionViewTranscriptContentOutputSchema, output)
+    : output as ContentSegment;
 }
 
 export type {

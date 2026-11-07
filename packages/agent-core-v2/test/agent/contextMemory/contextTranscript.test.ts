@@ -654,6 +654,45 @@ describe('live fold parity', () => {
     expect(texts(transcript)).toEqual(type === 'context.clear' ? ['old ', 'old answer', 'fresh suffix'] : ['fresh suffix']);
   });
 
+  it('folds external.text into logical context and replaces that context on model switch', () => {
+    const source = { connectionId: 'c1', clientName: 'kiki', sessionRef: 's', driver: 'external' as const };
+    const result = reduceContextTranscript([
+      appendMessage(userMessage('first user body')),
+      {
+        type: 'external.text',
+        recordId: 'rec-2',
+        turnId: 1,
+        text: 'second user body',
+        kind: 'user_excerpt',
+        title: 'note',
+        source,
+      },
+      { type: 'agent.model_switch', mode: 'direct', operationId: 'direct' },
+    ]);
+    expect(result.logicalEntries.map((message) => message.content)).toEqual([
+      [{ type: 'text', text: 'first user body' }],
+      [{ type: 'text', text: 'second user body' }],
+    ]);
+    expect(result.logicalEntries[1]).toMatchObject({
+      role: 'user',
+      toolCalls: [],
+      origin: {
+        kind: 'external_record',
+        recordId: 'rec-2',
+        recordKind: 'user_excerpt',
+        title: 'note',
+        ...source,
+      },
+      source: { ref: 'external.text:rec-2' },
+    });
+    const replaced = reduceContextTranscript([
+      appendMessage(userMessage('first user body')),
+      { type: 'agent.model_switch', mode: 'fresh', context: [userMessage('replacement body')] },
+    ]);
+    expect(replaced.logicalEntries.map((message) => message.content)).toEqual([[{ type: 'text', text: 'replacement body' }]]);
+    expect(texts(replaced)).toEqual(['first user body']);
+  });
+
   it('keeps injections not owned by any removed prompt across undo', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('note', { kind: 'injection', variant: 'test' })),

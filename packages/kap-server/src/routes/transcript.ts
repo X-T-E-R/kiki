@@ -12,10 +12,12 @@ import {
   transcriptPlanResponseSchema,
   transcriptResponseSchema,
   transcriptUserMessagesResponseSchema,
-  type ToolCallFrame,
+  jsonBytes,
+  type ContentRef,
   type TranscriptAttachment,
   type TranscriptInteraction,
   type TranscriptItem,
+  type TranscriptTurn,
   type TurnOrigin,
   type TurnState,
 } from '@kiki/transcript';
@@ -25,7 +27,9 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProjection';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import { boundedEntity } from '../transport/klient/boundedContent';
 import {
   readSessionViewTranscriptCatchUp,
   readSessionViewTranscriptDetails,
@@ -93,6 +97,7 @@ const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }
 const userMessagesQueryCoercion = z
   .object({
     agent_id: z.string().min(1).optional(),
+    cursor: z.string().min(1).max(4096).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.agent_id !== undefined && !isPlainAgentId(value.agent_id)) {
@@ -103,12 +108,21 @@ const userMessagesQueryCoercion = z
         params: { code: ErrorCode.VALIDATION_FAILED },
       });
     }
+    if (value.cursor !== undefined && value.agent_id === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'agent_id is required when cursor is set',
+        path: ['agent_id'],
+        params: { code: ErrorCode.VALIDATION_FAILED },
+      });
+    }
   });
 
 const planQueryCoercion = z
   .object({
     agent_id: z.string().min(1),
     tool_call_id: z.string().min(1).optional(),
+    cursor: z.string().min(1).max(4096).optional(),
   })
   .superRefine((value, ctx) => {
     if (!isPlainAgentId(value.agent_id)) {
@@ -299,61 +313,57 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         [ErrorCode.SESSION_NOT_FOUND]: {},
       },
       description:
-        'All turn-opening inputs ("user messages") of a session, grouped per agent: every turn with a defined prompt (real user text, user-slash skill/plugin commands, cron prompts — distinguish via origin), plus attachment-only prompts projected with an empty prompt string. agent_id optional: present reads one agent, absent reads every rostered agent. Live sessions answer from the in-memory store (history backfill awaited per agent), cold sessions rebuild from the persisted wire records. Unpaginated; attachment entities referenced by the messages ride along (metadata only)',
+        'Turn-opening inputs ("user messages") of a session, grouped per agent: every turn with a defined prompt (real user text, user-slash skill/plugin commands, cron prompts — distinguish via origin), plus attachment-only prompts projected with an empty prompt string. agent_id optional: present reads one agent, absent reads every rostered agent. Each response is the newest unread window for that agent, chronological inside the window; has_more and next_cursor are omitted when the window is complete. cursor continues that agent toward older history and requires agent_id. A long prompt is a preview plus contentRefs. Live sessions answer from the in-memory store (history backfill awaited per agent), cold sessions read a wire page. Attachment entities referenced by the returned messages ride along (metadata only)',
       tags: ['transcript'],
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const { agent_id } = req.query;
+      const { agent_id, cursor } = req.query;
 
       const store = transcriptService.forSessionLive(session_id);
       if (store !== undefined) {
         await transcriptService.whenReady(session_id);
-        const agentIds =
-          agent_id !== undefined ? [agent_id] : store.agents().map((d) => d.agentId);
+        const agentIds = agent_id !== undefined ? [agent_id] : store.agents().map((descriptor) => descriptor.agentId);
         const agents = [];
         for (const agentId of agentIds) {
-          const transcript = await transcriptService.ensureAgentHistory(session_id, agentId);
-          if (transcript === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
-          const snapshot = await transcriptService.readFullAgentSnapshot(session_id, agentId, transcript);
-          if (snapshot === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
-          const attachments = new Map(snapshot.attachments.map((attachment) => [attachment.attachmentId, attachment]));
-          agents.push({
-            agent_id: agentId,
-            ...projectUserMessages(snapshot.items, (id) => attachments.get(id)),
-          });
+          let window;
+          try {
+            window = await readUserMessageWindow(transcriptService, session_id, agentId, agent_id === undefined ? undefined : cursor, undefined);
+          } catch (error) {
+            if (!(error instanceof TranscriptDetailCursorError)) throw error;
+            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+            return;
+          }
+          if (window === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
+          agents.push(window);
         }
         reply.send(okEnvelope({ agents }, req.id));
         return;
       }
 
-      const agents = await withReplyCloseSignal(replySignalSource(reply), async (signal) => {
-        const roster = await transcriptService.readColdRoster(session_id);
-        signal.throwIfAborted();
-        if (roster === undefined) return undefined;
-        const agentIds = agent_id !== undefined ? [agent_id] : roster.map((d) => d.agentId);
-        if (agent_id === undefined && !agentIds.includes(MAIN_AGENT_ID)) {
-          agentIds.unshift(MAIN_AGENT_ID);
-        }
-        const projected: ({
-          agent_id: string;
-        } & ReturnType<typeof projectUserMessages>)[] = [];
-        for (const agentId of agentIds) {
-          const snapshot = await transcriptService.readColdSnapshot(
-            session_id,
-            agentId,
-            undefined,
-            signal,
-          );
-          if (snapshot === undefined) return undefined;
-          const byId = new Map(snapshot.attachments.map((a) => [a.attachmentId, a]));
-          projected.push({
-            agent_id: agentId,
-            ...projectUserMessages(snapshot.items, (id) => byId.get(id)),
-          });
-        }
-        return projected;
-      });
+      let agents;
+      try {
+        agents = await withReplyCloseSignal(replySignalSource(reply), async (signal) => {
+          const roster = await transcriptService.readColdRoster(session_id);
+          signal.throwIfAborted();
+          if (roster === undefined) return undefined;
+          const agentIds = agent_id !== undefined ? [agent_id] : roster.map((descriptor) => descriptor.agentId);
+          if (agent_id === undefined && !agentIds.includes(MAIN_AGENT_ID)) {
+            agentIds.unshift(MAIN_AGENT_ID);
+          }
+          const projected = [];
+          for (const agentId of agentIds) {
+            const window = await readUserMessageWindow(transcriptService, session_id, agentId, agent_id === undefined ? undefined : cursor, signal);
+            if (window === undefined) return undefined;
+            projected.push(window);
+          }
+          return projected;
+        });
+      } catch (error) {
+        if (!(error instanceof TranscriptDetailCursorError)) throw error;
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+        return;
+      }
       if (agents === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
@@ -380,45 +390,46 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         [ErrorCode.TOOL_CALL_NOT_FOUND]: {},
       },
       description:
-        'Plan information of an agent\'s ExitPlanMode tool calls: the reviewed plan content, plan file path, offered options, and the review outcome, in timeline order. agent_id required; tool_call_id optional — present narrows the read to that one call (unknown id or non-ExitPlanMode call → 40416), absent lists every call with recoverable plan content. Content is projected from the linked approval interaction (interactive reviews, live or cold), the live tool frame display (auto mode), or the tool result output text (cold rebuilds without an interaction). Live sessions read the in-memory store (history backfill awaited), cold sessions rebuild the agent from the persisted wire records',
+        'Plan information of an agent\'s ExitPlanMode tool calls: the reviewed plan content, plan file path, offered options, and the review outcome, in timeline order. agent_id required; tool_call_id optional — present narrows the read to that one call (unknown id or non-ExitPlanMode call → 40416), absent lists the newest window of calls with recoverable plan content. has_more and next_cursor are omitted when nothing older remains; cursor continues toward older history. A long plan is a preview plus contentRefs. Content is projected from the linked approval interaction (interactive reviews, live or cold), the tool frame display (auto mode), or the tool result output text. Live sessions read the in-memory store (history backfill awaited), cold sessions read a wire page',
       tags: ['transcript'],
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const { agent_id, tool_call_id } = req.query;
-
-      const store = transcriptService.forSessionLive(session_id);
-      if (store !== undefined) {
-        const transcript = await transcriptService.ensureAgentHistory(session_id, agent_id);
-        if (transcript === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
-        const snapshot = await transcriptService.readFullAgentSnapshot(session_id, agent_id, transcript);
-        if (snapshot === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
-        const plans = projectPlans(snapshot.items, snapshot.interactions, tool_call_id);
-        if (tool_call_id !== undefined && plans.length === 0) {
-          sendToolCallNotFound(reply, req.id, tool_call_id);
-          return;
+      const { agent_id, tool_call_id, cursor } = req.query;
+      const read = async (signal?: AbortSignal) => {
+        if (transcriptService.forSessionLive(session_id) !== undefined) {
+          const transcript = await transcriptService.ensureAgentHistory(session_id, agent_id);
+          if (transcript === undefined) return undefined;
         }
-        reply.send(okEnvelope({ agent_id, plans }, req.id));
+        return readPlanWindow(transcriptService, session_id, agent_id, tool_call_id, tool_call_id === undefined ? cursor : undefined, signal);
+      };
+      let result;
+      try {
+        result = transcriptService.forSessionLive(session_id) !== undefined
+          ? await read()
+          : await withReplyCloseSignal(replySignalSource(reply), read);
+      } catch (error) {
+        if (!(error instanceof TranscriptDetailCursorError)) throw error;
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;
       }
-
-      const snapshot = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
-        transcriptService.readColdSnapshot(session_id, agent_id, undefined, signal),
-      );
-      if (snapshot === undefined) {
+      if (result === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      const plans = projectPlans(snapshot.items, snapshot.interactions, tool_call_id);
-      if (tool_call_id !== undefined && plans.length === 0) {
-        sendToolCallNotFound(reply, req.id, tool_call_id);
+      if (result.missingTool) {
+        sendToolCallNotFound(reply, req.id, tool_call_id ?? '');
         return;
       }
-      reply.send(okEnvelope({ agent_id, plans }, req.id));
+      reply.send(okEnvelope({ agent_id, plans: result.plans, ...result.page }, req.id));
     },
   );
   app.get(planRoute.path, planRoute.options, planRoute.handler as Parameters<TranscriptRouteHost['get']>[2]);
 }
+
+const LIST_PAGE_BYTES = 64 * 1024;
+const LIST_TURN_PAGE = 20;
+const PROMPT_INLINE_BYTES = 24 * 1024;
 
 interface UserMessageEntry {
   turn_id: string;
@@ -428,6 +439,27 @@ interface UserMessageEntry {
   prompt: string;
   attachment_ids?: readonly string[];
   started_at?: string;
+  contentRefs?: ContentRef[];
+}
+
+interface ListedPage {
+  has_more?: true;
+  next_cursor?: string;
+}
+
+function listedPage(hasMore: boolean, cursor: string | undefined): ListedPage {
+  if (!hasMore) return {};
+  return cursor === undefined ? { has_more: true } : { has_more: true, next_cursor: cursor };
+}
+
+function fitNewest<T>(entries: readonly T[], sizeOf: (subset: readonly T[]) => number): { kept: T[]; trimmed: boolean } {
+  const kept: T[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const candidate = [entries[index]!, ...kept];
+    if (kept.length > 0 && sizeOf(candidate) > LIST_PAGE_BYTES) break;
+    kept.unshift(entries[index]!);
+  }
+  return { kept, trimmed: kept.length < entries.length };
 }
 
 function projectUserMessages(
@@ -481,142 +513,158 @@ function sendToolCallNotFound(
   );
 }
 
-interface PlanReviewInfo {
-  state: 'pending' | 'approved' | 'rejected' | 'cancelled';
-  selected_option?: string;
-  feedback?: string;
+function boundPrompt(entry: UserMessageEntry, turn: TranscriptTurn): UserMessageEntry {
+  const refs = (turn.contentRefs ?? []).filter((ref) => ref.kind === 'text' && ref.path.length === 1 && ref.path[0] === 'prompt');
+  if (refs.length > 0) return { ...entry, prompt: turn.prompt ?? '', contentRefs: [...refs] };
+  if (jsonBytes(entry.prompt) <= PROMPT_INLINE_BYTES) return entry;
+  const bounded = boundedEntity({ prompt: entry.prompt }, { kind: 'turn', id: turn.turnId }, PROMPT_INLINE_BYTES);
+  return { ...entry, prompt: bounded.prompt, ...(bounded.contentRefs === undefined ? {} : { contentRefs: [...bounded.contentRefs] }) };
 }
 
-interface PlanInfo {
-  tool_call_id: string;
-  turn_id: string;
-  source: 'interaction' | 'display' | 'output';
-  plan: string;
-  path?: string;
-  options?: { label: string; description?: string }[];
-  review?: PlanReviewInfo;
+function attachmentsFor(messages: readonly UserMessageEntry[], attachments: readonly TranscriptAttachment[]): TranscriptAttachment[] {
+  const ids = new Set(messages.flatMap((message) => message.attachment_ids ?? []));
+  return attachments.filter((attachment) => ids.has(attachment.attachmentId));
 }
 
-interface PlanReviewDisplayInfo {
-  plan: string;
-  path?: string;
-  options?: { label: string; description?: string }[];
+async function readUserMessageWindow(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  cursor: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<{ agent_id: string; messages: UserMessageEntry[]; attachments: TranscriptAttachment[] } & ListedPage | undefined> {
+  let beforeItem = cursor;
+  const seen = new Set<string>();
+  for (let guard = 0; guard < 1000; guard += 1) {
+    const page = await readSessionViewTranscriptPage(transcriptService, sessionId, {
+      agentId, beforeItem, pageSize: LIST_TURN_PAGE, signal,
+    });
+    if (page === undefined) return undefined;
+    const attachments = new Map(page.attachments.map((attachment) => [attachment.attachmentId, attachment]));
+    const projected = projectUserMessages(page.items, (id) => attachments.get(id));
+    const messages = projected.messages.map((message) => {
+      const turn = page.items.find((item) => item.kind === 'turn' && item.turnId === message.turn_id);
+      return turn?.kind === 'turn' ? boundPrompt(message, turn) : message;
+    });
+    if (messages.length > 0 || page.has_more !== true) {
+      const fitted = fitNewest(messages, (subset) => jsonBytes({
+        messages: subset,
+        attachments: attachmentsFor(subset, projected.attachments),
+      }));
+      const oldest = fitted.kept[0];
+      const hasMore = fitted.trimmed || page.has_more === true;
+      const next = fitted.trimmed && oldest !== undefined ? `turn:${oldest.turn_id}` : page.next_cursor;
+      return {
+        agent_id: agentId,
+        messages: fitted.kept,
+        attachments: attachmentsFor(fitted.kept, projected.attachments),
+        ...listedPage(hasMore, next),
+      };
+    }
+    if (page.next_cursor === undefined || seen.has(page.next_cursor)) {
+      return { agent_id: agentId, messages: [], attachments: [] };
+    }
+    seen.add(page.next_cursor);
+    beforeItem = page.next_cursor;
+  }
+  return { agent_id: agentId, messages: [], attachments: [] };
 }
 
-function projectPlans(
+function liveInteractions(transcriptService: TranscriptService, sessionId: string, agentId: string): TranscriptInteraction[] {
+  const values = transcriptService.forSessionLive(sessionId)?.getAgent(agentId)?.getInteractions();
+  return values === undefined ? [] : [...values.values()];
+}
+
+function turnHidesPlan(turn: TranscriptTurn): boolean {
+  const refs = turn.contentRefs ?? [];
+  if (refs.some((ref) => ref.path[0] === 'steps' || ref.path.includes('output') || ref.path.includes('display') || ref.path.includes('input'))) return true;
+  return turn.steps.some((step) => step.frames.some((frame) => (frame.contentRefs?.length ?? 0) > 0));
+}
+
+async function completeTurn(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  turn: TranscriptTurn,
+  signal: AbortSignal | undefined,
+): Promise<TranscriptTurn> {
+  if (!turnHidesPlan(turn)) return turn;
+  const resident = transcriptService.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(turn.turnId);
+  if (resident !== undefined && !turnHidesPlan(resident)) return resident;
+  if (typeof transcriptService.readProjectedColdTurn === 'function') {
+    const cold = await transcriptService.readProjectedColdTurn(sessionId, agentId, turn.turnId, signal);
+    if (cold !== undefined) return cold;
+  }
+  if (typeof transcriptService.readCanonicalEntity === 'function') {
+    const entity = await transcriptService.readCanonicalEntity(sessionId, agentId, { kind: 'turn', id: turn.turnId }, signal);
+    if (entity !== undefined && (entity as TranscriptTurn).kind === 'turn') return entity as TranscriptTurn;
+  }
+  return resident ?? turn;
+}
+
+interface ListedPlan extends PlanInfo {
+  contentRefs?: ContentRef[];
+}
+
+function boundPlan(info: PlanInfo, frameId: string, stepId: string): ListedPlan {
+  if (jsonBytes(info.plan) <= PROMPT_INLINE_BYTES) return info;
+  const bounded = boundedEntity({ ...info }, { kind: 'frame', id: frameId, turnId: info.turn_id, stepId }, PROMPT_INLINE_BYTES);
+  const { contentRefs, ...rest } = bounded;
+  return contentRefs === undefined ? rest : { ...rest, contentRefs: [...contentRefs] };
+}
+
+async function plansOnPage(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string,
   items: readonly TranscriptItem[],
   interactions: readonly TranscriptInteraction[],
-  toolCallId?: string,
-): PlanInfo[] {
-  const plans: PlanInfo[] = [];
+  toolCallId: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<Array<{ plan: ListedPlan; turnId: string }>> {
+  const live = liveInteractions(transcriptService, sessionId, agentId);
+  const usable = live.length > 0 ? live : interactions;
+  const plans: Array<{ plan: ListedPlan; turnId: string }> = [];
   for (const item of items) {
     if (item.kind !== 'turn') continue;
-    for (const step of item.steps) {
-      for (const frame of step.frames) {
-        if (frame.kind !== 'tool' || frame.name !== 'ExitPlanMode') continue;
-        if (toolCallId !== undefined && frame.toolCallId !== toolCallId) continue;
-        const info = projectPlanFrame(item.turnId, frame, interactions);
-        if (info !== undefined) plans.push(info);
-      }
+    const turn = await completeTurn(transcriptService, sessionId, agentId, item, signal);
+    for (const projected of projectTurnPlans(turn, usable, toolCallId)) {
+      plans.push({ plan: boundPlan(projected.info, projected.frameId, projected.stepId), turnId: turn.turnId });
     }
   }
   return plans;
 }
 
-function projectPlanFrame(
-  turnId: string,
-  frame: ToolCallFrame,
-  interactions: readonly TranscriptInteraction[],
-): PlanInfo | undefined {
-  const toolCallId = frame.toolCallId;
-  const interaction = interactions.find(
-    (i) => i.interactionKind === 'approval' && i.toolCallId === toolCallId,
-  );
-  const review = readPlanReview(interaction);
-
-  const requestDisplay =
-    interaction !== undefined && interaction.request !== null && typeof interaction.request === 'object'
-      ? (interaction.request as { display?: unknown }).display
-      : undefined;
-  const fromInteraction = readPlanReviewDisplay(requestDisplay);
-  if (fromInteraction !== undefined) {
-    return { tool_call_id: toolCallId, turn_id: turnId, source: 'interaction', ...fromInteraction, review };
-  }
-  const fromDisplay = readPlanReviewDisplay(frame.display);
-  if (fromDisplay !== undefined) {
-    return { tool_call_id: toolCallId, turn_id: turnId, source: 'display', ...fromDisplay, review };
-  }
-  const fromOutput = parsePlanFromOutput(frame.output);
-  if (fromOutput !== undefined) {
-    return { tool_call_id: toolCallId, turn_id: turnId, source: 'output', ...fromOutput, review };
-  }
-  return undefined;
-}
-
-function readPlanReview(interaction: TranscriptInteraction | undefined): PlanReviewInfo | undefined {
-  if (interaction === undefined) return undefined;
-  const state = interaction.state;
-  if (state !== 'pending' && state !== 'approved' && state !== 'rejected' && state !== 'cancelled') {
-    return undefined;
-  }
-  const response =
-    interaction.response !== null && typeof interaction.response === 'object'
-      ? (interaction.response as { selectedLabel?: unknown; feedback?: unknown })
-      : undefined;
-  const selected =
-    typeof response?.selectedLabel === 'string' && response.selectedLabel.length > 0
-      ? response.selectedLabel
-      : undefined;
-  const feedback =
-    typeof response?.feedback === 'string' && response.feedback.length > 0
-      ? response.feedback
-      : undefined;
-  return { state, selected_option: selected, feedback };
-}
-
-function readPlanReviewDisplay(display: unknown): PlanReviewDisplayInfo | undefined {
-  if (display === null || typeof display !== 'object') return undefined;
-  const d = display as { kind?: unknown; plan?: unknown; path?: unknown; options?: unknown };
-  if (d.kind !== 'plan_review' || typeof d.plan !== 'string' || d.plan.trim().length === 0) {
-    return undefined;
-  }
-  const options = Array.isArray(d.options)
-    ? d.options
-        .map((option: unknown): { label: string; description?: string } | null => {
-          if (option === null || typeof option !== 'object') return null;
-          const o = option as { label?: unknown; description?: unknown };
-          if (typeof o.label !== 'string' || o.label.length === 0) return null;
-          return {
-            label: o.label,
-            description: typeof o.description === 'string' ? o.description : undefined,
-          };
-        })
-        .filter((o): o is { label: string; description?: string } => o !== null)
-    : undefined;
-  return {
-    plan: d.plan,
-    path: typeof d.path === 'string' ? d.path : undefined,
-    options: options !== undefined && options.length > 0 ? options : undefined,
-  };
-}
-
-const PLAN_SAVED_TO_MARKER = 'Plan saved to: ';
-const PLAN_BODY_MARKERS = ['## Approved Plan:\n', '## Plan (auto-approved, not user-reviewed):\n'];
-
-function parsePlanFromOutput(output: unknown): { plan: string; path?: string } | undefined {
-  if (typeof output !== 'string') return undefined;
-  let path: string | undefined;
-  for (const line of output.split('\n')) {
-    if (line.startsWith(PLAN_SAVED_TO_MARKER)) {
-      path = line.slice(PLAN_SAVED_TO_MARKER.length).trim() || undefined;
-      break;
+async function readPlanWindow(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  toolCallId: string | undefined,
+  cursor: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<{ plans: ListedPlan[]; page: ListedPage; missingTool?: boolean } | undefined> {
+  let beforeItem = cursor;
+  const seen = new Set<string>();
+  for (let guard = 0; guard < 1000; guard += 1) {
+    const page = await readSessionViewTranscriptPage(transcriptService, sessionId, {
+      agentId, beforeItem, pageSize: LIST_TURN_PAGE, signal,
+    });
+    if (page === undefined) return undefined;
+    const plans = await plansOnPage(transcriptService, sessionId, agentId, page.items, page.interactions, toolCallId, signal);
+    if (toolCallId !== undefined) {
+      if (plans.length > 0) return { plans: plans.map((entry) => entry.plan), page: {} };
+    } else if (plans.length > 0 || page.has_more !== true) {
+      const fitted = fitNewest(plans, (subset) => jsonBytes(subset.map((entry) => entry.plan)));
+      const oldest = fitted.kept[0];
+      const hasMore = fitted.trimmed || page.has_more === true;
+      const next = fitted.trimmed && oldest !== undefined ? `turn:${oldest.turnId}` : page.next_cursor;
+      return { plans: fitted.kept.map((entry) => entry.plan), page: listedPage(hasMore, next) };
     }
+    if (page.has_more !== true || page.next_cursor === undefined || seen.has(page.next_cursor)) {
+      return toolCallId === undefined ? { plans: [], page: {} } : { plans: [], page: {}, missingTool: true };
+    }
+    seen.add(page.next_cursor);
+    beforeItem = page.next_cursor;
   }
-  for (const marker of PLAN_BODY_MARKERS) {
-    const index = output.indexOf(marker);
-    if (index === -1) continue;
-    const plan = output.slice(index + marker.length);
-    if (plan.trim().length > 0) return { plan, path };
-  }
-  return undefined;
+  return toolCallId === undefined ? { plans: [], page: {} } : { plans: [], page: {}, missingTool: true };
 }

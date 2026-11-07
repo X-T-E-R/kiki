@@ -177,6 +177,35 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
         logical = [];
         resetOpenState();
         break;
+      case 'external.text': {
+        const recordId = record['recordId'];
+        const text = record['text'];
+        const recordKind = externalTextKind(record['kind']);
+        const source = record['source'];
+        if (typeof recordId !== 'string' || typeof text !== 'string' || recordKind === undefined || !isExternalSource(source)) break;
+        const title = record['title'];
+        push(toMutableEntry({
+          role: 'user',
+          content: [{ type: 'text', text }],
+          toolCalls: [],
+          origin: {
+            kind: 'external_record',
+            recordId,
+            recordKind,
+            ...(typeof title === 'string' ? { title } : {}),
+            ...source,
+          },
+          source: { ref: `external.text:${recordId}` },
+        }, record.time));
+        break;
+      }
+      case 'agent.model_switch': {
+        const context = record['context'];
+        if (!Array.isArray(context) || !context.every(isContextMessageLike)) break;
+        logical = context.map((message) => toMutableEntry(message, record.time));
+        resetOpenState();
+        break;
+      }
       default:
         break;
     }
@@ -232,6 +261,21 @@ function isContextMessageLike(value: unknown): value is ContextMessage {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const message = value as { role?: unknown; content?: unknown };
   return typeof message.role === 'string' && Array.isArray(message.content);
+}
+
+const EXTERNAL_TEXT_KINDS = ['note', 'user_excerpt', 'assistant_excerpt', 'handoff'] as const;
+
+function externalTextKind(value: unknown): (typeof EXTERNAL_TEXT_KINDS)[number] | undefined {
+  return EXTERNAL_TEXT_KINDS.find((kind) => kind === value);
+}
+
+function isExternalSource(value: unknown): value is { connectionId: string; clientName: string; sessionRef: string; driver: 'external' } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const source = value as { connectionId?: unknown; clientName?: unknown; sessionRef?: unknown; driver?: unknown };
+  return typeof source.connectionId === 'string' && source.connectionId.length > 0 &&
+    typeof source.clientName === 'string' && source.clientName.length > 0 &&
+    typeof source.sessionRef === 'string' && source.sessionRef.length > 0 &&
+    source.driver === 'external';
 }
 
 function textOfParts(content: readonly ContentPart[]): string {

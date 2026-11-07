@@ -885,6 +885,7 @@ export const transcriptUserMessageSchema = z.object({
   prompt: z.string(),
   attachment_ids: z.array(z.string()).optional(),
   started_at: z.string().optional(),
+  contentRefs: contentWindowSchema.shape.contentRefs,
 });
 
 /**
@@ -900,9 +901,12 @@ export const transcriptUserMessagesResponseSchema = z.object({
       agent_id: agentIdSchema,
       messages: z.array(transcriptUserMessageSchema),
       attachments: z.array(attachmentSchema).default([]),
+      has_more: z.boolean().optional(),
+      next_cursor: z.string().min(1).optional(),
     }),
   ),
 });
+export type TranscriptUserMessagesResponse = z.infer<typeof transcriptUserMessagesResponseSchema>;
 
 /**
  * The review round-trip of one ExitPlanMode call, projected from the linked
@@ -931,6 +935,7 @@ export const transcriptPlanEntrySchema = z.object({
     .array(z.object({ label: z.string(), description: z.string().optional() }))
     .optional(),
   review: transcriptPlanReviewSchema.optional(),
+  contentRefs: contentWindowSchema.shape.contentRefs,
 });
 
 /**
@@ -942,7 +947,10 @@ export const transcriptPlanEntrySchema = z.object({
 export const transcriptPlanResponseSchema = z.object({
   agent_id: agentIdSchema,
   plans: z.array(transcriptPlanEntrySchema),
+  has_more: z.boolean().optional(),
+  next_cursor: z.string().min(1).optional(),
 });
+export type TranscriptPlanResponse = z.infer<typeof transcriptPlanResponseSchema>;
 
 export const transcriptDetailQuerySchema = z
   .object({

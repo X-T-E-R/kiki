@@ -52,7 +52,7 @@ import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot,
 import { sessionAgentRoster } from '../src/routes/sessionAgentRoster';
 import { contentRevision } from '../src/transport/klient/contentRevision';
 import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
-import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
+import { applyContentSegment, jsonBytes, TRANSCRIPT_COVERAGE_VERSION, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
 import { type RunningServer, startServer } from '../src/start';
 import {
@@ -1358,6 +1358,48 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(heavyAgain.session.message_count).toBe(1);
     expect(heavyAgain.messages.items).toEqual([]);
     readSpy.mockRestore();
+  });
+
+  it('keeps the second external user body on a restarted legacy snapshot while the transcript can still read it', async () => {
+    const sid = await createSession();
+    const live = getLiveSessionById(server!.core.accessor, sid);
+    if (live === undefined) throw new Error(`session ${sid} not found`);
+    const wireDir = join(home as string, live.accessor.get(ISessionContext).metaScope, 'agents', 'main');
+    await mkdir(wireDir, { recursive: true });
+    const records = [
+      { type: 'metadata', protocol_version: '1.4', created_at: Date.now() },
+      {
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: 'first user body' }], toolCalls: [] },
+      },
+      {
+        type: 'external.text',
+        recordId: 'rec-2',
+        turnId: 1,
+        text: 'second user body',
+        kind: 'user_excerpt',
+        source: { connectionId: 'c1', clientName: 'kiki', sessionRef: sid, driver: 'external' },
+      },
+    ];
+    await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf-8');
+    await server!.close();
+    server = undefined;
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
+
+    const snap = await snapshot(sid);
+    expect(snap.messages.items.map((message) => message.content.map((part) => part.type === 'text' ? part.text : '').join(''))).toEqual([
+      'first user body',
+      'second user body',
+    ]);
+    const transcript = await fetch(`${base}/api/klient/session-view/${sid}/transcript?agent_id=main&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    expect(transcript.status).toBe(200);
+    expect(await transcript.text()).toContain('second user body');
+    const compact = await snapshot(sid, 'transcript');
+    expect(compact.messages.items).toEqual([]);
   });
 
   it('retains cold identity-only subagent relations without presenting them as active', async () => {

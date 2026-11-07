@@ -21,12 +21,16 @@ import {
   type ContentRef,
   type ContentSegment,
   type AgentTranscriptSnapshot,
+  type ToolCallFrame,
+  type TranscriptInteraction,
   type TranscriptItem,
   type TranscriptTurn,
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
+import { projectPlanFrame } from '../../services/transcript/planProjection';
 import { boundedEntity, ContentChangedError, readContentSegment } from './boundedContent';
+import { contentRevision } from './contentRevision';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, historyAnchorMatches, historyDigestAnchor, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
 
 const DETAIL_PAGE_BYTES = 48 * 1024;
@@ -43,7 +47,7 @@ export async function readSessionViewTranscriptContent(
   if (resident !== undefined) {
     input.signal?.throwIfAborted();
     try {
-      return readContentSegment(resident, input.ref, input.range, input.agentId, pageBytes);
+      return readContentSegment(await planReadableEntity(service, sessionId, input.agentId, resident, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
     } catch (error) {
       if (!(error instanceof ContentChangedError)) throw error;
     }
@@ -53,12 +57,43 @@ export async function readSessionViewTranscriptContent(
     const turn = await service.readColdWindowTurn(sessionId, input.agentId, source.kind === 'turn' ? source.id : source.turnId ?? '', input.signal);
     const current = source.kind === 'turn' ? turn : turn?.steps.find(step => step.stepId === source.stepId)?.frames.find(frame => frame.frameId === source.id);
     if (current !== undefined && !(source.kind === 'turn' && turn?.stepsPartial === true && input.ref.path[0] === 'steps')) {
-      try { return readContentSegment(current, input.ref, input.range, input.agentId, pageBytes); }
+      try { return readContentSegment(await planReadableEntity(service, sessionId, input.agentId, current, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes); }
       catch (error) { if (!(error instanceof ContentChangedError)) throw error; }
     }
   }
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
-  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range, input.agentId, pageBytes);
+  return entity === undefined ? undefined : readContentSegment(await planReadableEntity(service, sessionId, input.agentId, entity, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
+}
+
+async function planReadableEntity(service: TranscriptService, sessionId: string, agentId: string, entity: object, ref: ContentRef, signal?: AbortSignal): Promise<object> {
+  if (ref.path[0] !== 'plan' || ref.source.kind !== 'frame') return entity;
+  const frame = entity as Partial<ToolCallFrame>;
+  if (frame.kind !== 'tool' || typeof frame.toolCallId !== 'string') return entity;
+  const interactions = await planInteractions(service, sessionId, agentId, signal);
+  const turnId = ref.source.turnId ?? '';
+  const preferred = projectPlanFrame(turnId, frame as ToolCallFrame, interactions)?.plan;
+  const fallback = interactions.length === 0 ? undefined : projectPlanFrame(turnId, frame as ToolCallFrame, [])?.plan;
+  const candidates = [preferred, fallback].filter((value): value is string => value !== undefined);
+  const plan = candidates.find((value) => contentRevision(value) === ref.revision) ?? candidates[0];
+  return plan === undefined ? entity : { plan };
+}
+
+function liveInteractions(service: TranscriptService, sessionId: string, agentId: string): TranscriptInteraction[] {
+  const values = service.forSessionLive(sessionId)?.getAgent(agentId)?.getInteractions();
+  return values === undefined ? [] : [...values.values()];
+}
+
+async function planInteractions(service: TranscriptService, sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly TranscriptInteraction[]> {
+  const live = liveInteractions(service, sessionId, agentId);
+  if (live.length > 0 || typeof service.readColdPageSnapshot !== 'function') return live;
+  try {
+    const snapshot = await service.readColdPageSnapshot(sessionId, agentId, (source) => ({
+      ...source, items: [], tasks: [], prompts: [], todos: [], attachments: [],
+    }), signal);
+    return snapshot?.interactions ?? [];
+  } catch {
+    return [];
+  }
 }
 
 function residentTimelineEntity(service: TranscriptService, sessionId: string, agentId: string, source: ContentRef['source']): object | undefined {
