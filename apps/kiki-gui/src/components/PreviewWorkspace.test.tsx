@@ -982,6 +982,31 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
       expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
       expect(menu.querySelector('[data-menu-item="show-in-folder"]') !== null).toBe(expected);
       expect(menu.querySelector('[data-menu-item="open-default-app"]') !== null).toBe(expected);
+      if (expected) {
+        await act(async () => {
+          menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-absolute"]')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(writeText).toHaveBeenLastCalledWith('/work/src/server.ts');
+        await act(async () => {
+          workspace().querySelector('[data-preview-tab="/work/src/server.ts"]')!
+            .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+        });
+        await act(async () => {
+          document.querySelector<HTMLButtonElement>('[data-menu-item="show-in-folder"]')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(hostMock.revealPath).toHaveBeenLastCalledWith('/work/src/server.ts');
+        await act(async () => {
+          workspace().querySelector('[data-preview-tab="/work/src/server.ts"]')!
+            .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+        });
+        await act(async () => {
+          document.querySelector<HTMLButtonElement>('[data-menu-item="open-default-app"]')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(hostMock.openPath).toHaveBeenLastCalledWith('/work/src/server.ts');
+      }
     },
   );
 
@@ -1532,10 +1557,10 @@ describe('PreviewWorkspace media tabs', () => {
     await renderSettled(
       probe.root,
       <MediaPreviewProvider cwd="/work">
-        <OpenButton path="/work/src/server.ts" />
+        <OpenButton path="src/server.ts" />
       </MediaPreviewProvider>,
     );
-    await openFile(probe.container, '/work/src/server.ts');
+    await openFile(probe.container, 'src/server.ts');
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/src/server.ts"]')!;
     expect(panel.querySelector('[data-download-file]')).not.toBeNull();
     const openButton = panel.querySelector<HTMLElement>('[data-open-default-app]')!;

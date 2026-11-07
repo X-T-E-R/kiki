@@ -530,6 +530,27 @@ export function joinPath(base: string, relative: string): string {
 }
 
 /**
+ * Normalize a raw filesystem path and resolve relative paths against `cwd`.
+ * Unlike `resolveFileReference`, this preserves literal `%` and `:line` text.
+ */
+export function resolveHostPath(path: string, cwd?: string): string {
+  const normalized = WINDOWS_ROOTED_RE.test(path) ? path.slice(1) : path;
+  if (
+    normalized === ''
+    || WINDOWS_ABS_RE.test(normalized)
+    || UNC_RE.test(normalized)
+    || normalized.startsWith('//')
+    || normalized.startsWith('/')
+  ) {
+    return normalized;
+  }
+  if (cwd === undefined) return normalized;
+  const base = cwd.trim();
+  if (base === '') return normalized;
+  return joinPath(WINDOWS_ROOTED_RE.test(base) ? base.slice(1) : base, normalized);
+}
+
+/**
  * Resolve a markdown link target to an absolute host file path, or undefined
  * when the href is not a file reference (external URL, app route, anchor).
  * Relative references need the session cwd or document directory to anchor against.

@@ -351,7 +351,7 @@ export const tauriHost: TauriHostAdapter = {
   },
   async writeFileText(path, text) {
     requireLocalWorkspace();
-    await invoke('write_host_file_text', { path, text });
+    await invoke('write_host_file_text', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path, text });
   },
   async writeDesktopPrefs(prefs) {
     // JSON drops undefined keys; an explicitly cleared record must reach native.

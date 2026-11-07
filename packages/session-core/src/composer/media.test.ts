@@ -16,6 +16,7 @@ import {
   previewKindOf,
   resolveFileHref,
   resolveFileReference,
+  resolveHostPath,
   toolResultMedia,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
@@ -442,6 +443,16 @@ describe('joinPath', () => {
     expect(joinPath('\\\\server\\share\\docs', './assets/a.png')).toBe('//server/share/docs/assets/a.png');
     expect(resolveFileHref('./assets/a.png', '\\\\server\\share\\docs')).toBe('//server/share/docs/assets/a.png');
     expect(joinPath('//server/share/docs', '../../../private.png')).toBe('//server/share/private.png');
+  });
+});
+
+describe('resolveHostPath', () => {
+  it('normalizes rooted Windows drive paths and resolves relative paths against cwd without decoding literal characters', () => {
+    expect(resolveHostPath('/C:/work/a%20b.ts')).toBe('C:/work/a%20b.ts');
+    expect(resolveHostPath('/work/a.ts:12', '/other')).toBe('/work/a.ts:12');
+    expect(resolveHostPath('src/中 a.ts', '/C:/work')).toBe('C:/work/src/中 a.ts');
+    expect(resolveHostPath('./nested/../说明 1.md', 'C:\\work\\')).toBe('C:/work/说明 1.md');
+    expect(resolveHostPath('src/app.ts', undefined)).toBe('src/app.ts');
   });
 });
 

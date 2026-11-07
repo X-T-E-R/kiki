@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
+import { formatBytes, resolveHostPath, type MediaRef } from '@kiki/session-core/composer/media';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -9,7 +9,7 @@ import { Icon } from './icons';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
-import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
+import { copyImageBitmap, hostActionPath, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
 import { imagePreviewDownloadName } from './imagePreviewName';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
@@ -59,14 +59,16 @@ export function useSessionMedia(
   attempt = 0,
 ): SessionMediaLoad {
   const client = useOptionalConnection()?.client;
-  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: item.path, attempt }), [client, sessionId, item.fileId, item.path, item.mime, item.kind, item.blobHash, previewOnly, attempt]);
+  const preview = useMediaPreview();
+  const hostPath = item.path === undefined ? undefined : resolveHostPath(item.path, preview?.cwd);
+  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: hostPath, attempt }), [client, sessionId, item.fileId, hostPath, item.mime, item.kind, item.blobHash, previewOnly, attempt]);
   const [loaded, setLoaded] = useState<{ source: typeof source; load: SessionMediaLoad }>({ source, load: { status: 'loading' } });
   const setLoad = useCallback((load: SessionMediaLoad) => { setLoaded({ source, load }); }, [source]);
   const load: SessionMediaLoad = loaded.source === source ? loaded.load : { status: 'loading' };
 
   useEffect(() => {
     if (!enabled) { setLoad({ status: 'loading' }); return; }
-    if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined)) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
+    if (client === undefined || (hostPath === undefined && (sessionId === undefined || item.fileId === undefined)) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
       setLoad({ status: 'failed' });
       return;
     }
@@ -74,12 +76,12 @@ export function useSessionMedia(
     let objectUrl: string | undefined;
     setLoad({ status: 'loading' });
     const options = { ...client.readingOptions(), signal: controller.signal, mediaType: item.mime };
-    const read: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = item.path !== undefined
-      ? previewOnly ? client.readHostMediaPreviewBytes(item.path, options) : client.readHostFileBytes(item.path, options)
+    const read: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = hostPath !== undefined
+      ? previewOnly ? client.readHostMediaPreviewBytes(hostPath, options) : client.readHostFileBytes(hostPath, options)
       : previewOnly ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
     const resolved: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = read.catch((error: unknown) => {
       if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
-      return item.path !== undefined ? client.readHostFileBytes(item.path, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
+      return hostPath !== undefined ? client.readHostFileBytes(hostPath, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
     });
     resolved.then(({ bytes, mime, name }) => {
       if (controller.signal.aborted) return;
@@ -94,7 +96,7 @@ export function useSessionMedia(
       controller.abort();
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, enabled, previewOnly, item.blobHash, item.fileId, item.path, item.mime, item.kind, sessionId, setLoad]);
+  }, [client, enabled, previewOnly, item.blobHash, item.fileId, hostPath, item.mime, item.kind, sessionId, setLoad]);
 
   return load;
 }
@@ -145,10 +147,11 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     setMenu({ x: event.clientX, y: event.clientY });
   }, []);
   const downloadName = imagePreviewDownloadName({ name: item.name, path: item.path });
+  const hostPath = item.path === undefined ? undefined : hostActionPath(item.path, preview?.cwd);
   const onSave = useCallback(async () => {
     try {
       await saveMediaToDisk(
-        { url: item.url ?? src, path: item.path, fileId: item.fileId },
+        { url: item.url ?? src, path: hostPath, fileId: item.fileId },
         downloadName,
         host,
         client as Parameters<typeof saveMediaToDisk>[3],
@@ -157,7 +160,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     } catch (error) {
       pushToast({ tone: 'error', text: imageDownloadFailureText(error, t), detail: errorToText(error) });
     }
-  }, [item.url, item.path, item.fileId, src, downloadName, host, client, preview?.sessionId, t]);
+  }, [item.url, hostPath, item.fileId, src, downloadName, host, client, preview?.sessionId, t]);
   const onCopyImage = useCallback(async () => {
     if (src === undefined) return;
     try {
@@ -170,6 +173,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     t,
     src,
     path: item.path,
+    cwd: preview?.cwd,
     link: httpImageLink(item.url),
     remote,
     revealPath: host.revealPath,
@@ -441,15 +445,16 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   const remoteScope = isRemoteConnection(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{path}</span>;
-  const filePath = /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
+  const filePath = resolveHostPath(path, preview.cwd);
   const hostEntries: MiniMenuEntry[] = [];
   if (!remoteScope) {
     if (host.revealPath !== undefined) hostEntries.push({ key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath?.(filePath) });
     if (host.openPath !== undefined) hostEntries.push({ key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath?.(filePath) });
   }
   const entries: MiniMenuEntry[] = [
-    { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
+    { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(filePath); } },
     { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
+    ...(filePath !== path ? [{ key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(filePath) } as const] : []),
     ...(hostEntries.length > 0 ? [{ separator: true } as const, ...hostEntries] : []),
   ];
   return (
@@ -457,10 +462,10 @@ export function FilePathLink({ path, className }: { path: string; className?: st
       <span
         role="link"
         tabIndex={0}
-        title={path}
-        onClick={(event) => { event.stopPropagation(); preview.openFile(path); }}
+        title={filePath}
+        onClick={(event) => { event.stopPropagation(); preview.openFile(filePath); }}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}
-        onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); preview.openFile(path); } }}
+        onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); preview.openFile(filePath); } }}
         className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${className ?? ''}`}
       >
         {path}

@@ -23,7 +23,7 @@ import { CodeEditor } from './CodeEditor';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { formatBytes, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import { formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { useOptionalConnection } from '../state/connection';
 import {
   closeAllPreviewTabs,
@@ -62,11 +62,6 @@ import {
 import { useSessionMediaPlayback } from './useSessionMediaPlayback';
 
 export { useMediaPreview } from './mediaPreviewContext';
-
-// Filesystem paths are not URI/citation text: preserve percent escapes and colons.
-function normalizeRawPath(path: string): string {
-  return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
-}
 
 const WIDTH_STORAGE_KEY = 'kiki.previewPanelWidth';
 const DEFAULT_WIDTH = 420;
@@ -248,14 +243,14 @@ export function MediaPreviewProvider({
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openFile = useCallback((input: string | FileReference) => {
     const raw = typeof input === 'string' ? { path: input } : input;
-    const path = normalizeRawPath(raw.path);
+    const path = resolveHostPath(raw.path, cwd);
     const identity = (value: string) => /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
     const existing = tabsState.tabs.find((tab) => tab.kind === 'file' && identity(tab.path) === identity(path));
     const reference = { ...raw, path: existing?.kind === 'file' ? existing.path : path };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
     revealPreview();
-  }, [revealPreview, tabsState.tabs]);
+  }, [cwd, revealPreview, tabsState.tabs]);
 
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
@@ -520,8 +515,10 @@ function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | unde
 function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const preview = useMediaPreview();
+  const hostPath = image.item.path === undefined ? undefined : resolveHostPath(image.item.path, preview?.cwd);
   const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
-  const canonical = seededSrc === undefined && (image.item.fileId !== undefined || image.item.path !== undefined);
+  const canonical = seededSrc === undefined && (image.item.fileId !== undefined || hostPath !== undefined);
   const load = useSessionMedia(image.item, sessionId, canonical, false, retry.id === image.id ? retry.attempt : 0);
   const bytes = load.status === 'ready' ? load.bytes : undefined;
   const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
@@ -530,20 +527,20 @@ function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, c
   const size = load.status === 'ready' ? load.bytes.byteLength : image.item.size;
 
   const onSaveOriginal = useMemo(() => {
-    if (client === undefined || (image.item.path === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
+    if (client === undefined || (hostPath === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
     return async (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => {
       const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
         await sink.write(chunk);
         onProgress(progress.bytes, progress.totalBytes);
       };
       const options = { ...client.readingOptions(), signal };
-      if (image.item.path !== undefined) await client.downloadHostFile(image.item.path, consume, options);
+      if (hostPath !== undefined) await client.downloadHostFile(hostPath, consume, options);
       else await client.downloadSessionMedia(sessionId!, image.item.fileId!, consume, options);
     };
-  }, [client, sessionId, image.item.path, image.item.fileId]);
+  }, [client, sessionId, hostPath, image.item.fileId]);
 
   return <MediaLightbox src={src} identity={image.id} name={safeImagePreviewName({ name: image.item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: image.item.path })}
-    sourcePath={image.item.path} linkUrl={httpImageLink(image.item.url)} outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })} remote={remote}
+    sourcePath={hostPath} linkUrl={httpImageLink(image.item.url)} outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })} remote={remote}
     mime={mime} size={size}
     loading={canonical && load.status === 'loading'} failed={canonical && load.status === 'failed'}
     onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
@@ -577,6 +574,7 @@ function AttachmentPreviewDialog({
   const { t } = useI18n();
   const host = useHost();
   const preview = useMediaPreview();
+  const hostPath = item.path === undefined ? undefined : resolveHostPath(item.path, preview?.cwd);
   const connection = useOptionalConnection();
   const client = connection?.client;
   const remoteScope = isRemoteConnection(connection);
@@ -597,9 +595,9 @@ function AttachmentPreviewDialog({
   useEffect(() => {
     if (imageMenu !== null) document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [role="menuitem"]')?.focus();
   }, [imageMenu]);
-  useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
+  useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, hostPath]);
   const download = async () => {
-    if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined))) return;
+    if (client === undefined || (hostPath === undefined && (sessionId === undefined || item.fileId === undefined))) return;
     downloadController.current?.abort();
     const controller = new AbortController();
     downloadController.current = controller;
@@ -616,8 +614,8 @@ function AttachmentPreviewDialog({
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
       const options = { ...client.readingOptions(), signal: controller.signal };
-      await imageDownloadStep('read', () => item.path !== undefined
-        ? client.downloadHostFile(item.path, consume, options)
+      await imageDownloadStep('read', () => hostPath !== undefined
+        ? client.downloadHostFile(hostPath, consume, options)
         : client.downloadSessionMedia(sessionId!, item.fileId!, consume, options));
       controller.signal.throwIfAborted();
       setTransfer({ status: 'saving' });
@@ -773,6 +771,7 @@ function AttachmentPreviewDialog({
         t,
         src: load.status === 'ready' && load.mime.startsWith('image/') && failedUrl !== load.url ? load.url : undefined,
         path: item.path,
+        cwd: preview?.cwd,
         link: httpImageLink(item.url),
         remote: remoteScope,
         revealPath: host.revealPath,

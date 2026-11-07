@@ -132,6 +132,8 @@ describe('Markdown link menus', () => {
     ['/C:/work/a%20b.ts', 'C:/work/a%20b.ts'],
     ['C:/work/a b.ts', 'C:/work/a b.ts'],
     ['/work/a.ts:12', '/work/a.ts:12'],
+    ['src/中 a.ts', 'C:/work/src/中 a.ts'],
+    ['./nested/../说明 1.md', 'C:/work/说明 1.md'],
   ])('preserves raw FilePathLink target %s in preview and native actions', async (input, path) => {
     hostMocks.desktop = true;
     const probe = makeRoot();
@@ -143,6 +145,13 @@ describe('Markdown link menus', () => {
       await rightClick(link);
       await act(async () => { document.querySelector(`[data-menu-item="${key}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
       expect(action).toHaveBeenLastCalledWith(path);
+    }
+    await rightClick(link);
+    const copyAbsolute = document.querySelector<HTMLButtonElement>('[data-menu-item="copy-absolute"]');
+    if (path !== input) {
+      expect(copyAbsolute).not.toBeNull();
+      await act(async () => { copyAbsolute!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(writeText).toHaveBeenLastCalledWith(path);
     }
     await act(async () => { link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     expect(document.querySelector('[data-preview-tab]')?.getAttribute('data-preview-tab')).toBe(path);

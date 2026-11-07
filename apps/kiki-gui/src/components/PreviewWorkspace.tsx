@@ -33,7 +33,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExterna
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
-import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
+import { basenameOf, formatBytes, previewKindOf, resolveHostPath, type FileReference } from '@kiki/session-core/composer/media';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
@@ -59,6 +59,7 @@ import { Icon } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { ImageViewport } from './ImageViewport';
 import { useMessageImageMenu } from './mediaParts';
+import { useMediaPreview } from './mediaPreviewContext';
 import { DocumentTabView } from './preview/DocumentTabView';
 
 export interface PreviewWorkspaceProps {
@@ -125,8 +126,8 @@ export function clampPreviewWidth(width: number, viewport: number): number {
  */
 export function relativeToCwd(path: string, cwd: string | undefined): string {
   if (cwd === undefined) return path;
-  const normPath = path.replaceAll('\\', '/');
-  const normCwd = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
+  const normPath = resolveHostPath(path).replaceAll('\\', '/');
+  const normCwd = resolveHostPath(cwd).replaceAll('\\', '/').replace(/\/+$/, '');
   const prefix = `${normCwd}/`;
   if (normPath.toLowerCase().startsWith(prefix.toLowerCase())) {
     return normPath.slice(prefix.length);
@@ -850,15 +851,16 @@ function TabContextMenu({
     { key: 'close-all', label: t('preview.closeAll'), run: onCloseAll },
   ];
   if (tab.kind === 'file') {
+    const filePath = resolveHostPath(tab.path, cwd);
     entries.push(
       { separator: true },
-      { key: 'copy-relative', label: t('file.copyRelativePath'), run: () => copyTextToClipboard(relativeToCwd(tab.path, cwd)) },
-      { key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(tab.path) },
+      { key: 'copy-relative', label: t('file.copyRelativePath'), run: () => copyTextToClipboard(relativeToCwd(filePath, cwd)) },
+      { key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(filePath) },
     );
     if (!remoteScope && fileOps) {
       entries.push(
-        { key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath!(tab.path) },
-        { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath!(tab.path) },
+        { key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath!(filePath) },
+        { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath!(filePath) },
       );
     }
   } else if (tab.kind === 'panel') {
@@ -919,15 +921,17 @@ async function downloadHostFile(
 function useFileOpeners(): { readonly reveal: (path: string) => void; readonly open: (path: string) => void } | null {
   const host = useHost();
   const { t } = useI18n();
+  const preview = useMediaPreview();
   const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
   const { revealPath, openPath } = host;
+  const cwd = preview?.cwd;
   return useMemo(() => {
     if (remoteScope || revealPath === undefined || openPath === undefined) return null;
     return {
-      reveal: (path: string) => { runToastAction(t('file.showInFolder'), () => revealPath(path)); },
-      open: (path: string) => { runToastAction(t('file.openDefaultApp'), () => openPath(path)); },
+      reveal: (path: string) => { runToastAction(t('file.showInFolder'), () => revealPath(resolveHostPath(path, cwd))); },
+      open: (path: string) => { runToastAction(t('file.openDefaultApp'), () => openPath(resolveHostPath(path, cwd))); },
     };
-  }, [remoteScope, revealPath, openPath, t]);
+  }, [cwd, remoteScope, revealPath, openPath, t]);
 }
 
 // The text/video header pill idiom, shared by the download anchor and its
@@ -1175,7 +1179,8 @@ function PreviewTabView({
   /** Which session's document renderer and asset route serve this file. */
   readonly sessionId?: string;
 }) {
-  const kind = previewKindOf(path);
+  const filePath = resolveHostPath(path, workspaceRoot);
+  const kind = previewKindOf(filePath);
   const host = useHost();
   const connection = useOptionalConnection();
   const openers = useFileOpeners();
@@ -1189,27 +1194,27 @@ function PreviewTabView({
       data-preview-tabpanel={path}
     >
       {kind === 'image' ? (
-        <ImageTabView path={path} onOpenImage={onOpenImage} />
+        <ImageTabView path={filePath} onOpenImage={onOpenImage} />
       ) : kind === 'video' ? (
-        <VideoTabView path={path} />
+        <VideoTabView path={filePath} />
       ) : kind === 'audio' ? (
-        <AudioTabView path={path} scopeId={connection?.scopeId} />
+        <AudioTabView path={filePath} scopeId={connection?.scopeId} />
       ) : kind === 'pdf' || kind === 'office' ? (
         <DocumentTabView
-          source={{ kind: 'workspace', path }}
+          source={{ kind: 'workspace', path: filePath }}
           sessionId={sessionId}
           client={connection?.client}
           active={visible}
-          onOpenLocally={openers === null ? undefined : () => { openers.open(path); }}
+          onOpenLocally={openers === null ? undefined : () => { openers.open(filePath); }}
           onDownload={() => {
             const target = connection?.client;
-            if (target !== undefined) void downloadHostFile(host, target, path, basenameOf(path));
+            if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath));
           }}
         />
       ) : kind === 'binary' ? (
-        <BinaryTabView path={path} />
+        <BinaryTabView path={filePath} />
       ) : (
-        <TextTabView path={path} workspaceRoot={workspaceRoot} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView path={filePath} workspaceRoot={workspaceRoot} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );

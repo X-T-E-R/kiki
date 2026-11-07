@@ -1,4 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { resolveHostPath } from '@kiki/session-core/composer/media';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { copyImageToClipboard, copyTextToClipboard, isPngBlob, readBlobBytes } from '../lib/clipboard';
@@ -28,8 +29,8 @@ export function localImagePath(path: string | undefined): string | undefined {
   return trimmed;
 }
 
-export function hostActionPath(path: string): string {
-  return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
+export function hostActionPath(path: string, cwd?: string): string {
+  return resolveHostPath(path, cwd);
 }
 
 export function httpImageLink(url: string | undefined): string | undefined {
@@ -322,6 +323,7 @@ export function imageMenuEntries({
   t,
   src,
   path,
+  cwd,
   link,
   remote,
   revealPath,
@@ -336,6 +338,7 @@ export function imageMenuEntries({
   t: (key: I18nKey) => string;
   src?: string;
   path?: string;
+  cwd?: string;
   link?: string;
   remote: boolean;
   revealPath?: (path: string) => Promise<void>;
@@ -353,7 +356,10 @@ export function imageMenuEntries({
   if (link !== undefined) entries.push({ key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(link) });
   if (filePath !== undefined) entries.push({ key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(filePath) });
   if (!remote && filePath !== undefined) {
-    const actionable = hostActionPath(filePath);
+    const actionable = hostActionPath(filePath, cwd);
+    if (actionable !== filePath) {
+      entries.push({ key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(actionable) });
+    }
     const hasHostAction = revealPath !== undefined || openPath !== undefined;
     if (hasHostAction) entries.push({ separator: true });
     if (revealPath !== undefined) {

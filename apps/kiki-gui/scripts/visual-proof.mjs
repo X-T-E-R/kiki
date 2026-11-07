@@ -6115,7 +6115,7 @@ async function scenarioPreviewMedia() {
     const internals = window.__TAURI_INTERNALS__;
     const original = internals.invoke;
     internals.invoke = (cmd, args) => {
-      window.__proofHostCalls.push(cmd);
+      window.__proofHostCalls.push({ cmd, path: args?.path ?? null });
       return original(cmd, args);
     };
   });
@@ -6123,7 +6123,10 @@ async function scenarioPreviewMedia() {
   await page.locator(`${brokenPanel} [data-reveal-file]`).first().click();
   await page.waitForFunction(() => {
     const calls = window.__proofHostCalls ?? [];
-    return calls.includes('open_host_path') && calls.includes('reveal_host_path');
+    return (
+      calls.some((call) => call.cmd === 'open_host_path' && call.path === 'C:/fixture/workshop/clips/broken.mp4') &&
+      calls.some((call) => call.cmd === 'reveal_host_path' && call.path === 'C:/fixture/workshop/clips/broken.mp4')
+    );
   });
 
   // A text tab carries the same trio in its busier (editable) header.

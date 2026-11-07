@@ -90,11 +90,13 @@ describe('native desktop bridge', () => {
     ['C:/work/a b.ts', 'C:/work/a b.ts'],
     ['/work/a.ts:12', '/work/a.ts:12'],
     ['//server/share/file.ts', '//server/share/file.ts'],
-  ])('passes real host path %s to both native openers', async (input, path) => {
+  ])('passes real host path %s to native openers and writer', async (input, path) => {
     await tauriHost.revealPath(input);
     await tauriHost.openPath(input);
+    await tauriHost.writeFileText(input, 'content');
     expect(invoke).toHaveBeenNthCalledWith(1, 'reveal_host_path', { path });
     expect(invoke).toHaveBeenNthCalledWith(2, 'open_host_path', { path });
+    expect(invoke).toHaveBeenNthCalledWith(3, 'write_host_file_text', { path, text: 'content' });
   });
 
   it('blocks native file and directory operations in SSH scope and restores local operations', async () => {

@@ -50,6 +50,7 @@ describe('image action targets', () => {
     expect(localImagePath('C:/fixture/image-actions/shot.png')).toBe('C:/fixture/image-actions/shot.png');
     expect(hostActionPath('/C:/fixture/image-actions/shot.png')).toBe('C:/fixture/image-actions/shot.png');
     expect(hostActionPath('/srv/images/shot.png')).toBe('/srv/images/shot.png');
+    expect(hostActionPath('shots/中 a.png', '/C:/fixture/image-actions')).toBe('C:/fixture/image-actions/shots/中 a.png');
   });
 
   it('offers bitmap, link, and save for a url, and does not invent a path', () => {
@@ -60,14 +61,21 @@ describe('image action targets', () => {
     expect(keys(entries)).toEqual(['copy-image', 'copy-link', '|', 'save-image']);
   });
 
-  it('offers the local file actions only when the host can reveal that path', () => {
+  it('offers the local file actions only when the host can reveal that path', async () => {
     const revealPath = vi.fn(async () => {});
     const openPath = vi.fn(async () => {});
     const local = imageMenuEntries({
-      t: label, src: 'blob:shot', path: '/C:/fixture/image-actions/shot.png', remote: false, revealPath, openPath,
+      t: label, src: 'blob:shot', path: 'shots/中 a.png', cwd: '/C:/fixture/image-actions', remote: false, revealPath, openPath,
       canCopyImage: true, canSave: true, annotated: true, onCopyImage: async () => {}, onSave() {}, onSaveAnnotated() {},
     });
-    expect(keys(local)).toEqual(['copy-image', 'copy-path', '|', 'show-in-folder', 'open-default-app', '|', 'save-image', 'save-annotated-image']);
+    expect(keys(local)).toEqual(['copy-image', 'copy-path', 'copy-absolute', '|', 'show-in-folder', 'open-default-app', '|', 'save-image', 'save-annotated-image']);
+    for (const entry of local) {
+      if (!('separator' in entry) && (entry.key === 'show-in-folder' || entry.key === 'open-default-app')) {
+        await entry.run();
+      }
+    }
+    expect(revealPath).toHaveBeenCalledWith('C:/fixture/image-actions/shots/中 a.png');
+    expect(openPath).toHaveBeenCalledWith('C:/fixture/image-actions/shots/中 a.png');
     const remote = imageMenuEntries({
       t: label, src: 'blob:shot', path: '/srv/images/shot.png', remote: true, revealPath, openPath,
       canCopyImage: true, canSave: true, annotated: false, onCopyImage: async () => {}, onSave() {},
