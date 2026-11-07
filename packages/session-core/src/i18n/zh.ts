@@ -1499,7 +1499,7 @@ export const zh = {
   'composer.slash.shortcuts': '操作',
   'composer.slash.empty': '没有匹配的指令 — Enter 会按普通消息发送。',
   'composer.slash.skillsFailed': '技能加载失败 — 仅显示快捷指令。',
-  'composer.slash.submitCatalogFailed': '无法加载技能，请重试发送。',
+  'composer.slash.submitCatalogFailed': '技能目录暂不可用 — 可继续编辑或按普通消息发送。',
   'composer.slash.notActivatable': '不可激活',
   'composer.slash.skillBadge': '技能',
   'composer.slash.previewAria': '技能或命令详情',

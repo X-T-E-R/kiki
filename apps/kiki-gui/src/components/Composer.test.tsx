@@ -2999,7 +2999,7 @@ describe('Composer slash skill catalog', () => {
     await click(sendButton);
     await settle();
     expect(container.querySelector('[data-slash-confirm]')).not.toBeNull();
-    expect(container.textContent).toContain('Could not load skills. Please try sending again.');
+    expect(container.textContent).toContain('Skills catalog is unavailable right now — keep editing or send as a plain message.');
     expect(composerInput(container).value).toBe('/kiki-ops Help me get started.');
     expect(onSend).not.toHaveBeenCalled();
     expect(onActivateSkill).not.toHaveBeenCalled();

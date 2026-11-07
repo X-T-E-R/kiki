@@ -956,9 +956,14 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   expect(readComposerState('session-example').annotations).toEqual([{ ...savedQuote, comment: '' }]);
 });
 
-it('keeps truncated queued content gated until hydrated, tolerates failed holds, and releases late hold completions on exit', async () => {
+it('keeps truncated queued content non-editable until hydrated while keeping cancel active, seeds hydrated selection carryovers, and releases late hold completions on exit', async () => {
+  const savedQuote = createQuote('parked note');
+  writeDraft('session-example', 'parked draft');
+  writeComposerState('session-example', { attachments: [], annotations: [], quotes: [savedQuote], permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
+  const carry = selectionCarryoverPresentation([], [createQuote('hydrated first'), createQuote('hydrated second')]);
+  const fullText = carry.prefix + 'complete hydrated queued body';
   const fullContent: import('@kiki/protocol').MessageContent[] = [
-    { type: 'text', text: 'complete hydrated queued body' },
+    { type: 'text', text: fullText, presentation: carry.presentation },
     { type: 'image', name: 'retained.png', source: { kind: 'session_media', file_id: 'retained-img' } },
   ];
   const holds: [string, boolean][] = [];
@@ -970,8 +975,8 @@ it('keeps truncated queued content gated until hydrated, tolerates failed holds,
     if (failHold) return Promise.reject(new Error('hold timeout'));
     return new Promise<boolean>((resolve) => { pendingTrueHolds.push({ resolve }); });
   });
-  let resolveHydration!: (content: import('@kiki/protocol').MessageContent[]) => void;
-  const readQueuedPromptContent = vi.fn(() => new Promise<import('@kiki/protocol').MessageContent[]>((resolve) => { resolveHydration = resolve; }));
+  const hydrations: { resolve: (content: import('@kiki/protocol').MessageContent[]) => void; signal: AbortSignal }[] = [];
+  const readQueuedPromptContent = vi.fn((_promptId: string, signal: AbortSignal) => new Promise<import('@kiki/protocol').MessageContent[]>((resolve) => { hydrations.push({ resolve, signal }); }));
   const replaceQueued = vi.fn(async () => {});
   let incomplete = true;
   const controller = {
@@ -981,7 +986,7 @@ it('keeps truncated queued content gated until hydrated, tolerates failed holds,
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    contentRefsFor: () => incomplete ? [{ source: { kind: 'prompt' as const, id: 'queued-example' }, revision: 'r1', path: ['content', 0, 'text'], kind: 'text' as const, offset: 10, total: 29 }] : [],
+    contentRefsFor: () => incomplete ? [{ source: { kind: 'prompt' as const, id: 'queued-example' }, revision: 'r1', path: ['content', 0, 'text'], kind: 'text' as const, offset: 12, total: fullText.length }] : [],
     ...contentRead, holdQueued, readQueuedPromptContent, replaceQueued,
   };
   fixture.controller = controller;
@@ -991,14 +996,37 @@ it('keeps truncated queued content gated until hydrated, tolerates failed holds,
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await act(async () => container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]')!.click());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  const input = () => composerInput(container);
   const confirm = () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!;
   const cancel = () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!;
+  expect(input().disabled).toBe(true);
+  expect(input().getAttribute('contenteditable')).toBe('false');
   expect(confirm().disabled).toBe(true);
-  await act(async () => { resolveHydration(fullContent); await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(composerInput(container).value).toBe('complete hydrated queued body');
+  expect(cancel().disabled).toBe(false);
+  expect(hydrations).toHaveLength(1);
+  await act(async () => cancel().click());
+  expect(hydrations[0]!.signal.aborted).toBe(true);
+  expect(input().disabled).toBe(false);
+  expect(input().value).toBe('parked draft');
+
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  expect(hydrations).toHaveLength(2);
+  expect(input().disabled).toBe(true);
+  await act(async () => {
+    setComposerInputValue(input(), 'edited truncated prefix only');
+    input().dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(readDraft('session-example')).toBe('truncated...');
+
+  await act(async () => { hydrations[1]!.resolve(fullContent); await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(input().disabled).toBe(false);
+  expect(input().value).toBe('complete hydrated queued body');
+  if (container.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
+  const noteTitles = () => [...container.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
+  expect(noteTitles()).toEqual(['hydrated first', 'hydrated second']);
   expect(confirm().disabled).toBe(false);
   await act(async () => confirm().click());
-  expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'complete hydrated queued body', fullContent.slice(1), undefined);
+  expect(replaceQueued).toHaveBeenCalledWith('queued-example', fullText, fullContent.slice(1), carry.presentation);
 
   failHold = false;
   incomplete = false;

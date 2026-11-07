@@ -1255,6 +1255,8 @@ export class TranscriptProjector {
               subagentName: payload.subagentName,
               description: payload.description ?? payload.subagentName,
               agentId: payload.subagentId,
+              ...(payload.model !== undefined ? { model: payload.model } : {}),
+              ...(payload.thinkingEffort !== undefined ? { thinkingEffort: payload.thinkingEffort } : {}),
               outputTail: '',
               startedAt: at,
             },

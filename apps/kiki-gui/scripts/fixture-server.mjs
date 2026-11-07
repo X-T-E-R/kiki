@@ -4777,6 +4777,36 @@ class FixtureServer {
       return this.envelope(res, { prompt_id: promptId, user_message_id: promptId, status: 'running', content: body.content, created_at: createdAt });
     }
     if (tail === '/prompts' && body !== undefined && typeof body.agent_id === 'string'
+      && body.agent_id !== 'main' && session.childTurns?.[body.agent_id] === undefined) {
+      const agentId = body.agent_id;
+      const promptId = typeof body.prompt_id === 'string' && body.prompt_id !== '' ? body.prompt_id : nextId('msg');
+      const createdAt = now();
+      const text = (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join(String.fromCharCode(10));
+      session.lastPromptSubmission = body;
+      const extras = { promptId, userMessageId: promptId, content: body.content };
+      this.emitSideFrame(session, agentId, {
+        type: 'prompt.submitted',
+        payload: { promptId, userMessageId: promptId, content: body.content, createdAt },
+      }, extras);
+      const reply = this.scenario?.data.childReply;
+      if (typeof reply === 'string' && reply !== '') {
+        const turnId = ((session.childContinuationTurns ??= {})[agentId] = (session.childContinuationTurns[agentId] ?? 100) + 1);
+        void (async () => {
+          await sleep(60);
+          for (const frame of [
+            { type: 'turn.started', payload: { turnId, origin: { kind: 'user' }, prompt: text } },
+            { type: 'turn.step.started', payload: { turnId, step: 1 } },
+            { type: 'assistant.delta', offset: 0, payload: { turnId, delta: reply } },
+            { type: 'turn.ended', payload: { turnId, reason: 'completed', durationMs: 250 } },
+          ]) {
+            await sleep(20);
+            this.emitSideFrame(session, agentId, frame, extras);
+          }
+        })();
+      }
+      return this.envelope(res, { prompt_id: promptId, user_message_id: promptId, status: 'running', content: body.content, created_at: createdAt });
+    }
+    if (tail === '/prompts' && body !== undefined && typeof body.agent_id === 'string'
       && body.agent_id !== 'main' && session.childTurns?.[body.agent_id] !== undefined) {
       // A native child mid-turn parks the prompt in ITS queue (agent-scoped
       // like kap-server); `:steer?agent_id=` then hands it to that turn.

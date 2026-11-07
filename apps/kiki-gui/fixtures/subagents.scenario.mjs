@@ -121,7 +121,7 @@ export default {
           parentToolCallId: 'call-agent-research',
           description: 'Map the protocol surface',
           runInBackground: false,
-          model: 'kimi-code/k3',
+          model: 'fixture/kiki-pro',
           thinkingEffort: 'high',
         },
       },

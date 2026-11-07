@@ -6,7 +6,7 @@ A Recipe packages reusable prompt text, model settings and optional script hooks
 
 In **Settings → Models & agents → Models & providers**, open a model's editor and choose **Choose a Recipe**. You can select an installed package, browse a configured Recipe market, or import a source.
 
-1. Preview the source URL or an absolute path on the server. A local source can be a directory or `recipe.toml` file; an HTTPS ZIP requires its SHA-256 checksum.
+1. Preview the source URL or an absolute path on the server. A local source can be a directory or `recipe.toml` file; an HTTPS ZIP accepts an optional SHA-256 checksum and verifies it when provided.
 2. Review the expanded prompts, model settings and any script files. A package with new scripts requires explicit consent to install them.
 3. Choose **Install only** to keep the package without changing the model, or **Install and apply** to also save the model binding and its current drafts.
 4. For an already installed package, select its options and choose **Apply to model**. Merely reading or selecting a package leaves the saved binding unchanged.

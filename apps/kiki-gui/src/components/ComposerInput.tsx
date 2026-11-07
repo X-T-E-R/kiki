@@ -157,6 +157,7 @@ export function ComposerInput(props: ComposerInputProps) {
           EditorView.updateListener.of((update) => {
             if (externalChange.current) return;
             const current = propsRef.current;
+            if (current.disabled) return;
             if (update.docChanged) current.onChange(update.state.sliceDoc(), update.state.selection.main.head);
             if (update.selectionSet || update.docChanged) current.onSelection(update.state.selection.main.head);
           }),

@@ -2084,9 +2084,11 @@ export function SessionView({
     return annotation.id;
   }, []);
   const handleRemoveAnnotation = useCallback((id: string) => {
+    if (queueEditRef.current?.loading === true) return;
     setAnnotations((current) => removeAnnotation(current, id));
   }, []);
   const handleUpdateAnnotation = useCallback((id: string, comment: string) => {
+    if (queueEditRef.current?.loading === true) return;
     setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
@@ -4354,9 +4356,10 @@ boundExecution,
       setQueueEdit(edit);
       const carryovers = parseSelectionCarryovers(edit.original.text, edit.original.presentation);
       updateDraft(carryovers.body);
-      setAnnotations(carryovers.selections.reduce<readonly SelectionAnnotation[]>(
+      const annotationsFromCarryovers = (selections: typeof carryovers.selections) => selections.reduce<readonly SelectionAnnotation[]>(
         (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
-      ));
+      );
+      setAnnotations(annotationsFromCarryovers(carryovers.selections));
       const ownsEdit = () => !abort.signal.aborted && composerOwnerActive.current && sessionIdRef.current === sessionId && queueEditRef.current?.owner === edit.owner;
       void (async () => {
         const releaseAbandonedHold = () => {
@@ -4380,10 +4383,9 @@ boundExecution,
               ...current, loading: false, original, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
             });
             initialAttachments = completeAttachments;
-            if (draftRef.current === carryovers.body) {
-              const complete = parseSelectionCarryovers(original.text, original.presentation);
-              updateDraft(complete.body);
-            }
+            const complete = parseSelectionCarryovers(original.text, original.presentation);
+            updateDraft(complete.body);
+            setAnnotations(annotationsFromCarryovers(complete.selections));
           }
           const loaded = await loadMessageEditAttachments({ queuedContent: [...content] }, abort.signal).catch((error: unknown) => {
             abort.signal.throwIfAborted();
@@ -4407,7 +4409,7 @@ boundExecution,
   );
   const updateQueueEditAttachments = useCallback((next: readonly ComposerAttachment[] | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[])) => {
     const owner = queueEdit?.owner;
-    setQueueEdit((current) => current === null || current.owner !== owner ? current : {
+    setQueueEdit((current) => current === null || current.owner !== owner || current.loading ? current : {
       ...current,
       attachments: typeof next === 'function' ? next(current.attachments) : next,
     });
@@ -4610,7 +4612,7 @@ boundExecution,
     reportAttention([{ sessionId, agentId: MAIN_AGENT_ID, turnId: turnTail.turnId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
-  const composerDisabled = controller === null;
+  const composerDisabled = controller === null || queueEdit?.loading === true;
   const modelSource: ModelSource = resolveModelSource(
     composerSelection.modelOverride,
     sessionModel,
@@ -4969,6 +4971,7 @@ boundExecution,
             disabled={composerDisabled}
             sendDisabled={!sessionSendReady || queueEdit?.loading === true || queueEdit?.loadError === true}
             sendDisabledTitle={queueEdit?.loading ? t('preview.loading') : queueEdit?.loadError ? t('preview.failed') : state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
+            disabledPlaceholder={queueEdit?.loading ? t('preview.loading') : undefined}
             busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             value={draft}
             onChange={updateDraft}

@@ -2916,7 +2916,7 @@ export function Composer({
             dragDepthRef.current = 0;
             setDragActive(false);
             const files = [...event.dataTransfer.files];
-            if (files.length === 0) return;
+            if (disabled || files.length === 0) return;
             event.preventDefault();
             const images = queueEditing || messageEditing ? files.filter((file) => ACCEPTED_IMAGE_MIMES.includes(file.type)) : [];
             if (images.length > 0) addFiles(readyAttachmentFiles(images));

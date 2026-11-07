@@ -1515,7 +1515,7 @@ export const en = {
   'composer.slash.shortcuts': 'Actions',
   'composer.slash.empty': 'No matching commands — Enter sends the line as a plain prompt.',
   'composer.slash.skillsFailed': 'Could not load skills — showing shortcuts only.',
-  'composer.slash.submitCatalogFailed': 'Could not load skills. Please try sending again.',
+  'composer.slash.submitCatalogFailed': 'Skills catalog is unavailable right now — keep editing or send as a plain message.',
   'composer.slash.notActivatable': 'not activatable',
   'composer.slash.skillBadge': 'skill',
   'composer.slash.previewAria': 'Skill or command details',
