@@ -81,11 +81,12 @@ export interface UsageExportSource {
   readonly records: readonly NormalizedUsageRecord[];
 }
 
-interface SessionRecords {
-  readonly summary: SessionSummary;
-  readonly records: readonly NormalizedUsageRecord[];
-  readonly complete: boolean;
-  readonly deleted: boolean;
+interface ExportSessionRead {
+  readonly key: string;
+  readonly agents: readonly string[];
+  readonly records: NormalizedUsageRecord[];
+  nextAgent: number;
+  complete: boolean;
 }
 
 export interface AgentUsageProjection {
@@ -205,6 +206,7 @@ export class UsageAggregationService {
   private exportRetainedIncomplete = false;
   private exportVerifyBoundary = false;
   private exportCursor: string | undefined;
+  private exportSession: ExportSessionRead | undefined;
   private exportAtRetained = false;
   private readonly exportActiveKeys = new Set<string>();
 
@@ -284,6 +286,7 @@ export class UsageAggregationService {
     for (const flight of this.queryFlights.values()) flight.controller.abort();
     this.queryFlights.clear();
     this.pendingWireLines.clear();
+    this.exportSession = undefined;
     this.recovery.dispose();
   }
 
@@ -503,7 +506,7 @@ export class UsageAggregationService {
 
   async resetExportRead(): Promise<void> {
     await this.exportRetainedIterator?.return(undefined); this.exportRetainedIterator = undefined; this.exportEphemeralRecords.clear(); this.exportRetainedIncomplete = false;
-    this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
+    this.exportCursor = undefined; this.exportSession = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
   }
 
   async invalidateExportCheckpoints(): Promise<void> {
@@ -513,15 +516,17 @@ export class UsageAggregationService {
     this.modelVerifiedAt = 0;
   }
 
-  private async readExportSession(summary: SessionSummary, budget: ScanBudget): Promise<SessionRecords | undefined> {
+  private async readExportSession(summary: SessionSummary, budget: ScanBudget): Promise<ExportSessionRead | undefined> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const logs = this.core.accessor.get(IAppendLogStore);
     const facts = this.core.accessor.get(IUsageFactStore);
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-    const agents = await storage.list(`${scope}/agents`);
-    const records: NormalizedUsageRecord[] = [];
-    let complete = true;
-    for (const agentId of agents) {
+    const key = sessionKey(summary);
+    const session: ExportSessionRead = this.exportSession?.key === key ? this.exportSession : { key, agents: await storage.list(`${scope}/agents`), records: [], nextAgent: 0, complete: true };
+    this.exportSession = session;
+    while (session.nextAgent < session.agents.length) {
+      if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; return undefined; }
+      const agentId = session.agents[session.nextAgent]!;
       const source = agentScopeOf(scope, agentId);
       const [generation, size, mtimeMs] = await Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY)]);
       if (!await this.synchronizeSource({ source, agentId, generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 }, this.modelController.signal, { verifyBoundary: this.exportVerifyBoundary, maxFacts: Infinity, maxRecords: budget.remainingRecords, deadlineAt: budget.deadlineAt, onScannedRecord: () => { budget.remainingRecords--; } })) {
@@ -529,11 +534,13 @@ export class UsageAggregationService {
         return undefined;
       }
       const snapshot = await facts.read(source, undefined, this.modelController.signal);
-      records.push(...snapshot.records);
-      complete &&= snapshot.readComplete !== false && snapshot.checkpoint?.offset === (size ?? 0) && snapshot.checkpoint?.generation === generation && await logs.generation(source, AGENT_WIRE_RECORD_KEY) === generation;
+      for (const record of snapshot.records) session.records.push(record);
+      session.complete &&= snapshot.readComplete !== false && snapshot.checkpoint?.offset === (size ?? 0) && snapshot.checkpoint?.generation === generation && await logs.generation(source, AGENT_WIRE_RECORD_KEY) === generation;
+      session.nextAgent++;
       await yieldToEventLoop(undefined, { signal: this.modelController.signal });
     }
-    return { summary, records, complete, deleted: false };
+    this.exportSession = undefined;
+    return session;
   }
 
   async readExportSources(
@@ -567,7 +574,7 @@ export class UsageAggregationService {
           for (const [workspaceId, records] of this.exportEphemeralRecords) { await consume({ key: `ephemeral\0${workspaceId}`, workspaceId, kind: 'ephemeral', records }); sources++; }
           this.exportEphemeralRecords.clear(); this.exportRetainedIterator = undefined;
           const complete = !this.exportRetainedIncomplete; this.exportRetainedIncomplete = false;
-          this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
+          this.exportCursor = undefined; this.exportSession = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
           return { complete, reason: complete ? null : 'retained-incomplete', sources, operationsComplete: event.value?.operationsComplete };
         }
         if (event.value.kind === 'progress') { budget.remainingRecords--; if (budget.remainingRecords % 1024 === 0) await yieldToEventLoop(); }
@@ -604,7 +611,7 @@ export class UsageAggregationService {
       if (!ephemeral.complete) return { complete: false, reason: ephemeral.incompleteReason ?? 'ephemeral-incomplete', sources };
     }
     const complete = !this.exportRetainedIncomplete; this.exportRetainedIncomplete = false;
-    this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
+    this.exportCursor = undefined; this.exportSession = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear(); this.exportVerifyBoundary = false;
     return { complete, reason: complete ? null : 'retained-incomplete', sources };
   }
 

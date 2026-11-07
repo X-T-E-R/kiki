@@ -54,7 +54,7 @@ const priced: Pricing = {
 function record(time: number, inputOther: number, other = { output: 3, inputCacheRead: 4, inputCacheCreation: 5 }, model = 'gpt-5'): WireRecord {
   return { type: 'usage.record', time, model, usageKnown: true, usage: { inputOther, ...other }, prompt: SENTINEL, reply: SENTINEL, reasoning: SENTINEL, profileName: SENTINEL, tool: { args: SENTINEL }, attachments: [SENTINEL], custom: { sentinel: SENTINEL } };
 }
-async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest) {
+async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest, aggregationNow = Date.now) {
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
   const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
   const bootstrap = { homeDir: home, scope: (name: string) => name, credentialsHomeDir: home, cacheDir: join(home, 'cache') } as Bootstrap;
@@ -69,13 +69,13 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
   const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
-  const reader = new UsageAggregationService(core, Date.now, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
+  const reader = new UsageAggregationService(core, aggregationNow, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
   const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
   const secrets = secretStore();
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => append.rewrite(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, records);
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, aggregationNow, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -427,6 +427,94 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
       expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
       expect(read).toHaveBeenCalled(); expect(batch).not.toHaveBeenCalled();
     } finally { read.mockRestore(); batch.mockRestore(); }
+  });
+
+  it.each(['separate sessions', 'one session'] as const)('finishes first publication across deadlines with the same wires in %s', async (layout) => {
+    let clock = 0;
+    const f = await fixture({}, () => T, undefined, undefined, () => clock);
+    const facts = f.core.accessor.get(IUsageFactStore);
+    const zero = { output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const wires = [[record(T + 1, 10, zero)], [record(T + 2, 20, zero)], [record(T + 3, 30, zero), { ...record(T + 4, 0, zero), usageKnown: false }, { ...record(T + 5, 0, zero), usageKnown: undefined }]];
+    const scopes: string[] = [];
+    if (layout === 'one session') f.add('combined');
+    for (let i = 0; i < wires.length; i++) {
+      const session = layout === 'one session' ? 'combined' : `session-${i}`;
+      if (layout === 'separate sessions') f.add(session);
+      const agent = `agent-${i}`; const scope = `sessions/work/${session}/agents/${agent}`; scopes.push(scope);
+      if (i < 2) { await f.write(session, agent, wires[i]!); await facts.summary(scope); }
+      else await f.storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(wires[i]!.map((row) => JSON.stringify(row)).join('\n') + '\n'));
+    }
+    const d = await destination(f.service);
+    await f.service.saveDraft({ draft: { id: d.id, label: d.label, target: d.target, scope: d.scope, schedule_minutes: 120 }, auto_upload: true });
+    const reads = new Map<string, number>(); const read = facts.read.bind(facts);
+    const observed = vi.spyOn(facts, 'read').mockImplementation(async (...args) => {
+      const snapshot = await read(...args); reads.set(args[0], (reads.get(args[0]) ?? 0) + 1); clock += 6_000; return snapshot;
+    });
+    const states: { scan_complete: boolean; scan_error: string | null }[] = [];
+    try {
+      for (let i = 0; i < 6; i++) {
+        await f.service.scan(); const { scan_complete, scan_error } = f.service.status(); states.push({ scan_complete, scan_error });
+        if (scan_complete) break;
+        expect(f.store.preview(d.id).total).toBe(0); expect(f.store.queue(d.id).pending).toBe(0);
+      }
+      const tail = await f.core.accessor.get(IUsageReadModel).source(scopes[2]!);
+      expect(states, JSON.stringify({ layout, reads: [...reads], tail_offset: tail?.checkpoint?.offset ?? 0 })).toEqual([{ scan_complete: false, scan_error: 'deadline' }, { scan_complete: true, scan_error: null }]);
+      expect([...reads.values()]).toEqual([1, 1, 1]);
+      expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 60 }, quality: { known_records: 3, missing_records: 1, legacy_zero_records: 1 }, cost: { usd_estimated: null } });
+      expect(f.store.get(d.id)).toMatchObject({ enabled: true, schedule_minutes: 120 });
+      expect(f.store.queue(d.id).pending).toBe(1);
+    } finally { observed.mockRestore(); }
+  });
+
+  it('discards an unfinished session prefix on a forced scan and reads the replacement once', async () => {
+    let clock = 0;
+    const f = await fixture({ deadlineMs: 3_000 }, undefined, undefined, undefined, () => clock);
+    f.add('forced');
+    for (let i = 0; i < 3; i++) await f.write('forced', `agent-${i}`, [record(T + i, i + 1)]);
+    const d = await destination(f.service);
+    const facts = f.core.accessor.get(IUsageFactStore); const read = facts.read.bind(facts);
+    const observed = vi.spyOn(facts, 'read').mockImplementation(async (...args) => { const row = await read(...args); clock += 2_000; return row; });
+    try {
+      await f.service.scan(); expect(f.service.status()).toMatchObject({ scan_complete: false, scan_error: 'deadline' });
+      expect(f.store.preview(d.id).total).toBe(0);
+      await f.write('forced', 'agent-0', [record(T, 100)]);
+      await f.service.scan(true); expect(f.service.status()).toMatchObject({ scan_complete: false, scan_error: 'deadline' });
+      await f.service.scan(); expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
+      expect(observed.mock.calls.map(([source]) => source.split('/').at(-1))).toEqual(['agent-0', 'agent-1', 'agent-0', 'agent-1', 'agent-2']);
+      expect(f.store.preview(d.id).items[0]!.bucket!.tokens.input_other).toBe(105);
+    } finally { observed.mockRestore(); }
+  });
+
+  it('automatically continues three-second and raw-record slices before queuing first upload with the existing consent and interval', async () => {
+    let clock = 0;
+    const f = await fixture({ deadlineMs: 3_000, wireRecordBudget: 1 }, () => T, undefined, undefined, () => clock);
+    f.add('automatic-slices');
+    for (let i = 0; i < 3; i++) {
+      const rows = Array.from({ length: i === 2 ? 3 : 1 }, () => record(T + i, i + 1));
+      await f.storage.write(`sessions/work/automatic-slices/agents/agent-${i}`, AGENT_WIRE_RECORD_KEY, Buffer.from(rows.map((row) => JSON.stringify(row)).join('\n') + '\n'));
+    }
+    const sent: UsageExportBatch[] = [];
+    f.service.registerAdapter({ ...createWebhookUsageAdapter(), send: async (batch) => {
+      sent.push(batch);
+      return { outcome: 'delivered', receipt: { schema_version: 'kiki.usage.receipt.v1', batch_id: batch.batch_id, items: batch.items.map((item) => ({ stream_id: item.stream_id, bucket_id: item.bucket_id, revision: item.revision, payload_hash: item.payload_hash, status: 'applied' })) } };
+    } });
+    const d = await destination(f.service);
+    const agreed = await f.service.saveDraft({ draft: { id: d.id, label: d.label, target: d.target, scope: d.scope, schedule_minutes: 120 }, auto_upload: true });
+    const facts = f.core.accessor.get(IUsageFactStore); const read = facts.read.bind(facts);
+    const observed = vi.spyOn(facts, 'read').mockImplementation(async (...args) => { const row = await read(...args); clock += 2_000; return row; });
+    try {
+      f.service.start(); await f.service.syncNow(d.id);
+      expect(f.service.status()).toMatchObject({ scan_complete: false, scan_error: 'record_budget' });
+      expect(f.store.queue(d.id).pending).toBe(0); expect(sent).toHaveLength(0);
+      await vi.waitFor(() => { expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null }); });
+      expect(observed.mock.calls.map(([source]) => source.split('/').at(-1))).toEqual(['agent-0', 'agent-1', 'agent-2']);
+      expect(f.store.queue(d.id).pending).toBe(1);
+      expect(f.store.get(d.id)).toMatchObject({ enabled: true, schedule_minutes: 120, next_at: T + 7_200_000, consent_fingerprint: agreed.consent_fingerprint });
+      await f.service.deliver(d.id, true);
+      expect(sent).toHaveLength(1); expect(sent[0]!.items[0]!.bucket!.tokens.input_other).toBe(12);
+      expect(f.store.queue(d.id).pending).toBe(0);
+      expect(f.store.ack(d.id, sent[0]!.items[0]!.bucket_id)?.revision).toBe(1);
+    } finally { observed.mockRestore(); }
   });
 
   it('retains the previous complete source while budget-limited, then publishes a complete correction; force detects same size/mtime rewrite without resetting ACK', async () => {
