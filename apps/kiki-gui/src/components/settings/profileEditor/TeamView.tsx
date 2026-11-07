@@ -251,7 +251,7 @@ function QuickModelMenuReview({ profile, alias, disabled, onSave, onCancel }: {
     <p className="text-[12px] font-medium text-ink">{t('st.profiles.modelFor', { name: profile.name })}: <span className="break-all font-mono">{alias || t('st.profiles.modelUnset')}</span></p>
     <ModelMenuPreview value={preview.value} pending={preview.pending} error={preview.error} onRetry={preview.retry} />
     <div className="flex flex-wrap items-center gap-2">
-      <button type="button" data-team-menu-save className={PRIMARY_BUTTON} disabled={disabled || !preview.ready} onClick={onSave}>{t('common.save')}</button>
+      <button type="button" data-team-menu-save className={PRIMARY_BUTTON} disabled={disabled} onClick={onSave}>{t('common.save')}</button>
       <button type="button" className={SECONDARY_BUTTON} disabled={disabled} onClick={onCancel}>{t('common.cancel')}</button>
     </div>
   </div>;

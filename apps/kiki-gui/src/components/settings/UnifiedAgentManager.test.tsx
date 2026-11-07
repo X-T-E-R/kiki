@@ -776,7 +776,7 @@ it('previews default-model removal before saving and keeps the full catalog edit
   await open('agent');
   expect(sheet().querySelector('[data-menu-declared]')?.textContent).toContain('fixture/opusDefault');
   await choose(sheet().querySelector<HTMLElement>('#profile-model')!, 'fixture/lite');
-  expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+  expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
   expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
   await act(async () => resolvePreview({ restrict_models_to_menu: true,
     declared_model_menu: { aliases: ['fixture/lite'], default_alias: 'fixture/lite', identities: ['fixture/lite'] },
@@ -809,15 +809,16 @@ it('requires an explicit save after a restricted TeamView default change', async
   expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
 });
 
-it('keeps failed previews unsavable and shows an empty effective set after retry', async () => {
-  client.klient.rest.agents.previewModelMenu.mockRejectedValueOnce(new Error('preview unavailable'));
+it('keeps failed previews savable while preserving retry and empty effective set diagnostics', async () => {
+  client.klient.rest.agents.previewModelMenu.mockRejectedValue(new Error('preview unavailable'));
+  client.updateNamedAgentProfile.mockResolvedValue({ ...main, restrict_models_to_menu: true });
   await render();
   await open('agent');
   await act(async () => sheet().querySelector<HTMLInputElement>('[data-profile-field="restrictModelsToMenu"] input')!.click());
   await settle();
-  expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+  expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
   expect(sheet().querySelector('[data-model-menu-preview]')?.textContent).toContain('Could not calculate');
-  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
+  client.klient.rest.agents.previewModelMenu.mockResolvedValueOnce({ restrict_models_to_menu: true,
     declared_model_menu: { aliases: ['fixture/opus'], default_alias: 'fixture/opus', identities: ['fixture/opus'] },
     effective_model_aliases: [], added_model_identities: [], removed_model_identities: [],
   });
@@ -826,6 +827,25 @@ it('keeps failed previews unsavable and shows an empty effective set after retry
   expect(sheet().querySelector('[data-menu-empty]')?.textContent).toContain('No model can bind');
   expect(sheet().querySelector('[data-menu-declared]')?.textContent).toContain('fixture/opus');
   expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
+  await save();
+  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ restrict_models_to_menu: true }));
+
+});
+
+it('allows saving a restricted TeamView default change when the menu preview fails', async () => {
+  const restricted = { ...main, restrict_models_to_menu: true };
+  client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });
+  client.klient.rest.agents.previewModelMenu.mockRejectedValue(new Error('preview offline'));
+  client.updateNamedAgentProfile.mockResolvedValue({ ...restricted, pinned_model_alias: 'fixture/lite' });
+  await render();
+  await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
+  await settle();
+  const review = document.body.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
+  const teamSave = review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!;
+  expect(teamSave.disabled).toBe(false);
+  await act(async () => teamSave.click());
+  await settle();
+  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
 });
 
 describe('profile prompt editing', () => {

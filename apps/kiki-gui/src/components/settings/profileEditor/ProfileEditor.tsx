@@ -177,7 +177,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     onSaved(updated);
   };
   const save = async () => {
-    if (!writable || !dirty || problems.length > 0 || !menuPreview.ready || profile.workspace_id === undefined) return;
+    if (!writable || !dirty || problems.length > 0 || profile.workspace_id === undefined) return;
     setSaving(true); setFeedback(null);
     try {
       const updated = await client.updateNamedAgentProfile(profile.name, patchBody(profile, baseline, draft));
@@ -469,7 +469,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     </div> : null}
     {writable && tab !== 'raw' ? <div className="sticky bottom-[calc(-1*var(--settings-scroll-pb,0px))] z-10 -mx-1 mt-auto border-t border-transparent bg-canvas/95 px-1 backdrop-blur-sm has-[[data-settings-draft]:not([hidden])]:border-hairline has-[[data-settings-draft]:not([hidden])]:pb-3">
       <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
-        saveDisabled={problems.length > 0 || !menuPreview.ready} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
+        saveDisabled={problems.length > 0} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>
           : dirty && (menuPreview.value?.removed?.length ?? 0) > 0 ? <span data-menu-save-warning role="status" className="max-w-[36rem] break-words text-[12px] font-medium text-amber-ink">{t('st.profiles.menuRemoved', { models: menuPreview.value!.removed!.join(', ') })}</span>
             : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />
