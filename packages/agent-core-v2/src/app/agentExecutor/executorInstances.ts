@@ -11,22 +11,69 @@ import type { AgentExecutorDescriptor } from './agentExecutor';
 import { CLAUDE_CREDENTIAL_ENV_VARS, CLAUDE_EXTERNAL_BACKEND_ENV_VARS } from './claudeCredentials';
 
 export const AGENT_EXECUTOR_INSTANCES_SECTION = 'agentExecutorInstances';
-export const AgentExecutorInstancesSchema = z.record(executorInstanceIdSchema, executorInstanceConfigSchema);
+export const AgentExecutorInstancesSchema = z.preprocess(
+  (value) => mapProxyAuthorizationMask(value, undefined),
+  z.record(executorInstanceIdSchema, executorInstanceConfigSchema),
+);
 export type AgentExecutorInstances = z.infer<typeof AgentExecutorInstancesSchema>;
+
+type InstanceProxy = ExecutorInstanceConfig['proxy'];
+type StoredInstanceProxy = InstanceProxy | (Omit<Extract<InstanceProxy, { kind: 'url' }>, 'authorization'> & { authorization: false });
+type StoredInstances = Record<string, Omit<ExecutorInstanceConfig, 'proxy'> & { proxy: StoredInstanceProxy }>;
+
+function mapProxyAuthorizationMask(value: unknown, replacement: null | undefined): unknown {
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([id, instance]) => {
+    if (!isPlainObject(instance)) return [id, instance];
+    const proxy = instance['proxy'];
+    return isPlainObject(proxy) && proxy['kind'] === 'url' && proxy['authorization'] === false
+      ? [id, { ...instance, proxy: { ...proxy, authorization: replacement } }]
+      : [id, instance];
+  }));
+}
+
+function instanceProxyRecord(instance: unknown): Record<string, unknown> | undefined {
+  const proxy = isPlainObject(instance) ? instance['proxy'] : undefined;
+  return isPlainObject(proxy) ? proxy : undefined;
+}
+
+function mergeInstanceProxyLayers(base: unknown, home: unknown, merged: unknown): unknown {
+  if (!isPlainObject(base) || !isPlainObject(home) || !isPlainObject(merged)) return merged;
+  return Object.fromEntries(Object.entries(merged).map(([id, instance]) => {
+    const lower = instanceProxyRecord(base[id]);
+    const upper = instanceProxyRecord(home[id]);
+    const effective = instanceProxyRecord(instance);
+    if (!lower || !upper || !effective || !isPlainObject(instance)) return [id, instance];
+    const proxy = upper['kind'] !== undefined && upper['kind'] !== lower['kind'] ? { ...upper } : { ...effective };
+    if (proxy['kind'] === 'url') {
+      const owner = Object.hasOwn(upper, 'authorization') ? upper : lower;
+      const authorization = owner['authorization'];
+      const origin = owner['url'];
+      const destination = proxy['url'];
+      const sameAddress = typeof origin === 'string' && typeof destination === 'string' && sameExecutorProxyAddress(origin, destination);
+      proxy['authorization'] = authorization === false || sameAddress ? authorization : undefined;
+    }
+    return [id, { ...instance, proxy }];
+  }));
+}
 
 registerConfigSection(AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSchema, {
   fromToml: (value) => value,
   toToml: (value) => withoutUndefined(value),
-  merge: (base, patch) => {
-    if (!isPlainObject(patch)) return patch as AgentExecutorInstances;
+  layerMerge: mergeInstanceProxyLayers,
+  merge: (base: StoredInstances | undefined, patch): StoredInstances => {
+    if (!isPlainObject(patch)) return patch as StoredInstances;
     const result = { ...base };
-    for (const [id, entry] of Object.entries(executorInstancesPatchSchema.parse(patch))) {
+    for (const [id, entry] of Object.entries(executorInstancesPatchSchema.parse(mapProxyAuthorizationMask(patch, null)))) {
       if (entry === null) delete result[id];
       else if (entry.proxy.kind === 'url') {
         const { url, authorization } = entry.proxy;
         const previous = result[id]?.proxy;
-        const next = authorization === null ? undefined
-          : authorization ?? (previous?.kind === 'url' && sameExecutorProxyAddress(previous.url, url) ? previous.authorization : undefined);
+        const previousUrl = previous !== undefined && 'url' in previous ? previous.url : undefined;
+        const previousAuthorization = previous !== undefined && 'authorization' in previous ? previous.authorization : undefined;
+        const sameAddress = (previous?.kind === undefined || previous.kind === 'url') && previousUrl !== undefined && sameExecutorProxyAddress(previousUrl, url);
+        const next = authorization === null ? false : authorization ?? (sameAddress
+          ? previousAuthorization : previous?.kind !== undefined || previousUrl !== undefined ? false : undefined);
         result[id] = { ...entry, proxy: { kind: 'url', url, authorization: next } };
       } else result[id] = { ...entry, proxy: entry.proxy };
     }

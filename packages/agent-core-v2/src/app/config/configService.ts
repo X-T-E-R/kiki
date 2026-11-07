@@ -705,6 +705,8 @@ export class ConfigService extends Disposable implements IConfigService {
       const key = camelToSnake(section.domain);
       if (section.layerMerge === 'union' && Array.isArray(base[key]) && Array.isArray(home[key])) {
         merged[key] = [...new Set([...base[key], ...home[key]])];
+      } else if (typeof section.layerMerge === 'function' && Object.hasOwn(merged, key)) {
+        merged[key] = section.layerMerge(base[key], home[key], merged[key]);
       }
     }
     for (const key of ['providers', 'models']) {

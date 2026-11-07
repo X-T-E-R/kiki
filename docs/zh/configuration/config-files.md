@@ -209,7 +209,7 @@ proxy = { kind = "url", url = "socks5h://127.0.0.1:1080" }
 }
 ```
 
-编辑 URL 代理实例时，只有规范化后的地址不变，省略 `authorization` 才会保留已保存的认证。更换地址时，可在同一次保存中填写新代理的用户名和密码；不填写则移除旧认证。若只想移除认证、不改地址，传入 JSON `null`。改为 `inherit`、`direct` 或 `env` 也会移除认证。公开的配置和执行器响应只返回 `proxy.has_authorization = true`，不返回保存的用户名和密码。
+编辑 URL 代理实例时，只有规范化后的地址不变，省略 `authorization` 才会保留已保存的认证。更换地址时，可在同一次保存中填写新代理的用户名和密码；不填写则移除旧认证。若只想移除认证、不改地址，传入 JSON `null`。改为 `inherit`、`direct` 或 `env` 也会移除认证。在共享凭据的空间中移除继承的代理认证，只影响该空间，不改动基础空间的凭据。公开的配置和执行器响应只返回 `proxy.has_authorization = true`，不返回保存的用户名和密码。
 
 已启用的 [插件](../customization/plugins.md) 为引擎提供账号时，AGY CLI 和 Codex app-server 的实例还可选择 **插件账号**。在实例表单中选择来源和账号；登录、账号管理和 OAuth 刷新仍由对应插件负责。配置保存的是 `configuration = { kind = "plugin_account", source = "plugin:example-accounts/accounts", account_id = "YOUR_ACCOUNT_ID" }`，不是凭据或连接地址。
 

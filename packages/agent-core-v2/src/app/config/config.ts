@@ -71,6 +71,9 @@ export type ConfigToToml = (value: unknown, rawSnake: unknown) => unknown;
 
 export type ConfigCollectDiagnostics = (rawSection: unknown) => readonly ConfigDiagnostic[];
 
+/** Combines a section's raw TOML layers; a callback receives the default deep merge as its third argument. */
+export type ConfigLayerMerge = 'union' | ((base: unknown, home: unknown, merged: unknown) => unknown);
+
 export interface ConfigSection<T = unknown> {
   readonly domain: string;
   readonly schema?: ConfigSchema<T>;
@@ -83,7 +86,7 @@ export interface ConfigSection<T = unknown> {
   readonly toToml?: ConfigToToml;
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
-  readonly layerMerge?: 'union';
+  readonly layerMerge?: ConfigLayerMerge;
 }
 
 export interface RegisterSectionOptions<T> {
@@ -96,7 +99,7 @@ export interface RegisterSectionOptions<T> {
   readonly toToml?: ConfigToToml;
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
-  readonly layerMerge?: 'union';
+  readonly layerMerge?: ConfigLayerMerge;
 }
 
 export interface ConfigEffectiveOverlay {

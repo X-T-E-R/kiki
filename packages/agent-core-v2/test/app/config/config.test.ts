@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { AGENT_EXECUTOR_INSTANCES_SECTION, type AgentExecutorInstances } from '#/app/agentExecutor/executorInstances';
 import {
   Error2,
   ErrorCodes,
@@ -4170,6 +4171,54 @@ describe('space config layers', () => {
       expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-base');
       expect(f.config.origins('providers')['acme.apiKey']).toBe('base');
       expect(await f.baseStore.getText('', 'credentials/credentials.toml')).toContain('sk-base');
+    } finally { await f.disposables.dispose(); }
+  });
+
+  it('keeps shared instance proxy authentication bound to its layer address across saves and reloads', async () => {
+    const section = AGENT_EXECUTOR_INSTANCES_SECTION;
+    const id = 'instance-work';
+    const auth = { username: 'fixture-base-user', password: 'fixture-base-password' };
+    const url = 'socks5h://127.0.0.1:1080';
+    const other = 'socks5h://127.0.0.1:1081';
+    const instance = { source_executor: 'agy-cli', label: 'Work', configuration: { kind: 'inherit' } };
+    const credentialsKey = 'credentials/credentials.toml';
+    const proxyTable = `[agent_executor_instances.${id}.proxy]\n`;
+    const baseCredentials = `${proxyTable}[agent_executor_instances.${id}.proxy.authorization]\nusername = "${auth.username}"\npassword = "${auth.password}"\n`;
+    const baseStorage = new InMemoryStorageService();
+    await new TomlAtomicDocumentStore(baseStorage).setText('', credentialsKey, baseCredentials);
+    const f = await fixture(
+      `[agent_executor_instances.${id}]\nsource_executor = "agy-cli"\nlabel = "Work"\nconfiguration = { kind = "inherit" }\nproxy = { kind = "url", url = "${url}" }\n`,
+      `${proxyTable}url = "${other}"\n`, {}, 'shared', undefined, baseStorage,
+    );
+    const proxy = () => f.config.get<AgentExecutorInstances>(section)[id]?.proxy;
+    const save = (address: string, authorization?: typeof auth | null) => f.config.set(section, {
+      [id]: { ...instance, proxy: { kind: 'url', url: address, authorization } },
+    });
+    try {
+      expect(proxy()).toEqual({ kind: 'url', url: other });
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url: other });
+      await f.homeStore.setText('', 'config.toml', `${proxyTable}url = "${url}"\n`);
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url, authorization: auth });
+      await save(url);
+      expect(proxy()).toEqual({ kind: 'url', url, authorization: auth });
+      expect(await f.homeStore.getText('', credentialsKey) ?? '').not.toContain(auth.password);
+      await save(url, null);
+      expect(proxy()).toEqual({ kind: 'url', url });
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url });
+      await save(url);
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url });
+      const localAuth = { username: 'fixture-local-user', password: 'fixture-local-password' };
+      await save(other, localAuth);
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url: other, authorization: localAuth });
+      await save(url);
+      await f.config.reload();
+      expect(proxy()).toEqual({ kind: 'url', url });
+      expect(await f.baseStore.getText('', credentialsKey)).toBe(baseCredentials);
     } finally { await f.disposables.dispose(); }
   });
 
