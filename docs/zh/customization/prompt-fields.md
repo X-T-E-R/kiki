@@ -139,7 +139,7 @@ Recipe 引用无法解析时，Profile 编辑器会显示失效引用，绑定�
 
 `prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
 
-Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入，已核验且完成的 subagent 任务回执也默认继承。明确设置 `steering_sources.task.mode = "off"` 可关闭该继承；普通进程结果、失败子任务及其它非用户来源仍需各自配置。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
+Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入；已核验且完成的 subagent 任务回执默认继承，未设置 `steering_sources.thread` 时新线程的首条指令也默认继承。明确设置 `steering_sources.task.mode = "off"` 可关闭回执继承；`thread` 上显式的 `off`、`inherit` 或 `custom` 决定这条首条指令。之后的 peer 消息、普通进程结果、失败子任务及其它非用户来源仍需各自配置。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
 
 在同一分支中使用 `steering_sources` 开启其他来源：`mode = "inherit"` 在绑定时沿用最终用户正文与节奏，`mode = "custom"` 使用自己的 `custom` 正文与节奏。来源及 custom 字段在父配方、模型 Recipe、profile Recipe 各层按声明的叶项合并，再随绑定冻结；改用户设置不会重写已有会话。来源键与默认值见 [模型认知](../configuration/config-files.md#模型认知)。例如：
 

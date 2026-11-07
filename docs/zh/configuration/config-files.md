@@ -442,7 +442,7 @@ Recipe 可以覆盖支持的模型提示词与生成参数，但不改变模型�
 | `steering_on_turn` | `boolean` | `true` | 在用户来源的新轮次及其压缩后重新装填上下文时注入 |
 | `steering_on_input` | `boolean` | `true` | 在新接纳的人类输入后注入，包括轮内「立即发送」的纠偏 |
 | `steering_interval_steps` | `integer` | `0` | 每隔用户输入驱动的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
-| `steering_sources` | `table` | 已核验的子任务完成回执继承，其它来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
+| `steering_sources` | `table` | 已核验的子任务完成回执与新线程首条指令继承，其它来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
 | `anchor` | `{text: string}`、`string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的正文，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
@@ -472,9 +472,9 @@ await klient.global.kosong.updateModel(baseline.id, {
 
 路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。读取模型不改变这些文件。明确把编辑后的文件槽保存为 `{text}` 时，正文改存到模型中，原文件保持不变；要再次使用原文件，恢复原路径引用即可。已有会话保留冻结正文，直到显式重建上下文或换模。
 
-三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。已核验且完成的 subagent 任务回执默认继承该 steering；明确设置 `steering_sources.task.mode = "off"` 仍优先关闭。普通进程结果、失败子任务及其它非用户来源保持关闭，需在 `steering_sources` 中启用。重试沿用原输入来源。
+三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。已核验且完成的 subagent 任务回执默认继承该 steering；明确设置 `steering_sources.task.mode = "off"` 仍优先关闭。新线程的首条指令（`thread_create`）在未设置 `steering_sources.thread` 时同样继承；`thread` 上显式的 `off`、`inherit` 或 `custom` 仍优先，之后的 peer 与 bridged-peer 消息在启用 `thread` 之前保持关闭。普通进程结果、失败子任务及其它非用户来源保持关闭，需在 `steering_sources` 中启用。重试沿用原输入来源。
 
-选 `mode = "inherit"` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
+选 `mode = "inherit"` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息，以及模型创建的 thread——该来源未设置时，首条指令继承用户 steering）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
 
 ```toml
 [models."example-model".cognition.steering_sources.thread]

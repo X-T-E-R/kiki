@@ -469,6 +469,8 @@ describe('AgentModelSteeringService', () => {
     { kind: 'task', taskId: 'example-task', notificationId: 'example-task-notice', status: 'completed' },
     { kind: 'cron_job', jobId: 'example-cron', cron: '* * * * *', recurring: true, coalescedCount: 1, stale: false },
     { kind: 'system_trigger', name: 'unrecognized-future-source' },
+    { kind: 'system_trigger', name: 'subagent' },
+    { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 1 },
   ] satisfies ContextMessage['origin'][])('does not inherit user cadence on an unconfigured input %j', async (origin) => {
     ctx = createTestAgent(homeDirServices(homeDir));
     await bindModel(true, { steeringIntervalSteps: 1 });
@@ -504,6 +506,95 @@ describe('AgentModelSteeringService', () => {
     memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Task update' }], origin: { kind: 'task', taskId: 'example-task', notificationId: 'example-new-notice', status: 'completed' } });
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
+  });
+
+  it.each([
+    { label: 'unset', sources: undefined, cue: 'CLASSIFY THEN ACT', count: 1 },
+    { label: 'off', sources: { thread: { mode: 'off' as const, custom: { steering: { text: 'PEER CUE' }, steering_interval_steps: 1 } } }, cue: 'CLASSIFY THEN ACT', count: 0 },
+    { label: 'inherit', sources: { thread: { mode: 'inherit' as const } }, cue: 'CLASSIFY THEN ACT', count: 1 },
+    { label: 'custom', sources: { thread: { mode: 'custom' as const, custom: { steering: { text: 'PEER CUE' }, steering_interval_steps: 1 } } }, cue: 'PEER CUE', count: 1 },
+  ])('puts thread source $label on the first thread_create request without relabeling it', async ({ label, sources, cue, count }) => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true, { steeringSources: sources });
+    const agent = ctx;
+    agent.mockNextResponse({ type: 'text', text: 'thread answer' });
+    const handle = await agent.get(IAgentPromptService).enqueue({ message: {
+      role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Open the new thread' }],
+      origin: { kind: 'system_trigger', name: 'thread_create' },
+    } });
+    await handle.completion;
+    await agent.get(IAgentLoopService).settled();
+    const history = agent.llmCalls[0]!.history;
+    const texts = history.flatMap((message) => message.content).flatMap((part) => part.type === 'text' ? [part.text] : []);
+    expect(texts).toContain('Open the new thread');
+    expect(texts.filter((text) => text === cue)).toHaveLength(count);
+    expect(texts.filter((text) => text === 'CLASSIFY THEN ACT')).toHaveLength(label === 'custom' ? 0 : count);
+    expect(texts.filter((text) => text === 'PEER CUE')).toHaveLength(label === 'custom' ? 1 : 0);
+    if (count === 1) expect(history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: cue }] });
+    expect(agent.get(IAgentContextMemoryService).get().find((message) => message.content.some((part) => part.type === 'text' && part.text === 'Open the new thread'))?.origin)
+      .toEqual({ kind: 'system_trigger', name: 'thread_create' });
+  });
+
+  it('keeps a later unconfigured peer off after the first thread instruction inherited steering', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true);
+    const agent = ctx;
+    const loop = agent.get(IAgentLoopService);
+    const prompts = agent.get(IAgentPromptService);
+    agent.mockNextResponse({ type: 'text', text: 'thread answer' });
+    agent.mockNextResponse({ type: 'text', text: 'peer answer' });
+    const created = await prompts.enqueue({ message: {
+      role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Open the new thread' }],
+      origin: { kind: 'system_trigger', name: 'thread_create' },
+    } });
+    await created.completion;
+    const peer = await prompts.enqueue({ message: {
+      role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Later peer' }],
+      origin: { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 2 },
+    } });
+    await peer.completion;
+    await loop.settled();
+    expect(agent.llmCalls).toHaveLength(2);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    expect(cues).toEqual([1, 1]);
+    const second = agent.llmCalls[1]!.history.flatMap((message) => message.content).flatMap((part) => part.type === 'text' ? [part.text] : []);
+    expect(second).toContain('Later peer');
+    expect(second.filter((text) => text === 'CLASSIFY THEN ACT')).toHaveLength(1);
+    expect(agent.context.get().filter((message) => message.origin?.kind === 'peer_thread' || (message.origin?.kind === 'system_trigger' && message.origin.name === 'thread_create')).map((message) => message.origin))
+      .toEqual([
+        { kind: 'system_trigger', name: 'thread_create' },
+        { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 2 },
+      ]);
+  });
+
+  it('rearms one inherited cue after compaction and a cold retry without dropping the original thread instruction', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true);
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    const origin: ContextMessage['origin'] = { kind: 'system_trigger', name: 'thread_create' };
+    memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Open the new thread' }], origin, source: { turnId: 0, step: 1 } });
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(1);
+    memory.applyCompaction({ summary: 'Thread compacted', compactedCount: memory.get().length, tokensBefore: 100 });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(1);
+    expect(memory.get().find((message) => message.content.some((part) => part.type === 'text' && part.text === 'Open the new thread'))?.origin).toEqual(origin);
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(1);
+  });
+
+  it('recovers an unconfigured thread_create input on a cold retry', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true);
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Open the new thread' }], origin: { kind: 'system_trigger', name: 'thread_create' }, source: { turnId: 0, step: 1 } });
+    memory.append({ role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'Previous answer' }] });
+    ctx.get(IEventBus).publish(new TurnStarted({ turnId: 1, origin: { kind: 'retry' } }));
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(1);
+    expect(memory.get()[0]?.origin).toEqual({ kind: 'system_trigger', name: 'thread_create' });
   });
 
   it('does not inject when the bound model has no steering slot', async () => {

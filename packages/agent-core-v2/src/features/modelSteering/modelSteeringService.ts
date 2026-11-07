@@ -18,7 +18,7 @@ import { steeringInputSources, type SteeringInputSource } from './modelSteeringS
 
 const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
 
-/** Frozen per-source steering at safe request boundaries. Verified child completions inherit steering; other non-user sources require configuration. */
+/** Frozen per-source steering at safe request boundaries. Verified child completions and an unconfigured new thread's first instruction inherit steering; other non-user sources require configuration. */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
   private lastStepId: string | undefined;
@@ -28,6 +28,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
   private readonly cadence = new Map<SteeringInputSource, { steps: number; lastInjection: number; countedStep?: number }>();
   private activeSources = new Set<SteeringInputSource>();
   private completedSubagentInput = false;
+  private initialThreadCreate = false;
   private observedTail: ContextMessage | undefined;
   private turnSources: Set<SteeringInputSource> | undefined;
   private turnId: number | undefined;
@@ -51,11 +52,13 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
           const lastInput = this.context.get().findLast((message) => message.role === 'user' && message.origin?.kind !== 'injection' && message.origin?.kind !== 'compaction_summary' && message.origin?.kind !== 'shell_command');
           this.activeSources = steeringInputSources(lastInput?.origin);
           this.completedSubagentInput = this.isCompletedSubagentInput(lastInput?.origin);
+          this.initialThreadCreate = this.isInitialThreadCreate(lastInput?.origin);
         }
         return;
       }
       this.turnSources = steeringInputSources(event.origin);
       this.completedSubagentInput = this.isCompletedSubagentInput(event.origin);
+      this.initialThreadCreate = this.isInitialThreadCreate(event.origin);
     }));
     this._register(loop.hooks.onWillBeginStep.register('model-steering.cadence', async ({ stepId, signal }, next) => {
       signal.throwIfAborted();
@@ -87,8 +90,9 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       if (!this.activeSources.has(source)) continue;
       const setting = source === 'user' ? undefined : frozen?.[source];
       const inheritCompletion = source === 'task' && setting === undefined && this.completedSubagentInput;
-      if (source !== 'user' && !inheritCompletion && (setting === undefined || setting.mode === 'off')) continue;
-      const inherited = source === 'user' || inheritCompletion || setting?.mode === 'inherit';
+      const inheritThreadCreate = source === 'thread' && setting === undefined && this.initialThreadCreate;
+      if (source !== 'user' && !inheritCompletion && !inheritThreadCreate && (setting === undefined || setting.mode === 'off')) continue;
+      const inherited = source === 'user' || inheritCompletion || inheritThreadCreate || setting?.mode === 'inherit';
       const onTurn = inherited ? binding.config?.steeringOnTurn ?? true : setting?.custom?.steering_on_turn ?? true;
       const onInput = inherited ? binding.config?.steeringOnInput ?? true : setting?.custom?.steering_on_input ?? true;
       const interval = inherited ? binding.config?.steeringIntervalSteps ?? 0 : setting?.custom?.steering_interval_steps ?? 0;
@@ -112,6 +116,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     const sources = new Set<SteeringInputSource>();
     let hasInput = false;
     let completedSubagentInput = false;
+    let initialThreadCreate = false;
     for (let index = history.length - 1; index > floor; index--) {
       const message = history[index]!;
       if (message.role === 'assistant' && tailIndex < 0) break;
@@ -119,9 +124,13 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       if (this.turnId !== undefined && message.source?.turnId !== undefined && message.source.turnId !== this.turnId) continue;
       hasInput = true;
       completedSubagentInput ||= this.isCompletedSubagentInput(message.origin);
+      initialThreadCreate ||= this.isInitialThreadCreate(message.origin);
       for (const source of steeringInputSources(message.origin)) sources.add(source);
     }
-    if (hasInput) this.completedSubagentInput = completedSubagentInput;
+    if (hasInput) {
+      this.completedSubagentInput = completedSubagentInput;
+      this.initialThreadCreate = initialThreadCreate;
+    }
     this.observedTail = history.at(-1);
     return { sources, hasInput };
   }
@@ -131,5 +140,10 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     if (origin?.kind !== 'task' || origin.status !== 'completed') return false;
     const task = this.tasks.getTask(origin.taskId);
     return task?.kind === 'agent' && task.status === 'completed' && task.receiptVerification === 'verified';
+  }
+
+  private isInitialThreadCreate(origin: PromptOrigin | undefined): boolean {
+    if (origin?.kind === 'merged') return origin.origins.some((item) => this.isInitialThreadCreate(item));
+    return origin?.kind === 'system_trigger' && origin.name === 'thread_create';
   }
 }
