@@ -576,16 +576,36 @@ describe('ProviderEditor save channel', () => {
     expect(template, 'OpenAI preset').not.toBeNull();
     await act(async () => { template!.click(); });
     expect(container.querySelector<HTMLInputElement>('input[value="openai"]')).not.toBeNull();
+    const baseUrl = container.querySelector<HTMLInputElement>('#provider-field-base-url')!;
+    expect(baseUrl.value).toBe('https://api.openai.com/v1');
+    expect(baseUrl.placeholder).not.toBe(baseUrl.value);
     await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY'); });
     const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove model"]')!;
     expect(remove.disabled).toBe(false);
     await act(async () => { remove.click(); });
     expect(container.querySelector('#provider-model-0-id')).toBeNull();
     await act(async () => { buttonByText(container, 'Create provider').click(); });
-    expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({ id: 'openai', api_key: 'YOUR_API_KEY', models: [] }));
+    expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'openai', api_key: 'YOUR_API_KEY', models: [], base_url: 'https://api.openai.com/v1',
+    }));
     expect(createProvider.mock.calls[0]![0].default_model).toBeUndefined();
     expect(createModel).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+
+  it('submits an edited OpenAI preset address as the request URL', async () => {
+    const onSaved = vi.fn(async () => {});
+    const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[data-provider-template="openai"]')!.click(); });
+    const baseUrl = container.querySelector<HTMLInputElement>('#provider-field-base-url')!;
+    await act(async () => { setInputValue(baseUrl, 'https://custom.example.test/v1'); });
+    expect(baseUrl.value).toBe('https://custom.example.test/v1');
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Remove model"]')!.click(); });
+    await act(async () => { buttonByText(container, 'Create provider').click(); });
+    expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'custom', base_url: 'https://custom.example.test/v1', models: [],
+    }));
   });
 
   it('a protocol card in Settings names the connection from its address and flags an empty one', async () => {

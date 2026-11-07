@@ -1824,12 +1824,15 @@ export function SavedGenerationParametersEditor({
 export function NewProviderWizard({
   onSaved,
   onAccountChanged,
+  onImported,
   initialMethod = 'api',
   configuredIds,
 }: {
   onSaved: () => Promise<void>;
   /** An account sign-in completed inside the picker. */
   onAccountChanged?: () => Promise<void> | void;
+  /** A directory import wrote a connection. Refresh the list; leave this form open. */
+  onImported?: () => Promise<void> | void;
   initialMethod?: 'api' | 'account';
   /** Ids already on the list, so a directory pick can say it updates one. */
   configuredIds?: ReadonlySet<string>;
@@ -1908,6 +1911,7 @@ export function NewProviderWizard({
         <ConnectionMethodPicker initialMethod={initialMethod}
           onPickApi={chooseTemplate}
           onAccountChanged={onAccountChanged ?? onSaved}
+          onImported={onImported}
           configuredIds={configuredIds ?? new Set<string>()} />
         <FeedbackLine feedback={feedback} />
       </div>

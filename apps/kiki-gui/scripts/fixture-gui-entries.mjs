@@ -12,13 +12,13 @@ import { tsImport } from 'tsx/esm/api';
 const shortcuts = await tsImport('../../../packages/protocol/src/shortcuts.ts', import.meta.url);
 
 const DEFAULT_CATALOG = [
-  { id: 'openrouter', name: 'OpenRouter', wire_type: 'openai', guessed: false, needs_base_url: false, rejected: false, reject_reason: null, env_key: 'OPENROUTER_API_KEY',
+  { id: 'openrouter', name: 'OpenRouter', wire_type: 'openai', guessed: false, needs_base_url: false, base_url: 'https://openrouter.ai/api/v1', rejected: false, reject_reason: null, env_key: 'OPENROUTER_API_KEY',
     models: [{ id: 'anthropic/claude-sonnet-4.5', name: 'Claude Sonnet 4.5', max_context_size: 200000, reasoning: true }, { id: 'openai/gpt-5', name: 'GPT-5', max_context_size: 400000, reasoning: true }] },
-  { id: 'groq', name: 'Groq', wire_type: 'openai', guessed: false, needs_base_url: false, rejected: false, reject_reason: null, env_key: 'GROQ_API_KEY',
+  { id: 'groq', name: 'Groq', wire_type: 'openai', guessed: false, needs_base_url: false, base_url: 'https://api.groq.com/openai/v1', rejected: false, reject_reason: null, env_key: 'GROQ_API_KEY',
     models: [{ id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', max_context_size: 131072, reasoning: false }] },
   { id: 'azure', name: 'Azure OpenAI', wire_type: 'openai', guessed: true, needs_base_url: true, rejected: false, reject_reason: null, env_key: 'AZURE_API_KEY',
     models: [{ id: 'gpt-4.1', name: 'GPT-4.1', max_context_size: 1047576, reasoning: false }] },
-  { id: 'anthropic', name: 'Anthropic', wire_type: 'anthropic', guessed: false, needs_base_url: false, rejected: false, reject_reason: null, env_key: 'ANTHROPIC_API_KEY',
+  { id: 'anthropic', name: 'Anthropic', wire_type: 'anthropic', guessed: false, needs_base_url: false, base_url: 'https://api.anthropic.com', rejected: false, reject_reason: null, env_key: 'ANTHROPIC_API_KEY',
     models: [{ id: 'claude-opus-4-1', name: 'Claude Opus 4.1', max_context_size: 200000, reasoning: true }, { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', max_context_size: 200000, reasoning: true }, { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', max_context_size: 200000, reasoning: false }] },
   { id: 'amazon-bedrock', name: 'Amazon Bedrock', wire_type: null, guessed: false, needs_base_url: false, rejected: true, reject_reason: 'Uses AWS request signing, which this version cannot send.', env_key: null,
     models: [{ id: 'anthropic.claude-sonnet-4', max_context_size: 200000, reasoning: true }] },
@@ -83,8 +83,11 @@ export function handleGuiEntries(server, res, path, query, body, method) {
       return true;
     }
     const id = body.id ?? item.id;
+    const submitted = typeof body.base_url === 'string' ? body.base_url.trim() : '';
+    const resolved = typeof item.base_url === 'string' ? item.base_url.trim() : '';
+    const baseUrl = submitted !== '' ? submitted : resolved !== '' ? resolved : undefined;
     const provider = {
-      id, type: item.wire_type ?? 'openai', base_url: body.base_url ?? `https://api.${item.id}.example.test/v1`,
+      id, type: item.wire_type ?? 'openai', ...(baseUrl === undefined ? {} : { base_url: baseUrl }),
       has_api_key: typeof body.api_key === 'string' && body.api_key !== '', status: 'connected',
       models: item.models.map((model) => `${id}/${model.id}`),
     };

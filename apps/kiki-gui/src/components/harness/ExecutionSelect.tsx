@@ -254,7 +254,7 @@ export function ExecutionSelect({
     const q = modelSearch.trim().toLowerCase();
     if (q === '') return list;
     return list.filter((m) =>
-      `${m.id} ${m.display_name ?? ''} ${m.provider_id}`.toLowerCase().includes(q)
+      `${m.id} ${m.remote_id ?? ''} ${m.display_name ?? ''} ${m.provider_id}`.toLowerCase().includes(q)
     );
   }, [models, modelSearch]);
 

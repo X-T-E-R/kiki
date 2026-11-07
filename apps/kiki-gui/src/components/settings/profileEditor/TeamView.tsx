@@ -5,6 +5,7 @@ import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile } from '../../../lib/client';
 import { DisclosureChevron, Icon } from '../../icons';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
+import { buildCatalogModelOptions } from '../../modelSelectOptions';
 import { SearchableSelect } from '../../SearchableSelect';
 import { SETTINGS_SELECT_TRIGGER } from '../SettingsPrimitives';
 import { ListEmpty, ListToolbar, useListView, type ListSortSpec } from '../list';
@@ -89,7 +90,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
   });
   const modelChoices = (current: string) => [
     { value: '', label: t('st.profiles.modelUnset') },
-    ...models.map((model) => ({ value: model.id, label: model.id, group: model.provider_id })),
+    ...buildCatalogModelOptions(models, t),
     ...(current !== '' && current !== 'inherit' && !modelIds.has(current) ? [{ value: current, label: current, hint: t('st.profiles.aliasMissingShort') }] : []),
   ];
   const warnings = rows.reduce((count, row) => count + row.diagnostics.filter((item) => diagnosticTone(item) === 'warning').length, 0);
@@ -199,7 +200,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
       <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-model
         ref={(node) => { if (pendingModel?.key === row.key) pendingAnchor.current = node; }}>
         {quickEditable && !external ? <SearchableSelect id={`team-model-${row.key}`} value={alias} allowCustomValue
-          options={modelChoices(alias)} ariaLabel={t('st.profiles.modelFor', { name: profile.name })} searchPlaceholder="provider/model"
+          options={modelChoices(alias)} ariaLabel={t('st.profiles.modelFor', { name: profile.name })} searchPlaceholder={t('st.models.searchPlaceholder')}
           triggerSuffix={aliasMissing ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
           triggerLabel={alias === '' ? <span className="font-sans text-ink-faint">{t('st.profiles.modelUnset')}</span>
             : <span className="min-w-0 truncate font-mono">{alias}</span>}

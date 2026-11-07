@@ -219,6 +219,27 @@ async function typeSearch(container: HTMLElement, value: string) {
 }
 
 describe('ProvidersSection configured rows', () => {
+  it('finds a connection by a model display name that shares nothing with its ids', async () => {
+    listProviders.mockResolvedValue({ items: [
+      { id: 'acme', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
+      { id: 'other', type: 'openai', status: 'connected', base_url: 'https://other.example.test/v1' },
+    ] });
+    listModels.mockResolvedValue({ items: [
+      { id: 'acme/zz-local', provider_id: 'acme', remote_id: 'zz-remote', display_name: 'Northwind Writer', max_context_size: 8000 },
+      { id: 'other/plain', provider_id: 'other', remote_id: 'plain', display_name: 'Plain', max_context_size: 8000 },
+    ] });
+    const container = await render();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await typeSearch(container, 'Northwind');
+    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
+    await typeSearch(container, 'zz-remote');
+    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
+    await typeSearch(container, 'acme/zz-local');
+    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
+    await typeSearch(container, 'Plain');
+    expect(zoneRows(container, 'apikey')).toEqual(['other']);
+  });
+
   it('puts each configured provider in one zone and does not sign in a configured account again', async () => {
     installMixedProviders();
     const container = await render();

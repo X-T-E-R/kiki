@@ -20,7 +20,7 @@ import { useConnection } from '../../state/connection';
 import { SearchField, Tag } from '../capabilities/primitives';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { InlineEditor } from '../InlineEditor';
-import { protocolLabel } from '../providerPresets';
+import { baseUrlRequired, protocolLabel } from '../providerPresets';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { FORM_LABEL } from './SettingsPrimitives';
@@ -54,8 +54,24 @@ export function rejectReasonText(
 }
 
 function matches(item: CatalogProviderItem, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  return needle === '' || item.name.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle);
+  const needles = query.trim().toLowerCase().split(/\s+/).filter((word) => word !== '');
+  if (needles.length === 0) return true;
+  const haystack = [item.name, item.id, ...item.models.flatMap((model) => [model.name, model.id])]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join('\n')
+    .toLowerCase();
+  return needles.every((needle) => haystack.includes(needle));
+}
+
+/**
+ * An address the directory already resolved has to be sent back: omitting it
+ * makes the server store its own resolution, which is not the empty field the
+ * person just cleared. Google-style entries with no address still omit it.
+ */
+function catalogAddressRequired(item: CatalogProviderItem): boolean {
+  if (item.needs_base_url) return true;
+  if ((item.base_url ?? '').trim() !== '') return true;
+  return item.wire_type !== null && baseUrlRequired(item.wire_type);
 }
 
 export function CatalogImportPicker({
@@ -200,7 +216,7 @@ function ImportForm({
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const [localId, setLocalId] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
+  const [baseUrl, setBaseUrl] = useState(item.base_url ?? '');
   const [key, setKey] = useState<SecretDraft>(KEEP_SECRET);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<Feedback>(null);
@@ -208,9 +224,10 @@ function ImportForm({
   const targetId = localId.trim() === '' ? item.id : localId.trim();
   const idInvalid = localId.trim() !== '' && !providerIdSchema.safeParse(localId.trim()).success;
   const refreshes = configuredIds.has(targetId);
+  const addressRequired = catalogAddressRequired(item);
 
   const submit = async () => {
-    if (item.needs_base_url && baseUrl.trim() === '') { setBaseUrlMissing(true); return; }
+    if (addressRequired && baseUrl.trim() === '') { setBaseUrlMissing(true); return; }
     if (idInvalid) return;
     setImporting(true);
     setError(null);
@@ -250,23 +267,23 @@ function ImportForm({
           />
           {idInvalid ? <span role="alert" className="block text-[12px] text-danger">{t('st.catalog.localIdInvalid')}</span> : null}
         </label>
-        {item.needs_base_url ? (
-          <label className="block space-y-1">
-            <span className={FORM_LABEL}>{t('st.providers.baseUrl')}</span>
-            <input
-              data-catalog-base-url
-              className={`${INPUT} font-mono ${baseUrlMissing ? 'border-danger/60' : ''}`}
-              value={baseUrl}
-              aria-required
-              placeholder="https://"
-              aria-invalid={baseUrlMissing || undefined}
-              onChange={(event) => { setBaseUrl(event.target.value); setBaseUrlMissing(false); }}
-            />
+        <label className="block space-y-1">
+          <span className={FORM_LABEL}>{t('st.providers.baseUrl')}</span>
+          <input
+            data-catalog-base-url
+            className={`${INPUT} font-mono ${baseUrlMissing ? 'border-danger/60' : ''}`}
+            value={baseUrl}
+            aria-required={addressRequired || undefined}
+            placeholder="https://"
+            aria-invalid={baseUrlMissing || undefined}
+            onChange={(event) => { setBaseUrl(event.target.value); setBaseUrlMissing(false); }}
+          />
+          {item.needs_base_url || baseUrlMissing ? (
             <span className={`block text-[12px] ${baseUrlMissing ? 'text-danger' : 'text-ink-faint'}`} role={baseUrlMissing ? 'alert' : undefined}>
-              {t('st.catalog.baseUrlRequired')}
+              {item.needs_base_url ? t('st.catalog.baseUrlRequired') : t('val.baseUrlRequired')}
             </span>
-          </label>
-        ) : null}
+          ) : null}
+        </label>
       </div>
       <SecretField
         label={t('st.providers.apiKey')}

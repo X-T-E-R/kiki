@@ -245,6 +245,7 @@ export function ProvidersSection() {
             initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
             configuredIds={allProviderIds}
             onSaved={async () => { await refreshProviderData(); closeAdd(); }}
+            onImported={refreshProviderData}
             onAccountChanged={refreshProviderData}
           />
         </SectionCard>
@@ -307,6 +308,7 @@ export function ProvidersSection() {
               initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
               configuredIds={allProviderIds}
               onSaved={async () => { await refreshProviderData(); closeAdd(); }}
+              onImported={refreshProviderData}
               onAccountChanged={refreshProviderData}
             />
           </div>

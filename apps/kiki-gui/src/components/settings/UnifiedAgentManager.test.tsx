@@ -789,6 +789,24 @@ it('previews default-model removal before saving and keeps the full catalog edit
   expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
 });
 
+it('finds a pinned model by a display name that shares nothing with its ids', async () => {
+  client.listModels.mockResolvedValue({ items: [
+    { id: 'acme/zz-local', provider_id: 'acme', remote_id: 'zz-remote', display_name: 'Northwind Writer', max_context_size: 8000 },
+  ] });
+  await render();
+  const trigger = container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!;
+  await act(async () => { trigger.click(); });
+  const search = document.body.querySelector<HTMLInputElement>('[role="combobox"]')!;
+  const optionText = async (query: string) => {
+    await typeIn(search, query);
+    return [...document.body.querySelectorAll('[role="option"]')].map((item) => item.textContent ?? '').join('\n');
+  };
+  expect(await optionText('Northwind')).toContain('Northwind Writer');
+  expect(await optionText('zz-remote')).toContain('Northwind Writer');
+  expect(await optionText('acme')).toContain('Northwind Writer');
+  expect(await optionText('no-such-model')).not.toContain('Northwind Writer');
+});
+
 it('requires an explicit save after a restricted TeamView default change', async () => {
   const restricted = { ...main, restrict_models_to_menu: true };
   client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });

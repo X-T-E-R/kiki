@@ -182,6 +182,65 @@ const GROUPS = [
       await shot('catalog-reimport');
     },
   },
+  {
+    name: 'provider-address',
+    fixture: 'provider-address',
+    async run({ page, open, shot, fixtureUrl }) {
+      const catalogUrl = 'https://api.openai.com/v1';
+      const custom = 'https://custom.example.test/v1';
+      const presetCustom = 'https://preset.example.test/v1';
+      const providers = async () => {
+        const response = await fetch(`${fixtureUrl}/api/providers`, { headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } });
+        const body = await response.json();
+        return body.data?.items ?? [];
+      };
+      await open('/settings/ai?tab=providers', '[data-catalog-picker]');
+      await page.fill('#st-card-catalog-import input[type="search"]', 'Northwind');
+      await page.waitForFunction(() => [...document.querySelectorAll('[data-catalog-row]')].map((row) => row.getAttribute('data-catalog-row')).join(',') === 'acme');
+      await page.locator('#st-card-catalog-import').scrollIntoViewIfNeeded();
+      await shot('address-display-name-search');
+      await page.click('[data-catalog-row="acme"] button');
+      const urlInput = page.locator('[data-catalog-form="acme"] [data-catalog-base-url]');
+      await urlInput.waitFor();
+      if (await urlInput.inputValue() !== catalogUrl) throw new Error(`catalog address prefilled as ${await urlInput.inputValue()}`);
+      if (await urlInput.getAttribute('placeholder') === catalogUrl) throw new Error('catalog address is only a placeholder');
+      await page.locator('[data-catalog-form="acme"]').scrollIntoViewIfNeeded();
+      await shot('address-catalog-prefilled');
+      await urlInput.fill(custom);
+      await shot('address-catalog-custom');
+      await page.click('[data-catalog-form="acme"] [data-catalog-import]');
+      await page.waitForSelector('[data-connection-row="acme"]', { timeout: 15_000 });
+      const imported = (await providers()).find((item) => item.id === 'acme');
+      if (imported?.base_url !== custom) throw new Error(`catalog persisted ${imported?.base_url ?? 'missing'}`);
+      await page.locator('[data-connection-row="acme"] summary').click();
+      await page.waitForFunction((expected) => [...document.querySelectorAll('[data-connection-row="acme"] input')].some((input) => input.value === expected), custom);
+      await page.locator('[data-connection-row="acme"]').scrollIntoViewIfNeeded();
+      await shot('address-reopened');
+      await page.fill('[data-list-search]', 'Northwind');
+      await page.waitForFunction(() => [...document.querySelectorAll('[data-connection-row]')].map((row) => row.getAttribute('data-connection-row')).join(',') === 'acme');
+      await shot('address-saved-display-name');
+      await page.fill('[data-list-search]', '');
+      await page.click('[data-add-connection]');
+      await page.waitForSelector('[data-add-connection-panel] [data-connection-source-choice="manual"]');
+      await page.click('[data-add-connection-panel] [data-connection-source-choice="manual"]');
+      await page.click('[data-add-connection-panel] [data-provider-template="openai"]');
+      const presetUrl = page.locator('#provider-field-base-url');
+      await presetUrl.waitFor();
+      if (await presetUrl.inputValue() !== catalogUrl) throw new Error(`preset address prefilled as ${await presetUrl.inputValue()}`);
+      await presetUrl.scrollIntoViewIfNeeded();
+      await shot('address-preset-openai');
+      await presetUrl.fill(presetCustom);
+      await page.locator('button[aria-label="Remove model"], button[aria-label="移除模型"]').click();
+      await page.getByRole('button', { name: /^(Create provider|创建提供商)$/ }).click();
+      await page.waitForSelector('[data-connection-row="preset"]', { timeout: 15_000 });
+      const created = (await providers()).find((item) => item.id === 'preset');
+      if (created?.base_url !== presetCustom) throw new Error(`preset persisted ${created?.base_url ?? 'missing'}`);
+      await page.locator('[data-connection-row="preset"] summary').click();
+      await page.waitForFunction((expected) => [...document.querySelectorAll('[data-connection-row="preset"] input')].some((input) => input.value === expected), presetCustom);
+      await page.locator('[data-connection-row="preset"]').scrollIntoViewIfNeeded();
+      await shot('address-preset-reopened');
+    },
+  },
   //@@MORE@@
 ];
 

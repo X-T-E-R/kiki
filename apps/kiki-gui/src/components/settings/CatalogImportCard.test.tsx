@@ -21,7 +21,7 @@ const entry = (id: string, overrides: Record<string, unknown> = {}) => ({
   reject_reason: null, env_key: null, models: [{ id: 'm1', max_context_size: 1000, reasoning: false }], ...overrides,
 });
 const CATALOG = [
-  entry('groq'),
+  entry('groq', { base_url: 'https://api.groq.com/openai/v1' }),
   entry('bedrock', { wire_type: null, rejected: true, reject_reason: 'Needs AWS signing.' }),
   entry('fireworks', { wire_type: null, rejected: true, reject_code: 'proprietary-sdk', reject_reason: 'proprietary-sdk' }),
   entry('azure', { needs_base_url: true, guessed: true }),
@@ -131,6 +131,69 @@ describe('CatalogImportPicker', () => {
     await click(container.querySelector('[data-catalog-row="groq"] button'));
     await click(container.querySelector('[data-catalog-import]'));
     await settle();
+    expect(importCatalogProvider).toHaveBeenCalledExactlyOnceWith({ catalog_id: 'groq', base_url: 'https://api.groq.com/openai/v1' });
     expect(container.querySelector('[data-catalog-form="groq"] [role="alert"]')?.textContent).toContain('upstream refused the key');
+  });
+
+  it('finds a directory model by a display name that shares nothing with the provider or model id', async () => {
+    listCatalogProviders.mockResolvedValue({ items: [
+      ...CATALOG,
+      entry('acme', {
+        name: 'Acme',
+        models: [{ id: 'zz-remote', name: 'Northwind Writer', max_context_size: 1000, reasoning: false }],
+      }),
+    ] });
+    const container = await render(<CatalogImportPicker configuredIds={new Set()} onImported={vi.fn()} />);
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await type(search, 'Northwind');
+    expect([...container.querySelectorAll('[data-catalog-row]')].map((row) => row.getAttribute('data-catalog-row'))).toEqual(['acme']);
+    await type(search, 'zz-remote');
+    expect(container.querySelector('[data-catalog-row="acme"]')).not.toBeNull();
+    await type(search, 'acme');
+    expect(container.querySelector('[data-catalog-row="acme"]')).not.toBeNull();
+  });
+
+  it('prefills a resolved address as the input value, submits an edit, and blocks a cleared one', async () => {
+    const container = await render(<CatalogImportPicker configuredIds={new Set()} onImported={vi.fn()} />);
+    await click(container.querySelector('[data-catalog-row="groq"] button'));
+    const input = container.querySelector<HTMLInputElement>('[data-catalog-base-url]')!;
+    expect(input.value).toBe('https://api.groq.com/openai/v1');
+    expect(input.placeholder).not.toBe(input.value);
+    await type(input, '');
+    await click(container.querySelector('[data-catalog-import]'));
+    expect(importCatalogProvider).not.toHaveBeenCalled();
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    await type(input, 'https://custom.example.test/v1');
+    await click(container.querySelector('[data-catalog-import]'));
+    await settle();
+    expect(importCatalogProvider).toHaveBeenCalledExactlyOnceWith({ catalog_id: 'groq', base_url: 'https://custom.example.test/v1' });
+  });
+
+  it('omits the address for a Google entry that has none, and sends one the person types', async () => {
+    listCatalogProviders.mockResolvedValue({ items: [
+      entry('gemini', { name: 'Google Gemini', wire_type: 'google-genai' }),
+      entry('vertex', { name: 'Vertex', wire_type: 'vertexai', needs_base_url: true }),
+    ] });
+    const container = await render(<CatalogImportPicker configuredIds={new Set()} onImported={vi.fn()} />);
+    await click(container.querySelector('[data-catalog-row="gemini"] button'));
+    const gemini = container.querySelector<HTMLInputElement>('[data-catalog-form="gemini"] [data-catalog-base-url]')!;
+    expect(gemini.value).toBe('');
+    await click(container.querySelector('[data-catalog-form="gemini"] [data-catalog-import]'));
+    await settle();
+    expect(importCatalogProvider).toHaveBeenCalledExactlyOnceWith({ catalog_id: 'gemini' });
+    await click(container.querySelector('[data-catalog-row="vertex"] button'));
+    await click(container.querySelector('[data-catalog-form="vertex"] [data-catalog-import]'));
+    expect(importCatalogProvider).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-catalog-form="vertex"] [data-catalog-base-url]')?.getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('cancels an open import without sending it', async () => {
+    const container = await render(<CatalogImportPicker configuredIds={new Set()} onImported={vi.fn()} />);
+    await click(container.querySelector('[data-catalog-row="azure"] button'));
+    await type(container.querySelector<HTMLInputElement>('[data-catalog-base-url]')!, 'https://r.example.test/v1');
+    const cancel = [...container.querySelectorAll('[data-catalog-form="azure"] button')].find((button) => button.textContent === 'Cancel');
+    await click(cancel ?? null);
+    expect(container.querySelector('[data-catalog-form="azure"]')).toBeNull();
+    expect(importCatalogProvider).not.toHaveBeenCalled();
   });
 });
