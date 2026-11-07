@@ -2857,7 +2857,10 @@ class FixtureServer {
           if (entry === null) delete instances[id];
           else if (entry.proxy.kind === 'url') {
             const { authorization, ...proxy } = entry.proxy;
-            const hasAuthorization = authorization === undefined ? instances[id]?.proxy.has_authorization : authorization !== null;
+            const previous = instances[id]?.proxy;
+            const hasAuthorization = authorization === undefined
+              ? previous?.kind === 'url' && previous.has_authorization && new URL(previous.url).href === new URL(proxy.url).href
+              : authorization !== null;
             instances[id] = { ...entry, proxy: { ...proxy, has_authorization: hasAuthorization || undefined } };
           } else instances[id] = structuredClone(entry);
         }

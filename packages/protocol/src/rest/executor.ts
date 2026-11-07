@@ -89,6 +89,12 @@ export function executorProxyUrl(value: string, allowCredentials = false): URL |
   } catch { return undefined; }
 }
 
+export function sameExecutorProxyAddress(left: string, right: string): boolean {
+  const a = executorProxyUrl(left);
+  const b = executorProxyUrl(right);
+  return a !== undefined && b !== undefined && a.href === b.href;
+}
+
 export const executorInstanceConfigurationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('inherit') }),
   z.strictObject({ kind: z.literal('config_directory'), path: z.string().trim().min(1) }),

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
-import { executorInstanceConfigSchema, executorInstanceIdSchema, executorInstancesPatchSchema, executorProxyUrl, publicExecutorInstance, supportsExecutorPluginAccount, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
+import { executorInstanceConfigSchema, executorInstanceIdSchema, executorInstancesPatchSchema, executorProxyUrl, publicExecutorInstance, sameExecutorProxyAddress, supportsExecutorPluginAccount, type ExecutorInstanceConfig, type ExecutorInstanceIssue } from '@kiki/protocol';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { isPlainObject, withoutUndefined } from '#/app/config/configPure';
@@ -26,7 +26,7 @@ registerConfigSection(AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSc
         const { url, authorization } = entry.proxy;
         const previous = result[id]?.proxy;
         const next = authorization === null ? undefined
-          : authorization ?? (previous?.kind === 'url' ? previous.authorization : undefined);
+          : authorization ?? (previous?.kind === 'url' && sameExecutorProxyAddress(previous.url, url) ? previous.authorization : undefined);
         result[id] = { ...entry, proxy: { kind: 'url', url, authorization: next } };
       } else result[id] = { ...entry, proxy: entry.proxy };
     }

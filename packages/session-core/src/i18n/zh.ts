@@ -8531,6 +8531,7 @@ export const zh = {
   'st.engines.instance.proxy.envHint': '填写 Kiki 主机上已有的代理变量名，变量值为代理地址。',
   'st.engines.instance.proxy.add': '添加代理认证',
   'st.engines.instance.proxy.saved': '代理认证已保存',
+  'st.engines.instance.proxy.addressChanged': '新地址不会使用已保存的认证。',
   'st.engines.instance.proxy.replace': '更换认证',
   'st.engines.instance.proxy.clear': '移除认证',
   'st.engines.instance.proxy.clearPending': '保存后将移除代理认证。',

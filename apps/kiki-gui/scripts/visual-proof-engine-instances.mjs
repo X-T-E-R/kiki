@@ -155,6 +155,16 @@ async function walk({ page, link, shot, view, control }) {
   await agyEdit.scrollIntoViewIfNeeded();
   await shot(`agy-account-edit-${view.locale}-${view.width}`);
   assert.equal(await agyEdit.locator('[data-instance-proxy-password]').count(), 0);
+  const proxyAddress = agyEdit.locator('[data-instance-proxy-value]');
+  const addressChanged = agyEdit.locator('[data-instance-proxy-address-changed]');
+  await proxyAddress.fill('http://127.0.0.1:8080/');
+  assert.equal(await addressChanged.count(), 0);
+  assert.equal(await agyEdit.locator('[data-instance-proxy-auth-clear]').count(), 1);
+  await proxyAddress.fill('http://127.0.0.1:8081');
+  await addressChanged.waitFor();
+  assert.equal(await agyEdit.locator('[data-instance-proxy-auth-clear]').count(), 0);
+  await proxyAddress.fill('http://127.0.0.1:8080');
+  assert.equal(await addressChanged.count(), 0);
   await agyEdit.locator('[data-instance-proxy]').selectOption('direct');
   await agyEdit.locator('[data-instance-proxy]').selectOption('url');
   assert.equal(await agyEdit.locator('[data-instance-proxy-value]').inputValue(), 'http://127.0.0.1:8080');

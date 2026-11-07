@@ -209,7 +209,7 @@ To save authentication through `POST /api/config`, send the complete instance en
 }
 ```
 
-When updating a URL-proxy instance, omit `authorization` to keep the saved authentication, send a new username/password object to replace it, or send JSON `null` to remove it. Switching to `inherit`, `direct` or `env` also removes its saved URL authentication. Public config and executor responses expose only `proxy.has_authorization = true`, never the saved username or password; the form offers replacement and removal without fetching them.
+When updating a URL-proxy instance, omitting `authorization` keeps the saved authentication only if the proxy address stays the same after URL normalization. If you change the address, enter the new proxy's username and password in the same save; otherwise Kiki removes the old authentication. Send JSON `null` to remove authentication without changing the address. Switching to `inherit`, `direct` or `env` also removes it. Public config and executor responses expose only `proxy.has_authorization = true`, never the saved username or password.
 
 AGY CLI and Codex app-server also accept **Account from a plugin** when an enabled [plugin](../customization/plugins.md) supplies accounts for that engine. Select a source and account in the instance form. Sign-in, account management and OAuth refresh remain in that plugin. The saved reference is `configuration = { kind = "plugin_account", source = "plugin:example-accounts/accounts", account_id = "YOUR_ACCOUNT_ID" }`, not a credential or connection URL.
 

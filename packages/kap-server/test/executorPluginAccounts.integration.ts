@@ -169,8 +169,25 @@ it('uses only the selected plugin account and saved proxy through HTTP-to-harnes
     expect(JSON.stringify(publicViews)).not.toMatch(/fixture-proxy|"authorization"\s*:/);
     expect(await readFile(credentialFile, 'utf8')).toContain(auth.password);
     const firstRevision = executors().get('instance-work')!.revision;
-    await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl }) } });
+    const patchWorkProxy = (proxy: ExecutorInstancePatch['proxy']) => client.rest!.config.patch({
+      agent_executor_instances: { 'instance-work': instance('work', proxy) },
+    });
+    await patchWorkProxy({ kind: 'url', url: httpUrl });
     expect(executors().get('instance-work')!.revision).toBe(firstRevision);
+    const equivalent = await patchWorkProxy({ kind: 'url', url: `${httpUrl}/` });
+    expect(equivalent.agent_executor_instances?.['instance-work']?.proxy).toEqual({ kind: 'url', url: `${httpUrl}/`, has_authorization: true });
+    expect(executors().get('instance-work')!.instanceProxyUrl).toBe(expectedProxy.get('work'));
+    for (const [previous, next] of [
+      [httpUrl, 'http://127.0.0.2:54320'],
+      [httpUrl, 'https://127.0.0.1:54320'],
+      [socksUrl, 'socks5h://127.0.0.1:54322'],
+    ] as const) {
+      await patchWorkProxy({ kind: 'url', url: previous, authorization: auth });
+      const moved = await patchWorkProxy({ kind: 'url', url: next });
+      expect(moved.agent_executor_instances?.['instance-work']?.proxy).toEqual({ kind: 'url', url: next });
+      expect(executors().get('instance-work')!.instanceProxyUrl).toBe(next);
+      expect(await readFile(credentialFile, 'utf8')).not.toContain('instance-work');
+    }
     await client.rest!.config.patch({ agent_executor_instances: { 'instance-work': instance('work', { kind: 'url', url: httpUrl, authorization: replacement }) } });
     expect(executors().get('instance-work')!.instanceProxyUrl).toContain('fixture-proxy%40replacement');
     expect(executors().get('instance-work')!.env?.['HTTPS_PROXY']).toBeUndefined();
@@ -239,6 +256,17 @@ it('uses only the selected plugin account and saved proxy through HTTP-to-harnes
       proxy: { mode: 'custom', url: 'http://fixture-proxy%40user:fixture-proxy%40replacement@127.0.0.1:54320/' },
     });
     expect(observations).toHaveLength(observationCount);
+    const newUrl = 'http://127.0.0.1:54323';
+    const newBinding = 'http://fixture-proxy%40user:fixture-proxy%40replacement@127.0.0.1:54323/';
+    expectedProxy.set('work', newBinding);
+    await ok('/config', 'POST', { agent_executor_instances: {
+      'instance-work': instance('work', { kind: 'url', url: newUrl, authorization: replacement }),
+    } });
+    expect((await send(await create('instance-work'), 'new proxy')).code).toBe(0);
+    expect(leaseEvents.findLast(({ action }) => action === 'prepare')).toMatchObject({
+      accountId: 'work', instanceId: 'instance-work', proxy: { mode: 'custom', url: newBinding },
+    });
+    expect(observations.at(-1)).toMatchObject({ account: 'work', body: { text: 'new proxy' } });
     const config = await ok('/config');
     const auditContent = await Promise.all((await readdir(audit)).filter((name) => name.endsWith('.ndjson')).map((name) => readFile(join(audit, name), 'utf8')));
     expect(JSON.stringify([listed, config, await list(), denied, ...auditContent])).not.toMatch(/fixture-capability|fixture-lease|fixture-oauth|fixture-proxy/);

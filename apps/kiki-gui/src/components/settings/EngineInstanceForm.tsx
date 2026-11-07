@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { executorInstancePatchSchema, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfiguration, type ExecutorInstanceResponse } from '@kiki/protocol';
+import { executorInstancePatchSchema, sameExecutorProxyAddress, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfiguration, type ExecutorInstanceResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -27,9 +27,11 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
   const current = item?.instance;
   const [label, setLabel] = useState(current?.label ?? '');
   const [configuration, setConfiguration] = useState<ExecutorInstanceConfiguration>(current?.configuration ?? { kind: 'inherit' });
+  const [savedProxy, setSavedProxy] = useState(current?.proxy);
   const [proxy, setProxy] = useState<Proxy>(current?.proxy ?? { kind: 'inherit' });
   const [authorization, setAuthorization] = useState<AuthorizationDraft>({ mode: 'keep' });
-  const hasAuthorization = proxy.kind === 'url' && proxy.has_authorization === true;
+  const hasSavedAuthorization = savedProxy?.kind === 'url' && savedProxy.has_authorization === true;
+  const hasAuthorization = hasSavedAuthorization && proxy.kind === 'url' && sameExecutorProxyAddress(savedProxy.url, proxy.url);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const executors = client.klient?.rest?.executors;
@@ -77,7 +79,10 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       const instanceId = item?.id ?? `instance-${globalThis.crypto.randomUUID()}`;
       const echoed = await client.patchConfig({ agent_executor_instances: { [instanceId]: parsed.data } });
       const saved = echoed.agent_executor_instances?.[instanceId];
-      if (saved !== undefined) setProxy(saved.proxy);
+      if (saved !== undefined) {
+        setSavedProxy(saved.proxy);
+        setProxy(saved.proxy);
+      }
       setAuthorization({ mode: 'keep' });
       await Promise.all([
         queries.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) }),
@@ -102,7 +107,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
   const selectProxy = (kind: Proxy['kind']) => {
     setFeedback(null);
     setAuthorization({ mode: 'keep' });
-    if (kind === 'url') setProxy(current?.proxy.kind === 'url' ? current.proxy : { kind, url: '' });
+    if (kind === 'url') setProxy(savedProxy?.kind === 'url' ? savedProxy : { kind, url: '' });
     else if (kind === 'env') setProxy({ kind, name: '' });
     else setProxy({ kind });
   };
@@ -196,7 +201,8 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
               <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-undo
                 onClick={() => setAuthorization({ mode: 'keep' })}>{t('st.secret.undoClear')}</button>
             </> : <>
-              {hasAuthorization ? <p className="text-[12px] leading-4 text-ink-soft" role="status">{t('st.engines.instance.proxy.saved')}</p> : null}
+              {hasAuthorization ? <p className="text-[12px] leading-4 text-ink-soft" role="status">{t('st.engines.instance.proxy.saved')}</p>
+                : hasSavedAuthorization ? <p className="text-[12px] leading-4 text-ink-soft" role="status" data-instance-proxy-address-changed>{t('st.engines.instance.proxy.addressChanged')}</p> : null}
               <div className="flex flex-wrap items-center gap-2">
                 <button type="button" className={SECONDARY_BUTTON} disabled={saving} data-instance-proxy-auth-edit
                   onClick={() => setAuthorization({ mode: 'set', username: '', password: '' })}>

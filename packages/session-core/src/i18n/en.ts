@@ -8615,6 +8615,7 @@ export const en = {
   'st.engines.instance.proxy.envHint': 'Enter the name of a host variable that already contains the proxy URL.',
   'st.engines.instance.proxy.add': 'Add proxy authentication',
   'st.engines.instance.proxy.saved': 'Proxy authentication saved',
+  'st.engines.instance.proxy.addressChanged': 'Saved authentication will not be used for this address.',
   'st.engines.instance.proxy.replace': 'Replace authentication',
   'st.engines.instance.proxy.clear': 'Remove authentication',
   'st.engines.instance.proxy.clearPending': 'Proxy authentication will be removed when you save.',
