@@ -1,5 +1,5 @@
 import { dirname } from 'pathe';
-import { recipeOptionValuesSchema } from '@kiki/protocol';
+import { executorInstanceChoiceSchema, executorLaunchPatchSchema, recipeOptionValuesSchema } from '@kiki/protocol';
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
 import { AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
@@ -58,6 +58,8 @@ const AGENT_FILE_KEYS = new Set([
   'spawn_constraints',
   'executor',
   'executor_options',
+  'executor_instance',
+  'executor_launch',
   'executor_prompt',
   'allow_kiki_subagents',
   'kiki_context',
@@ -227,6 +229,14 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
       `Frontmatter field "executor" in ${options.path} is required when executor_options is set`,
     );
   }
+  const parsedInstance = frontmatter['executor_instance'] === undefined ? undefined : executorInstanceChoiceSchema.safeParse(frontmatter['executor_instance']);
+  if (parsedInstance !== undefined && !parsedInstance.success) {
+    throw new AgentFileParseError(`Frontmatter field "executor_instance" in ${options.path} is invalid: ${parsedInstance.error.message}`);
+  }
+  const parsedLaunch = frontmatter['executor_launch'] === undefined ? undefined : executorLaunchPatchSchema.safeParse(frontmatter['executor_launch']);
+  if (parsedLaunch !== undefined && !parsedLaunch.success) {
+    throw new AgentFileParseError(`Frontmatter field "executor_launch" in ${options.path} is invalid: ${parsedLaunch.error.message}`);
+  }
   const rawExecutorPrompt = frontmatter['executor_prompt'];
   const parsedExecutorPrompt = rawExecutorPrompt === undefined
     ? undefined : executorPromptSchema.safeParse(rawExecutorPrompt);
@@ -335,6 +345,8 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     spawnConstraints,
     executor,
     executorOptions,
+    executorInstance: parsedInstance?.data,
+    executorLaunch: parsedLaunch?.data,
     executorPrompt: parsedExecutorPrompt?.data,
     allowKikiSubagents: parseOptionalBoolean(frontmatter['allow_kiki_subagents'], 'allow_kiki_subagents', options.path),
     kikiContext: parseKikiContext(frontmatter['kiki_context'], options.path),

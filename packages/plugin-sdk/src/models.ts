@@ -31,8 +31,13 @@ export type PluginModelEvent =
 export interface PluginModelError extends Error { readonly code: string }
 
 /** The host binds identity, cancellation, governance and Usage to the invoking agent. No keys cross this API. */
+export interface PluginModelListOptions {
+  /** Exact catalog ids or remote ids. Unknown candidates are omitted. An empty list returns no models. */
+  readonly candidates?: readonly string[];
+}
+
 export interface PluginModelsApi {
-  list(): Promise<PluginModelCatalog>;
+  list(options?: PluginModelListOptions): Promise<PluginModelCatalog>;
   stream(request: PluginModelRequest, options?: { readonly signal?: AbortSignal }): AsyncIterable<PluginModelEvent>;
 }
 

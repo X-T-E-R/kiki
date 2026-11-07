@@ -132,24 +132,97 @@ export const executorInstanceProxyResponseSchema = z.discriminatedUnion('kind', 
 ]);
 
 export const executorInstanceIdSchema = z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/);
+export const executorQuotaSourceIdSchema = z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/);
+const executorAccountIdSchema = z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/);
+export const executorInstanceChoiceSchema = z.union([
+  z.enum(['main', 'auto']),
+  executorInstanceIdSchema,
+  z.strictObject({ account_id: executorAccountIdSchema }),
+]);
+export type ExecutorInstanceChoice = z.infer<typeof executorInstanceChoiceSchema>;
+const executorLaunchOptionSchema = z.union([z.string(), z.number(), z.boolean()]);
+export const executorLaunchSchema = z.strictObject({
+  bin_path: z.string().trim().min(1).optional(),
+  home_dir: z.string().trim().min(1).optional(),
+  configuration: executorInstanceConfigurationSchema.optional(),
+  proxy: executorInstanceProxySchema.optional(),
+  env: z.record(executorEnvironmentNameSchema, z.string()).optional(),
+  args: z.array(z.string()).optional(),
+  options: z.record(z.string().trim().min(1), executorLaunchOptionSchema).optional(),
+});
+export type ExecutorLaunch = z.infer<typeof executorLaunchSchema>;
+export const executorLaunchPatchSchema = z.strictObject({
+  bin_path: z.string().trim().min(1).nullable().optional(),
+  home_dir: z.string().trim().min(1).nullable().optional(),
+  configuration: executorInstanceConfigurationSchema.nullable().optional(),
+  proxy: executorInstanceProxyPatchSchema.nullable().optional(),
+  env: z.record(executorEnvironmentNameSchema, z.string().nullable()).nullable().optional(),
+  args: z.array(z.string()).nullable().optional(),
+  options: z.record(z.string().trim().min(1), executorLaunchOptionSchema.nullable()).nullable().optional(),
+});
+export type ExecutorLaunchPatch = z.infer<typeof executorLaunchPatchSchema>;
+export const executorLaunchResponseSchema = z.strictObject({
+  bin_path: z.string().trim().min(1).optional(),
+  home_dir: z.string().trim().min(1).optional(),
+  configuration: executorInstanceConfigurationSchema.optional(),
+  proxy: executorInstanceProxyResponseSchema.optional(),
+  env_keys: z.array(z.string()).optional(),
+  args: z.array(z.string()).optional(),
+  options: z.record(z.string().trim().min(1), executorLaunchOptionSchema).optional(),
+});
+export type ExecutorLaunchResponse = z.infer<typeof executorLaunchResponseSchema>;
 export const executorInstanceConfigSchema = z.strictObject({
   source_executor: z.string().trim().min(1),
   label: z.string().trim().min(1).max(80),
   configuration: executorInstanceConfigurationSchema,
   proxy: executorInstanceProxySchema,
+  quota_account_id: executorAccountIdSchema.optional(),
+  launch: executorLaunchSchema.optional(),
 });
 export type ExecutorInstanceConfig = z.infer<typeof executorInstanceConfigSchema>;
-export const executorInstancePatchSchema = executorInstanceConfigSchema.extend({ proxy: executorInstanceProxyPatchSchema });
+export const executorInstancePatchSchema = executorInstanceConfigSchema.omit({ quota_account_id: true, launch: true }).extend({
+  proxy: executorInstanceProxyPatchSchema,
+  /** `null` clears the saved account link. Omitting the field keeps it. */
+  quota_account_id: executorAccountIdSchema.nullable().optional(),
+  /** `null` clears launch overrides. Omitting the object keeps them; omitting `env` keeps saved env values. */
+  launch: executorLaunchSchema.nullable().optional(),
+});
 export type ExecutorInstancePatch = z.infer<typeof executorInstancePatchSchema>;
 export const executorInstancesPatchSchema = z.record(executorInstanceIdSchema, executorInstancePatchSchema.nullable());
-export const executorInstanceResponseSchema = executorInstanceConfigSchema.extend({ proxy: executorInstanceProxyResponseSchema });
+export const executorInstanceResponseSchema = executorInstanceConfigSchema.extend({
+  proxy: executorInstanceProxyResponseSchema,
+  launch: executorLaunchResponseSchema.optional(),
+});
 export type ExecutorInstanceResponse = z.infer<typeof executorInstanceResponseSchema>;
 export const executorInstancesResponseSchema = z.record(executorInstanceIdSchema, executorInstanceResponseSchema);
 
+export function publicExecutorLaunch(launch: ExecutorLaunch | undefined): ExecutorLaunchResponse | undefined {
+  if (launch === undefined) return undefined;
+  const proxy = launch.proxy === undefined ? undefined : launch.proxy.kind !== 'url' ? launch.proxy : {
+    kind: 'url' as const, url: launch.proxy.url, has_authorization: launch.proxy.authorization === undefined ? undefined : true,
+  };
+  const response: ExecutorLaunchResponse = {
+    bin_path: launch.bin_path,
+    home_dir: launch.home_dir,
+    configuration: launch.configuration,
+    proxy,
+    env_keys: launch.env === undefined ? undefined : Object.keys(launch.env).sort(),
+    args: launch.args,
+    options: launch.options,
+  };
+  return Object.values(response).some((value) => value !== undefined) ? response : undefined;
+}
+
 export function publicExecutorInstance(instance: ExecutorInstanceConfig): ExecutorInstanceResponse {
-  if (instance.proxy.kind !== 'url') return instance;
-  const { authorization, ...proxy } = instance.proxy;
-  return { ...instance, proxy: { ...proxy, has_authorization: authorization === undefined ? undefined : true } };
+  const launch = publicExecutorLaunch(instance.launch);
+  if (launch === undefined && instance.proxy.kind !== 'url') return instance;
+  const { launch: _stored, ...rest } = instance;
+  const proxy = instance.proxy.kind !== 'url' ? instance.proxy : {
+    kind: 'url' as const,
+    url: instance.proxy.url,
+    has_authorization: instance.proxy.authorization === undefined ? undefined : true,
+  };
+  return launch === undefined ? { ...rest, proxy } : { ...rest, proxy, launch };
 }
 
 export function supportsExecutorPluginAccount(engine: { readonly id: string; readonly protocol: string }): boolean {

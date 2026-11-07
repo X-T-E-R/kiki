@@ -32,6 +32,13 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
   const [authorization, setAuthorization] = useState<AuthorizationDraft>({ mode: 'keep' });
   const hasSavedAuthorization = savedProxy?.kind === 'url' && savedProxy.has_authorization === true;
   const hasAuthorization = hasSavedAuthorization && proxy.kind === 'url' && sameExecutorProxyAddress(savedProxy.url, proxy.url);
+  const [quotaAccountId, setQuotaAccountId] = useState(current?.quota_account_id ?? '');
+  const [homeDir, setHomeDir] = useState(current?.launch?.home_dir ?? '');
+  const [binPath, setBinPath] = useState(current?.launch?.bin_path ?? '');
+  const [argsText, setArgsText] = useState((current?.launch?.args ?? []).join('\n'));
+  const [envText, setEnvText] = useState('');
+  const [clearEnv, setClearEnv] = useState(false);
+  const savedEnvKeys = current?.launch?.env_keys ?? [];
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const executors = client.klient?.rest?.executors;
@@ -68,7 +75,27 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       authorization: authorization.mode === 'clear' ? null : authorization.mode === 'set'
         ? { username: authorization.username, password: authorization.password } : undefined,
     } : proxy;
-    const parsed = executorInstancePatchSchema.safeParse({ source_executor: source.id, label, configuration, proxy: proxyPatch });
+    const args = argsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+    let env: Record<string, string> | undefined;
+    if (clearEnv) env = {};
+    else if (envText.trim() !== '') {
+      const parsedEnv = parseInstanceEnv(envText);
+      if (parsedEnv === undefined) {
+        setFeedback({ tone: 'error', text: t('st.engines.instance.launch.envInvalid') });
+        return;
+      }
+      env = parsedEnv;
+    }
+    const launch: { home_dir?: string; bin_path?: string; args?: string[]; env?: Record<string, string> } = {};
+    if (homeDir.trim() !== '') launch.home_dir = homeDir.trim();
+    if (binPath.trim() !== '') launch.bin_path = binPath.trim();
+    if (args.length > 0) launch.args = args;
+    if (env !== undefined) launch.env = env;
+    const parsed = executorInstancePatchSchema.safeParse({
+      source_executor: source.id, label, configuration, proxy: proxyPatch,
+      quota_account_id: quotaAccountId.trim() === '' ? null : quotaAccountId.trim(),
+      launch,
+    });
     if (!parsed.success) {
       setFeedback({ tone: 'error', text: t('st.engines.instance.invalid') });
       return;
@@ -215,6 +242,37 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
           </div> : null}
         </div>
       </div>
+      <div className="grid min-w-0 gap-3 lg:grid-cols-2" data-instance-launch>
+        <div className="min-w-0 space-y-1.5">
+          <label htmlFor={`${id}-quota-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.quotaAccount')}</label>
+          <input id={`${id}-quota-account`} data-instance-quota-account className={INPUT} value={quotaAccountId} disabled={saving} spellCheck={false}
+            placeholder={t('st.engines.instance.quotaAccountPlaceholder')} onChange={(event) => setQuotaAccountId(event.target.value)} />
+          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.quotaAccountHint')}</p>
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <label htmlFor={`${id}-home`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.home')}</label>
+          <input id={`${id}-home`} data-instance-home className={`${INPUT} font-mono`} value={homeDir} disabled={saving} spellCheck={false}
+            onChange={(event) => setHomeDir(event.target.value)} />
+          <label htmlFor={`${id}-bin`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.bin')}</label>
+          <input id={`${id}-bin`} data-instance-bin className={`${INPUT} font-mono`} value={binPath} disabled={saving} spellCheck={false}
+            onChange={(event) => setBinPath(event.target.value)} />
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <label htmlFor={`${id}-args`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.args')}</label>
+          <textarea id={`${id}-args`} data-instance-args rows={3} className={`${INPUT} min-h-16 font-mono text-[12px]`} value={argsText} disabled={saving} spellCheck={false}
+            onChange={(event) => setArgsText(event.target.value)} />
+          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.launch.argsHint')}</p>
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <label htmlFor={`${id}-env`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.env')}</label>
+          {savedEnvKeys.length > 0 ? <p data-instance-env-keys className="break-words font-mono text-[11.5px] text-ink-faint">{savedEnvKeys.join(', ')}</p> : null}
+          <textarea id={`${id}-env`} data-instance-env rows={3} className={`${INPUT} min-h-16 font-mono text-[12px]`} value={envText} disabled={saving || clearEnv} spellCheck={false}
+            placeholder="EXAMPLE_FLAG=1" onChange={(event) => setEnvText(event.target.value)} />
+          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.launch.envHint')}</p>
+          <button type="button" className={SECONDARY_BUTTON} data-instance-env-clear disabled={saving}
+            onClick={() => { setClearEnv((value) => !value); }}>{t(clearEnv ? 'st.engines.instance.launch.envKeep' : 'st.engines.instance.launch.envClear')}</button>
+        </div>
+      </div>
       <div className="space-y-2 border-t border-hairline pt-3">
         <p className="text-[12px] leading-4 text-ink-soft">{t(item === undefined ? 'st.engines.instance.selectHint' : 'st.engines.instance.editHint')}</p>
         <div className="flex flex-wrap items-center gap-2">
@@ -227,4 +285,18 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       </div>
     </form>
   );
+}
+
+function parseInstanceEnv(text: string): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const split = trimmed.indexOf('=');
+    if (split <= 0) return undefined;
+    const key = trimmed.slice(0, split).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return undefined;
+    env[key] = trimmed.slice(split + 1);
+  }
+  return env;
 }

@@ -17,6 +17,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
+import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
 import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
 import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
@@ -584,10 +586,13 @@ interface WorkspaceCompositionProps extends AgentWorkspaceProps {
 export function AgentWorkspace(props: WorkspaceCompositionProps) {
   const ambientSlots = useOptionalConversationShell()?.slots;
   const { scopeId } = useConnection();
+  const catalog = useExecutorCatalog();
+  const executorLabels = useMemo(() => Object.fromEntries(catalog.map((item) => [item.id, item.label])), [catalog]);
   if (props.target.agentId === MAIN_AGENT_ID) {
     if (props.main === undefined) throw new Error('Main workspace requires the session prompt adapter');
     const main = props.main;
     return (
+      <ExecutorLabelProvider labels={executorLabels}>
       <WorkspaceSurface
         target={props.target}
         controller={props.controller}
@@ -602,9 +607,14 @@ export function AgentWorkspace(props: WorkspaceCompositionProps) {
         railIsOverlay={props.railIsOverlay}
         onCloseRail={props.onCloseRail}
       />
+      </ExecutorLabelProvider>
     );
   }
-  return <ChildAgentWorkspace key={JSON.stringify([scopeId, props.target.sessionId, props.target.agentId])} {...props} />;
+  return (
+    <ExecutorLabelProvider labels={executorLabels}>
+      <ChildAgentWorkspace key={JSON.stringify([scopeId, props.target.sessionId, props.target.agentId])} {...props} />
+    </ExecutorLabelProvider>
+  );
 }
 
 function ChildAgentWorkspace({

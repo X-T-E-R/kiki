@@ -280,8 +280,12 @@ Vibe 适配器把不支持的桶保留在 `queue.quarantined`，可通过 `GET /
 | `GET /api/executors/installations` | 固定版本的适配器，以及已选中的源码自有适配器。此请求不安装。没有安装记录的条目省略 `active` |
 | `POST /api/executors/{id}/install` | 显式更新一个选中的适配器。请求没有正文字段 |
 | `POST /api/executors/{id}/rollback` | 恢复该适配器的上一份安装。请求没有正文字段 |
+| `GET /api/harness-quota` | 已注册的额度来源和当前缓存。此请求不联系来源 |
+| `POST /api/harness-quota/read` | 正文 `{ "source": "plugin:<plugin-id>/<source-id>" }`。间隔已过才读取该来源。每个来源同时只有一个读取 |
 
 账号接口接受基础引擎 ID（`agy-cli` 或 `codex-app-server`），不是实例 ID。来源 ID 形如 `plugin:<plugin-id>/<source-id>`，放入 `source` query 时需百分号编码。账号只返回 `id`、`label` 和 `status`（`ready`、`signed_out` 或 `disabled`），不返回凭据；列举账号不准备连接。插件账号实例的显式检查读取所选来源和账号，不查引擎的全局登录。typed Klient 方法为 `klient.rest.executors.listAccountSources(id, options?)` 和 `listAccounts(id, source, options?)`。
+
+`GET /api/harness-quota` 和 `POST /api/harness-quota/read` 都返回 `{ sources: [{ id, label, engineIds, minRefreshIntervalMs, readAt?, readings? }] }`。一条读数包含 `accountId`、可选的 `modelIds` 和 `pool`、`unit`（`percent`、`money`、`tokens`、`requests`、`credits` 或 `count`）、可选的 `remaining`、`resetAt` 和 `readAt`。省略 `remaining` 表示未知。`0` 表示额度已用尽。第一次成功读取前，`readings` 省略。typed 方法为 `klient.rest.harnessQuota.cached(options?)` 和 `klient.rest.harnessQuota.read(source, options?)`。未知来源或读取失败返回代码 `40001`。
 
 `GET /api/agents/references` 严格接受以下三种 query 形式之一；未知字段会被拒绝：
 

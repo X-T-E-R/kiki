@@ -890,7 +890,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
 
   #permissionSessionRef(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {
     const snapshot = sessionRefWithLocalSource(sessionRef, localSource);
-    const ref = { ...snapshot.ref };
+    const ref: Record<string, unknown> = { ...snapshot.ref, kikiLaunchHome: launchHome(this.context.descriptor) };
     if (this.#permissionRestore === undefined) delete ref['kikiPermissionRestore'];
     else ref['kikiPermissionRestore'] = this.#permissionRestore;
     return { ...snapshot, ref };
@@ -1388,19 +1388,29 @@ function boundedPermissionDetail(request: AcpPermissionRequest): unknown {
   };
 }
 
+function launchHome(descriptor: AgentExecutorContext['descriptor']): string {
+  return descriptor.homeDir ?? '';
+}
+
+function sameLaunchHome(ref: ExecutorSessionRefEnvelope | undefined, descriptor: AgentExecutorContext['descriptor']): boolean {
+  const saved = ref?.ref['kikiLaunchHome'];
+  return typeof saved !== 'string' || saved === launchHome(descriptor);
+}
+
 function originalRemoteResumeFields(
   binding: AgentExecutorContext['binding'],
   descriptor: AgentExecutorContext['descriptor'],
   state: ReturnType<typeof externalStateForGeneration>,
   broken = false,
 ): { readonly sessionRef: ExecutorSessionRefEnvelope | undefined; readonly requireResume: boolean } {
+  const homeMatches = sameLaunchHome(state.sessionRef, descriptor);
   return {
     sessionRef:
-      agentExecutorBindingMatches(binding, state.bindingFingerprint) && state.sessionRef !== undefined
+      homeMatches && agentExecutorBindingMatches(binding, state.bindingFingerprint) && state.sessionRef !== undefined
         ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
         : undefined,
-    requireResume: state.sessionRef?.ref['localSource'] !== undefined ||
-      ((broken || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
+    requireResume: homeMatches && (state.sessionRef?.ref['localSource'] !== undefined ||
+      ((broken || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined)),
   };
 }
 

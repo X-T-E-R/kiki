@@ -267,6 +267,12 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.executor !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor', request.executor);
     }
+    if (request.executorInstance !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor_instance', request.executorInstance);
+    }
+    if (request.executorLaunch !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor_launch', request.executorLaunch);
+    }
     if (request.executorPrompt !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor_prompt', request.executorPrompt);
     }

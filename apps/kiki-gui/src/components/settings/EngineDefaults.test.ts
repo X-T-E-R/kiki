@@ -47,6 +47,7 @@ describe('engineDefaultsPatch', () => {
       allow_kiki_subagents: null,
       inject_kiki_mcp: null,
       executor_prompt: null,
+      executor_instance: null,
     });
   });
 
@@ -78,6 +79,7 @@ describe('engineDefaultsPatch', () => {
       allow_kiki_subagents: true,
       inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
+      executor_instance: 'auto',
     };
     const draft = engineDefaultsDraftFrom(saved);
     expect(engineDefaultsPatch(draft)).toEqual({
@@ -88,6 +90,7 @@ describe('engineDefaultsPatch', () => {
       allow_kiki_subagents: true,
       inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
+      executor_instance: 'auto',
     });
   });
 

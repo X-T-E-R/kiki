@@ -7,6 +7,7 @@ const tools = new Map();
 const sources = new Map();
 const providers = new Map();
 const harnessAccountSources = new Map();
+const harnessQuotaSources = new Map();
 const harnessAccountLeases = new Map();
 const harnessAccountWork = new Set();
 const wireString = (value) => typeof value === 'string' ? value : undefined;
@@ -109,7 +110,7 @@ function modelContext(id, ownerSignal, canStream) {
     if (ownerSignal.aborted) return Promise.reject(modelError('request.cancelled', 'Plugin invocation has ended'));
     return modelRpc(id, action, input);
   };
-  const models = { list: () => call('list') };
+  const models = { list: (options) => call('list', options?.candidates === undefined ? undefined : { candidates: [...options.candidates] }) };
   if (canStream) models.stream = async function* (input, options) {
     const signal = options?.signal === undefined ? ownerSignal : AbortSignal.any([ownerSignal, options.signal]);
     const check = () => { if (signal.aborted) throw modelError('request.cancelled', 'Model request cancelled'); };
@@ -135,7 +136,7 @@ function modelContext(id, ownerSignal, canStream) {
       if (!finished) await close();
     }
   };
-  return { models, credentials: {
+  return { models, harnessQuota: { cached: () => call('harness-quota-cached') }, credentials: {
     status: (setting) => call('credential-status', { setting }),
     set: (setting, value) => call('credential-set', { setting, value }),
   } };
@@ -325,6 +326,11 @@ for await (const line of input) {
           harnessAccountSources.set(definition.id, adapter);
           send({ method: 'register-harness-account-source', params: { version: 1, definition } });
         },
+        registerHarnessQuotaSource(definition, adapter) {
+          if (typeof definition?.id !== 'string' || harnessQuotaSources.has(definition.id) || typeof adapter?.read !== 'function') throw new Error('Invalid or duplicate harness quota source');
+          harnessQuotaSources.set(definition.id, adapter);
+          send({ method: 'register-harness-quota-source', params: { version: 1, definition } });
+        },
         registerImAdapter(definition, adapter) {
           if (typeof definition?.id !== 'string' || imAdapters.has(definition.id) || typeof adapter?.start !== 'function' || typeof adapter?.stop !== 'function' || (definition.outbound && typeof adapter?.sendText !== 'function') || (definition.supportsEdit && typeof adapter?.editText !== 'function') || (definition.mediaCapabilities?.length && typeof adapter?.sendMedia !== 'function')) throw new Error('Invalid or duplicate IM adapter');
           imAdapters.set(definition.id, { adapter, definition });
@@ -420,6 +426,22 @@ for await (const line of input) {
       harnessAccountWork.delete(work);
     });
     if (action === 'prepare') harnessAccountWork.add(work);
+    continue;
+  }
+  if (message.method === 'harness-quota-request') {
+    const { sourceId, settings, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const adapter = shuttingDown === undefined ? harnessQuotaSources.get(sourceId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (adapter === undefined) throw new Error('Unsupported harness quota source');
+      controller.signal.throwIfAborted();
+      const batch = await adapter.read({ settings: settings ?? {}, signal: controller.signal, kikiHome: kikiHome ?? '' });
+      return Array.isArray(batch) ? batch : batch?.readings;
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
+    ).finally(() => pending.delete(message.id));
     continue;
   }
   if (message.method === 'harness-account-release') {

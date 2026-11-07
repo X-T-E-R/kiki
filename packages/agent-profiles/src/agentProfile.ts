@@ -205,6 +205,8 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly configuration?: 'native';
   readonly executor?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunchPatch;
   readonly executorPrompt?: ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
   readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];

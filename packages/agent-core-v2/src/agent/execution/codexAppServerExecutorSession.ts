@@ -293,6 +293,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const sandboxPolicy = fullAccess ? { type: 'dangerFullAccess' } : this.#approvalRestore?.sandbox;
     let sessionRef = { executorId: this.context.descriptor.id, version: 1,
       ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'],
+        kikiLaunchHome: this.context.descriptor.homeDir ?? '',
         kikiPermissionRestore: this.#approvalRestore } };
     const sessionEpoch = priorThreadId === opened.threadId
       ? prior.sessionEpoch ?? 1
@@ -594,10 +595,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         `Executor session state does not match descriptor "${this.context.descriptor.id}"`,
       );
     }
+    const savedHome = state.sessionRef?.ref['kikiLaunchHome'];
+    const homeMismatch = typeof savedHome === 'string' && savedHome !== (this.context.descriptor.homeDir ?? '');
     const reusable =
-      agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint);
+      !homeMismatch && agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint);
     const priorThreadId = reusable ? threadIdFromState(state.sessionRef) : undefined;
-    if (state.sessionRef?.ref['localSource'] !== undefined && priorThreadId === undefined) {
+    if (state.sessionRef?.ref['localSource'] !== undefined && priorThreadId === undefined && !homeMismatch) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint or thread reference changed');
     }
     if (priorThreadId !== undefined) {

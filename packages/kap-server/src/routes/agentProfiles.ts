@@ -843,6 +843,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           whenToUse: req.body.when_to_use,
           main: req.body.main,
           executor: req.body.executor,
+          executorInstance: req.body.executor_instance,
+          executorLaunch: req.body.executor_launch,
           executorPrompt: req.body.executor_prompt,
           allowKikiSubagents: req.body.allow_kiki_subagents,
           kikiContext: req.body.kiki_context,
@@ -1122,6 +1124,8 @@ function toNamedAgentProfile(
     main: profile.main === true,
     override: profile.override === true ? true : undefined,
     executor: executorId,
+    executor_instance: profile.executorInstance,
+    executor_launch: profile.executorLaunch,
     executor_protocol: executor?.protocol ?? (executorId === 'native' ? 'native' : undefined),
     executor_options:
       profile.executorOptions === undefined

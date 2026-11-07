@@ -11,6 +11,17 @@ const profileStringListSchema = z.array(z.string().trim().min(1)).nullable().opt
 const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 const promptModeSchema = z.enum(['prepend', 'append', 'wrap']);
 const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+const namedExecutorInstanceSchema = z.union([
+  z.enum(['main', 'auto']),
+  z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/),
+  z.strictObject({ account_id: z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/) }),
+]);
+const namedExecutorLaunchSchema = z.strictObject({
+  bin_path: z.string().trim().min(1).nullable().optional(),
+  home_dir: z.string().trim().min(1).nullable().optional(),
+  env: z.record(z.string(), z.string().nullable()).nullable().optional(),
+  args: z.array(z.string()).nullable().optional(),
+});
 
 export const agentModelPromptContentSchema = z.object({
   prompt_mode: promptModeSchema,
@@ -159,6 +170,8 @@ export const namedAgentProfileSchema = z.object({
   main: z.boolean(),
   override: z.boolean().optional(),
   executor: z.string().optional(),
+  executor_instance: namedExecutorInstanceSchema.optional(),
+  executor_launch: namedExecutorLaunchSchema.optional(),
   executor_protocol: z.string().optional(),
   executor_options: requestParamsSchema.optional(),
   executor_prompt: executorPromptSchema.optional(),
@@ -692,6 +705,8 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   when_to_use: optionalProfileStringSchema,
   main: z.boolean().nullable().optional(),
   executor: z.string().trim().min(1).nullable().optional(),
+  executor_instance: namedExecutorInstanceSchema.nullable().optional(),
+  executor_launch: namedExecutorLaunchSchema.nullable().optional(),
   executor_prompt: executorPromptSchema.nullable().optional(),
   allow_kiki_subagents: z.boolean().nullable().optional(),
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).nullable().optional(),

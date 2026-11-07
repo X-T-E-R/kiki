@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { agentExecutorDisplayConfigSchema, executionContextSchema, executionPermissionSchema } from '@kiki/protocol';
+import { agentExecutorDisplayConfigSchema, executionContextSchema, executionPermissionSchema, executorInstanceChoiceSchema, executorQuotaSourceIdSchema } from '@kiki/protocol';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
@@ -27,6 +27,7 @@ export const AgentExecutorDefaultsSchema = z.strictObject({
   allow_kiki_subagents: z.boolean().optional(),
   inject_kiki_mcp: z.boolean().optional(),
   executor_prompt: executorPromptSchema.optional(),
+  executor_instance: executorInstanceChoiceSchema.optional(),
 });
 export type AgentExecutorDefaults = z.infer<typeof AgentExecutorDefaultsSchema>;
 
@@ -37,6 +38,7 @@ export const AgentExecutorOverrideSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   args: z.array(z.string()).optional(),
   showInProfileList: z.boolean().optional(),
+  quotaSource: executorQuotaSourceIdSchema.optional(),
 }).strict();
 
 export const AGENT_EXECUTOR_DISPLAY_SECTION = 'agentExecutorDisplay';
@@ -74,6 +76,7 @@ function mergeAgentExecutorOverrides(
     if (raw['binPath'] === null) delete entry['binPath'];
     if (raw['homeDir'] === null) delete entry['homeDir'];
     if (raw['showInProfileList'] === null) delete entry['showInProfileList'];
+    if (raw['quotaSource'] === null) delete entry['quotaSource'];
     if (raw['args'] === null || (Array.isArray(raw['args']) && raw['args'].length === 0)) delete entry['args'];
     const envPatch = raw['env'];
     if (envPatch === null) {
@@ -104,12 +107,14 @@ const TOML_TO_RUNTIME = {
   bin_path: 'binPath',
   home_dir: 'homeDir',
   show_in_profile_list: 'showInProfileList',
+  quota_source: 'quotaSource',
 } as const;
 
 const RUNTIME_TO_TOML = {
   binPath: 'bin_path',
   homeDir: 'home_dir',
   showInProfileList: 'show_in_profile_list',
+  quotaSource: 'quota_source',
 } as const;
 
 export function agentExecutorOverridesFromToml(value: unknown): unknown {

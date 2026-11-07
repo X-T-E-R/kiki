@@ -93,6 +93,13 @@ export interface PluginHarnessAccountSource {
   readonly engineIds: readonly string[];
 }
 
+export interface PluginHarnessQuotaSource {
+  readonly id: string;
+  readonly label: string;
+  readonly engineIds: readonly string[];
+  readonly minRefreshIntervalMs: number;
+}
+
 export interface PluginHarnessAccountLease {
   readonly connection: HarnessAccountConnection;
   release(): Promise<void>;
@@ -105,6 +112,10 @@ export interface IPluginHostService {
   list(): Promise<readonly PluginToolRegistration[]>;
   listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]>;
   listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]>;
+  listHarnessQuotaSources(): Promise<readonly PluginHarnessQuotaSource[]>;
+  readHarnessQuota(source: string, signal: AbortSignal): Promise<readonly import('@kiki/protocol').HarnessQuotaReading[]>;
+  cachedHarnessQuota(): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
+  attachQuotaCache(reader: () => Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>): void;
   listHarnessAccounts(source: string, engineId: string, signal: AbortSignal): Promise<readonly HarnessAccount[]>;
   prepareHarnessAccount(source: string, input: HarnessAccountPrepareInput, signal: AbortSignal): Promise<PluginHarnessAccountLease>;
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown>;
@@ -327,6 +338,44 @@ export class PluginHostService extends Service implements IPluginHostService {
     return info.flatMap((plugin) => (plugin.manifest?.kiki?.tools ?? []).map((definition) => ({ pluginId: plugin.id, definition })));
   }
 
+  private quotaCache: (() => Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>) | undefined;
+
+  attachQuotaCache(reader: () => Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>): void {
+    this.quotaCache = reader;
+  }
+
+  async cachedHarnessQuota(): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }> {
+    const sources = await this.listHarnessQuotaSources();
+    const cached = await this.quotaCache?.() ?? { sources: [] };
+    const byId = new Map(cached.sources.map((source) => [source.id, source]));
+    return { sources: sources.map((source) => {
+      const hit = byId.get(source.id);
+      return { ...source, engineIds: [...source.engineIds], readAt: hit?.readAt, readings: hit?.readings === undefined ? undefined : [...hit.readings] };
+    }) };
+  }
+
+  async listHarnessQuotaSources(): Promise<readonly PluginHarnessQuotaSource[]> {
+    const installed = await this.plugins.listPlugins();
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    return infos.filter((info) => info.enabled && info.state === 'ok').flatMap((info) =>
+      (info.manifest?.kiki?.harnessQuotaSources ?? []).map(({ id, label, engineIds, minRefreshIntervalMs }) => ({
+        id: `plugin:${info.id}/${id}`, label, engineIds: [...engineIds], minRefreshIntervalMs: Math.max(300_000, minRefreshIntervalMs ?? 300_000),
+      })));
+  }
+
+  async readHarnessQuota(source: string, signal: AbortSignal): Promise<readonly import('@kiki/protocol').HarnessQuotaReading[]> {
+    signal.throwIfAborted();
+    const [, pluginId, sourceId] = /^plugin:([a-z0-9][a-z0-9_-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})$/.exec(source) ?? [];
+    if (pluginId === undefined || sourceId === undefined) throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Invalid plugin harness quota source id');
+    return this.runRequest(pluginId, (info, settings) => {
+      signal.throwIfAborted();
+      const extension = info.manifest?.kiki;
+      const definition = extension?.harnessQuotaSources?.find(({ id }) => id === sourceId);
+      if (!info.enabled || info.state !== 'ok' || extension?.entry === undefined || definition === undefined) throw new Error('The quota source is not enabled or is no longer available');
+      return this.getHost(info).readHarnessQuota(sourceId, signal, settings);
+    }, signal);
+  }
+
   async listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]> {
     const installed = await this.plugins.listPlugins();
     const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
@@ -514,7 +563,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       }
       const filename = `${prerequisiteId}-${prereq.version}${process.platform === 'win32' ? '.exe' : ''}`;
       const destination = path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id, filename);
-      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders, undefined, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources);
+      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders, undefined, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources, undefined, info.manifest?.kiki?.harnessQuotaSources);
       try {
         await host.installPrerequisite(destination);
         await this.settings.update({ pluginId: info.id, values: { [setting]: destination } });
@@ -567,7 +616,7 @@ export class PluginHostService extends Service implements IPluginHostService {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
         }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources, {
-        models: { list: () => pluginModelCatalog(this.modelCatalog) },
+        models: { list: (options) => pluginModelCatalog(this.modelCatalog, options?.candidates) },
         credentials: {
           status: async (setting) => credentialStatus(await this.settings.inspect(info.id), setting),
           set: async (setting, value) => {
@@ -575,7 +624,7 @@ export class PluginHostService extends Service implements IPluginHostService {
             return credentialStatus(await updateSettings({ [setting]: value }), setting);
           },
         },
-      });
+      }, info.manifest?.kiki?.harnessQuotaSources, () => this.cachedHarnessQuota());
       this.hosts.set(info.id, host);
     }
     return host;

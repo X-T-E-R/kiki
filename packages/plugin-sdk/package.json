@@ -23,6 +23,10 @@
       "types": "./dist/harness-account.d.ts",
       "default": "./dist/harness-account.js"
     },
+    "./harness-quota": {
+      "types": "./dist/harness-quota.d.ts",
+      "default": "./dist/harness-quota.js"
+    },
     "./im": {
       "types": "./dist/im.d.ts",
       "default": "./dist/im.js"

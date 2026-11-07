@@ -360,6 +360,8 @@ export * from '#/app/pluginUsage/flag';
 import '#/app/pluginUsage/pluginUsageService';
 export * from '#/session/pluginUsage/sessionPluginUsageService';
 export * from '#/app/plugin/pluginHostService';
+import '#/app/plugin/harnessQuota';
+export * from '#/app/plugin/harnessQuota';
 export * from '#/app/pluginImport/pluginImport';
 import '#/app/pluginImport/pluginImportService';
 export * from '#/app/pluginMedia/pluginMedia';

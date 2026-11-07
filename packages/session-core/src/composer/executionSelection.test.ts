@@ -310,6 +310,17 @@ describe('isBareExternalChoice', () => {
     expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'm' } })).toBe(false);
     // A file is a Kiki layer, so the engine is not being run as it is.
     expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: '/p/research.md', overrides: undefined })).toBe(false);
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { executor_instance: 'auto' } })).toBe(true);
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { executor_instance: 'main', model: 'm' } })).toBe(false);
+  });
+
+  it('treats a schedule change as a different choice, including a clear', () => {
+    const bare = { executor: 'agy-cli', profile: undefined, profile_file: undefined, overrides: undefined };
+    expect(sameExecutionChoice(bare, { ...bare, overrides: { executor_instance: 'auto' } })).toBe(false);
+    expect(sameExecutionChoice(
+      { ...bare, overrides: { executor_instance: 'auto' } },
+      { ...bare, overrides: { executor_instance: null } },
+    )).toBe(false);
   });
 });
 

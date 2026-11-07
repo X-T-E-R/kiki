@@ -57,28 +57,57 @@ function mergeInstanceProxyLayers(base: unknown, home: unknown, merged: unknown)
   }));
 }
 
+function storedLaunch(previous: ExecutorInstanceConfig['launch'] | undefined, launch: ExecutorInstanceConfig['launch'] | null | undefined): ExecutorInstanceConfig['launch'] | undefined {
+  if (launch === undefined) return previous;
+  if (launch === null) return undefined;
+  const env = launch.env !== undefined ? (Object.keys(launch.env).length === 0 ? undefined : launch.env) : previous?.env;
+  const stored: ExecutorInstanceConfig['launch'] = { ...launch };
+  if (env === undefined) delete stored.env;
+  else stored.env = env;
+  return Object.values(stored).some((value) => value !== undefined) ? stored : undefined;
+}
+
+function storedQuota(previous: string | undefined, quota: string | null | undefined): string | undefined {
+  if (quota === undefined) return previous;
+  return quota === null ? undefined : quota;
+}
+
+export function applyExecutorInstancePatch(base: AgentExecutorInstances | undefined, patch: unknown): AgentExecutorInstances {
+  if (!isPlainObject(patch)) return patch as AgentExecutorInstances;
+  const result: Record<string, ExecutorInstanceConfig> = { ...base };
+  for (const [id, entry] of Object.entries(executorInstancesPatchSchema.parse(mapProxyAuthorizationMask(patch, null)))) {
+    if (entry === null) {
+      delete result[id];
+      continue;
+    }
+    const previous = result[id];
+    const launch = storedLaunch(previous?.launch, entry.launch);
+    const quota = storedQuota(previous?.quota_account_id, entry.quota_account_id);
+    const { quota_account_id: _quota, launch: _launch, ...rest } = entry;
+    let proxy = rest.proxy;
+    if (proxy.kind === 'url') {
+      const { url, authorization } = proxy;
+      const previousProxy = previous?.proxy;
+      const previousUrl = previousProxy !== undefined && 'url' in previousProxy ? previousProxy.url : undefined;
+      const previousAuthorization = previousProxy !== undefined && 'authorization' in previousProxy ? previousProxy.authorization : undefined;
+      const sameAddress = (previousProxy?.kind === undefined || previousProxy.kind === 'url') && previousUrl !== undefined && sameExecutorProxyAddress(previousUrl, url);
+      const next = authorization === null ? false : authorization ?? (sameAddress
+        ? previousAuthorization : previousProxy?.kind !== undefined || previousUrl !== undefined ? false : undefined);
+      proxy = { kind: 'url', url, authorization: next } as ExecutorInstanceConfig['proxy'];
+    }
+    const stored = { ...rest, proxy: proxy as ExecutorInstanceConfig['proxy'] } as ExecutorInstanceConfig;
+    if (quota !== undefined) stored.quota_account_id = quota;
+    if (launch !== undefined) stored.launch = launch;
+    result[id] = stored;
+  }
+  return result;
+}
+
 registerConfigSection(AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSchema, {
   fromToml: (value) => value,
   toToml: (value) => withoutUndefined(value),
   layerMerge: mergeInstanceProxyLayers,
-  merge: (base: StoredInstances | undefined, patch): StoredInstances => {
-    if (!isPlainObject(patch)) return patch as StoredInstances;
-    const result = { ...base };
-    for (const [id, entry] of Object.entries(executorInstancesPatchSchema.parse(mapProxyAuthorizationMask(patch, null)))) {
-      if (entry === null) delete result[id];
-      else if (entry.proxy.kind === 'url') {
-        const { url, authorization } = entry.proxy;
-        const previous = result[id]?.proxy;
-        const previousUrl = previous !== undefined && 'url' in previous ? previous.url : undefined;
-        const previousAuthorization = previous !== undefined && 'authorization' in previous ? previous.authorization : undefined;
-        const sameAddress = (previous?.kind === undefined || previous.kind === 'url') && previousUrl !== undefined && sameExecutorProxyAddress(previousUrl, url);
-        const next = authorization === null ? false : authorization ?? (sameAddress
-          ? previousAuthorization : previous?.kind !== undefined || previousUrl !== undefined ? false : undefined);
-        result[id] = { ...entry, proxy: { kind: 'url', url, authorization: next } };
-      } else result[id] = { ...entry, proxy: entry.proxy };
-    }
-    return result;
-  },
+  merge: (base: StoredInstances | undefined, patch): StoredInstances => applyExecutorInstancePatch(base as AgentExecutorInstances | undefined, patch) as StoredInstances,
 });
 
 const PROXY_URL_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];

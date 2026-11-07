@@ -217,6 +217,20 @@ proxy = { kind = "url", url = "socks5h://127.0.0.1:1080" }
 
 已有会话保留原实例身份和配置版本。修改实例配置或代理后，新建会话才能使用新版本；旧会话不会静默改用另一账号恢复。在设置中移除实例只删除注册，不删除来源引擎或账号目录。通过 `POST /api/config` 修改时，将 `agent_executor_instances.<instance-id>` 设为 JSON `null` 即可移除该项。
 
+每个外部引擎都可以用它自己的启动、某一个具名实例，或按可比额度自动选择实例。取值为 `main`、`auto`、`instance-…`，或 `{ "account_id": "…" }`。不写则继承下一层。从低到高是引擎自身启动、引擎覆盖、实例、profile、调用或会话。显式 `main` 会替换更低层的 `auto`。都没有配置时，新运行使用 `main`。最初的 main agent 仍走 Kiki 原生引擎。
+
+```toml
+[agent_executor_overrides.agy-cli]
+quota_source = "plugin:example-quota/example"
+
+[agent_executor_overrides.agy-cli.defaults]
+executor_instance = "auto"
+```
+
+`quota_source` 与 `defaults` 同级。任何已启用插件都可以注册来源，Kiki 不维护允许插件名单。`main` 和手选的实例或账号不读取额度。`auto` 在会话第一次绑定时读取所选来源，然后沿用选出的实例。每个来源在其间隔内最多读一次，间隔至少五分钟。恢复会话使用已保存的实例，不再读额度。启动 home 与已保存的厂商会话不一致时，不恢复该厂商会话。
+
+实例上的 `quota_account_id` 把实例关联到额度账号。`launch` 可以设置 `home_dir`、`bin_path`、`env`、`args`，以及上面已有的配置来源和代理。Kiki 先选定实例，再合并这些字段。省略某个启动字段则保留更低层的值，`null` 清除该字段。环境变量按名称合并。显式参数列表替换额外参数，而不是追加。配置更新如果省略 `launch` 或 `quota_account_id`，保留已保存的值；传 `null` 则清除。在已发送的 `launch` 对象里省略 `env` 会保留已保存的环境变量，`"env": {}` 清除它们。profile 或调用上的覆盖不会改写已保存的实例。公开响应只列出环境变量名和 `proxy.has_authorization`，不包含环境变量的值或代理密码。
+
 自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
 
 ```toml

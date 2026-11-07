@@ -925,6 +925,15 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
  * The wire keeps launch keys and defaults under the same executor entry, so
  * only the `defaults` sub-object is this editor's business.
  */
+export function engineQuotaSourceOf(raw: Readonly<Record<string, unknown>> | undefined, executorId: string): string {
+  const overrides = raw?.['agent_executor_overrides'];
+  if (typeof overrides !== 'object' || overrides === null) return '';
+  const entry = (overrides as Record<string, unknown>)[executorId];
+  if (typeof entry !== 'object' || entry === null) return '';
+  const source = (entry as Record<string, unknown>)['quota_source'];
+  return typeof source === 'string' ? source : '';
+}
+
 export function engineDefaultsOf(raw: Readonly<Record<string, unknown>> | undefined, executorId: string): Record<string, unknown> | null | undefined {
   const overrides = raw?.['agent_executor_overrides'];
   if (typeof overrides !== 'object' || overrides === null) return undefined;
@@ -1347,7 +1356,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
             <section data-engine-section="run" className="space-y-3 pt-5">
               <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
               <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} />
-              <EngineDefaults item={item} saved={savedDefaults} onSaved={refetchConfig} />
+              <EngineDefaults item={item} saved={savedDefaults} quotaSource={engineQuotaSourceOf(config?.raw, item.id)} onSaved={refetchConfig} />
             </section>
 
             <section data-engine-section="offer" className="space-y-3">

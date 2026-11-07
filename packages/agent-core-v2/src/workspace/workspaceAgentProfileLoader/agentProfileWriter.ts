@@ -48,6 +48,8 @@ export interface AgentProfileWriteRequest {
   readonly whenToUse?: string | null;
   readonly main?: boolean | null;
   readonly executor?: string | null;
+  readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice | null;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunchPatch | null;
   readonly executorPrompt?: ExecutorPrompt | null;
   readonly allowKikiSubagents?: boolean | null;
   readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'] | null;

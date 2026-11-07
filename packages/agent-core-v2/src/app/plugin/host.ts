@@ -7,9 +7,10 @@ import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
   PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS,
-  harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, mediaProviderDefinitionSchema,
+  harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
   pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, sessionSourceDefinitionSchema,
   type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
+  type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type PluginHarnessQuotaSnapshot,
   type ImInboundDiagnostic, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
 } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
@@ -54,7 +55,7 @@ interface Call {
 }
 
 export interface PluginHostModelServices {
-  readonly models: Pick<import('@kiki/protocol').PluginModelsApi, 'list'>;
+  readonly models: { list(options?: { readonly candidates?: readonly string[] }): Promise<import('@kiki/protocol').PluginModelCatalog> };
   readonly credentials: import('@kiki/protocol').PluginCredentialsApi;
 }
 
@@ -89,6 +90,8 @@ export class PluginHost {
     private readonly imAdapters: readonly PluginImAdapterDefinition[] = [],
     private readonly harnessAccountSources: readonly HarnessAccountSourceDefinition[] = [],
     private readonly modelServices?: PluginHostModelServices,
+    private readonly harnessQuotaSources: readonly HarnessQuotaSourceDefinition[] = [],
+    private readonly quotaCache?: () => Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }>,
   ) {}
 
   private readonly modelStreams = new Map<number, { readonly owner: number; readonly controller: AbortController; readonly iterator: AsyncIterator<import('@kiki/protocol').PluginModelEvent>; busy: boolean }>();
@@ -103,6 +106,7 @@ export class PluginHost {
   }
 
   private readonly registeredHarnessAccountSources = new Set<string>();
+  private readonly registeredHarnessQuotaSources = new Set<string>();
   private readonly harnessAccountLeases = new Set<number>();
   private shutdown?: Promise<void>;
 
@@ -169,6 +173,37 @@ export class PluginHost {
       this.pending.set(id, { resolve: (result) => finish(undefined, result), reject: (error) => finish(error) });
       this.send({ id, method: 'harness-account-request', params: { sourceId, action, input, settings, kikiHome: this.kikiHome } });
     });
+  }
+
+  async readHarnessQuota(sourceId: string, signal: AbortSignal, settings: Record<string, unknown>): Promise<readonly HarnessQuotaReading[]> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    await this.start();
+    signal.throwIfAborted();
+    if (!this.registeredHarnessQuotaSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register harness quota source ${sourceId}`);
+    clearTimeout(this.idle);
+    const id = ++this.nextId;
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(new Error('Harness quota read timed out'));
+      }, 30_000);
+      timer.unref();
+      const finish = (error?: Error, value?: unknown) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        this.scheduleIdle();
+        if (error) reject(error); else resolve(value);
+      };
+      const cancel = () => finish(signal.reason instanceof Error ? signal.reason : new Error('Harness quota read cancelled'));
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error) });
+      this.send({ id, method: 'harness-quota-request', params: { sourceId, settings, kikiHome: this.kikiHome } });
+    });
+    const parsed = harnessQuotaBatchSchema.safeParse(result);
+    if (!parsed.success) throw new Error('The adapter returned an invalid quota batch');
+    return Array.isArray(parsed.data) ? parsed.data : parsed.data.readings;
   }
 
   async connectImAdapter(adapterId: string, settings: Record<string, unknown>, instanceId: string, listener: (event: PluginImEvent) => Promise<void>, offset?: number): Promise<PluginImConnection> {
@@ -499,6 +534,12 @@ export class PluginHost {
             const expected = this.harnessAccountSources.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredHarnessAccountSources.has(definition.id)) throw new Error('Plugin harness account source definition mismatch');
             this.registeredHarnessAccountSources.add(definition.id);
+          } else if (message.method === 'register-harness-quota-source') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = harnessQuotaSourceDefinitionSchema.parse(message.params?.definition);
+            const expected = this.harnessQuotaSources.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredHarnessQuotaSources.has(definition.id)) throw new Error('Plugin harness quota source definition mismatch');
+            this.registeredHarnessQuotaSources.add(definition.id);
           } else if (message.method === 'register-im-adapter') {
             if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
             const definition = pluginImAdapterDefinitionSchema.parse(message.params?.definition);
@@ -534,7 +575,7 @@ export class PluginHost {
             }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
               () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length) throw new Error('Plugin registered incomplete contributions');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             resolve();
             this.scheduleIdle();
@@ -628,7 +669,12 @@ export class PluginHost {
     const call = this.pending.get(id);
     if (this.stopped || call === undefined) throw new Error('Plugin invocation has ended');
     call.signal?.throwIfAborted();
-    if (action === 'list') return this.modelServices?.models.list();
+    if (action === 'list') {
+      const raw = (input as { candidates?: unknown } | undefined)?.candidates;
+      const candidates = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : undefined;
+      return this.modelServices?.models.list(candidates === undefined ? undefined : { candidates });
+    }
+    if (action === 'harness-quota-cached') return this.quotaCache?.() ?? { sources: [] };
     if (action === 'credential-status' || action === 'credential-set') {
       const value = input as { setting?: unknown; value?: unknown };
       if (typeof value?.setting !== 'string' || this.modelServices === undefined) throw new Error('Invalid credential setting');

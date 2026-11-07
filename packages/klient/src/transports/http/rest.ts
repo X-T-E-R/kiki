@@ -18,7 +18,7 @@ import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
 import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema,
-  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, pluginModelCatalogSchema } from '@kiki/protocol';
+  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, pluginModelCatalogSchema } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -665,6 +665,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/executors/${encodeURIComponent(executorId)}/local-sessions/${encodeURIComponent(localSessionId)}/resume`,
         { ...options, method: 'POST', body },
       ),
+    },
+
+    harnessQuota: {
+      cached: async (options) => harnessQuotaCacheResponseSchema.parse(await transport.json('/harness-quota', options)),
+      read: async (source, options) => harnessQuotaCacheResponseSchema.parse(await transport.json('/harness-quota/read', {
+        ...options, method: 'POST', body: harnessQuotaReadRequestSchema.parse({ source }),
+      })),
     },
 
     agents: {

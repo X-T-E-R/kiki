@@ -113,6 +113,7 @@ export interface ProfileData extends AgentConfigData {
   readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunch;
   readonly agentsMdPaths?: readonly string[];
   readonly activeToolNames?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
@@ -184,6 +185,7 @@ export interface ProfileBindingSnapshot {
   readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunch;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;
   readonly bindingAdvisories?: readonly BindingAdvisory[];
@@ -273,6 +275,9 @@ export interface BindAgentInput {
   readonly deferPromptContext?: boolean;
   readonly driver?: 'external' | 'local';
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
+  readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice | null;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunchPatch | null;
+  readonly lockedExecutorId?: string;
   readonly toolOverride?: ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly persona?: string;

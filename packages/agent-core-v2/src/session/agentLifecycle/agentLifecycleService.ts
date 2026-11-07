@@ -559,6 +559,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
           unavailableTools: 'restore',
+          lockedExecutorId: opts.restoreBinding.executorId,
         });
       } catch (error) {
         if (

@@ -41,6 +41,8 @@ export function agentProfileFromFile(
     spawnConstraints: definition.spawnConstraints,
     executor: definition.executor,
     executorOptions: definition.executorOptions,
+    executorInstance: definition.executorInstance,
+    executorLaunch: definition.executorLaunch,
     executorPrompt: definition.executorPrompt,
     allowKikiSubagents: definition.allowKikiSubagents,
     kikiContext: definition.kikiContext,

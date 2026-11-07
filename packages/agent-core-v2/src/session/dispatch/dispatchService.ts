@@ -257,6 +257,8 @@ export class SessionDispatchService implements ISessionDispatchService {
           resolvedRoute,
           model: binding.model,
           thinking: binding.thinking,
+          executorInstance: input.executorInstance,
+          executorLaunch: input.executorLaunch,
           bindingSelection: binding.selection,
           strictThinking:
             input.strictThinking ??

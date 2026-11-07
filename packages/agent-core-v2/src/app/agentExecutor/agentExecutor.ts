@@ -322,6 +322,8 @@ export interface IAgentExecutorRegistry {
     binding: ExecutorBinding,
   ): ExecutorValidationResult;
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
+  /** Probes a descriptor after a profile or session launch patch. Empty patches use the registered descriptor. */
+  resolveScheduled?(id: string, launch: import('@kiki/protocol').ExecutorLaunch, options?: unknown): Promise<ResolvedAgentExecutor>;
   /** Defaults to full diagnostics; false resolves only the admitted source needed for catalog availability. */
   discover(id: string, exhaustive?: boolean): Promise<readonly AgentExecutorSourceProbe[]>;
   /** Reads installed files and package metadata without spawning programs or inspecting credentials. */

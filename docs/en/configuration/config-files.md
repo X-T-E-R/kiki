@@ -217,6 +217,20 @@ Plugin-account engines run on the Kiki host. Their proxy choice is passed to the
 
 An existing session keeps its instance identity and configuration revision. After changing an instance's configuration or proxy, create a new session to use the new revision; an old session will not silently resume with a different account. Removing the instance in Settings removes its registration, not the source engine or its account directory. Through `POST /api/config`, set `agent_executor_instances.<instance-id>` to JSON `null` to remove that entry.
 
+Every external engine can run as itself, as one named instance, or by letting Kiki pick an instance from comparable quota. The choice is `main`, `auto`, an `instance-…` id, or `{ "account_id": "…" }`. Leave it unset to inherit the next layer. The layers, from lowest to highest, are the engine's own launch, the engine override, the instance, the profile, and the call or session. An explicit `main` replaces a lower `auto`. With nothing configured, a new run uses `main`. The initial main agent stays on native Kiki.
+
+```toml
+[agent_executor_overrides.agy-cli]
+quota_source = "plugin:example-quota/example"
+
+[agent_executor_overrides.agy-cli.defaults]
+executor_instance = "auto"
+```
+
+`quota_source` is a sibling of `defaults`. Any enabled plugin can register a source; Kiki does not keep a list of allowed plugins. `main` and a manually chosen instance or account do not read quota. `auto` reads the selected source when a conversation is first bound, then keeps that instance. The source is read at most once per its interval, and the interval is at least five minutes. Restoring a conversation uses the saved instance and does not read quota again. A vendor session is not resumed when its launch home no longer matches.
+
+On an instance, `quota_account_id` links the instance to a quota account. `launch` can set `home_dir`, `bin_path`, `env`, `args`, and the configuration or proxy already described above. Kiki selects the instance first, then merges those fields. Omitting a launch field keeps the lower value. `null` clears that field. Environment variables merge by name. An explicit argument list replaces extra arguments. A config update that omits `launch` or `quota_account_id` keeps the saved values; `null` clears them. Omitting `env` inside a sent `launch` object keeps the saved environment values, and `"env": {}` clears them. A profile or call overlay does not rewrite the saved instance. Public responses list environment names and `proxy.has_authorization`. They do not include environment values or proxy passwords.
+
 Custom executor descriptors can read model IDs from a metadata-only command under `[agent_executors.<id>.model_probe]`. For a command whose JSON response contains `command.data.models`, configure:
 
 ```toml

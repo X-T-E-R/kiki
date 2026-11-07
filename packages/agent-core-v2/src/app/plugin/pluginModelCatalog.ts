@@ -2,10 +2,12 @@ import type { PluginModelCatalog } from '@kiki/protocol';
 
 import type { IModelCatalog } from '#/kosong/model/catalog';
 
-export async function pluginModelCatalog(catalog: IModelCatalog): Promise<PluginModelCatalog> {
+export async function pluginModelCatalog(catalog: IModelCatalog, candidates?: readonly string[]): Promise<PluginModelCatalog> {
   const [models, providers] = await Promise.all([catalog.listModels(), catalog.listProviders()]);
+  const allowed = candidates === undefined ? undefined : new Set(candidates);
+  const visible = allowed === undefined ? models : models.filter((model) => allowed.has(model.id) || allowed.has(model.remote_id));
   return {
-    models: models.map((model) => ({
+    models: visible.map((model) => ({
       id: model.id,
       provider_id: model.provider_id,
       remote_id: model.remote_id,

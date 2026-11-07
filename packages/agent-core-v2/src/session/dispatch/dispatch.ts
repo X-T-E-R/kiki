@@ -32,6 +32,8 @@ export interface DispatchLaunchInput {
   readonly name?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice | null;
+  readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunchPatch | null;
   readonly permissionMode?: PermissionMode;
   readonly permissionModeSource?: 'ambient';
   readonly permissionModeCeiling?: PermissionMode;

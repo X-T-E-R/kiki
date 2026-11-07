@@ -1,7 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { castDraft, nothing, original } from 'immer';
 import { z } from 'zod';
-import { executionBindingSchema, type ExecutionBinding } from '@kiki/protocol';
+import { executionBindingSchema, executorLaunchSchema, type ExecutionBinding, type ExecutorLaunch } from '@kiki/protocol';
 
 import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
 import { upgradePersistedSubagentPermissions } from '@kiki/agent-profiles/persistedSubagentPermissions';
@@ -53,6 +53,7 @@ export interface ProfileModelState {
   readonly injectKikiMcp?: boolean;
   readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
+  readonly executorLaunch?: ExecutorLaunch;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;
   readonly bindingAdvisories?: readonly BindingAdvisory[];
@@ -111,6 +112,7 @@ const profileBindSchema = z.object({
   injectKikiMcp: z.boolean().optional(),
   kikiContext: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).readonly().optional(),
   executorDescriptorRevision: z.string().optional(),
+  executorLaunch: executorLaunchSchema.optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
   thinkingEffortAdjusted: z.boolean().optional(),
   bindingAdvisories: z.array(z.custom<BindingAdvisory>()).readonly().optional(),
@@ -258,6 +260,7 @@ export const profileKey = defineState(
     injectKikiMcp: e.injectKikiMcp,
     kikiContext: e.kikiContext,
     executorDescriptorRevision: e.executorDescriptorRevision,
+    executorLaunch: e.executorLaunch,
     thinkingLevel: e.thinkingEffort,
     thinkingEffortAdjusted: e.thinkingEffortAdjusted ?? false,
     bindingAdvisories: e.bindingAdvisories ?? [],

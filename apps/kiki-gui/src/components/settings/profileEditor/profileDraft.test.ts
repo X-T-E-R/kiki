@@ -8,6 +8,17 @@ const base: NamedAgentProfile = {
   source_file: '/fixture/helper.md', workspace_id: 'ws-one', disabled: false, routes: [],
 };
 
+describe('profile draft executor instance', () => {
+  it('writes a schedule only when it changed, and clears it when the engine becomes native', () => {
+    const external = { ...base, executor: 'agy-cli', executor_instance: 'auto' as const };
+    const baseline = draftFromProfile(external);
+    expect(patchBody(external, baseline, baseline).executor_instance).toBeUndefined();
+    expect(patchBody(external, baseline, { ...baseline, executorInstance: 'instance-work' }).executor_instance).toBe('instance-work');
+    expect(patchBody(external, baseline, { ...baseline, executorInstance: 'account:work' }).executor_instance).toEqual({ account_id: 'work' });
+    expect(patchBody(external, baseline, { ...baseline, executor: '' }).executor_instance).toBeNull();
+  });
+});
+
 describe('profile draft subagent dispatch fields', () => {
   it('reads an absent field as not declared, not as a grant', () => {
     const policy = draftFromProfile(base).subagentPolicy;

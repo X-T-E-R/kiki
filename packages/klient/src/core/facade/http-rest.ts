@@ -677,6 +677,13 @@ export interface HttpRestFacade {
     resumeLocalSession(executorId: string, localSessionId: string, body: import('@kiki/protocol').ResumeLocalSessionRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ResumeLocalSessionResponse>;
   };
 
+  readonly harnessQuota: {
+    /** Definitions plus the current cache. Does not contact a quota source. */
+    cached(options?: HttpRestRequestOptions): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
+    /** One explicit read. The host still applies the source interval and single in-flight request. */
+    read(source: string, options?: HttpRestRequestOptions): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
+  };
+
   readonly agents: {
     referenceCandidates(query: import('@kiki/protocol').AgentReferenceCandidatesQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').AgentReferenceCandidatesResponse>;
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;

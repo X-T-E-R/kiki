@@ -502,7 +502,7 @@ return { output: text };
 
 流事件包含 `started`（解析后的模型和连接）、`delta`、`reset`（丢弃上一次尝试的文本）、`usage` 和 `completed`。错误会中断迭代，并提供稳定的 `error.code`；取消对应 `request.cancelled`。中止传入的 `AbortSignal`、取消工具或退出循环都会停止请求。Kiki 负责凭据解析和 OAuth 刷新、请求身份和治理，并将用量归入调用工具的会话和 Agent。
 
-`await context.models.list()` 返回 `{ models, connections }`。模型条目提供 `id`、`provider_id`、`remote_id`、显示名、上下文大小和可用的有效能力及协议。连接条目提供 `id`、供应商 `type`、`status`、用途 `service`（`chat` 或 `decision`）、默认及列出的模型，以及 `authentication`（`oauth`、`api-key` 或 `none`）。用这些字段标记和筛选选项，不要从 ID 猜测用途。目录不返回密钥、端点地址、自定义请求头或请求身份配置。
+`await context.models.list()` 返回 `{ models, connections }`。传入 `{ candidates: ['model-id'] }` 时，只保留 `id` 或 `remote_id` 在该列表中的条目。`candidates` 为空数组时不返回模型。未知 id 会被省略。列出模型不会启动运行，也不会修改 profile。模型条目提供 `id`、`provider_id`、`remote_id`、显示名、上下文大小和可用的有效能力及协议。连接条目提供 `id`、供应商 `type`、`status`、用途 `service`（`chat` 或 `decision`）、默认及列出的模型，以及 `authentication`（`oauth`、`api-key` 或 `none`）。用这些字段标记和筛选选项，不要从 ID 猜测用途。目录不返回密钥、端点地址、自定义请求头或请求身份配置。
 
 自定义面板后端的 `handlePanelRequest(action, args, context)` 第三个参数是 `PluginPanelContext`。它可以列出模型、管理插件自己声明的密钥，但执行模型请求须通过已准入的工具调用。浏览器面板可调用 `plugin.models.list`，客户端可调用 `klient.rest.plugins.models()` 或 `GET /api/plugins/models`，使用同一份目录。
 
@@ -533,6 +533,24 @@ Cockpit 这类可选管理器可直接复用自身账号存储和 OAuth 代码�
 | `release({ leaseId }, context)` | 关闭连接并撤销短期密钥。释放时收到建立连接时的设置快照和新的取消信号。 |
 
 每次调用都收到 `{ settings, signal, kikiHome }`。`signal` 取消时及时停止；如果 `prepare` 失败并抛错，先清理已取得的资源。连接使用期间 Kiki 保留宿主进程；插件更新等操作关闭该宿主时，会释放未结束的连接。原始 OAuth token 留在插件后端。账号元数据和错误只提供可展示的内容，不通过面板、聊天工具或公开 API 返回短期连接。
+
+### 外部 harness 额度来源
+
+额度来源插件报告用户已有账号的剩余额度。在 `x-kiki.harnessQuotaSources` 中声明，并在 `entry.mjs` 里用 `api.registerHarnessQuotaSource(definition, adapter)` 注册相同定义。类型和缓存 schema 从 `@kiki/plugin-sdk/harness-quota` 导出。任何已启用插件都可以注册来源。用户在每个引擎的默认设置里为该引擎选择一个来源。
+
+```json
+{
+  "engines": { "kiki": ">=0.4.2" },
+  "entry": "./entry.mjs",
+  "harnessQuotaSources": [
+    { "schemaVersion": 1, "id": "example", "label": "示例额度", "engineIds": ["agy-cli"], "minRefreshIntervalMs": 300000 }
+  ]
+}
+```
+
+`read({ signal, settings, kikiHome })` 一次返回整批，形式为 `{ readings }` 或数组。每条读数包含 `accountId`、可选的精确 `modelIds`、可选的展示用 `pool`、`unit`、可选的 `remaining`、`resetAt` 和 `readAt`。数值未知时省略 `remaining`，不要改成 `0` 或无限。只有 `pool`、没有 `modelIds` 的读数只用于展示。两者都没有的读数是账号级限额。`minRefreshIntervalMs` 至少为 `300000`。更长的间隔会保留。Kiki 不会定时轮询，列出这些来源也不会调用 `read`。
+
+`await context.harnessQuota.cached()` 与 `GET /api/harness-quota` 返回同一份缓存。两者都不联系额度后端。其他插件需要这些读数时使用这份缓存，不要再次轮询额度服务。
 
 ### 聊天信道与消息发送
 

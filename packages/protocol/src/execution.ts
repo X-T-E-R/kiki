@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
+import {
+  executorInstanceChoiceSchema, executorInstanceConfigurationSchema, executorInstanceIdSchema, executorInstanceProxyResponseSchema,
+  executorLaunchPatchSchema, executorQuotaSourceIdSchema,
+} from './rest/executor';
+
 export const executionContextSchema = z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks']);
 export const executionPermissionSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
+const executionLaunchOptionSchema = z.union([z.string(), z.number(), z.boolean()]);
 export const executionOverridesSchema = z.strictObject({
   model: z.string().min(1).nullable().optional(),
   thinking: z.string().min(1).nullable().optional(),
@@ -12,6 +18,10 @@ export const executionOverridesSchema = z.strictObject({
   allow_kiki_subagents: z.boolean().nullable().optional(),
   /** `null` clears a session choice and inherits the profile or executor default. */
   inject_kiki_mcp: z.boolean().nullable().optional(),
+  /** `null` clears the session instance choice. `main` overrides a lower `auto`. */
+  executor_instance: executorInstanceChoiceSchema.nullable().optional(),
+  /** `null` clears the session launch patch. Secret values stay on this selection and are omitted from the public schedule. */
+  executor_launch: executorLaunchPatchSchema.nullable().optional(),
 });
 export const executionSelectionSchema = z.strictObject({
   executor: z.string().min(1),
@@ -38,11 +48,30 @@ export const executionEffectiveSchema = z.strictObject({
   inject_kiki_mcp: z.boolean().optional(),
 });
 export const executionValueSourceSchema = z.enum(['session', 'profile', 'harness-settings', 'harness-default']);
+export type ExecutionValueSource = z.infer<typeof executionValueSourceSchema>;
+export const executionScheduleSchema = z.strictObject({
+  instance: z.union([z.literal('main'), executorInstanceIdSchema]),
+  choice: executorInstanceChoiceSchema,
+  source: executionValueSourceSchema,
+  quota_source: executorQuotaSourceIdSchema.optional(),
+  quota_consulted: z.boolean(),
+  launch: z.strictObject({
+    bin_path: z.string().optional(),
+    home_dir: z.string().optional(),
+    configuration: executorInstanceConfigurationSchema.optional(),
+    proxy: executorInstanceProxyResponseSchema.optional(),
+    env_keys: z.array(z.string()).optional(),
+    args: z.array(z.string()).optional(),
+    options: z.record(z.string(), executionLaunchOptionSchema).optional(),
+  }).optional(),
+});
+export type ExecutionSchedule = z.infer<typeof executionScheduleSchema>;
 export const executionBindingSchema = z.strictObject({
   version: z.literal(1),
   selection: executionSelectionSchema,
   effective: executionEffectiveSchema,
   sources: z.record(z.string(), executionValueSourceSchema),
   generation: z.number().int().positive(),
+  schedule: executionScheduleSchema.optional(),
 });
 export type ExecutionBinding = z.infer<typeof executionBindingSchema>;

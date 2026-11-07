@@ -234,6 +234,8 @@ export interface ProfileDraft {
   readonly main: boolean;
   /** '' = native (field absent). */
   readonly executor: string;
+  /** '' inherits. `main`, `auto`, an instance id, or `account:<id>`. */
+  readonly executorInstance: string;
   /** External main only: inject the Kiki MCP bridge so the engine can dispatch Kiki subagents. */
   readonly allowKikiSubagents: boolean;
   /**
@@ -353,6 +355,9 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     promptOverrides: promptIdentityDraft(profile.prompt_overrides, promptOverridesDraft),
     main: profile.main,
     executor: isExternalExecutor(profile.executor) ? profile.executor! : '',
+    executorInstance: profile.executor_instance === undefined ? ''
+      : typeof profile.executor_instance === 'string' ? profile.executor_instance
+        : `account:${profile.executor_instance.account_id}`,
     allowKikiSubagents: profile.allow_kiki_subagents === true,
     kikiContext: normalizeKikiContext(profile.kiki_context),
     modelAlias: profile.pinned_model_alias ?? '',
@@ -416,6 +421,12 @@ export function patchBody(
   if (changed.has('prompt')) body.prompt = draft.prompt;
   if (changed.has('main')) body.main = draft.main;
   if (changed.has('executor')) body.executor = textOrNull(draft.executor);
+  if (changed.has('executorInstance') || (!isExternalExecutor(draft.executor) && baseline.executorInstance !== '')) {
+    const instance = !isExternalExecutor(draft.executor) || draft.executorInstance === '' ? null
+      : draft.executorInstance.startsWith('account:') ? { account_id: draft.executorInstance.slice('account:'.length) }
+        : draft.executorInstance;
+    body.executor_instance = instance as UpdateNamedAgentProfileRequest['executor_instance'];
+  }
   // Off deletes the key: an absent flag and `false` keep the same binding
   // fingerprint. The flag only means something on an external main, so a
   // draft that stops being one clears it instead of saving a binding the

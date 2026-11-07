@@ -280,8 +280,12 @@ The executor catalog and the two discovery views below answer different question
 | `GET /api/executors/installations` | Pinned adapter releases and any selected source-owned adapter. This request does not install. An item with no installation omits `active` |
 | `POST /api/executors/{id}/install` | Explicitly update one selected adapter. The request has no body fields |
 | `POST /api/executors/{id}/rollback` | Restore that adapter's previous installation. The request has no body fields |
+| `GET /api/harness-quota` | Registered quota sources and the current cache. This request does not contact a source |
+| `POST /api/harness-quota/read` | Body `{ "source": "plugin:<plugin-id>/<source-id>" }`. Reads that source when its interval has elapsed. One read is in flight per source |
 
 Account routes take the base engine ID (`agy-cli` or `codex-app-server`), not an instance ID. Source IDs use `plugin:<plugin-id>/<source-id>`; percent-encode this reference in the `source` query. Accounts expose only `id`, `label`, and `status` (`ready`, `signed_out`, or `disabled`), never credentials. Listing does not prepare a connection. A plugin-account instance's explicit check reads that source and account instead of the engine's global login. The typed Klient methods are `klient.rest.executors.listAccountSources(id, options?)` and `listAccounts(id, source, options?)`.
+
+`GET /api/harness-quota` and `POST /api/harness-quota/read` both return `{ sources: [{ id, label, engineIds, minRefreshIntervalMs, readAt?, readings? }] }`. A reading has `accountId`, optional `modelIds` and `pool`, `unit` (`percent`, `money`, `tokens`, `requests`, `credits`, or `count`), optional `remaining`, `resetAt`, and `readAt`. Omitted `remaining` means the value is unknown. `0` means the quota is exhausted. Before the first successful read, `readings` is omitted. The typed methods are `klient.rest.harnessQuota.cached(options?)` and `klient.rest.harnessQuota.read(source, options?)`. An unknown source or a failed read returns code `40001`.
 
 `GET /api/agents/references` accepts exactly one of these strict query forms; unknown fields are rejected:
 

@@ -16,7 +16,7 @@ import {
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
-import { executorDisplayName } from './timeline/ExecutorNotes';
+import { useExecutorInstanceLabel } from './timeline/ExecutorNotes';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
@@ -75,6 +75,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
   flatStyle,
 }: AgentTreeRowProps) {
   const { t, tp } = useI18n();
+  const engineName = useExecutorInstanceLabel(node.executorId);
   const children = agentChildren(forest, node.agentId);
   const hasActiveChild = children.some((child) => isActiveStatus(child.status));
   // The unvirtualized subtree keeps its existing per-row expansion state.
@@ -164,12 +165,12 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   {node.executorId !== undefined && node.executorId !== '' && node.executorId !== 'native' ? (
                     <span
                       data-tree-engine-badge={node.executorId}
-                      title={node.executorProtocol ? `${executorDisplayName(node.executorId)} (${node.executorProtocol})` : executorDisplayName(node.executorId)}
-                      aria-label={node.executorProtocol ? `${executorDisplayName(node.executorId)} (${node.executorProtocol})` : executorDisplayName(node.executorId)}
+                      title={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
+                      aria-label={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
                       className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] font-normal leading-tight bg-ink/[0.05] text-ink-faint hover:text-ink-soft focus-visible:outline-1 focus-visible:outline-selected-ink"
                     >
                       <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
-                      <span className="truncate max-w-16">{executorDisplayName(node.executorId)}</span>
+                      <span className="truncate max-w-16">{engineName}</span>
                     </span>
                   ) : null}
                 </span>

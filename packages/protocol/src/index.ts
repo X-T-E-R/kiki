@@ -95,6 +95,7 @@ export * from './rest/plugin';
 export * from './rest/plugin-import';
 export * from '@kiki/plugin-sdk/media';
 export * from '@kiki/plugin-sdk/harness-account';
+export * from '@kiki/plugin-sdk/harness-quota';
 export * from '@kiki/plugin-sdk/im';
 export * from '@kiki/plugin-sdk/messages';
 export { pluginModelTargetSchema, pluginModelRequestSchema, type PluginModelTarget, type PluginModelRequest, type PluginModelEvent, type PluginModelsApi, type PluginCredentialsApi, type PluginCredentialStatus } from '@kiki/plugin-sdk';

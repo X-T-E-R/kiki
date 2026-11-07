@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
+import type { ExecutionOverrides, ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 import {
   isNativeExecutor,
   profileExecutor,
@@ -12,6 +12,7 @@ import {
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../host';
+import { ExecutorScheduleControl, familyExecutorId, passthroughScheduleOverrides } from './ExecutorScheduleControl';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
@@ -743,7 +744,7 @@ export function ProfileSelect({
                                 executor: item.id,
                                 profile: undefined,
                                 profile_file: undefined,
-                                overrides: undefined,
+                                overrides: passthroughScheduleOverrides(choice.overrides, item.id, catalog),
                                 external_connection_id: undefined,
                                 external_connection_name: undefined,
                               });
@@ -778,6 +779,23 @@ export function ProfileSelect({
                       );
                     })}
                   </ul>
+                  {!isNativeExecutor(choice.executor) && (choice.profile === undefined || choice.profile === '') && !hasFile ? (
+                    <div className="px-3 py-2" data-execution-schedule>
+                      <label htmlFor="execution-schedule" className="mb-1 block text-[11px] font-medium text-ink-faint">{t('st.engines.schedule.label')}</label>
+                      <ExecutorScheduleControl id="execution-schedule" executorId={choice.executor} catalog={catalog}
+                        value={choice.overrides?.executor_instance ?? (choice.executor.startsWith('instance-') ? choice.executor : undefined)}
+                        onChange={(next) => {
+                          const rest: ExecutionOverrides = { ...(choice.overrides ?? {}) };
+                          delete rest.executor_instance;
+                          const hasRest = Object.values(rest).some((entry) => entry !== undefined);
+                          onChange({
+                            ...choice,
+                            executor: familyExecutorId(choice.executor, catalog),
+                            overrides: next === '' ? (hasRest ? rest : undefined) : { ...rest, executor_instance: next },
+                          });
+                        }} />
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* Group 2: 自定义 Profile */}

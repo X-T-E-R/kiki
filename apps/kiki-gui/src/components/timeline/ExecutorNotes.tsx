@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { createContext, memo, useContext, useMemo, useState, type ReactNode } from 'react';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ExecutorNote, TurnExecutionInfo } from '@kiki/session-core/session';
@@ -15,7 +15,19 @@ const EXECUTOR_NAMES: Record<string, string> = {
   'claude-acp': 'Claude Code', 'codex-app-server': 'Codex', 'codex-acp': 'Codex', 'grok-acp': 'Grok Build',
 };
 
-export function executorDisplayName(id: string): string {
+const ExecutorLabelsContext = createContext<Readonly<Record<string, string>>>({});
+
+export function ExecutorLabelProvider({ labels, children }: { readonly labels: Readonly<Record<string, string>>; readonly children: ReactNode }) {
+  return <ExecutorLabelsContext.Provider value={labels}>{children}</ExecutorLabelsContext.Provider>;
+}
+
+export function useExecutorInstanceLabel(id: string | undefined): string {
+  const labels = useContext(ExecutorLabelsContext);
+  return executorDisplayName(id ?? '', id === undefined ? undefined : labels[id]);
+}
+
+export function executorDisplayName(id: string, instanceLabel?: string): string {
+  if (id.startsWith('instance-') && instanceLabel !== undefined && instanceLabel !== '') return instanceLabel;
   return EXECUTOR_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 }
 
@@ -28,7 +40,7 @@ export function executorDisplayName(id: string): string {
  */
 export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }: { execution: TurnExecutionInfo }) {
   const { t } = useI18n();
-  const executor = executorDisplayName(execution.executorId);
+  const executor = executorDisplayName(execution.executorId, useContext(ExecutorLabelsContext)[execution.executorId]);
   const protocol = PROTOCOL_SHORT[execution.protocol] ?? execution.protocol;
   const degraded = execution.fidelity === 'degraded' || execution.losses.length > 0;
   const lossLines = execution.losses.map((code) => {

@@ -19,6 +19,7 @@ import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../
 import { ShippedProfileControls } from '../ShippedProfileControls';
 import { DiagnosticsList } from './DiagnosticsList';
 import type { ProfileDiagnostic } from './diagnostics';
+import { ExecutorScheduleControl, scheduleChoiceFromDraft } from '../../harness/ExecutorScheduleControl';
 import { engineChoices, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './engines';
 import { ExecutorPromptField } from './ExecutorPromptField';
 import { KikiContextField } from './KikiContextField';
@@ -53,7 +54,7 @@ const TAB_LABEL: Record<Tab, I18nKey> = {
 /** Which tab owns each draft field, so a tab can show that it holds unsaved edits. */
 const FIELD_TAB: Record<keyof ProfileDraft, Exclude<Tab, 'raw'>> = {
   description: 'identity', whenToUse: 'identity', prompt: 'identity', main: 'identity',
-  executor: 'run', allowKikiSubagents: 'run', kikiContext: 'run', modelAlias: 'run', effort: 'run', recipeOptions: 'run',
+  executor: 'run', executorInstance: 'run', allowKikiSubagents: 'run', kikiContext: 'run', modelAlias: 'run', effort: 'run', recipeOptions: 'run',
   restrictModelsToMenu: 'run', preferredModels: 'run', discouragedModels: 'run', preferredEfforts: 'run',
   allowedModels: 'run', denyModels: 'run', allowedEfforts: 'run', modelProfiles: 'run', executorPrompt: 'run',
   subagentPolicy: 'dispatch', spawnConstraints: 'dispatch',
@@ -277,7 +278,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
                 hint: id === '' ? undefined : [id, version, status === 'unavailable' ? t('st.profiles.engineNotInstalled') : undefined].filter(Boolean).join(' · '),
               };
             })}
-            ariaLabel={t('st.profiles.engine')} buttonClassName={FORM_SELECT_TRIGGER} onChange={(value) => set('executor', value)} />
+            ariaLabel={t('st.profiles.engine')} buttonClassName={FORM_SELECT_TRIGGER} onChange={(value) => setDraft((current) => ({
+              ...current, executor: value, executorInstance: value === current.executor ? current.executorInstance : '',
+            }))} />
         </Field>
         <Field label={t('st.profiles.model')} htmlFor="profile-model" applicability={fieldState('pinned_model_alias')} engine={engine} dataField="model"
           hint={aliasMissing(draft.modelAlias.trim()) ? <span className="text-amber-ink">{t('st.profiles.aliasMissingTitle', { alias: draft.modelAlias.trim() })}</span> : undefined}>
@@ -294,6 +297,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
             onChange={(value) => set('effort', value)} />
         </Field>
       </div>
+      {external ? <Field label={t('st.engines.schedule.label')} htmlFor="profile-instance" dataField="executorInstance" hint={t('st.engines.schedule.hint')}>
+        <ExecutorScheduleControl id="profile-instance" executorId={draft.executor} catalog={catalog} disabled={disabled}
+          value={scheduleChoiceFromDraft(draft.executorInstance) || undefined}
+          onChange={(next) => set('executorInstance', next === '' ? '' : typeof next === 'string' ? next : `account:${next.account_id}`)} />
+      </Field> : null}
       <RecipeOptionsField recipe={profile.recipe} sourceFile={profile.source_file} values={draft.recipeOptions}
         disabled={disabled || external} onChange={(values) => set('recipeOptions', values)} />
       {external && ignoredFields.length > 0 ? <details data-profile-section="ignored-fields" className="text-[12px]">

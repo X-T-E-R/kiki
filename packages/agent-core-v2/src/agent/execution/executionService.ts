@@ -532,7 +532,10 @@ export class AgentExecutionService implements IAgentExecutionService {
     executorId: string,
     worktree: SessionWorktree | undefined,
   ): Promise<AgentExecutorSession> {
-    const resolved = await this.executors.resolveExecutable(executorId, binding.executorOptions);
+    const launch = binding.executorLaunch;
+    const resolved = launch !== undefined && Object.keys(launch).length > 0 && this.executors.resolveScheduled !== undefined
+      ? await this.executors.resolveScheduled(executorId, launch, binding.executorOptions)
+      : await this.executors.resolveExecutable(executorId, binding.executorOptions);
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
     }

@@ -85,9 +85,17 @@ export function sendsLegacyControl(choice: ExecutionChoice | undefined, control:
   return choice === undefined || isNativeExecutor(choice.executor) || choice.profile !== undefined;
 }
 
+function scheduleOnlyOverrides(value: ExecutionOverrides | undefined): boolean {
+  if (value === undefined) return true;
+  const rest: ExecutionOverrides = { ...value };
+  delete rest.executor_instance;
+  delete rest.executor_launch;
+  return isEmptyOverrides(rest);
+}
+
 export function isBareExternalChoice(choice: ExecutionChoice | undefined): boolean {
   return choice !== undefined && !isNativeExecutor(choice.executor) && choice.profile === undefined
-    && choice.profile_file === undefined && choice.external_connection_id === undefined && choice.overrides === undefined;
+    && choice.profile_file === undefined && choice.external_connection_id === undefined && scheduleOnlyOverrides(choice.overrides);
 }
 
 export function sameExecutionChoice(left: ExecutionChoice | undefined, right: ExecutionChoice | undefined): boolean {
@@ -122,7 +130,14 @@ function sameOverrides(left: ExecutionOverrides | undefined, right: ExecutionOve
   if (left === undefined || right === undefined) return isEmptyOverrides(left) && isEmptyOverrides(right);
   if (isEmptyOverrides(left) || isEmptyOverrides(right)) return isEmptyOverrides(left) && isEmptyOverrides(right);
   return left.model === right.model && left.thinking === right.thinking && left.permission_mode === right.permission_mode
-    && left.allow_kiki_subagents === right.allow_kiki_subagents && sameContext(left.kiki_context, right.kiki_context);
+    && left.allow_kiki_subagents === right.allow_kiki_subagents && sameContext(left.kiki_context, right.kiki_context)
+    && sameJson(left.executor_instance, right.executor_instance) && sameJson(left.executor_launch, right.executor_launch);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left === null || right === null) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isEmptyOverrides(value: ExecutionOverrides | undefined): boolean {

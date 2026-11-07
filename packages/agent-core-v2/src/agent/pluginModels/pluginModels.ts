@@ -35,7 +35,7 @@ export class AgentPluginModels implements IAgentPluginModels {
 
   api(pluginId: string, signal: AbortSignal): PluginModelsApi {
     return {
-      list: () => pluginModelCatalog(this.catalog),
+      list: (options) => pluginModelCatalog(this.catalog, options?.candidates),
       stream: (input, options) => this.stream(pluginId, input, options?.signal === undefined ? signal : AbortSignal.any([signal, options.signal])),
     };
   }

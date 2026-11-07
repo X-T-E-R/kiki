@@ -56,7 +56,8 @@ import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravi
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
 import { readExecutorDiscovery } from './executorDiscovery';
 import { AGENT_EXECUTOR_INSTANCES_SECTION, executorInstanceIssue, INSTANCE_ISSUE_MESSAGE, materializeExecutorInstance, type AgentExecutorInstances } from './executorInstances';
-import type { ExecutorDiscoveryStatus } from '@kiki/protocol';
+import { applyInstanceLaunch, overlayScheduleLaunch, type ScheduleInstanceView } from './executorSchedule';
+import { publicExecutorInstance, type ExecutorDiscoveryStatus, type ExecutorLaunch } from '@kiki/protocol';
 
 const CAPABILITY_CACHE_MAX_AGE_MS = 60_000;
 
@@ -99,8 +100,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION);
     const instance = instances !== undefined && Object.hasOwn(instances, id) ? instances[id] : undefined;
     if (instance !== undefined) {
-      return materializeExecutorInstance(id, instance, this.#registeredDescriptor(instance.source_executor, true),
-        (name) => this.bootstrap.getEnv(name));
+      const configuration = instance.launch?.configuration ?? instance.configuration;
+      const proxy = instance.launch?.proxy ?? instance.proxy;
+      const materialized = materializeExecutorInstance(id, { ...instance, configuration, proxy },
+        this.#registeredDescriptor(instance.source_executor, true), (name) => this.bootstrap.getEnv(name));
+      return applyInstanceLaunch({ ...materialized, instance: publicExecutorInstance(instance) }, instance.launch);
     }
     return this.#registeredDescriptor(id);
   }
@@ -323,6 +327,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         { details: { executorId: id } },
       );
     }
+    return this.#resolvePrepared(descriptor, options);
+  }
+
+  #resolvePrepared(descriptor: AgentExecutorDescriptor, options: unknown): ResolvedAgentExecutor {
+    const id = descriptor.id;
     if (descriptor.instanceIssue !== undefined) throw instanceConfigError(id, descriptor.instanceIssue);
     const provider = this.provider(descriptor.protocol);
     const normalized = scalarOptions(options, id);
@@ -436,11 +445,32 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     }
   }
 
+  async resolveScheduled(id: string, launch: ExecutorLaunch, options: unknown = {}): Promise<ResolvedAgentExecutor> {
+    const selected = this.get(id);
+    if (selected === undefined) return this.resolveExecutable(id, options);
+    const familyId = selected.instance?.source_executor ?? selected.id;
+    const family = this.#registeredDescriptor(familyId) ?? selected;
+    const stored = this.#scheduleInstance(id);
+    const overlaid = overlayScheduleLaunch(selected, family, launch, stored, (name) => this.bootstrap.getEnv(name));
+    return this.resolveExecutable(overlaid.id, options, overlaid);
+  }
+
+  #scheduleInstance(id: string): ScheduleInstanceView | undefined {
+    const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION);
+    const instance = instances !== undefined && Object.hasOwn(instances, id) ? instances[id] : undefined;
+    if (instance === undefined) return undefined;
+    return {
+      id, label: instance.label, sourceExecutor: instance.source_executor, quotaAccountId: instance.quota_account_id,
+      configuration: instance.configuration, proxy: instance.proxy, launch: instance.launch,
+    };
+  }
+
   async resolveExecutable(
     id = 'native',
     options: unknown = {},
+    prepared?: AgentExecutorDescriptor,
   ): Promise<ResolvedAgentExecutor> {
-    const resolved = this.resolve(id, options);
+    const resolved = prepared === undefined ? this.resolve(id, options) : this.#resolvePrepared(prepared, options);
     if (resolved.descriptor.id === 'native') return resolved;
     const issue = await executorInstanceIssue(resolved.descriptor, this.fs);
     if (issue !== undefined) throw instanceConfigError(id, issue);

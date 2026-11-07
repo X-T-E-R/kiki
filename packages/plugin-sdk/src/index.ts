@@ -1,4 +1,5 @@
 import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './harness-account.js';
+import type { HarnessQuotaSourceDefinition, HarnessQuotaAdapter, PluginHarnessQuotaApi } from './harness-quota.js';
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 import type { PluginMessagesApi } from './messages.js';
@@ -7,6 +8,7 @@ export * from './models.js';
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 
 export * from './harness-account.js';
+export * from './harness-quota.js';
 export * from './im.js';
 export * from './media.js';
 export * from './messages.js';
@@ -62,6 +64,8 @@ export interface PluginExecutionContext {
   readonly messages: PluginMessagesApi;
   /** Available on Kiki plugin engine 0.4.3 and later. */
   readonly models: PluginModelsApi;
+  /** Cached harness quota. Available on hosts that publish executor quota sources. Does not poll. */
+  readonly harnessQuota?: PluginHarnessQuotaApi;
   readonly credentials: PluginCredentialsApi;
   progress(update: { kind: 'progress' | 'status' | 'stdout' | 'stderr'; text?: string; percent?: number }): void;
 }
@@ -76,6 +80,7 @@ export interface PluginRegistrationApi {
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
   registerHarnessAccountSource(definition: HarnessAccountSourceDefinition, adapter: HarnessAccountAdapter): void;
+  registerHarnessQuotaSource(definition: HarnessQuotaSourceDefinition, adapter: HarnessQuotaAdapter): void;
   registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
 }
 

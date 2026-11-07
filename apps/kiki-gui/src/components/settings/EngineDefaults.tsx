@@ -15,9 +15,9 @@
  */
 
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ExecutorCatalogItem } from '@kiki/protocol';
+import type { ExecutorCatalogItem, ExecutorInstanceChoice } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -27,7 +27,8 @@ import { useConnection } from '../../state/connection';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { FeedbackLine, type Feedback } from '../controls';
 import { DisclosureChevron } from '../icons';
-import { EXECUTORS_QUERY_KEY } from './profileEditor/engines';
+import { ExecutorScheduleControl, scheduleChoiceFromDraft, scheduleChoiceValue } from '../harness/ExecutorScheduleControl';
+import { EXECUTORS_QUERY_KEY, useExecutorCatalog } from './profileEditor/engines';
 import { KIKI_CONTEXT_ORDER } from './profileEditor/profileDraft';
 import { CONTEXT_BLOCKS, DELIVERIES, type ExecutorPromptDelivery } from './profileEditor/executorPromptDraft';
 
@@ -43,6 +44,7 @@ export interface EngineDefaultsDraft {
   readonly promptInclude: readonly string[] | undefined;
   readonly promptBody: string;
   readonly promptAppend: string;
+  readonly executorInstance: string;
 }
 
 export const EMPTY_ENGINE_DEFAULTS: EngineDefaultsDraft = {
@@ -56,6 +58,7 @@ export const EMPTY_ENGINE_DEFAULTS: EngineDefaultsDraft = {
   promptInclude: undefined,
   promptBody: '',
   promptAppend: '',
+  executorInstance: '',
 };
 
 /** The raw `defaults` value as the config response carries it. */
@@ -99,6 +102,7 @@ export function engineDefaultsDraftFrom(saved: SavedDefaults): EngineDefaultsDra
     promptInclude: listField(prompt?.['include']),
     promptBody: stringField(prompt?.['body']),
     promptAppend: stringField(prompt?.['append']),
+    executorInstance: scheduleChoiceValue(saved['executor_instance'] as ExecutorInstanceChoice | undefined),
   };
 }
 
@@ -123,6 +127,7 @@ export function engineDefaultsPatch(draft: EngineDefaultsDraft): Record<string, 
     allow_kiki_subagents: draft.allowKikiSubagents === undefined ? null : draft.allowKikiSubagents,
     inject_kiki_mcp: draft.injectKikiMcp === undefined ? null : draft.injectKikiMcp,
     executor_prompt: promptEmpty ? null : prompt,
+    executor_instance: draft.executorInstance === '' ? null : scheduleChoiceFromDraft(draft.executorInstance) || null,
   };
   return Object.values(defaults).every((value) => value === null) ? null : defaults;
 }
@@ -175,21 +180,34 @@ function GroupRow({ group, engineLabel, on, disabled, onChange }: {
  * harness as it is. Launch settings (`bin_path`, `args`, …) stay in their own
  * block above; this one is about what Kiki adds to a run.
  */
-export function EngineDefaults({ item, saved, onSaved }: {
+export function EngineDefaults({ item, saved, quotaSource = '', instances = [], onSaved }: {
   item: ExecutorCatalogItem;
   saved: SavedDefaults;
+  quotaSource?: string;
+  instances?: readonly ExecutorCatalogItem[];
   onSaved: () => Promise<void>;
 }) {
-  const { client } = useConnection();
+  const { client, scopeId, meta } = useConnection();
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<EngineDefaultsDraft>(() => engineDefaultsDraftFrom(saved));
+  const [quotaDraft, setQuotaDraft] = useState(quotaSource);
   const [saving, setSaving] = useState(false);
+  const quotaQuery = useQuery({
+    queryKey: ['harness-quota', scopeId, meta?.server_id],
+    queryFn: ({ signal }) => client.klient?.rest?.harnessQuota.cached({ signal }) ?? Promise.resolve({ sources: [] }),
+    enabled: client.klient?.rest?.harnessQuota !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const quotaSources = (quotaQuery.data?.sources ?? []).filter((source) => source.engineIds.includes(item.id));
+  const catalog = useExecutorCatalog();
+  const scheduleCatalog = catalog.some((entry) => entry.id === item.id) ? catalog : [item, ...instances, ...catalog];
   const [feedback, setFeedback] = useState<Feedback>(null);
   const engineLabel = item.label;
   const set = <K extends keyof EngineDefaultsDraft>(key: K, value: EngineDefaultsDraft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
-  const dirty = JSON.stringify(engineDefaultsPatch(draft)) !== JSON.stringify(engineDefaultsPatch(engineDefaultsDraftFrom(saved)));
+  const dirty = quotaDraft !== quotaSource || JSON.stringify(engineDefaultsPatch(draft)) !== JSON.stringify(engineDefaultsPatch(engineDefaultsDraftFrom(saved)));
   const support = hookSupport(item.id);
   const groups = draft.kikiContext ?? [];
   const on = (group: string) => groups.includes(group);
@@ -202,7 +220,7 @@ export function EngineDefaults({ item, saved, onSaved }: {
     try {
       await client.patchConfig({
         agent_executor_overrides: {
-          [item.id]: { defaults: engineDefaultsPatch(draft) },
+          [item.id]: { defaults: engineDefaultsPatch(draft), quota_source: quotaDraft === '' ? null : quotaDraft },
         },
       });
       await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
@@ -222,6 +240,21 @@ export function EngineDefaults({ item, saved, onSaved }: {
         {t('st.engines.defaults.title')}
       </summary>
       <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaults.hint', { engine: engineLabel })}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label={t('st.engines.schedule.label')} htmlFor={`${item.id}-default-instance`} hint={t('st.engines.schedule.hint')}>
+          <ExecutorScheduleControl id={`${item.id}-default-instance`} executorId={item.id} catalog={scheduleCatalog}
+            value={scheduleChoiceFromDraft(draft.executorInstance) || undefined} disabled={saving}
+            onChange={(next) => { set('executorInstance', next === '' ? '' : scheduleChoiceValue(next)); }} />
+        </Field>
+        <Field label={t('st.engines.quotaSource')} htmlFor={`${item.id}-quota-source`} hint={t('st.engines.quotaSourceHint')}>
+          <select id={`${item.id}-quota-source`} data-engine-quota-source className={`${INPUT} min-w-0 text-[12px]`} value={quotaDraft} disabled={saving}
+            onChange={(event) => { setQuotaDraft(event.target.value); }}>
+            <option value="">{t('st.engines.quotaSource.none')}</option>
+            {quotaDraft !== '' && !quotaSources.some((source) => source.id === quotaDraft) ? <option value={quotaDraft}>{quotaDraft}</option> : null}
+            {quotaSources.map((source) => <option key={source.id} value={source.id}>{source.label}</option>)}
+          </select>
+        </Field>
+      </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label={t('st.engines.defaults.modelAlias')} htmlFor={`${item.id}-default-model`}
           hint={t('st.engines.defaults.modelAliasHint')}>

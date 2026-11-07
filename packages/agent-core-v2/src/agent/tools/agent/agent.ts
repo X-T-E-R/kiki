@@ -83,6 +83,17 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe('Omit to use the target default thinking effort. An explicit effort overrides that default and must be supported by the target.'),
+    executor_instance: z.union([
+      z.enum(['main', 'auto']),
+      z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/),
+      z.object({ account_id: z.string().min(1) }).strict(),
+    ]).optional().describe('Executor instance for a new agent. Omit to inherit the profile or executor default. main uses the executor\'s own launch. auto selects by comparable quota. A named instance or account_id does not read quota. Resume keeps the saved instance.'),
+    executor_launch: z.object({
+      bin_path: z.string().min(1).nullable().optional(),
+      home_dir: z.string().min(1).nullable().optional(),
+      env: z.record(z.string(), z.string().nullable()).nullable().optional(),
+      args: z.array(z.string()).nullable().optional(),
+    }).strict().optional().describe('Launch patch for a new agent, applied after the selected instance. Null clears one field. env merges by key. args replaces extra arguments. Resume keeps the saved launch.'),
   }).superRefine((args, ctx) => {
     if (args.model_alias === 'inherit') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: INHERIT_MODEL_ALIAS_UNAVAILABLE, path: ['model_alias'] });

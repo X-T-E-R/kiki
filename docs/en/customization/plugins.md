@@ -501,7 +501,7 @@ To use a connection and an explicit remote model, pass `target: { connectionId, 
 
 Events are `started` (resolved model and connection), `delta`, `reset` (discard previous attempt text), `usage`, and `completed`. Iteration rejects on errors with a stable `error.code`; cancellation uses `request.cancelled`. Passing an `AbortSignal`, cancelling the tool, or leaving the loop stops its request. Kiki resolves credentials and OAuth refresh, projects request identity, applies request governance, and records Usage against the invoking session and agent.
 
-`await context.models.list()` returns `{ models, connections }`. Model entries expose `id`, `provider_id`, `remote_id`, display name, context size, and available effective capabilities/protocol. Connection entries expose `id`, provider `type`, `status`, `service` (`chat` or `decision`), default/listed models, and `authentication` (`oauth`, `api-key`, or `none`). Use those fields to label and filter choices rather than inferring capabilities from IDs. Keys, endpoint URLs, custom headers and request-identity settings are not included.
+`await context.models.list()` returns `{ models, connections }`. Pass `{ candidates: ['model-id'] }` to keep entries whose `id` or `remote_id` is in that list. An empty `candidates` array returns no models. Unknown ids are omitted. Listing does not start a run or change a profile. Model entries expose `id`, `provider_id`, `remote_id`, display name, context size, and available effective capabilities/protocol. Connection entries expose `id`, provider `type`, `status`, `service` (`chat` or `decision`), default/listed models, and `authentication` (`oauth`, `api-key`, or `none`). Use those fields to label and filter choices rather than inferring capabilities from IDs. Keys, endpoint URLs, custom headers and request-identity settings are not included.
 
 A custom panel backend receives `PluginPanelContext` as the third argument of `handlePanelRequest(action, args, context)`. It can list models and manage its own declared secret settings, but model execution requires an admitted tool call. A browser panel can use `plugin.models.list`; a client can use `klient.rest.plugins.models()` or `GET /api/plugins/models` for the same catalog.
 
@@ -532,6 +532,24 @@ A source ID is unique within the plugin and uses lowercase letters, digits, and 
 | `release({ leaseId }, context)` | Close the connection and revoke its short-lived key. Release receives the same settings snapshot and a fresh signal. |
 
 Each call receives `{ settings, signal, kikiHome }`. Stop promptly when `signal` aborts, and clean up any partial work before `prepare` throws. Kiki keeps the host alive while a lease is in use and releases any remaining leases when that host shuts down, including on plugin replacement. Keep raw OAuth tokens inside the plugin backend. Account metadata and errors should contain only displayable text, and the short-lived connection must not be exposed through a panel, chat tool, or public API.
+
+### External harness quota sources
+
+A quota-source plugin reports remaining quota for the accounts a person already uses. Declare it in `x-kiki.harnessQuotaSources` and register the same definition with `api.registerHarnessQuotaSource(definition, adapter)` in `entry.mjs`. Types and the cache schemas are exported from `@kiki/plugin-sdk/harness-quota`. Any enabled plugin can register a source. The user chooses one source per engine under that engine's defaults.
+
+```json
+{
+  "engines": { "kiki": ">=0.4.2" },
+  "entry": "./entry.mjs",
+  "harnessQuotaSources": [
+    { "schemaVersion": 1, "id": "example", "label": "Example quota", "engineIds": ["agy-cli"], "minRefreshIntervalMs": 300000 }
+  ]
+}
+```
+
+`read({ signal, settings, kikiHome })` returns one batch, `{ readings }` or an array. Each reading has `accountId`, optional exact `modelIds`, optional display `pool`, `unit`, optional `remaining`, `resetAt`, and `readAt`. Omit `remaining` when the value is unknown. Do not substitute `0` or an unlimited number. A reading with `pool` and no `modelIds` is display-only. A reading with neither is an account-wide limit. `minRefreshIntervalMs` must be at least `300000`. A longer value is kept. Kiki does not poll on a timer, and listing sources does not call `read`.
+
+`await context.harnessQuota.cached()` returns the same cache as `GET /api/harness-quota`. Neither call contacts the quota backend. Use that cache when another plugin needs the readings. Do not poll the quota service again.
 
 ### Chat channels and message delivery
 

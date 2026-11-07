@@ -8,8 +8,11 @@ import { composeRecipeLayers, recipeReferences, recipeRevisionContent } from '#/
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
 import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
-import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
+import type { AgentPromptDiagnostics, ExecutionSchedule, ExecutionSelection, ExecutorInstanceChoice, ExecutorLaunch, ExecutorLaunchPatch } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
+import { AGENT_EXECUTOR_INSTANCES_SECTION, type AgentExecutorInstances } from '#/app/agentExecutor/executorInstances';
+import { mergeExecutorOptions, resolveExecutorSchedule, type ScheduleInstanceView } from '#/app/agentExecutor/executorSchedule';
+import { IHarnessQuotaService } from '#/app/plugin/harnessQuota';
 import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
@@ -361,6 +364,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IEventBus eventBus?: IEventBus,
     @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
     @IRecipeService private readonly recipes?: IRecipeService,
+    @IHarnessQuotaService private readonly quota?: IHarnessQuotaService,
   ) {
     super();
     this.delegationPosition = resolveDelegationPosition(this.agentScope.agentId, undefined);
@@ -544,6 +548,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         injectKikiMcp: snapshot.injectKikiMcp,
         kikiContext: snapshot.kikiContext,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
+        executorLaunch: snapshot.executorLaunch,
         thinkingEffort: snapshot.thinkingLevel,
         thinkingEffortAdjusted: snapshot.thinkingEffortAdjusted,
         bindingAdvisories: snapshot.bindingAdvisories,
@@ -650,10 +655,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const toolOverride = mergeToolBindingOverride(this.profileState.toolOverride, input.toolOverride);
     assertNativeToolOverride(selection.profile.executor, toolOverride);
     assertResearchExecutor(executionRestriction, selection.profile.executor);
-    const executor = await this.executors.resolveExecutable(
-      selection.profile.executor,
-      selection.profile.executorOptions,
-    );
+    const scheduled = await this.resolveScheduledExecutable(selection.profile.executor ?? 'native', selection.profile.executorOptions, selection.profile, input.executorInstance, input.executorLaunch, input.model ?? undefined, input.lockedExecutorId);
+    const executor = scheduled.executor;
     assertResearchExecutor(executionRestriction, executor.descriptor.id);
     this.assertInstanceRevision(executor.descriptor);
     const external = executor.descriptor.id !== 'native';
@@ -692,6 +695,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         spawnPolicy,
         subagentLeases,
         executor,
+        scheduled.launch,
         assertCurrent,
       );
       return;
@@ -892,6 +896,57 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       { details: { executorId: descriptor.id, reason: 'executor_instance_changed' } });
   }
 
+  private async resolveScheduledExecutable(
+    requestedExecutor: string,
+    profileOptions: unknown,
+    profile: { readonly name?: string; readonly definitionId?: string; readonly executor?: string; readonly executorInstance?: ExecutorInstanceChoice; readonly executorLaunch?: ExecutorLaunchPatch } | undefined,
+    sessionChoice: ExecutorInstanceChoice | null | undefined,
+    sessionLaunch: ExecutorLaunchPatch | null | undefined,
+    targetModel: string | undefined,
+    lockedExecutorId: string | undefined,
+  ): Promise<{ readonly executor: ResolvedAgentExecutor; readonly schedule: ExecutionSchedule | undefined; readonly launch: ExecutorLaunch }> {
+    const direct = this.executors.get(requestedExecutor);
+    const familyId = direct?.instance?.source_executor ?? requestedExecutor;
+    const family = this.executors.get(familyId);
+    if (requestedExecutor === 'native' || family?.protocol === 'native' || direct?.protocol === 'native') {
+      return { executor: await this.executors.resolveExecutable(requestedExecutor, profileOptions), schedule: undefined, launch: {} };
+    }
+    const overrides = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION);
+    const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION) ?? {};
+    const views: ScheduleInstanceView[] = Object.entries(instances).filter(([, item]) => item.source_executor === familyId).map(([id, item]) => ({
+      id, label: item.label, sourceExecutor: item.source_executor, quotaAccountId: item.quota_account_id,
+      configuration: item.configuration, proxy: item.proxy, launch: item.launch,
+    }));
+    const profileMatches = profile?.executor === undefined || profile.executor === familyId || profile.executor === requestedExecutor;
+    const resolved = await resolveExecutorSchedule({
+      requestedExecutor, familyId, sessionChoice, sessionLaunch,
+      profileChoice: profileMatches ? profile?.executorInstance : undefined,
+      profileLaunch: profileMatches ? profile?.executorLaunch : undefined,
+      profileExecutor: profile?.executor,
+      profileIdentity: profile?.definitionId ?? profile?.name,
+      defaultsChoice: overrides?.[familyId]?.defaults?.executor_instance ?? overrides?.[requestedExecutor]?.defaults?.executor_instance,
+      instances: views,
+      quotaSourceId: overrides?.[familyId]?.quotaSource ?? overrides?.[requestedExecutor]?.quotaSource,
+      previous: {
+        schedule: this.profileState.execution?.schedule,
+        profileIdentity: this.profileState.profileDefinitionId ?? this.profileState.profileName,
+        executorId: this.profileState.executorId,
+      },
+      lockedExecutorId,
+      targetModel,
+    }, this.quota === undefined ? undefined : (sourceId) => this.quota!.read(sourceId));
+    if (resolved.choice.missingInstance) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor instance "${resolved.choice.launchId}" is not configured for "${familyId}"`, { details: { executorId: resolved.choice.launchId } });
+    }
+    const selected = views.find((item) => item.id === resolved.choice.launchId);
+    const options = mergeExecutorOptions(selected?.launch?.options, profileOptions as Record<string, string | number | boolean> | undefined, sessionLaunch === null ? null : sessionLaunch?.options);
+    const launch = resolved.launch;
+    const executor = this.executors.resolveScheduled !== undefined && Object.keys(launch).length > 0
+      ? await this.executors.resolveScheduled(resolved.choice.launchId, launch, options ?? profileOptions)
+      : await this.executors.resolveExecutable(resolved.choice.launchId, options ?? profileOptions);
+    return { executor, schedule: resolved.schedule, launch };
+  }
+
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
     const retainedPolicy = this.profileState.boundProfile;
     const candidate = input.resolvedProfile ?? (retainedPolicy !== undefined && isNativeTarget(retainedPolicy)
@@ -959,14 +1014,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
-    const executor = await this.executors.resolveExecutable(requested.executor, role?.executorOptions);
+    const scheduled = await this.resolveScheduledExecutable(requested.executor, role?.executorOptions, profile, requested.overrides?.executor_instance, requested.overrides?.executor_launch, execution.effective.model, input.lockedExecutorId);
+    const executor = scheduled.executor;
+    execution.schedule = scheduled.schedule;
     this.assertInstanceRevision(executor.descriptor);
     const nativeAgent = execution.effective.native_agent;
     if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
       if (!['acp', 'acp-v1'].includes(executor.descriptor.protocol)) {
         throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not support native agent selection`);
       }
-      const discovered = this.executors.lastNegotiated?.(requested.executor);
+      const discovered = this.executors.lastNegotiated?.(executor.descriptor.id);
       const retained = this.profileState.execution?.selection.executor === requested.executor
         && this.profileState.execution.effective.native_agent === nativeAgent
         && this.profileState.executorDescriptorRevision === executor.descriptor.revision;
@@ -977,7 +1034,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not advertise native agent "${nativeAgent}"`);
       }
     }
-    const validated = this.requireValidBinding(this.executors.validateBinding(requested.executor, executor.options, {
+    const validated = this.requireValidBinding(this.executors.validateBinding(executor.descriptor.id, executor.options, {
       modelAlias: execution.effective.model, thinkingEffort: execution.effective.thinking,
     }));
     const bindingAdvisories = role === undefined ? [] : this.collectBindingAdvisories({
@@ -1036,6 +1093,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileBind({
       execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
+      executorLaunch: scheduled.launch !== undefined && Object.keys(scheduled.launch).length > 0 ? scheduled.launch : undefined,
       profileName: (role ?? policyProfile)?.name, profileDefinitionId: (role ?? policyProfile)?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
@@ -1224,6 +1282,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     spawnPolicy: SpawnConstraints | undefined,
     subagentLeases: Readonly<Record<string, SubagentLease>> | undefined,
     executor: ResolvedAgentExecutor,
+    executorLaunch: ExecutorLaunch | undefined,
     assertCurrent?: () => void,
   ): Promise<void> {
     persona = persona ?? this.personaSnapshot ?? this.profileState.persona;
@@ -1358,6 +1417,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       injectKikiMcp: profile.injectKikiMcp ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.inject_kiki_mcp,
       kikiContext: profile.kikiContext,
       executorDescriptorRevision: executor.descriptor.revision,
+      executorLaunch: executorLaunch !== undefined && Object.keys(executorLaunch).length > 0 ? executorLaunch : undefined,
       thinkingEffort: effectiveThinkingLevel,
       thinkingEffortExplicit: requestedThinking === undefined ? false : true,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
@@ -2791,6 +2851,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       injectKikiMcp: this.profileState.injectKikiMcp,
       kikiContext: this.profileState.kikiContext,
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
+      executorLaunch: this.profileState.executorLaunch,
       thinkingLevel: this.thinkingLevel,
       effectiveThinkingLevel: thinking.effective,
       thinkingEffortSource: thinking.forced !== undefined
@@ -3270,7 +3331,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private get profileState(): ProfileModelState {
-    return this.states.get(profileKey);
+    return this.states.get(profileKey) as ProfileModelState;
   }
 
   private get currentPersona(): PersonaSnapshot | undefined {

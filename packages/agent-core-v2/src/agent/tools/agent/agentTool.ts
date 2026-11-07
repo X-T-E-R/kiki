@@ -504,6 +504,8 @@ export class SubagentTool implements ISubagentTool {
             name: args.name?.trim(),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
+            executorInstance: args.executor_instance,
+            executorLaunch: args.executor_launch,
             allowParentNotify: args.allow_parent_notify,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             runtime,

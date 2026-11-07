@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
@@ -30,6 +31,11 @@ const sharedTestOptions = {
 
 const parallel = {
   plugins: [rawTextPlugin()],
+  resolve: {
+    alias: {
+      '@kiki/plugin-sdk/harness-quota': fileURLToPath(new URL('../plugin-sdk/src/harness-quota.ts', import.meta.url)),
+    },
+  },
   test: {
     ...sharedTestOptions,
     name: 'kap-server',
