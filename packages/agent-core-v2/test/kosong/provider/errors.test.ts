@@ -332,7 +332,7 @@ describe('non-abort classification still works', () => {
     const local = markProviderEventError(new ChatProviderError('terminal'), 'gateway_stream_terminal_error');
     noteExplicitUpstreamRetryDenial(local, body);
     expect(isRetryableGenerateError(local)).toBe(false);
-    expect(sameRequestRetryProhibition(toErrorPayload(local).details)).toBe('local');
+    expect(sameRequestRetryProhibition(toErrorPayload(local).details)).toBe('stream_terminal');
     expect(toErrorPayload(local).details).toMatchObject({ retry: false });
   });
 

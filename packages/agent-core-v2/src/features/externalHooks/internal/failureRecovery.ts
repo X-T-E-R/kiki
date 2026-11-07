@@ -18,12 +18,10 @@ export function permitsFailureContinuation(error: ErrorPayload): boolean {
   const chain = errorChain(error);
   if (!chain.some((entry) => ['provider.api_error', 'provider.connection_error', 'provider.overloaded'].includes(entry.code))) return false;
   return !chain.some((entry) => {
-    const status = entry.details?.['statusCode'];
+    const status = entry.details?.['statusCode'] ?? entry.details?.['upstreamStatus'];
     return sameRequestRetryProhibition(entry.details) === 'local' ||
-      entry.details?.['request_delivery'] === 'ambiguous' ||
-      entry.details?.['execution'] === 'unknown' ||
       entry.name === 'APIProviderQuotaExhaustedError' ||
-      ['provider.auth_error', 'provider.filtered', 'provider.rate_limit', 'context.overflow'].includes(entry.code) ||
+      ['provider.auth_error', 'provider.filtered', 'provider.rate_limit', 'context.overflow', 'config.invalid'].includes(entry.code) ||
       typeof status === 'number' && status >= 400 && status < 500;
   });
 }

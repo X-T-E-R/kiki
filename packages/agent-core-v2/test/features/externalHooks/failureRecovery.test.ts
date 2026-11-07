@@ -233,44 +233,48 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
-  it('does not continue a gateway terminal error when upstream retryable is true', async () => {
+  it.each([true, false, undefined])('permits a new message but no same-request retry for a gateway event with upstream retryable=%s', async (retryable) => {
     const f = await fixture({ hooks: [alwaysContinue] });
     try {
       const error = noteExplicitUpstreamRetryDenial(
         markProviderEventError(new ChatProviderError('terminal'), 'gateway_stream_terminal_error'),
-        { error: { retryable: true, code: 'gateway_stream_terminal_error' } },
+        { error: { retryable, code: 'gateway_stream_terminal_error' } },
       );
       f.local.mockNextProviderResponse({ error });
-      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
-      expect(f.local.llmCalls).toHaveLength(1);
-      expect(continuations(f.local)).toEqual([]);
-      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(false);
+      f.local.mockNextResponse({ type: 'text', text: 'Continued on the new message' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(2);
+      expect(continuations(f.local)).toHaveLength(1);
+      expect(JSON.stringify(f.local.llmCalls[1])).toContain('继续');
+      const input = f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData;
+      expect(input).toMatchObject({ recoverable: true, errorDetails: { retry: false } });
     } finally { await f.dispose(); }
   });
 
-  it.each(['unknown', 'not_executed'] as const)('keeps same-request retries but independently gates a new message for execution=%s', async (execution) => {
+  it.each(['unknown', 'not_executed'] as const)('keeps a new user message available after native retries for execution=%s', async (execution) => {
     const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
     try {
       const error = () => markProviderEventError(new ChatProviderError('Upstream failure', undefined, { details: { execution } }), 'antigravity_missing_terminal');
       f.local.mockNextProviderResponse({ error: error() });
       f.local.mockNextProviderResponse({ error: error() });
-      if (execution === 'not_executed') f.local.mockNextResponse({ type: 'text', text: 'Continued after a trusted non-execution' });
-      expect(await (await prompt(f.local)).completion).toMatchObject({ state: execution === 'unknown' ? 'failed' : 'completed' });
-      expect(f.local.llmCalls).toHaveLength(execution === 'unknown' ? 2 : 3);
-      expect(continuations(f.local)).toHaveLength(execution === 'unknown' ? 0 : 1);
-      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(execution !== 'unknown');
+      f.local.mockNextResponse({ type: 'text', text: 'Continued on the new message' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(3);
+      expect(continuations(f.local)).toHaveLength(1);
+      expect(f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData?.['recoverable']).toBe(true);
     } finally { await f.dispose(); }
   });
 
-  it('retries an explicit ambiguous delivery and does not continue it', async () => {
+  it('continues an exhausted ambiguous native model request with a new user message', async () => {
     const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 2, policies: [{ match: '.+', backoff: 0 }] } } });
     try {
       f.local.mockNextProviderResponse({ error: ambiguousRequestDelivery(new APIConnectionError('read dropped')) });
       f.local.mockNextProviderResponse({ error: ambiguousRequestDelivery(new APIConnectionError('read dropped again')) });
-      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed' });
-      expect(f.local.llmCalls).toHaveLength(2);
-      expect(continuations(f.local)).toEqual([]);
-      expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')[0]?.[1]?.inputData?.['recoverable']).toBe(false);
+      f.local.mockNextResponse({ type: 'text', text: 'Continued on the new message' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(3);
+      expect(continuations(f.local)).toHaveLength(1);
+      expect(f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData?.['recoverable']).toBe(true);
     } finally { await f.dispose(); }
   });
 

@@ -405,6 +405,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       const payload = toKimiErrorPayload(event.error);
       this.fireAndForget('StopFailure', {
         ...failureHookInput(payload),
+        modelAlias: this.profile?.data().modelAlias,
         turnId: event.turnId,
         recoverable: false,
       }, payload.name);
@@ -437,6 +438,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
         inputData: this.withSessionFacts({
           ...failureHookInput(payload),
+          modelAlias: this.profile?.data().modelAlias,
           turnId: ctx.turnId,
           step: ctx.step,
           recoverable,

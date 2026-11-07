@@ -1,12 +1,12 @@
 {
   "name": "argon-error-recovery",
-  "version": "0.1.0",
-  "description": "Unofficial, bounded continuation for Argon missing-terminal provider errors.",
+  "version": "0.2.0",
+  "description": "Unofficial, one-time continuation after an Argon stream interruption.",
   "license": "MIT",
   "author": "Community",
   "interface": {
     "displayName": "Argon Error Recovery (Unofficial)",
-    "shortDescription": "Continue once after a classified missing terminal response."
+    "shortDescription": "Continue once after an Argon stream interruption."
   },
   "hooks": [
     {

@@ -355,12 +355,16 @@ export function noteConfirmedRequestExecution(error: unknown): void {
   noteRequestDelivery(error, 'confirmed');
 }
 
-const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+const NON_CONTINUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'antigravity_thinking_only',
   'antigravity_safety',
   'antigravity_malformed_function_call',
   'antigravity_malformed_response',
   'antigravity_upstream_terminal_error',
+]);
+
+const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  ...NON_CONTINUABLE_PROVIDER_CODES,
   'gateway_stream_terminal_error',
 ]);
 
@@ -575,19 +579,20 @@ function readNestedErrorObject(value: object): object | undefined {
 
 /** Why the same provider request must not be sent again.
  *
- * `upstream` is only an explicit boolean `retryable: false`. `budget` is an exhausted
- * same-request attempt count. Neither forbids appending a new user message. `local` does.
- * `true`, omission, and non-boolean upstream values are not `upstream` and never clear `local`.
+ * `upstream` is an explicit boolean `retryable: false`, `budget` is an exhausted
+ * attempt count, and `stream_terminal` is a provider event that ended the stream.
+ * These stop same-request retries. `local` also prevents hook continuation.
  */
 export function sameRequestRetryProhibition(
   details: Readonly<Record<string, unknown>> | undefined,
-): 'local' | 'upstream' | 'budget' | undefined {
+): 'local' | 'upstream' | 'budget' | 'stream_terminal' | undefined {
   if (details === undefined) return undefined;
+  if (details['execution'] === 'executed') return 'local';
   const code = details['upstreamErrorCode'];
-  const localCode = typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code);
-  const executed = details['execution'] === 'executed';
-  const localRetry = details['retry'] === false && details['retry_exhausted'] !== true;
-  if (localCode || executed || localRetry) return 'local';
+  if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) {
+    return details['errorSource'] === 'provider_event' && !NON_CONTINUABLE_PROVIDER_CODES.has(code) ? 'stream_terminal' : 'local';
+  }
+  if (details['retry'] === false && details['retry_exhausted'] !== true) return 'local';
   if (details['retry'] === false && details['retry_exhausted'] === true) return 'budget';
   if (details['upstream_retryable'] === false) return 'upstream';
   return undefined;
@@ -645,7 +650,7 @@ export function noteExplicitUpstreamRetryDenial<T>(error: T, body: unknown): T {
   return attachErrorDetails(error, { upstream_retryable: false });
 }
 
-/** Whitelisted identifiers retained from an SDK stream error without its body or headers. */
+/** Whitelisted metadata retained from an SDK stream error without its body or headers. */
 export function providerStreamErrorDetails(
   body: unknown,
   requestId?: string | null,
@@ -660,6 +665,8 @@ export function providerStreamErrorDetails(
     requestId: readProviderErrorIdentifier(requestId) ?? readProviderErrorIdentifier(envelope === undefined ? undefined : readObjectStringProp(envelope, 'request_id')),
     traceId: readProviderErrorIdentifier(traceId),
   };
+  const status = (error as Record<string, unknown> | undefined)?.['status'];
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) details['upstreamStatus'] = status;
   if (explicitUpstreamRetryDenied(body)) details['upstream_retryable'] = false;
   return details;
 }

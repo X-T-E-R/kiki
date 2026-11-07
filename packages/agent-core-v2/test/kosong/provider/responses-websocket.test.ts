@@ -762,7 +762,7 @@ describe('production Responses adapter → generate → canonical history → of
 
   it.each([
     { retryable: false, execution: undefined, retry: false, recoverable: true },
-    { retryable: undefined, execution: 'unknown', retry: true, recoverable: false },
+    { retryable: undefined, execution: 'unknown', retry: true, recoverable: true },
   ])('keeps WS retry and StopFailure eligibility separate: retryable=$retryable execution=$execution', async ({ retryable, execution, retry, recoverable }) => {
     const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({
       type: 'error', status: 500, execution,

@@ -17,11 +17,24 @@ import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthrop
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import type { ChatProvider } from '#/kosong/contract/provider';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import { appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext } from '../../harness';
 import { makeHookRunner } from './runner-stub';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '../../../../transcript/src/index';
 
-const pluginRoot = fileURLToPath(new URL('../../fixtures/plugins/argon-error-recovery/', import.meta.url));
+const pluginRoot = process.env['KIKI_RECOVERY_PLUGIN_ROOT'] ?? fileURLToPath(new URL('../../fixtures/plugins/argon-error-recovery/', import.meta.url));
+const argonModel = 'axon-message/gemini-4-argon';
+const gatewayTerminalError = {
+  code: 'gateway_stream_terminal_error', message: 'Upstream stream ended before a terminal event', status: 502, type: 'upstream_error',
+};
+const gatewayTerminalEvent = ['error', { type: 'error', error: gatewayTerminalError }] as const;
+const gatewayTerminalWire = sse([gatewayTerminalEvent]);
 const usage = { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 202879 };
 const missingTerminalWire = Buffer.from(sse([
   ...Array.from({ length: 7 }, () => ['ping', { type: 'ping' }] as const),
@@ -70,12 +83,26 @@ function terminalSse(text: string): string {
 function toolSse(): string {
   return sse([
     messageStart('msg_tool'),
-    ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_probe', name: 'SaveWork', input: {} } }],
-    ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } }],
+    ...toolBlock('toolu_probe', '{}'),
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
     ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 4 } }],
     ['message_stop', { type: 'message_stop' }],
   ]);
+}
+
+function toolBlock(id: string, argumentsPart: string): ReadonlyArray<readonly [string, unknown]> {
+  return [
+    ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: 'SaveWork', input: {} } }],
+    ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: argumentsPart } }],
+  ];
+}
+
+function textBlock(text: string): ReadonlyArray<readonly [string, unknown]> {
+  return [
+    ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+    ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }],
+    ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+  ];
 }
 
 function errorSse(error: Record<string, unknown>): string {
@@ -100,14 +127,14 @@ interface Replay {
   close(): Promise<void>;
 }
 
-async function replay(choose: (requestNumber: number, continued: boolean) => Buffer | string, options: { readonly maxAttempts?: number; readonly tool?: boolean } = {}): Promise<Replay> {
+async function replay(choose: (requestNumber: number, continued: boolean) => Buffer | string, options: { readonly maxAttempts?: number; readonly tool?: boolean; readonly modelAlias?: string; readonly pluginEnabled?: boolean } = {}): Promise<Replay> {
   const home = await mkdtemp(join(tmpdir(), 'upstream-retry-continuation-'));
   const requests: Replay['requests'] = [];
   const responseBodies: Buffer[] = [];
   const retryEvents: unknown[] = [];
   let continued = false;
   let tools = 0;
-  const server = createServer(async (req, res) => {
+  const respond = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const raw = Buffer.concat(chunks).toString('utf8');
@@ -120,6 +147,11 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
       return;
     }
     req.socket.end(selected);
+  };
+  const server = createServer((req, res) => {
+    void respond(req, res).catch((error: unknown) => {
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -133,7 +165,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
     responseBodies.push(Buffer.from(await response.clone().arrayBuffer()));
     return response;
   });
-  await writeInstalled(home, { version: 1, plugins: [{ id: 'argon-error-recovery', root: pluginRoot, source: 'local-path', enabled: true, installedAt: '2026-11-07T00:00:00.000Z' }] });
+  await writeInstalled(home, { version: 1, plugins: [{ id: 'argon-error-recovery', root: pluginRoot, source: 'local-path', enabled: options.pluginEnabled ?? true, installedAt: '2026-11-07T00:00:00.000Z' }] });
   const manager = new PluginManager({ kimiHomeDir: home });
   await manager.load();
   expect(manager.get('argon-error-recovery')?.diagnostics).toEqual([]);
@@ -147,8 +179,11 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   const local = createTestAgent(
     externalHookServices(runner), permissionModeServices('yolo'),
     appService(IProtocolAdapterRegistry, new FixtureRegistry()),
+    appService(IFileSystemStorageService, new FileStorageService(join(home, 'persistence'))),
+    appService(IAppendLogStore, new SyncDescriptor(AppendLogStore)),
     { initialConfig: { retry: { maxAttempts: options.maxAttempts ?? 5, policies: [{ match: '.+', backoff: 0 }] } } },
   );
+  if (options.modelAlias !== undefined) local.configure({ provider: { type: 'anthropic', model: options.modelAlias, apiKey: 'YOUR_API_KEY', baseUrl: origin } });
   if (options.tool === true) {
     local.get(IAgentToolRegistryService).register({
       name: 'SaveWork', description: 'Save work', parameters: { type: 'object' },
@@ -165,13 +200,13 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
       vi.stubGlobal('fetch', originalFetch);
       await local.dispose();
       await runner.dispose();
-      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+      await server[Symbol.asyncDispose]();
       await rm(home, { recursive: true, force: true });
     },
   };
 }
 
-function writeSse(res: ServerResponse<IncomingMessage>, body: string): void {
+function writeSse(res: ServerResponse, body: string): void {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'close' });
   res.end(body);
 }
@@ -184,7 +219,18 @@ function stops(replayed: Replay) {
   return replayed.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
 }
 
-describe('upstream retryable false through the real Messages SDK', () => {
+function stopResults(replayed: Replay) {
+  return Promise.all(replayed.trigger.mock.calls.flatMap(([event], index) => event === 'StopFailure'
+    ? [replayed.trigger.mock.results[index]?.value] : []));
+}
+
+function prompt(replayed: Replay) {
+  return replayed.local.get(IAgentPromptService).enqueue({
+    message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
+  });
+}
+
+describe('provider failures through the real Messages SDK', () => {
   const open: Replay[] = [];
   afterEach(async () => {
     const pending = open.splice(0);
@@ -228,23 +274,33 @@ describe('upstream retryable false through the real Messages SDK', () => {
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
   }, 60_000);
 
-  it('does not replay a tool that already succeeded before the original wire', async () => {
+  it.each([false, true])('keeps the completed tool result without executing a call from the failed stream (block closed: %s)', async (blockClosed) => {
+    const failed = sse([
+      messageStart('msg_interrupted_tool'),
+      ...toolBlock('toolu_interrupted', blockClosed ? '{}' : '{'),
+      ...(blockClosed ? [['content_block_stop', { type: 'content_block_stop', index: 0 }] as const] : []),
+      gatewayTerminalEvent,
+    ]);
     const replayed = await replay((requestNumber, continued) => {
       if (requestNumber === 1) return toolSse();
-      return continued ? terminalSse('Continued after the saved tool.') : missingTerminalHttp;
-    }, { tool: true });
+      return continued ? terminalSse('Continued after the saved tool.') : failed;
+    }, { tool: true, modelAlias: argonModel });
     open.push(replayed);
-    const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
-      message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
-    })).completion;
-    expect(completion).toMatchObject({ state: 'completed' });
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
     expect(replayed.tools).toBe(1);
     expect(replayed.requests).toHaveLength(3);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(replayed.responseBodies.filter((body) => body.equals(missingTerminalWire))).toHaveLength(1);
+    expect(replayed.responseBodies[1]?.toString()).toBe(failed);
     expect(continuations(replayed.local)).toHaveLength(1);
-    expect(JSON.stringify(replayed.requests[2]?.body)).toContain('saved');
-    expect(JSON.stringify(replayed.requests[2]?.body).split('继续')).toHaveLength(2);
+    const nextRequest = JSON.stringify(replayed.requests[2]?.body);
+    expect(nextRequest).toContain('saved');
+    expect(nextRequest).toContain('toolu_probe');
+    expect(nextRequest).not.toContain('toolu_interrupted');
+    expect(nextRequest.split('继续')).toHaveLength(2);
+    const toolResults = (await replayed.local.persistedWireRecords()).filter((record) => record.type === 'context.append_loop_event')
+      .map((record) => record['event'] as { type: string; toolCallId?: string; result?: { output?: string } })
+      .filter((event) => event.type === 'tool.result');
+    expect(toolResults).toEqual([expect.objectContaining({ toolCallId: 'toolu_probe', result: { output: 'saved' } })]);
   }, 60_000);
 
   it.each(['upstream-denied', 'retry-exhausted'] as const)('retains the final failed partial answer on a new message: %s', async (mode) => {
@@ -260,10 +316,8 @@ describe('upstream retryable false through the real Messages SDK', () => {
         type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
       } }]);
       return sse(events);
-    }, { maxAttempts: 2 });
+    }, { maxAttempts: 2, modelAlias: argonModel });
     open.push(replayed);
-    replayed.trigger.mockImplementation(async (event) => event === 'StopFailure'
-      ? [{ action: 'allow', recovery: { action: 'continue', userMessage: '继续' } }] : []);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
     })).completion;
@@ -291,17 +345,15 @@ describe('upstream retryable false through the real Messages SDK', () => {
     await replayed.local.expectResumeMatches();
   }, 60_000);
 
-  it('retries a real read disconnect and does not append a message for it', async () => {
+  it.each([argonModel, 'example-model'])('keeps native read retries first and limits exhausted continuation to Argon: %s', async (modelAlias) => {
     const partial = sse([messageStart('msg_disconnect')]);
-    const replayed = await replay(() => partial, { maxAttempts: 2 });
+    const replayed = await replay((_number, continued) => continued ? terminalSse('Continued after exhausted native retries.') : partial, { maxAttempts: 2, modelAlias });
     open.push(replayed);
-    const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
-      message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
-    })).completion;
-    expect(completion).toMatchObject({ state: 'failed' });
-    expect(replayed.requests).toHaveLength(2);
+    const argon = modelAlias === argonModel;
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: argon ? 'completed' : 'failed' });
+    expect(replayed.requests).toHaveLength(argon ? 3 : 2);
     expect(replayed.retryEvents).toHaveLength(1);
-    expect(continuations(replayed.local)).toEqual([]);
+    expect(continuations(replayed.local)).toHaveLength(argon ? 1 : 0);
     expect(stops(replayed)).toHaveLength(1);
     const input = stops(replayed)[0]?.[1]?.inputData;
     expect(input).toMatchObject({
@@ -316,22 +368,75 @@ describe('upstream retryable false through the real Messages SDK', () => {
     expect(serialized).not.toContain('upstream_retryable');
   }, 60_000);
 
-  it.each([true, false])('keeps a gateway terminal error terminal when upstream retryable is %s', async (retryable) => {
-    const replayed = await replay(() => errorSse({
-      type: 'api_error', code: 'gateway_stream_terminal_error', message: 'terminal', retryable,
-    }));
+  it('appends a new user message for the Argon gateway terminal event without retrying the original request', async () => {
+    const replayed = await replay((_requestNumber, continued) => continued ? terminalSse('Completed after continuation.') : gatewayTerminalWire, { modelAlias: argonModel });
     open.push(replayed);
-    const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
-      message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
-    })).completion;
-    expect(completion).toMatchObject({ state: 'failed' });
+    const spawn = HostProcessService.prototype.spawn;
+    const inputs: Array<MockInstance<Awaited<ReturnType<typeof spawn>>['stdin']['end']>> = [];
+    const spy = vi.spyOn(HostProcessService.prototype, 'spawn').mockImplementation(async function (this: HostProcessService, command, args, options) {
+      const child = await spawn.call(this, command, args, options);
+      if (command === 'node ./scripts/recover.mjs') inputs.push(vi.spyOn(child.stdin, 'end'));
+      return child;
+    });
+    try {
+      expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(replayed.responseBodies[0]?.toString()).toBe(gatewayTerminalWire);
+    expect(replayed.requests).toHaveLength(2);
+    expect(replayed.retryEvents).toHaveLength(0);
+    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
+    const details = { errorSource: 'provider_event', upstreamErrorCode: gatewayTerminalError.code, upstreamErrorType: 'upstream_error', upstreamStatus: 502, retry: false, requestId: null, traceId: null };
+    const input = stops(replayed)[0]?.[1]?.inputData;
+    expect(input).toMatchObject({ modelAlias: argonModel, recoverable: true, recoveryAttempts: 0, errorDetails: details });
+    expect(input?.['errorDetails']).not.toHaveProperty('upstream_retryable');
+    expect(inputs).toHaveLength(1);
+    const stdin = inputs[0]?.mock.calls[0]?.[0];
+    expect(JSON.parse(String(stdin))).toMatchObject({ hook_event_name: 'StopFailure', model_alias: argonModel, recoverable: true, recovery_attempts: 0, upstream_error_code: gatewayTerminalError.code, error_details: details });
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'continue', userMessage: '继续' } }]]);
+  }, 60_000);
+
+  it('stops after one new message on a repeated gateway failure and retains the final partial', async () => {
+    const replayed = await replay((number) => sse([
+      messageStart(`msg_gateway_${number}`), ...textBlock(`Partial answer ${number}`), gatewayTerminalEvent,
+    ]), { modelAlias: argonModel });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
+    expect(replayed.requests).toHaveLength(2);
+    expect(replayed.retryEvents).toHaveLength(0);
+    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(JSON.stringify(replayed.requests[1]?.body)).toContain('Partial answer 1');
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'continue', userMessage: '继续' } }], [{ exitCode: 0, stdout: '' }]]);
+    const wire = await replayed.local.persistedWireRecords();
+    expect(wire.filter((record) => record.type === 'context.append_message' && JSON.stringify(record).includes('failure_recovery_hook'))).toHaveLength(1);
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of wire) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    const frames = transcript.snapshot().items.flatMap((item) => item.kind === 'turn' ? item.steps.flatMap((step) => step.frames) : []);
+    expect(frames.filter((frame) => frame.kind === 'text' && frame.role === 'user' && frame.text === '继续')).toHaveLength(1);
+    expect(frames.filter((frame) => frame.kind === 'text' && frame.role === 'assistant' && frame.text === 'Partial answer 2')).toHaveLength(1);
+    await replayed.local.expectResumeMatches();
+  }, 60_000);
+
+  it.each([
+    { name: 'another model', modelAlias: 'example-model', retryable: true, pluginEnabled: true, status: 502, recoverable: true },
+    { name: 'disabled plugin', modelAlias: argonModel, retryable: false, pluginEnabled: false, status: 502, recoverable: true },
+    { name: 'billing rejection', modelAlias: argonModel, retryable: undefined, pluginEnabled: true, status: 402, recoverable: false },
+  ])('stops without continuing the same gateway code for $name', async ({ modelAlias, retryable, pluginEnabled, status, recoverable }) => {
+    const replayed = await replay(() => errorSse({ ...gatewayTerminalError, status, retryable }), { modelAlias, pluginEnabled });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
     expect(replayed.requests).toHaveLength(1);
     expect(replayed.retryEvents).toHaveLength(0);
     expect(continuations(replayed.local)).toEqual([]);
     expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
-      recoverable: false,
-      upstreamErrorCode: 'gateway_stream_terminal_error',
-      error: { details: { retry: false, upstreamErrorCode: 'gateway_stream_terminal_error' } },
+      modelAlias, recoverable, upstreamErrorCode: gatewayTerminalError.code,
+      errorDetails: { retry: false, upstreamStatus: status },
     });
   }, 60_000);
 

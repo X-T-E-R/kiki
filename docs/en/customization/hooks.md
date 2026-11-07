@@ -190,7 +190,7 @@ You can also return a JSON object via stdout to block:
 
 ### Continuing after a model failure
 
-A legacy `StopFailure` script can ask the native agent loop to append a new user message and continue after a model request fails. Automatic retries of that same request run first and stop at their budget; the hook cannot add another retry of the failed request. A new message is a separate decision: exhausting the budget, or an upstream boolean `retryable: false` for that request, does not by itself refuse the new message. External executors do not use this recovery path.
+A legacy `StopFailure` script can ask the native agent loop to append a new user message and continue after a model request fails. Automatic retries of the same request run first. The hook can append a new message after those retries stop or run out; it cannot resend the failed request.
 
 Alongside the base event fields, the script receives:
 
@@ -199,6 +199,7 @@ Alongside the base event fields, the script receives:
 | `error_type`, `error_message`, `error_code` | Error name, text, and Kiki error code |
 | `error_details`, `error` | Error details and the full structured error, including its cause chain |
 | `upstream_error_code` | Structured upstream error identifier, when available; do not infer it from message text |
+| `model_alias` | Current model binding from the agent profile, when available; use it to scope model-specific recovery |
 | `turn_id`, `step` | Current turn and step; `step` may be absent for a turn-end observation |
 | `recoverable` | Whether the host permits continuation for this failure |
 | `recovery_attempts`, `max_recovery_attempts` | Continuations already used in this turn and the host limit of `2`; present when the loop asks for recovery |
@@ -218,7 +219,7 @@ When `recoverable` is `true` and the structured error matches a case your script
 
 `userMessage` must contain non-whitespace text and fit within 8 KiB of UTF-8. Kiki appends it as a user message with a hook origin and starts the next step in the same turn. The last failed attempt's partial assistant output and completed tool results stay in context; output discarded for earlier retries stays discarded. This action does not replay the failed request or previous tool calls. There is no `retry` action.
 
-The host permits at most two hook continuations per turn, even when a successful tool step occurs between failures. Cancellation, credentials, billing, quota, safety filtering, context overflow, ambiguous or unknown request execution, an ordinary HTTP 429, a generic gateway terminal error, and the host's own non-retryable classifications cannot be recovered this way. An upstream boolean `retryable: false` only stops an automatic resend of the same request; `true`, omission, and non-boolean values cannot override a host veto. Scripts should use narrower, exact error-code matches rather than continuing every permitted failure.
+The host permits at most two hook continuations per turn, even when a successful tool step occurs between failures. Cancellation, credentials, billing, quota, safety filtering, context overflow, invalid configuration, an ordinary HTTP 429, and permanent provider rejections still stop recovery. A `gateway_stream_terminal_error` stream event forbids resending that request but can be followed by a new user message. Ambiguous or unknown delivery of a native model request does not by itself block that new message; external executors retain their own recovery contracts. An upstream boolean `retryable: false` also stops only the same-request retry. Scripts should match their supported structured failures and use `model_alias` when the policy is model-specific.
 
 Without a continuation request, the original failure ends the turn normally. The same happens if a hook fails, times out, returns invalid output, or requests a different message from another matching hook. A synchronous `StopFailure` invocation is not repeated as a turn-end notification for the same failure; later failures can trigger it again. Return values on observation-only invocations (`recoverable = false`) do not change the outcome.
 

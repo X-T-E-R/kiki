@@ -950,7 +950,9 @@ describe('stepRetry plugin', () => {
     expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', finalizing: false });
     expect(executor.status().state).toBe('idle');
     expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
-    expect(JSON.stringify(ctx.contextData().history)).not.toContain('uncommitted answer');
+    expect(ctx.contextData().history.filter((message) => message.partial === true)).toEqual([
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: 'uncommitted answer' }] }),
+    ]);
     interrupted = false;
     const resumed = await executor.run({ kind: 'prompt', prompt: 'Resume and finish.' }, { signal: new AbortController().signal });
     expect(await resumed.completion).toMatchObject({ summary: 'resumed result' });
