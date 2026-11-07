@@ -80,9 +80,9 @@ export class RecipeSourceReader implements IRecipeSourceReader {
         return decode(value);
       } };
     }
-    if (source.sha256 === undefined) recipeFailure('Recipe ZIP requires SHA-256', source.locator);
+    if (source.sha256 !== undefined && !/^[0-9a-fA-F]{64}$/u.test(source.sha256)) recipeFailure('Recipe ZIP SHA-256 must contain 64 hexadecimal characters', source.locator);
     const buffer = await download(url.href);
-    if (createHash('sha256').update(buffer).digest('hex') !== source.sha256) recipeFailure('Recipe ZIP checksum mismatch', source.locator);
+    if (source.sha256 !== undefined && createHash('sha256').update(buffer).digest('hex') !== source.sha256.toLowerCase()) recipeFailure('Recipe ZIP checksum mismatch', source.locator);
     return zipReader(source, buffer);
   }
   private async readLocal(source: RecipeSource, absolute: string): Promise<RecipePackageReader> {

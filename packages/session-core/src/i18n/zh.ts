@@ -12145,7 +12145,7 @@ export const zh = {
   'st.recipe.sha256': 'SHA-256',
   'st.recipe.sha256Required': 'ZIP 必填',
   'st.recipe.sha256Optional': '可选',
-  'st.recipe.sourceHelp': 'HTTPS 的 recipe.toml、带 SHA-256 的 HTTPS ZIP、GitHub 仓库或 ref，或服务所在机器上的绝对路径。',
+  'st.recipe.sourceHelp': 'HTTPS 的 recipe.toml、HTTPS ZIP（可选填发布者 SHA-256）、GitHub 仓库或 ref，或服务所在机器上的绝对路径。',
   'st.recipe.preparing': '正在准备…',
   'st.recipe.previewRecipe': '预览 Recipe',
   'st.recipe.previewFailed': 'Recipe 准备失败。{detail}',

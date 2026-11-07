@@ -11,7 +11,7 @@ export const recipeUpdateModeSchema = z.enum(['follow', 'pinned']);
 export type RecipeUpdateMode = z.infer<typeof recipeUpdateModeSchema>;
 export const recipeSourceSchema = z.object({
   locator: z.string().trim().min(1),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  sha256: z.string().regex(/^[0-9a-fA-F]{64}$/u).transform((value) => value.toLowerCase()).optional(),
 }).strict();
 export type RecipeSource = z.infer<typeof recipeSourceSchema>;
 export const recipeDiagnosticSchema = z.object({ code: z.string(), message: z.string(), source: z.string().optional(), path: z.string().optional() });

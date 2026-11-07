@@ -12240,7 +12240,7 @@ export const en = {
   'st.recipe.sha256': 'SHA-256',
   'st.recipe.sha256Required': 'Required for a ZIP',
   'st.recipe.sha256Optional': 'Optional',
-  'st.recipe.sourceHelp': 'An HTTPS recipe.toml, an HTTPS ZIP with its SHA-256, a GitHub repo or ref, or an absolute path on the machine running the server.',
+  'st.recipe.sourceHelp': 'An HTTPS recipe.toml, an HTTPS ZIP (with an optional publisher SHA-256), a GitHub repo or ref, or an absolute path on the machine running the server.',
   'st.recipe.preparing': 'Preparing…',
   'st.recipe.previewRecipe': 'Preview Recipe',
   'st.recipe.previewFailed': 'The Recipe could not be prepared. {detail}',

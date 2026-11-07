@@ -188,7 +188,7 @@ section 按标题文本完全匹配，标题层级不限；范围从该标题开
 
 完成 `extends` 合并后，目标 slot 必须已声明且不能是 `off`；非法 slot 键、目标缺失或关闭、以及 `content` 带 `when` 或 `unless` 都会报错。开启的 patch 找不到 section，或 section 重复出现时，求值会失败，并在诊断中指出 option id 和 section。插入项自身不能使用 `when` 或 `unless`。
 
-`global.recipes.fork` 可生成独立的 `copy` 或继承父源的 `extend` 子配方；用 `saveLocal` 和 `expected_revision` 校验编辑生成的本地包。已安装包锁定完整依赖链，可离线使用。`follow` 每日检查更新；`pinned` 保留已接受版本。无效更新保留整个上次接受的 revision。HTTPS ZIP 源必须提供 `sha256`，继承的 ZIP 源也可在 `extends` 中携带。预览与安装接受同一份已检查快照，安装时不再次下载来源。
+`global.recipes.fork` 可生成独立的 `copy` 或继承父源的 `extend` 子配方；用 `saveLocal` 和 `expected_revision` 校验编辑生成的本地包。已安装包锁定完整依赖链，可离线使用。`follow` 每日检查更新；`pinned` 保留已接受版本。无效更新保留整个上次接受的 revision。HTTPS ZIP 源可选填 `sha256` 校验码并在提供时核对，继承的 ZIP 源也可在 `extends` 中携带。预览与安装接受同一份已检查快照，安装时不再次下载来源。
 
 分享本地定制时，先保存草稿，再调用 `global.recipes.export(installation_id)`。返回 `{ name, revision, files }`：建议的 ZIP 文件名、来源已接受的 revision，以及相对路径文件映射。客户端把这些文件打成 ZIP；继承的正文、模型设置与 cadence 已全部展开，不携带父安装引用，因此另一个 Kiki home 可以独立预览、安装。导出不会创建安装、更改模型、修改原文件或上传内容。重新导入会生成自己的 revision；导出结果中的 `revision` 标识发送方已接受的版本。
 

@@ -799,13 +799,25 @@ describe('Recipe package boundaries', () => {
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
-  it('requires a ZIP checksum and rejects mismatched content before unpacking', async () => {
+  it('opens a ZIP without a checksum and rejects invalid or mismatched checksums before unpacking', async () => {
+    const zip = new ZipFile();
+    const chunks: Buffer[] = [];
+    const archive = new Promise<Buffer>((resolve) => {
+      zip.outputStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      zip.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    zip.addBuffer(Buffer.from('schema_version = 1'), 'package/recipe.toml');
+    zip.end();
+    const bytes = await archive;
     const locator = 'https://93.184.216.34/recipe.zip';
-    await expect(reader.open({ locator })).rejects.toThrow('requires SHA-256');
+    await expect(reader.open({ locator, sha256: 'invalid' })).rejects.toThrow('64 hexadecimal');
     expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(new Response(bytes));
+    const withoutChecksum = await reader.open({ locator });
+    expect(await withoutChecksum.read('recipe.toml')).toBe('schema_version = 1');
     fetchMock.mockResolvedValueOnce(new Response('not a ZIP'));
     await expect(reader.open({ locator, sha256: '0'.repeat(64) })).rejects.toThrow('checksum mismatch');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
   it('delegates redirects to guarded-fetch while retaining the Recipe subtree and credential boundaries', async () => {
     const source = 'https://93.184.216.34/package/recipe.toml';

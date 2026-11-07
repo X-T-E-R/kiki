@@ -62,6 +62,7 @@ let packages = new Map<string, RecipeDetail>();
 const updateRecipeCalls: unknown[][] = [];
 const removeRecipeCalls: { installation_id: string; disable_models?: boolean }[] = [];
 const saveLocalCalls: unknown[][] = [];
+const previewRecipeCalls: unknown[] = [];
 let removeFailure = false;
 
 vi.mock('../../state/connection', () => ({
@@ -103,7 +104,16 @@ vi.mock('../../state/connection', () => ({
         return Promise.resolve(saved);
       },
       forkRecipe: () => Promise.reject(new Error('not staged')),
-      previewRecipe: () => Promise.reject(new Error('not staged')),
+      previewRecipe: (input: { source: { locator: string; sha256?: string } }) => {
+        previewRecipeCalls.push(input);
+        return Promise.resolve({
+          preview_id: 'prev-zip',
+          digest: 'sha256:a91d',
+          summary: source({ source: input.source }),
+          resolved: detail().resolved,
+          diagnostics: [],
+        });
+      },
       installRecipe: () => Promise.reject(new Error('not staged')),
       exportRecipe: () => Promise.resolve({ name: 'x', revision: 'r', files: {} }),
     },
@@ -173,6 +183,7 @@ describe('the Recipe library', () => {
     updateRecipeCalls.length = 0;
     removeRecipeCalls.length = 0;
     saveLocalCalls.length = 0;
+    previewRecipeCalls.length = 0;
     removeFailure = false;
   });
 
@@ -272,5 +283,37 @@ describe('the Recipe library', () => {
     await click('[role="alertdialog"] [data-confirm-action="confirm"]');
     expect(packages.has('inst-clear-work')).toBe(true);
     expect(container.textContent).toContain('could not be removed');
+  });
+
+  it('previews a ZIP source without requiring a SHA-256 and validates an explicit checksum', async () => {
+    await renderLibrary();
+    const locatorInput = container.querySelector<HTMLInputElement>('[data-recipe-import-locator]')!;
+    const shaInput = container.querySelector<HTMLInputElement>('[data-recipe-import-sha]')!;
+    const previewButton = container.querySelector<HTMLButtonElement>('button[data-recipe-preview]')!;
+    expect(shaInput.disabled).toBe(false);
+
+    const setInput = async (el: HTMLInputElement, value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        setter.call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    };
+
+    await setInput(locatorInput, 'https://example.test/recipes/custom.zip');
+    expect(previewButton.disabled).toBe(false);
+    await click('button[data-recipe-preview]');
+    expect(previewRecipeCalls).toEqual([{ source: { locator: 'https://example.test/recipes/custom.zip', sha256: undefined } }]);
+
+    await setInput(shaInput, 'not-a-digest');
+    expect(previewButton.disabled).toBe(true);
+
+    await setInput(shaInput, 'A'.repeat(64));
+    expect(previewButton.disabled).toBe(false);
+    await click('button[data-recipe-preview]');
+    expect(previewRecipeCalls.at(-1)).toEqual({
+      source: { locator: 'https://example.test/recipes/custom.zip', sha256: 'a'.repeat(64) },
+    });
   });
 });

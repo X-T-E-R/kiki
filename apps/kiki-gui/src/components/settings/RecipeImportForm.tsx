@@ -1,5 +1,5 @@
 /**
- * Import by link or local path; a ZIP additionally carries its digest.
+ * Import by link or local path; a ZIP may optionally carry its publisher digest.
  *
  * The preview is the frozen candidate: it is what the person reads, and it is
  * what gets installed. Nothing is re-resolved at install time, so a command
@@ -75,7 +75,8 @@ export function RecipeImportForm({ onInstalled, onApply, onFeedback }: {
     },
   );
 
-  const isZip = locator.trim().toLowerCase().endsWith('.zip');
+  const checksum = sha256.trim();
+  const shaInvalid = checksum !== '' && !/^[0-9a-fA-F]{64}$/u.test(checksum);
   const hooks = previewed?.hooks;
   const needsConsent = previewed !== null && recipePreviewNeedsConsent(previewed);
 
@@ -84,24 +85,30 @@ export function RecipeImportForm({ onInstalled, onApply, onFeedback }: {
       onSubmit={(event) => { event.preventDefault(); }}>
       <label className={FORM_LABEL}>
         {t('st.recipe.source')}
-        <input className={`${SMALL_INPUT} mt-1 w-full font-mono`} value={locator} data-recipe-import-locator
+        <input className={SMALL_INPUT + ' mt-1 w-full font-mono'} value={locator} data-recipe-import-locator
           placeholder="https://example.com/recipes/clear-work/recipe.toml"
           onChange={(event) => { setLocator(event.target.value); setPreviewed(null); }} />
       </label>
       <label className={FORM_LABEL}>
         {t('st.recipe.sha256')}
-        <input className={`${SMALL_INPUT} mt-1 w-full font-mono`} value={sha256} data-recipe-import-sha
-          disabled={!isZip && sha256.trim() === ''}
-          placeholder={isZip ? t('st.recipe.sha256Required') : t('st.recipe.sha256Optional')}
+        <input className={SMALL_INPUT + ' mt-1 w-full font-mono'} value={sha256} data-recipe-import-sha
+          spellCheck={false}
+          autoComplete="off"
+          aria-invalid={shaInvalid}
+          placeholder={t('st.recipe.sha256Optional')}
           onChange={(event) => { setSha256(event.target.value); setPreviewed(null); }} />
+        {shaInvalid ? (
+          <span className="mt-1 block text-[12px] font-normal leading-4 text-ink-faint">
+            {t('cap.source.shaInvalid')}
+          </span>
+        ) : null}
       </label>
       <Hint>{t('st.recipe.sourceHelp')}</Hint>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className={SECONDARY} disabled={preview.isPending || locator.trim() === ''}
+        <button type="button" className={SECONDARY} disabled={preview.isPending || locator.trim() === '' || shaInvalid}
           data-recipe-preview
           onClick={() => {
-            const trimmed = sha256.trim();
-            preview.mutate({ locator: locator.trim(), sha256: trimmed === '' ? undefined : trimmed });
+            preview.mutate({ locator: locator.trim(), sha256: checksum === '' ? undefined : checksum.toLowerCase() });
           }}>
           {t(preview.isPending ? 'st.recipe.preparing' : 'st.recipe.previewRecipe')}
         </button>
