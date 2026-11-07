@@ -8545,7 +8545,7 @@ export const zh = {
   'st.engines.instance.launch.envClear': '清除已保存的环境变量',
   'st.engines.instance.launch.envKeep': '保留已保存的环境变量',
   'st.engines.schedule.label': '实例',
-  'st.engines.schedule.hint': '留空继承下一层默认。Main 使用这个引擎自己的启动，不读额度。Auto 按目标模型的剩余额度选择。',
+  'st.engines.schedule.hint': '留空继承下一层默认。Main 使用这个引擎自己的启动，不读额度。自动按目标模型的剩余额度选择。',
   'st.engines.schedule.inherit': '继承',
   'st.engines.schedule.main': 'Main',
   'st.engines.schedule.auto': '自动',

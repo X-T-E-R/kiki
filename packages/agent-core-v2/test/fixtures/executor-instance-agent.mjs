@@ -15,7 +15,11 @@ if (process.argv.includes('models')) {
   process.exit(0);
 }
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const account = JSON.parse(await readFile(join(process.env.INSTANCE_HOME, 'account.json'), 'utf8'));
+const grokAuthPath = process.env.GROK_AUTH_PATH;
+const homeDir = process.env.INSTANCE_HOME || process.env.GROK_HOME;
+const accountFile = grokAuthPath || join(homeDir, process.env.GROK_HOME && !process.env.INSTANCE_HOME ? 'auth.json' : 'account.json');
+const rawAccount = JSON.parse(await readFile(accountFile, 'utf8'));
+const account = rawAccount.id ? rawAccount : Object.values(rawAccount)[0];
 const sessions = new Set();
 const target = new URL(account.endpoint);
 async function outbound(sessionId) {
@@ -36,7 +40,7 @@ async function outbound(sessionId) {
       path: proxyUrl && !socket ? target.href : target.pathname,
       method: 'POST', agent: socket ? undefined : false,
       createConnection: socket ? () => socket : undefined,
-      headers: { 'x-fixture-account': account.id, 'x-fixture-session': sessionId,
+      headers: { 'x-fixture-account': account.id ?? account.email ?? account.user_id, 'x-fixture-session': sessionId,
         authorization: `Bearer ${account.key}`,
         'proxy-authorization': proxyUrl?.username ? `Basic ${Buffer.from(`${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`).toString('base64')}` : '' },
     }, (res) => {
@@ -46,7 +50,17 @@ async function outbound(sessionId) {
       res.on('end', () => res.statusCode === 200 ? resolve(text) : reject(new Error(`Fixture request failed: ${res.statusCode}`)));
     });
     req.on('error', reject);
-    req.end(JSON.stringify({ pid: process.pid, noProxy: process.env.NO_PROXY, inherited: process.env.INSTANCE_HOST_MARKER }));
+    req.end(JSON.stringify({
+      pid: process.pid,
+      noProxy: process.env.NO_PROXY,
+      inherited: process.env.INSTANCE_HOST_MARKER,
+      exampleFlag: process.env.EXAMPLE_FLAG,
+      extraFlag: process.env.EXTRA_FLAG,
+      grokHome: process.env.GROK_HOME,
+      grokAuthPath: process.env.GROK_AUTH_PATH,
+      xaiApiKey: process.env.XAI_API_KEY,
+      argv: process.argv.slice(2),
+    }));
   });
 }
 for await (const line of createInterface({ input: process.stdin })) {

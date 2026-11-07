@@ -5,7 +5,8 @@
     "engines": { "kiki": ">=0.4.2" },
     "entry": "./entry.mjs",
     "harnessQuotaSources": [
-      { "schemaVersion": 1, "id": "example", "label": "Fixture quota", "engineIds": ["agy-cli", "fixture-acp"], "minRefreshIntervalMs": 300000 }
+      { "schemaVersion": 1, "id": "example", "label": "Fixture quota", "engineIds": ["agy-cli", "fixture-acp"], "minRefreshIntervalMs": 300000 },
+      { "schemaVersion": 1, "id": "grok", "label": "Fixture Grok quota", "engineIds": ["fixture-acp", "grok-acp"], "minRefreshIntervalMs": 300000 }
     ]
   }
 }

@@ -904,12 +904,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     sessionLaunch: ExecutorLaunchPatch | null | undefined,
     targetModel: string | undefined,
     lockedExecutorId: string | undefined,
-  ): Promise<{ readonly executor: ResolvedAgentExecutor; readonly schedule: ExecutionSchedule | undefined; readonly launch: ExecutorLaunch }> {
+  ): Promise<{ readonly executor: ResolvedAgentExecutor; readonly schedule: ExecutionSchedule | undefined; readonly launch: ExecutorLaunch | undefined }> {
     const direct = this.executors.get(requestedExecutor);
     const familyId = direct?.instance?.source_executor ?? requestedExecutor;
     const family = this.executors.get(familyId);
     if (requestedExecutor === 'native' || family?.protocol === 'native' || direct?.protocol === 'native') {
-      return { executor: await this.executors.resolveExecutable(requestedExecutor, profileOptions), schedule: undefined, launch: {} };
+      return { executor: await this.executors.resolveExecutable(requestedExecutor, profileOptions), schedule: undefined, launch: undefined };
     }
     const overrides = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION);
     const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION) ?? {};
@@ -918,10 +918,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       configuration: item.configuration, proxy: item.proxy, launch: item.launch,
     }));
     const profileMatches = profile?.executor === undefined || profile.executor === familyId || profile.executor === requestedExecutor;
+    const effectiveProfileLaunch = profileMatches ? profile?.executorLaunch : undefined;
     const resolved = await resolveExecutorSchedule({
       requestedExecutor, familyId, sessionChoice, sessionLaunch,
       profileChoice: profileMatches ? profile?.executorInstance : undefined,
-      profileLaunch: profileMatches ? profile?.executorLaunch : undefined,
+      profileLaunch: effectiveProfileLaunch,
       profileExecutor: profile?.executor,
       profileIdentity: profile?.definitionId ?? profile?.name,
       defaultsChoice: overrides?.[familyId]?.defaults?.executor_instance ?? overrides?.[requestedExecutor]?.defaults?.executor_instance,
@@ -936,15 +937,26 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       targetModel,
     }, this.quota === undefined ? undefined : (sourceId) => this.quota!.read(sourceId));
     if (resolved.choice.missingInstance) {
+      if (typeof resolved.choice.choice === 'object') {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor account "${resolved.choice.choice.account_id}" is not configured for "${familyId}"`, {
+          details: { executorId: familyId, accountId: resolved.choice.choice.account_id },
+        });
+      }
       throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor instance "${resolved.choice.launchId}" is not configured for "${familyId}"`, { details: { executorId: resolved.choice.launchId } });
     }
     const selected = views.find((item) => item.id === resolved.choice.launchId);
-    const options = mergeExecutorOptions(selected?.launch?.options, profileOptions as Record<string, string | number | boolean> | undefined, sessionLaunch === null ? null : sessionLaunch?.options);
-    const launch = resolved.launch;
-    const executor = this.executors.resolveScheduled !== undefined && Object.keys(launch).length > 0
-      ? await this.executors.resolveScheduled(resolved.choice.launchId, launch, options ?? profileOptions)
+    const profileOptionLayer = effectiveProfileLaunch?.options === null
+      ? null
+      : (profileOptions === undefined && effectiveProfileLaunch?.options === undefined)
+        ? undefined
+        : { ...(profileOptions as Record<string, string | number | boolean> | undefined), ...effectiveProfileLaunch?.options };
+    const options = mergeExecutorOptions(selected?.launch?.options, profileOptionLayer, sessionLaunch === null ? undefined : sessionLaunch?.options);
+    const hasLaunchOverride = effectiveProfileLaunch !== undefined || (sessionLaunch !== undefined && sessionLaunch !== null);
+    const persistedLaunch = hasLaunchOverride || Object.keys(resolved.launch).length > 0 ? resolved.launch : undefined;
+    const executor = this.executors.resolveScheduled !== undefined && persistedLaunch !== undefined
+      ? await this.executors.resolveScheduled(resolved.choice.launchId, persistedLaunch, options)
       : await this.executors.resolveExecutable(resolved.choice.launchId, options ?? profileOptions);
-    return { executor, schedule: resolved.schedule, launch };
+    return { executor, schedule: resolved.schedule, launch: persistedLaunch };
   }
 
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
@@ -1093,7 +1105,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileBind({
       execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
-      executorLaunch: scheduled.launch !== undefined && Object.keys(scheduled.launch).length > 0 ? scheduled.launch : undefined,
+      executorLaunch: scheduled.launch,
       profileName: (role ?? policyProfile)?.name, profileDefinitionId: (role ?? policyProfile)?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
@@ -1417,7 +1429,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       injectKikiMcp: profile.injectKikiMcp ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.inject_kiki_mcp,
       kikiContext: profile.kikiContext,
       executorDescriptorRevision: executor.descriptor.revision,
-      executorLaunch: executorLaunch !== undefined && Object.keys(executorLaunch).length > 0 ? executorLaunch : undefined,
+      executorLaunch,
       thinkingEffort: effectiveThinkingLevel,
       thinkingEffortExplicit: requestedThinking === undefined ? false : true,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,

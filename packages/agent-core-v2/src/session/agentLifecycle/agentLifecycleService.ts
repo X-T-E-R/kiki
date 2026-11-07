@@ -656,9 +656,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         { details: { agentId: handle.id, mismatches } },
       );
     }
-    const executor = await handle.accessor
-      .get(IAgentExecutorRegistry)
-      .resolveExecutable(data.executorId, data.executorOptions);
+    const registry = handle.accessor.get(IAgentExecutorRegistry);
+    const executor = data.executorLaunch !== undefined && data.executorId !== undefined && registry.resolveScheduled !== undefined
+      ? await registry.resolveScheduled(data.executorId, data.executorLaunch, data.executorOptions)
+      : await registry.resolveExecutable(data.executorId, data.executorOptions);
     if (executor.descriptor.protocol !== data.executorProtocol) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,

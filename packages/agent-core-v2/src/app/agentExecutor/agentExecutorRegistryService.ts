@@ -448,10 +448,10 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   async resolveScheduled(id: string, launch: ExecutorLaunch, options: unknown = {}): Promise<ResolvedAgentExecutor> {
     const selected = this.get(id);
     if (selected === undefined) return this.resolveExecutable(id, options);
-    const familyId = selected.instance?.source_executor ?? selected.id;
-    const family = this.#registeredDescriptor(familyId) ?? selected;
     const stored = this.#scheduleInstance(id);
-    const overlaid = overlayScheduleLaunch(selected, family, launch, stored, (name) => this.bootstrap.getEnv(name));
+    const familyId = stored?.sourceExecutor ?? selected.instance?.source_executor ?? selected.id;
+    const family = this.#registeredDescriptor(familyId, stored !== undefined);
+    const overlaid = overlayScheduleLaunch(selected, family ?? { id: familyId, protocol: 'unavailable', args: [], revision: familyId }, launch, stored, (name) => this.bootstrap.getEnv(name));
     return this.resolveExecutable(overlaid.id, options, overlaid);
   }
 

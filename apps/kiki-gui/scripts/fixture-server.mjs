@@ -2854,15 +2854,41 @@ class FixtureServer {
       if (instancesPatch !== undefined) {
         const instances = { ...this.config.agent_executor_instances };
         for (const [id, entry] of Object.entries(instancesPatch)) {
-          if (entry === null) delete instances[id];
-          else if (entry.proxy.kind === 'url') {
+          if (entry === null) {
+            delete instances[id];
+            continue;
+          }
+          const prevInstance = instances[id];
+          const nextInstance = structuredClone(entry);
+          if (entry.quota_account_id === null) delete nextInstance.quota_account_id;
+          else if (entry.quota_account_id === undefined && prevInstance?.quota_account_id !== undefined) {
+            nextInstance.quota_account_id = prevInstance.quota_account_id;
+          }
+          if (entry.launch === null) {
+            delete nextInstance.launch;
+          } else if (entry.launch !== undefined) {
+            const launch = structuredClone(entry.launch);
+            if (launch.env !== undefined) {
+              const keys = Object.keys(launch.env).sort();
+              delete launch.env;
+              if (keys.length > 0) launch.env_keys = keys;
+            } else if (prevInstance?.launch?.env_keys !== undefined) {
+              launch.env_keys = [...prevInstance.launch.env_keys];
+            }
+            if (Object.keys(launch).length > 0) nextInstance.launch = launch;
+            else delete nextInstance.launch;
+          } else if (prevInstance?.launch !== undefined) {
+            nextInstance.launch = structuredClone(prevInstance.launch);
+          }
+          if (entry.proxy.kind === 'url') {
             const { authorization, ...proxy } = entry.proxy;
-            const previous = instances[id]?.proxy;
+            const previous = prevInstance?.proxy;
             const hasAuthorization = authorization === undefined
               ? previous?.kind === 'url' && previous.has_authorization && new URL(previous.url).href === new URL(proxy.url).href
               : authorization !== null;
-            instances[id] = { ...entry, proxy: { ...proxy, has_authorization: hasAuthorization || undefined } };
-          } else instances[id] = structuredClone(entry);
+            nextInstance.proxy = { ...proxy, has_authorization: hasAuthorization || undefined };
+          }
+          instances[id] = nextInstance;
         }
         this.config.agent_executor_instances = instances;
       }
@@ -2873,13 +2899,24 @@ class FixtureServer {
           ...(typeof previous === 'object' && previous !== null && !Array.isArray(previous) ? previous : {}),
         };
         for (const [id, entry] of Object.entries(executorPatch)) {
-          const base = merged[id];
-          merged[id] = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
-            ? {
-              ...(typeof base === 'object' && base !== null && !Array.isArray(base) ? base : {}),
-              ...entry,
+          if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+            merged[id] = entry;
+            continue;
+          }
+          const base = typeof merged[id] === 'object' && merged[id] !== null && !Array.isArray(merged[id]) ? merged[id] : {};
+          const nextEntry = { ...base, ...entry };
+          for (const [field, val] of Object.entries(entry)) {
+            if (val === null) delete nextEntry[field];
+          }
+          if (entry.defaults !== undefined && entry.defaults !== null && typeof entry.defaults === 'object' && !Array.isArray(entry.defaults)) {
+            const prevDefaults = typeof base.defaults === 'object' && base.defaults !== null && !Array.isArray(base.defaults) ? base.defaults : {};
+            const nextDefaults = { ...prevDefaults, ...entry.defaults };
+            for (const [k, v] of Object.entries(entry.defaults)) {
+              if (v === null) delete nextDefaults[k];
             }
-            : entry;
+            nextEntry.defaults = nextDefaults;
+          }
+          merged[id] = nextEntry;
         }
         this.config.agent_executor_overrides = merged;
       }
@@ -3040,7 +3077,7 @@ class FixtureServer {
           ?? 'You name conversations. Answer with the title only: one line, at most 8 words, no quotes, no trailing punctuation, in the language of the conversation.';
         title.prompt_source = typeof title.prompt === 'string' && title.prompt !== '' ? 'custom' : 'default';
       }
-      return this.envelope(res, this.config);
+      return this.envelope(res, spaceConfig(this));
     }
     if (path === '/config') {
       return this.envelope(res, spaceConfig(this));
@@ -3506,6 +3543,15 @@ class FixtureServer {
     }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
+    }
+    if (path === '/harness-quota' && method === 'GET') {
+      return this.envelope(res, { sources: structuredClone(this.scenario?.data.harnessQuotaSources ?? []) });
+    }
+    if (path === '/harness-quota/read' && method === 'POST') {
+      const sources = structuredClone(this.scenario?.data.harnessQuotaSources ?? []).filter((item) => item.id === body?.source);
+      return sources.length > 0
+        ? this.envelope(res, { sources })
+        : this.envelope(res, null, 40001, `Unknown harness quota source ${String(body?.source ?? '')}`);
     }
     const accountSourcesMatch = /^\/executors\/([^/]+)\/account-sources$/.exec(path);
     if (accountSourcesMatch !== null && method === 'GET') {

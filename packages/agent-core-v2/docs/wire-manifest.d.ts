@@ -871,6 +871,7 @@ interface ProfileBindPayload {
   injectKikiMcp?: boolean;
   kikiContext?: 'memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks'[];
   executorDescriptorRevision?: string;
+  executorLaunch?: import('@kiki/protocol').executorLaunchSchema;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
   thinkingEffortAdjusted?: boolean;

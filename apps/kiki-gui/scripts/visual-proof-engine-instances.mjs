@@ -120,6 +120,9 @@ async function walk({ page, link, shot, view, control }) {
   assert.equal(agyAccountRequests.filter((request) => request.pathname.endsWith('/accounts')).length, 1);
   await account.selectOption('work');
   await agyCreate.locator('[data-instance-name]').fill('AGY Work account');
+  await agyCreate.locator('[data-instance-quota-account]').fill('work');
+  await agyCreate.locator('[data-instance-args]').fill('--example\n--fast');
+  await agyCreate.locator('[data-instance-env]').fill('EXAMPLE_FLAG=1');
   await agyCreate.locator('[data-instance-proxy]').selectOption('url');
   await agyCreate.locator('[data-instance-proxy-value]').fill('http://127.0.0.1:8080');
   await agyCreate.locator('[data-instance-proxy-auth-edit]').click();
@@ -151,6 +154,9 @@ async function walk({ page, link, shot, view, control }) {
   assert.equal(await agyEdit.locator('[data-instance-configuration]').inputValue(), 'plugin_account');
   assert.equal(await agyEdit.locator('[data-instance-account-source]').inputValue(), 'plugin:fixture-accounts/accounts');
   assert.equal(await agyEdit.locator('[data-instance-account]').inputValue(), 'work');
+  assert.equal(await agyEdit.locator('[data-instance-quota-account]').inputValue(), 'work');
+  assert.equal(await agyEdit.locator('[data-instance-args]').inputValue(), '--example\n--fast');
+  assert.equal(await agyEdit.locator('[data-instance-env-keys]').innerText(), 'EXAMPLE_FLAG');
   assert.equal(await agyEdit.locator('[data-instance-proxy-value]').inputValue(), 'http://127.0.0.1:8080');
   await agyEdit.scrollIntoViewIfNeeded();
   await shot(`agy-account-edit-${view.locale}-${view.width}`);
@@ -185,6 +191,33 @@ async function walk({ page, link, shot, view, control }) {
   await enterAuth(agyEdit, auth);
   assert.deepEqual((await saveInstance(agyEdit)).authorization, auth);
 
+  await page.goto(link(`${settings}&engine=agy-cli`), { waitUntil: 'domcontentloaded' });
+  const defaults = page.locator('[data-engine-defaults]');
+  await defaults.locator('summary').click();
+  const defaultSchedule = defaults.locator('[data-executor-schedule="agy-cli"]');
+  const quotaSourceSelect = defaults.locator('[data-engine-quota-source]');
+  await quotaSourceSelect.locator('option[value="plugin:magpie-harness-quota/antigravity"]').waitFor({ state: 'attached' });
+  await defaultSchedule.selectOption('auto');
+  await quotaSourceSelect.selectOption('plugin:magpie-harness-quota/antigravity');
+  const defaultsPatchResponse = page.waitForResponse((result) => new URL(result.url()).pathname === '/api/config' && result.request().method() === 'POST');
+  await defaults.locator('[data-engine-defaults-save]').click();
+  const savedDefaultsPayload = (await defaultsPatchResponse).request().postDataJSON();
+  assert.deepEqual(savedDefaultsPayload.agent_executor_overrides['agy-cli'], {
+    defaults: {
+      model_alias: null,
+      thinking_effort: null,
+      permission_mode: null,
+      kiki_context: null,
+      allow_kiki_subagents: null,
+      inject_kiki_mcp: null,
+      executor_prompt: null,
+      executor_instance: 'auto',
+    },
+    quota_source: 'plugin:magpie-harness-quota/antigravity',
+  });
+  await defaultSchedule.scrollIntoViewIfNeeded();
+  await shot(`agy-defaults-schedule-${view.locale}-${view.width}`);
+
   await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
   const profileTrigger = page.locator('[data-profile-trigger]').first();
   await profileTrigger.click();
@@ -202,6 +235,12 @@ async function walk({ page, link, shot, view, control }) {
   await profileTrigger.filter({ hasText: 'AGY Work account' }).waitFor();
   await shot(`agy-instance-selected-${view.locale}-${view.width}`);
   await profileTrigger.click();
+  const composerSchedule = page.locator('[data-execution-schedule] [data-executor-schedule="agy-cli"]');
+  await composerSchedule.waitFor();
+  assert.equal(await composerSchedule.inputValue(), agyInstanceId);
+  await composerSchedule.selectOption('auto');
+  assert.equal(await composerSchedule.inputValue(), 'auto');
+  await shot(`agy-composer-schedule-auto-${view.locale}-${view.width}`);
   await globalAgy.click();
   await profileTrigger.filter({ hasText: 'AGY CLI' }).waitFor();
 

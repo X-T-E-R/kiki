@@ -94,6 +94,15 @@
   # label: string
   # configuration: object | object | object | object | object
   # proxy: object | object | object | object
+  # quota_account_id: string
+  # launch: object
+    # bin_path: string
+    # home_dir: string
+    # configuration: object | object | object | object | object
+    # proxy: object | object | object | object
+    # env: record<string, string>
+    # args: string[]
+    # options: record<string, string | number | boolean>
 
 # ##########################################################################
 # agentExecutorOverrides (config.toml: agent_executor_overrides)
@@ -120,11 +129,13 @@
       # body: string
       # append: string
       # per_engine: record<string, object>
+    # executor_instance: "main" | "auto" | string | object
   # bin_path: string
   # home_dir: string
   # env: record<string, string>
   # args: string[]
   # show_in_profile_list: boolean
+  # quota_source: string
 
 # ##########################################################################
 # agentExecutors (config.toml: agent_executors)

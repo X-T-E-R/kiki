@@ -55,6 +55,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     defaultProfile: true,
     installHint: 'Install the Grok Build CLI',
     loginCommand: ['grok'],
+    apiKeyEnv: 'XAI_API_KEY',
     diagnostics: [
       { kind: 'env', name: 'XAI_API_KEY', present: 'XAI_API_KEY is present in the host environment.',
         absent: 'Grok reuses the existing CLI login; set XAI_API_KEY only if that is how the vendor CLI is authenticated.' },

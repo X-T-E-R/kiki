@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { abortError } from '#/_base/utils/abort';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
@@ -196,7 +197,10 @@ export class PluginHost {
         this.scheduleIdle();
         if (error) reject(error); else resolve(value);
       };
-      const cancel = () => finish(signal.reason instanceof Error ? signal.reason : new Error('Harness quota read cancelled'));
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(signal.reason instanceof Error ? signal.reason : abortError('Harness quota read cancelled'));
+      };
       signal.addEventListener('abort', cancel, { once: true });
       this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error) });
       this.send({ id, method: 'harness-quota-request', params: { sourceId, settings, kikiHome: this.kikiHome } });

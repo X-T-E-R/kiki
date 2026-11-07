@@ -587,6 +587,47 @@ export interface SessionStateSnapshot {
             kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
             allow_kiki_subagents?: boolean | null;
             inject_kiki_mcp?: boolean | null;
+            executor_instance?: string | {
+              account_id: string;
+            } | null;
+            executor_launch?: {
+              bin_path?: string | null;
+              home_dir?: string | null;
+              configuration?: {
+                kind: 'inherit';
+              } | {
+                kind: 'config_directory';
+                path: string;
+              } | {
+                kind: 'claude_settings';
+                path: string;
+              } | {
+                kind: 'credential_env';
+                name: string;
+              } | {
+                kind: 'plugin_account';
+                source: string;
+                account_id: string;
+              } | null;
+              proxy?: {
+                kind: 'inherit';
+              } | {
+                kind: 'direct';
+              } | {
+                kind: 'env';
+                name: string;
+              } | {
+                kind: 'url';
+                url: string;
+                authorization?: {
+                  username: string;
+                  password: string;
+                } | null;
+              } | null;
+              env?: Record<string, string | null> | null;
+              args?: string[] | null;
+              options?: Record<string, boolean | string | number | null> | null;
+            } | null;
           };
         };
         effective: {
@@ -600,6 +641,50 @@ export interface SessionStateSnapshot {
         };
         sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
         generation: number;
+        schedule?: {
+          instance: string;
+          choice: string | {
+            account_id: string;
+          };
+          source: 'profile' | 'session' | 'harness-settings' | 'harness-default';
+          quota_consulted: boolean;
+          quota_source?: string;
+          launch?: {
+            bin_path?: string;
+            home_dir?: string;
+            configuration?: {
+              kind: 'inherit';
+            } | {
+              kind: 'config_directory';
+              path: string;
+            } | {
+              kind: 'claude_settings';
+              path: string;
+            } | {
+              kind: 'credential_env';
+              name: string;
+            } | {
+              kind: 'plugin_account';
+              source: string;
+              account_id: string;
+            };
+            proxy?: {
+              kind: 'inherit';
+            } | {
+              kind: 'direct';
+            } | {
+              kind: 'env';
+              name: string;
+            } | {
+              kind: 'url';
+              url: string;
+              has_authorization?: boolean;
+            };
+            env_keys?: string[];
+            args?: string[];
+            options?: Record<string, boolean | string | number>;
+          };
+        };
       };
       readonly personaId?: string;
       readonly homedir?: string;
@@ -1202,7 +1287,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'output' | 'input';
+        readonly phase: 'input' | 'output';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1583,7 +1668,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'output' | 'input';
+      readonly phase: 'input' | 'output';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -1892,7 +1977,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'output' | 'input';
+        readonly phase: 'input' | 'output';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -2325,7 +2410,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'output' | 'input';
+      readonly phase: 'input' | 'output';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -4029,6 +4114,47 @@ export interface AgentStateSnapshot {
           kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
           allow_kiki_subagents?: boolean | null;
           inject_kiki_mcp?: boolean | null;
+          executor_instance?: string | {
+            account_id: string;
+          } | null;
+          executor_launch?: {
+            bin_path?: string | null;
+            home_dir?: string | null;
+            configuration?: {
+              kind: 'inherit';
+            } | {
+              kind: 'config_directory';
+              path: string;
+            } | {
+              kind: 'claude_settings';
+              path: string;
+            } | {
+              kind: 'credential_env';
+              name: string;
+            } | {
+              kind: 'plugin_account';
+              source: string;
+              account_id: string;
+            } | null;
+            proxy?: {
+              kind: 'inherit';
+            } | {
+              kind: 'direct';
+            } | {
+              kind: 'env';
+              name: string;
+            } | {
+              kind: 'url';
+              url: string;
+              authorization?: {
+                username: string;
+                password: string;
+              } | null;
+            } | null;
+            env?: Record<string, string | null> | null;
+            args?: string[] | null;
+            options?: Record<string, boolean | string | number | null> | null;
+          } | null;
         };
       };
       effective: {
@@ -4042,6 +4168,50 @@ export interface AgentStateSnapshot {
       };
       sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
       generation: number;
+      schedule?: {
+        instance: string;
+        choice: string | {
+          account_id: string;
+        };
+        source: 'profile' | 'session' | 'harness-settings' | 'harness-default';
+        quota_consulted: boolean;
+        quota_source?: string;
+        launch?: {
+          bin_path?: string;
+          home_dir?: string;
+          configuration?: {
+            kind: 'inherit';
+          } | {
+            kind: 'config_directory';
+            path: string;
+          } | {
+            kind: 'claude_settings';
+            path: string;
+          } | {
+            kind: 'credential_env';
+            name: string;
+          } | {
+            kind: 'plugin_account';
+            source: string;
+            account_id: string;
+          };
+          proxy?: {
+            kind: 'inherit';
+          } | {
+            kind: 'direct';
+          } | {
+            kind: 'env';
+            name: string;
+          } | {
+            kind: 'url';
+            url: string;
+            has_authorization?: boolean;
+          };
+          env_keys?: string[];
+          args?: string[];
+          options?: Record<string, boolean | string | number>;
+        };
+      };
     };
     readonly executorId?: string;
     readonly executorProtocol?: string;
@@ -4062,6 +4232,44 @@ export interface AgentStateSnapshot {
     readonly injectKikiMcp?: boolean;
     readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
     readonly executorDescriptorRevision?: string;
+    readonly executorLaunch?: {
+      bin_path?: string;
+      home_dir?: string;
+      configuration?: {
+        kind: 'inherit';
+      } | {
+        kind: 'config_directory';
+        path: string;
+      } | {
+        kind: 'claude_settings';
+        path: string;
+      } | {
+        kind: 'credential_env';
+        name: string;
+      } | {
+        kind: 'plugin_account';
+        source: string;
+        account_id: string;
+      };
+      proxy?: {
+        kind: 'inherit';
+      } | {
+        kind: 'direct';
+      } | {
+        kind: 'env';
+        name: string;
+      } | {
+        kind: 'url';
+        url: string;
+        authorization?: {
+          username: string;
+          password: string;
+        };
+      };
+      env?: Record<string, string>;
+      args?: string[];
+      options?: Record<string, boolean | string | number>;
+    };
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
     readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
@@ -4671,6 +4879,47 @@ export interface AgentStateSnapshot {
         };
         readonly executor?: string;
         readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+        readonly executorInstance?: string | {
+          account_id: string;
+        };
+        readonly executorLaunch?: {
+          bin_path?: string | null;
+          home_dir?: string | null;
+          configuration?: {
+            kind: 'inherit';
+          } | {
+            kind: 'config_directory';
+            path: string;
+          } | {
+            kind: 'claude_settings';
+            path: string;
+          } | {
+            kind: 'credential_env';
+            name: string;
+          } | {
+            kind: 'plugin_account';
+            source: string;
+            account_id: string;
+          } | null;
+          proxy?: {
+            kind: 'inherit';
+          } | {
+            kind: 'direct';
+          } | {
+            kind: 'env';
+            name: string;
+          } | {
+            kind: 'url';
+            url: string;
+            authorization?: {
+              username: string;
+              password: string;
+            } | null;
+          } | null;
+          env?: Record<string, string | null> | null;
+          args?: string[] | null;
+          options?: Record<string, boolean | string | number | null> | null;
+        };
         readonly executorPrompt?: {
           delivery?: 'replace' | 'append' | 'preamble';
           include?: readonly string[];
@@ -4748,7 +4997,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
-        readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
+        readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
         readonly prompt: string;
         readonly path: string;
         readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
@@ -4759,7 +5008,7 @@ export interface AgentStateSnapshot {
         readonly profile: string;
         readonly description: string;
         readonly whenToUse?: string;
-        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'append' | 'prepend' | 'wrap' | 'inherit';
+        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'inherit' | 'append' | 'prepend' | 'wrap';
         readonly prompt: string;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
@@ -4949,6 +5198,47 @@ export interface AgentStateSnapshot {
       readonly configuration?: 'native';
       readonly executor?: string;
       readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+      readonly executorInstance?: string | {
+        account_id: string;
+      };
+      readonly executorLaunch?: {
+        bin_path?: string | null;
+        home_dir?: string | null;
+        configuration?: {
+          kind: 'inherit';
+        } | {
+          kind: 'config_directory';
+          path: string;
+        } | {
+          kind: 'claude_settings';
+          path: string;
+        } | {
+          kind: 'credential_env';
+          name: string;
+        } | {
+          kind: 'plugin_account';
+          source: string;
+          account_id: string;
+        } | null;
+        proxy?: {
+          kind: 'inherit';
+        } | {
+          kind: 'direct';
+        } | {
+          kind: 'env';
+          name: string;
+        } | {
+          kind: 'url';
+          url: string;
+          authorization?: {
+            username: string;
+            password: string;
+          } | null;
+        } | null;
+        env?: Record<string, string | null> | null;
+        args?: string[] | null;
+        options?: Record<string, boolean | string | number | null> | null;
+      };
       readonly executorPrompt?: {
         delivery?: 'replace' | 'append' | 'preamble';
         include?: readonly string[];
@@ -5120,7 +5410,7 @@ export interface AgentStateSnapshot {
         readonly files?: readonly string[];
         readonly fields?: Readonly<Record<string, string>>;
       }[];
-      readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
+      readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
         readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
           readonly id: string;
@@ -5381,6 +5671,47 @@ export interface AgentStateSnapshot {
           };
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorInstance?: string | {
+            account_id: string;
+          };
+          readonly executorLaunch?: {
+            bin_path?: string | null;
+            home_dir?: string | null;
+            configuration?: {
+              kind: 'inherit';
+            } | {
+              kind: 'config_directory';
+              path: string;
+            } | {
+              kind: 'claude_settings';
+              path: string;
+            } | {
+              kind: 'credential_env';
+              name: string;
+            } | {
+              kind: 'plugin_account';
+              source: string;
+              account_id: string;
+            } | null;
+            proxy?: {
+              kind: 'inherit';
+            } | {
+              kind: 'direct';
+            } | {
+              kind: 'env';
+              name: string;
+            } | {
+              kind: 'url';
+              url: string;
+              authorization?: {
+                username: string;
+                password: string;
+              } | null;
+            } | null;
+            env?: Record<string, string | null> | null;
+            args?: string[] | null;
+            options?: Record<string, boolean | string | number | null> | null;
+          };
           readonly executorPrompt?: {
             delivery?: 'replace' | 'append' | 'preamble';
             include?: readonly string[];
@@ -5458,7 +5789,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
+          readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
@@ -5546,6 +5877,47 @@ export interface AgentStateSnapshot {
                 kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
                 allow_kiki_subagents?: boolean | null;
                 inject_kiki_mcp?: boolean | null;
+                executor_instance?: string | {
+                  account_id: string;
+                } | null;
+                executor_launch?: {
+                  bin_path?: string | null;
+                  home_dir?: string | null;
+                  configuration?: {
+                    kind: 'inherit';
+                  } | {
+                    kind: 'config_directory';
+                    path: string;
+                  } | {
+                    kind: 'claude_settings';
+                    path: string;
+                  } | {
+                    kind: 'credential_env';
+                    name: string;
+                  } | {
+                    kind: 'plugin_account';
+                    source: string;
+                    account_id: string;
+                  } | null;
+                  proxy?: {
+                    kind: 'inherit';
+                  } | {
+                    kind: 'direct';
+                  } | {
+                    kind: 'env';
+                    name: string;
+                  } | {
+                    kind: 'url';
+                    url: string;
+                    authorization?: {
+                      username: string;
+                      password: string;
+                    } | null;
+                  } | null;
+                  env?: Record<string, string | null> | null;
+                  args?: string[] | null;
+                  options?: Record<string, boolean | string | number | null> | null;
+                } | null;
               };
             };
             effective: {
@@ -5559,6 +5931,50 @@ export interface AgentStateSnapshot {
             };
             sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
             generation: number;
+            schedule?: {
+              instance: string;
+              choice: string | {
+                account_id: string;
+              };
+              source: 'profile' | 'session' | 'harness-settings' | 'harness-default';
+              quota_consulted: boolean;
+              quota_source?: string;
+              launch?: {
+                bin_path?: string;
+                home_dir?: string;
+                configuration?: {
+                  kind: 'inherit';
+                } | {
+                  kind: 'config_directory';
+                  path: string;
+                } | {
+                  kind: 'claude_settings';
+                  path: string;
+                } | {
+                  kind: 'credential_env';
+                  name: string;
+                } | {
+                  kind: 'plugin_account';
+                  source: string;
+                  account_id: string;
+                };
+                proxy?: {
+                  kind: 'inherit';
+                } | {
+                  kind: 'direct';
+                } | {
+                  kind: 'env';
+                  name: string;
+                } | {
+                  kind: 'url';
+                  url: string;
+                  has_authorization?: boolean;
+                };
+                env_keys?: string[];
+                args?: string[];
+                options?: Record<string, boolean | string | number>;
+              };
+            };
           };
           readonly executorId?: string;
           readonly executorProtocol?: string;
@@ -5579,6 +5995,44 @@ export interface AgentStateSnapshot {
           readonly injectKikiMcp?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
           readonly executorDescriptorRevision?: string;
+          readonly executorLaunch?: {
+            bin_path?: string;
+            home_dir?: string;
+            configuration?: {
+              kind: 'inherit';
+            } | {
+              kind: 'config_directory';
+              path: string;
+            } | {
+              kind: 'claude_settings';
+              path: string;
+            } | {
+              kind: 'credential_env';
+              name: string;
+            } | {
+              kind: 'plugin_account';
+              source: string;
+              account_id: string;
+            };
+            proxy?: {
+              kind: 'inherit';
+            } | {
+              kind: 'direct';
+            } | {
+              kind: 'env';
+              name: string;
+            } | {
+              kind: 'url';
+              url: string;
+              authorization?: {
+                username: string;
+                password: string;
+              };
+            };
+            env?: Record<string, string>;
+            args?: string[];
+            options?: Record<string, boolean | string | number>;
+          };
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
@@ -6179,6 +6633,47 @@ export interface AgentStateSnapshot {
             };
             readonly executor?: string;
             readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+            readonly executorInstance?: string | {
+              account_id: string;
+            };
+            readonly executorLaunch?: {
+              bin_path?: string | null;
+              home_dir?: string | null;
+              configuration?: {
+                kind: 'inherit';
+              } | {
+                kind: 'config_directory';
+                path: string;
+              } | {
+                kind: 'claude_settings';
+                path: string;
+              } | {
+                kind: 'credential_env';
+                name: string;
+              } | {
+                kind: 'plugin_account';
+                source: string;
+                account_id: string;
+              } | null;
+              proxy?: {
+                kind: 'inherit';
+              } | {
+                kind: 'direct';
+              } | {
+                kind: 'env';
+                name: string;
+              } | {
+                kind: 'url';
+                url: string;
+                authorization?: {
+                  username: string;
+                  password: string;
+                } | null;
+              } | null;
+              env?: Record<string, string | null> | null;
+              args?: string[] | null;
+              options?: Record<string, boolean | string | number | null> | null;
+            };
             readonly executorPrompt?: {
               delivery?: 'replace' | 'append' | 'preamble';
               include?: readonly string[];
@@ -6256,7 +6751,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
-            readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
+            readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
             readonly prompt: string;
             readonly path: string;
             readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
@@ -6448,6 +6943,47 @@ export interface AgentStateSnapshot {
           };
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorInstance?: string | {
+            account_id: string;
+          };
+          readonly executorLaunch?: {
+            bin_path?: string | null;
+            home_dir?: string | null;
+            configuration?: {
+              kind: 'inherit';
+            } | {
+              kind: 'config_directory';
+              path: string;
+            } | {
+              kind: 'claude_settings';
+              path: string;
+            } | {
+              kind: 'credential_env';
+              name: string;
+            } | {
+              kind: 'plugin_account';
+              source: string;
+              account_id: string;
+            } | null;
+            proxy?: {
+              kind: 'inherit';
+            } | {
+              kind: 'direct';
+            } | {
+              kind: 'env';
+              name: string;
+            } | {
+              kind: 'url';
+              url: string;
+              authorization?: {
+                username: string;
+                password: string;
+              } | null;
+            } | null;
+            env?: Record<string, string | null> | null;
+            args?: string[] | null;
+            options?: Record<string, boolean | string | number | null> | null;
+          };
           readonly executorPrompt?: {
             delivery?: 'replace' | 'append' | 'preamble';
             include?: readonly string[];
@@ -6525,7 +7061,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
+          readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
@@ -7785,7 +8321,7 @@ export interface AgentStateSnapshot {
           readonly disclosure?: unknown;
         } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'shell_command';
-          readonly phase: 'output' | 'input';
+          readonly phase: 'input' | 'output';
           readonly isError?: boolean;
         } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'compaction_summary';
@@ -7989,6 +8525,47 @@ export interface AgentStateSnapshot {
             kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
             allow_kiki_subagents?: boolean | null;
             inject_kiki_mcp?: boolean | null;
+            executor_instance?: string | {
+              account_id: string;
+            } | null;
+            executor_launch?: {
+              bin_path?: string | null;
+              home_dir?: string | null;
+              configuration?: {
+                kind: 'inherit';
+              } | {
+                kind: 'config_directory';
+                path: string;
+              } | {
+                kind: 'claude_settings';
+                path: string;
+              } | {
+                kind: 'credential_env';
+                name: string;
+              } | {
+                kind: 'plugin_account';
+                source: string;
+                account_id: string;
+              } | null;
+              proxy?: {
+                kind: 'inherit';
+              } | {
+                kind: 'direct';
+              } | {
+                kind: 'env';
+                name: string;
+              } | {
+                kind: 'url';
+                url: string;
+                authorization?: {
+                  username: string;
+                  password: string;
+                } | null;
+              } | null;
+              env?: Record<string, string | null> | null;
+              args?: string[] | null;
+              options?: Record<string, boolean | string | number | null> | null;
+            } | null;
           };
         };
         readonly afterModelSwitch?: string;

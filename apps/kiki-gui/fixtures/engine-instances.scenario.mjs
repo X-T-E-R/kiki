@@ -33,6 +33,20 @@ export default {
       ],
     },
   },
+  harnessQuotaSources: [
+    {
+      id: 'plugin:magpie-harness-quota/antigravity',
+      label: 'Magpie · Antigravity',
+      engineIds: ['agy-cli'],
+      minRefreshIntervalMs: 300_000,
+    },
+    {
+      id: 'plugin:magpie-harness-quota/codex',
+      label: 'Magpie · Codex',
+      engineIds: ['codex-app-server'],
+      minRefreshIntervalMs: 300_000,
+    },
+  ],
   accountSourceUnavailable: false,
   engineDiscovery: { items: executors.filter(item => item.id !== 'native').map(item => ({
     id: item.id, label: item.label, protocol: item.protocol, installed: true, status: 'installed',

@@ -113,6 +113,7 @@ registerConfigSection(AGENT_EXECUTOR_INSTANCES_SECTION, AgentExecutorInstancesSc
 const PROXY_URL_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
 const PROXY_BYPASS_ENV = ['NO_PROXY', 'no_proxy'];
 const LOOPBACK_BYPASS = 'localhost,.localhost,127.0.0.1,::1,[::1]';
+const GROK_CREDENTIAL_ENV_VARS = ['GROK_AUTH', 'GROK_AUTH_PATH', 'GROK_AUTH_PROVIDER_COMMAND', 'GROK_AUTH_EXPIRED', 'XAI_API_KEY'];
 
 export const INSTANCE_ISSUE_MESSAGE: Record<ExecutorInstanceIssue, string> = {
   instance_source_unavailable: 'The source engine is unavailable. Restore its registration or choose another source engine.',
@@ -139,14 +140,16 @@ export function materializeExecutorInstance(
   let instanceProxyUrl: string | undefined;
   const proxySecrets: string[] = [];
   const claude = base?.id === 'claude-acp' || base?.claudeSettingsFile !== undefined;
+  const grok = base?.id === 'grok-acp' || base?.homeEnv === 'GROK_HOME';
   if (base === undefined || base.protocol === 'native') {
     issue = 'instance_source_unavailable';
   } else if (configuration.kind !== 'inherit') {
     claudeSettingsFile = undefined;
     if (claude) {
       for (const key of [...CLAUDE_CREDENTIAL_ENV_VARS, ...CLAUDE_EXTERNAL_BACKEND_ENV_VARS]) envUnset.add(key);
-    } else if (base.apiKeyEnv !== undefined) {
-      envUnset.add(base.apiKeyEnv);
+    } else {
+      if (grok) for (const key of GROK_CREDENTIAL_ENV_VARS) envUnset.add(key);
+      if (base.apiKeyEnv !== undefined) envUnset.add(base.apiKeyEnv);
     }
     if (configuration.kind === 'plugin_account') {
       if (!supportsExecutorPluginAccount(base)) issue = 'instance_configuration_unsupported';

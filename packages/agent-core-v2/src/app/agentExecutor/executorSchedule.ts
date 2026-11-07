@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   executorInstanceIdSchema,
+  publicExecutorInstance,
   publicExecutorLaunch,
   type ExecutionSchedule,
   type ExecutionValueSource,
@@ -138,7 +139,7 @@ function resolveChoice(input: ScheduleChoiceInput, choice: ExecutorInstanceChoic
     return decision(input, choice, source, choice, choice, { missingInstance: familyInstance(input, choice) === undefined });
   }
   const match = input.instances.find((instance) => instance.sourceExecutor === input.familyId && instanceAccountId(instance) === choice.account_id);
-  if (match === undefined) return decision(input, choice, source, input.familyId, 'main');
+  if (match === undefined) return decision(input, choice, source, input.familyId, 'main', { missingInstance: true });
   return decision(input, choice, source, match.id, match.id);
 }
 
@@ -160,6 +161,7 @@ export function chooseAutoInstance(
   const usable = readings.filter((reading) => readingCanRoute(reading, targetModel));
   const counts = new Map<HarnessQuotaReading['unit'], number>();
   for (const reading of usable) {
+    if ((reading.remaining ?? 0) <= 0) continue;
     if (!candidates.some((instance) => instanceAccountId(instance) === reading.accountId)) continue;
     counts.set(reading.unit, (counts.get(reading.unit) ?? 0) + 1);
   }
@@ -169,7 +171,9 @@ export function chooseAutoInstance(
     const account = instanceAccountId(instance);
     const windows = usable.filter((reading) => reading.accountId === account && reading.unit === unit);
     if (windows.length === 0) return [];
-    return [{ id: instance.id, remaining: Math.min(...windows.map((reading) => reading.remaining ?? 0)) }];
+    const remaining = Math.min(...windows.map((reading) => reading.remaining ?? 0));
+    if (remaining <= 0) return [];
+    return [{ id: instance.id, remaining }];
   }).sort((left, right) => right.remaining - left.remaining || left.id.localeCompare(right.id));
   return scored[0]?.id ?? 'main';
 }
@@ -226,11 +230,21 @@ export function mergeLaunchLayers(
 
 export function mergeExecutorOptions(
   instance: Readonly<Record<string, string | number | boolean>> | undefined,
-  profile: Readonly<Record<string, string | number | boolean>> | undefined,
+  profile: Readonly<Record<string, string | number | boolean | null>> | null | undefined,
   session: Readonly<Record<string, string | number | boolean | null>> | null | undefined,
 ): Record<string, string | number | boolean> | undefined {
-  const merged: Record<string, string | number | boolean> = { ...instance, ...profile };
-  if (session !== undefined && session !== null) {
+  let merged: Record<string, string | number | boolean> = { ...instance };
+  if (profile === null) {
+    merged = {};
+  } else if (profile !== undefined) {
+    for (const [key, value] of Object.entries(profile)) {
+      if (value === null) delete merged[key];
+      else merged[key] = value;
+    }
+  }
+  if (session === null) {
+    merged = {};
+  } else if (session !== undefined) {
     for (const [key, value] of Object.entries(session)) {
       if (value === null) delete merged[key];
       else merged[key] = value;
@@ -266,9 +280,11 @@ function applyLaunchScalars(descriptor: AgentExecutorDescriptor, launch: Executo
   if (launch.home_dir !== undefined) next = { ...next, homeDir: launch.home_dir };
   if (launch.env !== undefined) {
     const secrets = Object.values(launch.env).filter((value) => value.length > 0);
+    const explicitKeys = new Set(Object.keys(launch.env).map((key) => process.platform === 'win32' ? key.toLowerCase() : key));
     next = {
       ...next,
       env: { ...next.env, ...launch.env },
+      envUnset: next.envUnset?.filter((key) => !explicitKeys.has(process.platform === 'win32' ? key.toLowerCase() : key)),
       launchSecrets: [...(next.launchSecrets ?? []), ...secrets].sort((left, right) => right.length - left.length),
     };
   }
@@ -287,25 +303,43 @@ export function overlayScheduleLaunch(
 ): AgentExecutorDescriptor {
   const configuration = patch.configuration;
   const proxy = patch.proxy;
-  const configChanges = configuration !== undefined && JSON.stringify(configuration) !== JSON.stringify(stored?.configuration ?? selected.instance?.configuration);
-  const proxyChanges = proxy !== undefined && JSON.stringify(publicExecutorLaunch({ proxy })?.proxy) !== JSON.stringify(selected.instance?.proxy);
-  let descriptor = selected;
-  if ((configChanges || proxyChanges) && family.protocol !== 'native') {
-    const materialized = materializeExecutorInstance(stored?.id ?? family.id, {
+  let descriptor = family;
+  if (stored !== undefined) {
+    const baseInstance: ExecutorInstanceConfig = {
       source_executor: family.id,
-      label: stored?.label ?? selected.label ?? family.label ?? family.id,
-      configuration: configuration ?? stored?.configuration ?? { kind: 'inherit' },
-      proxy: proxy ?? stored?.proxy ?? { kind: 'inherit' },
-      quota_account_id: stored?.quotaAccountId,
-      launch: stored?.launch,
+      label: stored.label,
+      configuration: stored.configuration,
+      proxy: stored.proxy,
+      quota_account_id: stored.quotaAccountId,
+      launch: stored.launch,
+    };
+    const effectiveConfiguration = configuration ?? stored.configuration;
+    const effectiveProxy = proxy ?? stored.proxy;
+    const materialized = materializeExecutorInstance(stored.id, {
+      ...baseInstance,
+      configuration: effectiveConfiguration,
+      proxy: effectiveProxy,
     }, family, hostEnv);
-    const published = stored === undefined ? undefined : materialized.instance;
-    descriptor = stored === undefined
-      ? { ...materialized, id: family.id, label: family.label, instance: undefined, defaultProfile: family.defaultProfile }
-      : { ...materialized, instance: published };
-    descriptor = applyInstanceLaunch(descriptor, stored?.launch);
+    const publishedInstance = publicExecutorInstance(baseInstance);
+    const effectivePublicProxy = publicExecutorInstance({ ...baseInstance, proxy: effectiveProxy }).proxy;
+    descriptor = {
+      ...materialized,
+      instance: {
+        ...publishedInstance,
+        configuration: effectiveConfiguration,
+        proxy: effectivePublicProxy,
+      },
+    };
+  } else if ((configuration !== undefined || proxy !== undefined) && family.protocol !== 'native') {
+    const materialized = materializeExecutorInstance(family.id, {
+      source_executor: family.id,
+      label: selected.label ?? family.label ?? family.id,
+      configuration: configuration ?? { kind: 'inherit' },
+      proxy: proxy ?? { kind: 'inherit' },
+    }, family, hostEnv);
+    descriptor = { ...materialized, id: family.id, label: family.label, instance: undefined, defaultProfile: family.defaultProfile };
   }
-  return applyLaunchScalars(descriptor, patch);
+  return applyInstanceLaunch(descriptor, patch);
 }
 
 export function scheduleRecord(

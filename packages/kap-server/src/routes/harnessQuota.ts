@@ -44,13 +44,15 @@ export function registerHarnessQuotaRoutes(app: HarnessQuotaRouteHost, core: Sco
       try {
         await quota.read(req.body.source, signal);
       } catch (error) {
+        if (signal.aborted) return;
         const message = error instanceof Error ? error.message : 'Harness quota source is unavailable';
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
         return;
       }
+      if (signal.aborted) return;
       const cached = await quota.cached();
       reply.send(okEnvelope({ sources: cached.sources.filter((source) => source.id === req.body.source) }, req.id));
-    });
+    }, req);
   });
   app.post(readRoute.path, readRoute.options, readRoute.handler as unknown as Parameters<HarnessQuotaRouteHost['post']>[2]);
 }

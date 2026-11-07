@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyExecutorInstancePatch } from '#/app/agentExecutor/executorInstances';
+import { applyExecutorInstancePatch, materializeExecutorInstance } from '#/app/agentExecutor/executorInstances';
 import {
+  applyInstanceLaunch,
   chooseAutoInstance,
   decideExecutorSchedule,
+  mergeExecutorOptions,
   mergeLaunchLayers,
+  overlayScheduleLaunch,
   resolveExecutorSchedule,
   winningScheduleChoice,
   type ScheduleInstanceView,
 } from '#/app/agentExecutor/executorSchedule';
-import type { HarnessQuotaReading } from '@kiki/protocol';
+import type { AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { publicExecutorInstance, type ExecutorInstanceConfig, type HarnessQuotaReading } from '@kiki/protocol';
 
 const family = 'agy-cli';
 
@@ -55,14 +59,21 @@ describe('executor schedule', () => {
     }))).toMatchObject({ reused: true, instance: 'instance-work', choice: 'instance-work' });
   });
 
-  it('matches an account without reading quota and uses main when nothing matches', () => {
+  it('matches an account without reading quota and marks an unmatched account as missing while preserving saved bindings', () => {
     expect(decideExecutorSchedule(input({ sessionChoice: { account_id: 'personal' }, quotaSourceId: 'plugin:fixture-quota/example' }))).toMatchObject({
-      instance: 'instance-personal', needsQuota: false, launchId: 'instance-personal',
+      instance: 'instance-personal', needsQuota: false, launchId: 'instance-personal', missingInstance: false,
     });
-    expect(decideExecutorSchedule(input({ sessionChoice: { account_id: 'missing' } }))).toMatchObject({ instance: 'main', needsQuota: false });
+    expect(decideExecutorSchedule(input({ sessionChoice: { account_id: 'missing' } }))).toMatchObject({
+      choice: { account_id: 'missing' }, missingInstance: true, needsQuota: false,
+    });
+    const savedSchedule = { instance: 'instance-work', choice: { account_id: 'retired-account' }, source: 'session' as const, quota_consulted: false };
+    expect(decideExecutorSchedule(input({
+      sessionChoice: { account_id: 'retired-account' }, profileIdentity: 'same',
+      previous: { schedule: savedSchedule, profileIdentity: 'same', executorId: 'instance-work' },
+    }))).toMatchObject({ reused: true, instance: 'instance-work', launchId: 'instance-work', missingInstance: false });
   });
 
-  it('picks the highest comparable remaining and stays stable on a tie', () => {
+  it('picks the highest positive comparable remaining, rejects exhausted zero, and stays stable on a tie', () => {
     const readings: HarnessQuotaReading[] = [
       { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 20 },
       { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: 80 },
@@ -78,6 +89,20 @@ describe('executor schedule', () => {
       { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
       { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: 5 },
     ], family, 'fixture-model')).toBe('instance-personal');
+    expect(chooseAutoInstance(instances, [
+      { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+      { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+    ], family, 'fixture-model')).toBe('main');
+    expect(chooseAutoInstance(instances, [
+      { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 50 },
+      { accountId: 'work', modelIds: ['fixture-model'], window: 'daily', unit: 'percent', remaining: 0 },
+      { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: undefined },
+    ], family, 'fixture-model')).toBe('main');
+    expect(chooseAutoInstance(instances, [
+      { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+      { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+      { accountId: 'work', modelIds: ['fixture-model'], unit: 'tokens', remaining: 120 },
+    ], family, 'fixture-model')).toBe('instance-work');
     expect(chooseAutoInstance(instances, [
       { accountId: 'work', unit: 'percent', remaining: 10 },
     ], family, undefined)).toBe('instance-work');
@@ -108,12 +133,112 @@ describe('executor schedule', () => {
     expect(reads).toBe(1);
   });
 
-  it('merges env by key and replaces extra args', () => {
+  it('merges env by key, replaces extra args, and prevents cleared launch fields from resurfacing from the instance descriptor', () => {
     expect(mergeLaunchLayers(work.launch, { env: { REPLACE: null, ADDED: '1' } }, { args: ['--next'] })).toEqual({
       home_dir: '/work', env: { KEEP: '1', ADDED: '1' }, args: ['--next'],
     });
     expect(mergeLaunchLayers(work.launch, { args: [] }, { env: null }).env).toBeUndefined();
     expect(mergeLaunchLayers(work.launch, { args: [] }, { env: null }).args).toBeUndefined();
+
+    const familyDescriptor: AgentExecutorDescriptor = {
+      id: family,
+      protocol: 'acp-v1',
+      command: 'agy-base',
+      homeEnv: 'INSTANCE_HOME',
+      args: ['--base'],
+      env: { BASE_ENV: 'base' },
+      revision: 'family-rev',
+    };
+    const storedConfig: ExecutorInstanceConfig = {
+      source_executor: family,
+      label: 'Work',
+      configuration: { kind: 'config_directory', path: '/config-dir' },
+      proxy: { kind: 'url', url: 'http://127.0.0.1:8080' },
+      quota_account_id: 'work',
+      launch: {
+        bin_path: '/instance-bin',
+        home_dir: '/instance-home',
+        env: { KEEP: '1', DROP: 'secret' },
+        args: ['--instance-arg'],
+        options: { optA: 'instance', optB: true },
+      },
+    };
+    const storedView: ScheduleInstanceView = {
+      id: 'instance-work',
+      label: storedConfig.label,
+      sourceExecutor: family,
+      quotaAccountId: storedConfig.quota_account_id,
+      configuration: storedConfig.configuration,
+      proxy: storedConfig.proxy,
+      launch: storedConfig.launch,
+    };
+    const selectedDescriptor = applyInstanceLaunch(
+      { ...materializeExecutorInstance('instance-work', storedConfig, familyDescriptor, () => undefined), instance: publicExecutorInstance(storedConfig) },
+      storedConfig.launch,
+    );
+    expect(selectedDescriptor.homeDir).toBe('/instance-home');
+    expect(selectedDescriptor.env).toMatchObject({ KEEP: '1', DROP: 'secret', HTTP_PROXY: 'http://127.0.0.1:8080' });
+    expect(selectedDescriptor.extraArgs).toEqual(['--instance-arg']);
+
+    const clearedPatch = mergeLaunchLayers(
+      storedView.launch,
+      { home_dir: null, bin_path: null, env: { DROP: null }, args: [] },
+      { proxy: { kind: 'direct' } },
+    );
+    expect(clearedPatch).toEqual({
+      env: { KEEP: '1' },
+      options: { optA: 'instance', optB: true },
+      proxy: { kind: 'direct' },
+    });
+    const overlaid = overlayScheduleLaunch(selectedDescriptor, familyDescriptor, clearedPatch, storedView, () => undefined);
+    expect(overlaid.homeDir).toBe('/config-dir');
+    expect(overlaid.sources).toBeUndefined();
+    expect(overlaid.extraArgs).toBeUndefined();
+    expect(overlaid.env).toEqual({ BASE_ENV: 'base', KEEP: '1' });
+    expect(overlaid.env).not.toHaveProperty('DROP');
+    expect(overlaid.env).not.toHaveProperty('HTTP_PROXY');
+    expect(overlaid.launchSecrets).toEqual(['1']);
+    expect(storedView.launch).toEqual(storedConfig.launch);
+
+    const inheritedPatch = mergeLaunchLayers(storedView.launch, undefined, undefined);
+    const inherited = overlayScheduleLaunch(selectedDescriptor, familyDescriptor, inheritedPatch, storedView, () => undefined);
+    expect(inherited.homeDir).toBe('/instance-home');
+    expect(inherited.extraArgs).toEqual(['--instance-arg']);
+    expect(inherited.env).toMatchObject({ BASE_ENV: 'base', KEEP: '1', DROP: 'secret', HTTP_PROXY: 'http://127.0.0.1:8080' });
+
+    expect(mergeExecutorOptions(storedConfig.launch?.options, { optA: null, optC: 2 }, { optB: null })).toEqual({ optC: 2 });
+    expect(mergeExecutorOptions(storedConfig.launch?.options, null, undefined)).toBeUndefined();
+  });
+
+  it('isolates Grok Build config_directory instances from host auth overrides while keeping explicit launch env', () => {
+    const grokFamily: AgentExecutorDescriptor = {
+      id: 'grok-acp',
+      protocol: 'acp-v1',
+      command: 'grok',
+      homeEnv: 'GROK_HOME',
+      apiKeyEnv: 'XAI_API_KEY',
+      args: ['--no-auto-update', 'agent', 'stdio'],
+      revision: 'grok-rev',
+    };
+    const materialized = materializeExecutorInstance('instance-grok-a', {
+      source_executor: 'grok-acp',
+      label: 'Grok Account A',
+      configuration: { kind: 'config_directory', path: '/grok-home-a' },
+      proxy: { kind: 'direct' },
+      quota_account_id: 'acct-a@example.test',
+    }, grokFamily, () => undefined);
+    expect(materialized.homeDir).toBe('/grok-home-a');
+    expect(materialized.envUnset).toEqual(expect.arrayContaining([
+      'GROK_AUTH',
+      'GROK_AUTH_PATH',
+      'GROK_AUTH_PROVIDER_COMMAND',
+      'GROK_AUTH_EXPIRED',
+      'XAI_API_KEY',
+    ]));
+    const withLaunchEnv = applyInstanceLaunch(materialized, { env: { XAI_API_KEY: 'explicit-instance-key' } });
+    expect(withLaunchEnv.env?.['XAI_API_KEY']).toBe('explicit-instance-key');
+    expect(withLaunchEnv.envUnset).not.toContain('XAI_API_KEY');
+    expect(withLaunchEnv.envUnset).toContain('GROK_AUTH_PATH');
   });
 });
 
