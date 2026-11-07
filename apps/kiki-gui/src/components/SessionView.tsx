@@ -4342,8 +4342,9 @@ boundExecution,
       });
       let initialAttachments = retainedAttachmentsFromContent(item.content ?? []);
       const abort = new AbortController();
+      const incomplete = controller.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
       const edit = {
-        promptId, owner: crypto.randomUUID(), abort, loading: true, loadError: false,
+        promptId, owner: crypto.randomUUID(), abort, loading: incomplete, loadError: false,
         attachments: [...initialAttachments, ...pathFileMentions],
         savedDraft: draftRef.current,
         savedAnnotations: draftSelectionsRef.current,
@@ -4357,11 +4358,16 @@ boundExecution,
         (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
       ));
       const ownsEdit = () => !abort.signal.aborted && composerOwnerActive.current && sessionIdRef.current === sessionId && queueEditRef.current?.owner === edit.owner;
-      const incomplete = controller.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
       void (async () => {
+        const releaseAbandonedHold = () => {
+          if ((abort.signal.aborted || !composerOwnerActive.current || sessionIdRef.current !== sessionId) && queueEditRef.current?.promptId !== promptId) {
+            void controller.holdQueued(promptId, false).catch(() => undefined);
+          }
+        };
+        const holdFlight = controller.holdQueued(promptId, true).then((held) => {
+          if (held) releaseAbandonedHold();
+        }, () => undefined);
         try {
-          await controller.holdQueued(promptId, true);
-          abort.signal.throwIfAborted();
           const content = incomplete ? await controller.readQueuedPromptContent(promptId, abort.signal) : item.content ?? [];
           abort.signal.throwIfAborted();
           if (!ownsEdit()) return;
@@ -4371,7 +4377,7 @@ boundExecution,
             const previous = initialAttachments;
             const original = { text: content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), presentation: contentTextPresentation(content, '\n\n') };
             setQueueEdit((current) => current?.owner !== edit.owner ? current : {
-              ...current, original, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
+              ...current, loading: false, original, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
             });
             initialAttachments = completeAttachments;
             if (draftRef.current === carryovers.body) {
@@ -4379,16 +4385,21 @@ boundExecution,
               updateDraft(complete.body);
             }
           }
-          const loaded = await loadMessageEditAttachments({ queuedContent: [...content] }, abort.signal);
-          if (ownsEdit()) setQueueEdit((current) => current?.owner !== edit.owner ? current : {
-            ...current, loading: false, attachments: mergeLoadedAttachments(current.attachments, loaded, initialAttachments),
+          const loaded = await loadMessageEditAttachments({ queuedContent: [...content] }, abort.signal).catch((error: unknown) => {
+            abort.signal.throwIfAborted();
+            if (ownsEdit()) pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+            return undefined;
+          });
+          if (loaded !== undefined && ownsEdit()) setQueueEdit((current) => current?.owner !== edit.owner ? current : {
+            ...current, attachments: mergeLoadedAttachments(current.attachments, loaded, initialAttachments),
           });
         } catch (error: unknown) {
           if (!ownsEdit()) return;
           setQueueEdit((current) => current?.owner !== edit.owner ? current : { ...current, loading: false, loadError: true });
           pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
         } finally {
-          if (abort.signal.aborted && queueEditRef.current?.promptId !== promptId) await controller.holdQueued(promptId, false).catch(() => undefined);
+          await holdFlight;
+          releaseAbandonedHold();
         }
       })();
     },
@@ -4503,12 +4514,27 @@ boundExecution,
   const editHoldPromptId = queueEdit?.promptId;
   useEffect(() => {
     if (editHoldPromptId === undefined || controller === null) return;
-    const hold = () => { void controller.holdQueued(editHoldPromptId, true).catch(() => undefined); };
+    let active = true;
+    let inFlight: Promise<unknown> = Promise.resolve();
+    const hold = () => {
+      if (!active) return;
+      const flight = controller.holdQueued(editHoldPromptId, true).then((held) => {
+        if (!active && held && queueEditRef.current?.promptId !== editHoldPromptId) {
+          return controller.holdQueued(editHoldPromptId, false).catch(() => undefined);
+        }
+      }, () => undefined);
+      inFlight = flight;
+    };
     hold();
     const renew = setInterval(hold, QUEUE_EDIT_HOLD_RENEW_MS);
     return () => {
+      active = false;
       clearInterval(renew);
-      void controller.holdQueued(editHoldPromptId, false).catch(() => undefined);
+      void inFlight.finally(() => {
+        if (queueEditRef.current?.promptId !== editHoldPromptId) {
+          void controller.holdQueued(editHoldPromptId, false).catch(() => undefined);
+        }
+      });
     };
   }, [controller, editHoldPromptId]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);

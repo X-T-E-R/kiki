@@ -695,15 +695,15 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'saved with image', content.slice(1), undefined);
-  fixture.readPreview.mockRejectedValue(new ApiError({ code: 40407, msg: 'Original unavailable', data: null }));
+  fixture.readPreview.mockRejectedValue(new ApiError({ code: 40407, msg: "Original unavailable", data: null }));
   await act(async () => edit().click());
   for (let i = 0; i < 3; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('Original unavailable') }));
-  expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.disabled).toBe(true);
-  expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('saved.png');
-  expect(controller.state.blocks[0]?.queuedContent).toEqual(content);
-  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
-  expect(holdQueued).toHaveBeenCalledWith('queued-example', false);
+  expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error", text: expect.stringContaining("Original unavailable") }));
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.disabled).toBe(false);
+  expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain("saved.png");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
+  expect(replaceQueued).toHaveBeenLastCalledWith("queued-example", "saved with image", content.slice(1), undefined);
+  expect(holdQueued).toHaveBeenCalledWith("queued-example", false);
   fixture.readPreview.mockRejectedValue(new ApiError({ code: 40001, msg: 'No image preview', data: null }));
   await act(async () => edit().click());
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
@@ -918,7 +918,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   const cancel = () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!;
   expect(input().disabled).toBe(false);
   expect(input().value).toBe('queued image body');
-  expect(confirm().disabled).toBe(true);
+  expect(confirm().disabled).toBe(false);
   expect(cancel().disabled).toBe(false);
   expect(holdQueued).toHaveBeenCalledWith('queued-example', true);
   await act(async () => cancel().click());
@@ -930,7 +930,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   expect(pending).toHaveLength(2);
   const preview = { bytes: Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='), char => char.charCodeAt(0)), mime: 'image/png', name: 'saved.png' };
   await act(async () => { pending[0]!.resolve(preview); });
-  expect(confirm().disabled).toBe(true);
+  expect(container.querySelector('[data-context-tray] img')).toBeNull();
   expect(pending[1]!.signal.aborted).toBe(false);
   await act(async () => {
     setComposerInputValue(input(), 'typed queued edit');
@@ -954,6 +954,66 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   await act(async () => { pending[2]!.resolve(preview); });
   expect(readDraft('session-example')).toBe('parked draft');
   expect(readComposerState('session-example').annotations).toEqual([{ ...savedQuote, comment: '' }]);
+});
+
+it('keeps truncated queued content gated until hydrated, tolerates failed holds, and releases late hold completions on exit', async () => {
+  const fullContent: import('@kiki/protocol').MessageContent[] = [
+    { type: 'text', text: 'complete hydrated queued body' },
+    { type: 'image', name: 'retained.png', source: { kind: 'session_media', file_id: 'retained-img' } },
+  ];
+  const holds: [string, boolean][] = [];
+  const pendingTrueHolds: { resolve: (held: boolean) => void }[] = [];
+  let failHold = true;
+  const holdQueued = vi.fn((promptId: string, held: boolean) => {
+    holds.push([promptId, held]);
+    if (!held) return Promise.resolve(true);
+    if (failHold) return Promise.reject(new Error('hold timeout'));
+    return new Promise<boolean>((resolve) => { pendingTrueHolds.push({ resolve }); });
+  });
+  let resolveHydration!: (content: import('@kiki/protocol').MessageContent[]) => void;
+  const readQueuedPromptContent = vi.fn(() => new Promise<import('@kiki/protocol').MessageContent[]>((resolve) => { resolveHydration = resolve; }));
+  const replaceQueued = vi.fn(async () => {});
+  let incomplete = true;
+  const controller = {
+    state: { ...createViewState('session-example'), loaded: true, transcriptReady: true,
+      session: { id: 'session-example', title: 'Queue hydration', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { model: 'example/model', profile: 'agent' }, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      blocks: [{ kind: 'user', id: 'queued-example', promptId: 'queued-example', promptStatus: 'queued', text: 'truncated...', queuedContent: [{ type: 'text', text: 'truncated...' }], createdAt: '2026-01-01T00:00:00Z' }], queuedPromptIds: ['queued-example'] },
+    subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
+    getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
+    open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+    contentRefsFor: () => incomplete ? [{ source: { kind: 'prompt' as const, id: 'queued-example' }, revision: 'r1', path: ['content', 0, 'text'], kind: 'text' as const, offset: 10, total: 29 }] : [],
+    ...contentRead, holdQueued, readQueuedPromptContent, replaceQueued,
+  };
+  fixture.controller = controller;
+  fixture.readPreview.mockRejectedValue(new Error('thumbnail 500'));
+  root = createRoot(container);
+  await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]')!.click());
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  const confirm = () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!;
+  const cancel = () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!;
+  expect(confirm().disabled).toBe(true);
+  await act(async () => { resolveHydration(fullContent); await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(composerInput(container).value).toBe('complete hydrated queued body');
+  expect(confirm().disabled).toBe(false);
+  await act(async () => confirm().click());
+  expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'complete hydrated queued body', fullContent.slice(1), undefined);
+
+  failHold = false;
+  incomplete = false;
+  holds.length = 0;
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  expect(confirm().disabled).toBe(false);
+  expect(pendingTrueHolds.length).toBeGreaterThan(0);
+  await act(async () => cancel().click());
+  const releasesBeforeLateHold = holds.filter(([, held]) => !held).length;
+  await act(async () => {
+    for (const entry of pendingTrueHolds) entry.resolve(true);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  });
+  expect(holds.filter(([, held]) => !held).length).toBeGreaterThan(releasesBeforeLateHold);
+  expect(holds.at(-1)).toEqual(['queued-example', false]);
 });
 
 describe('the session announcer', () => {
