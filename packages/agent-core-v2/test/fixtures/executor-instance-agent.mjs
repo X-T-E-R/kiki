@@ -21,8 +21,9 @@ const accountFile = grokAuthPath || join(homeDir, process.env.GROK_HOME && !proc
 const rawAccount = JSON.parse(await readFile(accountFile, 'utf8'));
 const account = rawAccount.id ? rawAccount : Object.values(rawAccount)[0];
 const sessions = new Set();
+const active = new Map();
 const target = new URL(account.endpoint);
-async function outbound(sessionId) {
+async function outbound(sessionId, signal) {
   const proxy = process.env.HTTP_PROXY || process.env.http_proxy;
   const proxyUrl = proxy ? new URL(proxy) : undefined;
   let socket;
@@ -38,7 +39,7 @@ async function outbound(sessionId) {
       hostname: proxyUrl && !socket ? proxyUrl.hostname : target.hostname,
       port: proxyUrl && !socket ? Number(proxyUrl.port) : Number(target.port) || 80,
       path: proxyUrl && !socket ? target.href : target.pathname,
-      method: 'POST', agent: socket ? undefined : false,
+      method: 'POST', agent: socket ? undefined : false, signal,
       createConnection: socket ? () => socket : undefined,
       headers: { 'x-fixture-account': account.id ?? account.email ?? account.user_id, 'x-fixture-session': sessionId,
         authorization: `Bearer ${account.key}`,
@@ -64,9 +65,12 @@ async function outbound(sessionId) {
   });
 }
 for await (const line of createInterface({ input: process.stdin })) {
-  const message = JSON.parse(line);
-  if (message.id === undefined) continue;
-  const { id, method, params = {} } = message;
+  const { id, method, params = {} } = JSON.parse(line);
+  if (method === 'session/cancel') {
+    active.get(params.sessionId)?.abort();
+    continue;
+  }
+  if (id === undefined) continue;
   try {
     if (method === 'initialize') send({ jsonrpc: '2.0', id, result: { protocolVersion: 1,
       agentInfo: { name: 'synthetic-instance-harness', version: '1.0.0' },
@@ -79,10 +83,18 @@ for await (const line of createInterface({ input: process.stdin })) {
       send({ jsonrpc: '2.0', id, result: { sessionId, configOptions } });
     } else if (method === 'session/prompt') {
       if (!sessions.has(params.sessionId)) throw new Error('Session must be opened first');
-      const text = await outbound(params.sessionId);
-      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: params.sessionId,
-        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
-      send({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+      const controller = new AbortController();
+      active.set(params.sessionId, controller);
+      void outbound(params.sessionId, controller.signal).then((text) => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
+        send({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+      }, (error) => {
+        if (controller.signal.aborted) send({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+        else send({ jsonrpc: '2.0', id, error: { code: -32603, message: error.message } });
+      }).finally(() => {
+        if (active.get(params.sessionId) === controller) active.delete(params.sessionId);
+      });
     } else send({ jsonrpc: '2.0', id, result: {} });
   } catch (error) { send({ jsonrpc: '2.0', id, error: { code: -32603, message: error.message } }); }
 }

@@ -36,6 +36,8 @@ it('selects AGY and another harness from config, then serves the same quota cach
   const droppedWhileHeld: string[] = [];
   let markPair = (): void => undefined;
   let pairReady = new Promise<void>((resolve) => { markPair = resolve; });
+  let markCancelled = (): void => undefined;
+  const aCancelled = new Promise<void>((resolve) => { markCancelled = resolve; });
   const origin = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -49,8 +51,12 @@ it('selects AGY and another harness from config, then serves the same quota cach
       if (new Set(heldLive.map((item) => item.account)).size >= 2) markPair();
       await new Promise<void>((resolve) => {
         heldReleases.push(resolve);
-        req.on('close', () => {
-          if (!res.writableEnded) droppedWhileHeld.push(account);
+        res.once('close', () => {
+          if (!res.writableEnded) {
+            droppedWhileHeld.push(account);
+            if (account === 'work') markCancelled();
+          }
+          resolve();
         });
       });
     }
@@ -299,14 +305,17 @@ it('selects AGY and another harness from config, then serves the same quota cach
     ]);
     expect(heldLive.map((item) => item.account).sort()).toEqual(['personal', 'work']);
     expect(new Set(heldLive.map((item) => item.pid)).size).toBe(2);
-    const aborted = await call<{ aborted: boolean }>(`/sessions/${sessionA}:abort`, 'POST', {});
-    expect(aborted).toMatchObject({ code: 0, data: { aborted: true } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(droppedWhileHeld).not.toContain('personal');
-    for (const release of heldReleases) release();
     const [receiptA, receiptB] = await Promise.all([pendingA, pendingB]);
     expect(receiptA.code, receiptA.msg).toBe(0);
     expect(receiptB.code, receiptB.msg).toBe(0);
+    const aborted = await call<{ aborted: boolean }>(`/sessions/${sessionA}/prompts/${receiptA.data.prompt_id}:abort`, 'POST', {});
+    expect(aborted).toMatchObject({ code: 0, data: { aborted: true } });
+    await Promise.race([
+      aCancelled,
+      new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error('Account A outbound request was not cancelled')), 5000)),
+    ]);
+    expect(droppedWhileHeld).toEqual(['work']);
+    for (const release of heldReleases) release();
     const settle = (sessionId: string) => manager().get(sessionId)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentExecutionService).settled();
     await Promise.all([settle(sessionA), settle(sessionB)]);
     const page = async (sessionId: string) => call<{ items: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }>(`/sessions/${sessionId}/messages?page_size=20`);
