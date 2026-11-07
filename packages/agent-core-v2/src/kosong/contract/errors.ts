@@ -580,8 +580,9 @@ function readNestedErrorObject(value: object): object | undefined {
 /** Why the same provider request must not be sent again.
  *
  * `upstream` is an explicit boolean `retryable: false`, `budget` is an exhausted
- * attempt count, and `stream_terminal` is a provider event that ended the stream.
- * These stop same-request retries. `local` also prevents hook continuation.
+ * attempt count, and `stream_terminal` is a provider-named gateway stream stop
+ * on a stream event or an HTTP error body. These stop same-request retries.
+ * `local` also prevents hook continuation.
  */
 export function sameRequestRetryProhibition(
   details: Readonly<Record<string, unknown>> | undefined,
@@ -590,7 +591,8 @@ export function sameRequestRetryProhibition(
   if (details['execution'] === 'executed') return 'local';
   const code = details['upstreamErrorCode'];
   if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) {
-    return details['errorSource'] === 'provider_event' && !NON_CONTINUABLE_PROVIDER_CODES.has(code) ? 'stream_terminal' : 'local';
+    const namedByProvider = details['errorSource'] === 'provider_event' || details['errorSource'] === 'provider_http';
+    return namedByProvider && !NON_CONTINUABLE_PROVIDER_CODES.has(code) ? 'stream_terminal' : 'local';
   }
   if (details['retry'] === false && details['retry_exhausted'] !== true) return 'local';
   if (details['retry'] === false && details['retry_exhausted'] === true) return 'budget';

@@ -398,6 +398,37 @@ describe('provider failures through the real Messages SDK', () => {
     expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'continue', userMessage: '继续' } }]]);
   }, 60_000);
 
+  it('continues an Argon HTTP 502 that names the gateway terminal code without resending that request', async () => {
+    const body = { type: 'error', error: gatewayTerminalError };
+    const replayed = await replay((_requestNumber, continued) => continued
+      ? terminalSse('Completed after the HTTP gateway terminal.')
+      : jsonResponse(502, 'Bad Gateway', body), { modelAlias: argonModel });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
+    expect(replayed.requests).toHaveLength(2);
+    expect(replayed.retryEvents).toHaveLength(0);
+    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
+    expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
+      modelAlias: argonModel,
+      recoverable: true,
+      recoveryAttempts: 0,
+      upstreamErrorCode: gatewayTerminalError.code,
+      errorDetails: { errorSource: 'provider_http', statusCode: 502, retry: false },
+    });
+  }, 60_000);
+
+  it('still retries an ordinary HTTP 502 that does not name a terminal code', async () => {
+    const failure = jsonResponse(502, 'Bad Gateway', { type: 'error', error: { type: 'api_error', message: 'temporary' } });
+    const replayed = await replay((requestNumber) => requestNumber === 1 ? failure : terminalSse('Recovered ordinary HTTP failure'), { maxAttempts: 2, modelAlias: argonModel });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
+    expect(replayed.requests).toHaveLength(2);
+    expect(replayed.retryEvents).toHaveLength(1);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(stops(replayed)).toEqual([]);
+  }, 60_000);
+
   it('stops after one new message on a repeated gateway failure and retains the final partial', async () => {
     const replayed = await replay((number) => sse([
       messageStart(`msg_gateway_${number}`), ...textBlock(`Partial answer ${number}`), gatewayTerminalEvent,

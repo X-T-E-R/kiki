@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { attachErrorDetails } from '#/errors';
 
+import { permitsFailureContinuation } from '#/features/externalHooks/internal/failureRecovery';
 import {
   APIConnectionError,
   APIProviderQuotaExhaustedError,
@@ -19,6 +20,7 @@ import {
   isRetryableGenerateError,
   isRetryableRequestInterruption,
   markProviderEventError,
+  markProviderHttpError,
   noteExplicitUpstreamRetryDenial,
   sameRequestRetryProhibition,
 } from '#/kosong/contract/errors';
@@ -334,6 +336,62 @@ describe('non-abort classification still works', () => {
     expect(isRetryableGenerateError(local)).toBe(false);
     expect(sameRequestRetryProhibition(toErrorPayload(local).details)).toBe('stream_terminal');
     expect(toErrorPayload(local).details).toMatchObject({ retry: false });
+  });
+
+  it('permits a new message for the recorded Messages gateway terminal details', () => {
+    const recorded = new ChatProviderError(
+      'Anthropic error: {"error":{"code":"gateway_stream_terminal_error","message":"Upstream stream ended before a terminal event","status":502,"type":"upstream_error"},"type":"error"}',
+      undefined,
+      { details: {
+        errorSource: 'provider_event',
+        upstreamErrorType: 'upstream_error',
+        upstreamErrorCode: 'gateway_stream_terminal_error',
+        requestId: null,
+        traceId: null,
+        retry: false,
+      } },
+    );
+    const payload = toErrorPayload(recorded);
+    expect(payload.details).toMatchObject({ error_kind: 'unknown', errorSource: 'provider_event', retry: false });
+    expect(payload.details).not.toHaveProperty('statusCode');
+    expect(sameRequestRetryProhibition(payload.details)).toBe('stream_terminal');
+    expect(permitsFailureContinuation(payload)).toBe(true);
+    expect(isRetryableGenerateError(recorded)).toBe(false);
+  });
+
+  it('keeps an HTTP body that names gateway_stream_terminal_error continuable and does not resend it', () => {
+    const body = {
+      type: 'error',
+      error: {
+        code: 'gateway_stream_terminal_error',
+        message: 'Upstream stream ended before a terminal event',
+        status: 502,
+        type: 'upstream_error',
+      },
+    };
+    const anthropic = convertAnthropicError(new AnthropicAPIError(502, body, 'Bad Gateway', new Headers()));
+    const responses = convertOpenAIError(new OpenAIAPIError(502, body.error, 'Bad Gateway', new Headers()));
+    for (const converted of [anthropic, responses]) {
+      const payload = toErrorPayload(converted);
+      expect(payload).toMatchObject({
+        code: 'provider.api_error',
+        details: { errorSource: 'provider_http', upstreamErrorCode: 'gateway_stream_terminal_error', statusCode: 502, retry: false },
+      });
+      expect(sameRequestRetryProhibition(payload.details)).toBe('stream_terminal');
+      expect(isRetryableGenerateError(converted)).toBe(false);
+      expect(permitsFailureContinuation(payload)).toBe(true);
+    }
+    const permanent = markProviderHttpError(new APIStatusError(502, 'closed'), 'antigravity_upstream_terminal_error');
+    expect(sameRequestRetryProhibition(toErrorPayload(permanent).details)).toBe('local');
+    expect(permitsFailureContinuation(toErrorPayload(permanent))).toBe(false);
+    const ordinary = convertAnthropicError(new AnthropicAPIError(502, {
+      type: 'error', error: { type: 'api_error', message: 'temporary' },
+    }, 'Bad Gateway', new Headers(), 'api_error'));
+    expect(isRetryableGenerateError(ordinary)).toBe(true);
+    expect(sameRequestRetryProhibition(toErrorPayload(ordinary).details)).toBeUndefined();
+    const executed = markProviderHttpError(new APIStatusError(502, 'closed'), 'gateway_stream_terminal_error');
+    attachErrorDetails(executed, { execution: 'executed' });
+    expect(sameRequestRetryProhibition(toErrorPayload(executed).details)).toBe('local');
   });
 
   it('redacts labeled plaintext secrets inlined in the Anthropic SDK message', () => {
