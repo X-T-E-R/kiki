@@ -86,6 +86,23 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private static let verifiedOriginsPrefix = "kiki.shell.verifiedOrigins."
     private static var pendingPairUri: String?
 
+    private var pendingAuthOrigin: String?
+    private var pendingAuthServerId: String?
+    private var urlObservation: NSKeyValueObservation?
+    private var loadingObservation: NSKeyValueObservation?
+
+    public override func load() {
+        super.load()
+        urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] _, _ in
+            self?.handleWebViewNavigationState(finalize: false)
+        }
+        loadingObservation = webView?.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
+            if !webView.isLoading {
+                self?.handleWebViewNavigationState(finalize: true)
+            }
+        }
+    }
+
     @discardableResult
     static func capturePairURL(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "kiki" else { return false }
@@ -237,6 +254,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let serverId, !serverId.isEmpty else {
             UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
             DispatchQueue.main.async { [weak self] in
+                self?.clearPendingAuth()
                 self?.webView?.load(URLRequest(url: entryURL))
                 call.resolve(["ok": true, "origin": origin])
             }
@@ -244,20 +262,25 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         guard Self.isOriginVerified(origin: origin, for: serverId),
               Self.hasStoredToken(for: serverId, origin: origin) else {
+            DispatchQueue.main.async { [weak self] in
+                self?.clearPendingAuth()
+            }
             call.resolve([
                 "ok": false,
                 "reason": "pairing_required"
             ])
             return
         }
-        let targetString = Self.attachStoredTokenIfNeeded(origin: origin, entry: entry, serverId: serverId)
-        guard let finalURL = URL(string: targetString) else {
+        let cleanString = Self.stripTokenFromEntry(origin: origin, entry: entry)
+        guard let cleanURL = URL(string: cleanString) else {
             call.reject("invalid_origin")
             return
         }
         UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
         DispatchQueue.main.async { [weak self] in
-            self?.webView?.load(URLRequest(url: finalURL))
+            self?.pendingAuthOrigin = origin
+            self?.pendingAuthServerId = serverId
+            self?.webView?.load(URLRequest(url: cleanURL))
             call.resolve(["ok": true, "origin": origin])
         }
     }
@@ -265,21 +288,76 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func forgetServer(_ call: CAPPluginCall) {
         let serverId = call.getString("serverId")
         let origin = call.getString("origin")
+        clearPendingAuth()
         Self.forgetServerData(serverId: serverId, origin: origin)
         call.resolve(["ok": true])
     }
 
-    private static func attachStoredTokenIfNeeded(origin: String, entry: String, serverId: String?) -> String {
-        guard let serverId, !serverId.isEmpty else { return entry }
-        guard isOriginVerified(origin: origin, for: serverId) else { return entry }
-        if entry.contains("#access=") || entry.contains("&access=") || entry.contains("token=") {
-            return entry
+    private func clearPendingAuth() {
+        pendingAuthOrigin = nil
+        pendingAuthServerId = nil
+    }
+
+    private func handleWebViewNavigationState(finalize: Bool) {
+        guard let expectedOrigin = pendingAuthOrigin,
+              let serverId = pendingAuthServerId,
+              let webView = self.webView,
+              let currentURL = webView.url else {
+            return
         }
-        guard let token = readPeerToken(for: serverId, origin: origin), !token.isEmpty else {
-            return entry
+        if let local = bridge?.config.appStartServerURL,
+           currentURL.absoluteString.hasPrefix(local.absoluteString) {
+            return
         }
-        let encoded = token.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? token
-        return "\(origin)/#token=\(encoded)"
+        guard let committedOrigin = Self.origin(of: currentURL),
+              committedOrigin == expectedOrigin else {
+            clearPendingAuth()
+            if let local = bridge?.config.appStartServerURL,
+               let fallbackURL = URL(string: "\(local.absoluteString)/index.html#unreachable") {
+                webView.load(URLRequest(url: fallbackURL))
+            }
+            return
+        }
+        guard Self.isOriginVerified(origin: expectedOrigin, for: serverId) else {
+            clearPendingAuth()
+            return
+        }
+        let token = Self.readPeerToken(for: serverId, origin: expectedOrigin)
+        if finalize {
+            clearPendingAuth()
+        }
+        guard let token, !token.isEmpty else { return }
+        let script = Self.buildCredentialDeliveryScript(expectedOrigin: expectedOrigin, token: token)
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    static func stripTokenFromEntry(origin: String, entry: String) -> String {
+        guard let entryURL = URL(string: entry),
+              Self.origin(of: entryURL) == origin,
+              var components = URLComponents(url: entryURL, resolvingAgainstBaseURL: false) else {
+            return "\(origin)/"
+        }
+        if let items = components.queryItems, items.contains(where: { $0.name == "token" }) {
+            let filtered = items.filter { $0.name != "token" }
+            components.queryItems = filtered.isEmpty ? nil : filtered
+        }
+        if let fragment = components.percentEncodedFragment,
+           fragment.hasPrefix("token=") || fragment.contains("&token=") {
+            let kept = fragment
+                .split(separator: "&")
+                .map(String.init)
+                .filter { !$0.isEmpty && !$0.hasPrefix("token=") }
+            components.percentEncodedFragment = kept.isEmpty ? nil : kept.joined(separator: "&")
+        }
+        return components.url?.absoluteString ?? "\(origin)/"
+    }
+
+    static func buildCredentialDeliveryScript(expectedOrigin: String, token: String) -> String {
+        let originData = (try? JSONSerialization.data(withJSONObject: [expectedOrigin])) ?? Data("[\"\"]".utf8)
+        let tokenData = (try? JSONSerialization.data(withJSONObject: [token])) ?? Data("[\"\"]".utf8)
+        let originArray = String(data: originData, encoding: .utf8) ?? "[\"\"]"
+        let tokenArray = String(data: tokenData, encoding: .utf8) ?? "[\"\"]"
+        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));}catch(e){}try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
     }
 
     private static func fetchHandshake(
@@ -468,8 +546,22 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
            url.absoluteString.hasPrefix(local.absoluteString) {
             return false
         }
+        let targetOrigin = Self.origin(of: url)
+        if let expectedPending = pendingAuthOrigin {
+            if targetOrigin == expectedPending {
+                return false
+            }
+            clearPendingAuth()
+            if let local = bridge?.config.appStartServerURL,
+               let fallbackURL = URL(string: "\(local.absoluteString)/index.html#unreachable") {
+                DispatchQueue.main.async { [weak self] in
+                    self?.webView?.load(URLRequest(url: fallbackURL))
+                }
+            }
+            return true
+        }
         guard let trusted = UserDefaults.standard.string(forKey: Self.trustedOriginKey),
-              Self.origin(of: url) == trusted else {
+              targetOrigin == trusted else {
             return nil
         }
         return false

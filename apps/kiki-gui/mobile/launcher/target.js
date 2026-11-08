@@ -941,10 +941,320 @@ export async function claimPairingOrigin(storage, input) {
 }
 
 /**
+ * Removes any `token` query or fragment parameter from `entry` while preserving
+ * the rest of the path, query, and hash (such as `/settings#st-card-providers-add`).
+ */
+export function stripTokenFromEntry(origin, entry) {
+  try {
+    const expectedOrigin = new URL(origin).origin;
+    const parsed = new URL(entry || `${expectedOrigin}/`, `${expectedOrigin}/`);
+    if (parsed.origin !== expectedOrigin) {
+      return `${expectedOrigin}/`;
+    }
+    if (parsed.searchParams.has('token')) {
+      parsed.searchParams.delete('token');
+    }
+    if (parsed.hash && /(?:^#|&)token=/.test(parsed.hash)) {
+      const rawHash = parsed.hash.slice(1);
+      if (rawHash.includes('=')) {
+        const hashParams = new URLSearchParams(rawHash);
+        if (hashParams.has('token')) {
+          hashParams.delete('token');
+          const nextHash = hashParams.toString();
+          parsed.hash = nextHash ? `#${nextHash}` : '';
+        }
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return `${origin}/`;
+  }
+}
+
+/**
+ * Builds an origin-checked credential delivery script that writes the peer token
+ * only when `window.location.origin === expectedOrigin` after navigation commits,
+ * preserving the page's route path, query, non-credential hash, and history state (`idx`).
+ */
+export function buildCommittedCredentialScript(expectedOrigin, token) {
+  const originJson = JSON.stringify(String(expectedOrigin ?? ''));
+  const tokenJson = JSON.stringify(String(token ?? ''));
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));}catch(e){}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+}
+
+/**
+ * Delivers `resolved.sessionToken` only after verifying that the target page or
+ * frame has committed at `resolved.commitOrigin` (`resolved.origin`).
+ * Never attaches `#token=` to a navigation URL and refuses delivery if the
+ * navigation redirected to another origin.
+ */
+export async function deliverCommittedServerCredential(target, resolved, options = {}) {
+  if (!resolved || !resolved.ok) {
+    return {
+      ok: false,
+      reason: resolved?.reason ?? 'invalid_resolution',
+      tokenDelivered: false,
+    };
+  }
+  const rawOrigin = resolved.commitOrigin ?? resolved.origin ?? '';
+  let expectedOrigin = '';
+  try {
+    expectedOrigin = new URL(rawOrigin).origin;
+  } catch {
+    return {
+      ok: false,
+      reason: 'invalid_origin',
+      tokenDelivered: false,
+    };
+  }
+  const token =
+    typeof resolved.sessionToken === 'string' && resolved.sessionToken !== ''
+      ? resolved.sessionToken
+      : '';
+
+  if (typeof target?.evaluate === 'function') {
+    if (typeof target.url === 'function') {
+      let committedOrigin = '';
+      try {
+        committedOrigin = new URL(target.url()).origin;
+      } catch {
+        return {
+          ok: false,
+          reason: 'invalid_committed_url',
+          committedOrigin: '',
+          tokenDelivered: false,
+        };
+      }
+      if (committedOrigin !== expectedOrigin) {
+        return {
+          ok: false,
+          reason: 'cross_origin_redirect',
+          committedOrigin,
+          tokenDelivered: false,
+        };
+      }
+    }
+    if (!token) {
+      return {
+        ok: true,
+        committedOrigin: expectedOrigin,
+        tokenDelivered: false,
+      };
+    }
+    const delivered = await target.evaluate(
+      ({ expectedOrigin: exp, token: tok }) => {
+        if (window.location.origin !== exp || !tok) {
+          return { ok: false, committedOrigin: window.location.origin };
+        }
+        try {
+          window.localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: tok }));
+        } catch {}
+        try {
+          window.sessionStorage.setItem('kiki.peer.token', tok);
+        } catch {}
+        try {
+          window.dispatchEvent(
+            new CustomEvent('kiki:shell-token', { detail: { origin: exp, token: tok } }),
+          );
+        } catch {}
+        return { ok: true, committedOrigin: window.location.origin };
+      },
+      { expectedOrigin, token },
+    );
+    if (!delivered?.ok) {
+      return {
+        ok: false,
+        reason: 'cross_origin_redirect',
+        committedOrigin: delivered?.committedOrigin ?? '',
+        tokenDelivered: false,
+      };
+    }
+    return {
+      ok: true,
+      committedOrigin: delivered.committedOrigin,
+      tokenDelivered: true,
+    };
+  }
+
+  if (!token) {
+    return {
+      ok: true,
+      committedOrigin: expectedOrigin,
+      tokenDelivered: false,
+    };
+  }
+
+  const win =
+    target && typeof target.addEventListener === 'function' && target.document
+      ? target
+      : globalThis.window;
+  const doc =
+    target && typeof target.createElement === 'function'
+      ? target
+      : win?.document ?? globalThis.document;
+
+  if (!win || !doc?.body || typeof doc.createElement !== 'function') {
+    return {
+      ok: false,
+      reason: 'unsupported_target',
+      tokenDelivered: false,
+    };
+  }
+
+  const timeoutMs = options.timeoutMs ?? 4500;
+  const ackTimeoutMs = options.ackTimeoutMs ?? 700;
+
+  return new Promise((resolveDelivery) => {
+    const iframe = doc.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.tabIndex = -1;
+    iframe.style.display = 'none';
+
+    let settled = false;
+    let loadTimer = null;
+    let ackTimer = null;
+    let retryTimer = null;
+
+    const cleanup = () => {
+      if (loadTimer !== null) clearTimeout(loadTimer);
+      if (ackTimer !== null) clearTimeout(ackTimer);
+      if (retryTimer !== null) clearInterval(retryTimer);
+      win.removeEventListener('message', onMessage);
+      try {
+        iframe.remove();
+      } catch {}
+    };
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveDelivery(result);
+    };
+
+    const onMessage = (event) => {
+      if (event.source !== iframe.contentWindow) return;
+      if (event.origin !== expectedOrigin) {
+        finish({
+          ok: false,
+          reason: 'cross_origin_redirect',
+          committedOrigin: event.origin,
+          tokenDelivered: false,
+        });
+        return;
+      }
+      const data = event.data;
+      if (
+        data &&
+        typeof data === 'object' &&
+        data.type === 'kiki:shell-credential-ack' &&
+        data.origin === expectedOrigin
+      ) {
+        finish({
+          ok: true,
+          committedOrigin: expectedOrigin,
+          tokenDelivered: true,
+        });
+      }
+    };
+
+    const postCredential = () => {
+      try {
+        iframe.contentWindow?.postMessage(
+          {
+            type: 'kiki:shell-credential',
+            origin: expectedOrigin,
+            token,
+          },
+          expectedOrigin,
+        );
+      } catch {
+        finish({
+          ok: false,
+          reason: 'cross_origin_redirect',
+          tokenDelivered: false,
+        });
+      }
+    };
+
+    win.addEventListener('message', onMessage);
+
+    loadTimer = setTimeout(() => {
+      finish({
+        ok: false,
+        reason: 'unreachable',
+        tokenDelivered: false,
+      });
+    }, timeoutMs);
+
+    iframe.addEventListener('error', () => {
+      finish({
+        ok: false,
+        reason: 'unreachable',
+        tokenDelivered: false,
+      });
+    });
+
+    iframe.addEventListener('load', () => {
+      if (settled) return;
+      if (loadTimer !== null) {
+        clearTimeout(loadTimer);
+        loadTimer = null;
+      }
+      postCredential();
+      retryTimer = setInterval(postCredential, 50);
+      ackTimer = setTimeout(() => {
+        finish({
+          ok: false,
+          reason: 'cross_origin_redirect',
+          tokenDelivered: false,
+        });
+      }, ackTimeoutMs);
+    });
+
+    iframe.src = resolved.finalEntry;
+    doc.body.appendChild(iframe);
+  });
+}
+
+/**
+ * Resolves a verified server open, navigates `page` to the token-free `finalEntry`,
+ * and delivers the credential only if the navigation commits at `resolved.origin`.
+ */
+export async function openVerifiedServerNavigation(page, storage, input, options = {}) {
+  const resolved = await resolveVerifiedServerOpen(storage, input);
+  if (!resolved.ok) {
+    return { ...resolved, tokenDelivered: false };
+  }
+  await page.goto(resolved.finalEntry, options.gotoOptions);
+  const delivery = await deliverCommittedServerCredential(page, resolved, options);
+  if (!delivery.ok) {
+    return {
+      ok: false,
+      reason: delivery.reason,
+      origin: resolved.origin,
+      committedOrigin: delivery.committedOrigin,
+      server: resolved.server,
+      serverId: resolved.serverId,
+      finalEntry: resolved.finalEntry,
+      tokenAttached: false,
+      tokenDelivered: false,
+    };
+  }
+  return {
+    ...resolved,
+    committedOrigin: delivery.committedOrigin,
+    tokenDelivered: delivery.tokenDelivered,
+  };
+}
+
+/**
  * Opens `input.origin` only when it has established pairing trust (`verifiedOrigins`)
  * or redeems a pairing code (`input.code`) first. Never promotes an unpaired origin
- * via public handshake metadata, never follows cross-origin redirects, and never
- * overwrites an existing paired computer before pairing succeeds.
+ * via public handshake metadata, never follows cross-origin redirects, never
+ * overwrites an existing paired computer before pairing succeeds, and never attaches
+ * `#token=` to `finalEntry` before navigation commits.
  */
 export async function resolveVerifiedServerOpen(storage, input) {
   const parsedTarget = readTarget(input?.origin ?? '');
@@ -1031,21 +1341,22 @@ export async function resolveVerifiedServerOpen(storage, input) {
   });
   const serverId = saved?.id ?? targetServerId;
 
-  let finalEntry = entry;
+  const finalEntry = isPairedTarget ? stripTokenFromEntry(origin, entry) : entry;
   const sessionToken =
     claimedToken ??
     (isPairedTarget && serverId && isServerOriginVerified(saved, origin) && typeof input.getToken === 'function'
       ? await input.getToken(serverId, origin)
       : undefined);
-  if (sessionToken && !/(?:^#|&)token=/.test(finalEntry) && !/(?:^#|&)access=/.test(finalEntry)) {
-    finalEntry = `${origin}/#token=${encodeURIComponent(sessionToken)}`;
-  }
 
   return {
     ok: true,
+    origin,
+    commitOrigin: origin,
     server: saved,
     serverId,
     finalEntry,
-    tokenAttached: Boolean(sessionToken && finalEntry.includes('#token=')),
+    sessionToken:
+      typeof sessionToken === 'string' && sessionToken !== '' ? sessionToken : undefined,
+    tokenAttached: false,
   };
 }

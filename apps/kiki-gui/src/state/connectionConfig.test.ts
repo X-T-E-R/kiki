@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { installAppShellCredentialListener } from '../lib/appShell';
 import {
   clearStoredConfig,
   CONNECTION_STORAGE_KEY,
@@ -113,5 +114,98 @@ describe('connection config readers', () => {
 
     expect(writeStoredConfig({ url: '', token: '' }, { setItem: () => { throw new Error('full'); } })).toBe(false);
     expect(clearStoredConfig({ removeItem: () => { throw new Error('blocked'); } })).toBe(false);
+  });
+
+  it('accepts post-commit shell credential messages only for matching window origin and preserves hash and history state', () => {
+    const localMap = new Map<string, string>();
+    const sessionMap = new Map<string, string>();
+    const localStore = {
+      getItem: (key: string) => localMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { localMap.set(key, value); },
+    };
+    const sessionStore = {
+      getItem: (key: string) => sessionMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+    };
+    const target = new EventTarget();
+    const locationState = {
+      origin: 'http://127.0.0.1:5494',
+      pathname: '/settings',
+      search: '?tab=providers',
+      hash: '#st-card-providers-add',
+    };
+    const historyState = { state: { idx: 4 } };
+    const win = {
+      location: locationState,
+      history: historyState,
+      localStorage: localStore,
+      sessionStorage: sessionStore,
+      addEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+        target.addEventListener(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+        target.removeEventListener(type, listener as EventListener);
+      },
+      dispatchEvent: (event: Event) => target.dispatchEvent(event),
+    };
+
+    const receivedEvents: Array<{ origin: string; token: string }> = [];
+    const onShellToken = (event: Event) => {
+      receivedEvents.push((event as CustomEvent<{ origin: string; token: string }>).detail);
+    };
+    target.addEventListener('kiki:shell-token', onShellToken);
+    const uninstall = installAppShellCredentialListener(win);
+    try {
+      const acks: Array<{ message: unknown; targetOrigin: string }> = [];
+      const mockSource = {
+        postMessage: (message: unknown, targetOrigin: string) => {
+          acks.push({ message, targetOrigin });
+        },
+      };
+
+      const makeMessageEvent = (origin: string, data: unknown) => {
+        const evt = new MessageEvent('message', { origin, data });
+        Object.defineProperty(evt, 'source', { value: mockSource });
+        return evt;
+      };
+
+      // Mismatched origin is ignored
+      target.dispatchEvent(
+        makeMessageEvent('http://127.0.0.1:4100', {
+          type: 'kiki:shell-credential',
+          origin: 'https://other.example.test',
+          token: 'wrong-origin-token',
+        }),
+      );
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(sessionStore.getItem('kiki.peer.token')).toBeNull();
+      expect(receivedEvents).toEqual([]);
+      expect(acks).toEqual([]);
+
+      // Matching window.location.origin is accepted, stored, acknowledged, and leaves hash/history untouched
+      target.dispatchEvent(
+        makeMessageEvent('http://127.0.0.1:4100', {
+          type: 'kiki:shell-credential',
+          origin: 'http://127.0.0.1:5494',
+          token: 'committed-peer-token',
+        }),
+      );
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'committed-peer-token' });
+      expect(sessionStore.getItem('kiki.peer.token')).toBe('committed-peer-token');
+      expect(receivedEvents).toEqual([{ origin: 'http://127.0.0.1:5494', token: 'committed-peer-token' }]);
+      expect(acks).toEqual([
+        {
+          message: { type: 'kiki:shell-credential-ack', origin: 'http://127.0.0.1:5494' },
+          targetOrigin: 'http://127.0.0.1:4100',
+        },
+      ]);
+      expect(win.location.pathname).toBe('/settings');
+      expect(win.location.search).toBe('?tab=providers');
+      expect(win.location.hash).toBe('#st-card-providers-add');
+      expect(win.history.state).toEqual({ idx: 4 });
+    } finally {
+      uninstall();
+      target.removeEventListener('kiki:shell-token', onShellToken);
+    }
   });
 });

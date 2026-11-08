@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 
 import { HostProvider, hostAdapter } from './host';
+import { installAppShellCredentialListener } from './lib/appShell';
 import { initializeSpaceStorage, activeSpace, configureSpaceStorage } from './lib/spaceStorage';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import { adoptWindowModeFromHost } from './lib/workModeStartup';
@@ -58,6 +59,7 @@ async function redeemWebAccessLink(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  installAppShellCredentialListener();
   // A `#access=<one-time code>` link is taken out of the address bar before
   // anything else runs, and redeemed before the app graph loads. Nothing else
   // in boot can observe the code: it is cleared first, held in module memory

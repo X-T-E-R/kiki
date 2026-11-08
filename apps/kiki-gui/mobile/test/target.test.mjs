@@ -1,18 +1,25 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+
+import { chromium } from '../../node_modules/playwright/index.mjs';
 
 // Node ESM needs the extension to resolve the browser module.
 // oxlint-disable-next-line import/extensions
 import {
   STORE_ORIGIN_KEY,
+  buildCommittedCredentialScript,
   claimPairingOrigin,
   classifyOrigin,
+  deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
   formatPairingUri,
   isServerOriginVerified,
   normalizePairingCode,
+  openVerifiedServerNavigation,
   parsePairingUri,
   probeOriginHandshake,
   readConnectInput,
@@ -22,6 +29,7 @@ import {
   readTarget,
   removeSavedServer,
   resolveVerifiedServerOpen,
+  stripTokenFromEntry,
   updateSavedServerOrigin,
   upsertSavedServer,
   verifySavedServerOrigin,
@@ -469,8 +477,10 @@ await test('unverified origin echoing targetHomeId/targetHostId or 302-redirecti
       getToken,
     });
     assert.equal(openA2WithCode.ok, true);
-    assert.equal(openA2WithCode.tokenAttached, true);
-    assert.equal(openA2WithCode.finalEntry, `${originA2}/#token=peer_token_secret_a2`);
+    assert.equal(openA2WithCode.tokenAttached, false);
+    assert.equal(openA2WithCode.finalEntry, `${originA2}/`);
+    assert.equal(openA2WithCode.commitOrigin, originA2);
+    assert.equal(openA2WithCode.sessionToken, 'peer_token_secret_a2');
     assert.equal(isServerOriginVerified(openA2WithCode.server, originA2), true);
     assert.equal(isServerOriginVerified(openA2WithCode.server, originA1), true);
 
@@ -489,13 +499,215 @@ await test('unverified origin echoing targetHomeId/targetHostId or 302-redirecti
       getToken,
     });
     assert.equal(reopenA1.ok, true);
-    assert.equal(reopenA1.tokenAttached, true);
-    assert.equal(reopenA1.finalEntry, `${originA1}/#token=peer_token_secret_a1`);
+    assert.equal(reopenA1.tokenAttached, false);
+    assert.equal(reopenA1.finalEntry, `${originA1}/`);
+    assert.equal(reopenA1.commitOrigin, originA1);
+    assert.equal(reopenA1.sessionToken, 'peer_token_secret_a1');
   } finally {
     serverA1.close();
     serverA2.close();
     serverSpoof.close();
     serverRedirect.close();
     serverB.close();
+  }
+});
+
+await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) leaks zero credential to target B while same-origin open and same-origin redirect preserve hash and history state', async () => {
+  const servers = [];
+  async function serve(handler) {
+    const server = createServer(handler);
+    servers.push(server);
+    await new Promise((resolveServer) => server.listen(0, '127.0.0.1', resolveServer));
+    return `http://127.0.0.1:${server.address().port}`;
+  }
+
+  assert.equal(
+    stripTokenFromEntry(
+      'http://127.0.0.1:5494',
+      'http://127.0.0.1:5494/settings?token=leak&tab=providers#token=leak2&st-card-providers-add=1',
+    ),
+    'http://127.0.0.1:5494/settings?tab=providers#st-card-providers-add=1',
+  );
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const receiverRequests = [];
+    const receiver = await serve((req, res) => {
+      receiverRequests.push({
+        url: req.url ?? '/',
+        authorization: req.headers.authorization ?? '',
+        referer: req.headers.referer ?? '',
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><html><body>redirect target</body></html>');
+    });
+
+    // 1. Direct 302 from already-paired origin to receiver (exact reproduction from check-paired-navigation-redirect.mjs)
+    const pairedRedirecting = await serve((_req, res) => {
+      res.writeHead(302, { Location: receiver }).end();
+    });
+
+    const storage = createMemoryStorage();
+    upsertSavedServer(storage, {
+      origin: pairedRedirecting,
+      targetHomeId: 'fixture-home',
+      paired: true,
+      verified: true,
+    });
+    const resolved = await resolveVerifiedServerOpen(storage, {
+      origin: pairedRedirecting,
+      targetHomeId: 'fixture-home',
+      paired: true,
+      getToken: async () => 'fixture-token',
+    });
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.tokenAttached, false);
+    assert.equal(resolved.finalEntry, `${pairedRedirecting}/`);
+    assert.equal(resolved.finalEntry.includes('token='), false);
+
+    const page = await browser.newPage();
+    await page.goto(resolved.finalEntry);
+    assert.equal(new URL(page.url()).origin, receiver);
+    assert.equal(await page.evaluate(() => location.hash), '');
+
+    const deliveryOnRedirect = await deliverCommittedServerCredential(page, resolved);
+    assert.equal(deliveryOnRedirect.ok, false);
+    assert.equal(deliveryOnRedirect.reason, 'cross_origin_redirect');
+    assert.equal(deliveryOnRedirect.tokenDelivered, false);
+    assert.equal(await page.evaluate(() => location.hash), '');
+    assert.equal(await page.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+
+    // Even if native evaluateJavascript runs buildCommittedCredentialScript on the redirected page,
+    // the in-page origin guard rejects delivery.
+    const scriptEvalOnReceiver = await page.evaluate((script) => {
+      // eslint-disable-next-line no-eval
+      return (0, eval)(script);
+    }, buildCommittedCredentialScript(pairedRedirecting, 'fixture-token'));
+    assert.equal(scriptEvalOnReceiver, false);
+    assert.equal(await page.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+
+    // 2. TOCTOU paired origin: returns 200 OK on first visit (e.g. preflight/iframe commit) and 302s to receiver on second visit
+    let toctouCount = 0;
+    const pairedToctou = await serve((_req, res) => {
+      toctouCount += 1;
+      if (toctouCount === 1) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<!doctype html><html><body>first visit ok</body></html>');
+        return;
+      }
+      res.writeHead(302, { Location: receiver }).end();
+    });
+    upsertSavedServer(storage, {
+      origin: pairedToctou,
+      targetHomeId: 'fixture-home-toctou',
+      paired: true,
+      verified: true,
+    });
+    const firstOpen = await openVerifiedServerNavigation(page, storage, {
+      origin: pairedToctou,
+      targetHomeId: 'fixture-home-toctou',
+      paired: true,
+      getToken: async () => 'toctou-secret-token',
+    });
+    assert.equal(firstOpen.ok, true);
+    assert.equal(firstOpen.tokenDelivered, true);
+
+    const secondOpen = await openVerifiedServerNavigation(page, storage, {
+      origin: pairedToctou,
+      targetHomeId: 'fixture-home-toctou',
+      paired: true,
+      getToken: async () => 'toctou-secret-token',
+    });
+    assert.equal(secondOpen.ok, false);
+    assert.equal(secondOpen.reason, 'cross_origin_redirect');
+    assert.equal(secondOpen.tokenDelivered, false);
+    assert.equal(new URL(page.url()).origin, receiver);
+    assert.equal(await page.evaluate(() => location.hash), '');
+    assert.equal(await page.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+
+    for (const reqInfo of receiverRequests) {
+      assert.equal(reqInfo.url.includes('token='), false);
+      assert.equal(reqInfo.authorization, '');
+      assert.equal(reqInfo.referer.includes('token='), false);
+    }
+
+    // 3. Positive: Paired origin with same-origin 302 redirect (`/settings?tab=providers#st-card-providers-add`)
+    // commits at paired origin, receives credential, and preserves path, query, hash, and history.state.idx
+    const pairedSameOriginRedirect = await serve((req, res) => {
+      if (req.url === '/') {
+        res.writeHead(302, { Location: '/settings?tab=providers#st-card-providers-add' }).end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><html><body><script>
+        window.history.replaceState({ idx: 3, usr: { from: 'boot' } }, '');
+        window.addEventListener('kiki:shell-token', (e) => {
+          window.__receivedShellToken = e.detail;
+        });
+      </script>same-origin destination</body></html>`);
+    });
+    upsertSavedServer(storage, {
+      origin: pairedSameOriginRedirect,
+      targetHomeId: 'fixture-home-same-origin',
+      paired: true,
+      verified: true,
+    });
+    const sameOriginOpen = await openVerifiedServerNavigation(page, storage, {
+      origin: pairedSameOriginRedirect,
+      targetHomeId: 'fixture-home-same-origin',
+      paired: true,
+      getToken: async () => 'same-origin-token-123',
+    });
+    assert.equal(sameOriginOpen.ok, true);
+    assert.equal(sameOriginOpen.tokenDelivered, true);
+    assert.equal(sameOriginOpen.committedOrigin, pairedSameOriginRedirect);
+    const sameOriginState = await page.evaluate(() => ({
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hash: window.location.hash,
+      historyState: window.history.state,
+      storedConnection: JSON.parse(window.localStorage.getItem('kiki.connection') || 'null'),
+      peerToken: window.sessionStorage.getItem('kiki.peer.token'),
+      eventDetail: window.__receivedShellToken,
+    }));
+    assert.equal(sameOriginState.pathname, '/settings');
+    assert.equal(sameOriginState.search, '?tab=providers');
+    assert.equal(sameOriginState.hash, '#st-card-providers-add');
+    assert.deepEqual(sameOriginState.historyState, { idx: 3, usr: { from: 'boot' } });
+    assert.deepEqual(sameOriginState.storedConnection, { url: '', token: 'same-origin-token-123' });
+    assert.equal(sameOriginState.peerToken, 'same-origin-token-123');
+    assert.deepEqual(sameOriginState.eventDetail, {
+      origin: pairedSameOriginRedirect,
+      token: 'same-origin-token-123',
+    });
+
+    // 4. Native Android & iOS plugin source contract verification:
+    // Neither KikiShellPlugin.java nor SceneDelegate.swift attaches `#token=` before loadUrl/load(URLRequest);
+    // both strip token fragments before loading, cancel cross-origin redirects in shouldOverrideLoad,
+    // and deliver credentials only after verifying committed origin.
+    const mobileRoot = resolve(import.meta.dirname, '..');
+    const androidPluginSource = readFileSync(
+      join(mobileRoot, 'android/app/src/main/java/ai/easyagent/kiki/KikiShellPlugin.java'),
+      'utf8',
+    );
+    const iosPluginSource = readFileSync(
+      join(mobileRoot, 'ios/App/App/SceneDelegate.swift'),
+      'utf8',
+    );
+    assert.equal(androidPluginSource.includes('/#token='), false);
+    assert.equal(iosPluginSource.includes('/#token='), false);
+    assert.match(androidPluginSource, /stripTokenFromEntry\(origin,\s*entry\)/);
+    assert.match(androidPluginSource, /onPageCommitVisible/);
+    assert.match(androidPluginSource, /deliverCommittedToken/);
+    assert.match(androidPluginSource, /buildCredentialDeliveryScript\(expectedOrigin,\s*token\)/);
+    assert.match(iosPluginSource, /stripTokenFromEntry\(origin:\s*origin,\s*entry:\s*entry\)/);
+    assert.match(iosPluginSource, /handleWebViewNavigationState/);
+    assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*expectedOrigin,\s*token:\s*token\)/);
+  } finally {
+    await browser.close();
+    for (const server of servers) server.close();
   }
 });

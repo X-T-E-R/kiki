@@ -1399,6 +1399,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     [connect],
   );
 
+  useEffect(() => {
+    if (desktopRuntime || vscodeRuntime) return;
+    const onShellToken = (event: Event): void => {
+      const detail = (event as CustomEvent<{ origin?: unknown; token?: unknown }>).detail;
+      if (!detail || typeof detail.origin !== 'string' || detail.origin !== window.location.origin) return;
+      const token = typeof detail.token === 'string' ? detail.token.trim() : '';
+      if (!token) return;
+      writeStoredConfig({ url: '', token });
+      connect({ url: '', token }, true);
+    };
+    window.addEventListener('kiki:shell-token', onShellToken);
+    return () => {
+      window.removeEventListener('kiki:shell-token', onShellToken);
+    };
+  }, [desktopRuntime, vscodeRuntime, connect]);
+
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || klient === null || socket === null || meta === null) return null;
     return {

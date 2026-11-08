@@ -4,6 +4,7 @@ import {
   STORE_ORIGIN_KEY,
   claimPairingOrigin,
   classifyOrigin,
+  deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
   isServerOriginVerified,
@@ -531,7 +532,7 @@ async function openServer(origin, entry, options = {}) {
     try {
       const res = await window.Capacitor.nativePromise('KikiShell', 'open', {
         origin,
-        entry,
+        entry: resolved.finalEntry,
         serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
@@ -562,6 +563,16 @@ async function openServer(origin, entry, options = {}) {
       return;
     } catch {
       /* fall through to plain navigation */
+    }
+  }
+
+  if (resolved.sessionToken) {
+    const delivery = await deliverCommittedServerCredential(window, resolved);
+    if (!delivery.ok) {
+      button.disabled = false;
+      updateInputAffordances();
+      showProblem(unreachableMessageFor(origin));
+      return;
     }
   }
 

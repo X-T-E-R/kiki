@@ -17,6 +17,7 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.WebViewListener;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
@@ -64,6 +65,8 @@ public class KikiShellPlugin extends Plugin {
     static final String ACTION_CHANGE_SERVER = "ai.easyagent.kiki.CHANGE_SERVER";
 
     private volatile String pendingPairUri;
+    private volatile String pendingAuthOrigin;
+    private volatile String pendingAuthServerId;
 
     private static final class HandshakeResult {
         final boolean ok;
@@ -84,6 +87,20 @@ public class KikiShellPlugin extends Plugin {
     @Override
     public void load() {
         capturePairIntent(getActivity().getIntent());
+        getBridge()
+            .addWebViewListener(
+                new WebViewListener() {
+                    @Override
+                    public void onPageCommitVisible(WebView view, String url) {
+                        deliverCommittedToken(view, url, false);
+                    }
+
+                    @Override
+                    public void onPageLoaded(WebView view) {
+                        deliverCommittedToken(view, view == null ? null : view.getUrl(), true);
+                    }
+                }
+            );
         getActivity()
             .getOnBackPressedDispatcher()
             .addCallback(
@@ -304,6 +321,7 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         if (serverId == null || serverId.isEmpty()) {
+            clearPendingAuth();
             prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
             getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(entry));
             JSObject result = new JSObject();
@@ -313,15 +331,18 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         if (!isOriginVerified(serverId, origin) || !hasStoredToken(serverId, origin)) {
+            clearPendingAuth();
             JSObject untrusted = new JSObject();
             untrusted.put("ok", false);
             untrusted.put("reason", "pairing_required");
             call.resolve(untrusted);
             return;
         }
+        String cleanEntry = stripTokenFromEntry(origin, entry);
+        pendingAuthOrigin = origin;
+        pendingAuthServerId = serverId;
         prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
-        String targetUrl = attachStoredTokenIfNeeded(origin, entry, serverId);
-        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(targetUrl));
+        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(cleanEntry));
         JSObject result = new JSObject();
         result.put("ok", true);
         result.put("origin", origin);
@@ -338,15 +359,85 @@ public class KikiShellPlugin extends Plugin {
         call.resolve(result);
     }
 
-    private String attachStoredTokenIfNeeded(String origin, String entry, String serverId) {
-        if (serverId == null || serverId.isEmpty()) return entry;
-        if (!isOriginVerified(serverId, origin)) return entry;
-        if (entry.contains("#access=") || entry.contains("&access=") || entry.contains("token=")) {
-            return entry;
+    private void clearPendingAuth() {
+        pendingAuthOrigin = null;
+        pendingAuthServerId = null;
+    }
+
+    private void deliverCommittedToken(WebView view, String candidateUrl, boolean finalize) {
+        String expectedOrigin = pendingAuthOrigin;
+        String serverId = pendingAuthServerId;
+        if (expectedOrigin == null || serverId == null || view == null) return;
+
+        String viewUrl = view.getUrl();
+        String committedOrigin = viewUrl == null ? null : originOf(Uri.parse(viewUrl));
+        String candidateOrigin = candidateUrl == null ? committedOrigin : originOf(Uri.parse(candidateUrl));
+        if (
+            committedOrigin == null ||
+            !expectedOrigin.equals(committedOrigin) ||
+            !expectedOrigin.equals(candidateOrigin)
+        ) {
+            clearPendingAuth();
+            String local = getBridge().getLocalUrl();
+            if (local != null && (viewUrl == null || !viewUrl.startsWith(local))) {
+                view.post(() -> view.loadUrl(local + "/index.html#unreachable"));
+            }
+            return;
         }
-        String token = readPeerToken(serverId, origin);
-        if (token == null || token.isEmpty()) return entry;
-        return origin + "/#token=" + Uri.encode(token);
+        if (!isOriginVerified(serverId, expectedOrigin)) {
+            clearPendingAuth();
+            return;
+        }
+        String token = readPeerToken(serverId, expectedOrigin);
+        if (finalize) {
+            clearPendingAuth();
+        }
+        if (token == null || token.isEmpty()) return;
+        view.evaluateJavascript(buildCredentialDeliveryScript(expectedOrigin, token), null);
+    }
+
+    static String stripTokenFromEntry(String origin, String entry) {
+        if (entry == null || entry.isEmpty()) return origin + "/";
+        Uri parsed = Uri.parse(entry);
+        if (!origin.equals(originOf(parsed))) return origin + "/";
+        String fragment = parsed.getEncodedFragment();
+        String nextFragment = fragment;
+        if (fragment != null && (fragment.startsWith("token=") || fragment.contains("&token="))) {
+            StringBuilder kept = new StringBuilder();
+            for (String part : fragment.split("&")) {
+                if (part.isEmpty() || part.startsWith("token=")) continue;
+                if (kept.length() > 0) kept.append('&');
+                kept.append(part);
+            }
+            nextFragment = kept.length() > 0 ? kept.toString() : null;
+        }
+        Uri.Builder builder = parsed.buildUpon().encodedFragment(nextFragment);
+        if (parsed.getQueryParameter("token") != null) {
+            builder.clearQuery();
+            for (String name : parsed.getQueryParameterNames()) {
+                if ("token".equals(name)) continue;
+                for (String val : parsed.getQueryParameters(name)) {
+                    builder.appendQueryParameter(name, val);
+                }
+            }
+        }
+        return builder.build().toString();
+    }
+
+    static String buildCredentialDeliveryScript(String expectedOrigin, String token) {
+        String originJson = JSONObject.quote(expectedOrigin == null ? "" : expectedOrigin);
+        String tokenJson = JSONObject.quote(token == null ? "" : token);
+        return (
+            "(function(){try{if(window.location.origin!==" +
+            originJson +
+            ")return false;var t=" +
+            tokenJson +
+            ";if(!t)return false;try{window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));}catch(e){}" +
+            "try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}" +
+            "try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:" +
+            originJson +
+            ",token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
+        );
     }
 
     private HandshakeResult fetchHandshake(String normalizedOrigin) {
@@ -415,6 +506,7 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private void forgetServerData(String serverId, String origin) {
+        clearPendingAuth();
         SharedPreferences sp = prefs();
         SharedPreferences.Editor editor = sp.edit();
         String trusted = sp.getString(TRUSTED_ORIGIN, null);
@@ -538,8 +630,21 @@ public class KikiShellPlugin extends Plugin {
         if (local != null && url.toString().startsWith(local)) {
             return false;
         }
+        String targetOrigin = originOf(url);
+        String expectedPending = pendingAuthOrigin;
+        if (expectedPending != null) {
+            if (targetOrigin != null && expectedPending.equals(targetOrigin)) {
+                return false;
+            }
+            clearPendingAuth();
+            if (local != null) {
+                WebView webView = getBridge().getWebView();
+                webView.post(() -> webView.loadUrl(local + "/index.html#unreachable"));
+            }
+            return true;
+        }
         String trusted = prefs().getString(TRUSTED_ORIGIN, null);
-        if (trusted != null && trusted.equals(originOf(url))) {
+        if (trusted != null && trusted.equals(targetOrigin)) {
             return false;
         }
         return null;
@@ -550,11 +655,13 @@ public class KikiShellPlugin extends Plugin {
         super.handleOnNewIntent(intent);
         if (intent == null) return;
         if (capturePairIntent(intent)) {
+            clearPendingAuth();
             WebView webView = getBridge().getWebView();
             webView.post(() -> webView.loadUrl(getBridge().getLocalUrl() + "/index.html#pair"));
             return;
         }
         if (ACTION_CHANGE_SERVER.equals(intent.getAction())) {
+            clearPendingAuth();
             WebView webView = getBridge().getWebView();
             webView.post(() -> {
                 webView.loadUrl(getBridge().getLocalUrl() + "/index.html#change");
