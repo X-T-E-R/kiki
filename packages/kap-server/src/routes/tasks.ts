@@ -260,7 +260,7 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
       const wireStatus = toWireTask(session_id, found).status;
-      if (isTerminalStatus(wireStatus)) {
+      if (isTerminalStatus(wireStatus) && found.cleanupPending !== true) {
         reply.send(taskAlreadyFinished(session_id, task_id, wireStatus, req.id));
         return;
       }

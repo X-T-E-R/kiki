@@ -38,7 +38,7 @@ export class TaskStopTool implements ITaskStopTool {
             ? 'Stopped by TaskStop'
             : trimmedReason;
 
-        if (TERMINAL_STATUSES.has(info.status)) {
+        if (TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true) {
           return {
             output:
               `task_id: ${info.taskId}\n` +

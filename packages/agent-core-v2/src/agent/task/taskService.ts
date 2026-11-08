@@ -807,7 +807,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (includeRestoration && this.restorePending) return true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
-      if (!TERMINAL_STATUSES.has(entry.status)) return true;
+      if (!TERMINAL_STATUSES.has(entry.status) || entry.cleanupFailure !== undefined) return true;
       if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
         !this.deliveredNotificationKeys.has(entry.taskId)) return true;
     }
@@ -1176,7 +1176,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     },
   ): Promise<AgentTaskInfo | undefined> {
     if (entry.stopping !== undefined) return entry.stopping;
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
@@ -1216,6 +1216,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
           );
           entry.cleanupFailure = undefined;
+          this.fireWorkChange();
         } catch (error) {
           descendantFailure = error;
           await this.retainCleanupFailure(entry, error);
@@ -1246,7 +1247,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     ]);
     if (graceTimer !== undefined) clearTimeout(graceTimer);
 
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
@@ -1259,6 +1260,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
         await forceStop?.();
         entry.cleanupFailure = undefined;
+        this.fireWorkChange();
       } catch (error) {
         await this.retainCleanupFailure(entry, error);
         throw error;
@@ -1266,6 +1268,23 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
 
     if (TERMINAL_STATUSES.has(entry.status)) {
+      if (options.stopReason !== undefined) {
+        entry.stopReason = options.stopReason;
+      } else if (entry.status !== 'killed') {
+        entry.stopReason = undefined;
+      }
+      if (entry.visible && (this.isDetached(entry) || entry.outputPersistStarted ||
+        (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
+        await this.commitTerminal(entry);
+      }
+      if (entry.cleanupFailure !== undefined) {
+        throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
+      }
+      this.fireTerminalEffects(entry);
+      this.resolveWaiters(entry);
+      void this.archiveTask(entry).catch((error) => {
+        this.log.error('task archival failed; retaining execution record', { taskId: entry.taskId, error });
+      });
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
@@ -1274,12 +1293,19 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       status: options.finalStatus,
       stopReason: options.stopReason,
     });
+    if (entry.cleanupFailure !== undefined) {
+      throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
+    }
     await entry.persistWriteQueue;
     return this.toInfo(entry);
   }
 
   private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
     entry.cleanupFailure = error;
+    if (TERMINAL_STATUSES.has(entry.status)) {
+      entry.receipt = undefined;
+      entry.receiptVerification = 'invalid';
+    }
     this.fireWorkChange();
     const diagnostic = error as { code?: unknown; details?: unknown } | null;
     entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
@@ -1322,7 +1348,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (hadPendingWaitDeliveries) this.fireWorkChange();
     if (!this.keepAliveOnExit()) {
       for (const entry of this.tasks.values()) {
-        if (TERMINAL_STATUSES.has(entry.status)) continue;
+        if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) continue;
         if (entry.timeoutHandle !== undefined) {
           clearTimeout(entry.timeoutHandle);
           entry.timeoutHandle = undefined;
@@ -1362,7 +1388,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   ): Promise<AgentTaskInfo | undefined> {
     const entry = this.tasks.get(taskId);
     if (entry === undefined) return this.ghosts.get(taskId);
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
@@ -1392,7 +1418,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
 
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
     }
     return this.toInfo(entry);
@@ -1682,7 +1708,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       const metadata = entry.persistWriteQueue;
       const output = entry.outputWriteQueue;
       await Promise.all([lifecycle, notification, metadata, output]);
-      if (!entry.visible || !TERMINAL_STATUSES.has(entry.status) || this.tasks.get(entry.taskId) !== entry) return;
+      if (
+        !entry.visible ||
+        !TERMINAL_STATUSES.has(entry.status) ||
+        entry.cleanupFailure !== undefined ||
+        this.tasks.get(entry.taskId) !== entry
+      ) return;
       if (
         entry.lifecyclePromise === lifecycle &&
         entry.notificationPromise === notification &&
@@ -1774,6 +1805,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
       await this.commitTerminal(entry);
     }
+    if (entry.cleanupFailure !== undefined) return false;
     this.fireTerminalEffects(entry);
     foregroundRelease?.resolve('terminal');
     this.resolveWaiters(entry);
@@ -2296,7 +2328,7 @@ function renderOutputFileBlock(outputPath: string, outputSizeBytes: number): str
 }
 
 function shouldListTask(info: AgentTaskInfo, activeOnly: boolean): boolean {
-  if (!TERMINAL_STATUSES.has(info.status)) return true;
+  if (!TERMINAL_STATUSES.has(info.status) || info.cleanupPending === true) return true;
   if (activeOnly) return false;
   return info.detached !== false;
 }

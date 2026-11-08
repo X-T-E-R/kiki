@@ -1610,6 +1610,100 @@ describe('AgentTaskService', () => {
     expect(forceStop).toHaveBeenCalledTimes(path === 'lifecycle' ? 1 : 2);
   });
 
+  it('reproduces the timed_out plus cleanupPending race and retries cleanup via stop until confirmed', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    ix.stub(IAtomicDocumentStore, mapBackedDocs());
+    ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+    const service = ix.get(IAgentTaskService);
+    const error = new HostProcessError('os.process.kill_failed', 'Windows process helper did not confirm cleanup before its deadline.', {
+      details: { cleanupComplete: false, phase: 'deadline', pid: 67460 },
+    });
+    let resolveWait!: (code: number) => void;
+    const wait = new Promise<number>((resolve) => { resolveWait = resolve; });
+    let rejectLifecycleDispose!: (reason: unknown) => void;
+    const lifecycleDispose = new Promise<void>((_resolve, reject) => { rejectLifecycleDispose = reject; });
+    const kill = vi.fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(undefined);
+    const dispose = vi.fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(lifecycleDispose)
+      .mockResolvedValue(undefined);
+    const proc = {
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from(['> tsc -p tsconfig.json --noEmit\n']),
+      stderr: Readable.from([]),
+      pid: 67460,
+      exitCode: 1,
+      wait: () => wait,
+      kill,
+      dispose,
+    } as unknown as IHostProcess;
+
+    const taskId = service.registerTask(new ProcessTask(proc, 'pnpm --filter @kiki/kap-server typecheck', 'typecheck'), { timeoutMs: 1 });
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    resolveWait(1);
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
+    rejectLifecycleDispose(error);
+    await vi.waitFor(() => expect(service.getTask(taskId)?.cleanupPending).toBe(true));
+
+    expect(service.getTask(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      endedAt: expect.any(Number),
+      exitCode: 1,
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+      stopReason: expect.stringContaining('Windows process helper did not confirm cleanup before its deadline.'),
+    });
+    expect(service.list(true).map((info) => info.taskId)).toContain(taskId);
+    expect(service.hasUnfinishedWork()).toBe(true);
+
+    await expect(service.stop(taskId, 'first retry')).rejects.toBe(error);
+    expect(service.getTask(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      endedAt: expect.any(Number),
+      exitCode: 1,
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    expect(service.list(true).map((info) => info.taskId)).toContain(taskId);
+    expect(service.hasUnfinishedWork()).toBe(true);
+
+    const settled = await service.stop(taskId, 'second retry');
+    expect(settled).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      exitCode: 1,
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+      stopReason: 'second retry',
+    });
+    expect(service.list(true).map((info) => info.taskId)).not.toContain(taskId);
+    expect(await service.getTaskSnapshot(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+      stopReason: 'second retry',
+    });
+
+    const callsAfterSettle = kill.mock.calls.length;
+    const idempotent = await service.stop(taskId, 'later stop');
+    expect(idempotent).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+    });
+    expect(kill).toHaveBeenCalledTimes(callsAfterSettle);
+  });
+
   it('does not publish a parent terminal when a descendant cleanup fails', async () => {
     stubTaskConfig({ killGracePeriodMs: 0 });
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());

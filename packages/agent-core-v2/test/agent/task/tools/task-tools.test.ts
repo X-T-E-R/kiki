@@ -217,8 +217,8 @@ class FakeTaskService implements IAgentTaskService {
     let skipped = 0;
     for (const entry of this.entries.values()) {
       const info = entry.info;
-      if (activeOnly && TERMINAL_STATUSES.has(info.status)) continue;
-      if (!activeOnly && TERMINAL_STATUSES.has(info.status) && info.detached === false) continue;
+      if (activeOnly && TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true) continue;
+      if (!activeOnly && TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true && info.detached === false) continue;
       if (skipped++ < offset) continue;
       result.push(info);
       if (limit !== undefined && result.length >= limit) break;
@@ -284,13 +284,14 @@ class FakeTaskService implements IAgentTaskService {
     this.stopCalls.push({ taskId, reason });
     const entry = this.entries.get(taskId);
     if (entry === undefined) return undefined;
-    if (TERMINAL_STATUSES.has(entry.info.status)) return entry.info;
+    if (TERMINAL_STATUSES.has(entry.info.status) && entry.info.cleanupPending !== true) return entry.info;
     entry.info = {
       ...entry.info,
-      status: 'killed',
-      endedAt: 1_700_000_002_000,
+      status: TERMINAL_STATUSES.has(entry.info.status) ? entry.info.status : 'killed',
+      endedAt: entry.info.endedAt ?? 1_700_000_002_000,
+      cleanupPending: undefined,
       stopReason: reason,
-      ...(entry.info.kind === 'process' ? { exitCode: 143 } : undefined),
+      ...(entry.info.kind === 'process' && entry.info.exitCode === null ? { exitCode: 143 } : undefined),
     } as AgentTaskInfo;
     return entry.info;
   }
@@ -882,6 +883,49 @@ describe('TaskStopTool', () => {
     ]);
     expect(tasks.suppressCalls).toEqual([]);
     expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).not.toBe(true);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('retries cleanup when a terminal task still has cleanupPending=true, then stays idempotent after cleanup succeeds', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(
+      processTask({
+        taskId: 'bash-cd8my91y',
+        command: 'pnpm --filter @kiki/kap-server typecheck',
+        pid: 67460,
+        exitCode: 1,
+        status: 'timed_out',
+        endedAt: 1_794_163_612_175,
+        cleanupPending: true,
+        receiptVerification: 'invalid',
+        stopReason: 'Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. os.process.kill_failed: Windows process helper did not confirm cleanup before its deadline.; details={"cleanupComplete":false,"phase":"deadline","pid":67460}',
+      }),
+    );
+
+    const retry = await executeTool(
+      new TaskStopTool(tasks, noLiveAgents),
+      context('task_stop_cleanup_pending', { task_id: taskId, reason: 'Confirm cleanup' }),
+    );
+    expect(retry.isError ?? false).toBe(false);
+    expect(outputString(retry).trim().split('\n')).toEqual([
+      `task_id: ${taskId}`,
+      'status: timed_out',
+      'reason: Confirm cleanup',
+    ]);
+    expect(tasks.stopCalls).toEqual([{ taskId, reason: 'Confirm cleanup' }]);
+    expect(tasks.suppressCalls).toEqual([taskId]);
+    expect(tasks.getTask(taskId)?.cleanupPending).toBeUndefined();
+
+    const second = await executeTool(
+      new TaskStopTool(tasks, noLiveAgents),
+      context('task_stop_after_cleanup', { task_id: taskId, reason: 'Ignored after cleanup' }),
+    );
+    expect(second.isError ?? false).toBe(false);
+    expect(outputString(second).trim().split('\n')).toEqual([
+      `task_id: ${taskId}`,
+      'status: timed_out',
+      'reason: Confirm cleanup',
+    ]);
+    expect(tasks.stopCalls).toHaveLength(1);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('falls back to the placeholder when a terminal task has a blank stored reason', async () => {

@@ -70,8 +70,11 @@ export class ProcessTask implements AgentTask {
       };
     } finally {
       sink.signal.removeEventListener('abort', requestStop);
-      await this.stopPromise;
-      await this.disposeProcess();
+      try {
+        await this.stopPromise;
+      } finally {
+        await this.disposeProcess();
+      }
     }
     await sink.settle(settlement);
   }

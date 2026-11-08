@@ -197,7 +197,7 @@ export class TaskWaitTool implements ITaskWaitTool {
     const remaining = Math.max(0, startedAt + timeoutMs - Date.now());
     try {
       signal.throwIfAborted();
-      const finished = saved === undefined ? undefined : runningAtStart.filter(task => TERMINAL_STATUSES.has(task.status))
+      const finished = saved === undefined ? undefined : runningAtStart.filter(task => TERMINAL_STATUSES.has(task.status) && task.cleanupPending !== true)
         .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))[0];
       waited = finished !== undefined ? await this.tasks.wait(finished.taskId, 0, signal)
         : args.task_id === undefined ? await this.waitAny(runningAtStart, remaining, signal)
@@ -223,7 +223,7 @@ export class TaskWaitTool implements ITaskWaitTool {
       return { isError: true, output: `Task not found: ${args.task_id ?? ''}` };
     }
 
-    if (!TERMINAL_STATUSES.has(waited.status)) {
+    if (!TERMINAL_STATUSES.has(waited.status) || waited.cleanupPending === true) {
       this.track(args, startedAt, timeoutMs, 'timed_out', 0);
       return { output: this.formatTimeout(args, startedAt, timeoutMs), isError: false };
     }
@@ -273,7 +273,7 @@ export class TaskWaitTool implements ITaskWaitTool {
     for (const task of runningAtStart) {
       if (task.taskId === finishedTaskId) continue;
       const current = this.tasks.getTask(task.taskId);
-      if (current !== undefined && TERMINAL_STATUSES.has(current.status)) extras.push(current);
+      if (current !== undefined && TERMINAL_STATUSES.has(current.status) && current.cleanupPending !== true) extras.push(current);
     }
     return extras;
   }
