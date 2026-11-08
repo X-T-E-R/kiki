@@ -792,20 +792,21 @@ describe('hooks v2 completed-step engine contract', () => {
       rules: loaded.rules.map((entry) => ({ ...entry, active: pluginEnabled })),
     });
 
-    const subagent = agentWithRules(currentSnapshot, (_event, id) => observedHooks.push(id), 'sub-1320');
-    const mockModel = subagent.kimiConfig.models!['mock-model']!;
-    const baseModel = {
-      ...mockModel,
-      capabilities: mockModel.capabilities ? [...mockModel.capabilities] : undefined,
-      supportEfforts: mockModel.supportEfforts ? [...mockModel.supportEfforts] : undefined,
-    };
-    const argonModels = {
-      'mock-model': baseModel,
-      'axon-message/gemini-4-argon': { ...baseModel, model: 'gemini-4-argon' },
-    };
-    subagent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
-    await subagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    const argonAlias = 'axon-message/gemini-4-argon';
+    async function configuredSubagent(
+      id: string,
+      hooks: string[],
+      contextStrategy?: 'fresh',
+      model = argonAlias,
+    ): Promise<TestAgentContext> {
+      const agent = agentWithRules(currentSnapshot, (_event, hookId) => hooks.push(hookId), id, {
+        models: { [argonAlias]: { provider: 'test-provider', model: 'gemini-4-argon', maxContextSize: 1_000_000, contextStrategy } },
+      });
+      await agent.get(IAgentProfileService).bind({ profile: 'agent', model });
+      return agent;
+    }
 
+    const subagent = await configuredSubagent('sub-1320', observedHooks);
     const committedStrategies: Array<'summarize' | 'relay' | undefined> = [];
     subagent.get(IAgentFullCompactionService).hooks.onDidCommit.register('test-commit', async (task, next) => {
       committedStrategies.push(task.committedStrategy);
@@ -832,9 +833,7 @@ describe('hooks v2 completed-step engine contract', () => {
     expect(observedHooks).toHaveLength(1);
 
     const thresholdHooks: string[] = [];
-    const thresholdAgent = agentWithRules(currentSnapshot, (_event, id) => thresholdHooks.push(id), 'sub-threshold');
-    thresholdAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
-    await thresholdAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    const thresholdAgent = await configuredSubagent('sub-threshold', thresholdHooks);
     seedReadHeavyWindow(thresholdAgent, { steps: 16, reads: 40, charsPerRead: 10_000 });
     thresholdAgent.mockNextResponse({ type: 'text', text: 'Synthesized summary at 16-step 40-read 400k threshold.' });
     thresholdAgent.mockNextResponse({ type: 'text', text: 'Continued after threshold summary.' });
@@ -845,35 +844,28 @@ describe('hooks v2 completed-step engine contract', () => {
 
     pluginEnabled = false;
     const disabledHooks: string[] = [];
-    const disabledSubagent = agentWithRules(currentSnapshot, (_event, id) => disabledHooks.push(id), 'sub-disabled');
-    disabledSubagent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
-    await disabledSubagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    const disabledSubagent = await configuredSubagent('sub-disabled', disabledHooks);
     seedReadHeavyWindow(disabledSubagent, { steps: 67, reads: 196, charsPerRead: 13_500 });
     await turn(disabledSubagent, 'Continue with plugin disabled');
     expect(disabledHooks).toEqual([]);
     expect(disabledSubagent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary')).toBe(false);
 
     pluginEnabled = true;
-    for (const [label, setup] of [
-      ['short task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 6, reads: 10, charsPerRead: 2_000 })],
-      ['editing task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000, includeEdit: true })],
-      ['explicit fresh model strategy', (ctx: TestAgentContext) => {
-        ctx.get(IModelService).loadAll({
-          ...argonModels,
-          'axon-message/gemini-4-argon': { ...baseModel, model: 'gemini-4-argon', contextStrategy: 'fresh' },
-        }, 'axon-message/gemini-4-argon');
-        seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000 });
-      }],
-      ['other model', async (ctx: TestAgentContext) => {
-        await ctx.get(IAgentProfileService).bind({ profile: 'agent', model: 'mock-model' });
-        seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000 });
-      }],
-    ] as const) {
+    const negativeCases: readonly {
+      label: string;
+      contextStrategy?: 'fresh';
+      model?: string;
+      window: Parameters<typeof seedReadHeavyWindow>[1];
+    }[] = [
+      { label: 'short task', window: { steps: 6, reads: 10, charsPerRead: 2_000 } },
+      { label: 'editing task', window: { steps: 20, reads: 45, charsPerRead: 10_000, includeEdit: true } },
+      { label: 'explicit fresh model strategy', contextStrategy: 'fresh', window: { steps: 20, reads: 45, charsPerRead: 10_000 } },
+      { label: 'other model', model: 'mock-model', window: { steps: 20, reads: 45, charsPerRead: 10_000 } },
+    ];
+    for (const { label, contextStrategy, model, window } of negativeCases) {
       const negHooks: string[] = [];
-      const negAgent = agentWithRules(currentSnapshot, (_event, id) => negHooks.push(id), `sub-${label}`);
-      negAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
-      await negAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
-      await setup(negAgent);
+      const negAgent = await configuredSubagent(`sub-${label}`, negHooks, contextStrategy, model);
+      seedReadHeavyWindow(negAgent, window);
       expect(negAgent.get(IAgentFullCompactionService).isCompacting(), label).toBe(false);
       await turn(negAgent, `Check ${label}`);
       expect(negHooks, label).toEqual([]);
@@ -881,9 +873,7 @@ describe('hooks v2 completed-step engine contract', () => {
     }
 
     const budgetHooks: string[] = [];
-    const budgetAgent = agentWithRules(currentSnapshot, (_event, id) => budgetHooks.push(id), 'sub-budget');
-    budgetAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
-    await budgetAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    const budgetAgent = await configuredSubagent('sub-budget', budgetHooks);
     seedReadHeavyWindow(budgetAgent, { steps: 16, reads: 40, charsPerRead: 10_000 });
     const budgetCompaction = budgetAgent.get(IAgentFullCompactionService);
     const beginSpy = vi.spyOn(budgetCompaction, 'begin').mockReturnValue(false);

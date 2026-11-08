@@ -276,6 +276,7 @@ interface ModelConfigForConfig {
   readonly capabilities?: readonly string[];
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly contextStrategy?: ModelsSection[string]['contextStrategy'];
   readonly parameters?: GenerationParameters;
   readonly usage?: ModelUsagePolicy;
   readonly cognition?: CognitionConfig;

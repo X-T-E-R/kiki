@@ -200,7 +200,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
     { initialConfig: { retry: { maxAttempts: options.maxAttempts ?? 5, policies: [{ match: '.+', backoff: 0 }] } } },
   );
   if (options.modelAlias !== undefined) local.configure({ provider: { type: 'anthropic', model: options.modelAlias, apiKey: 'YOUR_API_KEY', baseUrl: origin } });
-  if (options.profileName !== undefined) local.get(IAgentProfileService).update({ profileName: options.profileName, executorId: 'native' });
+  if (options.profileName !== undefined) local.get(IAgentProfileService).update({ profileName: options.profileName });
   if (options.tool === true) {
     local.get(IAgentToolRegistryService).register({
       name: 'SaveWork', description: 'Save work', parameters: { type: 'object' },
