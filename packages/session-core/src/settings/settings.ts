@@ -339,6 +339,8 @@ export interface ProviderModelDraft extends RequestIdentityLayerDraft, ImagePoli
   maxContextSize: number;
   /** Absolute positive integer tokens; omitted means inherit the existing compaction policy. */
   autoCompact?: number;
+  /** Renewal strategy when the model reaches its compaction point; omitted inherits. */
+  contextStrategy?: 'summarize' | 'auto' | 'fresh';
   displayName: string;
   /**
    * Canonical billing name for local cost and content-free usage export.
@@ -1487,6 +1489,7 @@ export function providerModelDraftFromCatalog(
     remoteId: model.remote_id ?? '',
     maxContextSize: model.max_context_size ?? 0,
     autoCompact: model.auto_compact,
+    contextStrategy: model.context_strategy,
     displayName: model.display_name ?? '',
     pricingModel: model.pricing_model ?? '',
     capabilities: configured === undefined ? [...DEFAULT_MODEL_CAPABILITIES] : [...configured],
@@ -1690,6 +1693,7 @@ export function providerModelDraftsEqual(
     && model.remoteId === other.remoteId
     && model.maxContextSize === other.maxContextSize
     && model.autoCompact === other.autoCompact
+    && model.contextStrategy === other.contextStrategy
     && model.displayName === other.displayName
     && (model.pricingModel ?? '') === (other.pricingModel ?? '')
     && JSON.stringify(model.behavior) === JSON.stringify(other.behavior)
@@ -1748,6 +1752,7 @@ export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest 
         remote_id: model.remoteId,
         max_context_size: model.maxContextSize > 0 ? model.maxContextSize : undefined,
         auto_compact: model.autoCompact,
+        context_strategy: model.contextStrategy,
         display_name: model.displayName || undefined,
         capabilities: model.capabilities.length > 0 ? [...model.capabilities] : undefined,
         support_efforts: model.supportEfforts.length > 0 ? [...model.supportEfforts] : undefined,
@@ -1812,6 +1817,9 @@ export function modelPatchBody(
   if (draft.autoCompact !== baseline.autoCompact) {
     patch.auto_compact = draft.autoCompact ?? null;
   }
+  if (draft.contextStrategy !== baseline.contextStrategy) {
+    patch.context_strategy = draft.contextStrategy ?? null;
+  }
   if (!stringArraysEqual(draft.capabilities, baseline.capabilities)) {
     patch.capabilities = [...draft.capabilities];
   }
@@ -1846,6 +1854,7 @@ export function modelCreateBody(
     pricing_model: row.pricingModel?.trim() || undefined,
     max_context_size: row.maxContextSize > 0 ? row.maxContextSize : undefined,
     auto_compact: row.autoCompact,
+    context_strategy: row.contextStrategy,
     capabilities: row.capabilities.length > 0 ? [...row.capabilities] : undefined,
     support_efforts: row.supportEfforts.length > 0 ? [...row.supportEfforts] : undefined,
     behavior: row.behavior,

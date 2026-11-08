@@ -578,6 +578,49 @@ describe('ProviderModelList row editor', () => {
     });
   });
 
+  it('saves, reopens, and clears the model compaction strategy', async () => {
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const wrapper = () => container.querySelector('[data-model-context-strategy-select]')!;
+    expect(wrapper().getAttribute('data-model-context-strategy-select')).toBe('inherit');
+    expect(await optionLabels(wrapper())).toEqual(['Use inherited setting', 'Auto', 'Summarize', 'Fresh start']);
+    await pickValue(wrapper(), 'data-option-value', 'fresh');
+    expect(wrapper().getAttribute('data-model-context-strategy-select')).toBe('fresh');
+    updateModel.mockResolvedValueOnce({ ...ENTITY, context_strategy: 'fresh', revision: 'rev-8' });
+    getModel.mockResolvedValue({ ...ENTITY, context_strategy: 'fresh', revision: 'rev-8' });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+    expect(updateModel).toHaveBeenLastCalledWith('kimi-code/kimi-k2', {
+      context_strategy: 'fresh',
+      base_revision: 'rev-7',
+    });
+    expect(wrapper().getAttribute('data-model-context-strategy-select')).toBe('fresh');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(wrapper().getAttribute('data-model-context-strategy-select')).toBe('fresh');
+
+    await pickValue(wrapper(), 'data-option-value', 'inherit');
+    updateModel.mockResolvedValueOnce({ ...ENTITY, revision: 'rev-9' });
+    getModel.mockResolvedValue({ ...ENTITY, revision: 'rev-9' });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+    expect(updateModel).toHaveBeenLastCalledWith('kimi-code/kimi-k2', {
+      context_strategy: null,
+      base_revision: 'rev-8',
+    });
+  });
+
   it('saves engine fields as a sparse patch, clears emptied ones with null and blocks bad JSON', async () => {
     getModel.mockResolvedValue({ ...ENTITY, aliases: ['old-k2'], context_budget: 90_000, request_params: { store: false } });
     const container = await renderCard();

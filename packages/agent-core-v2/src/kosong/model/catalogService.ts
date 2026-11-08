@@ -508,6 +508,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         overrides: configuredModel.overrides,
         contextBudget: model.contextBudget,
         autoCompact: model.autoCompact,
+        contextStrategy: model.contextStrategy,
         maxCompletionTokens: generation.values.maxCompletionTokens,
         requestParams: model.requestParams,
         serviceTier: isApiDefault(generation.values.serviceTier) ? undefined : generation.values.serviceTier,

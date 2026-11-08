@@ -592,7 +592,7 @@ export interface AgentStatusUpdatedEvent {
   readonly maxContextTokens?: number;
   readonly autoCompactTokens?: number;
   readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
-  readonly contextStrategySource?: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor';
+  readonly contextStrategySource?: 'session' | 'profile' | 'model' | 'global' | 'default' | 'subagent' | 'executor';
   /** The effective layer; legacy means no auto_compact key was configured. */
   readonly autoCompactSource?: 'session' | 'profile' | 'model' | 'global' | 'legacy';
   readonly effectiveMaxContextTokens?: number;
@@ -1783,7 +1783,7 @@ export const agentStatusUpdatedEventSchema = z.object({
   contextTokens: z.number().optional(),
   maxContextTokens: z.number().optional(),
   contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
-  contextStrategySource: z.enum(['session', 'profile', 'global', 'default', 'subagent', 'executor']).optional(),
+  contextStrategySource: z.enum(['session', 'profile', 'model', 'global', 'default', 'subagent', 'executor']).optional(),
   contextUsage: z.number().optional(),
   planMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),

@@ -69,6 +69,7 @@ describe('relay-v1 REST and cold wire contract', () => {
     await mkdir(join(home, 'agents'), { recursive: true });
     await writeFile(join(home, 'agents', 'custom.md'), '---\nname: custom\ndescription: Custom agent\ncontext_strategy: auto\nmodel_profiles:\n  - alias: test\n    context_strategy: fresh\n---\n\nYou are helpful.\n');
     await writeFile(join(home, 'agents', 'child.md'), '---\nname: child\ndescription: Child agent\ncontext_strategy: summarize\n---\n\nYou are helpful.\n');
+    await writeFile(join(home, 'agents', 'plain.md'), '---\nname: plain\ndescription: Plain agent without profile context_strategy\n---\n\nYou are helpful.\n');
     await start();
   });
 
@@ -120,6 +121,40 @@ describe('relay-v1 REST and cold wire contract', () => {
     const rejected = await request<unknown>(`/api/sessions/${id}/agents/${child.id}/context-strategy`, 'PATCH', { strategy: 'fresh' });
     expect(rejected.code).not.toBe(0);
     expect((await request<{ strategy: string; source: string }>(path)).data).toMatchObject({ strategy: 'summarize', source: 'session' });
+
+    const plainSession = await request<{ id: string }>('/api/sessions', 'POST', {
+      metadata: { cwd: home }, agent_config: { profile: 'plain', model: 'test' },
+    });
+    expect(plainSession.code, plainSession.msg).toBe(0);
+    const plainId = plainSession.data.id;
+    const plainPath = `/api/sessions/${plainId}/agents/main/context-strategy`;
+    expect((await request<{ strategy: string; source: string }>(plainPath)).data).toMatchObject({ strategy: 'auto', source: 'global' });
+
+    const modelBefore = await request<{ revision: string; context_strategy?: string }>('/api/models/test');
+    expect(modelBefore.data.context_strategy).toBeUndefined();
+    const patchedModel = await request<{ revision: string; context_strategy?: string }>('/api/models/test', 'PATCH', {
+      base_revision: modelBefore.data.revision,
+      context_strategy: 'fresh',
+    });
+    expect(patchedModel.code, patchedModel.msg).toBe(0);
+    expect(patchedModel.data.context_strategy).toBe('fresh');
+    expect((await request<{ context_strategy?: string }>('/api/models/test')).data.context_strategy).toBe('fresh');
+
+    expect((await request<{ strategy: string; source: string }>(plainPath)).data).toMatchObject({ strategy: 'fresh', source: 'model' });
+    const plainLive = getLiveSessionById(server!.core.accessor, plainId)!;
+    const plainChild = await plainLive.accessor.get(IAgentLifecycleService).create({
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'plain', model: 'test' },
+    });
+    expect((await request<{ strategy: string; source: string }>(`/api/sessions/${plainId}/agents/${plainChild.id}/context-strategy`)).data)
+      .toMatchObject({ strategy: 'fresh', source: 'model' });
+
+    await request<{ revision: string }>('/api/models/test', 'PATCH', {
+      base_revision: patchedModel.data.revision,
+      context_strategy: null,
+    });
+    expect((await request<{ context_strategy?: string }>('/api/models/test')).data.context_strategy).toBeUndefined();
+    expect((await request<{ strategy: string; source: string }>(plainPath)).data).toMatchObject({ strategy: 'auto', source: 'global' });
   });
 
   it('persists only the selected global context strategy', async () => {

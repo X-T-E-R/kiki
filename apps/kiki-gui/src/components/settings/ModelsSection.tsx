@@ -1873,6 +1873,33 @@ function ModelCatalogRowEditor({
               disabled={saving}
             />
           ) : null}
+          <div className="space-y-1.5" data-model-context-strategy={entity.id}>
+            <label htmlFor={`model-context-strategy-${entity.id}`} className="text-[12px] font-medium text-ink-soft">
+              {t('context.strategy.title')}
+            </label>
+            <SettingsSelect<'inherit' | 'auto' | 'summarize' | 'fresh'>
+              id={`model-context-strategy-${entity.id}`}
+              variant="form"
+              ariaLabel={t('st.models.contextStrategyAria', { model: entity.id })}
+              dataAttr="data-model-context-strategy-select"
+              value={draft.contextStrategy ?? 'inherit'}
+              disabled={saving}
+              choices={[
+                { value: 'inherit', label: t('context.strategy.reset') },
+                ...(['auto', 'summarize', 'fresh'] as const).map((value) => ({
+                  value,
+                  label: t(`context.strategy.option.${value}`),
+                  hint: t(`context.strategy.hint.${value}`),
+                })),
+              ]}
+              onChange={(next) => {
+                setDraft({
+                  ...draft,
+                  contextStrategy: next === 'inherit' ? undefined : next,
+                });
+              }}
+            />
+          </div>
         </EditorSection>
         <EditorSection id={sectionId('capabilities')} title={t('st.modelEditor.section.capabilities')}>
           <ModelContextFields

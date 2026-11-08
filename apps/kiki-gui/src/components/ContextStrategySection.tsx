@@ -36,6 +36,7 @@ type Source = ContextStrategyStatus['source'];
 
 const SOURCE_KEY = {
   session: 'context.strategy.source.session',
+  model: 'context.strategy.source.model',
   global: 'context.strategy.source.global',
   default: 'context.strategy.source.default',
   subagent: 'context.strategy.source.subagent',

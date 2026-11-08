@@ -36,6 +36,7 @@ export interface InspectedResolvedModel {
   readonly capabilities: ModelCapability;
   readonly maxContextSize: number;
   readonly autoCompact?: number;
+  readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
   readonly maxInputSize?: number;
   readonly maxOutputSize?: number;
   readonly displayName?: string;
@@ -242,6 +243,7 @@ interface ResolvedModelLike {
   readonly capabilities: ModelCapability;
   readonly maxContextSize: number;
   readonly autoCompact?: number;
+  readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
   readonly maxInputSize?: number;
   readonly maxOutputSize?: number;
   readonly displayName?: string;
@@ -419,6 +421,7 @@ export function assembleModelInspection(args: {
       capabilities: model.capabilities,
       maxContextSize: model.maxContextSize,
       autoCompact: model.autoCompact,
+      contextStrategy: model.contextStrategy,
       maxInputSize: model.maxInputSize,
       maxOutputSize: model.maxOutputSize,
       displayName: model.displayName,

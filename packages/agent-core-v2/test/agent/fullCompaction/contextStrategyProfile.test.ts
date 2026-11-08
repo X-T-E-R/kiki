@@ -21,9 +21,33 @@ function resolveProfile(modelId: string, selected = profile) {
   return AgentProfileService.prototype.resolveContextStrategy.call(fake as unknown as AgentProfileService);
 }
 
-function effective(agentId: string, strategy: ReturnType<typeof resolveProfile>, override: string | null, config: { contextStrategy?: 'summarize' | 'auto' | 'fresh'; subagentContextStrategy?: 'summarize' | 'auto' | 'fresh' } = { contextStrategy: 'auto', subagentContextStrategy: 'summarize' }, executorId = 'native') {
+function resolveModelStrategy(
+  model: { id: string; contextStrategy?: 'summarize' | 'auto' | 'fresh' } | undefined,
+  record?: { contextStrategy?: 'summarize' | 'auto' | 'fresh'; overrides?: { contextStrategy?: 'summarize' | 'auto' | 'fresh' } },
+) {
   const fake = {
-    profile: { data: () => ({ executorId }), resolveContextStrategy: () => strategy },
+    modelAlias: 'test',
+    isExternalExecutor: false,
+    tryResolveRawModel: () => model,
+    models: { resolveId: (id: string) => id, get: () => record },
+  };
+  return AgentProfileService.prototype.resolveModelContextStrategy.call(fake as unknown as AgentProfileService);
+}
+
+function effective(
+  agentId: string,
+  strategy: ReturnType<typeof resolveProfile>,
+  override: string | null,
+  config: { contextStrategy?: 'summarize' | 'auto' | 'fresh'; subagentContextStrategy?: 'summarize' | 'auto' | 'fresh' } = { contextStrategy: 'auto', subagentContextStrategy: 'summarize' },
+  executorId = 'native',
+  modelStrategy?: 'summarize' | 'auto' | 'fresh',
+) {
+  const fake = {
+    profile: {
+      data: () => ({ executorId }),
+      resolveContextStrategy: () => strategy,
+      resolveModelContextStrategy: () => modelStrategy,
+    },
     appConfig: { get: () => config },
     scope: { agentId }, states: { get: () => override },
   };
@@ -36,14 +60,22 @@ describe('context strategy profile precedence', () => {
     expect(resolveProfile('different')).toBe('auto');
   });
 
-  it('keeps main session override first and reads only each child profile or child default', () => {
-    expect(effective('main', resolveProfile('test'), 'summarize')).toMatchObject({ strategy: 'summarize', source: 'session' });
-    expect(effective('main', resolveProfile('test'), null)).toMatchObject({ strategy: 'fresh', source: 'profile' });
-    expect(effective('child-1', resolveProfile('test'), 'summarize')).toMatchObject({ strategy: 'fresh', source: 'profile' });
+  it('resolves model-level contextStrategy from the resolved model or stored record', () => {
+    expect(resolveModelStrategy({ id: 'test', contextStrategy: 'fresh' })).toBe('fresh');
+    expect(resolveModelStrategy(undefined, { contextStrategy: 'summarize' })).toBe('summarize');
+    expect(resolveModelStrategy(undefined, { contextStrategy: 'summarize', overrides: { contextStrategy: 'fresh' } })).toBe('fresh');
+  });
+
+  it('keeps main session override first, then profile, then model, then child or global default', () => {
+    expect(effective('main', resolveProfile('test'), 'summarize', undefined, 'native', 'auto')).toMatchObject({ strategy: 'summarize', source: 'session' });
+    expect(effective('main', resolveProfile('test'), null, undefined, 'native', 'summarize')).toMatchObject({ strategy: 'fresh', source: 'profile' });
+    expect(effective('main', undefined, null, { contextStrategy: 'auto' }, 'native', 'fresh')).toMatchObject({ strategy: 'fresh', source: 'model' });
+    expect(effective('child-1', resolveProfile('test'), 'summarize', undefined, 'native', 'auto')).toMatchObject({ strategy: 'fresh', source: 'profile' });
+    expect(effective('child-model', undefined, 'summarize', { subagentContextStrategy: 'summarize' }, 'native', 'fresh')).toMatchObject({ strategy: 'fresh', source: 'model' });
     expect(effective('child-2', undefined, 'fresh')).toMatchObject({ strategy: 'summarize', source: 'subagent' });
     expect(effective('child-3', undefined, 'summarize', {})).toMatchObject({ strategy: 'auto', source: 'subagent' });
     expect(effective('child-4', undefined, null, { subagentContextStrategy: 'fresh' })).toMatchObject({ strategy: 'fresh', source: 'subagent' });
-    expect(effective('child-5', 'auto', null, {}, 'codex')).toMatchObject({ strategy: 'summarize', source: 'executor' });
+    expect(effective('child-5', 'auto', null, {}, 'codex', 'fresh')).toMatchObject({ strategy: 'summarize', source: 'executor' });
     expect(effective('main', undefined, null)).toMatchObject({ strategy: 'auto', source: 'global' });
   });
 });

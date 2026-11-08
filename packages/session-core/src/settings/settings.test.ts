@@ -951,16 +951,23 @@ describe('settings persistence and validation', () => {
     const draft = providerDraftFromCatalog({
       id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured', models: ['example/chat', 'example/other'],
     }, [
-      { id: 'example/chat', provider_id: 'example', remote_id: 'chat', max_context_size: 200000, auto_compact: 120000 },
+      { id: 'example/chat', provider_id: 'example', remote_id: 'chat', max_context_size: 200000, auto_compact: 120000, context_strategy: 'fresh' },
       { id: 'example/other', provider_id: 'example', remote_id: 'other', max_context_size: 200000 },
     ])!;
     const row = draft.models[0]!;
     expect(row.autoCompact).toBe(120000);
+    expect(row.contextStrategy).toBe('fresh');
     expect(draft.models[1]!.autoCompact).toBeUndefined();
+    expect(draft.models[1]!.contextStrategy).toBeUndefined();
     expect(modelPatchBody(row, row)).toBeNull();
     expect(modelPatchBody({ ...row, displayName: 'Renamed' }, row)).toEqual({ display_name: 'Renamed' });
     expect(modelPatchBody({ ...row, autoCompact: 110000 }, row)).toEqual({ auto_compact: 110000 });
     expect(modelPatchBody({ ...row, autoCompact: undefined }, row)).toEqual({ auto_compact: null });
+    expect(modelPatchBody({ ...row, contextStrategy: 'summarize' }, row)).toEqual({ context_strategy: 'summarize' });
+    expect(modelPatchBody({ ...row, contextStrategy: undefined }, row)).toEqual({ context_strategy: null });
+    expect(modelCreateBody('example', row).context_strategy).toBe('fresh');
+    expect(modelCreateBody('example', draft.models[1]!).context_strategy).toBeUndefined();
+    expect(isProviderDraftDirty(providerDraft({ models: [{ ...draft.models[1]!, contextStrategy: 'auto' }] }), providerDraft({ models: [draft.models[1]!] }))).toBe(true);
     expect(providerPatchBody({ ...draft, models: [{ ...row, autoCompact: 110000 }, draft.models[1]!] }, draft)).toBeNull();
   });
 

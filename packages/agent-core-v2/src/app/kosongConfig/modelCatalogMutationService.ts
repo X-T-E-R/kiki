@@ -270,6 +270,7 @@ function modelEntity(
     max_input_size: record.maxInputSize,
     max_output_size: record.maxOutputSize,
     auto_compact: record.autoCompact,
+    context_strategy: record.contextStrategy,
     capabilities: record.capabilities,
     support_efforts: record.supportEfforts,
     default_effort: record.defaultEffort,
@@ -400,6 +401,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('maxInputSize', patch.max_input_size);
   setOrClear('maxOutputSize', patch.max_output_size);
   setOrClear('autoCompact', patch.auto_compact);
+  setOrClear('contextStrategy', patch.context_strategy);
   setOrClear('capabilities', patch.capabilities);
   setOrClear('supportEfforts', patch.support_efforts);
   setOrClear('defaultEffort', patch.default_effort);
@@ -696,6 +698,7 @@ export class ModelCatalogMutationService
       if (request.max_input_size !== undefined) record.maxInputSize = request.max_input_size;
       if (request.max_output_size !== undefined) record.maxOutputSize = request.max_output_size;
       if (request.auto_compact !== undefined) record.autoCompact = request.auto_compact;
+      if (request.context_strategy !== undefined) record.contextStrategy = request.context_strategy;
       if (request.capabilities !== undefined) record.capabilities = [...request.capabilities];
       if (request.support_efforts !== undefined) {
         record.supportEfforts = [...request.support_efforts];
@@ -827,6 +830,7 @@ export class ModelCatalogMutationService
         if (entry.display_name !== undefined) record.displayName = entry.display_name;
         if (entry.max_context_size !== undefined) record.maxContextSize = entry.max_context_size;
         if (entry.auto_compact !== undefined) record.autoCompact = entry.auto_compact;
+        if (entry.context_strategy !== undefined) record.contextStrategy = entry.context_strategy;
         if (entry.capabilities !== undefined) record.capabilities = [...entry.capabilities];
         if (entry.max_output_size !== undefined) record.maxOutputSize = entry.max_output_size;
         if (entry.support_efforts !== undefined) {

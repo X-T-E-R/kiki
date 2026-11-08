@@ -92,10 +92,14 @@ describe('ContextStrategySection', () => {
     expect(container.querySelector('[data-strategy-hint]')?.textContent).not.toContain('default.');
   });
 
-  it('names the profile a strategy comes from', async () => {
+  it('names the profile or model a strategy comes from', async () => {
     const container = await render(handle(st('fresh', 'profile')));
     expect(container.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('From profile builder');
     expect(container.querySelector('[data-strategy-hint]')?.textContent).toContain('work notes');
+
+    const fromModel = await render(handle(st('summarize', 'model')));
+    expect(fromModel.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('From model');
+    expect(fromModel.querySelector('[data-strategy-option="summarize"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('writes a session override on pick and resets to the inherited layer', async () => {

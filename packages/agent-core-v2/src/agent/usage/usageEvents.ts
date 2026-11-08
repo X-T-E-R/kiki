@@ -12,7 +12,7 @@ export interface AgentStatusUpdatedPayload {
   /** Current effective input window; 0 clears an unknown native model limit, omission leaves other status slices unchanged. */
   maxContextTokens?: number;
   contextStrategy?: 'summarize' | 'auto' | 'fresh';
-  contextStrategySource?: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor';
+  contextStrategySource?: 'session' | 'profile' | 'model' | 'global' | 'default' | 'subagent' | 'executor';
   autoCompactTokens?: number;
   autoCompactSource?: 'session' | 'profile' | 'model' | 'global' | 'legacy';
   effectiveMaxContextTokens?: number;

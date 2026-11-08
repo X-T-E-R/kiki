@@ -347,18 +347,24 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this.publishAutoCompactStatus();
   }
 
-  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean } {
-    if (this.profile.data().executorId !== undefined && this.profile.data().executorId !== 'native') return { strategy: 'summarize', source: 'executor', shadow: false };
+  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'model' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean } {
+    const profileData = this.profile.data();
+    if (profileData.driver === 'external' || (profileData.executorId !== undefined && profileData.executorId !== 'native')) {
+      return { strategy: 'summarize', source: 'executor', shadow: false };
+    }
     const config = this.appConfig.get<LoopControl>('loopControl');
     const shadow = config?.relayShadow === true;
     const profileStrategy = this.profile.resolveContextStrategy?.();
+    const modelStrategy = this.profile.resolveModelContextStrategy?.();
     if (this.scope.agentId !== 'main') {
       if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
+      if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
       return { strategy: config?.subagentContextStrategy ?? 'auto', source: 'subagent', shadow };
     }
     const override = this.states.get(contextStrategyOverrideKey);
     if (override !== null) return { strategy: override, source: 'session', shadow };
     if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
+    if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
     if (config?.contextStrategy !== undefined) return { strategy: config.contextStrategy, source: 'global', shadow };
     return { strategy: 'auto', source: 'default', shadow };
   }

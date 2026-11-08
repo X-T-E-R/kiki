@@ -28,6 +28,7 @@ export interface ModelUsagePolicy {
 
 export interface ModelParameterDefaults {
   autoCompact?: number;
+  contextStrategy?: 'summarize' | 'auto' | 'fresh';
   contextBudget?: number;
   maxCompletionTokens?: number;
   serviceTier?: ServiceTier;

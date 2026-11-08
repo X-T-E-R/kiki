@@ -2920,6 +2920,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return entry?.contextStrategy ?? profile?.contextStrategy;
   }
 
+  resolveModelContextStrategy(): import('@kiki/agent-profiles/agentProfile').ContextStrategy | undefined {
+    const model = this.tryResolveRawModel();
+    if (model?.contextStrategy !== undefined) return model.contextStrategy;
+    const alias = this.modelAlias;
+    if (alias === undefined || this.isExternalExecutor) return undefined;
+    const resolvedId = this.models?.resolveId?.(alias) ?? alias;
+    const record = this.models?.get?.(resolvedId);
+    return record?.overrides?.contextStrategy ?? record?.contextStrategy;
+  }
+
   resolveModelContext(): ProfileModelContext {
     if ((this.profileState.executorId ?? 'native') !== 'native') {
       throw new Error2(
@@ -2944,6 +2954,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       reservedContextSize: loopControl?.reservedContextSize,
       globalAutoCompact: loopControl?.autoCompact,
       modelAutoCompact: model.autoCompact,
+      modelContextStrategy: model.contextStrategy,
       profileAutoCompact: entry?.autoCompact ?? profile?.autoCompact,
       compactionTriggerRatio: loopControl?.compactionTriggerRatio,
       compactionMaxAttempts: loopControl?.compactionMaxAttempts,

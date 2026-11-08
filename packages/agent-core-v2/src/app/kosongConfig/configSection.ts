@@ -307,6 +307,7 @@ const ModelBaseSchema = z.object({
   offEffort: z.string().optional(),
   contextBudget: z.number().int().min(1).optional(),
   autoCompact: z.number({ error: 'model auto_compact must be an absolute positive integer token count, not a percentage' }).int().positive().safe().optional(),
+  contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
   maxCompletionTokens: z.number().int().min(1).optional(),
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   requestParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),

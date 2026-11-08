@@ -335,7 +335,7 @@ export const agentStatusUpdatedEventSchema = z.looseObject({
   autoCompactTokens: z.number().optional(),
   autoCompactSource: z.enum(['session', 'profile', 'model', 'global', 'legacy']).optional(),
   contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
-  contextStrategySource: z.enum(['session', 'profile', 'global', 'default', 'subagent', 'executor']).optional(),
+  contextStrategySource: z.enum(['session', 'profile', 'model', 'global', 'default', 'subagent', 'executor']).optional(),
   effectiveMaxContextTokens: z.number().optional(),
   reservedContextTokens: z.number().optional(),
 });

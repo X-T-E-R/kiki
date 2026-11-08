@@ -34,7 +34,7 @@ export interface IAgentFullCompactionService {
   getAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   getDefaultAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   setAutoCompactOverride(tokens: number | null): void;
-  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean };
+  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'model' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean };
   setContextStrategyOverride(strategy: 'summarize' | 'auto' | 'fresh' | null): void;
 
   readonly hooks: Hooks<{

@@ -312,14 +312,17 @@ max_context_size=8192
       await config.reload();
       expect((await catalog.readModel('fast')).usage_effective?.main).toEqual(edited.usage_effective?.main);
       await catalog.createProvider({ id: 'new-edge', type: 'openai', models: [
-        { remote_id: 'first', auto_compact: 120000 },
-        { remote_id: 'second', auto_compact: 90000 },
+        { remote_id: 'first', auto_compact: 120000, context_strategy: 'fresh' },
+        { remote_id: 'second', auto_compact: 90000, context_strategy: 'summarize' },
         { remote_id: 'inherited' },
       ] });
       await config.reload();
       expect((await catalog.readModel('new-edge/first')).auto_compact).toBe(120000);
+      expect((await catalog.readModel('new-edge/first')).context_strategy).toBe('fresh');
       expect((await catalog.readModel('new-edge/second')).auto_compact).toBe(90000);
+      expect((await catalog.readModel('new-edge/second')).context_strategy).toBe('summarize');
       expect((await catalog.readModel('new-edge/inherited')).auto_compact).toBeUndefined();
+      expect((await catalog.readModel('new-edge/inherited')).context_strategy).toBeUndefined();
       expect((await catalog.readModel('fast')).usage_effective?.main).toEqual(edited.usage_effective?.main);
       expect((await catalog.readModel('fast')).usage_effective?.sub.auto_compact).toBe(200000);
       expect(config.inspect<Record<string, unknown>>('models').userValue?.['fast']).toEqual({ usage: { main: { thinkingEffort: 'low', serviceTier: { kind: 'api_default' } } } });
@@ -359,11 +362,11 @@ max_context_size=8192
       expect(original).toMatchObject({ provider_id: 'edge', remote_id: 'remote-fast', max_context_size: 8192, auto_compact: 4000 });
       expect(original.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ severity: 'error' })]));
       await expect(catalog.readModel('sibling')).rejects.toMatchObject({ code: 'model.not_found' });
-      const edited = await catalog.updateModel('fast', { base_revision: original.revision, auto_compact: 3000 });
-      expect(edited).toMatchObject({ remote_id: 'remote-fast', auto_compact: 3000 });
-      expect(config.inspect<Record<string, unknown>>('models').userValue).toEqual({ fast: { autoCompact: 3000 }, sibling: { enabled: false } });
+      const edited = await catalog.updateModel('fast', { base_revision: original.revision, auto_compact: 3000, context_strategy: 'fresh' });
+      expect(edited).toMatchObject({ remote_id: 'remote-fast', auto_compact: 3000, context_strategy: 'fresh' });
+      expect(config.inspect<Record<string, unknown>>('models').userValue).toEqual({ fast: { autoCompact: 3000, contextStrategy: 'fresh' }, sibling: { enabled: false } });
       await expect(catalog.updateModel('fast', { base_revision: original.revision, auto_compact: 2000 })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
-      await catalog.updateModel('fast', { base_revision: edited.revision, auto_compact: null });
+      await catalog.updateModel('fast', { base_revision: edited.revision, auto_compact: null, context_strategy: null });
       expect((await catalog.readModel('fast')).remote_id).toBe('remote-fast');
       await catalog.createModel({ id: 'second', provider_id: 'edge', remote_id: 'remote-second', max_context_size: 8192 });
       expect(config.inspect('providers').userValue).toBeUndefined();

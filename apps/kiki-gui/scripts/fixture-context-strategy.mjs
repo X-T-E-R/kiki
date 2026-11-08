@@ -34,14 +34,19 @@ export function resolveContextStrategy(server, session, agentId) {
   if ((seed.executor ?? []).includes(session.record.id)) return { strategy: 'summarize', source: 'executor', shadow: false };
   const profileName = session.record.agent_config?.profile ?? 'agent';
   const profile = seed.profiles?.[profileName];
+  const modelId = session.record.agent_config?.model ?? server.config.default_model;
+  const modelEntry = (server.models ?? []).find((entry) => entry.id === modelId);
+  const modelStrategy = modelEntry?.overrides?.contextStrategy ?? modelEntry?.context_strategy ?? seed.models?.[modelId];
   const loop = server.config.loop_control ?? {};
   if (agentId !== 'main') {
     if (profile !== undefined) return { strategy: profile, source: 'profile', shadow: false };
+    if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow: false };
     return { strategy: loop.subagentContextStrategy ?? 'summarize', source: 'subagent', shadow: false };
   }
   const override = overridesOf(server).get(session.record.id);
   if (override !== undefined) return { strategy: override, source: 'session', shadow: false };
   if (profile !== undefined) return { strategy: profile, source: 'profile', shadow: false };
+  if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow: false };
   if (loop.contextStrategy !== undefined) return { strategy: loop.contextStrategy, source: 'global', shadow: false };
   return { strategy: 'auto', source: 'default', shadow: false };
 }

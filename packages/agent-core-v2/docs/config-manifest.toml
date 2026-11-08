@@ -580,6 +580,7 @@ merge_all_available_skills = true
   # off_effort: string
   # context_budget: integer
   # auto_compact: integer
+  # context_strategy: "summarize" | "auto" | "fresh"
   # max_completion_tokens: integer
   # service_tier: "auto" | "default" | "flex" | "priority"
   # request_params: record<string, string | number | boolean>
@@ -606,6 +607,7 @@ merge_all_available_skills = true
     # off_effort: string
     # context_budget: integer
     # auto_compact: integer
+    # context_strategy: "summarize" | "auto" | "fresh"
     # max_completion_tokens: integer
     # service_tier: "auto" | "default" | "flex" | "priority"
     # request_params: record<string, string | number | boolean>

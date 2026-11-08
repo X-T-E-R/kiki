@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { contextStrategySchema } from './contextStrategy';
 import { decisionProtocolSchema, decisionProtocolForProviderType } from './decision';
 import { recipeModelBindingSchema, recipeOptionValuesSchema } from './recipe';
 import { modelSteeringCadenceSchema, modelSteeringSourcesSchema } from './modelSteering';
@@ -247,6 +248,7 @@ export const modelCatalogItemSchema = z.object({
   display_name: z.string().min(1).optional(),
   max_context_size: z.number().int().min(0),
   auto_compact: z.number().int().positive().safe().optional(),
+  context_strategy: contextStrategySchema.optional(),
   capabilities: z.array(z.string()).optional(),
   effective_capabilities: z.array(z.string()).optional(),
   protocol: modelProtocolSchema.optional(),
@@ -478,6 +480,7 @@ export const modelEntitySchema = z.object({
   max_input_size: z.number().int().min(1).optional(),
   max_output_size: z.number().int().min(1).optional(),
   auto_compact: z.number().int().positive().safe().optional(),
+  context_strategy: contextStrategySchema.optional(),
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
@@ -537,6 +540,7 @@ export const patchModelRequestSchema = z
     max_input_size: z.number().int().min(1).nullable().optional(),
     max_output_size: z.number().int().min(1).nullable().optional(),
     auto_compact: z.number().int().positive().safe().nullable().optional(),
+    context_strategy: contextStrategySchema.nullable().optional(),
     capabilities: z.array(z.string().min(1)).nullable().optional(),
     support_efforts: z.array(z.string().min(1)).nullable().optional(),
     default_effort: z.string().min(1).nullable().optional(),
@@ -583,6 +587,7 @@ export const createModelRequestSchema = z
     max_input_size: z.number().int().min(1).optional(),
     max_output_size: z.number().int().min(1).optional(),
     auto_compact: z.number().int().positive().safe().optional(),
+    context_strategy: contextStrategySchema.optional(),
     capabilities: z.array(z.string().min(1)).optional(),
     support_efforts: z.array(z.string().min(1)).optional(),
     default_effort: z.string().min(1).optional(),
@@ -659,6 +664,7 @@ const modelDraftSchema = z.object({
 export const createProviderModelSchema = modelDraftSchema.extend({
   protocol: modelProtocolSchema.optional(),
   auto_compact: createModelRequestSchema.shape.auto_compact,
+  context_strategy: createModelRequestSchema.shape.context_strategy,
   behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
 });

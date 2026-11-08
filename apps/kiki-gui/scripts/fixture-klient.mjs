@@ -1194,6 +1194,10 @@ export class FixtureKlient {
           if (patch.auto_compact === null) delete next.auto_compact;
           else next.auto_compact = patch.auto_compact;
         }
+        if (patch.context_strategy !== undefined) {
+          if (patch.context_strategy === null) delete next.context_strategy;
+          else next.context_strategy = patch.context_strategy;
+        }
         if (patch.pricing_model !== undefined) {
           if (patch.pricing_model === null) delete next.pricing_model;
           else next.pricing_model = patch.pricing_model;
@@ -1238,6 +1242,8 @@ export class FixtureKlient {
           remote_id: input.remote_id,
           display_name: input.display_name,
           max_context_size: input.max_context_size ?? 0,
+          auto_compact: input.auto_compact,
+          context_strategy: input.context_strategy,
           capabilities: input.capabilities,
           support_efforts: input.support_efforts,
           protocol: input.protocol,

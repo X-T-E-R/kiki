@@ -230,6 +230,7 @@ export interface ProfileModelContext {
   readonly reservedContextSize: number | undefined;
   readonly globalAutoCompact?: string;
   readonly modelAutoCompact?: number;
+  readonly modelContextStrategy?: import('@kiki/agent-profiles/agentProfile').ContextStrategy;
   readonly profileAutoCompact?: number;
   readonly sessionAutoCompact?: number;
   readonly compactionTriggerRatio: number | undefined;
@@ -356,6 +357,7 @@ export interface IAgentProfileService {
   getEffectiveThinkingLevel(): ThinkingEffort;
   resolveModelContext(): ProfileModelContext;
   resolveContextStrategy(): import('@kiki/agent-profiles/agentProfile').ContextStrategy | undefined;
+  resolveModelContextStrategy(): import('@kiki/agent-profiles/agentProfile').ContextStrategy | undefined;
   resolveRequestParams(): ModelRequestParams;
   getModelCapabilities(): ModelCapability;
   /**

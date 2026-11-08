@@ -45,6 +45,7 @@ const modelBaseSchema = z.object({
   betaApi: z.boolean().optional(),
   supportEfforts: z.array(z.string()).optional(),
   defaultEffort: z.string().optional(),
+  contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
 });
 
