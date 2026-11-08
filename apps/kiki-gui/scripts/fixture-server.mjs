@@ -624,7 +624,7 @@ class FixtureSession {
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
     this.lastFsSearch = null; // last fs:search body
     this.lastMessageAction = null; // {action: 'edit'|'regenerate', message_id, body}
-    this.seq = scenarioData.as_of_seq ?? this.messages.length;
+    this.seq = scenarioData.as_of_seq ?? record.last_seq ?? this.messages.length;
     this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
     this.abortRequested = false;
