@@ -198,6 +198,7 @@ function isNativeSendMessageCall(block: Block): boolean {
 function activity(members: readonly Block[], turn: string | undefined): ActivitySummary {
   const counts = { tools: 0, reads: 0, commands: 0, thinking: 0, subagents: 0, memories: 0 };
   const subagents = new Set<string>();
+  const sentMap = new Map<string, { subagentId: string; name: string; count: number }>();
   let failed = 0;
   let running = false;
   let durationMs: number | undefined;
@@ -227,11 +228,20 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
       if (block.status === 'failed') failed += 1;
     } else if (block.kind === 'subagent-event') {
       subagents.add(block.subagentId);
+      if (block.event === 'sent') {
+        const existing = sentMap.get(block.subagentId);
+        if (existing === undefined) {
+          sentMap.set(block.subagentId, { subagentId: block.subagentId, name: block.name, count: 1 });
+        } else {
+          sentMap.set(block.subagentId, { ...existing, count: existing.count + 1 });
+        }
+      }
     }
   }
   counts.subagents = subagents.size;
+  const sentMessages = sentMap.size > 0 ? [...sentMap.values()] : undefined;
   return { kind: 'activity-summary', id: `activity-${members[0]!.id}`, turnId: turn,
-    members, counts, running, failed, durationMs };
+    members, counts, running, failed, durationMs, sentMessages };
 }
 
 /**
@@ -316,8 +326,15 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     pendingTurn = undefined;
   };
   let lastTurn: string | undefined;
+  const questionCalls = new Set<string>();
+  for (const block of blocks) {
+    if (block.kind === 'question' && block.request.tool_call_id !== undefined && block.request.tool_call_id !== '') {
+      questionCalls.add(block.request.tool_call_id);
+    }
+  }
   const projected = blocks.flatMap<Block>((block) => {
     if (block.kind !== 'tool') return [block];
+    if (block.status !== 'error' && block.isError !== true && questionCalls.has(block.toolCallId)) return [];
     const messages = projectSendMessages(block);
     return messages.length === 0 ? [block] : messages;
   });

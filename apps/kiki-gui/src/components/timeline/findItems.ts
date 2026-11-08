@@ -54,6 +54,16 @@ export function blockFindText(block: Block, includeToolOutput = false): string {
       return includeToolOutput ? block.output.slice(0, OUTPUT_CAP) : '';
     case 'message':
       return block.text;
+    case 'subagent-event':
+      return block.message ?? '';
+    case 'question': {
+      const qText = block.request.questions.map((item) => item.question).join('\n');
+      const aText =
+        block.outcome?.kind === 'answered' && block.outcome.answers !== undefined
+          ? Object.values(block.outcome.answers).join('\n')
+          : '';
+      return [qText, aText].filter((part) => part !== '').join('\n');
+    }
     default:
       return '';
   }
@@ -63,11 +73,22 @@ export function buildFindItems(nodes: readonly FindNode[], includeToolOutput = f
   const out: FindItem[] = [];
   const pushBlock = (block: Block, reveal: readonly string[], processViewOnly = false) => {
     const toolOutput = block.kind === 'tool' || block.kind === 'shell';
-    if (toolOutput ? !includeToolOutput : block.kind !== 'user' && block.kind !== 'assistant' && block.kind !== 'message') return;
+    const isExpandableItem = block.kind === 'subagent-event' || block.kind === 'question';
+    if (
+      toolOutput
+        ? !includeToolOutput
+        : block.kind !== 'user' &&
+          block.kind !== 'assistant' &&
+          block.kind !== 'message' &&
+          !isExpandableItem
+    ) {
+      return;
+    }
     const text = blockFindText(block, includeToolOutput);
+    if (isExpandableItem && text === '') return;
     out.push({
       blockId: block.id,
-      reveal: toolOutput ? [...reveal, block.id] : reveal,
+      reveal: toolOutput || isExpandableItem ? [...reveal, block.id] : reveal,
       toolCallId: block.kind === 'tool' ? block.toolCallId : undefined,
       toolOutput,
       processViewOnly: processViewOnly ? true : undefined,
@@ -88,15 +109,27 @@ export function buildFindItems(nodes: readonly FindNode[], includeToolOutput = f
       case 'media-run':
         for (const member of node.members) pushBlock(member, reveal);
         return;
-      case 'subagent-ended':
+      case 'subagent-ended': {
+        const text = node.task?.output_preview ?? node.note.taskNotification?.outputPreview ?? node.note.text;
+        if (text.trim() !== '') {
+          out.push({
+            blockId: node.id,
+            reveal: [...reveal, node.id],
+            turnId: node.turnId,
+            text: markdownVisibleText(text),
+          });
+        }
         return;
+      }
       case 'activity-summary':
         // The message view folds a stretch of internal activity into one
         // collapsed line. The tool output inside it is still loaded and the
         // tool checkbox selects it, so it must count here too; the process
         // view is the surface that can open and paint it.
         for (const member of node.members) {
-          if (member.kind === 'tool' || member.kind === 'shell') pushBlock(member, [...reveal, node.id], true);
+          if (member.kind === 'tool' || member.kind === 'shell' || member.kind === 'subagent-event') {
+            pushBlock(member, [...reveal, node.id], member.kind !== 'subagent-event');
+          }
         }
         return;
       default:

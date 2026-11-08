@@ -126,6 +126,31 @@ export type SystemVariant =
   | 'agent_message'
   | 'system';
 
+export interface TaskNotificationMeta {
+  readonly id?: string;
+  readonly category?: string;
+  readonly type?: string;
+  readonly sourceKind?: string;
+  readonly sourceId?: string;
+  readonly agentId?: string;
+  readonly title?: string;
+  readonly severity?: string;
+  readonly body?: string;
+  readonly description?: string;
+  readonly status?: 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
+  readonly stopReason?: string;
+  readonly exitCode?: number | null;
+  readonly durationMs?: number;
+  readonly outputPreview?: string;
+  readonly outputTruncated?: boolean;
+  readonly outputBytes?: number;
+  readonly totalBytes?: number;
+  readonly outputFile?: string;
+  readonly answerRaw?: string;
+  readonly answers?: Readonly<Record<string, string>>;
+  readonly questionOutcome?: 'answered' | 'dismissed';
+}
+
 export interface SystemBlock {
   readonly kind: 'system';
   readonly id: string;
@@ -137,6 +162,7 @@ export interface SystemBlock {
   readonly ownerPromptId?: string;
   /** Task notifications: the background task the note is about. */
   readonly taskId?: string;
+  readonly taskNotification?: TaskNotificationMeta;
   /** Hook results: the event that produced it (`kiki:<harness>:<event>` for Kiki's own hooks). */
   readonly hookEvent?: string;
 }
@@ -341,6 +367,7 @@ export interface ActivitySummary {
     readonly subagents: number;
     readonly memories: number;
   };
+  readonly sentMessages?: readonly { readonly subagentId: string; readonly name: string; readonly count: number }[];
   readonly running: boolean;
   readonly failed: number;
   /** Only measured tool-frame durations; turn-level fallbacks are not added repeatedly. */
@@ -372,6 +399,8 @@ export interface SubagentBlock {
   readonly kind: 'subagent';
   readonly id: string;
   readonly subagentId: string;
+  readonly taskId?: string;
+  readonly resumed?: boolean;
   readonly parentAgentId: string | undefined;
   readonly parentToolCallId: string | undefined;
   readonly parentToolCallUuid?: string;

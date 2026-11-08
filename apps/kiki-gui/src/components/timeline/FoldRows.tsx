@@ -225,6 +225,7 @@ export function SubagentEndedRow({
   const how = t(`transcript.agentEnd.${ending.outcome}` as const);
   return (
     <ActivityRow
+      shrinkLabel
       attrs={{ 'data-subagent-ended': ending.agentId, 'data-subagent-outcome': ending.outcome }}
       glyph={<EndedMark outcome={ending.outcome} />}
       label={
@@ -251,7 +252,7 @@ export function SubagentEndedRow({
               className={ICON_ACTION}
               title={t('transcript.agentEnd.toDispatchTitle')}
               aria-label={t('transcript.agentEnd.toDispatchTitle')}
-              onClick={() => { onLocateDispatch(ending.agentId); }}
+              onClick={() => { onLocateDispatch(ending.dispatchCardId ?? ending.agentId); }}
             >
               <Icon name="arrowUp" size={12} />
             </button>

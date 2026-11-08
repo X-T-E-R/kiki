@@ -449,6 +449,11 @@ export interface AgentTranscriptTask {
   readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
+  readonly parentToolCallId?: string;
+  readonly toolCallId?: string;
+  readonly questionCount?: number;
+  readonly exitCode?: number | null;
+  readonly taskKind?: string;
   readonly description?: string;
   readonly command?: string;
   readonly ownerTurnId?: number;

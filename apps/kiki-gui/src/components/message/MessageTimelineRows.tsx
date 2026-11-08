@@ -33,12 +33,22 @@ export function activityParts(
   compact: boolean,
 ): string[] {
   const steps = activitySteps(summary);
-  if (compact) return steps > 0 ? [t('message.steps', { count: steps })] : summary.counts.thinking > 0 ? [t('message.thoughts', { count: summary.counts.thinking })] : [];
+  const sentParts = (summary.sentMessages ?? []).map((item) =>
+    t('transcript.fold.sentTo', { name: item.name, count: item.count }),
+  );
+  if (compact) {
+    return steps > 0
+      ? [t('message.steps', { count: steps }), ...sentParts]
+      : summary.counts.thinking > 0
+        ? [t('message.thoughts', { count: summary.counts.thinking }), ...sentParts]
+        : sentParts;
+  }
   const { reads, commands, subagents, memories, thinking } = summary.counts;
   const parts = [
     reads > 0 ? t('message.reads', { count: reads }) : null,
     commands > 0 ? t('message.commands', { count: commands }) : null,
     subagents > 0 ? t('message.subagents', { count: subagents }) : null,
+    ...sentParts,
     memories > 0 ? t('message.memories', { count: memories }) : null,
   ].filter((part): part is string => part !== null);
   // Steps the named counts do not cover still count, so the line never

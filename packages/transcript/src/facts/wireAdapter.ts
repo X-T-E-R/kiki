@@ -870,6 +870,11 @@ export class TranscriptWireAdapter {
       const agentId = stringOf(info?.['agentId']) ?? previous?.agentId;
       const state = taskStateOf(info?.['status']) ?? previous?.state ?? 'running';
       const stopReason = stringOf(info?.['stopReason']);
+      const rawExitCode = info?.['exitCode'];
+      const exitCode =
+        typeof rawExitCode === 'number' || rawExitCode === null
+          ? rawExitCode
+          : previous?.exitCode;
       const task: TranscriptTask = {
         taskId,
         kind: taskKindOf(info?.['kind']),
@@ -890,6 +895,11 @@ export class TranscriptWireAdapter {
         executorId: stringOf(info?.['executorId']) ?? previous?.executorId,
         executorProtocol: stringOf(info?.['executorProtocol']) ?? previous?.executorProtocol,
         sourceRef: transcriptTaskSchema.shape.sourceRef.safeParse(info?.['sourceRef']).data ?? previous?.sourceRef,
+        parentToolCallId: previous?.parentToolCallId,
+        toolCallId: stringOf(info?.['toolCallId']) ?? previous?.toolCallId,
+        questionCount: numberOf(info?.['questionCount']) ?? previous?.questionCount,
+        exitCode,
+        taskKind: stringOf(info?.['kind']) ?? previous?.taskKind,
         description: stringOf(info?.['description']) ?? previous?.description,
         command: stringOf(info?.['command']) ?? previous?.command,
         agentId,
@@ -984,6 +994,7 @@ export class TranscriptWireAdapter {
           thinkingEffortExplicit: booleanOf(record['thinkingEffortExplicit']) ?? previous.thinkingEffortExplicit,
           executorId: stringOf(record['executorId']) ?? previous.executorId,
           executorProtocol: stringOf(record['executorProtocol']) ?? previous.executorProtocol,
+          parentToolCallId: parentToolCallId ?? previous.parentToolCallId,
           description: stringOf(record['description']) ?? previous.description,
         };
         const enriched = transcriptResidentValueEquals(previous, task) ? previous : task;
@@ -999,14 +1010,15 @@ export class TranscriptWireAdapter {
           detached,
           name: stringOf(record['name']),
           subagentName: stringOf(record['subagentName']),
-          model: stringOf(record['model']) ?? previous?.model,
-          thinkingEffort: stringOf(record['thinkingEffort']) ?? previous?.thinkingEffort,
-          thinkingEffortExplicit: booleanOf(record['thinkingEffortExplicit']) ?? previous?.thinkingEffortExplicit,
-          executorId: stringOf(record['executorId']) ?? previous?.executorId,
-          executorProtocol: stringOf(record['executorProtocol']) ?? previous?.executorProtocol,
-          description: stringOf(record['description']) ?? previous?.description,
+          model: stringOf(record['model']),
+          thinkingEffort: stringOf(record['thinkingEffort']),
+          thinkingEffortExplicit: booleanOf(record['thinkingEffortExplicit']),
+          executorId: stringOf(record['executorId']),
+          executorProtocol: stringOf(record['executorProtocol']),
+          parentToolCallId,
+          description: stringOf(record['description']),
           agentId: subagentId,
-          outputTail: previous?.outputTail ?? '',
+          outputTail: '',
           startedAt,
         };
         this.#tasks.set(taskId, task);
@@ -1046,10 +1058,18 @@ export class TranscriptWireAdapter {
         return [];
       }
       this.#replayedSubagentSpawns.delete(subagentId);
-      const previous = this.#tasks.get(taskId);
+      const cached = this.#tasks.get(taskId);
+      const projected = this.lookups?.task?.(taskId);
+      const previous =
+        cached === undefined
+          ? projected
+          : projected === undefined
+            ? cached
+            : { ...cached, ...projected };
       if (record.type === 'subagent.started') {
         const at = isoOf(record.time);
         const task: TranscriptTask = {
+          ...previous,
           taskId,
           kind: 'subagent',
           state: 'running',
@@ -1080,6 +1100,7 @@ export class TranscriptWireAdapter {
               : 'failed'
             : 'running';
       const task: TranscriptTask = {
+        ...previous,
         taskId,
         kind: 'subagent',
         state,
@@ -2996,8 +3017,8 @@ function goalFollowUpTimingOf(value: unknown): 'subagents_done' | 'tasks_done' |
 }
 
 function taskKindOf(value: unknown): TranscriptTask['kind'] {
-  if (value === 'process') return 'shell';
-  if (value === 'agent') return 'subagent';
+  if (value === 'process' || value === 'shell') return 'shell';
+  if (value === 'agent' || value === 'subagent') return 'subagent';
   return 'other';
 }
 

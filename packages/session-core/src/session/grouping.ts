@@ -65,6 +65,8 @@ export interface SubagentEnding {
   readonly note: SystemBlock;
   /** The dispatch card is on this page, so the row can point back to it. */
   readonly dispatchOnPage: boolean;
+  /** Specific run card id on this page when multiple runs exist for the same agent. */
+  readonly dispatchCardId?: string;
 }
 
 /**
@@ -118,6 +120,8 @@ export interface HistoryFold {
   readonly failed: number;
   /** Sum of real per-tool frame durations; undefined when none is known. */
   readonly durationMs: number | undefined;
+  /** Delivered AgentSend messages folded in this contiguous process stretch, grouped by target agent. */
+  readonly sentMessages?: readonly { readonly subagentId: string; readonly name: string; readonly count: number }[];
 }
 
 /** What a fold can hold. */
@@ -163,11 +167,31 @@ export function isMediaTool(block: Block): block is ToolBlock {
  * A settled subagent card is process too (its conclusion is the answer that
  * follows); a live one stays out until it settles.
  */
+function isFailedTaskSystemBlock(node: SystemBlock): boolean {
+  if (node.variant !== 'task') return false;
+  if (node.taskNotification?.severity === 'warning' || node.taskNotification?.severity === 'error') return true;
+  if (node.taskNotification?.type === 'task.failed' || node.taskNotification?.status === 'failed') return true;
+  const firstLine = node.text.split('\n', 1)[0] ?? '';
+  return (
+    /^(?:Title:\s*)?Background \S+ (?:failed|timed_out|killed|lost)\b/i.test(firstLine) ||
+    /^Severity:\s*warning\s*$/m.test(node.text)
+  );
+}
+
 function foldable(node: Row): boolean {
   switch (node.kind) {
     case 'subagent-ended':
-      // A run that did not complete stays in view.
-      return node.outcome === 'completed';
+      // A cross-turn or separated subagent ending stays in view at its first
+      // recorded result position as a named, independently expandable summary.
+      return false;
+    case 'subagent-event':
+      return (
+        node.event === 'sent' &&
+        node.delivery === 'delivered' &&
+        node.status !== 'running' &&
+        node.status !== 'failed' &&
+        node.error === undefined
+      );
     case 'tool-group':
       return !groupHasRunning(node);
     case 'tool':
@@ -182,7 +206,9 @@ function foldable(node: Row): boolean {
     case 'skill':
       return true;
     case 'system':
-      return node.variant !== 'compaction_summary';
+      if (node.variant === 'compaction_summary') return false;
+      if (node.variant === 'task' && isFailedTaskSystemBlock(node)) return false;
+      return true;
     case 'notice':
       // Text an external client saved stays in view: its body is the reason
       // the row exists, and folding it away would hide a record the session
@@ -192,7 +218,7 @@ function foldable(node: Row): boolean {
     case 'approval':
       return node.resolution !== undefined;
     case 'question':
-      return node.outcome !== undefined;
+      return false;
     default:
       return false;
   }
@@ -214,6 +240,7 @@ function buildFold(run: readonly Row[], turnId: string | undefined): HistoryFold
   let notes = 0;
   let failed = 0;
   let duration: number | undefined;
+  const sentMap = new Map<string, { subagentId: string; name: string; count: number }>();
   const addDuration = (tool: ToolBlock) => {
     if (tool.durationSource === 'frame' && tool.durationMs !== undefined) duration = (duration ?? 0) + tool.durationMs;
   };
@@ -237,13 +264,21 @@ function buildFold(run: readonly Row[], turnId: string | undefined): HistoryFold
       agents += 1;
     } else if (node.kind === 'subagent-ended') {
       agentsDone += 1;
+    } else if (node.kind === 'subagent-event' && node.event === 'sent') {
+      const existing = sentMap.get(node.subagentId);
+      if (existing === undefined) {
+        sentMap.set(node.subagentId, { subagentId: node.subagentId, name: node.name, count: 1 });
+      } else {
+        sentMap.set(node.subagentId, { ...existing, count: existing.count + 1 });
+      }
     } else {
       notes += 1;
     }
   }
+  const sentMessages = sentMap.size > 0 ? [...sentMap.values()] : undefined;
   return {
     kind: 'history-fold', id: `fold-${run[0]!.id}`, turnId, members: run,
-    steps, thoughts, agents, agentsDone, notes, failed, durationMs: duration,
+    steps, thoughts, agents, agentsDone, notes, failed, durationMs: duration, sentMessages,
   };
 }
 
@@ -291,26 +326,126 @@ export function readSubagentEndings(
   tasks: readonly EndingTask[],
 ): DisplayNode[] {
   const agentByTask = new Map<string, EndingTask>();
+  const taskIdsByAgent = new Map<string, Set<string>>();
   for (const task of tasks) {
-    if (task.agent_id !== undefined && task.agent_id !== '') agentByTask.set(task.id, task);
+    if (task.agent_id === undefined || task.agent_id === '') continue;
+    agentByTask.set(task.id, task);
+    const set = taskIdsByAgent.get(task.agent_id);
+    if (set === undefined) taskIdsByAgent.set(task.agent_id, new Set([task.id]));
+    else set.add(task.id);
   }
   const merged = mergeTaskNotifications(nodes);
-  if (agentByTask.size === 0) return merged;
-  const dispatchTurn = new Map<string, string | undefined>();
-  for (const node of nodes) {
-    if (node.kind === 'subagent' && !dispatchTurn.has(node.subagentId)) dispatchTurn.set(node.subagentId, normTurn(node.parentTurnId));
+  const cardsByTaskId = new Map<string, { card: SubagentBlock; index: number }>();
+  const untaggedCardsByAgentId = new Map<string, { card: SubagentBlock; index: number }[]>();
+  const allCardsByAgentId = new Map<string, { card: SubagentBlock; index: number }[]>();
+  merged.forEach((node, index) => {
+    if (node.kind !== 'subagent') return;
+    const allList = allCardsByAgentId.get(node.subagentId);
+    if (allList === undefined) allCardsByAgentId.set(node.subagentId, [{ card: node, index }]);
+    else allList.push({ card: node, index });
+    if (node.taskId !== undefined && node.taskId !== '') {
+      cardsByTaskId.set(node.taskId, { card: node, index });
+      const set = taskIdsByAgent.get(node.subagentId);
+      if (set === undefined) taskIdsByAgent.set(node.subagentId, new Set([node.taskId]));
+      else set.add(node.taskId);
+      return;
+    }
+    const untaggedList = untaggedCardsByAgentId.get(node.subagentId);
+    if (untaggedList === undefined) untaggedCardsByAgentId.set(node.subagentId, [{ card: node, index }]);
+    else untaggedList.push({ card: node, index });
+  });
+  const isContiguousSameTurn = (cardIndex: number, noteIndex: number, turn: string | undefined): boolean => {
+    const start = Math.min(cardIndex, noteIndex) + 1;
+    const end = Math.max(cardIndex, noteIndex) - 1;
+    for (let i = start; i <= end; i += 1) {
+      const mid = merged[i]!;
+      if (mid.kind === 'user' || mid.kind === 'assistant' || mid.kind === 'message' || mid.kind === 'question' || mid.kind === 'approval') {
+        return false;
+      }
+      if (mid.kind === 'notice' && (mid.externalText !== undefined || mid.tone !== 'neutral' || mid.executor === undefined || mid.executor.kind === 'compaction')) {
+        return false;
+      }
+      const midTurn = mid.kind === 'history-fold' ? normTurn(mid.turnId) : normTurn(foldTurnId(mid));
+      if (midTurn !== undefined && turn !== undefined && midTurn !== turn) return false;
+    }
+    return true;
+  };
+  const resolveTaskForNode = (node: DisplayNode): EndingTask | undefined => {
+    let task = node.kind === 'system' && node.variant === 'task' && node.taskId !== undefined ? agentByTask.get(node.taskId) : undefined;
+    if (node.kind === 'system' && node.variant === 'task' && task === undefined && node.taskNotification?.agentId !== undefined) {
+      const meta = node.taskNotification;
+      const taskId = node.taskId ?? meta.sourceId ?? node.id;
+      task = {
+        id: taskId,
+        agent_id: meta.agentId,
+        status: meta.type === 'task.failed' || meta.status === 'failed' ? 'failed' : 'completed',
+        stop_reason: meta.stopReason,
+        output_preview: meta.outputPreview ?? meta.body,
+      };
+    }
+    if (task?.agent_id !== undefined && task.agent_id !== '') {
+      const set = taskIdsByAgent.get(task.agent_id);
+      if (set === undefined) taskIdsByAgent.set(task.agent_id, new Set([task.id]));
+      else set.add(task.id);
+    }
+    return task;
+  };
+  const resolvedTasks = merged.map(resolveTaskForNode);
+  const resolveMatchedCard = (
+    task: EndingTask,
+  ): { card: SubagentBlock; index: number } | undefined => {
+    const exactCard = cardsByTaskId.get(task.id);
+    if (exactCard !== undefined) return exactCard;
+    const agentId = task.agent_id!;
+    const allCards = allCardsByAgentId.get(agentId) ?? [];
+    const untaggedCards = untaggedCardsByAgentId.get(agentId) ?? [];
+    if (allCards.length !== 1 || untaggedCards.length !== 1) return undefined;
+    return untaggedCards[0];
+  };
+  const precomputedCardSummaries = new Map<string, string>();
+  const absorbedNoteIndices = new Set<number>();
+  for (let index = 0; index < merged.length; index += 1) {
+    const node = merged[index]!;
+    const task = resolvedTasks[index];
+    if (node.kind !== 'system' || task === undefined || task.agent_id === undefined) continue;
+    const turn = normTurn(node.turnId);
+    const matchedCard = resolveMatchedCard(task);
+    const knownAgentTasks = taskIdsByAgent.get(task.agent_id);
+    const canAbsorbIntoCard =
+      matchedCard !== undefined &&
+      (matchedCard.card.taskId === task.id || (knownAgentTasks?.size ?? 0) <= 1) &&
+      normTurn(matchedCard.card.parentTurnId) === turn &&
+      isContiguousSameTurn(matchedCard.index, index, turn);
+    if (canAbsorbIntoCard) {
+      absorbedNoteIndices.add(index);
+      if (
+        (matchedCard.card.summary === undefined || matchedCard.card.summary === '') &&
+        !precomputedCardSummaries.has(matchedCard.card.id) &&
+        task.output_preview !== undefined &&
+        task.output_preview !== ''
+      ) {
+        precomputedCardSummaries.set(matchedCard.card.id, task.output_preview);
+      }
+    }
   }
   const out: DisplayNode[] = [];
-  for (const node of merged) {
-    const task = node.kind === 'system' && node.variant === 'task' && node.taskId !== undefined ? agentByTask.get(node.taskId) : undefined;
-    if (node.kind !== 'system' || task === undefined) {
+  for (let index = 0; index < merged.length; index += 1) {
+    if (absorbedNoteIndices.has(index)) continue;
+    const node = merged[index]!;
+    if (node.kind === 'subagent') {
+      const summary = precomputedCardSummaries.get(node.id);
+      out.push(summary !== undefined && (node.summary === undefined || node.summary === '') ? { ...node, summary } : node);
+      continue;
+    }
+    const task = resolvedTasks[index];
+    if (node.kind !== 'system' || task === undefined || task.agent_id === undefined) {
       out.push(node);
       continue;
     }
-    const agentId = task.agent_id!;
+    const agentId = task.agent_id;
     const turn = normTurn(node.turnId);
-    const onPage = dispatchTurn.has(agentId);
-    if (onPage && dispatchTurn.get(agentId) === turn) continue;
+    const matchedCard = resolveMatchedCard(task);
+    const onPage = matchedCard !== undefined;
     out.push({
       kind: 'subagent-ended',
       id: `ended-task-${task.id}`,
@@ -321,6 +456,7 @@ export function readSubagentEndings(
       outcome: outcomeOf(task, node),
       note: node,
       dispatchOnPage: onPage,
+      dispatchCardId: matchedCard?.card.id,
     });
   }
   return out;
