@@ -5,14 +5,17 @@ import {
   classifyOrigin,
   displayOrigin,
   formatPairingCodeInput,
+  isServerOriginVerified,
+  probeOriginHandshake,
   readConnectInput,
   readDeviceIdentity,
   readSavedServers,
   readScanPayload,
   readTarget,
   removeSavedServer,
+  resolveVerifiedServerOpen,
   updateSavedServerOrigin,
-  upsertSavedServer,
+  verifySavedServerOrigin,
 } from './target.js';
 
 /*
@@ -23,7 +26,150 @@ import {
  */
 
 const STARTED_KEY = 'kiki.shell.started';
+const VAULT_DB_NAME = 'kiki.shell.vault';
+const VAULT_STORE_NAME = 'tokens';
+const VAULT_KEY_ID = '__aes_gcm_key__';
 const ephemeralTokens = new Map();
+
+function openVaultDb() {
+  return new Promise((resolveDb, rejectDb) => {
+    if (typeof indexedDB === 'undefined') {
+      resolveDb(null);
+      return;
+    }
+    const req = indexedDB.open(VAULT_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(VAULT_STORE_NAME)) {
+        db.createObjectStore(VAULT_STORE_NAME);
+      }
+    };
+    req.onsuccess = () => resolveDb(req.result);
+    req.onerror = () => rejectDb(req.error);
+  });
+}
+
+function idbGet(db, key) {
+  return new Promise((resolveGet, rejectGet) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readonly');
+    const req = tx.objectStore(VAULT_STORE_NAME).get(key);
+    req.onsuccess = () => resolveGet(req.result);
+    req.onerror = () => rejectGet(req.error);
+  });
+}
+
+function idbPut(db, key, value) {
+  return new Promise((resolvePut, rejectPut) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+    tx.objectStore(VAULT_STORE_NAME).put(value, key);
+    tx.oncomplete = () => resolvePut();
+    tx.onerror = () => rejectPut(tx.error);
+  });
+}
+
+function idbDelete(db, key) {
+  return new Promise((resolveDel, rejectDel) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+    tx.objectStore(VAULT_STORE_NAME).delete(key);
+    tx.oncomplete = () => resolveDel();
+    tx.onerror = () => rejectDel(tx.error);
+  });
+}
+
+async function getOrCreateVaultKey(db) {
+  if (!globalThis.crypto?.subtle) return null;
+  const existing = await idbGet(db, VAULT_KEY_ID);
+  if (existing) return existing;
+  const key = await globalThis.crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  await idbPut(db, VAULT_KEY_ID, key);
+  return key;
+}
+
+async function saveWebPeerToken(serverId, token) {
+  if (!serverId || !token) return;
+  ephemeralTokens.set(serverId, token);
+  try {
+    const db = await openVaultDb();
+    if (!db) return;
+    try {
+      const key = await getOrCreateVaultKey(db);
+      if (key) {
+        const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+        const aad = new TextEncoder().encode(serverId);
+        const cipher = await globalThis.crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv, additionalData: aad },
+          key,
+          new TextEncoder().encode(token),
+        );
+        await idbPut(db, serverId, { iv, cipher });
+      } else {
+        await idbPut(db, serverId, { token });
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* fallback to in-memory map */
+  }
+}
+
+async function readWebPeerToken(serverId) {
+  if (!serverId) return undefined;
+  if (ephemeralTokens.has(serverId)) {
+    return ephemeralTokens.get(serverId);
+  }
+  try {
+    const db = await openVaultDb();
+    if (!db) return undefined;
+    try {
+      const record = await idbGet(db, serverId);
+      if (!record) return undefined;
+      if (record.iv && record.cipher && globalThis.crypto?.subtle) {
+        const key = await getOrCreateVaultKey(db);
+        if (!key) return undefined;
+        const aad = new TextEncoder().encode(serverId);
+        const plain = await globalThis.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: record.iv, additionalData: aad },
+          key,
+          record.cipher,
+        );
+        const decoded = new TextDecoder().decode(plain);
+        if (decoded) {
+          ephemeralTokens.set(serverId, decoded);
+          return decoded;
+        }
+      } else if (typeof record.token === 'string' && record.token !== '') {
+        ephemeralTokens.set(serverId, record.token);
+        return record.token;
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+async function deleteWebPeerToken(serverId) {
+  if (!serverId) return;
+  ephemeralTokens.delete(serverId);
+  try {
+    const db = await openVaultDb();
+    if (!db) return;
+    try {
+      await idbDelete(db, serverId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 const COPY = {
   en: {
@@ -70,6 +216,8 @@ const COPY = {
       'Could not reach {host}. Confirm the HTTPS tunnel or reverse proxy is online and forwarding to Kiki.',
     probeOk: 'Reached {host} ({layer}). Ready to connect.',
     addressSaved: 'Updated address to {host} ({layer}). Device trust preserved.',
+    identityMismatch:
+      '{host} belongs to a different Kiki computer. Kept {label} on its verified address — enter a pairing code to pair the new computer.',
   },
   zh: {
     lede: '连接你电脑上的 Kiki。',
@@ -115,6 +263,8 @@ const COPY = {
       '无法连接 {host}。请确认外部 HTTPS 隧道或反向代理在线，并已转发至电脑上的 Kiki。',
     probeOk: '已连通 {host}（{layer}），可直接连接。',
     addressSaved: '已更新为 {host}（{layer}），已保留配对信任。',
+    identityMismatch:
+      '{host} 属于另一台 Kiki 电脑，已保留 {label} 的原配对地址。如需连接该地址，请使用新配对码重新配对。',
   },
 };
 
@@ -174,6 +324,13 @@ function unreachableMessageFor(originOrRaw) {
   return copy.unreachableLan.replace('{host}', host);
 }
 
+function identityMismatchMessageFor(originOrRaw, label) {
+  const host = displayOrigin(originOrRaw).replace(' · http', '');
+  return copy.identityMismatch
+    .replace('{host}', host)
+    .replace('{label}', label || (lang === 'zh' ? '已保存电脑' : 'saved computer'));
+}
+
 function showProblem(text) {
   problem.textContent = text;
   problem.hidden = text === '';
@@ -224,45 +381,15 @@ async function probeServer(origin) {
       const res = await window.Capacitor.nativePromise('KikiShell', 'probe', { origin });
       return {
         ok: Boolean(res?.ok),
-        targetLabel: typeof res?.targetLabel === 'string' ? res.targetLabel : undefined,
-        targetHomeId: typeof res?.targetHomeId === 'string' ? res.targetHomeId : undefined,
+        targetLabel: typeof res?.targetLabel === 'string' && res.targetLabel !== '' ? res.targetLabel : undefined,
+        targetHomeId: typeof res?.targetHomeId === 'string' && res.targetHomeId !== '' ? res.targetHomeId : undefined,
+        targetHostId: typeof res?.targetHostId === 'string' && res.targetHostId !== '' ? res.targetHostId : undefined,
       };
     } catch {
       return { ok: false };
     }
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4500);
-  try {
-    const handshakeRes = await fetch(`${origin}/api/remote-connections/handshake`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (handshakeRes.ok) {
-      const payload = await handshakeRes.json().catch(() => null);
-      const data = payload?.data;
-      return {
-        ok: true,
-        targetLabel: typeof data?.targetLabel === 'string' ? data.targetLabel : undefined,
-        targetHomeId:
-          typeof data?.identity?.homeId === 'string'
-            ? data.identity.homeId
-            : typeof data?.target?.homeId === 'string'
-              ? data.target.homeId
-              : undefined,
-      };
-    }
-    const metaRes = await fetch(`${origin}/api/meta`, {
-      method: 'GET',
-      signal: controller.signal,
-    });
-    return { ok: metaRes.status > 0 };
-  } catch {
-    return { ok: false };
-  } finally {
-    clearTimeout(timer);
-  }
+  return probeOriginHandshake(origin);
 }
 
 async function claimPairing(endpoint, code) {
@@ -328,7 +455,7 @@ async function claimPairing(endpoint, code) {
     if (!data || typeof data.peerToken !== 'string' || !data.target?.homeId) {
       return { ok: false, reason: 'rejected' };
     }
-    ephemeralTokens.set(data.target.homeId, data.peerToken);
+    await saveWebPeerToken(data.target.homeId, data.peerToken);
     return {
       ok: true,
       targetHomeId: data.target.homeId,
@@ -345,38 +472,70 @@ async function claimPairing(endpoint, code) {
 }
 
 async function openServer(origin, entry, options = {}) {
-  const saved = upsertSavedServer(window.localStorage, {
-    id: options.serverId,
-    origin,
-    label: options.label,
-    paired: options.paired,
-    targetHomeId: options.targetHomeId,
-    targetHostId: options.targetHostId,
-    grantId: options.grantId,
-  });
-  const serverId = saved?.id ?? options.serverId;
+  const isPairedTarget = Boolean(options.paired || options.targetHomeId);
+  const targetServerId = options.serverId ?? options.targetHomeId;
+
   button.disabled = true;
   button.textContent = copy.opening;
 
+  const resolved = await resolveVerifiedServerOpen(window.localStorage, {
+    ...options,
+    origin,
+    entry,
+    probe: probeServer,
+    getToken: readWebPeerToken,
+  });
+
+  if (!resolved.ok) {
+    button.disabled = false;
+    renderSavedServers();
+    if (resolved.reason === 'identity_mismatch') {
+      input.value = displayOrigin(origin).replace(' · http', '');
+      updateInputAffordances();
+      showProblem(identityMismatchMessageFor(origin, resolved.server?.label ?? options.label));
+      codeInput.focus();
+    } else {
+      updateInputAffordances();
+      showProblem(unreachableMessageFor(origin));
+    }
+    return;
+  }
+
+  const serverId = resolved.serverId;
+
   if (isNativeShell()) {
     try {
-      await window.Capacitor.nativePromise('KikiShell', 'open', {
+      const res = await window.Capacitor.nativePromise('KikiShell', 'open', {
         origin,
         entry,
-        serverId: serverId ?? undefined,
+        serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
+        targetHomeId: options.targetHomeId ?? undefined,
+        targetHostId: options.targetHostId ?? undefined,
       });
+      if (res && res.ok === false) {
+        button.disabled = false;
+        if (res.reason === 'identity_mismatch' && targetServerId) {
+          const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, origin, {
+            ok: true,
+            targetHomeId: res.targetHomeId,
+          });
+          renderSavedServers();
+          input.value = displayOrigin(origin).replace(' · http', '');
+          updateInputAffordances();
+          showProblem(identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
+          codeInput.focus();
+        } else {
+          updateInputAffordances();
+          showProblem(unreachableMessageFor(origin));
+        }
+      }
       return;
     } catch {
       /* fall through to plain navigation */
     }
   }
 
-  let finalEntry = entry;
-  const sessionToken = serverId ? ephemeralTokens.get(serverId) : undefined;
-  if (sessionToken && !/(?:^#|&)token=/.test(finalEntry) && !/(?:^#|&)access=/.test(finalEntry)) {
-    finalEntry = `${origin}/#token=${encodeURIComponent(sessionToken)}`;
-  }
-  window.location.assign(finalEntry);
+  window.location.assign(resolved.finalEntry);
 }
 
 async function submitConnect(parsed) {
@@ -405,6 +564,7 @@ async function submitConnect(parsed) {
       targetHomeId: claim.targetHomeId,
       targetHostId: claim.targetHostId,
       grantId: claim.grantId,
+      verified: true,
     });
     return;
   }
@@ -700,9 +860,23 @@ function renderSavedServers() {
       forgetBtn.className = 'mini-button mini-danger';
       forgetBtn.textContent = copy.forgetServer;
       forgetBtn.addEventListener('click', () => {
+        ephemeralTokens.delete(server.id);
+        if (server.targetHomeId) ephemeralTokens.delete(server.targetHomeId);
         removeSavedServer(window.localStorage, server.id);
         if (editingServerId === server.id) editingServerId = null;
         renderSavedServers();
+        if (isNativeShell()) {
+          try {
+            void window.Capacitor.nativePromise('KikiShell', 'forgetServer', {
+              serverId: server.id,
+              origin: server.origin,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+        void deleteWebPeerToken(server.id);
+        if (server.targetHomeId) void deleteWebPeerToken(server.targetHomeId);
       });
 
       const rightBtns = document.createElement('div');
@@ -726,6 +900,22 @@ function renderSavedServers() {
         testEditBtn.disabled = false;
         testEditBtn.textContent = copy.testAddress;
         if (probe.ok) {
+          if (server.paired && server.targetHomeId) {
+            const check = verifySavedServerOrigin(window.localStorage, server.id, parsed.origin, probe);
+            if (!check.ok) {
+              const mismatchText = identityMismatchMessageFor(
+                parsed.origin,
+                check.server?.label ?? server.label,
+              );
+              statusLine.dataset.tone = 'danger';
+              statusLine.textContent = mismatchText;
+              statusLine.hidden = false;
+              input.value = displayOrigin(parsed.origin).replace(' · http', '');
+              updateInputAffordances();
+              showProblem(mismatchText);
+              return;
+            }
+          }
           const host = displayOrigin(parsed.origin).replace(' · http', '');
           statusLine.dataset.tone = 'ok';
           statusLine.textContent = copy.probeOk
@@ -752,12 +942,42 @@ function renderSavedServers() {
           return;
         }
         renderSavedServers();
-        const host = displayOrigin(res.server.origin).replace(' · http', '');
+        const candidateOrigin = res.server.origin;
+        const host = displayOrigin(candidateOrigin).replace(' · http', '');
         showProbeStatus(
           copy.addressSaved
             .replace('{host}', host)
-            .replace('{layer}', layerLabelFor(res.server.origin)),
+            .replace('{layer}', layerLabelFor(candidateOrigin)),
         );
+        if (
+          res.server.paired &&
+          res.server.targetHomeId &&
+          !isServerOriginVerified(res.server, candidateOrigin)
+        ) {
+          void (async () => {
+            const probe = await probeServer(candidateOrigin);
+            if (!probe.ok) return;
+            const current = readSavedServers(window.localStorage).find((s) => s.id === server.id);
+            if (!current || !current.origins.includes(candidateOrigin)) return;
+            const verified = verifySavedServerOrigin(
+              window.localStorage,
+              server.id,
+              candidateOrigin,
+              probe,
+            );
+            if (!verified.ok && verified.reason === 'identity_mismatch') {
+              renderSavedServers();
+              input.value = displayOrigin(candidateOrigin).replace(' · http', '');
+              updateInputAffordances();
+              showProblem(
+                identityMismatchMessageFor(candidateOrigin, verified.server?.label ?? server.label),
+              );
+              codeInput.focus();
+            } else if (verified.ok) {
+              renderSavedServers();
+            }
+          })();
+        }
       });
 
       rightBtns.append(testEditBtn, saveEditBtn);
