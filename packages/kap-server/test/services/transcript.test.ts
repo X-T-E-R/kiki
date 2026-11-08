@@ -4067,7 +4067,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(16);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(17);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4077,11 +4077,12 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
       const sourceRef = { ...ref, messageId: 'message-1' };
+      const externalEditInput = { Path: '/workspace/example/file.ts', Target: 'before\n', Replacement: 'after\n' };
       await appendFile(wirePath, `${[
         { type: 'turn.prompt', turnId: 1, origin: { kind: 'user', agentRefs: [ref] }, input: [{ type: 'text', text: 'typed generated', presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } }], time: 10_000 },
         { type: 'task.started', info: { taskId: 'source-task', kind: 'agent', agentId: 'source-child', profile: 'worker', sourceRef, status: 'completed', detached: true, startedAt: 10_000, endedAt: 10_001 }, time: 10_001 },
@@ -4121,6 +4122,15 @@ describe('TranscriptService live integration', () => {
         { type: 'context.append_message', time: 26_500, delivery: { deliveryId: 'd-steer-cue', messageId: 'steer-cue', origin: 'injection', deliveredAt: new Date(26_500).toISOString() }, message: { id: 'steer-cue', role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }], origin: { kind: 'injection', variant: 'model_steering' } } },
         { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 2, uuid: 'step-5b' }, time: 26_600 },
         { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5b', uuid: 'boundary-thought', part: { type: 'think', think: 'next' } }, time: 26_700 },
+        { type: 'executor.tool.display', turnId: 5, stepId: 'step-5b', toolCallId: 'external:acp:edit-1', name: 'edit_file', state: 'running',
+          input: externalEditInput, display: { kind: 'generic', summary: 'edit_file' },
+          output: { kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file', rawInput: externalEditInput, status: 'in_progress' }, time: 26_720 },
+        { type: 'executor.tool.display', turnId: 5, stepId: 'step-5b', toolCallId: 'external:acp:edit-1', name: 'edit_file', state: 'done',
+          display: { kind: 'generic', summary: 'edit_file' },
+          output: { kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file', text: 'Updated file.ts', status: 'completed' }, time: 26_740 },
+        { type: 'executor.tool.display', turnId: 5, stepId: 'step-5b', toolCallId: 'external:acp:no-input', name: 'edit_file', state: 'done',
+          display: { kind: 'generic', summary: 'edit_file' },
+          output: { kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file', text: 'Completed without recorded input', status: 'completed' }, time: 26_760 },
         { type: 'turn.ended', turnId: 5, reason: 'completed', time: 26_800 },
         { type: 'prompt.enqueued', promptId: 'accepted-not-delivered', userMessageId: 'logical-accepted',
           message: { origin: { kind: 'user' }, content: [{ type: 'text', text: 'Wait for a step' }] }, time: 26_900 },
@@ -4143,7 +4153,7 @@ describe('TranscriptService live integration', () => {
         first.dispose();
         const query = core.accessor.get(IQueryStore);
         const key = 'ws\0s1\0main';
-        const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot }>('__transcript_projection_checkpoint__', key);
+        const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot; adapter: TranscriptWireAdapterCheckpoint }>('__transcript_projection_checkpoint__', key);
         const recoveredTurn = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
         expect(recoveredTurn).toMatchObject({ state: 'cancelled', prompt: 'typed generated', origin: { kind: 'user', payload: { agentRefs: [ref] } }, presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } });
         expect(expected?.tasks).toContainEqual(expect.objectContaining({ taskId: 'source-task', sourceRef }));
@@ -4164,16 +4174,34 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(16);
+        expect(checkpoint?.format).toBe(17);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary?.kind === 'turn' ? boundary.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)]) : []).toEqual([
           ['step-5a', ['before-boundary']],
-          ['step-5b', ['steer-boundary', 'steer-cue', 'boundary-thought']],
+          ['step-5b', ['steer-boundary', 'steer-cue', 'boundary-thought', 'step-5b.external:acp:edit-1', 'step-5b.external:acp:no-input']],
         ]);
         expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[1] : undefined).toMatchObject({
           origin: { kind: 'injection', variant: 'model_steering' },
           delivery: { messageId: 'steer-cue', turnId: 't5', stepId: 'step-5b' },
         });
+        expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[3] : undefined).toMatchObject({
+          kind: 'tool',
+          toolCallId: 'external:acp:edit-1',
+          name: 'edit_file',
+          state: 'done',
+          input: externalEditInput,
+          display: { kind: 'file_io', operation: 'edit', path: '/workspace/example/file.ts', before: 'before\n', after: 'after\n' },
+          output: expect.objectContaining({ text: 'Updated file.ts' }),
+        });
+        expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[4] : undefined).toEqual(expect.objectContaining({
+          kind: 'tool',
+          toolCallId: 'external:acp:no-input',
+          name: 'edit_file',
+          state: 'done',
+          display: { kind: 'generic', summary: 'edit_file' },
+          output: expect.objectContaining({ text: 'Completed without recorded input' }),
+        }));
+        expect(boundary?.kind === 'turn' && boundary.steps[1]?.frames[4]?.kind === 'tool' ? boundary.steps[1].frames[4].input : undefined).toBeUndefined();
         expect(expected?.items.find(item => item.kind === 'turn' && item.turnId === 't4')).toMatchObject({ prompt: 'accepted edited text', promptId: 'edited-request', message: { messageId: 'logical-message' } });
         expect(expected?.meta.goal).toMatchObject({ budgetUsed: 200, turnsUsed: 1, wallClockMs: 50 });
         expect(expected?.items.flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
@@ -4181,7 +4209,24 @@ describe('TranscriptService live integration', () => {
         const originalWire = await fsPromises.readFile(wirePath);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
+          adapter: {
+            ...checkpoint!.adapter,
+            tools: checkpoint!.adapter.tools.map(([id, entry]) => id === 'external:acp:edit-1'
+              ? [id, { ...entry, frame: { ...entry.frame, input: undefined, display: { kind: 'generic', summary: 'edit_file' } } }]
+              : [id, entry]),
+          },
           snapshot: { ...checkpoint!.snapshot, meta: {}, prompts: checkpoint!.snapshot.prompts.map(prompt => ({ ...prompt, steerAccepted: undefined })), items: [
+            ...checkpoint!.snapshot.items.map(item => item.kind === 'turn' && item.turnId === 't5'
+              ? {
+                  ...item,
+                  steps: item.steps.map(step => ({
+                    ...step,
+                    frames: step.frames.map(frame => frame.kind === 'tool' && frame.toolCallId === 'external:acp:edit-1'
+                      ? { ...frame, input: undefined, display: { kind: 'generic', summary: 'edit_file' } }
+                      : frame),
+                  })),
+                }
+              : item),
             { kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] },
             { kind: 'marker', markerId: 'stale-accounting', marker: 'goal', payload: { type: 'goal.update', tokensUsed: 100 } },
           ] },

@@ -21,7 +21,9 @@ function replay(records: readonly TranscriptWireRecord[]): AgentTranscript {
 }
 
 function toolFrame(transcript: AgentTranscript, toolCallId: string) {
-  return transcript.getTurn('t1')?.steps.flatMap((step) => step.frames).find((frame) => frame.kind === 'tool' && frame.toolCallId === toolCallId);
+  return transcript.getTurn('t1')?.steps.flatMap((step) => step.frames).find(
+    (frame): frame is Extract<typeof frame, { kind: 'tool' }> => frame.kind === 'tool' && frame.toolCallId === toolCallId,
+  );
 }
 
 describe('projectExternalToolDisplay', () => {
@@ -193,6 +195,34 @@ describe('cold generic external wire', () => {
         text: 'updated', status: 'completed',
       },
     },
+    {
+      type: 'executor.tool.display', time: 12, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:carried-input',
+      name: 'edit_file', state: 'running',
+      input: { Path: '/workspace/example/d.ts', Target: 'old', Replacement: 'new' },
+      display: { kind: 'generic', summary: 'edit_file' },
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file',
+        rawInput: { Path: '/workspace/example/d.ts', Target: 'old', Replacement: 'new' }, status: 'in_progress',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 13, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:carried-input',
+      name: 'edit_file', state: 'done',
+      display: { kind: 'generic', summary: 'edit_file' },
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file',
+        text: 'patched', status: 'completed',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 14, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:missing-input',
+      name: 'read_file', state: 'done',
+      display: { kind: 'generic', summary: 'read_file' },
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'read_file',
+        text: 'contents without recorded input', status: 'completed',
+      },
+    },
   ];
 
   it('recovers native rows from a generic wire without rewriting the record', () => {
@@ -242,6 +272,26 @@ describe('cold generic external wire', () => {
         after: 'after',
       },
     });
+    expect(toolFrame(transcript, 'external:agy:carried-input')).toMatchObject({
+      name: 'edit_file',
+      state: 'done',
+      input: { Path: '/workspace/example/d.ts', Target: 'old', Replacement: 'new' },
+      display: {
+        kind: 'file_io',
+        operation: 'edit',
+        path: '/workspace/example/d.ts',
+        before: 'old',
+        after: 'new',
+      },
+      output: { text: 'patched', status: 'completed' },
+    });
+    expect(toolFrame(transcript, 'external:agy:missing-input')).toMatchObject({
+      name: 'read_file',
+      state: 'done',
+      display: { kind: 'generic', summary: 'read_file' },
+      output: { text: 'contents without recorded input', status: 'completed' },
+    });
+    expect(toolFrame(transcript, 'external:agy:missing-input')?.input).toBeUndefined();
     expect(replay(records).snapshot()).toEqual(transcript.snapshot());
   });
 });
