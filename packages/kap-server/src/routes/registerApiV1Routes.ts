@@ -150,7 +150,7 @@ export async function registerApiV1Routes(
 ): Promise<void> {
   if (opts.enableShutdown !== false) {
     registerDesktopLifecycleRoutes(app as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core,
-      { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api', explicitExitPath: opts.explicitExitPath, pid: opts.pid });
+      { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api', explicitExitPath: opts.explicitExitPath, pid: opts.pid, startedAt: Date.parse(opts.startedAt) });
   }
   await app.register(
     async (apiV1) => {

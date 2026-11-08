@@ -2589,7 +2589,7 @@ impl BackendManager {
         let Ok(state) = self.inner.lock() else {
             return if record.is_some() { ExplicitExitAdmission::Wait } else { ExplicitExitAdmission::Admit };
         };
-        let alive = record.as_ref().is_some_and(|record| pid_alive(record.pid));
+        let alive = record.as_ref().is_some_and(explicit_exit_process_alive);
         explicit_exit_decision(record.as_ref(), state.observed_server_id.as_deref(), state.replacing, alive)
     }
 
@@ -2598,7 +2598,7 @@ impl BackendManager {
         let Some(record) = read_explicit_lifecycle_exit(home) else { return false; };
         if record.pid != pid { return false; }
         let Ok(state) = self.inner.lock() else { return true; };
-        explicit_exit_decision(Some(&record), state.observed_server_id.as_deref(), state.replacing, pid_alive(record.pid)) != ExplicitExitAdmission::Admit
+        explicit_exit_decision(Some(&record), state.observed_server_id.as_deref(), state.replacing, explicit_exit_process_alive(&record)) != ExplicitExitAdmission::Admit
     }
 
     fn open_host_path(&self, path: &Path) -> Result<(), String> {
@@ -3080,13 +3080,25 @@ struct ExplicitLifecycleExit {
     #[serde(rename = "serverId")]
     server_id: String,
     pid: u32,
+    #[serde(rename = "startedAt")]
+    started_at: u64,
     action: String,
+}
+
+fn explicit_exit_process_alive(record: &ExplicitLifecycleExit) -> bool {
+    #[cfg(windows)]
+    {
+        BackendExitProbe::open(record.pid, record.started_at)
+            .is_ok_and(|probe| unsafe { WaitForSingleObject(probe.0, 0) } == WAIT_TIMEOUT)
+    }
+    #[cfg(not(windows))]
+    { pid_alive(record.pid) }
 }
 
 fn read_explicit_lifecycle_exit(home: &Path) -> Option<ExplicitLifecycleExit> {
     let raw = fs::read_to_string(home.join("server").join("explicit-exit.json")).ok()?;
     let record: ExplicitLifecycleExit = serde_json::from_str(&raw).ok()?;
-    if record.schema_version != 1 || record.server_id.is_empty() || record.pid == 0 {
+    if record.schema_version != 1 || record.server_id.is_empty() || record.pid == 0 || record.started_at == 0 {
         return None;
     }
     if !matches!(record.action.as_str(), "update" | "restart" | "quit") {
@@ -4945,7 +4957,7 @@ mod tests {
 
     #[test]
     fn explicit_update_does_not_admit_a_replacement_from_the_attached_shell() {
-        let record = ExplicitLifecycleExit { schema_version: 1, server_id: "old-server".into(), pid: 42, action: "update".into() };
+        let record = ExplicitLifecycleExit { schema_version: 1, server_id: "old-server".into(), pid: 42, started_at: 1000, action: "update".into() };
         assert_eq!(explicit_exit_decision(None, Some("old-server"), false, false), ExplicitExitAdmission::Admit);
         assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), false, true), ExplicitExitAdmission::Wait);
         assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), true, true), ExplicitExitAdmission::Wait);
@@ -4955,13 +4967,29 @@ mod tests {
         assert_eq!(explicit_exit_decision(Some(&record), Some("other-server"), false, false), ExplicitExitAdmission::Admit);
         let home = env::temp_dir().join(format!("kiki-explicit-exit-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
         fs::create_dir_all(home.join("server")).unwrap();
-        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":1,"serverId":"old-server","pid":42,"action":"update"}"#).unwrap();
+        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":1,"serverId":"old-server","pid":42,"startedAt":1000,"action":"update"}"#).unwrap();
         let loaded = read_explicit_lifecycle_exit(&home).unwrap();
         assert_eq!(loaded.server_id, "old-server");
         assert_eq!(loaded.pid, 42);
-        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":2,"serverId":"old-server","pid":42,"action":"update"}"#).unwrap();
+        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":2,"serverId":"old-server","pid":42,"startedAt":1000,"action":"update"}"#).unwrap();
         assert!(read_explicit_lifecycle_exit(&home).is_none());
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn retired_exit_record_does_not_block_a_reused_pid() {
+        let mut record = ExplicitLifecycleExit {
+            schema_version: 1, server_id: "retired-server".into(), pid: std::process::id(), started_at: 1, action: "update".into(),
+        };
+        assert!(pid_alive(record.pid));
+        let alive = explicit_exit_process_alive(&record);
+        assert!(!alive);
+        assert_eq!(explicit_exit_decision(Some(&record), None, false, alive), ExplicitExitAdmission::Admit);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("new-server"), false, alive), ExplicitExitAdmission::Admit);
+        record.started_at = unix_epoch_millis().unwrap();
+        assert!(explicit_exit_process_alive(&record));
+        assert_eq!(explicit_exit_decision(Some(&record), None, false, explicit_exit_process_alive(&record)), ExplicitExitAdmission::Wait);
     }
 
     #[test]

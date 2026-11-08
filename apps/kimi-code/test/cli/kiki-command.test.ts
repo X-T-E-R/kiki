@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startServer, type RunningServer, type ServerStartOptions } from '@kiki/kap-server';
+import * as kapServer from '@kiki/kap-server';
 
 import {
   KIKI_CLI_PRINCIPAL,
@@ -133,6 +134,30 @@ describe('kiki command helpers', () => {
       output.mockRestore();
     }
   }, 30_000);
+
+  it.each([
+    { callerOutcome: 'rejected', cleanupOutcome: 'closed' },
+    { callerOutcome: 'resolved', cleanupOutcome: 'cleanup_failed' },
+  ])('reports failed foreground cleanup as exit 1: $callerOutcome/$cleanupOutcome', async (receipt) => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-serve-failed-')); roots.push(root);
+    await writeFile(join(root, 'server.local-owner'), 'x'.repeat(43));
+    const record = vi.fn();
+    const diagnostics = vi.spyOn(serverDiagnostics, 'installServerDiagnostics').mockReturnValue({ record });
+    const started = vi.spyOn(kapServer, 'startServer').mockResolvedValue({
+      closed: Promise.resolve(), exitReceipt: Promise.resolve({ ...receipt, errorMessage: 'fixture cleanup failed' }),
+      serverId: 'fixture-server', port: 1,
+    } as RunningServer);
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      const program = new Command(); registerServeCommand(program);
+      await program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--port', '0', '--json']);
+      expect(record).toHaveBeenCalledWith('closed', expect.objectContaining({ ...receipt, errorMessage: 'fixture cleanup failed' }));
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    } finally {
+      exit.mockRestore(); output.mockRestore(); started.mockRestore(); diagnostics.mockRestore();
+    }
+  });
 
   it('attaches a live backend and refuses ensure when its identity handshake cannot be verified', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-query-live-')); roots.push(root);

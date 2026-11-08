@@ -138,7 +138,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`logs/desktop-backend.log`**：记录桌面后端的标准错误输出，以及桌面壳观察到的退出码或信号；后端无法写入最后一条记录时，桌面壳仍可留下退出证据。
 - **`logs/reports/`**：保存堆内存耗尽等致命错误的 Node.js 报告。报告排除环境变量和网络详情，但仍含文件路径、错误文本，分享前请检查；文件保留到手动删除为止。
 
-排查守护进程重启时，请保留 `server-runtime.log`、`desktop-backend.log`、它们的备份及对应报告。强制终止可能使守护进程来不及写入最后一条记录，此时应查看桌面壳的退出记录。
+排查守护进程重启时，保留 `server-runtime.log`、`desktop-backend.log`、它们的备份及对应报告。`server-runtime.log` 的 `closed` 记录清理结果和当时仍活跃的运行时资源；确认进程退出时，看 `exit` 或桌面壳记录的退出结果。桌面通过 `server/explicit-exit.json` 区分主动停止和崩溃，排查重启时保留这个文件。
 
 报 bug 时，优先用 `kiki export` 导出相关会话（详见 [kiki 命令](../reference/command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
 

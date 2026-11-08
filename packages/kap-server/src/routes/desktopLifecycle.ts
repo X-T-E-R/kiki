@@ -38,7 +38,7 @@ export function registerDesktopLifecycleRoutes(app: {
   get: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   post: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   addHook: (name: 'onRequest' | 'preHandler', handler: (...args: never[]) => unknown) => unknown;
-}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string; explicitExitPath: string; pid: number }): void {
+}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string; explicitExitPath: string; pid: number; startedAt: number }): void {
   const bootstrap = core.accessor.get(IBootstrapService);
   let draining = false;
   let prepared = false;
@@ -59,7 +59,7 @@ export function registerDesktopLifecycleRoutes(app: {
   }) as never);
   const read = defineRoute({ method: 'GET', path: `${opts.pathPrefix ?? ''}/desktop-lifecycle`, success: { data: desktopLifecycleStateSchema }, description: 'Read desktop service ownership and the scope of an explicit restart, update or quit', tags: ['meta'] }, (req, reply) => { reply.send(okEnvelope(state(), req.id)); });
   app.get(read.path, read.options, read.handler as never);
-  const mutate = defineRoute({ method: 'POST', path: `${opts.pathPrefix ?? ''}/desktop-lifecycle`, body: desktopLifecycleRequestSchema, success: { data: z.object({ ok: z.literal(true) }) }, errors: { [ErrorCode.CAPABILITY_UNSUPPORTED]: {}, [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Consent to drain and stop exactly this desktop-managed service', tags: ['meta'] }, (req, reply) => {
+  const mutate = defineRoute({ method: 'POST', path: `${opts.pathPrefix ?? ''}/desktop-lifecycle`, body: desktopLifecycleRequestSchema, success: { data: z.object({ ok: z.literal(true) }) }, errors: { [ErrorCode.CAPABILITY_UNSUPPORTED]: {}, [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Consent to drain and stop exactly this desktop-managed service', tags: ['meta'] }, async (req, reply) => {
     const current = state();
     if (!current.managed) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This service is externally managed; stop it through its owner', req.id)); return; }
     if (req.body.server_id !== opts.serverId) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'The service changed; review the affected space again', req.id)); return; }
@@ -77,19 +77,18 @@ export function registerDesktopLifecycleRoutes(app: {
       reply.send(okEnvelope({ ok: true }, req.id));
       return;
     }
-    void (async () => {
-      try {
-        await writePrivateFile(opts.explicitExitPath, JSON.stringify({
-          schemaVersion: 1, serverId: opts.serverId, pid: opts.pid, action: req.body.action,
-        }));
-      } catch {
-        reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'The explicit exit record could not be saved, so the service was not stopped', req.id));
-        return;
-      }
-      draining = true;
-      reply.send(okEnvelope({ ok: true }, req.id));
-      setImmediate(opts.onShutdown);
-    })();
+    draining = true;
+    try {
+      await writePrivateFile(opts.explicitExitPath, JSON.stringify({
+        schemaVersion: 1, serverId: opts.serverId, pid: opts.pid, startedAt: opts.startedAt, action: req.body.action,
+      }));
+    } catch {
+      draining = false;
+      reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'The explicit exit record could not be saved, so the service was not stopped', req.id));
+      return;
+    }
+    reply.send(okEnvelope({ ok: true }, req.id));
+    setImmediate(opts.onShutdown);
   });
   app.post(mutate.path, mutate.options, mutate.handler as never);
 }

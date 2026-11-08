@@ -6,12 +6,20 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 describe('foreground serve exit', () => {
-  it('exits after an explicit update even while a timer still holds the event loop', async () => {
+  it.each([false, true])('exits with a retained timer after explicit update (explicit heap: %s)', async (explicitHeap) => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-serve-exit-'));
     const home = join(root, 'home');
     const hold = join(root, 'hold.mjs');
     const repo = resolve(import.meta.dirname, '../../../..');
-    await writeFile(hold, 'setInterval(() => {}, 1_000_000);\n');
+    await writeFile(hold, `const write = process.stdout.write;
+process.stdout.write = function (chunk, ...args) {
+  if (String(chunk).includes('"serverId"')) {
+    setInterval(() => {}, 1_000_000);
+    process.stdout.write = write;
+  }
+  return write.call(this, chunk, ...args);
+};
+`);
     await mkdir(home, { recursive: true });
     await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n');
     const child = spawn(process.execPath, [
@@ -27,8 +35,8 @@ describe('foreground serve exit', () => {
         KIKI_HOME: home,
         KIKI_DESKTOP_BUNDLED: '1',
         KIKI_LOG_LEVEL: 'silent',
-        NODE_OPTIONS: '--max-old-space-size=8192',
-        KIKI_INJECTED_HEAP_OPTION: '--max-old-space-size=8192',
+        NODE_OPTIONS: explicitHeap ? '--max-old-space-size=8192' : '',
+        KIKI_INJECTED_HEAP_OPTION: explicitHeap ? '--max-old-space-size=8192' : '',
         TSX_TSCONFIG_PATH: 'apps/kimi-code/tsconfig.dev.json',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -80,8 +88,9 @@ describe('foreground serve exit', () => {
         child.once('exit', (code, signal) => { clearTimeout(timer); resolveExit({ code, signal }); });
       });
       expect(exit).toEqual({ code: 0, signal: null });
-      const record = JSON.parse(await readFile(join(home, 'server', 'explicit-exit.json'), 'utf8')) as { schemaVersion: number; serverId: string; pid: number; action: string };
-      expect(record).toMatchObject({ schemaVersion: 1, serverId: published.serverId, pid: child.pid, action: 'update' });
+      const record = JSON.parse(await readFile(join(home, 'server', 'explicit-exit.json'), 'utf8')) as { schemaVersion: number; serverId: string; pid: number; startedAt: number; action: string };
+      expect(record).toMatchObject({ schemaVersion: 1, serverId: published.serverId, pid: expect.any(Number), startedAt: expect.any(Number), action: 'update' });
+      if (explicitHeap) expect(record.pid).toBe(child.pid);
       const events = (await readFile(join(home, 'logs', 'server-runtime.log'), 'utf8')).trim().split(/\r?\n/u).map((entry) => JSON.parse(entry) as { event: string; activeResources?: string[]; code?: number });
       const closed = events.find((event) => event.event === 'closed');
       expect(closed?.activeResources).toContain('Timeout');
