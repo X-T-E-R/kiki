@@ -427,6 +427,80 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(readSubagentEndings(nodes, tasks).filter((node) => node.kind === 'subagent-ended')).toEqual(endings);
   });
 
+  it('keeps an older run ending visible without mis-linking to a newer run card when the older dispatch is off-page, and preserves summary when same-turn ending precedes its exact card', () => {
+    const note = (id: string, taskId: string, turnId: string, body: string): SystemBlock => ({
+      kind: 'system', id, variant: 'task', taskId, turnId, createdAt: undefined,
+      text: `Title: Background agent completed\n${body}`,
+    });
+    const tasks = [
+      { id: 'run-1', agent_id: 'a1', status: 'completed', output_preview: 'First result.' },
+      { id: 'run-2', agent_id: 'a1', status: 'completed', output_preview: 'Second result.' },
+    ];
+    const runBCard: SubagentBlock = {
+      ...agent('a1', 'completed', 't2'),
+      id: 'subagent-run-2',
+      taskId: 'run-2',
+      summary: undefined,
+    };
+    const sameTurnNodes = readSubagentEndings([
+      note('n-run-1', 'run-1', 't2', 'First result.'),
+      runBCard,
+      note('n-run-2', 'run-2', 't2', 'Second result.'),
+    ], tasks);
+    expect(sameTurnNodes.map((node) => node.kind)).toEqual(['subagent-ended', 'subagent']);
+    expect(sameTurnNodes[0]).toMatchObject({
+      kind: 'subagent-ended',
+      taskId: 'run-1',
+      agentId: 'a1',
+      dispatchOnPage: false,
+      dispatchCardId: undefined,
+    });
+    expect(sameTurnNodes[1]).toMatchObject({
+      kind: 'subagent',
+      id: 'subagent-run-2',
+      taskId: 'run-2',
+      summary: 'Second result.',
+    });
+
+    const crossTurnNodes = readSubagentEndings([
+      runBCard,
+      inTurn(text('user'), 't3'),
+      note('n-run-1-late', 'run-1', 't3', 'First result.'),
+      note('n-run-2-late', 'run-2', 't3', 'Second result.'),
+    ], tasks);
+    const crossTurnEndings = crossTurnNodes.filter((node) => node.kind === 'subagent-ended');
+    expect(crossTurnEndings).toHaveLength(2);
+    expect(crossTurnEndings[0]).toMatchObject({
+      taskId: 'run-1',
+      dispatchOnPage: false,
+      dispatchCardId: undefined,
+    });
+    expect(crossTurnEndings[1]).toMatchObject({
+      taskId: 'run-2',
+      dispatchOnPage: true,
+      dispatchCardId: 'subagent-run-2',
+    });
+
+    const runACard: SubagentBlock = {
+      ...agent('a1', 'completed', 't1'),
+      id: 'subagent-run-1',
+      taskId: 'run-1',
+      summary: undefined,
+    };
+    const reverseOrderSameTurn = readSubagentEndings([
+      note('n-run-1-first', 'run-1', 't1', 'First result.'),
+      runACard,
+    ], tasks);
+    expect(reverseOrderSameTurn).toEqual([
+      expect.objectContaining({
+        kind: 'subagent',
+        id: 'subagent-run-1',
+        taskId: 'run-1',
+        summary: 'First result.',
+      }),
+    ]);
+  });
+
   it('reads a subagent’s task notification as its end: dropped beside its card, a row in a later turn', () => {
     const note = (id: string, taskId: string, turnId: string, text = 'Background agent completed\nDone.'): SystemBlock =>
       ({ kind: 'system', id, variant: 'task', text, createdAt: undefined, turnId, taskId });
