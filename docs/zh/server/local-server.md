@@ -56,7 +56,7 @@ daemon 本身只监听 `127.0.0.1`。不带 `--port` 时，Web 访问复用 daem
 两个彼此独立预配、互不信任的运行时——分属不同 host 身份、各自拥有权限域的两个服务——不要共享同一个可写 `KIKI_HOME`，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host。会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
 :::
 
-Web 访问的监听要绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）时，需要 `--public-url` 指向一个终结 TLS 的 HTTPS 反向代理，或加 `--insecure-no-tls`；两者都没有时会拒绝开启。设置 `KIKI_PASSWORD` 可作为另一种 owner 凭据；它不能替代 local-owner 或逐源 grant。服务端会对鉴权失败自动限流。
+Web 访问的监听要绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）时，需要 `--public-url` 指向一个终结 TLS 的 HTTPS 反向代理，或加 `--insecure-no-tls`；两者都没有时会拒绝开启。设置 `KIKI_PASSWORD` 可作为另一种 owner 凭据；它不能替代 local-owner 或逐源 grant。当主服务监听本身绑定在非 loopback 地址上时，会对鉴权失败自动限流；专用的 loopback Web 访问监听（包括经 SSH 隧道转发进入的回环监听）不启用按 IP 的失败限流。
 
 ## 在浏览器里使用 Kiki
 
@@ -85,6 +85,8 @@ TUI 里对应的是 `/web temporary|persistent|status|off|link|revoke [id]`，�
 :::
 
 Web 访问与远端 Kiki 连接是两种不同的对象。远端 Kiki 是另一台 Kiki，有自己的身份和需要你审批的按来源 grant；Web 链接是对**这台** Kiki 的访问，由本机 owner 掌控。Web 访问不改变 peer 授权，开启它也不会让任何 Kiki 进入。
+
+已登录的浏览器也可以切换到本机 owner 明确勾选共享的已连接远端 Kiki。新开启的 Web 访问默认不勾选任何远端连接（`sharedConnectionIds: []`），未勾选的远端不会向浏览器暴露。在**设置 → 连接与远程 → 外部接入 → 网页访问**的**允许在浏览器切换的已连接远端 Kiki** 下勾选要开放的远端并点击**保存共享远端**；取消勾选并保存会立即撤销浏览器对该远端的访问，并断开该远端连接上活跃的数据流与事件连接，同时保留浏览器在这台 Kiki 上的登录态。REST 侧由 `GET /api/web-access` 返回 `sharedConnectionIds`，`PUT /api/web-access` 接受可选的 `sharedConnectionIds`，`PUT /api/web-access/shared-connections` 接受 `{ "connectionIds": ["<uuid>"] }` 更新共享集合（仅限 local-owner）。
 
 ## 用 API 驱动一个会话
 

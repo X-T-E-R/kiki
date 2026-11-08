@@ -56,7 +56,7 @@ Supported local clients in the same home share the same sessions, regardless of 
 Two independently provisioned runtimes that do not trust each other — separate services with their own host identity and authority domain — must not share a writable `KIKI_HOME`, must not copy session directories between their homes, and must not copy `device_id` to impersonate the same host. Session indexes, thread attribution, and permission boundaries all depend on a home having a unique identity. The shared daemon, TUI, desktop GUI, and coexisting server instances inside one home are supported and unaffected.
 :::
 
-Binding the Web access listener to a non-loopback address (`--host`, including bare `--host`, which targets `0.0.0.0`) requires either `--public-url` pointing at an HTTPS TLS-terminating reverse proxy or `--insecure-no-tls`; without one of those Web access refuses to turn on. You may set `KIKI_PASSWORD` as an additional owner credential; it does not replace the local-owner capability or the per-source grant. The server rate-limits authentication failures automatically.
+Binding the Web access listener to a non-loopback address (`--host`, including bare `--host`, which targets `0.0.0.0`) requires either `--public-url` pointing at an HTTPS TLS-terminating reverse proxy or `--insecure-no-tls`; without one of those Web access refuses to turn on. You may set `KIKI_PASSWORD` as an additional owner credential; it does not replace the local-owner capability or the per-source grant. When the main server listener itself is bound to a non-loopback address, it rate-limits authentication failures automatically; the dedicated loopback Web access listener (including when reached through an SSH tunnel) does not apply per-IP failure rate limiting.
 
 ## Use Kiki in a browser
 
@@ -85,6 +85,8 @@ Plain LAN HTTP (`--insecure-no-tls`) is not encrypted: anyone on the same networ
 :::
 
 Web access and remote Kiki connections are different objects. A remote Kiki is another Kiki with its own identity and a per-source grant you approve; a web link is access to this one, owned by whoever owns this machine. Web access does not change peer authorization, and turning it on does not admit any Kiki.
+
+Signed-in browsers can also switch into connected remote Kikis that the local owner explicitly shares. New Web access openings default to an empty selection (`sharedConnectionIds: []`), so no connected remote Kiki is exposed to browsers until you choose it. Under **Settings → Connection & remote → Access from elsewhere → Web access**, check the connected Kikis you want to expose under **Connected Kikis available in browsers** and click **Save shared Kikis**; unchecking a connection and saving revokes browser access to it immediately, closing active streams and event sockets on that remote connection while keeping browsers signed in to this Kiki. Over REST, `GET /api/web-access` reports `sharedConnectionIds`, `PUT /api/web-access` accepts optional `sharedConnectionIds`, and `PUT /api/web-access/shared-connections` with `{ "connectionIds": ["<uuid>"] }` updates the shared set (local-owner only).
 
 ## Drive a session over the API
 
