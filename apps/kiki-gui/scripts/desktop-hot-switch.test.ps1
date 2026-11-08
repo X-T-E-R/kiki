@@ -201,8 +201,11 @@ internal static class Program
         string executable = Process.GetCurrentProcess().MainModule.FileName;
         string directory = Path.GetDirectoryName(executable);
         string server = Path.Combine(directory, "kiki-server.exe");
-        string preferences = Path.Combine(Environment.GetEnvironmentVariable("KIKI_HOME"), "desktop.json");
+        string launcherHome = Environment.GetEnvironmentVariable("KIKI_HOME");
+        string preferences = Path.Combine(launcherHome, "desktop.json");
+        string explicitExitPath = Path.Combine(launcherHome, "server", "explicit-exit.json");
         bool launcherClosing = false;
+        Process backend = null;
         using (Form window = new Form { Text = "Kiki hot switch fixture", Width = 300, Height = 120 })
         {
             window.FormClosing += delegate(object sender, FormClosingEventArgs args)
@@ -210,6 +213,10 @@ internal static class Program
                 bool allowed = File.Exists(preferences) && Regex.IsMatch(File.ReadAllText(preferences), "\"closeToTray\"\\s*:\\s*false");
                 args.Cancel = !allowed;
                 launcherClosing = allowed;
+                if (allowed && backend != null && !backend.HasExited)
+                {
+                    File.WriteAllText(Path.Combine(launcherHome, "fixture-stderr-reader-closed-" + backend.Id), "closed");
+                }
             };
             Action startServer = null;
             startServer = delegate
@@ -222,10 +229,13 @@ internal static class Program
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
+                backend = process;
+                int backendPid = process.Id;
                 process.EnableRaisingEvents = true;
                 process.Exited += delegate
                 {
                     if (launcherClosing || window.IsDisposed) return;
+                    if (File.Exists(explicitExitPath) && Regex.IsMatch(File.ReadAllText(explicitExitPath), "\"pid\"\\s*:\\s*" + backendPid + "(?:,|})")) return;
                     try { window.BeginInvoke(startServer); }
                     catch { }
                 };
@@ -379,10 +389,19 @@ internal static class Program
         }
         if (action == "update" || action == "restart" || action == "quit")
         {
+            int pid = Process.GetCurrentProcess().Id;
+            File.WriteAllText(Path.Combine(home, "server", "explicit-exit.json"),
+                "{\"schemaVersion\":1,\"serverId\":" + Json(serverId) + ",\"pid\":" + pid + ",\"startedAt\":" + startedAt + ",\"action\":" + Json(action) + "}");
             Send(context, 200, Envelope(0, "ok", "{\"ok\":true}"));
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Thread.Sleep(75);
+                if (action == "update" && File.Exists(Path.Combine(home, "fixture-stderr-reader-closed-" + pid)))
+                {
+                    AppendEvent("shutdown-stderr-epipe|" + pid);
+                    RemoveInstance();
+                    Environment.Exit(1);
+                }
                 StopServer();
             });
             return;

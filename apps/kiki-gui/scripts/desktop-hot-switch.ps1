@@ -243,10 +243,7 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw ('Still settling: ' + ($pending -join ', ')) }
         Start-Sleep -Milliseconds 400
     } while ($true)
-    # The open shell treats loss of the service registration as a crash and starts the old build.
-    # Close that shell while the service is still registered, then ask the service to exit.
-    foreach ($shell in $shells) { Close-DesktopShell $shell }
-    if (@(Find-Shells).Count -gt 0) { throw 'The desktop is still open, so it can restart the service being switched.' }
+    # The explicit exit record blocks reconnect recovery while the shell drains the backend pipes.
     Lifecycle $old.instance 'update' | Out-Null
     $state.phase = 'stopping'; Save-State
     Wait-ForExit $old $shells
