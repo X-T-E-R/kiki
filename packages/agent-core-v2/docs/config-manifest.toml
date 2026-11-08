@@ -130,6 +130,7 @@
       # append: string
       # per_engine: record<string, object>
     # executor_instance: "main" | "auto" | string | object
+    # auto_continuation_policy: "prefer_current" | "prefer_quota"
   # bin_path: string
   # home_dir: string
   # env: record<string, string>

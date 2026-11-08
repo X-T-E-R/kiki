@@ -2987,7 +2987,13 @@ export class AgentPromptService implements IAgentPromptService {
       await this.syncProfileBindingMetadata();
       return;
     }
-    if (execution === undefined) return;
+    if (execution === undefined) {
+      if (binding.execution?.schedule?.choice === 'auto' && (binding.executorId ?? 'native') !== 'native') {
+        await this.profile.bind({ execution: binding.execution.selection }, assertCurrent);
+        await this.syncProfileBindingMetadata();
+      }
+      return;
+    }
     if (execution.thinking === null && execution.execution === undefined && execution.profile === undefined) {
       const currentExecution = this.profile.data().execution;
       if (currentExecution !== undefined) {

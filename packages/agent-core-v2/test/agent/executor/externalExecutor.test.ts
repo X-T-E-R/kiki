@@ -68,7 +68,7 @@ import {
   type ExecutorCumulativeUsage,
 } from '#/agent/execution/externalExecutorOps';
 import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
-import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
+import { TurnEnded, TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { AssistantDelta, ThinkingDelta } from '#/agent/loop/turnEvents';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -270,7 +270,15 @@ function createHarness(options: FakeHarnessOptions = {}) {
     dispatch: async (event: Event2) => {
       events.push(event);
       if (event instanceof TurnPrompt) {
-        state.values.set(turnKey, { nextTurnId: event.turnId! + 1, cancelledTurnIds: [] });
+        const current = state.values.get(turnKey) as Record<string, unknown> | undefined;
+        state.values.set(turnKey, { ...current, nextTurnId: event.turnId! + 1, cancelledTurnIds: [] });
+      }
+      if (event instanceof TurnEnded) {
+        const current = state.values.get(turnKey) as Record<string, unknown> | undefined;
+        state.values.set(turnKey, {
+          ...current,
+          lastEnded: { turnId: event.turnId, reason: event.reason, error: event.error, durationMs: event.durationMs },
+        });
       }
       if (event instanceof ExecutorSessionUpdated) {
         state.values.set(externalExecutorKey, {

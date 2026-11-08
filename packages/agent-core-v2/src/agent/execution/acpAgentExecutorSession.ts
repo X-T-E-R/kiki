@@ -891,10 +891,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #stateMatchesDescriptorOrFamily(state: ReturnType<typeof externalStateForGeneration>): boolean {
     if (state.executorId === undefined) return true;
     if (state.executorId === this.context.descriptor.id && state.descriptorRevision === this.context.descriptor.revision) return true;
+    if (executorSourceId(this.context.descriptor) !== 'agy-cli') return false;
     const registry = this.context.agent.accessor.get(IAgentExecutorRegistry);
     const priorDescriptor = registry.get?.(state.executorId);
     if (priorDescriptor === undefined || priorDescriptor.protocol !== this.context.descriptor.protocol) return false;
-    return executorSourceId(priorDescriptor) === executorSourceId(this.context.descriptor);
+    return executorSourceId(priorDescriptor) === 'agy-cli' && launchHome(priorDescriptor) === launchHome(this.context.descriptor);
   }
 
   #reusablePriorState(state: ReturnType<typeof externalStateForGeneration>): boolean {

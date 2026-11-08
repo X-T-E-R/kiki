@@ -88,7 +88,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', error: '429 Too Many Requests: quota exhausted' } }) + '\n');
     continue;
   }
-  if (input.message.content === 'complete-response-late-wsarecv') {
+  if (input.message.content === 'complete-response-late-wsarecv'
+    || input.message.content === 'complete-response-late-429'
+    || input.message.content === 'complete-response-late-auth'
+    || input.message.content === 'complete-response-unknown-status') {
     const response = `final-delivery-${turns}`;
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'user_input', step_index: turns * 10, state: 'DONE' } }) + '\n');
@@ -100,8 +103,15 @@ for await (const line of createInterface({ input: process.stdin })) {
       step_update: { step_type: 'agent_response', step_index: turns * 10 + 2, state: 'ACTIVE', text_delta: response.slice(0, 6) } }) + '\n');
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'agent_response', step_index: turns * 10 + 2, state: 'DONE', text_delta: response.slice(6) } }) + '\n');
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response,
-      error: 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed' } }) + '\n');
+    const status = input.message.content === 'complete-response-unknown-status' ? 'UNKNOWN' : 'ERROR';
+    const error = input.message.content === 'complete-response-late-429'
+      ? '429 Too Many Requests: RESOURCE_EXHAUSTED: Individual quota reached.'
+      : input.message.content === 'complete-response-late-auth'
+        ? '401 Unauthorized: authentication failed for selected account'
+        : input.message.content === 'complete-response-unknown-status'
+          ? 'unexpected terminal status after response'
+          : 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed';
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status, response, error } }) + '\n');
     continue;
   }
   if (input.message.content === 'partial-response-late-wsarecv' || input.message.content === 'post-tool-error-late-wsarecv') {

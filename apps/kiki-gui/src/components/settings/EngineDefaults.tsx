@@ -17,7 +17,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ExecutorCatalogItem, ExecutorInstanceChoice } from '@kiki/protocol';
+import type { ExecutorAutoContinuationPolicy, ExecutorCatalogItem, ExecutorInstanceChoice } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -45,6 +45,7 @@ export interface EngineDefaultsDraft {
   readonly promptBody: string;
   readonly promptAppend: string;
   readonly executorInstance: string;
+  readonly autoContinuationPolicy: '' | ExecutorAutoContinuationPolicy;
 }
 
 export const EMPTY_ENGINE_DEFAULTS: EngineDefaultsDraft = {
@@ -59,6 +60,7 @@ export const EMPTY_ENGINE_DEFAULTS: EngineDefaultsDraft = {
   promptBody: '',
   promptAppend: '',
   executorInstance: '',
+  autoContinuationPolicy: '',
 };
 
 /** The raw `defaults` value as the config response carries it. */
@@ -78,6 +80,10 @@ function listField(value: unknown): readonly string[] | undefined {
 
 function permissionField(value: unknown): '' | 'manual' | 'auto' | 'review' | 'yolo' {
   return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo' ? value : '';
+}
+
+function autoContinuationField(value: unknown): '' | ExecutorAutoContinuationPolicy {
+  return value === 'prefer_current' || value === 'prefer_quota' ? value : '';
 }
 
 function promptField(value: unknown): SavedDefaults {
@@ -103,6 +109,7 @@ export function engineDefaultsDraftFrom(saved: SavedDefaults): EngineDefaultsDra
     promptBody: stringField(prompt?.['body']),
     promptAppend: stringField(prompt?.['append']),
     executorInstance: scheduleChoiceValue(saved['executor_instance'] as ExecutorInstanceChoice | undefined),
+    autoContinuationPolicy: autoContinuationField(saved['auto_continuation_policy']),
   };
 }
 
@@ -128,6 +135,7 @@ export function engineDefaultsPatch(draft: EngineDefaultsDraft): Record<string, 
     inject_kiki_mcp: draft.injectKikiMcp === undefined ? null : draft.injectKikiMcp,
     executor_prompt: promptEmpty ? null : prompt,
     executor_instance: draft.executorInstance === '' ? null : scheduleChoiceFromDraft(draft.executorInstance) || null,
+    auto_continuation_policy: draft.autoContinuationPolicy === '' ? null : draft.autoContinuationPolicy,
   };
   return Object.values(defaults).every((value) => value === null) ? null : defaults;
 }
@@ -245,7 +253,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
         {t('st.engines.defaults.title')}
       </summary>
       <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaults.hint', { engine: engineLabel })}</p>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label={t('st.engines.schedule.label')} htmlFor={`${item.id}-default-instance`} hint={t('st.engines.schedule.hint')}>
           <ExecutorScheduleControl id={`${item.id}-default-instance`} executorId={item.id} catalog={scheduleCatalog}
             value={scheduleChoiceFromDraft(draft.executorInstance) || undefined} disabled={saving}
@@ -257,6 +265,15 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
             <option value="">{t('st.engines.quotaSource.none')}</option>
             {quotaDraft !== '' && !quotaSources.some((source) => source.id === quotaDraft) ? <option value={quotaDraft}>{quotaDraft}</option> : null}
             {quotaSources.map((source) => <option key={source.id} value={source.id}>{source.label}</option>)}
+          </select>
+        </Field>
+        <Field label={t('st.engines.autoContinuation.label')} htmlFor={`${item.id}-auto-continuation`} hint={t('st.engines.autoContinuation.hint')}>
+          <select id={`${item.id}-auto-continuation`} data-engine-default="auto_continuation_policy" disabled={saving}
+            className={`${INPUT} min-w-0 text-[12px]`} value={draft.autoContinuationPolicy}
+            onChange={(event) => { set('autoContinuationPolicy', event.target.value as EngineDefaultsDraft['autoContinuationPolicy']); }}>
+            <option value="">{t('st.engines.defaults.inheritPlaceholder')}</option>
+            <option value="prefer_current">{t('st.engines.autoContinuation.prefer_current')}</option>
+            <option value="prefer_quota">{t('st.engines.autoContinuation.prefer_quota')}</option>
           </select>
         </Field>
       </div>

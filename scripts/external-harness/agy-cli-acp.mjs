@@ -796,8 +796,13 @@ export class AgyBridge {
     let stopReason = 'end_turn';
     let stopAfterResult = false;
     let postResponseTerminalError;
+    const lateTransportDisconnect = result.status === 'ERROR'
+      && typeof result.error === 'string'
+      && /\b(?:wsarecv|wsasend|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|EOF)\b|socket\s+hang\s+up|read\s+tcp|write\s+tcp|connection\s+attempt\s+failed|connection\s+was\s+forcibly\s+closed|broken\s+pipe/i.test(result.error)
+      && !/\b(?:401|403|429|RESOURCE_EXHAUSTED|UNAUTHENTICATED|PERMISSION_DENIED)\b|quota[\s_-]*(?:reached|exceeded|exhausted)|rate[\s_-]*limit|insufficient[\s_-]*quota|unauthorized|authentication\s+failed/i.test(result.error);
     const confirmedFinalResponse = Boolean(
-      active.promptConsumed
+      lateTransportDisconnect
+      && active.promptConsumed
       && !unresolved.length
       && active.steering.length === 0
       && !active.steerDeliveryUnknown

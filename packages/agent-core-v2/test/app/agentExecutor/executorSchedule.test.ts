@@ -5,6 +5,7 @@ import {
   applyInstanceLaunch,
   chooseAutoInstance,
   decideExecutorSchedule,
+  isQuotaExhaustedTurnError,
   mergeExecutorOptions,
   mergeLaunchLayers,
   overlayScheduleLaunch,
@@ -12,6 +13,7 @@ import {
   winningScheduleChoice,
   type ScheduleInstanceView,
 } from '#/app/agentExecutor/executorSchedule';
+import { AGENT_EXECUTOR_OVERRIDES_SECTION, agentExecutorOverridesFromToml, agentExecutorOverridesToToml, AgentExecutorOverridesSchema } from '#/app/agentExecutor/executorOverrides';
 import type { AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
 import { publicExecutorInstance, type ExecutorInstanceConfig, type HarnessQuotaReading } from '@kiki/protocol';
 
@@ -239,6 +241,184 @@ describe('executor schedule', () => {
     expect(withLaunchEnv.env?.['XAI_API_KEY']).toBe('explicit-instance-key');
     expect(withLaunchEnv.envUnset).not.toContain('XAI_API_KEY');
     expect(withLaunchEnv.envUnset).toContain('GROK_AUTH_PATH');
+  });
+
+  it('distinguishes explicit quota exhaustion from network disconnects and applies auto_continuation_policy', async () => {
+    expect(isQuotaExhaustedTurnError(new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.'))).toBe(true);
+    expect(isQuotaExhaustedTurnError({ message: 'External turn failed', details: { stderrTail: 'rate_limit_exceeded: insufficient_quota' } })).toBe(true);
+    expect(isQuotaExhaustedTurnError(new Error('read tcp 127.0.0.1:52100->127.0.0.1:7897: wsarecv: An existing connection was forcibly closed by the remote host.'))).toBe(false);
+    expect(isQuotaExhaustedTurnError(new Error('network error: ECONNRESET socket hang up'))).toBe(false);
+
+    const previous = { instance: 'instance-work', choice: 'auto' as const, source: 'harness-settings' as const, quota_consulted: true };
+    const readings: HarnessQuotaReading[] = [
+      { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+      { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: 75 },
+    ];
+
+    let quotaReads = 0;
+    const preferCurrentReused = await resolveExecutorSchedule(input({
+      defaultsChoice: 'auto',
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: previous, profileIdentity: 'same', executorId: 'instance-work' },
+    }), async () => {
+      quotaReads += 1;
+      return readings;
+    });
+    expect(preferCurrentReused.choice).toMatchObject({
+      reused: true,
+      instance: 'instance-work',
+      launchId: 'instance-work',
+      quotaConsulted: true,
+    });
+    expect(quotaReads).toBe(0);
+
+    const preferCurrentAfterQuotaFailure = await resolveExecutorSchedule(input({
+      defaultsChoice: 'auto',
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: previous, profileIdentity: 'same', executorId: 'instance-work' },
+      excludedInstances: ['instance-work'],
+    }), async () => {
+      quotaReads += 1;
+      return readings;
+    });
+    expect(preferCurrentAfterQuotaFailure.choice).toMatchObject({
+      reused: false,
+      instance: 'instance-personal',
+      launchId: 'instance-personal',
+      quotaConsulted: true,
+    });
+    expect(quotaReads).toBe(1);
+
+    const preferQuotaDirect = await resolveExecutorSchedule(input({
+      defaultsChoice: 'auto',
+      autoContinuationPolicy: 'prefer_quota',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: previous, profileIdentity: 'same', executorId: 'instance-work' },
+    }), async () => {
+      quotaReads += 1;
+      return readings;
+    });
+    expect(preferQuotaDirect.choice).toMatchObject({
+      reused: false,
+      instance: 'instance-personal',
+      launchId: 'instance-personal',
+      quotaConsulted: true,
+    });
+    expect(quotaReads).toBe(2);
+
+    const savedSessionAuto = { instance: 'instance-work', choice: 'auto' as const, source: 'session' as const, quota_consulted: true };
+    const savedSessionAutoReused = await resolveExecutorSchedule(input({
+      sessionChoice: 'auto',
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: savedSessionAuto, profileIdentity: 'same', executorId: 'instance-work' },
+    }), async () => {
+      quotaReads += 1;
+      return readings;
+    });
+    expect(savedSessionAutoReused.choice).toMatchObject({
+      reused: true,
+      instance: 'instance-work',
+      launchId: 'instance-work',
+      choice: 'auto',
+      source: 'session',
+      quotaConsulted: true,
+    });
+    expect(quotaReads).toBe(2);
+
+    const freshExplicitAutoReselected = await resolveExecutorSchedule(input({
+      sessionChoice: 'auto',
+      freshSessionChoice: true,
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: savedSessionAuto, profileIdentity: 'same', executorId: 'instance-work' },
+    }), async () => {
+      quotaReads += 1;
+      return readings;
+    });
+    expect(freshExplicitAutoReselected.choice).toMatchObject({
+      reused: false,
+      instance: 'instance-personal',
+      launchId: 'instance-personal',
+      choice: 'auto',
+      source: 'session',
+      quotaConsulted: true,
+    });
+    expect(quotaReads).toBe(3);
+
+    const legacySmoke = instance('instance-cockpit-smoke', undefined);
+    const instancesWithLegacy = [legacySmoke, ...instances];
+    const excludedMainExhausted = await resolveExecutorSchedule(input({
+      instances: instancesWithLegacy,
+      sessionChoice: 'auto',
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: { ...savedSessionAuto, instance: 'main' }, profileIdentity: 'same', executorId: family },
+      excludedInstances: ['main'],
+    }), async () => {
+      quotaReads += 1;
+      return [
+        { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 0 },
+        { accountId: 'personal', modelIds: ['fixture-model'], unit: 'percent', remaining: undefined },
+      ];
+    });
+    expect(excludedMainExhausted.choice).toMatchObject({
+      exhaustedAutoReselection: true,
+      quotaConsulted: true,
+      choice: 'auto',
+      instance: 'main',
+    });
+    expect(excludedMainExhausted.schedule.choice).toBe('auto');
+
+    const excludedMainReaderError = await resolveExecutorSchedule(input({
+      instances: instancesWithLegacy,
+      sessionChoice: 'auto',
+      autoContinuationPolicy: 'prefer_current',
+      quotaSourceId: 'plugin:fixture-quota/example',
+      profileIdentity: 'same',
+      targetModel: 'fixture-model',
+      previous: { schedule: { ...savedSessionAuto, instance: 'main' }, profileIdentity: 'same', executorId: family },
+      excludedInstances: ['main'],
+    }), async () => {
+      quotaReads += 1;
+      throw new Error('quota plugin offline');
+    });
+    expect(excludedMainReaderError.choice).toMatchObject({
+      exhaustedAutoReselection: true,
+      quotaConsulted: false,
+      choice: 'auto',
+      instance: 'main',
+    });
+    expect(excludedMainReaderError.schedule.quota_consulted).toBe(false);
+    expect(excludedMainReaderError.schedule.choice).toBe('auto');
+
+    const rawToml = {
+      [family]: {
+        quota_source: 'plugin:fixture-quota/example',
+        defaults: {
+          executor_instance: 'auto',
+          auto_continuation_policy: 'prefer_current',
+        },
+      },
+    };
+    const parsed = AgentExecutorOverridesSchema.parse(agentExecutorOverridesFromToml(rawToml));
+    expect(parsed[family]?.defaults?.auto_continuation_policy).toBe('prefer_current');
+    expect(agentExecutorOverridesToToml(parsed)).toEqual(rawToml);
+    expect(AGENT_EXECUTOR_OVERRIDES_SECTION).toBe('agentExecutorOverrides');
   });
 });
 

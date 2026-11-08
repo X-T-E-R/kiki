@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { agentExecutorDisplayConfigSchema, executionContextSchema, executionPermissionSchema, executorInstanceChoiceSchema, executorQuotaSourceIdSchema } from '@kiki/protocol';
+import { agentExecutorDisplayConfigSchema, executionContextSchema, executionPermissionSchema, executorAutoContinuationPolicySchema, executorInstanceChoiceSchema, executorQuotaSourceIdSchema } from '@kiki/protocol';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
@@ -28,6 +28,7 @@ export const AgentExecutorDefaultsSchema = z.strictObject({
   inject_kiki_mcp: z.boolean().optional(),
   executor_prompt: executorPromptSchema.optional(),
   executor_instance: executorInstanceChoiceSchema.optional(),
+  auto_continuation_policy: executorAutoContinuationPolicySchema.optional(),
 });
 export type AgentExecutorDefaults = z.infer<typeof AgentExecutorDefaultsSchema>;
 

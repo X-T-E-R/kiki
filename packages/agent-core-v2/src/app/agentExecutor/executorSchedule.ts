@@ -5,6 +5,7 @@ import {
   publicExecutorLaunch,
   type ExecutionSchedule,
   type ExecutionValueSource,
+  type ExecutorAutoContinuationPolicy,
   type ExecutorInstanceChoice,
   type ExecutorInstanceConfig,
   type ExecutorLaunch,
@@ -31,11 +32,13 @@ export interface ScheduleChoiceInput {
   readonly familyId: string;
   readonly sessionChoice?: ExecutorInstanceChoice | null;
   readonly sessionLaunch?: ExecutorLaunchPatch | null;
+  readonly freshSessionChoice?: boolean;
   readonly profileChoice?: ExecutorInstanceChoice;
   readonly profileLaunch?: ExecutorLaunchPatch;
   readonly profileExecutor?: string;
   readonly profileIdentity?: string;
   readonly defaultsChoice?: ExecutorInstanceChoice;
+  readonly autoContinuationPolicy?: ExecutorAutoContinuationPolicy;
   readonly instances: readonly ScheduleInstanceView[];
   readonly quotaSourceId?: string;
   readonly previous?: {
@@ -57,6 +60,7 @@ export interface ScheduleChoice {
   readonly launchId: string;
   readonly instance: 'main' | string;
   readonly missingInstance: boolean;
+  readonly exhaustedAutoReselection?: boolean;
   readonly quotaConsulted: boolean;
 }
 
@@ -93,7 +97,13 @@ function decision(
   source: ExecutionValueSource,
   launchId: string,
   instance: 'main' | string,
-  flags: { readonly reused?: boolean; readonly needsQuota?: boolean; readonly missingInstance?: boolean; readonly quotaConsulted?: boolean } = {},
+  flags: {
+    readonly reused?: boolean;
+    readonly needsQuota?: boolean;
+    readonly missingInstance?: boolean;
+    readonly exhaustedAutoReselection?: boolean;
+    readonly quotaConsulted?: boolean;
+  } = {},
 ): ScheduleChoice {
   return {
     reused: flags.reused === true,
@@ -104,8 +114,42 @@ function decision(
     launchId,
     instance,
     missingInstance: flags.missingInstance === true,
+    exhaustedAutoReselection: flags.exhaustedAutoReselection === true ? true : undefined,
     quotaConsulted: flags.quotaConsulted === true,
   };
+}
+
+const QUOTA_EXPLICIT_PATTERN = /RESOURCE_EXHAUSTED|quota[\s_-]*reached|quota[\s_-]*exceeded|rate[\s_-]*limit[\s_-]*exceeded|insufficient[\s_-]*quota|usage[\s_-]*limit|额度|余额不足/i;
+const QUOTA_STATUS_PATTERN = /\b429\b|\btoo\s+many\s+requests\b/i;
+const NETWORK_DISCONNECT_PATTERN = /\b(?:wsarecv|wsasend|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE)\b|socket\s+hang\s+up|read\s+tcp|write\s+tcp|connection\s+was\s+forcibly\s+closed|network\s+(?:error|issue|disconnected)/i;
+
+function extractErrorTexts(error: unknown, seen = new Set<unknown>()): string[] {
+  if (error === undefined || error === null || seen.has(error)) return [];
+  if (typeof error === 'string') return [error];
+  if (typeof error !== 'object') return [];
+  seen.add(error);
+  const record = error as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof record['message'] === 'string') parts.push(record['message']);
+  if (typeof record['code'] === 'string') parts.push(record['code']);
+  const details = record['details'];
+  if (typeof details === 'object' && details !== null) {
+    const detailRec = details as Record<string, unknown>;
+    if (typeof detailRec['stderrTail'] === 'string') parts.push(detailRec['stderrTail']);
+    if (typeof detailRec['reason_code'] === 'string') parts.push(detailRec['reason_code']);
+    if (typeof detailRec['message'] === 'string') parts.push(detailRec['message']);
+  }
+  parts.push(...extractErrorTexts(record['cause'], seen));
+  parts.push(...extractErrorTexts(record['error'], seen));
+  return parts;
+}
+
+export function isQuotaExhaustedTurnError(error: unknown): boolean {
+  const combined = extractErrorTexts(error).join('\n');
+  if (combined.length === 0) return false;
+  if (QUOTA_EXPLICIT_PATTERN.test(combined)) return true;
+  if (NETWORK_DISCONNECT_PATTERN.test(combined)) return false;
+  return QUOTA_STATUS_PATTERN.test(combined);
 }
 
 export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoice {
@@ -119,7 +163,18 @@ export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoi
   const next = winningScheduleChoice(input);
   const previous = input.previous?.schedule;
   const sameProfile = input.previous?.profileIdentity === input.profileIdentity;
-  const forceAutoReselect = next.choice === 'auto' && (input.sessionChoice === 'auto' || (input.excludedInstances?.length ?? 0) > 0);
+  const policy = input.autoContinuationPolicy ?? 'prefer_current';
+  const freshExplicitSessionAuto = input.sessionChoice === 'auto' && (
+    input.freshSessionChoice === true ||
+    previous === undefined ||
+    previous.choice !== 'auto' ||
+    previous.source !== 'session'
+  );
+  const forceAutoReselect = next.choice === 'auto' && (
+    freshExplicitSessionAuto ||
+    policy === 'prefer_quota' ||
+    (input.excludedInstances?.length ?? 0) > 0
+  );
   if (!forceAutoReselect && previous !== undefined && sameProfile && previous.source === next.source && sameChoice(previous.choice, next.choice)) {
     const instance = previous.instance;
     const launchId = instance === 'main' ? input.familyId : instance;
@@ -128,15 +183,24 @@ export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoi
   const sessionUntouched = (input.sessionChoice === undefined || input.sessionChoice === null) && (input.sessionLaunch === undefined || input.sessionLaunch === null);
   if (!forceAutoReselect && previous === undefined && input.previous?.executorId !== undefined && sessionUntouched && sameProfile && !isInstanceId(input.requestedExecutor)) {
     const saved = input.previous.executorId;
-    if (saved === input.familyId || !isInstanceId(saved)) return decision(input, 'main', 'harness-default', input.familyId, 'main', { reused: true });
-    if (familyInstance(input, saved) !== undefined) return decision(input, saved, 'harness-default', saved, saved, { reused: true });
+    const fallbackChoice = next.choice === 'auto' ? 'auto' : saved === input.familyId || !isInstanceId(saved) ? 'main' : saved;
+    const fallbackSource = next.choice === 'auto' ? next.source : 'harness-default';
+    if (saved === input.familyId || !isInstanceId(saved)) return decision(input, fallbackChoice, fallbackSource, input.familyId, 'main', { reused: true });
+    if (familyInstance(input, saved) !== undefined) return decision(input, fallbackChoice, fallbackSource, saved, saved, { reused: true });
   }
   return resolveChoice(input, next.choice, next.source);
 }
 
 function resolveChoice(input: ScheduleChoiceInput, choice: ExecutorInstanceChoice, source: ExecutionValueSource): ScheduleChoice {
   if (choice === 'main') return decision(input, choice, source, input.familyId, 'main');
-  if (choice === 'auto') return decision(input, choice, source, input.familyId, 'main', { needsQuota: input.quotaSourceId !== undefined });
+  if (choice === 'auto') {
+    const hasExcluded = (input.excludedInstances?.length ?? 0) > 0;
+    const needsQuota = input.quotaSourceId !== undefined;
+    return decision(input, choice, source, input.familyId, 'main', {
+      needsQuota,
+      exhaustedAutoReselection: hasExcluded && !needsQuota,
+    });
+  }
   if (typeof choice === 'string') {
     return decision(input, choice, source, choice, choice, { missingInstance: familyInstance(input, choice) === undefined });
   }
@@ -153,13 +217,13 @@ function readingCanRoute(reading: HarnessQuotaReading, model: string | undefined
   return model !== undefined && modelIds.includes(model);
 }
 
-export function chooseAutoInstance(
+function pickPositiveQuotaInstance(
   instances: readonly ScheduleInstanceView[],
   readings: readonly HarnessQuotaReading[],
   familyId: string,
   targetModel: string | undefined,
   excludedInstances: readonly ('main' | string)[] = [],
-): 'main' | string {
+): string | undefined {
   const excludedIds = new Set(excludedInstances);
   const excludedAccounts = new Set(
     instances
@@ -182,7 +246,7 @@ export function chooseAutoInstance(
     counts.set(reading.unit, (counts.get(reading.unit) ?? 0) + 1);
   }
   const unit = [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
-  if (unit === undefined) return 'main';
+  if (unit === undefined) return undefined;
   const scored = candidates.flatMap((instance) => {
     const account = instanceAccountId(instance);
     const windows = usable.filter((reading) => reading.accountId === account && reading.unit === unit);
@@ -191,7 +255,17 @@ export function chooseAutoInstance(
     if (remaining <= 0) return [];
     return [{ id: instance.id, remaining }];
   }).sort((left, right) => right.remaining - left.remaining || left.id.localeCompare(right.id));
-  return scored[0]?.id ?? 'main';
+  return scored[0]?.id;
+}
+
+export function chooseAutoInstance(
+  instances: readonly ScheduleInstanceView[],
+  readings: readonly HarnessQuotaReading[],
+  familyId: string,
+  targetModel: string | undefined,
+  excludedInstances: readonly ('main' | string)[] = [],
+): 'main' | string {
+  return pickPositiveQuotaInstance(instances, readings, familyId, targetModel, excludedInstances) ?? 'main';
 }
 
 function applyLaunchPatch(base: ExecutorLaunch, patch: ExecutorLaunchPatch | null | undefined): ExecutorLaunch {
@@ -380,18 +454,38 @@ export async function resolveExecutorSchedule(
   const decided = decideExecutorSchedule(input);
   const selected = decided.launchId === input.familyId ? undefined : input.instances.find((instance) => instance.id === decided.launchId);
   const launch = mergeLaunchLayers(selected?.launch, input.profileLaunch, input.sessionLaunch);
+  const hasExcluded = (input.excludedInstances?.length ?? 0) > 0;
   if (!decided.needsQuota || decided.quotaSourceId === undefined || readQuota === undefined) {
-    const choice = { ...decided, needsQuota: false };
+    const choice = { ...decided, needsQuota: false, ...(hasExcluded && decided.choice === 'auto' ? { exhaustedAutoReselection: true } : {}) };
     return { choice, launch, schedule: scheduleRecord(choice, launch) };
   }
+  const currentInstance = input.previous?.schedule?.instance ?? (
+    input.previous?.executorId === undefined ? undefined
+      : input.previous.executorId === input.familyId || !isInstanceId(input.previous.executorId) ? 'main' : input.previous.executorId
+  );
   try {
     const readings = await readQuota(decided.quotaSourceId);
-    const picked = chooseAutoInstance(input.instances, readings, input.familyId, input.targetModel, input.excludedInstances);
+    const positive = pickPositiveQuotaInstance(input.instances, readings, input.familyId, input.targetModel, input.excludedInstances);
+    if (positive === undefined && hasExcluded) {
+      const kept = currentInstance ?? 'main';
+      const choice = { ...decided, needsQuota: false, quotaConsulted: true, exhaustedAutoReselection: true, launchId: kept === 'main' ? input.familyId : kept, instance: kept };
+      const keptInstance = kept === 'main' ? undefined : input.instances.find((instance) => instance.id === kept);
+      const keptLaunch = mergeLaunchLayers(keptInstance?.launch, input.profileLaunch, input.sessionLaunch);
+      return { choice, launch: keptLaunch, schedule: scheduleRecord(choice, keptLaunch) };
+    }
+    const picked = positive ?? 'main';
     const choice = { ...decided, needsQuota: false, quotaConsulted: true, launchId: picked === 'main' ? input.familyId : picked, instance: picked };
     const pickedInstance = picked === 'main' ? undefined : input.instances.find((instance) => instance.id === picked);
     const pickedLaunch = mergeLaunchLayers(pickedInstance?.launch, input.profileLaunch, input.sessionLaunch);
     return { choice, launch: pickedLaunch, schedule: scheduleRecord(choice, pickedLaunch) };
   } catch {
+    if (hasExcluded) {
+      const kept = currentInstance ?? 'main';
+      const choice = { ...decided, needsQuota: false, quotaConsulted: false, exhaustedAutoReselection: true, launchId: kept === 'main' ? input.familyId : kept, instance: kept };
+      const keptInstance = kept === 'main' ? undefined : input.instances.find((instance) => instance.id === kept);
+      const keptLaunch = mergeLaunchLayers(keptInstance?.launch, input.profileLaunch, input.sessionLaunch);
+      return { choice, launch: keptLaunch, schedule: scheduleRecord(choice, keptLaunch) };
+    }
     const choice = { ...decided, needsQuota: false, quotaConsulted: true, launchId: input.familyId, instance: 'main' as const };
     const failedLaunch = mergeLaunchLayers(undefined, input.profileLaunch, input.sessionLaunch);
     return { choice, launch: failedLaunch, schedule: scheduleRecord(choice, failedLaunch) };
