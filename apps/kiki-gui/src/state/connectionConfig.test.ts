@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  consumeAppShellHandoff,
-  createShellHandoffEnvelope,
+  applyCommittedShellCredential,
+  hasExistingOwnerCredential,
   installAppShellCredentialListener,
-  SHELL_HANDOFF_MAX_AGE_MS,
+  SHELL_MANAGED_STORAGE_KEY,
+  SHELL_PEER_TOKEN_KEY,
+  SHELL_TOKEN_EVENT,
 } from '../lib/appShell';
 import {
   clearStoredConfig,
@@ -121,16 +123,18 @@ describe('connection config readers', () => {
     expect(clearStoredConfig({ removeItem: () => { throw new Error('blocked'); } })).toBe(false);
   });
 
-  it('consumes one-time shell handoff only for matching origin in the KikiApp shell and preserves hash and history state', () => {
+  it('applies post-commit shell credentials only for matching origin and preserves route hash and history state', () => {
     const localMap = new Map<string, string>();
     const sessionMap = new Map<string, string>();
     const localStore = {
       getItem: (key: string) => localMap.get(key) ?? null,
       setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
     };
     const sessionStore = {
       getItem: (key: string) => sessionMap.get(key) ?? null,
       setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
     };
     const target = new EventTarget();
     const locationState = {
@@ -140,70 +144,51 @@ describe('connection config readers', () => {
       hash: '#st-card-providers-add',
     };
     const historyState = { state: { idx: 4 } };
-    const now = 1_700_000_000_000;
     const win = {
       location: locationState,
       history: historyState,
       localStorage: localStore,
       sessionStorage: sessionStore,
-      navigator: { userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android' },
-      opener: null as unknown,
-      parent: undefined as unknown,
-      name: '',
-      addEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+      name: JSON.stringify({
+        type: 'kiki:shell-handoff',
+        origin: 'http://127.0.0.1:5494',
+        token: 'untrusted-window-name-token',
+      }),
+      addEventListener: (type: string, listener: (event: Event) => void) => {
         target.addEventListener(type, listener as EventListener);
       },
-      removeEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
         target.removeEventListener(type, listener as EventListener);
       },
       dispatchEvent: (event: Event) => target.dispatchEvent(event),
     };
-    win.parent = win;
 
     const receivedEvents: Array<{ origin: string; token: string }> = [];
-    const onShellToken = (event: Event) => {
-      receivedEvents.push((event as CustomEvent<{ origin: string; token: string }>).detail);
-    };
-    target.addEventListener('kiki:shell-token', onShellToken);
+    const uninstall = installAppShellCredentialListener(win, (detail) => {
+      receivedEvents.push(detail);
+    });
     try {
-      // 1. Mismatched origin handoff is scrubbed and ignored
-      win.name = JSON.stringify(
-        createShellHandoffEnvelope('https://other.example.test', 'wrong-origin-token', now),
-      );
-      expect(consumeAppShellHandoff(win, now)).toBe(false);
+      // 1. Any window.name payload is scrubbed and never trusted as a credential source
       expect(win.name).toBe('');
       expect(readStoredConfig(localStore)).toBeNull();
-      expect(sessionStore.getItem('kiki.peer.token')).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
       expect(receivedEvents).toEqual([]);
 
-      // 2. Expired or forged-signature handoff is scrubbed and ignored
-      win.name = JSON.stringify(
-        createShellHandoffEnvelope(
-          'http://127.0.0.1:5494',
-          'expired-token',
-          now - SHELL_HANDOFF_MAX_AGE_MS - 1,
-        ),
-      );
-      expect(consumeAppShellHandoff(win, now)).toBe(false);
-      expect(win.name).toBe('');
+      // 2. Mismatched expectedOrigin is rejected
+      expect(
+        applyCommittedShellCredential(win, 'https://other.example.test', 'wrong-origin-token'),
+      ).toBe(false);
       expect(readStoredConfig(localStore)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(receivedEvents).toEqual([]);
 
-      win.name = JSON.stringify({
-        ...createShellHandoffEnvelope('http://127.0.0.1:5494', 'forged-sig-token', now),
-        sig: '0000000000000000',
-      });
-      expect(consumeAppShellHandoff(win, now)).toBe(false);
-      expect(win.name).toBe('');
-      expect(readStoredConfig(localStore)).toBeNull();
-
-      // 3. Matching origin in KikiApp shell is consumed once, scrubs window.name, and leaves hash/history untouched
-      win.name = JSON.stringify(
-        createShellHandoffEnvelope('http://127.0.0.1:5494', 'committed-peer-token', now),
-      );
-      expect(consumeAppShellHandoff(win, now)).toBe(true);
-      expect(win.name).toBe('');
+      // 3. Matching committed origin applies credential and leaves pathname, search, hash, and history.state untouched
+      expect(
+        applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'committed-peer-token'),
+      ).toBe(true);
       expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'committed-peer-token' });
-      expect(sessionStore.getItem('kiki.peer.token')).toBe('committed-peer-token');
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBe('1');
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBe('committed-peer-token');
       expect(receivedEvents).toEqual([
         { origin: 'http://127.0.0.1:5494', token: 'committed-peer-token' },
       ]);
@@ -212,52 +197,53 @@ describe('connection config readers', () => {
       expect(win.location.hash).toBe('#st-card-providers-add');
       expect(win.history.state).toEqual({ idx: 4 });
     } finally {
-      target.removeEventListener('kiki:shell-token', onShellToken);
+      uninstall();
     }
   });
 
-  it('rejects malicious opener, cross-window postMessage, and non-shell browser overwrite attempts with zero credential mutation', () => {
+  it('refuses to overwrite existing non-shell owner credentials and rejects window.name, postMessage, and unbacked events', () => {
     const localMap = new Map<string, string>();
     const sessionMap = new Map<string, string>();
     const localStore = {
       getItem: (key: string) => localMap.get(key) ?? null,
       setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
     };
     const sessionStore = {
       getItem: (key: string) => sessionMap.get(key) ?? null,
       setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
     };
     writeStoredConfig({ url: '', token: 'existing-owner-token' }, localStore);
+    expect(hasExistingOwnerCredential(localStore)).toBe(true);
 
     const target = new EventTarget();
     const win = {
       location: { origin: 'http://127.0.0.1:5494' },
       localStorage: localStore,
       sessionStorage: sessionStore,
-      navigator: {
-        userAgent:
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
-      },
-      opener: null as unknown,
-      parent: undefined as unknown,
-      name: '',
-      addEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+      name: JSON.stringify({
+        type: 'kiki:shell-handoff',
+        origin: 'http://127.0.0.1:5494',
+        token: 'attacker-window-name-token',
+      }),
+      addEventListener: (type: string, listener: (event: Event) => void) => {
         target.addEventListener(type, listener as EventListener);
       },
-      removeEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
         target.removeEventListener(type, listener as EventListener);
       },
       dispatchEvent: (event: Event) => target.dispatchEvent(event),
     };
-    win.parent = win;
 
     const receivedEvents: Array<{ origin: string; token: string }> = [];
-    const onShellToken = (event: Event) => {
-      receivedEvents.push((event as CustomEvent<{ origin: string; token: string }>).detail);
-    };
-    target.addEventListener('kiki:shell-token', onShellToken);
-    const uninstall = installAppShellCredentialListener(win);
+    const uninstall = installAppShellCredentialListener(win, (detail) => {
+      receivedEvents.push(detail);
+    });
     try {
+      expect(win.name).toBe('');
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
+
       // 1. Cross-window / opener or same-origin forged postMessage is completely ignored
       for (const senderOrigin of ['https://evil.example.test', 'http://127.0.0.1:5494']) {
         const evt = new MessageEvent('message', {
@@ -270,32 +256,25 @@ describe('connection config readers', () => {
         });
         target.dispatchEvent(evt);
       }
-      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
-      expect(sessionStore.getItem('kiki.peer.token')).toBeNull();
-      expect(receivedEvents).toEqual([]);
 
-      // 2. Ordinary top-level browser page (non-KikiApp UA) rejects even a validly signed window.name handoff
-      win.name = JSON.stringify(
-        createShellHandoffEnvelope('http://127.0.0.1:5494', 'attacker-handoff-token'),
-      );
-      expect(consumeAppShellHandoff(win)).toBe(false);
-      expect(win.name).toBe('');
-      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
+      // 2. Direct commit-origin delivery attempt refuses to overwrite existing owner credential
+      expect(
+        applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'shell-attempt-token'),
+      ).toBe(false);
 
-      // 3. Even inside KikiApp UA, a popup with window.opener !== null or a subframe is rejected
-      win.navigator = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) KikiApp/ios' };
-      win.opener = { postMessage: () => {} };
-      win.name = JSON.stringify(
-        createShellHandoffEnvelope('http://127.0.0.1:5494', 'attacker-opener-token'),
+      // 3. Even if sessionStorage and kiki:shell-token event are triggered, existing owner credential is preserved
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'staged-override-token');
+      target.dispatchEvent(
+        new CustomEvent(SHELL_TOKEN_EVENT, {
+          detail: { origin: 'http://127.0.0.1:5494', token: 'staged-override-token' },
+        }),
       );
-      expect(consumeAppShellHandoff(win)).toBe(false);
-      expect(win.name).toBe('');
+
       expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
-      expect(sessionStore.getItem('kiki.peer.token')).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
       expect(receivedEvents).toEqual([]);
     } finally {
       uninstall();
-      target.removeEventListener('kiki:shell-token', onShellToken);
     }
   });
 });

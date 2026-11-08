@@ -4,7 +4,6 @@ import {
   STORE_ORIGIN_KEY,
   claimPairingOrigin,
   classifyOrigin,
-  deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
   isServerOriginVerified,
@@ -16,6 +15,7 @@ import {
   readTarget,
   removeSavedServer,
   resolveVerifiedServerOpen,
+  stripTokenFromEntry,
   updateSavedServerOrigin,
   verifySavedServerOrigin,
 } from './target.js';
@@ -445,42 +445,29 @@ async function probeServer(origin) {
 
 async function claimPairing(endpoint, code) {
   const platform = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android';
-  let nativeClaimFn;
-  if (isNativeShell()) {
-    nativeClaimFn = async (params) => {
-      try {
-        const res = await window.Capacitor.nativePromise('KikiShell', 'claimPair', {
-          endpoint: params.endpoint,
-          code: params.code,
-          homeId: params.homeId,
-          hostId: params.hostId,
-          sourceLabel: params.sourceLabel,
-        });
-        if (res && typeof res.ok === 'boolean') return res;
-      } catch {
-        /* fall through to web fetch */
-      }
-      return null;
-    };
-  }
   const nativeIdentity = readDeviceIdentity(window.localStorage, platform);
-  if (nativeClaimFn) {
-    const nativeRes = await nativeClaimFn({
+  if (isNativeShell()) {
+    return claimPairingOrigin(window.localStorage, {
       endpoint,
       code,
-      homeId: nativeIdentity.homeId,
-      hostId: nativeIdentity.hostId,
-      sourceLabel: nativeIdentity.label,
+      platform,
+      identity: nativeIdentity,
+      nativeClaim: async (params) => {
+        try {
+          const res = await window.Capacitor.nativePromise('KikiShell', 'claimPair', {
+            endpoint: params.endpoint,
+            code: params.code,
+            homeId: params.homeId,
+            hostId: params.hostId,
+            sourceLabel: params.sourceLabel,
+          });
+          if (res && typeof res.ok === 'boolean') return res;
+        } catch {
+          /* native bridge call failed: never fall back to browser token route */
+        }
+        return { ok: false, reason: 'unreachable' };
+      },
     });
-    if (nativeRes !== null) {
-      return claimPairingOrigin(window.localStorage, {
-        endpoint,
-        code,
-        platform,
-        identity: nativeIdentity,
-        nativeClaim: async () => nativeRes,
-      });
-    }
   }
   return claimPairingOrigin(window.localStorage, {
     endpoint,
@@ -503,7 +490,7 @@ async function openServer(origin, entry, options = {}) {
     origin,
     entry,
     probe: probeServer,
-    getToken: readWebPeerToken,
+    getToken: isNativeShell() ? undefined : readWebPeerToken,
   });
 
   if (!resolved.ok) {
@@ -528,6 +515,10 @@ async function openServer(origin, entry, options = {}) {
 
   const serverId = resolved.serverId;
 
+  try {
+    window.name = '';
+  } catch {}
+
   if (isNativeShell()) {
     try {
       const res = await window.Capacitor.nativePromise('KikiShell', 'open', {
@@ -537,9 +528,10 @@ async function openServer(origin, entry, options = {}) {
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
       });
-      if (res && res.ok === false) {
+      if (!res || res.ok === false) {
         button.disabled = false;
-        if (res.reason === 'identity_mismatch' && targetServerId) {
+        renderSavedServers();
+        if (res?.reason === 'identity_mismatch' && targetServerId) {
           const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, origin, {
             ok: true,
             targetHomeId: res.targetHomeId,
@@ -549,38 +541,44 @@ async function openServer(origin, entry, options = {}) {
           updateInputAffordances();
           showProblem(identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
           codeInput.focus();
-        } else if (res.reason === 'pairing_required') {
-          renderSavedServers();
+        } else if (res?.reason === 'pairing_required') {
           input.value = displayOrigin(origin).replace(' · http', '');
           updateInputAffordances();
           showProblem(pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
           codeInput.focus();
         } else {
+          if (input.value.trim() === '') {
+            input.value = displayOrigin(origin).replace(' · http', '');
+          }
           updateInputAffordances();
           showProblem(unreachableMessageFor(origin));
         }
       }
       return;
     } catch {
-      /* fall through to plain navigation */
-    }
-  }
-
-  if (resolved.sessionToken) {
-    const delivery = await deliverCommittedServerCredential(window, resolved);
-    if (!delivery.ok) {
       button.disabled = false;
+      renderSavedServers();
+      if (input.value.trim() === '') {
+        input.value = displayOrigin(origin).replace(' · http', '');
+      }
       updateInputAffordances();
       showProblem(unreachableMessageFor(origin));
       return;
     }
-  } else {
-    try {
-      window.name = '';
-    } catch {}
   }
 
-  window.location.assign(resolved.finalEntry);
+  if (isPairedTarget || resolved.sessionToken) {
+    button.disabled = false;
+    renderSavedServers();
+    if (input.value.trim() === '') {
+      input.value = displayOrigin(origin).replace(' · http', '');
+    }
+    updateInputAffordances();
+    showProblem(unreachableMessageFor(origin));
+    return;
+  }
+
+  window.location.assign(stripTokenFromEntry(origin, resolved.finalEntry));
 }
 
 async function submitConnect(parsed) {

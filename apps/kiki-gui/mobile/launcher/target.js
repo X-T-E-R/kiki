@@ -971,57 +971,27 @@ export function stripTokenFromEntry(origin, entry) {
   }
 }
 
-export const SHELL_HANDOFF_TYPE = 'kiki:shell-handoff';
-export const SHELL_HANDOFF_MAX_AGE_MS = 30_000;
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
-
-export function computeShellHandoffTag(origin, token, issuedAt) {
-  const input = `kiki:shell-handoff:v1|${origin}|${token}|${String(issuedAt)}`;
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < input.length; i += 1) {
-    const code = input.codePointAt(i) ?? 0;
-    h1 ^= code;
-    h1 = Math.imul(h1, 0x01000193);
-    h2 ^= code + ((i & 0xff) << 8);
-    h2 = Math.imul(h2, 0x85ebca6b);
-  }
-  const p1 = (h1 < 0 ? h1 + 0x100000000 : h1).toString(16).padStart(8, '0');
-  const p2 = (h2 < 0 ? h2 + 0x100000000 : h2).toString(16).padStart(8, '0');
-  return `${p1}${p2}`;
-}
-
-export function createShellHandoffEnvelope(origin, token, issuedAt = Date.now()) {
-  const normalizedOrigin = new URL(origin).origin;
-  const trimmedToken = typeof token === 'string' ? token.trim() : '';
-  return {
-    type: SHELL_HANDOFF_TYPE,
-    origin: normalizedOrigin,
-    token: trimmedToken,
-    issuedAt,
-    sig: computeShellHandoffTag(normalizedOrigin, trimmedToken, issuedAt),
-  };
-}
 
 /**
  * Builds an origin-checked credential delivery script that writes the peer token
  * only when `window.location.origin === expectedOrigin` after navigation commits,
- * preserving the page's route path, query, non-credential hash, and history state (`idx`).
+ * refuses to overwrite an existing non-shell owner connection, and preserves the
+ * page's route path, query, non-credential hash, and history state (`idx`).
  */
 export function buildCommittedCredentialScript(expectedOrigin, token) {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw&&!managed){var parsed=JSON.parse(raw);if(parsed&&typeof parsed.token==="string"&&parsed.token.trim()!=="")return false;}window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
  * Delivers `resolved.sessionToken` only after verifying that the target page
- * has committed at `resolved.commitOrigin` (`resolved.origin`) or, for a top-level
- * browser launcher window, after verifying that `resolved.finalEntry` responds
- * directly from `expectedOrigin` without cross-origin redirection (`redirect: 'manual'`),
- * staging a single-use origin-bound handoff without framing the target GUI.
+ * has committed at `resolved.commitOrigin` (`resolved.origin`) via a committed
+ * WebView/page evaluation handle. Never stages tokens in `window.name` or URL,
+ * and never overwrites an existing non-shell owner connection.
  */
-export async function deliverCommittedServerCredential(target, resolved, options = {}) {
+export async function deliverCommittedServerCredential(target, resolved) {
   if (!resolved || !resolved.ok) {
     return {
       ok: false,
@@ -1045,27 +1015,11 @@ export async function deliverCommittedServerCredential(target, resolved, options
       ? resolved.sessionToken
       : '';
 
-  if (typeof target?.evaluate === 'function') {
-    if (typeof target.url === 'function') {
-      let committedOrigin = '';
+  if (typeof target?.evaluate !== 'function') {
+    if (target && typeof target === 'object' && 'name' in target) {
       try {
-        committedOrigin = new URL(target.url()).origin;
-      } catch {
-        return {
-          ok: false,
-          reason: 'invalid_committed_url',
-          committedOrigin: '',
-          tokenDelivered: false,
-        };
-      }
-      if (committedOrigin !== expectedOrigin) {
-        return {
-          ok: false,
-          reason: 'cross_origin_redirect',
-          committedOrigin,
-          tokenDelivered: false,
-        };
-      }
+        target.name = '';
+      } catch {}
     }
     if (!token) {
       return {
@@ -1074,15 +1028,82 @@ export async function deliverCommittedServerCredential(target, resolved, options
         tokenDelivered: false,
       };
     }
-    const delivered = await target.evaluate(
-      ({ expectedOrigin: exp, token: tok }) => {
+    return {
+      ok: false,
+      reason: target ? 'native_bridge_required' : 'unsupported_target',
+      tokenDelivered: false,
+    };
+  }
+
+  if (typeof target.url === 'function') {
+    let committedOrigin = '';
+    try {
+      committedOrigin = new URL(target.url()).origin;
+    } catch {
+      return {
+        ok: false,
+        reason: 'invalid_committed_url',
+        committedOrigin: '',
+        tokenDelivered: false,
+      };
+    }
+    if (committedOrigin !== expectedOrigin) {
+      return {
+        ok: false,
+        reason: 'cross_origin_redirect',
+        committedOrigin,
+        tokenDelivered: false,
+      };
+    }
+  }
+  if (!token) {
+    return {
+      ok: true,
+      committedOrigin: expectedOrigin,
+      tokenDelivered: false,
+    };
+  }
+  let delivered;
+  try {
+    delivered = await target.evaluate(
+      async ({ expectedOrigin: exp, token: tok }) => {
+        try {
+          if (typeof window.name === 'string' && window.name !== '') {
+            window.name = '';
+          }
+        } catch {}
+        await new Promise((resolveTurn) => {
+          setTimeout(resolveTurn, 0);
+        });
         if (window.location.origin !== exp || !tok) {
-          return { ok: false, committedOrigin: window.location.origin };
+          return {
+            ok: false,
+            reason: 'cross_origin_redirect',
+            committedOrigin: window.location.origin,
+          };
         }
         try {
+          const raw = window.localStorage.getItem('kiki.connection');
+          const managed = window.localStorage.getItem('kiki.shell.managed') === '1';
+          if (raw && !managed) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.token === 'string' && parsed.token.trim() !== '') {
+              return {
+                ok: false,
+                reason: 'existing_owner_credential',
+                committedOrigin: window.location.origin,
+              };
+            }
+          }
           window.localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: tok }));
           window.localStorage.setItem('kiki.shell.managed', '1');
-        } catch {}
+        } catch {
+          return {
+            ok: false,
+            reason: 'storage_unavailable',
+            committedOrigin: window.location.origin,
+          };
+        }
         try {
           window.sessionStorage.setItem('kiki.peer.token', tok);
         } catch {}
@@ -1095,108 +1116,34 @@ export async function deliverCommittedServerCredential(target, resolved, options
       },
       { expectedOrigin, token },
     );
-    if (!delivered?.ok) {
-      return {
-        ok: false,
-        reason: 'cross_origin_redirect',
-        committedOrigin: delivered?.committedOrigin ?? '',
-        tokenDelivered: false,
-      };
-    }
-    return {
-      ok: true,
-      committedOrigin: delivered.committedOrigin,
-      tokenDelivered: true,
-    };
-  }
-
-  const win =
-    target && typeof target === 'object' && ('name' in target || 'location' in target || 'document' in target)
-      ? target
-      : globalThis.window;
-
-  if (!win) {
-    return {
-      ok: false,
-      reason: 'unsupported_target',
-      tokenDelivered: false,
-    };
-  }
-
-  try {
-    win.name = '';
-  } catch {}
-
-  if (!token) {
-    return {
-      ok: true,
-      committedOrigin: expectedOrigin,
-      tokenDelivered: false,
-    };
-  }
-
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== 'function') {
-    return {
-      ok: false,
-      reason: 'unreachable',
-      tokenDelivered: false,
-    };
-  }
-
-  const entryUrl =
-    typeof resolved.finalEntry === 'string' && resolved.finalEntry !== ''
-      ? resolved.finalEntry
-      : `${expectedOrigin}/`;
-  const timeoutMs = options.timeoutMs ?? 4500;
-  const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    const res = await fetchImpl(entryUrl, {
-      method: 'GET',
-      redirect: 'manual',
-      credentials: 'omit',
-      cache: 'no-store',
-      signal: controller?.signal,
-    });
-    if (!isSameOriginResponse(res, expectedOrigin)) {
-      return {
-        ok: false,
-        reason: 'cross_origin_redirect',
-        tokenDelivered: false,
-      };
-    }
-    if (!res.ok) {
-      return {
-        ok: false,
-        reason: 'unreachable',
-        tokenDelivered: false,
-      };
-    }
   } catch {
+    if (typeof target.waitForLoadState === 'function') {
+      await target.waitForLoadState('load').catch(() => {});
+    }
+    let committedOrigin = '';
+    if (typeof target.url === 'function') {
+      try {
+        committedOrigin = new URL(target.url()).origin;
+      } catch {}
+    }
     return {
       ok: false,
-      reason: 'unreachable',
-      tokenDelivered: false,
-    };
-  } finally {
-    if (timer !== null) clearTimeout(timer);
-  }
-
-  const issuedAt = typeof options.now === 'function' ? options.now() : Date.now();
-  try {
-    win.name = JSON.stringify(createShellHandoffEnvelope(expectedOrigin, token, issuedAt));
-  } catch {
-    return {
-      ok: false,
-      reason: 'unsupported_target',
+      reason: 'cross_origin_redirect',
+      committedOrigin,
       tokenDelivered: false,
     };
   }
-
+  if (!delivered?.ok) {
+    return {
+      ok: false,
+      reason: delivered?.reason ?? 'cross_origin_redirect',
+      committedOrigin: delivered?.committedOrigin ?? '',
+      tokenDelivered: false,
+    };
+  }
   return {
     ok: true,
-    committedOrigin: expectedOrigin,
+    committedOrigin: delivered.committedOrigin,
     tokenDelivered: true,
   };
 }

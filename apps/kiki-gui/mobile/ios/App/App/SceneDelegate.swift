@@ -357,7 +357,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         let tokenData = (try? JSONSerialization.data(withJSONObject: [token])) ?? Data("[\"\"]".utf8)
         let originArray = String(data: originData, encoding: .utf8) ?? "[\"\"]"
         let tokenArray = String(data: tokenData, encoding: .utf8) ?? "[\"\"]"
-        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));}catch(e){}try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
+        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw&&!managed){var parsed=JSON.parse(raw);if(parsed&&typeof parsed.token===\"string\"&&parsed.token.trim()!==\"\")return false;}window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));window.localStorage.setItem(\"kiki.shell.managed\",\"1\");}catch(e){return false;}try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
     }
 
     private static func fetchHandshake(

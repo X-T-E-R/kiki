@@ -432,7 +432,7 @@ public class KikiShellPlugin extends Plugin {
             originJson +
             ")return false;var t=" +
             tokenJson +
-            ";if(!t)return false;try{window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));}catch(e){}" +
+            ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw&&!managed){var parsed=JSON.parse(raw);if(parsed&&typeof parsed.token===\"string\"&&parsed.token.trim()!==\"\")return false;}window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));window.localStorage.setItem(\"kiki.shell.managed\",\"1\");}catch(e){return false;}" +
             "try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}" +
             "try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:" +
             originJson +

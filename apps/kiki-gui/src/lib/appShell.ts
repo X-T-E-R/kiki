@@ -5,12 +5,12 @@
  * person back to the shell's own connect screen instead.
  */
 
-import { writeStoredConfig } from '../state/connectionConfig';
+import { readStoredConfig, writeStoredConfig } from '../state/connectionConfig';
 
 const SHELL_AGENT = /\bKikiApp\/(android|ios)\b/;
-export const SHELL_HANDOFF_TYPE = 'kiki:shell-handoff';
-export const SHELL_HANDOFF_MAX_AGE_MS = 30_000;
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
+export const SHELL_PEER_TOKEN_KEY = 'kiki.peer.token';
+export const SHELL_TOKEN_EVENT = 'kiki:shell-token';
 
 /** The shell's connect screen, opened to enter a new server address or link. */
 export function appShellConnectUrl(userAgent: string = globalThis.navigator?.userAgent ?? ''): string | null {
@@ -25,14 +25,6 @@ export interface ShellCredentialDetail {
   readonly token: string;
 }
 
-export interface ShellHandoffEnvelope {
-  readonly type: typeof SHELL_HANDOFF_TYPE;
-  readonly origin: string;
-  readonly token: string;
-  readonly issuedAt: number;
-  readonly sig: string;
-}
-
 export interface ShellWindowLike {
   readonly location: { readonly origin: string };
   readonly localStorage?: {
@@ -43,116 +35,64 @@ export interface ShellWindowLike {
   readonly sessionStorage?: {
     getItem?(key: string): string | null;
     setItem(key: string, value: string): void;
+    removeItem?(key: string): void;
   } | null;
-  readonly navigator?: { readonly userAgent?: string } | null;
-  readonly opener?: unknown;
-  readonly parent?: unknown;
   name?: string;
-  addEventListener?(type: string, listener: (event: MessageEvent) => void): void;
-  removeEventListener?(type: string, listener: (event: MessageEvent) => void): void;
+  addEventListener?(type: string, listener: (event: Event) => void): void;
+  removeEventListener?(type: string, listener: (event: Event) => void): void;
   dispatchEvent(event: Event): boolean;
 }
 
-export function computeShellHandoffTag(origin: string, token: string, issuedAt: number): string {
-  const input = `kiki:shell-handoff:v1|${origin}|${token}|${String(issuedAt)}`;
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < input.length; i += 1) {
-    const code = input.codePointAt(i) ?? 0;
-    h1 ^= code;
-    h1 = Math.imul(h1, 0x01000193);
-    h2 ^= code + ((i & 0xff) << 8);
-    h2 = Math.imul(h2, 0x85ebca6b);
+/**
+ * Returns true when `storage` already holds a non-empty connection token that
+ * was not provisioned by the mobile shell (`kiki.shell.managed !== '1'`).
+ */
+export function hasExistingOwnerCredential(
+  storage?: { getItem?(key: string): string | null } | null,
+): boolean {
+  if (!storage || typeof storage.getItem !== 'function') return false;
+  try {
+    if (storage.getItem(SHELL_MANAGED_STORAGE_KEY) === '1') return false;
+    const existing = readStoredConfig({ getItem: (key) => storage.getItem!(key) });
+    return existing !== null && existing.token.trim() !== '';
+  } catch {
+    return false;
   }
-  const p1 = (h1 < 0 ? h1 + 0x100000000 : h1).toString(16).padStart(8, '0');
-  const p2 = (h2 < 0 ? h2 + 0x100000000 : h2).toString(16).padStart(8, '0');
-  return `${p1}${p2}`;
-}
-
-export function createShellHandoffEnvelope(
-  origin: string,
-  token: string,
-  issuedAt: number = Date.now(),
-): ShellHandoffEnvelope {
-  const normalizedOrigin = new URL(origin).origin;
-  const trimmedToken = token.trim();
-  return {
-    type: SHELL_HANDOFF_TYPE,
-    origin: normalizedOrigin,
-    token: trimmedToken,
-    issuedAt,
-    sig: computeShellHandoffTag(normalizedOrigin, trimmedToken, issuedAt),
-  };
 }
 
 /**
- * Consumes a one-time top-level navigation credential handoff staged by the
- * mobile launcher for this exact origin. Immediately scrubs `window.name`,
- * rejects any window with an external `opener` or parent frame, refuses to
- * overwrite non-shell connections, and never listens to arbitrary `postMessage`.
+ * Applies a peer credential injected by the native shell after verifying that
+ * navigation committed at `expectedOrigin`. Refuses mismatched origins and
+ * never overwrites an existing non-shell owner connection.
  */
-export function consumeAppShellHandoff(
-  win: ShellWindowLike | undefined = globalThis.window,
-  now: number = Date.now(),
+export function applyCommittedShellCredential(
+  win: ShellWindowLike | undefined,
+  expectedOrigin: string,
+  token: string,
 ): boolean {
-  if (!win) return false;
-  const rawName = typeof win.name === 'string' ? win.name : '';
-  if (rawName !== '') {
-    try {
-      win.name = '';
-    } catch {
-      // Ignore read-only window.name in restricted contexts.
-    }
-  }
-  if (!rawName) return false;
+  if (!win || typeof expectedOrigin !== 'string' || expectedOrigin === '') return false;
+  if (win.location.origin !== expectedOrigin) return false;
+  const trimmedToken = typeof token === 'string' ? token.trim() : '';
+  if (!trimmedToken) return false;
+  if (hasExistingOwnerCredential(win.localStorage)) return false;
 
-  if (win.opener !== undefined && win.opener !== null) return false;
-  if (win.parent !== undefined && win.parent !== null && win.parent !== win) return false;
-  const userAgent = win.navigator?.userAgent ?? globalThis.navigator?.userAgent ?? '';
-  if (!SHELL_AGENT.test(userAgent)) return false;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawName);
-  } catch {
+  if (!writeStoredConfig({ url: '', token: trimmedToken }, win.localStorage ?? undefined)) {
     return false;
   }
-  if (!parsed || typeof parsed !== 'object') return false;
-  const data = parsed as {
-    type?: unknown;
-    origin?: unknown;
-    token?: unknown;
-    issuedAt?: unknown;
-    sig?: unknown;
-  };
-  if (data.type !== SHELL_HANDOFF_TYPE) return false;
-  if (typeof data.origin !== 'string' || data.origin !== win.location.origin) return false;
-  const token = typeof data.token === 'string' ? data.token.trim() : '';
-  if (!token) return false;
-  if (typeof data.issuedAt !== 'number' || !Number.isFinite(data.issuedAt)) return false;
-  if (Math.abs(now - data.issuedAt) > SHELL_HANDOFF_MAX_AGE_MS) return false;
-  if (
-    typeof data.sig !== 'string' ||
-    data.sig !== computeShellHandoffTag(win.location.origin, token, data.issuedAt)
-  ) {
-    return false;
-  }
-
-  writeStoredConfig({ url: '', token }, win.localStorage ?? undefined);
   try {
     win.localStorage?.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
   } catch {
-    // Ignore storage quota or access errors.
+    return false;
   }
   try {
-    win.sessionStorage?.setItem('kiki.peer.token', token);
+    win.sessionStorage?.setItem(SHELL_PEER_TOKEN_KEY, trimmedToken);
   } catch {
     // Session storage may be unavailable in restricted contexts.
   }
   try {
     win.dispatchEvent(
-      new CustomEvent<ShellCredentialDetail>('kiki:shell-token', {
-        detail: { origin: win.location.origin, token },
+      new CustomEvent<ShellCredentialDetail>(SHELL_TOKEN_EVENT, {
+        detail: { origin: expectedOrigin, token: trimmedToken },
       }),
     );
   } catch {
@@ -161,9 +101,73 @@ export function consumeAppShellHandoff(
   return true;
 }
 
+/**
+ * Synchronizes credentials delivered by the native host's post-commit
+ * same-origin evaluation (`kiki:shell-token` + `sessionStorage['kiki.peer.token']`).
+ * Never reads credentials from `window.name` or `postMessage`, and never
+ * overwrites an existing non-shell owner connection.
+ */
 export function installAppShellCredentialListener(
   win: ShellWindowLike | undefined = globalThis.window,
+  onCredential?: (detail: ShellCredentialDetail) => void,
 ): () => void {
-  consumeAppShellHandoff(win);
-  return () => {};
+  if (!win) return () => {};
+
+  if (typeof win.name === 'string' && win.name !== '') {
+    try {
+      win.name = '';
+    } catch {
+      // Ignore read-only window.name in restricted contexts.
+    }
+  }
+
+  const syncCommittedToken = (candidateToken: string): void => {
+    const trimmed = candidateToken.trim();
+    if (!trimmed) return;
+    if (hasExistingOwnerCredential(win.localStorage)) {
+      try {
+        win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+      } catch {
+        // Ignore session storage errors.
+      }
+      return;
+    }
+    writeStoredConfig({ url: '', token: trimmed }, win.localStorage ?? undefined);
+    try {
+      win.localStorage?.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    } catch {
+      // Ignore storage errors.
+    }
+    onCredential?.({ origin: win.location.origin, token: trimmed });
+  };
+
+  try {
+    const stagedSessionToken = win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) ?? null;
+    if (typeof stagedSessionToken === 'string' && stagedSessionToken.trim() !== '') {
+      syncCommittedToken(stagedSessionToken);
+    }
+  } catch {
+    // Session storage may be unavailable.
+  }
+
+  const onShellToken = (event: Event): void => {
+    const detail = (event as CustomEvent<{ origin?: unknown; token?: unknown }>).detail;
+    if (!detail || typeof detail.origin !== 'string' || detail.origin !== win.location.origin) {
+      return;
+    }
+    const token = typeof detail.token === 'string' ? detail.token.trim() : '';
+    if (!token) return;
+    if (hasExistingOwnerCredential(win.localStorage)) return;
+    try {
+      if (win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) !== token) return;
+    } catch {
+      return;
+    }
+    syncCommittedToken(token);
+  };
+
+  win.addEventListener?.(SHELL_TOKEN_EVENT, onShellToken);
+  return () => {
+    win.removeEventListener?.(SHELL_TOKEN_EVENT, onShellToken);
+  };
 }

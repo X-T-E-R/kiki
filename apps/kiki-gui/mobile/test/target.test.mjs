@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { stripTypeScriptTypes } from 'node:module';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
@@ -13,7 +14,6 @@ import {
   buildCommittedCredentialScript,
   claimPairingOrigin,
   classifyOrigin,
-  computeShellHandoffTag,
   deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
@@ -685,13 +685,25 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       token: 'same-origin-token-123',
     });
 
-    // 4. Browser Window handoff under production non-loopback CSP (`frame-ancestors 'self'; default-src 'self'`)
-    // and counterexample against malicious opener postMessage / popup overwrite:
+    // 4. Real GUI `appShell.ts` + `connectionConfig.ts` consumption under production non-loopback CSP
+    // (`frame-ancestors 'self'; default-src 'self'`, without `Access-Control-Allow-Origin: *`),
+    // plus the four targeted counterexamples:
+    //   (a) Preflight 200 OK -> main navigation 302 cross-origin redirect
+    //   (b) Page JS cross-origin redirect (`window.location.replace`)
+    //   (c) Plain Window / missing native bridge refusal (`native_bridge_required`)
+    //   (d) Existing non-shell owner credential refusal (`existing_owner_credential`)
+    const guiSrcDir = resolve(import.meta.dirname, '../../src');
+    const realConnectionConfigJs = stripTypeScriptTypes(
+      readFileSync(join(guiSrcDir, 'state/connectionConfig.ts'), 'utf8'),
+    );
+    const realAppShellJs = stripTypeScriptTypes(
+      readFileSync(join(guiSrcDir, 'lib/appShell.ts'), 'utf8'),
+    ).replace("from '../state/connectionConfig'", "from '/src/state/connectionConfig.ts'");
+
     const productionCsp =
       "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
-    let cspTargetRedirectTo = '';
+    let cspTargetMode = 'normal';
     const cspPairedServer = await serve((req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Content-Security-Policy', productionCsp);
@@ -709,45 +721,68 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
         );
         return;
       }
+      if (req.url === '/src/state/connectionConfig.ts') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end(realConnectionConfigJs);
+        return;
+      }
+      if (req.url === '/src/lib/appShell.ts') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end(realAppShellJs);
+        return;
+      }
       if (req.url === '/app.js') {
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
         res.end(`
-          const rawName = typeof window.name === 'string' ? window.name : '';
-          if (rawName) window.name = '';
-          if (!window.opener && window.parent === window && /\\bKikiApp\\/(android|ios)\\b/.test(navigator.userAgent)) {
-            try {
-              const data = JSON.parse(rawName);
-              const computeTag = ${computeShellHandoffTag.toString()};
-              if (
-                data &&
-                data.type === 'kiki:shell-handoff' &&
-                data.origin === window.location.origin &&
-                typeof data.token === 'string' &&
-                data.token.trim() &&
-                typeof data.issuedAt === 'number' &&
-                Math.abs(Date.now() - data.issuedAt) <= 30000 &&
-                data.sig === computeTag(window.location.origin, data.token.trim(), data.issuedAt)
-              ) {
-                localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: data.token.trim() }));
-                localStorage.setItem('kiki.shell.managed', '1');
-                sessionStorage.setItem('kiki.peer.token', data.token.trim());
-              }
-            } catch {}
-          }
+          import { installAppShellCredentialListener } from '/src/lib/appShell.ts';
+          import { readStoredConfig } from '/src/state/connectionConfig.ts';
+          window.__shellEvents = [];
+          installAppShellCredentialListener(window, (detail) => {
+            window.__shellEvents.push(detail);
+          });
+          window.__readStoredConfig = () => readStoredConfig(window.localStorage);
           document.body.dataset.ready = 'true';
         `);
         return;
       }
-      if (cspTargetRedirectTo) {
-        res.writeHead(302, { Location: cspTargetRedirectTo }).end();
+      if (cspTargetMode === 'preflight-200-nav-302') {
+        const isMainNav =
+          req.headers['sec-fetch-mode'] === 'navigate' ||
+          String(req.headers.accept ?? '').includes('text/html');
+        if (!isMainNav) {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('preflight ok');
+          return;
+        }
+        res.writeHead(302, { Location: `${receiver}/` }).end();
+        return;
+      }
+      if (req.url === '/redirect.js') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end(`window.location.replace(${JSON.stringify(`${receiver}/`)});`);
+        return;
+      }
+      if (cspTargetMode === 'js-cross-origin-redirect') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(
+          '<!doctype html><html><head><meta charset="utf-8"><script src="/redirect.js"></script></head><body>redirecting</body></html>',
+        );
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html><html><head><meta charset="utf-8"></head><body><script type="module" src="/app.js"></script>csp-gui</body></html>');
     });
 
+    upsertSavedServer(storage, {
+      origin: cspPairedServer,
+      targetHomeId: 'fixture-home-csp',
+      paired: true,
+      verified: true,
+    });
+
+    // 4a. Counterexample: Plain browser Window (no native evaluation bridge) refuses token delivery and wipes window.name
     const mockLauncherWin = {
-      name: 'stale-name',
+      name: 'stale-window-name',
     };
     const cspResolved = {
       ok: true,
@@ -757,56 +792,119 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       sessionToken: 'csp-paired-secret-token',
       tokenAttached: false,
     };
-
-    // 4a. When CSP server redirects `/` cross-origin to `receiver`, Window handoff refuses and keeps window.name empty
-    cspTargetRedirectTo = `${receiver}/`;
-    const blockedCspDelivery = await deliverCommittedServerCredential(mockLauncherWin, cspResolved);
-    assert.equal(blockedCspDelivery.ok, false);
-    assert.equal(blockedCspDelivery.reason, 'cross_origin_redirect');
-    assert.equal(blockedCspDelivery.tokenDelivered, false);
+    const plainWinDelivery = await deliverCommittedServerCredential(mockLauncherWin, cspResolved);
+    assert.equal(plainWinDelivery.ok, false);
+    assert.equal(plainWinDelivery.reason, 'native_bridge_required');
+    assert.equal(plainWinDelivery.tokenDelivered, false);
     assert.equal(mockLauncherWin.name, '');
 
-    // 4b. When CSP server responds 200 OK on `/`, Window handoff stages signed envelope without any iframe and succeeds on navigation
-    cspTargetRedirectTo = '';
-    const stagedCspDelivery = await deliverCommittedServerCredential(mockLauncherWin, cspResolved);
-    assert.equal(stagedCspDelivery.ok, true);
-    assert.equal(stagedCspDelivery.tokenDelivered, true);
-    const parsedEnvelope = JSON.parse(mockLauncherWin.name);
-    assert.equal(parsedEnvelope.type, 'kiki:shell-handoff');
-    assert.equal(parsedEnvelope.origin, cspPairedServer);
-    assert.equal(parsedEnvelope.token, 'csp-paired-secret-token');
+    // 4b. Counterexample: Preflight returns 200 OK, but main document navigation 302s cross-origin to `receiver`
+    cspTargetMode = 'preflight-200-nav-302';
+    const preflightRes = await fetch(`${cspPairedServer}/`, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { Accept: 'application/json' },
+    });
+    assert.equal(preflightRes.status, 200);
+    const nav302Result = await openVerifiedServerNavigation(page, storage, {
+      origin: cspPairedServer,
+      targetHomeId: 'fixture-home-csp',
+      paired: true,
+      getToken: async () => 'csp-paired-secret-token',
+    });
+    assert.equal(nav302Result.ok, false);
+    assert.equal(nav302Result.reason, 'cross_origin_redirect');
+    assert.equal(nav302Result.tokenDelivered, false);
+    assert.equal(new URL(page.url()).origin, receiver);
+    assert.equal(await page.evaluate(() => window.name), '');
+    assert.equal(await page.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
 
+    // 4c. Counterexample: Target returns 200 OK HTML that immediately executes a JS cross-origin redirect (`window.location.replace(receiver)`)
+    cspTargetMode = 'js-cross-origin-redirect';
+    const jsRedirectResult = await openVerifiedServerNavigation(page, storage, {
+      origin: cspPairedServer,
+      targetHomeId: 'fixture-home-csp',
+      paired: true,
+      getToken: async () => 'csp-paired-secret-token',
+    });
+    assert.equal(jsRedirectResult.ok, false);
+    assert.equal(jsRedirectResult.reason, 'cross_origin_redirect');
+    assert.equal(jsRedirectResult.tokenDelivered, false);
+    assert.equal(new URL(page.url()).origin, receiver);
+    assert.equal(await page.evaluate(() => window.name), '');
+    assert.equal(await page.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+
+    // 4d. Positive: Same-origin commit under production CSP with real `appShell.ts` + `connectionConfig.ts`
+    cspTargetMode = 'normal';
     const shellCtx = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android',
     });
     try {
       const shellPage = await shellCtx.newPage();
-      await shellPage.goto(receiver);
-      await shellPage.evaluate((handoffName) => {
-        window.name = handoffName;
-      }, mockLauncherWin.name);
-      await shellPage.goto(`${cspPairedServer}/`);
+      const positiveCspOpen = await openVerifiedServerNavigation(shellPage, storage, {
+        origin: cspPairedServer,
+        targetHomeId: 'fixture-home-csp',
+        paired: true,
+        getToken: async () => 'csp-paired-secret-token',
+      });
+      assert.equal(positiveCspOpen.ok, true);
+      assert.equal(positiveCspOpen.tokenDelivered, true);
       await shellPage.waitForSelector('body[data-ready="true"]');
       const cspState = await shellPage.evaluate(() => ({
         windowName: window.name,
-        storedConnection: JSON.parse(localStorage.getItem('kiki.connection') || 'null'),
+        storedConnection: window.__readStoredConfig(),
+        shellManaged: localStorage.getItem('kiki.shell.managed'),
         peerToken: sessionStorage.getItem('kiki.peer.token'),
+        shellEvents: window.__shellEvents,
       }));
       assert.equal(cspState.windowName, '');
       assert.deepEqual(cspState.storedConnection, { url: '', token: 'csp-paired-secret-token' });
+      assert.equal(cspState.shellManaged, '1');
       assert.equal(cspState.peerToken, 'csp-paired-secret-token');
+      assert.deepEqual(cspState.shellEvents, [
+        { origin: cspPairedServer, token: 'csp-paired-secret-token' },
+      ]);
 
-      // 4c. Counterexample: Malicious opener / cross-window postMessage or popup window.name cannot overwrite stored connection
+      // 4e. Counterexample: Existing non-shell owner credential on target origin is never overwritten
+      await shellPage.evaluate(() => {
+        localStorage.removeItem('kiki.shell.managed');
+        localStorage.setItem(
+          'kiki.connection',
+          JSON.stringify({ url: '', token: 'existing-owner-token' }),
+        );
+        sessionStorage.removeItem('kiki.peer.token');
+      });
+      const ownerProtectedDelivery = await deliverCommittedServerCredential(shellPage, {
+        ...cspResolved,
+        sessionToken: 'override-attempt-token',
+      });
+      assert.equal(ownerProtectedDelivery.ok, false);
+      assert.equal(ownerProtectedDelivery.reason, 'existing_owner_credential');
+      assert.equal(ownerProtectedDelivery.tokenDelivered, false);
+      const scriptEvalWithOwner = await shellPage.evaluate((script) => {
+        // eslint-disable-next-line no-eval
+        return (0, eval)(script);
+      }, buildCommittedCredentialScript(cspPairedServer, 'override-attempt-token'));
+      assert.equal(scriptEvalWithOwner, false);
       await shellPage.evaluate((origin) => {
         window.postMessage(
           { type: 'kiki:shell-credential', origin, token: 'attacker-forged-token' },
           '*',
         );
       }, cspPairedServer);
-      const afterPostMessage = await shellPage.evaluate(() =>
-        JSON.parse(localStorage.getItem('kiki.connection') || 'null'),
-      );
-      assert.deepEqual(afterPostMessage, { url: '', token: 'csp-paired-secret-token' });
+      const afterOwnerCheck = await shellPage.evaluate(() => ({
+        storedConnection: window.__readStoredConfig(),
+        shellManaged: localStorage.getItem('kiki.shell.managed'),
+        peerToken: sessionStorage.getItem('kiki.peer.token'),
+      }));
+      assert.deepEqual(afterOwnerCheck.storedConnection, {
+        url: '',
+        token: 'existing-owner-token',
+      });
+      assert.equal(afterOwnerCheck.shellManaged, null);
+      assert.equal(afterOwnerCheck.peerToken, null);
     } finally {
       await shellCtx.close();
     }
