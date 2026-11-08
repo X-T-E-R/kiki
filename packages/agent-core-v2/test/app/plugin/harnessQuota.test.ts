@@ -98,8 +98,13 @@ describe('harness quota cache', () => {
     await expect(cache.read(definition.id, 600_000, load)).rejects.toThrow('quota down');
     expect(calls).toBe(1);
     expect(cache.snapshots([definition]).sources[0]?.readings).toBeUndefined();
+    expect(cache.snapshots([definition]).sources[0]?.error).toBe('quota down');
     now += 2;
     await expect(cache.read(definition.id, 600_000, load)).rejects.toThrow('quota down');
     expect(calls).toBe(2);
+    now += 600_001;
+    const recovered = await cache.read(definition.id, 600_000, async () => [reading]);
+    expect(recovered).toEqual([reading]);
+    expect(cache.snapshots([definition]).sources[0]?.error).toBeUndefined();
   });
 });

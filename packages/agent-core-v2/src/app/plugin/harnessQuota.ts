@@ -35,6 +35,7 @@ export class HarnessQuotaCache {
         engineIds: [...definition.engineIds],
         readAt: readAtMs !== undefined ? new Date(readAtMs).toISOString() : undefined,
         readings: fresh ? [...hit.readings] : undefined,
+        error: hit?.error,
       };
     }) };
   }
@@ -67,12 +68,13 @@ export class HarnessQuotaCache {
         return readings;
       }, (error: unknown) => {
         const cancelled = controller.signal.aborted || isAbortError(error);
-        const message = error instanceof Error ? error.message : String(error);
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        const message = rawMessage.trim() || 'Harness quota source is unavailable';
         if (!cancelled) {
           const previous = this.entries.get(sourceId);
           this.entries.set(sourceId, { at: this.now(), readings: [], error: message, lastSuccessAt: previous?.lastSuccessAt });
         }
-        throw error instanceof Error ? error : new Error(message);
+        throw error instanceof Error && error.message.trim() !== '' ? error : new Error(message);
       }).finally(() => {
         created.settled = true;
         if (this.inflight.get(sourceId) === created) this.inflight.delete(sourceId);

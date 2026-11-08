@@ -952,6 +952,9 @@ class FixtureServer {
     this.requestGovernance = structuredClone(data.requestGovernance ?? null);
     this.liveAgentGovernance = structuredClone(data.liveAgentGovernance ?? null);
     this.providerQuotas = structuredClone(data.providerQuotas ?? null);
+    this.harnessQuotaSources = structuredClone(data.harnessQuotaSources ?? []);
+    this.harnessQuotaReadResults = structuredClone(data.harnessQuotaReadResults ?? {});
+    this.harnessQuotaFailSources = new Set();
     // Memory (`/api/memory/*`): `memory` seeds the settings section and the
     // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
     // mutate this state and append journal records, so the page's save / delete
@@ -3545,13 +3548,27 @@ class FixtureServer {
       return this.envelope(res, { items: this.executorItems() });
     }
     if (path === '/harness-quota' && method === 'GET') {
-      return this.envelope(res, { sources: structuredClone(this.scenario?.data.harnessQuotaSources ?? []) });
+      return this.envelope(res, { sources: structuredClone(this.harnessQuotaSources ?? []) });
     }
     if (path === '/harness-quota/read' && method === 'POST') {
-      const sources = structuredClone(this.scenario?.data.harnessQuotaSources ?? []).filter((item) => item.id === body?.source);
-      return sources.length > 0
-        ? this.envelope(res, { sources })
-        : this.envelope(res, null, 40001, `Unknown harness quota source ${String(body?.source ?? '')}`);
+      const sourceId = String(body?.source ?? '');
+      const index = (this.harnessQuotaSources ?? []).findIndex((item) => item.id === sourceId);
+      if (index === -1) {
+        return this.envelope(res, null, 40001, `Unknown harness quota source ${sourceId}`);
+      }
+      if (this.harnessQuotaFailSources?.has(sourceId)) {
+        const errorMsg = 'Plugin quota bridge unreachable';
+        const failed = { ...structuredClone(this.harnessQuotaSources[index]), readings: undefined, error: errorMsg };
+        this.harnessQuotaSources[index] = failed;
+        return this.envelope(res, null, 50301, errorMsg);
+      }
+      const seededRead = this.harnessQuotaReadResults?.[sourceId];
+      const current = structuredClone(this.harnessQuotaSources[index]);
+      const updated = seededRead !== undefined
+        ? { ...current, readAt: seededRead.readAt ?? new Date().toISOString(), readings: structuredClone(seededRead.readings), error: undefined }
+        : { ...current, readAt: current.readAt ?? new Date().toISOString(), error: undefined };
+      this.harnessQuotaSources[index] = updated;
+      return this.envelope(res, { sources: [structuredClone(updated)] });
     }
     const accountSourcesMatch = /^\/executors\/([^/]+)\/account-sources$/.exec(path);
     if (accountSourcesMatch !== null && method === 'GET') {
@@ -5295,6 +5312,10 @@ class FixtureServer {
       case 'engine_account_source_unavailable':
         this.accountSourceUnavailable = body.unavailable !== false;
         return this.envelope(res, { unavailable: this.accountSourceUnavailable });
+      case 'harness_quota_fail':
+        if (body.fail === false) this.harnessQuotaFailSources.delete(String(body.source ?? ''));
+        else this.harnessQuotaFailSources.add(String(body.source ?? ''));
+        return this.envelope(res, { failing: [...this.harnessQuotaFailSources] });
       case 'cron_fail_next_write':
         // Arms a one-shot refusal of the next cron create/update, so the
         // panel's real-failure path (draft kept, panel open) is walkable

@@ -72,7 +72,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         } });
     }
     for (const executor of executors.list()) {
-      if (executor.protocol === 'native') continue;
+      if (executor.protocol === 'native' || executor.instance !== undefined) continue;
       result.push({ id: `executor:${executor.id}`, label: executor.label ?? executor.id, kind: 'executor', providerId: executor.id, accountLabel: '执行器自行管理的登录',
         revision: fingerprint([executor.id, executor.protocol, executor.homeDir]), active: true, supported: false,
         unsupportedReason: 'executor_credentials_not_shared', auth: { action: 'executor_login', provider: executor.id }, source: { label: '执行器登录不等于已批准的提供商额度连接' }, fetch: async () => [] });

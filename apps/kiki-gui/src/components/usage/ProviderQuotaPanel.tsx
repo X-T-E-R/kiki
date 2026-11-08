@@ -10,12 +10,16 @@ import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { OAuthDeviceCard } from '../OAuthDeviceCard';
 import { useOAuthFlow } from '../useOAuthFlow';
-import { engineHealth, type EngineHealth } from '../settings/ExternalEnginesSection';
-import { useExecutorCatalogQuery } from '../settings/profileEditor/engines';
+import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../settings/ExternalEnginesSection';
+import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '../settings/profileEditor/engines';
+import { SMALL_INPUT } from '../ui';
 import {
-  arrangeQuotaSources, effectiveQuotaStatus, formatWindowPeriod, isSourceLocked, isSourceRefreshable, meterToneClass,
-  meterUtilization, meterValue, normalizeQuotaSources, quotaEngineScopeOf, quotaLocalUsageHref, quotaSettingsHref,
+  arrangeQuotaSources, effectiveQuotaStatus, formatHarnessQuotaReading, formatWindowPeriod,
+  groupHarnessQuotaReadings, harnessQuotaQueryKey, isSourceLocked, isSourceRefreshable,
+  mergeHarnessQuotaSnapshots, meterToneClass, meterUtilization, meterValue, normalizeQuotaSources,
+  pluginQuotaSnapshotStatus, quotaEngineScopeOf, quotaLocalUsageHref, quotaSettingsHref,
   signedOutProviderIds, statusBadgeInfo, useProviderQuotas,
+  type HarnessQuotaReading, type PluginHarnessQuotaSnapshot,
   type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource, type ProviderQuotaStatus,
 } from '../../lib/providerQuota';
 
@@ -39,11 +43,30 @@ const ICON_BUTTON = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 r
  */
 export function ProviderQuotaPanel() {
   const { t, time, locale } = useI18n();
-  const { client } = useConnection();
+  const { client, scopeId, meta } = useConnection();
+  const queryClient = useQueryClient();
   const { snapshot, loading, isError, stale, refetch, isRefetching, refreshSource, refreshingSourceId, setSourceEnabled } = useProviderQuotas();
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
   const executorsQuery = useExecutorCatalogQuery();
+  const pluginQuotaKey = harnessQuotaQueryKey(scopeId, meta?.server_id);
+  const harnessQuotaQuery = useQuery({
+    queryKey: pluginQuotaKey,
+    queryFn: async ({ signal }) => {
+      const api = client.klient?.rest?.harnessQuota;
+      if (api === undefined) return { sources: [] as readonly PluginHarnessQuotaSnapshot[] };
+      try {
+        return await api.cached({ signal });
+      } catch {
+        return { sources: [] as readonly PluginHarnessQuotaSnapshot[] };
+      }
+    },
+    enabled: client.klient?.rest?.harnessQuota !== undefined,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const pluginQuotaSources = harnessQuotaQuery.data?.sources ?? [];
+  const configRaw = asConfigRecord(configQuery.data?.raw);
   const sources = normalizeQuotaSources(snapshot);
   const providers = providersQuery.data?.items;
   const signedOut = useMemo(() => signedOutProviderIds(providers), [providers]);
@@ -54,6 +77,9 @@ export function ProviderQuotaPanel() {
   const [sourceFeedbacks, setSourceFeedbacks] = useState<Record<string, Feedback>>({});
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [activeRefreshSourceIds, setActiveRefreshSourceIds] = useState<readonly string[]>([]);
+  const [refreshingPluginIds, setRefreshingPluginIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
+  const [savingEngineSourceIds, setSavingEngineSourceIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const clearFeedback = (id: string) => {
     setSourceFeedbacks((prev) => {
@@ -64,10 +90,85 @@ export function ProviderQuotaPanel() {
     });
   };
 
+  const refreshPluginSource = useCallback(async (pluginSourceId: string) => {
+    const api = client.klient?.rest?.harnessQuota;
+    if (api === undefined) return;
+    setRefreshingPluginIds((prev) => new Set(prev).add(pluginSourceId));
+    setPluginErrors((prev) => {
+      if (!(pluginSourceId in prev)) return prev;
+      const next = { ...prev };
+      delete next[pluginSourceId];
+      return next;
+    });
+    try {
+      const updated = await api.read(pluginSourceId);
+      queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) =>
+        mergeHarnessQuotaSnapshots(current, updated.sources),
+      );
+    } catch (error) {
+      const message = errorText(locale, error);
+      setPluginErrors((prev) => ({ ...prev, [pluginSourceId]: message }));
+      queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) => {
+        if (current === undefined) return current;
+        return {
+          sources: current.sources.map((entry) =>
+            entry.id === pluginSourceId ? { ...entry, readings: undefined, error: message } : entry,
+          ),
+        };
+      });
+      throw error;
+    } finally {
+      setRefreshingPluginIds((prev) => {
+        const next = new Set(prev);
+        next.delete(pluginSourceId);
+        return next;
+      });
+    }
+  }, [client, locale, pluginQuotaKey, queryClient]);
+
+  const handleSelectEngineQuotaSource = useCallback(async (engineId: string, nextSourceId: string) => {
+    setSavingEngineSourceIds((prev) => new Set(prev).add(engineId));
+    clearFeedback(`executor:${engineId}`);
+    try {
+      await client.patchConfig({
+        agent_executor_overrides: {
+          [engineId]: { quota_source: nextSourceId === '' ? null : nextSourceId },
+        },
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+        queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY }),
+      ]);
+    } catch (error) {
+      setSourceFeedbacks((prev) => ({
+        ...prev,
+        [`executor:${engineId}`]: { tone: 'error', text: errorText(locale, error) },
+      }));
+    } finally {
+      setSavingEngineSourceIds((prev) => {
+        const next = new Set(prev);
+        next.delete(engineId);
+        return next;
+      });
+    }
+  }, [client, locale, queryClient]);
+
   const handleHeaderRefresh = async () => {
     if (loading || isRefetching || refreshingAll) return;
-    const targets = arranged.live.filter((source) => isSourceRefreshable(source) && !signedOut.has(source.provider_id));
-    if (targets.length === 0) {
+    const liveTargets = arranged.live.filter((source) => isSourceRefreshable(source) && !signedOut.has(source.provider_id));
+    const nativeEngineTargets = arranged.engines.filter((engine) => {
+      const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
+      return selected === '' && isSourceRefreshable(engine);
+    });
+    const targets = [...liveTargets, ...nativeEngineTargets];
+    const pluginTargets = new Set<string>();
+    for (const engine of arranged.engines) {
+      const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
+      if (selected !== '' && pluginQuotaSources.some((s) => s.id === selected && s.engineIds.includes(engine.provider_id))) {
+        pluginTargets.add(selected);
+      }
+    }
+    if (targets.length === 0 && pluginTargets.size === 0) {
       await refetch();
       return;
     }
@@ -81,8 +182,8 @@ export function ProviderQuotaPanel() {
       return next;
     });
     try {
-      await Promise.all(
-        targets.map(async (target) => {
+      await Promise.all([
+        ...targets.map(async (target) => {
           try {
             await refreshSource(target.id);
           } catch (error) {
@@ -92,7 +193,14 @@ export function ProviderQuotaPanel() {
             }));
           }
         }),
-      );
+        ...[...pluginTargets].map(async (pluginId) => {
+          try {
+            await refreshPluginSource(pluginId);
+          } catch {
+            // Error is already captured in pluginErrors state per pluginId.
+          }
+        }),
+      ]);
     } finally {
       setRefreshingAll(false);
       setActiveRefreshSourceIds([]);
@@ -201,8 +309,20 @@ export function ProviderQuotaPanel() {
             hidden={arranged.hiddenEngines}
             pending={arranged.enginesPending}
             catalog={executorsQuery.data?.items}
+            configRaw={configRaw}
             configError={configQuery.isError}
             onRetryConfig={() => { void configQuery.refetch(); }}
+            pluginQuotaSources={pluginQuotaSources}
+            refreshingPluginIds={refreshingPluginIds}
+            pluginErrors={pluginErrors}
+            savingEngineSourceIds={savingEngineSourceIds}
+            refreshingNativeSourceId={refreshingSourceId}
+            activeRefreshSourceIds={activeRefreshSourceIds}
+            sourceFeedbacks={sourceFeedbacks}
+            onClearFeedback={clearFeedback}
+            onSelectQuotaSource={handleSelectEngineQuotaSource}
+            onRefreshPluginSource={refreshPluginSource}
+            onRefreshNativeSource={refreshSource}
           />
           <div className="space-y-2">
             <UnsupportedQuotaSection sources={arranged.unsupported} providerById={providerById} />
@@ -539,16 +659,38 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
   );
 }
 
-function EngineQuotaSection({ engines, hidden, pending, catalog, configError, onRetryConfig }: {
+function EngineQuotaSection({
+  engines, hidden, pending, catalog, configRaw, configError, onRetryConfig,
+  pluginQuotaSources, refreshingPluginIds, pluginErrors, savingEngineSourceIds,
+  refreshingNativeSourceId, activeRefreshSourceIds, sourceFeedbacks, onClearFeedback,
+  onSelectQuotaSource, onRefreshPluginSource, onRefreshNativeSource,
+}: {
   readonly engines: readonly ProviderQuotaSource[];
   readonly hidden: number;
   readonly pending: boolean;
   readonly catalog: readonly ExecutorCatalogItem[] | undefined;
+  readonly configRaw: Readonly<Record<string, unknown>> | undefined;
   readonly configError: boolean;
   readonly onRetryConfig: () => void;
+  readonly pluginQuotaSources: readonly PluginHarnessQuotaSnapshot[];
+  readonly refreshingPluginIds: ReadonlySet<string>;
+  readonly pluginErrors: Readonly<Record<string, string>>;
+  readonly savingEngineSourceIds: ReadonlySet<string>;
+  readonly refreshingNativeSourceId: string | undefined;
+  readonly activeRefreshSourceIds: readonly string[];
+  readonly sourceFeedbacks: Readonly<Record<string, Feedback>>;
+  readonly onClearFeedback: (id: string) => void;
+  readonly onSelectQuotaSource: (engineId: string, nextSourceId: string) => Promise<void>;
+  readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
+  readonly onRefreshNativeSource: (sourceId: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
   if (pending || (!configError && engines.length === 0 && hidden === 0)) return null;
+  const anyQuotaSelectorShown = engines.some((source) => {
+    const engineId = source.provider_id;
+    const selected = engineQuotaSourceOf(configRaw, engineId);
+    return selected !== '' || pluginQuotaSources.some((entry) => entry.engineIds.includes(engineId));
+  });
   return (
     <section data-quota-engines>
       <SectionHeading title={t(q('usage.quota.engines.title'))}
@@ -560,26 +702,38 @@ function EngineQuotaSection({ engines, hidden, pending, catalog, configError, on
         </div>
       ) : null}
       {engines.length > 0 ? (
-        <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
+        <ul className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
           {engines.map((source) => {
-            const item = catalog?.find((entry) => entry.id === source.provider_id);
+            const engineId = source.provider_id;
+            const item = catalog?.find((entry) => entry.id === engineId);
             const health: EngineHealth = item === undefined ? 'unknown' : engineHealth(item, undefined);
-            const view = ENGINE_HEALTH[health];
+            const selectedSourceId = engineQuotaSourceOf(configRaw, engineId);
+            const matchingPluginSources = pluginQuotaSources.filter((entry) => entry.engineIds.includes(engineId));
+            const selectedPluginSnapshot = selectedSourceId !== ''
+              ? pluginQuotaSources.find((entry) => entry.id === selectedSourceId)
+              : undefined;
             return (
-              <li key={source.id} data-quota-engine={source.provider_id} data-engine-health={health}
-                className="flex min-h-10 items-center gap-3 px-3 py-1.5">
-                <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
-                  {source.label}
-                  <span className="ml-2 hidden font-mono text-[11px] text-ink-faint sm:inline">{source.provider_id}</span>
-                </span>
-                <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-soft">
-                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${view.dot}`} />
-                  {t(view.key)}
-                </span>
-                {health === 'warning' || health === 'missing' ? (
-                  <Link to={quotaSettingsHref(source)} data-quota-engine-settings={source.provider_id} className={ROW_LINK}>{t('usage.quota.action.settings')}</Link>
-                ) : null}
-              </li>
+              <EngineQuotaRow
+                key={source.id}
+                source={source}
+                health={health}
+                selectedSourceId={selectedSourceId}
+                matchingPluginSources={matchingPluginSources}
+                selectedPluginSnapshot={selectedPluginSnapshot}
+                savingSource={savingEngineSourceIds.has(engineId)}
+                isRefreshingPlugin={selectedSourceId !== '' && refreshingPluginIds.has(selectedSourceId)}
+                pluginError={selectedSourceId !== '' ? pluginErrors[selectedSourceId] : undefined}
+                isRefreshingNative={
+                  refreshingNativeSourceId === source.id ||
+                  source.refreshing ||
+                  activeRefreshSourceIds.includes(source.id)
+                }
+                feedback={sourceFeedbacks[source.id]}
+                onClearFeedback={() => onClearFeedback(source.id)}
+                onSelectQuotaSource={(next) => onSelectQuotaSource(engineId, next)}
+                onRefreshPluginSource={onRefreshPluginSource}
+                onRefreshNativeSource={() => onRefreshNativeSource(source.id)}
+              />
             );
           })}
         </ul>
@@ -588,9 +742,404 @@ function EngineQuotaSection({ engines, hidden, pending, catalog, configError, on
         {hidden > 0 ? (
           <span data-quota-hidden-engines={hidden} className="mr-1.5">{t(q('usage.quota.engines.hidden'), { n: hidden })}</span>
         ) : null}
-        <span>{t(q('usage.quota.engines.note'))}</span>
+        <span data-quota-engines-auto-note={anyQuotaSelectorShown ? 'true' : undefined}>
+          {t(q(anyQuotaSelectorShown ? 'usage.quota.engines.autoScheduleNote' : 'usage.quota.engines.note'))}
+        </span>
       </p>
     </section>
+  );
+}
+
+function EngineQuotaRow({
+  source, health, selectedSourceId, matchingPluginSources, selectedPluginSnapshot,
+  savingSource, isRefreshingPlugin, pluginError, isRefreshingNative, feedback: externalFeedback,
+  onClearFeedback, onSelectQuotaSource, onRefreshPluginSource, onRefreshNativeSource,
+}: {
+  readonly source: ProviderQuotaSource;
+  readonly health: EngineHealth;
+  readonly selectedSourceId: string;
+  readonly matchingPluginSources: readonly PluginHarnessQuotaSnapshot[];
+  readonly selectedPluginSnapshot: PluginHarnessQuotaSnapshot | undefined;
+  readonly savingSource: boolean;
+  readonly isRefreshingPlugin: boolean;
+  readonly pluginError: string | undefined;
+  readonly isRefreshingNative: boolean;
+  readonly feedback: Feedback | undefined;
+  readonly onClearFeedback: () => void;
+  readonly onSelectQuotaSource: (nextSourceId: string) => Promise<void>;
+  readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
+  readonly onRefreshNativeSource: () => Promise<unknown>;
+}) {
+  const { t, time, locale } = useI18n();
+  const [localFeedback, setLocalFeedback] = useState<Feedback>(null);
+  const feedback = localFeedback ?? externalFeedback ?? null;
+  const engineId = source.provider_id;
+  const view = ENGINE_HEALTH[health];
+  const hasQuotaControls = matchingPluginSources.length > 0 || selectedSourceId !== '' || source.supported;
+
+  if (!hasQuotaControls) {
+    return (
+      <li data-quota-engine={engineId} data-engine-health={health}
+        className="flex min-h-10 items-center gap-3 px-3.5 py-2">
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+          {source.label}
+          <span className="ml-2 hidden font-mono text-[11px] text-ink-faint sm:inline">{engineId}</span>
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-soft">
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${view.dot}`} />
+          {t(view.key)}
+        </span>
+        {health === 'warning' || health === 'missing' ? (
+          <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className={ROW_LINK}>{t('usage.quota.action.settings')}</Link>
+        ) : null}
+      </li>
+    );
+  }
+
+  const isPluginMode = selectedSourceId !== '';
+  const showSourceSelect = matchingPluginSources.length > 0 || selectedSourceId !== '';
+  const pStatus = isPluginMode
+    ? pluginQuotaSnapshotStatus(selectedPluginSnapshot, engineId, pluginError)
+    : undefined;
+  const isNativeLocked = !isPluginMode && isSourceLocked(source);
+  const nativeRefreshAfterMs = source.refresh_after ? new Date(source.refresh_after).getTime() : 0;
+  const nativeSecondsLeft = isNativeLocked ? Math.ceil((nativeRefreshAfterMs - Date.now()) / 1000) : 0;
+  const canRefreshNative = !isPluginMode && source.supported && source.enabled;
+  const canRefreshPlugin = isPluginMode && pStatus !== 'missing';
+
+  const headerReadAt = isPluginMode
+    ? (pStatus !== 'expired' ? selectedPluginSnapshot?.readAt : undefined)
+    : (source.supported ? (source.data_as_of ?? source.checked_at) : undefined);
+
+  const runNativeRefresh = async () => {
+    setLocalFeedback(null);
+    onClearFeedback();
+    try {
+      await onRefreshNativeSource();
+    } catch (error) {
+      setLocalFeedback({ tone: 'error', text: errorText(locale, error) });
+    }
+  };
+
+  const runPluginRefresh = async () => {
+    setLocalFeedback(null);
+    onClearFeedback();
+    try {
+      await onRefreshPluginSource(selectedSourceId);
+    } catch {
+      // Error is stored on pluginErrors by parent.
+    }
+  };
+
+  const nativeHasBeenQueried = source.status !== 'unknown' || source.checked_at !== undefined || source.data_as_of !== undefined;
+  const nativeUnqueried = !isPluginMode && source.supported && !nativeHasBeenQueried && source.meters.length === 0;
+  const accountGroups = useMemo(
+    () => (isPluginMode && pStatus === 'ready' && selectedPluginSnapshot?.readings !== undefined
+      ? groupHarnessQuotaReadings(selectedPluginSnapshot.readings)
+      : []),
+    [isPluginMode, pStatus, selectedPluginSnapshot?.readings],
+  );
+
+  return (
+    <li
+      data-quota-engine={engineId}
+      data-engine-health={health}
+      data-engine-quota-mode={isPluginMode ? 'plugin' : 'native'}
+      className="space-y-2.5 px-4 py-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className="truncate font-display text-[13.5px] font-semibold text-ink">{source.label}</span>
+          <span className="hidden font-mono text-[11px] text-ink-faint sm:inline">{engineId}</span>
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-soft">
+            <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${view.dot}`} />
+            {t(view.key)}
+          </span>
+          {health === 'warning' || health === 'missing' ? (
+            <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className={ROW_LINK}>
+              {t('usage.quota.action.settings')}
+            </Link>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {headerReadAt ? (
+            <span
+              className="text-[11px] text-ink-faint tabular-nums"
+              data-engine-quota-read-at={headerReadAt}
+              title={headerReadAt}
+            >
+              {t(q('usage.quota.engines.readAt'), { time: time.relativeTime(headerReadAt) })}
+            </span>
+          ) : null}
+          {showSourceSelect ? (
+            <select
+              data-engine-quota-source={engineId}
+              aria-label={t(q('usage.quota.engines.sourceAria'), { engine: source.label })}
+              value={selectedSourceId}
+              disabled={savingSource}
+              onChange={(event) => {
+                setLocalFeedback(null);
+                onClearFeedback();
+                void onSelectQuotaSource(event.target.value);
+              }}
+              className={`${SMALL_INPUT} min-w-[132px] max-w-[220px] py-1 pr-6 pl-2.5 text-[11.5px]`}
+            >
+              <option value="">{t(q('usage.quota.engines.sourceNative'))}</option>
+              {selectedSourceId !== '' && !matchingPluginSources.some((entry) => entry.id === selectedSourceId) ? (
+                <option value={selectedSourceId}>{selectedPluginSnapshot?.label ?? selectedSourceId}</option>
+              ) : null}
+              {matchingPluginSources.map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.label}</option>
+              ))}
+            </select>
+          ) : null}
+          {canRefreshPlugin ? (
+            <button
+              type="button"
+              data-engine-quota-refresh={engineId}
+              disabled={isRefreshingPlugin}
+              aria-label={t('usage.quota.refresh')}
+              title={t('usage.quota.refresh')}
+              onClick={() => { void runPluginRefresh(); }}
+              className={ICON_BUTTON}
+            >
+              <Icon name="refresh" size={14} className={isRefreshingPlugin ? 'animate-spin' : undefined} />
+            </button>
+          ) : canRefreshNative ? (
+            <button
+              type="button"
+              data-engine-quota-refresh={engineId}
+              data-quota-source-refresh={source.id}
+              disabled={isRefreshingNative || isNativeLocked}
+              aria-label={t('usage.quota.refresh')}
+              title={isNativeLocked ? t('usage.quota.refreshAfter', { seconds: nativeSecondsLeft }) : t('usage.quota.refresh')}
+              onClick={() => { void runNativeRefresh(); }}
+              className={ICON_BUTTON}
+            >
+              <Icon name="refresh" size={14} className={isRefreshingNative ? 'animate-spin' : undefined} />
+              {isNativeLocked ? <span className="font-mono text-[10.5px]">{nativeSecondsLeft}s</span> : null}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {!isPluginMode ? (
+        source.supported ? (
+          <div className="space-y-2" data-engine-native-quota={engineId} data-engine-quota-status={nativeUnqueried ? 'unqueried' : source.status}>
+            {source.meters.length > 0 ? (
+              <div className="space-y-2" data-engine-native-meters={engineId}>
+                {source.meters.map((meter) => <QuotaMeterRow key={meter.id} meter={meter} sourceStatus={source.status} />)}
+              </div>
+            ) : nativeUnqueried ? (
+              <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft" data-engine-quota-unqueried={engineId}>
+                <span>{t('usage.quota.notQueried')}</span>
+                {canRefreshNative ? (
+                  <>
+                    <span aria-hidden className="text-ink-faint">·</span>
+                    <button
+                      type="button"
+                      data-engine-quota-query={engineId}
+                      disabled={isRefreshingNative || isNativeLocked}
+                      onClick={() => { void runNativeRefresh(); }}
+                      className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50"
+                    >
+                      {t('usage.quota.queryNow')}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : (
+              <p className={`text-[12px] ${source.status === 'error' ? 'text-danger' : 'text-ink-soft'}`}>
+                {source.message ?? source.reason ?? t(source.status === 'ready' || source.status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
+              </p>
+            )}
+            {source.message && source.meters.length > 0 ? <p className="text-[11.5px] text-ink-soft">{source.message}</p> : null}
+            <FeedbackLine feedback={feedback} />
+          </div>
+        ) : (
+          <div className="space-y-1" data-engine-quota-status="unsupported">
+            <p className="text-[11.5px] text-ink-faint">
+              {t(q(matchingPluginSources.length > 0 ? 'usage.quota.engines.nativeUnsupportedWithPlugin' : 'usage.quota.engines.nativeUnsupported'))}
+            </p>
+            <FeedbackLine feedback={feedback} />
+          </div>
+        )
+      ) : (
+        <div className="space-y-2" data-engine-plugin-quota={engineId} data-engine-quota-status={pStatus}>
+          {pStatus === 'missing' ? (
+            <p className="text-[12px] text-danger" data-engine-quota-error={engineId}>
+              {t(q('usage.quota.engines.pluginMissing'), { source: selectedSourceId })}
+            </p>
+          ) : pStatus === 'error' ? (
+            <p className="text-[12px] text-danger" data-engine-quota-error={engineId}>
+              {pluginError ?? selectedPluginSnapshot?.error}
+            </p>
+          ) : pStatus === 'unqueried' ? (
+            <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft" data-engine-quota-unqueried={engineId}>
+              <span>{t('usage.quota.notQueried')}</span>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <button
+                type="button"
+                data-engine-quota-query={engineId}
+                disabled={isRefreshingPlugin}
+                onClick={() => { void runPluginRefresh(); }}
+                className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50"
+              >
+                {t('usage.quota.queryNow')}
+              </button>
+            </div>
+          ) : pStatus === 'expired' ? (
+            <div className="flex flex-wrap items-center gap-2 text-[12px] text-amber-ink" data-engine-quota-expired={engineId}>
+              <span data-engine-quota-read-at={selectedPluginSnapshot?.readAt} title={selectedPluginSnapshot?.readAt}>
+                {t(q('usage.quota.engines.pluginExpired'), {
+                  time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
+                })}
+              </span>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <button
+                type="button"
+                data-engine-quota-query={engineId}
+                disabled={isRefreshingPlugin}
+                onClick={() => { void runPluginRefresh(); }}
+                className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50"
+              >
+                {t('usage.quota.refresh')}
+              </button>
+            </div>
+          ) : accountGroups.length === 0 ? (
+            <p className="text-[12px] text-ink-soft" data-engine-quota-empty={engineId}>
+              {t(q('usage.quota.engines.pluginEmpty'))}
+            </p>
+          ) : (
+            <div className="divide-y divide-hairline/60" data-engine-plugin-readings={engineId}>
+              {accountGroups.map((group) => (
+                <div key={group.accountId} data-quota-account={group.accountId} className="space-y-1.5 py-2 first:pt-0.5 last:pb-0.5">
+                  <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
+                    <span className="font-medium text-ink">{group.accountLabel}</span>
+                    {group.showAccountId ? (
+                      <span className="font-mono text-[10.5px] text-ink-faint">{group.accountId}</span>
+                    ) : null}
+                  </div>
+                  <div className="space-y-2">
+                    {group.readings.map((reading, index) => (
+                      <PluginQuotaBucketRow
+                        key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${index}`}
+                        reading={reading}
+                        snapshotReadAt={selectedPluginSnapshot?.readAt}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <FeedbackLine feedback={feedback} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function PluginQuotaBucketRow({ reading, snapshotReadAt }: {
+  readonly reading: HarnessQuotaReading;
+  readonly snapshotReadAt: string | undefined;
+}) {
+  const { t, time } = useI18n();
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const val = formatHarnessQuotaReading(reading);
+  const models = reading.modelIds ?? [];
+  const singleModelAsLabel = reading.pool === undefined && models.length === 1;
+  const poolLabel = reading.pool ?? (singleModelAsLabel ? models[0]! : t(q('usage.quota.engines.defaultPool')));
+  const inlineModels = !singleModelAsLabel && models.length > 0 && models.length <= 2;
+  const foldModels = models.length > 2;
+  const distinctReadAt = reading.readAt !== undefined && reading.readAt !== snapshotReadAt ? reading.readAt : undefined;
+  const barTone = val.kind === 'known' && val.remainingPercent !== undefined
+    ? val.remainingPercent === 0
+      ? 'bg-danger'
+      : val.remainingPercent <= 20
+        ? 'bg-amber-rule'
+        : 'bg-accent'
+    : undefined;
+
+  return (
+    <div
+      className="space-y-1 text-[12px]"
+      data-quota-bucket={reading.pool ?? 'default'}
+      data-quota-window={reading.window ?? ''}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+          <span className="truncate text-ink-soft">{poolLabel}</span>
+          {reading.window ? (
+            <span className="shrink-0 rounded bg-ink/[0.06] px-1.5 py-px font-mono text-[10px] text-ink-soft" data-bucket-window>
+              {reading.window}
+            </span>
+          ) : null}
+          {inlineModels ? (
+            <span className="font-mono text-[10.5px] text-ink-faint" data-reading-models-inline>
+              {models.join(' · ')}
+            </span>
+          ) : null}
+          {foldModels ? (
+            <button
+              type="button"
+              data-reading-models-toggle
+              aria-expanded={modelsOpen}
+              onClick={() => { setModelsOpen((prev) => !prev); }}
+              className="inline-flex items-center gap-1 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.09] hover:text-ink"
+            >
+              <DisclosureChevron open={modelsOpen} />
+              <span>{t(q('usage.quota.engines.modelsCount'), { count: models.length })}</span>
+            </button>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 items-baseline gap-2">
+          {val.kind === 'unknown' ? (
+            <span className="text-[11.5px] text-ink-faint tabular-nums" data-reading-state="unknown">
+              {t('usage.quota.status.unknown')}
+            </span>
+          ) : (
+            <span
+              className={`text-[11.5px] tabular-nums ${val.exhausted ? 'font-medium text-danger' : 'text-ink'}`}
+              data-reading-state={val.exhausted ? 'exhausted' : 'available'}
+            >
+              {t('usage.quota.value.remaining', { value: val.value })}
+            </span>
+          )}
+          {reading.resetAt ? (
+            <span className="text-[10.5px] text-ink-faint" title={reading.resetAt}>
+              {t('usage.quota.resets', { time: time.timeUntil(reading.resetAt) })}
+            </span>
+          ) : null}
+          {distinctReadAt ? (
+            <span className="text-[10.5px] text-ink-faint tabular-nums" data-reading-read-at={distinctReadAt} title={distinctReadAt}>
+              {t(q('usage.quota.engines.readAt'), { time: time.relativeTime(distinctReadAt) })}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      {foldModels && modelsOpen ? (
+        <div className="flex flex-wrap gap-1 pt-0.5" data-reading-models-list>
+          {models.map((modelId) => (
+            <span key={modelId} className="rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft">
+              {modelId}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {val.kind === 'known' && val.remainingPercent !== undefined && barTone !== undefined ? (
+        <div className="relative h-1 w-full overflow-hidden rounded-full bg-ink/[0.07]" data-bucket-progress>
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${barTone}`}
+            style={{ width: `${val.remainingPercent}%` }}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 

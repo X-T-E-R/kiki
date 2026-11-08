@@ -535,7 +535,7 @@ Each call receives `{ settings, signal, kikiHome }`. Stop promptly when `signal`
 
 ### External harness quota sources
 
-A quota-source plugin reports remaining quota for the accounts a person already uses. Declare it in `x-kiki.harnessQuotaSources` and register the same definition with `api.registerHarnessQuotaSource(definition, adapter)` in `entry.mjs`. Types and the cache schemas are exported from `@kiki/plugin-sdk/harness-quota`. Any enabled plugin can register a source. The user chooses one source per engine under that engine's defaults.
+A quota-source plugin reports remaining quota for the accounts a person already uses. Declare it in `x-kiki.harnessQuotaSources` and register the same definition with `api.registerHarnessQuotaSource(definition, adapter)` in `entry.mjs`. Types and the cache schemas are exported from `@kiki/plugin-sdk/harness-quota`. Any enabled plugin can register a source. The user chooses one source per engine under that engine's defaults or on **Usage → Quotas**.
 
 ```json
 {

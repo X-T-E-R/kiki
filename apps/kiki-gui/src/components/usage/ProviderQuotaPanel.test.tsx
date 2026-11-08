@@ -14,10 +14,16 @@ vi.mock('../../lib/providerQuota', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/providerQuota')>();
   return { ...actual, useProviderQuotas: () => realQuotas ? actual.useProviderQuotas() : mockUseProviderQuotas() };
 });
+const harnessQuotaCached = vi.fn();
+const harnessQuotaRead = vi.fn();
+const patchConfig = vi.fn();
 const client = {
   listOAuthMethods: vi.fn(), startOAuthLogin: vi.fn(), getOAuthStatus: vi.fn(), cancelOAuthLogin: vi.fn(),
-  listProviders: vi.fn(), getConfig: vi.fn(), listExecutors: vi.fn(),
+  listProviders: vi.fn(), getConfig: vi.fn(), patchConfig, listExecutors: vi.fn(),
   getProviderQuotas: vi.fn(), refreshProviderQuota: vi.fn(), setProviderQuotaEnabled: vi.fn(),
+  klient: { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead } } } as {
+    rest?: { harnessQuota?: { cached: typeof harnessQuotaCached; read: typeof harnessQuotaRead } };
+  },
 };
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local', wsStatus: 'open' }) }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -60,13 +66,26 @@ async function click(container: Element, selector: string) {
   await act(async () => { button.click(); });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
 }
+async function selectOption(container: Element, selector: string, value: string) {
+  const select = container.querySelector<HTMLSelectElement>(selector)!;
+  expect(select).not.toBeNull();
+  await act(async () => {
+    select.value = value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+}
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.setItem('kiki.locale', 'en');
   realQuotas = false;
   refreshSource.mockResolvedValue(undefined); setSourceEnabled.mockResolvedValue(undefined);
   client.listProviders.mockResolvedValue({ items: [] });
   client.getConfig.mockResolvedValue({ raw: {} });
+  patchConfig.mockResolvedValue({ raw: {} });
   client.listExecutors.mockResolvedValue({ items: [] });
+  client.klient = { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead } } };
+  harnessQuotaCached.mockResolvedValue({ sources: [] });
+  harnessQuotaRead.mockResolvedValue({ sources: [] });
   client.listOAuthMethods.mockResolvedValue([{ id: 'openai-codex', provider: 'managed:openai-codex', label: 'ChatGPT' }]);
   client.startOAuthLogin.mockResolvedValue(pending);
   client.getOAuthStatus.mockResolvedValue(pending);
@@ -345,5 +364,331 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-quota-snapshot-error]')).not.toBeNull();
     await click(container, '[data-quota-snapshot-retry]');
     expect(refetch).toHaveBeenCalledOnce();
+  });
+  it('switches an engine with native readings between Native, Plugin A, and Plugin B without calling plugin read or affecting other rows', async () => {
+    let configState: Record<string, unknown> = {
+      agent_executor_overrides: {
+        'claude-acp': { show_in_profile_list: true },
+        'codex-acp': { show_in_profile_list: true },
+      },
+    };
+    client.getConfig.mockImplementation(async () => ({ raw: configState }));
+    patchConfig.mockImplementation(async (patch: { agent_executor_overrides?: Record<string, { quota_source?: string | null }> }) => {
+      const prevOverrides = (configState['agent_executor_overrides'] ?? {}) as Record<string, Record<string, unknown>>;
+      const nextOverrides = { ...prevOverrides };
+      for (const [engineId, entry] of Object.entries(patch.agent_executor_overrides ?? {})) {
+        const current = { ...nextOverrides[engineId] };
+        if (entry.quota_source === null) delete current['quota_source'];
+        else if (entry.quota_source !== undefined) current['quota_source'] = entry.quota_source;
+        nextOverrides[engineId] = current;
+      }
+      configState = { ...configState, agent_executor_overrides: nextOverrides };
+      return { raw: configState };
+    });
+    harnessQuotaCached.mockResolvedValue({
+      sources: [
+        {
+          id: 'plugin:alpha/claude',
+          label: 'Alpha Quota Bridge',
+          engineIds: ['claude-acp'],
+          minRefreshIntervalMs: 300_000,
+          readAt: '2026-10-10T11:58:00Z',
+          readings: [
+            { accountId: 'alpha-work@example.test', pool: 'Claude', window: '5h', remaining: 78, unit: 'percent', resetAt: '2026-10-10T16:00:00Z' },
+          ],
+        },
+        {
+          id: 'plugin:beta/claude',
+          label: 'Beta Telemetry',
+          engineIds: ['claude-acp'],
+          minRefreshIntervalMs: 600_000,
+          readAt: '2026-10-10T11:50:00Z',
+          readings: [
+            { accountId: 'beta-team@example.test', pool: 'Daily budget', remaining: 42.5, unit: 'money' },
+          ],
+        },
+      ],
+    });
+    show([
+      source({ id: 'provider-native', label: 'Native Provider', kind: 'provider', meters: [meter({ remaining: 19.5 })] }),
+      source({
+        id: 'executor:claude-acp',
+        provider_id: 'claude-acp',
+        label: 'Claude Code',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        checked_at: '2026-10-10T11:59:00Z',
+        meters: [meter({ id: 'native-5h', label: 'Native 5h window', unit: 'percent', unit_label: '%', used: 35, limit: 100 })],
+      }),
+      source({
+        id: 'executor:codex-acp',
+        provider_id: 'codex-acp',
+        label: 'Codex CLI',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        meters: [meter({ id: 'codex-native', label: 'Codex window', unit: 'percent', unit_label: '%', used: 12, limit: 100 })],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+
+    // Opening the page only reads cache, never calls plugin read
+    expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
+    expect(harnessQuotaRead).not.toHaveBeenCalled();
+
+    const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
+    const codexRow = container.querySelector<HTMLElement>('[data-quota-engine="codex-acp"]')!;
+    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.textContent).toContain('Native 5h window');
+    expect(claudeRow.textContent).toContain('35%');
+    expect(container.querySelector('[data-quota-engines-auto-note="true"]')?.textContent).toContain('Auto instance selection');
+
+    // Switch to Plugin A
+    await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:alpha/claude');
+    expect(patchConfig).toHaveBeenCalledWith({
+      agent_executor_overrides: { 'claude-acp': { quota_source: 'plugin:alpha/claude' } },
+    });
+    expect(harnessQuotaRead).not.toHaveBeenCalled();
+    expect(claudeRow.dataset.engineQuotaMode).toBe('plugin');
+    expect(claudeRow.textContent).not.toContain('Native 5h window');
+    expect(claudeRow.textContent).toContain('alpha-work@example.test');
+    expect(claudeRow.textContent).toContain('Remaining 78%');
+
+    // Switch to Plugin B
+    await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:beta/claude');
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      agent_executor_overrides: { 'claude-acp': { quota_source: 'plugin:beta/claude' } },
+    });
+    expect(harnessQuotaRead).not.toHaveBeenCalled();
+    expect(claudeRow.textContent).toContain('beta-team@example.test');
+    expect(claudeRow.textContent).toContain('42.50 USD');
+
+    // Other engine and native provider remain completely unaffected
+    expect(codexRow.dataset.engineQuotaMode).toBe('native');
+    expect(codexRow.textContent).toContain('Codex window');
+    expect(container.querySelector('[data-quota-item="provider-native"]')?.textContent).toContain('19.50 USD');
+
+    // Switch back to Native
+    await selectOption(container, '[data-engine-quota-source="claude-acp"]', '');
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      agent_executor_overrides: { 'claude-acp': { quota_source: null } },
+    });
+    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.textContent).toContain('Native 5h window');
+  });
+  it('fills in an engine without native quota using multi-bucket plugin readings, distinguishing 0 from unknown and folding model lists', async () => {
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'agy-cli': { show_in_profile_list: true, quota_source: 'plugin:magpie/agy' },
+        },
+      },
+    });
+    harnessQuotaCached.mockResolvedValue({
+      sources: [
+        {
+          id: 'plugin:magpie/agy',
+          label: 'Magpie AGY Quota',
+          engineIds: ['agy-cli'],
+          minRefreshIntervalMs: 300_000,
+          readAt: '2026-10-10T11:57:00Z',
+          readings: [
+            {
+              accountId: 'work@example.test',
+              pool: 'Gemini',
+              window: '5h',
+              remaining: 84,
+              unit: 'percent',
+              resetAt: '2026-10-10T15:00:00Z',
+              modelIds: ['gemini-3.1-pro-high', 'gemini-3-flash', 'gemini-2.5-pro'],
+            },
+            {
+              accountId: 'work@example.test',
+              pool: 'Claude / GPT',
+              window: '5h',
+              remaining: 0,
+              unit: 'percent',
+              resetAt: '2026-10-10T14:00:00Z',
+              modelIds: ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'gpt-5.4'],
+            },
+            {
+              accountId: 'work@example.test',
+              pool: 'Claude / GPT',
+              window: '7d',
+              remaining: undefined,
+              unit: 'percent',
+              modelIds: ['claude-opus-4-6-thinking'],
+            },
+            {
+              accountId: 'personal@example.test',
+              pool: 'Gemini',
+              window: '5h',
+              remaining: 100,
+              unit: 'percent',
+              modelIds: ['gemini-3.1-pro-high'],
+            },
+          ],
+        },
+      ],
+    });
+    show([
+      source({
+        id: 'executor:agy-cli',
+        provider_id: 'agy-cli',
+        label: 'AGY CLI',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+
+    const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+    expect(agyRow.dataset.engineQuotaMode).toBe('plugin');
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(agyRow.querySelectorAll('[data-quota-account]')).toHaveLength(2);
+
+    const workAccount = agyRow.querySelector('[data-quota-account="work@example.test"]')!;
+    const buckets = workAccount.querySelectorAll('[data-quota-bucket]');
+    expect(buckets).toHaveLength(3);
+
+    // Bucket 0: 84% remaining, foldable 3 models (collapsed by default, expands on click)
+    expect(buckets[0]!.textContent).toContain('Gemini');
+    expect(buckets[0]!.textContent).toContain('5h');
+    expect(buckets[0]!.textContent).toContain('Remaining 84%');
+    expect(buckets[0]!.textContent).not.toContain('gemini-2.5-pro');
+    const toggleModelsBtn = buckets[0]!.querySelector<HTMLButtonElement>('[data-reading-models-toggle]')!;
+    expect(toggleModelsBtn.textContent).toContain('3 models');
+    await act(async () => { toggleModelsBtn.click(); });
+    expect(buckets[0]!.textContent).toContain('gemini-2.5-pro');
+
+    // Bucket 1: remaining 0 is explicitly 'Remaining 0%' with exhausted state, NOT 'Unknown'
+    expect(buckets[1]!.textContent).toContain('Claude / GPT');
+    expect(buckets[1]!.querySelector('[data-reading-state="exhausted"]')?.textContent).toBe('Remaining 0%');
+
+    // Bucket 2: remaining undefined is explicitly 'Unknown', NOT converted to 0%
+    expect(buckets[2]!.textContent).toContain('Claude / GPT');
+    expect(buckets[2]!.textContent).toContain('7d');
+    expect(buckets[2]!.querySelector('[data-reading-state="exhausted"]')).toBeNull();
+    expect(buckets[2]!.querySelector('[data-reading-state="unknown"]')?.textContent).toBe('Unknown');
+  });
+  it('preserves unread, expired, and failed plugin states and never lets native data masquerade as plugin data on failure', async () => {
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'claude-acp': { show_in_profile_list: true, quota_source: 'plugin:alpha/claude' },
+          'agy-cli': { show_in_profile_list: true, quota_source: 'plugin:magpie/agy' },
+        },
+      },
+    });
+    harnessQuotaCached.mockResolvedValue({
+      sources: [
+        {
+          id: 'plugin:alpha/claude',
+          label: 'Alpha Quota Bridge',
+          engineIds: ['claude-acp'],
+          minRefreshIntervalMs: 300_000,
+          readAt: '2026-10-10T11:40:00Z',
+          readings: undefined,
+        },
+        {
+          id: 'plugin:magpie/agy',
+          label: 'Magpie AGY Quota',
+          engineIds: ['agy-cli'],
+          minRefreshIntervalMs: 300_000,
+        },
+      ],
+    });
+    show([
+      source({
+        id: 'executor:claude-acp',
+        provider_id: 'claude-acp',
+        label: 'Claude Code',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        meters: [meter({ id: 'claude-native-meter', label: 'Native Claude Meter', unit: 'percent', unit_label: '%', used: 22, limit: 100 })],
+      }),
+      source({
+        id: 'executor:agy-cli',
+        provider_id: 'agy-cli',
+        label: 'AGY CLI',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+
+    const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
+    const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+
+    // Expired state on claude-acp (readAt present, readings cleared after TTL)
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('expired');
+    expect(claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')).not.toBeNull();
+    expect(claudeRow.textContent).not.toContain('Native Claude Meter');
+
+    // Unqueried state on agy-cli (never queried)
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('unqueried');
+    expect(agyRow.querySelector('[data-engine-quota-unqueried="agy-cli"]')).not.toBeNull();
+
+    // Failing refresh on claude-acp shows error and never falls back to Native Claude Meter
+    harnessQuotaRead.mockRejectedValueOnce(new Error('Magpie local bridge unreachable'));
+    await click(container, '[data-engine-quota-query="claude-acp"]');
+    expect(harnessQuotaRead).toHaveBeenCalledExactlyOnceWith('plugin:alpha/claude');
+    expect(claudeRow.querySelector('[data-engine-quota-error="claude-acp"]')?.textContent).toContain('Magpie local bridge unreachable');
+    expect(claudeRow.textContent).not.toContain('Native Claude Meter');
+    expect(claudeRow.textContent).not.toContain('22%');
+
+    // Successful refresh on agy-cli updates readings in place
+    harnessQuotaRead.mockResolvedValueOnce({
+      sources: [
+        {
+          id: 'plugin:magpie/agy',
+          label: 'Magpie AGY Quota',
+          engineIds: ['agy-cli'],
+          minRefreshIntervalMs: 300_000,
+          readAt: '2026-10-10T12:01:00Z',
+          readings: [{ accountId: 'main@example.test', pool: 'Gemini', window: '5h', remaining: 91, unit: 'percent' }],
+        },
+      ],
+    });
+    await click(container, '[data-engine-quota-query="agy-cli"]');
+    expect(harnessQuotaRead).toHaveBeenLastCalledWith('plugin:magpie/agy');
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(agyRow.textContent).toContain('main@example.test');
+    expect(agyRow.textContent).toContain('Remaining 91%');
+  });
+  it('degrades gracefully when connected to an older server without the harness-quota route', async () => {
+    client.klient = { rest: {} };
+    client.getConfig.mockResolvedValue({
+      raw: { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: true } } },
+    });
+    show([
+      source({
+        id: 'executor:claude-acp',
+        provider_id: 'claude-acp',
+        label: 'Claude Code',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        meters: [meter({ id: 'm-native', label: 'Native Window', unit: 'percent', unit_label: '%', used: 10, limit: 100 })],
+      }),
+    ]);
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
+    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.textContent).toContain('Native Window');
+    expect(claudeRow.querySelector('[data-engine-quota-source="claude-acp"]')).toBeNull();
   });
 });

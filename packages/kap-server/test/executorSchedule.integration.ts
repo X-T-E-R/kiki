@@ -271,6 +271,12 @@ it('selects AGY and another harness from config, then serves the same quota cach
     const cached = await client.rest!.harnessQuota.cached();
     expect(cached.sources.find((item) => item.id === sourceId)?.readings?.map((item) => item.accountId)).toEqual(['exhausted', 'work', 'personal', 'other']);
     expect(cached.sources.find((item) => item.id === grokSourceId)?.readings?.map((item) => item.accountId)).toEqual(['exhausted', 'other', 'grok-b@example.test', 'grok-a@example.test']);
+    const providerQuotaSnapshot = await ok<{ sources: Array<{ id: string; provider_id: string; kind: string }> }>('/usage/provider-quotas');
+    const engineIdsInQuota = providerQuotaSnapshot.sources.filter((item) => item.kind === 'executor').map((item) => item.provider_id);
+    expect(engineIdsInQuota).toEqual(expect.arrayContaining(['agy-cli', 'fixture-acp', 'grok-acp']));
+    expect(engineIdsInQuota).not.toContain('instance-work');
+    expect(engineIdsInQuota).not.toContain('instance-personal');
+    expect(engineIdsInQuota).not.toContain('instance-grok-a');
     const demanded = await client.rest!.harnessQuota.read(sourceId);
     expect(demanded.sources).toHaveLength(1);
     expect(await reads()).toBe(1);

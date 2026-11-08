@@ -536,7 +536,7 @@ Cockpit 这类可选管理器可直接复用自身账号存储和 OAuth 代码�
 
 ### 外部 harness 额度来源
 
-额度来源插件报告用户已有账号的剩余额度。在 `x-kiki.harnessQuotaSources` 中声明，并在 `entry.mjs` 里用 `api.registerHarnessQuotaSource(definition, adapter)` 注册相同定义。类型和缓存 schema 从 `@kiki/plugin-sdk/harness-quota` 导出。任何已启用插件都可以注册来源。用户在每个引擎的默认设置里为该引擎选择一个来源。
+额度来源插件报告用户已有账号的剩余额度。在 `x-kiki.harnessQuotaSources` 中声明，并在 `entry.mjs` 里用 `api.registerHarnessQuotaSource(definition, adapter)` 注册相同定义。类型和缓存 schema 从 `@kiki/plugin-sdk/harness-quota` 导出。任何已启用插件都可以注册来源。用户在每个引擎的默认设置或「用量 → 额度」页中为该引擎选择一个来源。
 
 ```json
 {

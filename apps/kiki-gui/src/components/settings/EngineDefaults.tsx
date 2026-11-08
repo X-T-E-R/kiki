@@ -21,11 +21,10 @@ import type { ExecutorCatalogItem, ExecutorInstanceChoice } from '@kiki/protocol
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { Toggle } from '../controls';
+import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { hookSupport, kikiDelegationTools, kikiGroupTools } from '../harness/kikiContext';
 import { useConnection } from '../../state/connection';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
-import { FeedbackLine, type Feedback } from '../controls';
 import { DisclosureChevron } from '../icons';
 import { ExecutorScheduleControl, scheduleChoiceFromDraft, scheduleChoiceValue } from '../harness/ExecutorScheduleControl';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalog } from './profileEditor/engines';
@@ -192,6 +191,11 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<EngineDefaultsDraft>(() => engineDefaultsDraftFrom(saved));
   const [quotaDraft, setQuotaDraft] = useState(quotaSource);
+  const [prevQuotaSource, setPrevQuotaSource] = useState(quotaSource);
+  if (prevQuotaSource !== quotaSource) {
+    setPrevQuotaSource(quotaSource);
+    setQuotaDraft(quotaSource);
+  }
   const [saving, setSaving] = useState(false);
   const quotaQuery = useQuery({
     queryKey: ['harness-quota', scopeId, meta?.server_id],

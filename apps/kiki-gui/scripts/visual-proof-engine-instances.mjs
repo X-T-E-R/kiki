@@ -244,6 +244,70 @@ async function walk({ page, link, shot, view, control }) {
   await globalAgy.click();
   await profileTrigger.filter({ hasText: 'AGY CLI' }).waitFor();
 
+  const harnessQuotaReadCalls = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/harness-quota/read' && request.method() === 'POST') {
+      harnessQuotaReadCalls.push(request.postDataJSON()?.source);
+    }
+  });
+
+  await page.goto(link('/usage?panel=quota'), { waitUntil: 'domcontentloaded' });
+  const enginesSection = page.locator('[data-quota-engines]');
+  await enginesSection.waitFor();
+  const agyQuotaRow = page.locator('[data-quota-engine="agy-cli"]');
+  const codexQuotaRow = page.locator('[data-quota-engine="codex-app-server"]');
+  const grokQuotaRow = page.locator('[data-quota-engine="grok-acp"]');
+  await agyQuotaRow.waitFor();
+  await codexQuotaRow.waitFor();
+  await grokQuotaRow.waitFor();
+  assert.equal(harnessQuotaReadCalls.length, 0, 'opening the quota page only reads cache without calling plugin read');
+  assert.equal(await agyQuotaRow.locator('[data-engine-quota-source="agy-cli"]').inputValue(), 'plugin:magpie-harness-quota/antigravity');
+  await agyQuotaRow.locator('[data-engine-quota-unqueried="agy-cli"]').waitFor();
+
+  await agyQuotaRow.locator('[data-engine-quota-query="agy-cli"]').click();
+  await agyQuotaRow.locator('[data-engine-plugin-readings="agy-cli"]').waitFor();
+  assert.deepEqual(harnessQuotaReadCalls, ['plugin:magpie-harness-quota/antigravity']);
+  assert.equal(await agyQuotaRow.locator('[data-reading-state="exhausted"]').count(), 1);
+  assert.equal(await agyQuotaRow.locator('[data-reading-state="unknown"]').count(), 1);
+  await agyQuotaRow.locator('[data-reading-models-toggle]').first().click();
+  await agyQuotaRow.locator('[data-reading-models-list]').first().waitFor();
+  assert.match(await agyQuotaRow.innerText(), /gemini-2\.5-pro/);
+  await enginesSection.scrollIntoViewIfNeeded();
+  await shot(`quota-engines-filled-${view.locale}-${view.width}`);
+
+  assert.equal(await codexQuotaRow.getAttribute('data-engine-quota-mode'), 'native');
+  assert.match(await codexQuotaRow.innerText(), /28%/);
+  const codexSourceSelect = codexQuotaRow.locator('[data-engine-quota-source="codex-app-server"]');
+  await codexSourceSelect.selectOption('plugin:magpie-harness-quota/codex');
+  await codexQuotaRow.locator('[data-engine-plugin-readings="codex-app-server"]').waitFor();
+  assert.match(await codexQuotaRow.innerText(), /64%/);
+  await codexSourceSelect.selectOption('plugin:alpha-telemetry/codex');
+  await page.waitForFunction(() => document.querySelector('[data-quota-engine="codex-app-server"]')?.textContent?.includes('48.50 USD'));
+  assert.equal(harnessQuotaReadCalls.length, 1, 'switching quota sources only reads cached snapshots');
+  assert.match(await grokQuotaRow.innerText(), /18\/100/);
+  assert.match(await page.locator('[data-quota-item="account-kimi"]').innerText(), /87\.50 USD/);
+  await enginesSection.scrollIntoViewIfNeeded();
+  await shot(`quota-engines-switched-${view.locale}-${view.width}`);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await enginesSection.waitFor();
+  assert.equal(await codexSourceSelect.inputValue(), 'plugin:alpha-telemetry/codex');
+  assert.equal(await agyQuotaRow.locator('[data-engine-quota-source="agy-cli"]').inputValue(), 'plugin:magpie-harness-quota/antigravity');
+  await agyQuotaRow.locator('[data-engine-plugin-readings="agy-cli"]').waitFor();
+  assert.equal(harnessQuotaReadCalls.length, 1, 'reopening the page reads cache without calling plugin read');
+
+  await control({ action: 'harness_quota_fail', source: 'plugin:alpha-telemetry/codex', fail: true });
+  await codexQuotaRow.locator('[data-engine-quota-refresh="codex-app-server"]').click();
+  await codexQuotaRow.locator('[data-engine-quota-error="codex-app-server"]').waitFor();
+  assert.match(await codexQuotaRow.locator('[data-engine-quota-error="codex-app-server"]').innerText(), /Plugin quota bridge unreachable/);
+  assert.doesNotMatch(await codexQuotaRow.innerText(), /28%/, 'native engine quota never masquerades as plugin data when plugin refresh fails');
+  await control({ action: 'harness_quota_fail', source: 'plugin:alpha-telemetry/codex', fail: false });
+
+  await codexSourceSelect.selectOption('');
+  await codexQuotaRow.locator('[data-engine-native-meters="codex-app-server"]').waitFor();
+  assert.match(await codexQuotaRow.innerText(), /28%/);
+
   await control({ action: 'engine_account_source_unavailable', unavailable: true });
   const unavailableSourceResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());

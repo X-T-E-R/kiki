@@ -1,12 +1,108 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProviderCatalogItem, ProviderQuotaMeter, ProviderQuotaSnapshot, ProviderQuotaSource } from '@kiki/protocol';
+import type {
+  HarnessQuotaReading, PluginHarnessQuotaSnapshot, ProviderCatalogItem,
+  ProviderQuotaMeter, ProviderQuotaSnapshot, ProviderQuotaSource,
+} from '@kiki/protocol';
 import { useConnection } from '../state/connection';
 import {
-  configuredEngineDescriptors, engineDisplayOf, engineOverridesOf, engineVisibilityOf,
+  asConfigRecord, configuredEngineDescriptors, engineDisplayOf, engineOverridesOf, engineVisibilityOf,
 } from '../components/settings/profileEditor/engines';
 
-export type { ProviderQuotaMeter, ProviderQuotaSnapshot, ProviderQuotaSource } from '@kiki/protocol';
+export type {
+  HarnessQuotaReading, PluginHarnessQuotaSnapshot, ProviderQuotaMeter,
+  ProviderQuotaSnapshot, ProviderQuotaSource,
+} from '@kiki/protocol';
 export type ProviderQuotaStatus = ProviderQuotaSource['status'];
+
+export const HARNESS_QUOTA_QUERY_KEY = ['harness-quota'] as const;
+
+export function harnessQuotaQueryKey(scopeId: string, serverId?: string) {
+  return [...HARNESS_QUOTA_QUERY_KEY, scopeId, serverId] as const;
+}
+
+export type PluginQuotaStatus = 'ready' | 'unqueried' | 'expired' | 'error' | 'missing';
+
+export function pluginQuotaSnapshotStatus(
+  snapshot: PluginHarnessQuotaSnapshot | undefined,
+  engineId: string,
+  localError?: string,
+): PluginQuotaStatus {
+  if (snapshot === undefined || !snapshot.engineIds.includes(engineId)) return 'missing';
+  if (localError !== undefined || snapshot.error !== undefined) return 'error';
+  if (snapshot.readings !== undefined) return 'ready';
+  if (snapshot.readAt !== undefined) return 'expired';
+  return 'unqueried';
+}
+
+export interface HarnessQuotaAccountGroup {
+  readonly accountId: string;
+  readonly accountLabel: string;
+  readonly showAccountId: boolean;
+  readonly readings: readonly HarnessQuotaReading[];
+}
+
+export function groupHarnessQuotaReadings(readings: readonly HarnessQuotaReading[]): readonly HarnessQuotaAccountGroup[] {
+  const groups = new Map<string, { accountLabel: string; readings: HarnessQuotaReading[] }>();
+  for (const reading of readings) {
+    const existing = groups.get(reading.accountId);
+    if (existing === undefined) {
+      groups.set(reading.accountId, {
+        accountLabel: reading.accountLabel?.trim() || reading.accountId,
+        readings: [reading],
+      });
+    } else {
+      if (existing.accountLabel === reading.accountId && reading.accountLabel?.trim()) {
+        existing.accountLabel = reading.accountLabel.trim();
+      }
+      existing.readings.push(reading);
+    }
+  }
+  return [...groups.entries()].map(([accountId, group]) => ({
+    accountId,
+    accountLabel: group.accountLabel,
+    showAccountId: group.accountLabel !== accountId,
+    readings: group.readings,
+  }));
+}
+
+export type HarnessReadingValue =
+  | { readonly kind: 'known'; readonly value: string; readonly exhausted: boolean; readonly remainingPercent?: number }
+  | { readonly kind: 'unknown' };
+
+export function formatHarnessQuotaReading(reading: HarnessQuotaReading): HarnessReadingValue {
+  if (reading.remaining === undefined || reading.remaining === null) {
+    return { kind: 'unknown' };
+  }
+  const exhausted = reading.remaining === 0;
+  if (reading.unit === 'percent') {
+    const rounded = Math.round(reading.remaining);
+    return {
+      kind: 'known',
+      value: `${rounded}%`,
+      exhausted,
+      remainingPercent: Math.min(100, Math.max(0, rounded)),
+    };
+  }
+  if (reading.unit === 'money') {
+    return { kind: 'known', value: `${reading.remaining.toFixed(2)} USD`, exhausted };
+  }
+  return { kind: 'known', value: `${reading.remaining} ${reading.unit}`, exhausted };
+}
+
+export function mergeHarnessQuotaSnapshots(
+  current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined,
+  updated: readonly PluginHarnessQuotaSnapshot[],
+): { readonly sources: readonly PluginHarnessQuotaSnapshot[] } {
+  const byId = new Map(updated.map((item) => [item.id, item]));
+  if (current === undefined) return { sources: [...updated] };
+  const merged = current.sources.map((source) => byId.get(source.id) ?? source);
+  for (const item of updated) {
+    if (!current.sources.some((source) => source.id === item.id)) {
+      merged.push(item);
+    }
+  }
+  return { sources: merged };
+}
 
 export function formatWindowPeriod(seconds: number | undefined): string | undefined {
   if (seconds === undefined || seconds <= 0) return undefined;
@@ -201,7 +297,13 @@ export function signedOutProviderIds(providers: readonly ProviderCatalogItem[] |
 /** The engine scope off a `GET /config` response, from the records Settings › Connections writes. */
 export function quotaEngineScopeOf(config: { readonly raw?: unknown } | undefined): QuotaEngineScope {
   const prefs = engineVisibilityOf(engineOverridesOf(config), engineDisplayOf(config));
-  return { ...prefs, configured: new Set(Object.keys(configuredEngineDescriptors(config) ?? {})) };
+  const descriptors = configuredEngineDescriptors(config) ?? {};
+  const configured = new Set(
+    Object.entries(descriptors)
+      .filter(([, entry]) => typeof asConfigRecord(entry)?.['source_executor_id'] !== 'string')
+      .map(([id]) => id),
+  );
+  return { ...prefs, configured };
 }
 
 /**

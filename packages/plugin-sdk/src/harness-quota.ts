@@ -58,6 +58,7 @@ export const harnessQuotaSnapshotSchema = z.object({
   minRefreshIntervalMs: z.number().int().positive(),
   readAt: z.string().datetime({ offset: true }).optional(),
   readings: z.array(harnessQuotaReadingSchema).optional(),
+  error: z.string().min(1).optional(),
 }).strict();
 
 export const harnessQuotaCacheResponseSchema = z.object({
