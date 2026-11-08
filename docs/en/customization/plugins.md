@@ -448,6 +448,12 @@ Supported fields:
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
+### Model request projection
+
+Plugins can declare a send strategy for selected native models with `x-kiki.requestProjection`, without an `entry`. Set `schemaVersion: 1` and use `strategySetting` and `modelsSetting` to name two string settings (by default `strategy` and `targetModels`). Set `defaultStrategy` to `passthrough` or `tool_result_appendix`, and use `defaultModels` for the default model list. The model setting accepts exact model aliases, IDs, or names separated by newlines, commas, or semicolons.
+
+`tool_result_appendix` moves automatic host reminders immediately following a complete tool batch into a separate text part on the last tool result. Tool content, user input, and saved conversation history stay intact. Disable the plugin or select `passthrough` to restore the original message layout on subsequent requests. The plugin detail's Diagnostics section shows projection counts for the current host process.
+
 ### Host models and credentials
 
 A native plugin tool can use Kiki's configured models and connections without copying their API keys. Declare `"engines": { "kiki": ">=0.4.3" }` inside `x-kiki`; the types are exported from `@kiki/plugin-sdk`.

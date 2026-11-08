@@ -449,6 +449,12 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
+### 模型请求投影
+
+插件可以用 `x-kiki.requestProjection` 为选定的原生模型声明发送策略，无需 `entry`。设置 `schemaVersion: 1`，用 `strategySetting` 和 `modelsSetting` 指向两个字符串设置（默认为 `strategy` 和 `targetModels`）。`defaultStrategy` 可取 `passthrough` 或 `tool_result_appendix`；`defaultModels` 是默认模型列表。模型设置接受以换行、逗号或分号分隔的精确模型别名、ID 或名称。
+
+`tool_result_appendix` 只将紧随完整工具批次的自动宿主提醒放进最后一个工具结果的独立文本附录。原工具内容、用户输入和已保存的会话历史保持不变。关闭插件或选用 `passthrough` 后，后续请求沿用原来的消息布局。插件详情的「诊断」显示当前宿主进程的投影计数。
+
 ### 宿主模型与凭据
 
 原生插件工具可以直接使用 Kiki 中已配置的模型和连接，无须复制其 API 密钥。在 `x-kiki` 中声明 `"engines": { "kiki": ">=0.4.3" }`；类型从 `@kiki/plugin-sdk` 导出。
