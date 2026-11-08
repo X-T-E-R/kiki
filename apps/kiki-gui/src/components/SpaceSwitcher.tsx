@@ -52,7 +52,9 @@ export function SpaceSwitcher() {
   const spaces = useSpaces(directoryClient);
   // Remote Kikis are read from the local control home, the same list the
   // settings page manages; a remote space itself is never asked for it.
-  const remoteConnections = useRemoteConnections(directoryClient);
+  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0);
+  const remoteClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const remoteConnections = useRemoteConnections(remoteClient);
   const enterRemoteSpace = useRemoteSpaceEntry();
   const returnToLocal = useReturnToLocalSpace();
   // One read of the current space's preferences, which the appearance surfaces
@@ -66,8 +68,6 @@ export function SpaceSwitcher() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
   const here = currentSpace();
-  /** This window is showing a Kiki other than its own (SSH or a broker connection). */
-  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0);
   const records = remoteConnections.data ?? [];
   // Only a connection whose purposes include browsing is a space; one kept for
   // thread messages is managed in Settings, never entered from here.

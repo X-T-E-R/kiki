@@ -1956,19 +1956,13 @@ export class TranscriptWireAdapter {
     };
     this.storeStep(stepId, step);
     const operations: TranscriptOperation[] = [{ op: 'step.upsert', turnId, step }];
-    if (!this.#canonicalTurns.has(turnId)) {
+    if (!this.#canonicalTurns.has(turnId) && !interrupted) {
       const previous = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
       if (previous !== undefined) {
-        const state =
-          finishReason === 'error'
-            ? 'failed'
-            : finishReason === 'interrupted'
-              ? 'cancelled'
-              : 'completed';
         const turn: TurnHeader = {
           ...previous,
-          state,
-          cancellation: state === 'cancelled' ? this.#cancelRequests.get(turnId) ?? 'unknown' : undefined,
+          state: 'completed',
+          cancellation: undefined,
           endedAt: isoOf(time),
         };
         this.#turnHeaders.set(turnId, turn);
@@ -2352,7 +2346,13 @@ export class TranscriptWireAdapter {
             state: 'running',
             origin: { kind: 'other' },
           }
-        : { ...previous, state: 'running' };
+        : {
+            ...previous,
+            state: 'running',
+            endedAt: undefined,
+            error: undefined,
+            cancellation: undefined,
+          };
     this.#turnHeaders.set(turnId, turn);
     return { op: 'turn.upsert', turn };
   }

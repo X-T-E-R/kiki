@@ -480,7 +480,9 @@ export class AgentTranscriptLiveAdapter {
     this.releasedTurnIds.delete(turnId);
     const existing = this.lookups?.turn?.(turnId);
     if (existing !== undefined) {
-      const current = existing.state === 'running' ? existing : { ...existing, state: 'running' as const };
+      const current = existing.state === 'running'
+        ? existing
+        : { ...existing, state: 'running' as const, endedAt: undefined, error: undefined, cancellation: undefined };
       this.currentTurn = current;
       this.currentStep = undefined;
       this.openText = undefined;
@@ -1910,8 +1912,10 @@ export class AgentTranscriptLiveAdapter {
     const built = build(previous);
     const next = built.runtimeControls !== undefined || previous?.runtimeControls === undefined
       ? built : { ...built, runtimeControls: previous.runtimeControls };
-    const prompt = previous?.originKind === undefined ? next : {
-      ...next,
+    const withSteer = next.steerAccepted !== undefined || previous?.steerAccepted === undefined
+      ? next : { ...next, steerAccepted: previous.steerAccepted };
+    const prompt = previous?.originKind === undefined ? withSteer : {
+      ...withSteer,
       originKind: previous.originKind,
       originDeliveryMode: previous.originDeliveryMode,
     };

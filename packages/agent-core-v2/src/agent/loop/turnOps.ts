@@ -24,6 +24,7 @@ export interface TurnModelState {
   readonly lastEnded?: {
     readonly turnId: number;
     readonly reason: 'completed' | 'cancelled' | 'failed' | 'blocked';
+    readonly error?: KimiErrorPayload;
     readonly durationMs?: number;
   };
 }
@@ -160,7 +161,7 @@ export const turnKey = defineState(
   })
   .on(TurnEnded, (s, e) => ({
     ...s,
-    lastEnded: { turnId: e.turnId, reason: e.reason, durationMs: e.durationMs },
+    lastEnded: { turnId: e.turnId, reason: e.reason, error: e.error, durationMs: e.durationMs },
   }));
 
 function advanceTurnClock(

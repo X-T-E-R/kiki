@@ -1563,13 +1563,19 @@ void test('terminal quota or auth vendor failure stops the owned CLI process and
     assert.deepEqual(await turn(second, completedLateErrId, 'follow up after late wsarecv', resumedAfterLateErr), { stopReason: 'end_turn' });
     assert.equal(resumedAfterLateErr.map(u => u.update.content?.text ?? '').join(''), 'turn-1');
 
-    for (const promptName of ['partial-response-late-wsarecv', 'post-tool-error-late-wsarecv']) {
+    for (const [promptName, expectedPattern] of [
+      ['partial-response-late-wsarecv', /AGY terminal status ERROR:.*wsarecv/],
+      ['post-tool-error-late-wsarecv', /AGY terminal status ERROR:.*wsarecv/],
+      ['complete-response-late-429', /AGY terminal status ERROR:.*429 Too Many Requests/],
+      ['complete-response-late-auth', /AGY terminal status ERROR:.*401 Unauthorized/],
+      ['complete-response-unknown-status', /AGY terminal status UNKNOWN:/],
+    ]) {
       const partialId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
       const partialUpdates = [];
-      await assert.rejects(turn(first, partialId, promptName, partialUpdates), /AGY terminal status ERROR:.*wsarecv/);
-      assert.equal(partialUpdates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join(''), 'partial-or-pretool');
+      await assert.rejects(turn(first, partialId, promptName, partialUpdates), expectedPattern);
       assert.notEqual(first.session(partialId).child.exitCode, null);
       await first.session(partialId).cleanup;
+      await assert.rejects(readFile(join(auditDir, `${partialId}.resume-lock`)), { code: 'ENOENT' });
       const partialAudit = (await readFile(join(auditDir, `${partialId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
       assert.equal(partialAudit.some(r => r.type === 'post_response_terminal_error'), false);
     }

@@ -26,17 +26,15 @@ function isAbort(error: unknown): boolean {
 
 /** Switch this window into a registered remote Kiki's space. */
 export function useRemoteSpaceEntry() {
-  const host = useHost();
-  const { connectionId, spaceKey } = useConnection();
+  const { connectionId } = useConnection();
   const { t } = useI18n();
   return useCallback((id: string, name: string) => {
-    // Remote spaces need the desktop host: a browser window has no control home.
-    if (host.kind !== 'tauri' || id === connectionId) return;
+    if (id === connectionId) return;
     void requestScopeNavigation(remoteSpaceScope(id)).catch((error: unknown) => {
       if (isAbort(error)) return;
       pushToast({ tone: 'error', text: t('sidebar.space.remoteFailed', { name }) });
     });
-  }, [host.kind, connectionId, spaceKey, t]);
+  }, [connectionId, t]);
 }
 
 /**

@@ -48,6 +48,7 @@ describe('engineDefaultsPatch', () => {
       inject_kiki_mcp: null,
       executor_prompt: null,
       executor_instance: null,
+      auto_continuation_policy: null,
     });
   });
 
@@ -80,6 +81,7 @@ describe('engineDefaultsPatch', () => {
       inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
       executor_instance: 'auto',
+      auto_continuation_policy: 'prefer_current',
     };
     const draft = engineDefaultsDraftFrom(saved);
     expect(engineDefaultsPatch(draft)).toEqual({
@@ -91,6 +93,7 @@ describe('engineDefaultsPatch', () => {
       inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
       executor_instance: 'auto',
+      auto_continuation_policy: 'prefer_current',
     });
   });
 

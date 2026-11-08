@@ -3459,7 +3459,9 @@ describe('message row actions', () => {
     expect(row).not.toBeNull();
     expect(row.querySelector(`[data-steer-status="${phase}"]`)?.className).toContain('steer-bubble-pending');
     expect(row.querySelector('[data-steer-line]')?.getAttribute('data-steer-line')).toBe(phase);
-    expect(row.querySelector('[data-steer-line]')?.textContent).toContain(phase === 'waiting' ? 'Waiting to join' : 'Sending');
+    const statusLine = row.querySelector('[data-steer-line]')?.textContent;
+    expect(statusLine).toContain(phase === 'waiting' ? 'Accepted' : 'Accepting');
+    if (phase === 'waiting') expect(statusLine).toContain('Waiting for the next step');
     // It is not in the conversation yet: nothing to edit or fork.
     expect(rowActionButtons(row)).toEqual(['copy', 'link']);
 
@@ -7982,6 +7984,40 @@ describe('settled history folds and the unified locate entry', () => {
     } finally {
       refs.mockRestore();
       begin.mockRestore();
+      controller.close();
+    }
+  });
+
+  it('reads a visible turn’s partial structure on its own and leaves closed folds alone until opened or hidden', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const leases = new Map<string, ReturnType<typeof vi.fn>[]>();
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation((_agent, source, roots) => {
+      const release = vi.fn();
+      if (roots?.length === 1 && roots[0] === 'steps') leases.set(source.id, [...leases.get(source.id) ?? [], release]);
+      return { release, retry: () => {} };
+    });
+    const partialTurns = new Set(['t1', 't3']);
+    const pending = vi.spyOn(controller, 'turnStructurePending').mockImplementation((_agent, turnId) => partialTurns.has(turnId));
+    const blocks = [...turnBlocks(1, 'first'), { ...userBlock({ id: 'u3', text: 'latest' }), turnId: 't3' }, doneTool('tool3', 't3', { status: 'running' })];
+    const render = (visible = true) => renderSettled(root,
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+        <Transcript state={transcriptState(blocks)} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+      </TranscriptDetailProvider>);
+    try {
+      await render();
+      expect(leases.get('t3')).toHaveLength(1);
+      expect(leases.has('t1')).toBe(false);
+      expect(container.querySelector('[data-turn-structure="loading"]')).not.toBeNull();
+      await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
+      expect(leases.get('t1')?.length).toBeGreaterThan(0);
+      await render(false);
+      expect([...leases.values()].flat().every(release => release.mock.calls.length === 1)).toBe(true);
+    } finally {
+      pending.mockRestore();
+      begin.mockRestore();
+      await act(async () => { root.render(null); });
       controller.close();
     }
   });

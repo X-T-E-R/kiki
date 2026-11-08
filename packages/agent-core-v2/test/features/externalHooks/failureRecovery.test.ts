@@ -3,15 +3,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createControlledPromise } from '@antfu/utils';
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
-import { AssistantDelta } from '#/agent/loop/turnEvents';
+import { AssistantDelta, TurnStepInterrupted } from '#/agent/loop/turnEvents';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { IEventBus } from '#/app/event/eventBus';
+import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentTaskService } from '#/agent/task/task';
+import { TaskNotified, TaskTerminated } from '#/agent/task/taskOps';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { PluginManager } from '#/app/plugin/manager';
 import { writeInstalled } from '#/app/plugin/store';
@@ -21,6 +28,8 @@ import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthrop
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import type { HookDef } from '#/features/externalHooks/internal/types';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 
 import { appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext, type TestAgentOptions } from '../../harness';
 import { makeHookRunner, nodeCommand } from './runner-stub';
@@ -429,6 +438,215 @@ describe('StopFailure continuation recovery', () => {
       } finally { await subscription.dispose(); }
       expect(continuations(f.local)).toEqual([]);
       expect(f.trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toEqual([]);
+    } finally { await f.dispose(); }
+  });
+
+  it('resets the streak budget and suppresses task.failed notification when a resumed pendingStep completes before a second recoverable error', async () => {
+    const parent = createTestAgent(permissionModeServices('yolo'));
+    const f = await fixture();
+    try {
+      let tools = 0;
+      const toolStarted = createControlledPromise<void>();
+      const releaseTool = createControlledPromise<void>();
+      f.local.get(IAgentToolRegistryService).register({
+        name: 'WaitWork',
+        description: 'Wait work',
+        parameters: { type: 'object' },
+        resolveExecution: () => ({
+          approvalRule: 'WaitWork',
+          execute: async () => {
+            tools++;
+            if (tools === 1) {
+              toolStarted.resolve();
+              await releaseTool;
+              return { output: '', executionWait: { kind: 'task', taskIds: ['proc-wait-1'], startedAt: Date.now(), timeoutMs: 5_000 } };
+            }
+            return { output: 'saved after resume' };
+          },
+        }),
+      });
+      f.local.get(IAgentProfileService).update({ activeToolNames: ['WaitWork'] });
+
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'First partial' }], error: missingTerminal() });
+      f.local.mockNextResponse({ type: 'function', name: 'WaitWork', id: 'wait-call-1', arguments: '{}' });
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Second partial after resume' }], error: missingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Final subagent receipt' });
+
+      const parentNotifications: TaskNotified[] = [];
+      const parentTerminated: TaskTerminated[] = [];
+      const parentBus = parent.get(IEventBus);
+      const sub1 = parentBus.subscribe(TaskNotified, (event) => parentNotifications.push(event));
+      const sub2 = parentBus.subscribe(TaskTerminated, (event) => parentTerminated.push(event));
+
+      try {
+        const queued = await prompt(f.local);
+        await toolStarted;
+        const control = f.local.get(ISessionExecutionControl);
+        await control.pause({ operationId: 'pause-pending-step' });
+        releaseTool.resolve();
+        await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+        expect(control.resumePoint('main')?.pendingStep?.step).toBe(2);
+        expect(f.local.get(IAgentLoopService).preservePausedForExit?.()).toBe(true);
+        await f.local.get(IAgentLoopService).settled();
+
+        const internalLoop = f.local.get(IAgentLoopService) as unknown as {
+          parkedForExit: boolean;
+          resumeExecution(point?: unknown): Promise<{ id: number; result: Promise<unknown> } | undefined>;
+          pumpTurns(): void;
+        };
+        internalLoop.parkedForExit = false;
+        const resumedTurn = await internalLoop.resumeExecution(control.resumePoint('main'));
+        expect(resumedTurn).toBeDefined();
+        await control.cancelPause({ operationId: 'release-pending-step', pauseOperationId: 'pause-pending-step' });
+        internalLoop.pumpTurns();
+
+        const parentTasks = parent.get(IAgentTaskService);
+        const taskId = parentTasks.registerTask(new SubagentTask(
+          {
+            agentId: 'agent-child',
+            profileName: 'implementer',
+            completion: resumedTurn!.result.then((res) => {
+              const r = res as { type: string; error?: unknown };
+              if (r.type === 'failed') throw r.error ?? new Error('Subagent failed');
+              return { result: 'Final subagent receipt' };
+            }),
+          },
+          'subagent with resumed pendingStep',
+          new AbortController(),
+        ));
+
+        parent.mockNextResponse({ type: 'text', text: 'Handled child completion.' });
+        const taskInfo = await parentTasks.wait(taskId);
+        await vi.waitFor(() => expect(parentNotifications).toHaveLength(1));
+        await parent.get(IAgentLoopService).settled();
+        expect(taskInfo).toMatchObject({ status: 'completed' });
+        expect(parentNotifications.map((n) => n.notificationType)).toEqual(['task.completed']);
+        expect(parentTerminated.map((t) => t.info.status)).toEqual(['completed']);
+        expect(continuations(f.local)).toHaveLength(2);
+        const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
+        expect(calls).toHaveLength(2);
+        expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0]);
+        expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
+        void queued;
+      } finally {
+        sub1.dispose();
+        sub2.dispose();
+      }
+    } finally {
+      await f.dispose();
+      await parent.dispose();
+    }
+  });
+
+  it('keeps the agent turn active and suppresses premature failure events while an async StopFailure hook is deciding to continue', async () => {
+    const f = await fixture();
+    try {
+      const hookEntered = createControlledPromise<void>();
+      const releaseHook = createControlledPromise<void>();
+      f.trigger.mockImplementation(async (event) => {
+        if (event === 'StopFailure') {
+          hookEntered.resolve();
+          await releaseHook;
+          return [{ action: 'allow', recovery: { action: 'continue', userMessage: '继续' } }];
+        }
+        return [];
+      });
+
+      const parent = createTestAgent(permissionModeServices('yolo'));
+      const childController = new AbortController();
+      const childErrors: AgentErrorEvent[] = [];
+      const childTurnEnded: TurnEnded[] = [];
+      const childStepInterrupted: TurnStepInterrupted[] = [];
+      const parentNotifications: TaskNotified[] = [];
+      const bus = f.local.get(IEventBus);
+      const pBus = parent.get(IEventBus);
+      const subs = [
+        bus.subscribe(AgentErrorEvent, (e) => childErrors.push(e)),
+        bus.subscribe(TurnEnded, (e) => childTurnEnded.push(e)),
+        bus.subscribe(TurnStepInterrupted, (e) => childStepInterrupted.push(e)),
+        pBus.subscribe(TaskNotified, (e) => parentNotifications.push(e)),
+      ];
+
+      try {
+        f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Partial before slow hook' }], error: missingTerminal() });
+        f.local.mockNextResponse({ type: 'text', text: 'Completed after slow hook' });
+        parent.mockNextResponse({ type: 'text', text: 'Handled child completion.' });
+
+        const handle = await runAgentTurn(
+          { id: 'agent-child', accessor: { get: (id) => f.local.get(id) } },
+          { kind: 'prompt', prompt: 'Run child task' },
+          { signal: childController.signal },
+        );
+        const parentTasks = parent.get(IAgentTaskService);
+        const taskId = parentTasks.registerTask(new SubagentTask(
+          {
+            agentId: 'agent-child',
+            profileName: 'implementer',
+            completion: handle.completion.then((r) => ({ result: r.summary, usage: r.usage })),
+          },
+          'slow hook recovery child',
+          childController,
+        ));
+
+        await hookEntered;
+        expect(f.local.get(IAgentLoopService).status().state).toBe('running');
+        expect(f.local.get(IAgentActivityView).state().turn).toBeDefined();
+        expect(childErrors).toEqual([]);
+        expect(childTurnEnded).toEqual([]);
+        expect(childStepInterrupted).toEqual([]);
+        expect(parentTasks.getTask(taskId)?.status).toBe('running');
+        expect(parentNotifications).toEqual([]);
+
+        releaseHook.resolve();
+        const finalInfo = await parentTasks.wait(taskId);
+        expect(finalInfo).toMatchObject({ status: 'completed' });
+        await vi.waitFor(() => expect(parentNotifications.map((n) => n.notificationType)).toEqual(['task.completed']));
+        await parent.get(IAgentLoopService).settled();
+        expect(childErrors).toEqual([]);
+        expect(childStepInterrupted).toEqual([]);
+        expect(childTurnEnded).toEqual([expect.objectContaining({ reason: 'completed' })]);
+        expect((await f.local.persistedWireRecords()).some((r) => r.type === 'context.append_loop_event' && (r['event'] as { type?: string; finishReason?: string } | undefined)?.type === 'step.end' && (r['event'] as { finishReason?: string } | undefined)?.finishReason === 'error')).toBe(true);
+      } finally {
+        for (const sub of subs) sub.dispose();
+        await parent.dispose();
+      }
+    } finally { await f.dispose(); }
+  });
+
+  it('aborts an in-flight slow StopFailure hook on user cancellation without appending continuation or emitting failure notifications', async () => {
+    const f = await fixture();
+    try {
+      const hookEntered = createControlledPromise<void>();
+      f.trigger.mockImplementation(async (event, options) => {
+        if (event === 'StopFailure') {
+          hookEntered.resolve();
+          await new Promise<void>((_, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options?.signal?.reason ?? new Error('aborted')), { once: true });
+          });
+        }
+        return [];
+      });
+
+      const errors: AgentErrorEvent[] = [];
+      const ended: TurnEnded[] = [];
+      const bus = f.local.get(IEventBus);
+      const sub1 = bus.subscribe(AgentErrorEvent, (e) => errors.push(e));
+      const sub2 = bus.subscribe(TurnEnded, (e) => ended.push(e));
+
+      try {
+        f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Partial before hook cancel' }], error: missingTerminal() });
+        const enqueued = await prompt(f.local);
+        await hookEntered;
+        f.local.get(IAgentLoopService).cancel();
+        expect(await enqueued.completion).toMatchObject({ state: 'cancelled' });
+        expect(continuations(f.local)).toEqual([]);
+        expect(f.local.llmCalls).toHaveLength(1);
+        expect(errors).toEqual([]);
+        expect(ended).toEqual([expect.objectContaining({ reason: 'cancelled' })]);
+      } finally {
+        sub1.dispose();
+        sub2.dispose();
+      }
     } finally { await f.dispose(); }
   });
 });

@@ -133,6 +133,8 @@ export const executorInstanceProxyResponseSchema = z.discriminatedUnion('kind', 
 
 export const executorInstanceIdSchema = z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/);
 export const executorQuotaSourceIdSchema = z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/);
+export const executorAutoContinuationPolicySchema = z.enum(['prefer_current', 'prefer_quota']);
+export type ExecutorAutoContinuationPolicy = z.infer<typeof executorAutoContinuationPolicySchema>;
 const executorAccountIdSchema = z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/);
 export const executorInstanceChoiceSchema = z.union([
   z.enum(['main', 'auto']),

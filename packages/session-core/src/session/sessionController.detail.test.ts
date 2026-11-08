@@ -367,6 +367,34 @@ describe('SessionController transcript detail', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('opens a cold %s structure through empty partial pages and a partial preview in one expansion', async (agentId) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: Array.from({ length: 3 }, (_, index) =>
+        ({ kind: 'text', frameId: `f${index}`, role: 'assistant', text: `cold body ${index}` })) }] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const base = { session_id: 'session_test', agent_id: agentId, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    const budget = { ...base, items: [], has_more: true, next_cursor: 'turn-anchor', coverage: { kind: 'unknown' as const, hasMoreOlder: true as const },
+      read: { source: 'cold' as const, readiness: 'partial' as const, reason: 'budget' as const } };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce(budget)
+      .mockResolvedValueOnce(budget)
+      .mockResolvedValueOnce({ ...base, items: [{ ...turn, stepsPartial: true, steps: [] }], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'cold', readiness: 'partial', reason: 'source_unverified' } })
+      .mockResolvedValueOnce({ ...base, items: [turn], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('cold-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true, steps: [] }], hasMoreOlder: false }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const lease = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text))
+        .toEqual(['cold body 0', 'cold body 1', 'cold body 2']));
+      expect(view.transcript.page).toHaveBeenCalledTimes(4);
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toMatchObject({ beforeItem: 'turn-anchor', pageSize: 1 });
+      expect(state().detailLoads['structure:t0']).toBeUndefined();
+    } finally { lease.release(); controller.close(); }
+  });
+
   it('stages every canonical frame before replacing local partial indices and retains hydrated bodies', async () => {
     const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
       steps: Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed',

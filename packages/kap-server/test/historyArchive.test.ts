@@ -160,4 +160,15 @@ describe('history archive', () => {
     expect(search).not.toHaveBeenCalled();
     expect(readColdSnapshotBounded).toHaveBeenCalledTimes(3);
   });
+
+  it('turns a rewritten live search continuation into the recoverable restart signal', async () => {
+    const { GlobalSearchError } = await import('../src/search/contract');
+    const { archive, search } = fixture(true);
+    search.mockRejectedValueOnce(new GlobalSearchError('invalid_page_token', 'live transcript was rewritten since this search started; restart the search'));
+    await expect(archive.search({ query: 'needle', mode: 'literal', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 5, pageToken: 'next' }))
+      .rejects.toThrow('stale_scan_cursor');
+    search.mockRejectedValueOnce(new GlobalSearchError('invalid_page_token', 'pageToken is malformed'));
+    await expect(archive.search({ query: 'needle', mode: 'literal', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 5 }))
+      .rejects.toMatchObject({ reason: 'invalid_page_token' });
+  });
 });

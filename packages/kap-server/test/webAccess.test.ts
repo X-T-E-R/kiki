@@ -48,4 +48,28 @@ describe('Web session lifecycle', () => {
     expect(web.status().enabled).toBe(false); expect(close).toHaveBeenCalledOnce(); expect(closed).toBeGreaterThan(0);
     await web.enable({ mode: 'temporary', publicUrl: 'https://example.test' }); expect(web.current(request(cookie))).toBeNull();
   });
+  it('defaults sharedConnectionIds to empty, persists selected connections across restart, and revokes removed connection leases immediately', async () => {
+    const connA = randomUUID(); const connB = randomUUID();
+    expect(web.status().sharedConnectionIds).toEqual([]);
+    await web.enable({ mode: 'persistent', publicUrl: 'https://example.test' });
+    expect(web.status().sharedConnectionIds).toEqual([]);
+    expect(web.isConnectionShared(connA)).toBe(false);
+    const updated = await web.setSharedConnections([connA, connB]);
+    expect(updated.sharedConnectionIds).toEqual([connA, connB]);
+    expect(web.isConnectionShared(connA)).toBe(true);
+    expect(web.isConnectionShared(connB)).toBe(true);
+    const closeA = vi.fn(); const closeB = vi.fn();
+    web.attachConnection(connA, closeA); web.attachConnection(connB, closeB);
+    await web.setSharedConnections([connB]);
+    expect(closeA).toHaveBeenCalledOnce();
+    expect(closeB).not.toHaveBeenCalled();
+    expect(web.isConnectionShared(connA)).toBe(false);
+    expect(web.isConnectionShared(connB)).toBe(true);
+    await web.close();
+    expect(closeB).toHaveBeenCalledOnce();
+    web = new WebAccess(home, id, start, () => now);
+    await web.ready();
+    expect(web.status().sharedConnectionIds).toEqual([connB]);
+    expect(web.isConnectionShared(connB)).toBe(true);
+  });
 });

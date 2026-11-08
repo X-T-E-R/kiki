@@ -13,9 +13,20 @@ import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/c
 import { isPeerFrameAllowed, peerAudience } from '../services/connections/audience';
 import { BROKER_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
 import { directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
+import { webPrincipal, type WebAccess } from '../services/webAccess';
 
 export const CONNECTION_BROKER_WS = /^\/api\/remote-connections\/([0-9a-f-]{36})\/events(?:\?.*)?$/;
-export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}): WebSocketServer {
+function isWebSharedRecord(record: { id: string; enabled: boolean; state: string; purposes: readonly string[] }, web: WebAccess | undefined): boolean {
+  return web !== undefined && web.isConnectionShared(record.id) && record.enabled && !['disabled', 'authentication_required', 'identity_changed'].includes(record.state) && record.purposes.includes('gui');
+}
+function attachWebSharedConnection(request: object, id: string, manager: RemoteConnectionManager, web: WebAccess | undefined, close: () => void): () => void {
+  if (webPrincipal(request) === undefined) return () => {};
+  let record: ReturnType<RemoteConnectionManager['get']>;
+  try { record = manager.get(id); } catch { throw new AdmissionError(403, 'connection_not_shared'); }
+  if (!isWebSharedRecord(record, web)) throw new AdmissionError(403, 'connection_not_shared');
+  return web!.attachConnection(id, close);
+}
+export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess): WebSocketServer {
   const pairingLimit = new PairingRateLimit();
   const respond = async <T>(requestId: string, reply: { code(status: number): unknown; send(value: unknown): unknown }, work: () => Promise<T>) => {
     try { return reply.send(okEnvelope(await work(), requestId)); }
@@ -120,7 +131,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   }));
   app.post('/api/remote-connections/inbound/invitations', async (req, reply) => respond(req.id, reply, async () => { const input = connectionInviteInputSchema.parse(req.body); return admission.invite(input.source, input.label, input.expiresInMs); }));
   app.post('/api/remote-connections/inbound/grants/:grantId/revoke', async (req, reply) => respond(req.id, reply, () => admission.revoke((req.params as { grantId: string }).grantId)));
-  app.get('/api/remote-connections', async (req, reply) => reply.send(okEnvelope(manager.list(), req.id)));
+  app.get('/api/remote-connections', async (req, reply) => {
+    const records = manager.list();
+    return reply.send(okEnvelope(webPrincipal(req) === undefined ? records : records.filter((record) => isWebSharedRecord(record, web)), req.id));
+  });
   app.post('/api/remote-connections', { bodyLimit: 16384 }, async (req, reply) => respond(req.id, reply, () => manager.add(connectionAddInputSchema.parse(req.body))));
   app.delete('/api/remote-connections/:connectionId', async (req, reply) => respond(req.id, reply, () => manager.remove((req.params as { connectionId: string }).connectionId)));
   app.put('/api/remote-connections/:connectionId/enabled', async (req, reply) => respond(req.id, reply, async () => {
@@ -132,25 +146,32 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);
     if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
-    const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
+    const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
     reply.raw.once('close', stop);
     try {
+      detachWeb = attachWebSharedConnection(req, id, manager, web, () => controller.abort(new AdmissionError(403, 'connection_not_shared')));
       const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation);
       const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       const cap = reading ? SESSION_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap, lease.signal);
       return await reply.code(response.status).send(body);
-    } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
-    finally { reply.raw.off('close', stop); release(); }
+    } catch (error) {
+      const reason = controller.signal.reason;
+      if (reason instanceof AdmissionError) return await reply.code(reason.status).send(errEnvelope(40101, reason.reason, req.id));
+      if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));
+      throw error;
+    }
+    finally { detachWeb(); reply.raw.off('close', stop); release(); }
   });
   app.register(async (uploads) => {
     await uploads.register(multipart, { limits: { fileSize: Number.MAX_SAFE_INTEGER, files: 1 } });
     uploads.post('/api/remote-connections/:connectionId/upload', async (req, reply) => {
       const id = (req.params as { connectionId: string }).connectionId;
-      const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
+      const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
       reply.raw.once('close', stop);
       try {
+        detachWeb = attachWebSharedConnection(req, id, manager, web, () => controller.abort(new AdmissionError(403, 'connection_not_shared')));
         const lease = manager.lease(id, controller.signal); release = () => lease.release();
         const chunks = req.raw[Symbol.asyncIterator]();
         const upload = Readable.from((async function* () {
@@ -162,49 +183,76 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         })());
         const response = await manager.forward(id, { operation: 'fileUpload' }, lease.signal, upload as unknown as NonNullable<RequestInit['body']>, req.headers['content-type']);
         return await reply.code(response.status).send(await readBoundedJsonBody(response, 8192));
-      } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
-      finally { reply.raw.off('close', stop); release(); }
+      } catch (error) {
+        const reason = controller.signal.reason;
+        if (reason instanceof AdmissionError) return await reply.code(reason.status).send(errEnvelope(40101, reason.reason, req.id));
+        if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));
+        throw error;
+      }
+      finally { detachWeb(); reply.raw.off('close', stop); release(); }
     });
   });
   app.post('/api/remote-connections/:connectionId/download', { bodyLimit: 8192 }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId; const input = connectionBrokerInputSchema.parse(req.body);
     if (!['media', 'mediaPreview', 'file', 'appearanceAsset', 'personaAvatar'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'invalid_download_operation', req.id));
-    const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
-    const cleanup = () => { release(); reply.raw.off('close', stop); };
+    const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
+    let stream: Readable | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cleanup = () => { detachWeb(); release(); reply.raw.off('close', stop); };
     reply.raw.once('close', stop);
     try {
+      detachWeb = attachWebSharedConnection(req, id, manager, web, () => {
+        const err = new AdmissionError(403, 'connection_not_shared');
+        controller.abort(err);
+        void reader?.cancel(err).catch(() => {});
+        stream?.destroy(err);
+        reply.raw.destroy();
+      });
       const lease = manager.lease(id, controller.signal); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       for (const name of ['etag', 'content-range', 'accept-ranges', 'content-disposition', 'cache-control']) { const value = response.headers.get(name); if (value !== null) reply.header(name, value); }
       if (response.status === 304 || response.status === 204) { cleanup(); return await reply.code(response.status).send(); }
       if (response.body === null) throw new AdmissionError(502, 'empty_download');
-      const reader = response.body.getReader();
-      const stream = Readable.from((async function* () {
+      reader = response.body.getReader();
+      const bodyReader = reader;
+      stream = Readable.from((async function* () {
         try {
           let total = 0;
           for (;;) {
             let timer: ReturnType<typeof setTimeout> | undefined;
-            const next = await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new AdmissionError(504, 'download_stalled')); }, 30000); })]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+            const next = await Promise.race([bodyReader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new AdmissionError(504, 'download_stalled')); }, 30000); })]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
             if (next.done) break;
             total += next.value.byteLength;
             if (input.operation === 'mediaPreview' && total > MEDIA_PREVIEW_MAX_BYTES) throw new AdmissionError(413, 'preview_budget_exceeded');
             yield next.value;
           }
-        } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); cleanup(); }
+        } finally { await bodyReader.cancel().catch(() => {}); bodyReader.releaseLock(); cleanup(); }
       })());
       stream.once('close', cleanup);
       return await reply.code(response.status).type(response.headers.get('content-type') ?? 'application/octet-stream').send(stream);
-    } catch (error) { cleanup(); if (error instanceof AdmissionError) return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
+    } catch (error) {
+      cleanup();
+      const reason = controller.signal.reason;
+      if (reason instanceof AdmissionError) return reply.code(reason.status).send(errEnvelope(40101, reason.reason, req.id));
+      if (error instanceof AdmissionError) return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));
+      throw error;
+    }
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: BROKER_WS_MESSAGE_BYTES });
-  wss.on('connection', (socket, request) => { void brokerSocket(socket, request, manager).catch(() => socket.close(4001, 'connection unavailable')); });
+  wss.on('connection', (socket, request) => { void brokerSocket(socket, request, manager, web).catch(() => socket.close(4001, 'connection unavailable')); });
   app.addHook('preClose', async () => { admission.closeAll(); for (const socket of wss.clients) socket.terminate(); wss.close(); await manager.close(); });
   return wss;
 }
-async function brokerSocket(local: WebSocket, request: IncomingMessage, manager: RemoteConnectionManager): Promise<void> {
+async function brokerSocket(local: WebSocket, request: IncomingMessage, manager: RemoteConnectionManager, web?: WebAccess): Promise<void> {
   const id = CONNECTION_BROKER_WS.exec(request.url ?? '')?.[1]; if (id === undefined) { local.close(1008); return; }
-  const lease = manager.lease(id); let remote: WebSocket | undefined;
-  const stop = () => { remote?.terminate(); local.close(4001, 'connection stopped'); lease.release(); };
+  if (webPrincipal(request) !== undefined) {
+    let record: ReturnType<RemoteConnectionManager['get']> | undefined;
+    try { record = manager.get(id); } catch { record = undefined; }
+    if (record === undefined || !isWebSharedRecord(record, web)) { local.close(1008, 'connection not shared'); return; }
+  }
+  const lease = manager.lease(id); let remote: WebSocket | undefined; let detachWeb = () => {};
+  const stop = () => { detachWeb(); remote?.terminate(); local.close(4001, 'connection stopped'); lease.release(); };
+  if (webPrincipal(request) !== undefined) detachWeb = web!.attachConnection(id, stop);
   lease.signal.addEventListener('abort', stop, { once: true }); local.once('close', stop); local.once('error', stop);
   local.pause();
   try {

@@ -11,10 +11,11 @@ import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSchedule, ExecutionSelection, ExecutorInstanceChoice, ExecutorLaunch, ExecutorLaunchPatch } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
 import { AGENT_EXECUTOR_INSTANCES_SECTION, type AgentExecutorInstances } from '#/app/agentExecutor/executorInstances';
-import { mergeExecutorOptions, resolveExecutorSchedule, type ScheduleInstanceView } from '#/app/agentExecutor/executorSchedule';
+import { isQuotaExhaustedTurnError, mergeExecutorOptions, resolveExecutorSchedule, winningScheduleChoice, type ScheduleInstanceView } from '#/app/agentExecutor/executorSchedule';
+import { turnKey } from '#/agent/loop/turnOps';
 import { IHarnessQuotaService } from '#/app/plugin/harnessQuota';
 import { resolveSelectedExecutionBinding } from './executionBinding';
-import { agentExecutorBindingFingerprint, agentExecutorBindingMatches, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, agentExecutorBindingMatches, agentExecutorSameFamilyBindingMatches, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
 import { brokenOriginalResumeRefusal } from '#/agent/execution/execution';
 import { ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
@@ -908,6 +909,31 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       { details: { executorId: descriptor.id, reason: 'executor_instance_changed' } });
   }
 
+  private canSwitchSessionInstance(
+    previousExecutorId: string,
+    nextDescriptor: AgentExecutorDescriptor,
+    generation: number | undefined,
+  ): boolean {
+    const prior = externalStateForGeneration(this.states.get(externalExecutorKey), generation);
+    if (prior.sessionRef === undefined || prior.sessionRef.ref['localSource'] !== undefined) return false;
+    const currentDescriptor = this.executors.get?.(previousExecutorId);
+    const currentFamilyId = currentDescriptor?.instance?.source_executor ?? previousExecutorId;
+    const nextFamilyId = nextDescriptor.instance?.source_executor ?? nextDescriptor.id;
+    if (currentFamilyId !== 'agy-cli' || nextFamilyId !== 'agy-cli') return false;
+    const currentHome = currentDescriptor?.homeDir ?? '';
+    const savedHome = typeof prior.sessionRef.ref['kikiLaunchHome'] === 'string'
+      ? prior.sessionRef.ref['kikiLaunchHome']
+      : currentHome;
+    if (savedHome !== (nextDescriptor.homeDir ?? '') || currentHome !== (nextDescriptor.homeDir ?? '')) return false;
+    const priorNeg = this.executors.lastNegotiated?.(previousExecutorId);
+    const nextNeg = this.executors.lastNegotiated?.(nextDescriptor.id);
+    if ((priorNeg !== undefined && priorNeg.resume === false && priorNeg.load === false) ||
+        (nextNeg !== undefined && nextNeg.resume === false && nextNeg.load === false)) {
+      return false;
+    }
+    return true;
+  }
+
   private async resolveScheduledExecutable(
     requestedExecutor: string,
     profileOptions: unknown,
@@ -916,6 +942,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     sessionLaunch: ExecutorLaunchPatch | null | undefined,
     targetModel: string | undefined,
     lockedExecutorId: string | undefined,
+    excludedInstances?: readonly ('main' | string)[],
+    freshSessionChoice = false,
   ): Promise<{ readonly executor: ResolvedAgentExecutor; readonly schedule: ExecutionSchedule | undefined; readonly launch: ExecutorLaunch | undefined }> {
     const direct = this.executors.get?.(requestedExecutor);
     const familyId = direct?.instance?.source_executor ?? requestedExecutor;
@@ -933,11 +961,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const effectiveProfileLaunch = profileMatches ? profile?.executorLaunch : undefined;
     const resolved = await resolveExecutorSchedule({
       requestedExecutor, familyId, sessionChoice, sessionLaunch,
+      freshSessionChoice,
       profileChoice: profileMatches ? profile?.executorInstance : undefined,
       profileLaunch: effectiveProfileLaunch,
       profileExecutor: profile?.executor,
       profileIdentity: profile?.definitionId ?? profile?.name,
       defaultsChoice: overrides?.[familyId]?.defaults?.executor_instance ?? overrides?.[requestedExecutor]?.defaults?.executor_instance,
+      autoContinuationPolicy: overrides?.[familyId]?.defaults?.auto_continuation_policy ?? overrides?.[requestedExecutor]?.defaults?.auto_continuation_policy,
       instances: views,
       quotaSourceId: overrides?.[familyId]?.quotaSource ?? overrides?.[requestedExecutor]?.quotaSource,
       previous: {
@@ -945,9 +975,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profileIdentity: this.profileState.profileDefinitionId ?? this.profileState.profileName,
         executorId: this.profileState.executorId,
       },
+      excludedInstances,
       lockedExecutorId,
       targetModel,
     }, this.quota === undefined ? undefined : (sourceId) => this.quota!.read(sourceId));
+    if (resolved.choice.exhaustedAutoReselection) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `No available executor instance with positive quota for "${familyId}" from "${resolved.choice.quotaSourceId ?? 'unconfigured'}" after quota failure.`,
+        { details: { executorId: familyId, quotaSourceId: resolved.choice.quotaSourceId, excludedInstances } },
+      );
+    }
     if (resolved.choice.missingInstance) {
       if (typeof resolved.choice.choice === 'object') {
         throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor account "${resolved.choice.choice.account_id}" is not configured for "${familyId}"`, {
@@ -1038,7 +1076,47 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
-    const scheduled = await this.resolveScheduledExecutable(requested.executor, role?.executorOptions, profile, requested.overrides?.executor_instance, requested.overrides?.executor_launch, execution.effective.model, input.lockedExecutorId);
+    const previousTurn = this.states.get(turnKey).lastEnded;
+    const quotaFailed = previousTurn?.reason === 'failed' && isQuotaExhaustedTurnError(previousTurn.error);
+    const autoContinuationExcluded = quotaFailed && this.profileState.executorId !== undefined
+      ? [this.profileState.executorId === requested.executor ? 'main' : this.profileState.executorId]
+      : undefined;
+    let scheduled = await this.resolveScheduledExecutable(
+      requested.executor,
+      role?.executorOptions,
+      profile ?? policyProfile,
+      requested.overrides?.executor_instance,
+      requested.overrides?.executor_launch,
+      execution.effective.model,
+      input.lockedExecutorId,
+      autoContinuationExcluded,
+    );
+    if (scheduled.executor.descriptor.id !== this.profileState.executorId && this.profileState.executorId !== undefined &&
+        this.profileState.execution?.generation === execution.generation) {
+      const prior = externalStateForGeneration(this.states.get(externalExecutorKey), this.profileState.execution?.generation);
+      if (prior.sessionRef !== undefined && !this.canSwitchSessionInstance(this.profileState.executorId, scheduled.executor.descriptor, this.profileState.execution?.generation)) {
+        const preservedSchedule = scheduled.schedule;
+        const fallback = await this.resolveScheduledExecutable(
+          requested.executor,
+          role?.executorOptions,
+          profile ?? policyProfile,
+          requested.overrides?.executor_instance,
+          requested.overrides?.executor_launch,
+          execution.effective.model,
+          this.profileState.executorId,
+        );
+        scheduled = {
+          ...fallback,
+          schedule: preservedSchedule !== undefined && preservedSchedule.choice === 'auto'
+            ? {
+                ...preservedSchedule,
+                instance: fallback.schedule?.instance ?? 'main',
+                ...(fallback.schedule?.launch === undefined ? {} : { launch: fallback.schedule.launch }),
+              }
+            : fallback.schedule,
+        };
+      }
+    }
     const executor = scheduled.executor;
     execution.schedule = scheduled.schedule;
     this.assertInstanceRevision(executor.descriptor);
@@ -1087,24 +1165,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       fields, body) : '';
     const previous = this.profileState.execution;
     if (previous?.generation === execution.generation) {
-      const sameContext = this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
-        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === role?.definitionId;
-      if (sameContext && JSON.stringify(previous) === JSON.stringify(execution)) return;
+      const sameInstanceOrSwitchable = this.profileState.executorDescriptorRevision === executor.descriptor.revision ||
+        (this.profileState.executorId !== undefined && this.canSwitchSessionInstance(this.profileState.executorId, executor.descriptor, execution.generation));
+      const effectiveDefinitionId = (role ?? policyProfile)?.definitionId;
+      const sameContext = this.profileState.systemPrompt === systemPrompt && sameInstanceOrSwitchable &&
+        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === effectiveDefinitionId;
+      if (sameContext && this.profileState.executorDescriptorRevision === executor.descriptor.revision && JSON.stringify(previous) === JSON.stringify(execution)) return;
       if (!sameContext) execution.generation++;
     }
     assertCurrent?.();
-    if (previous?.generation === execution.generation) {
-      const prior = this.states.get(externalExecutorKey);
-      const binding = this.data();
-      if (prior.sessionRef !== undefined && prior.executorId !== undefined && prior.descriptorRevision !== undefined &&
-          agentExecutorBindingMatches(binding, prior.bindingFingerprint)) {
-        await this.dispatcher.dispatch(new ExecutorSessionUpdated({
-          ...prior, executionGeneration: execution.generation, executorId: prior.executorId,
-          descriptorRevision: prior.descriptorRevision, sessionRef: prior.sessionRef,
-          sessionEpoch: prior.sessionEpoch ?? 1, bindingFingerprint: agentExecutorBindingFingerprint(binding),
-        }));
-      }
-    }
+    const prior = previous?.generation === execution.generation ? this.states.get(externalExecutorKey) : undefined;
+    const previousBinding = this.data();
     this.activeProfile = role;
     this.activeProfileDefinitionId = role?.definitionId;
     this.activeToolNamesOverlay = undefined;
@@ -1135,6 +1206,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       spawnPolicy: input.spawnPolicy, appliedLease: input.lease, dispatchDecision: input.dispatchDecision,
       boundProfile: role === undefined && policyProfile === undefined ? undefined : freezeBoundProfile((role ?? policyProfile)!),
     }));
+    if (prior !== undefined && prior.sessionRef !== undefined && prior.executorId !== undefined && prior.descriptorRevision !== undefined) {
+      const nextBinding = this.data();
+      if (agentExecutorBindingMatches(previousBinding, prior.bindingFingerprint) ||
+          agentExecutorSameFamilyBindingMatches(nextBinding, prior.bindingFingerprint, {
+            executorId: prior.executorId,
+            descriptorRevision: prior.descriptorRevision,
+          }) ||
+          agentExecutorSameFamilyBindingMatches({ ...nextBinding, renderGeneration: previousBinding.renderGeneration }, prior.bindingFingerprint, {
+            executorId: prior.executorId,
+            descriptorRevision: prior.descriptorRevision,
+          })) {
+        await this.dispatcher.dispatch(new ExecutorSessionUpdated({
+          ...prior, executionGeneration: execution.generation, executorId: executor.descriptor.id,
+          descriptorRevision: executor.descriptor.revision,
+          sessionRef: { ...prior.sessionRef, executorId: executor.descriptor.id },
+          sessionEpoch: prior.sessionEpoch ?? 1, bindingFingerprint: agentExecutorBindingFingerprint(nextBinding),
+        }));
+      }
+    }
     this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
     this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: role?.name,
       thinkingLevel: validated.thinkingEffort ?? 'off', systemPrompt });
@@ -1544,6 +1634,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }
       const currentDescriptor = this.executors.get?.(previous.executorId!);
       const currentFamilyId = currentDescriptor?.instance?.source_executor ?? previous.execution?.selection.executor ?? previous.boundProfile?.executor ?? previous.executorId!;
+      const previousTurn = this.states.get(turnKey).lastEnded;
+      const quotaFailed = input.executorInstance === 'auto' && previousTurn?.reason === 'failed' && isQuotaExhaustedTurnError(previousTurn.error);
+      const excludedInstances = quotaFailed && previous.executorId !== undefined
+        ? [previous.executorId === currentFamilyId ? 'main' : previous.executorId]
+        : undefined;
       scheduledExecutor = await this.resolveScheduledExecutable(
         currentFamilyId,
         previous.boundProfile?.executorOptions ?? previous.executorOptions,
@@ -1552,6 +1647,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         undefined,
         model,
         undefined,
+        excludedInstances,
+        input.executorInstance === 'auto',
       );
       assertResearchExecutor(previous.executionRestriction, scheduledExecutor.executor.descriptor.id);
       const nextFamilyId = scheduledExecutor.executor.descriptor.instance?.source_executor ?? scheduledExecutor.executor.descriptor.id;
@@ -1572,19 +1669,58 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         if (changedModel || (input.thinkingEffort !== undefined && thinking !== previous.thinkingLevel)) {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Switching executor_instance on resume requires keeping the bound model and thinking effort unchanged.');
         }
-        const prior = externalStateForGeneration(this.states.get(externalExecutorKey), previous.execution?.generation);
-        if (prior.sessionRef === undefined || prior.sessionRef.ref['localSource'] !== undefined) {
+        if (!this.canSwitchSessionInstance(previous.executorId!, scheduledExecutor.executor.descriptor, previous.execution?.generation)) {
           throw brokenOriginalResumeRefusal(this.agentScope.agentId);
         }
-        const savedHome = typeof prior.sessionRef.ref['kikiLaunchHome'] === 'string' ? prior.sessionRef.ref['kikiLaunchHome'] : '';
-        if (savedHome !== (scheduledExecutor.executor.descriptor.homeDir ?? '')) {
-          throw brokenOriginalResumeRefusal(this.agentScope.agentId);
-        }
-        const priorNeg = this.executors.lastNegotiated?.(previous.executorId!);
-        const nextNeg = this.executors.lastNegotiated?.(scheduledExecutor.executor.descriptor.id);
-        if ((priorNeg !== undefined && priorNeg.resume === false && priorNeg.load === false) ||
-            (nextNeg !== undefined && nextNeg.resume === false && nextNeg.load === false)) {
-          throw brokenOriginalResumeRefusal(this.agentScope.agentId);
+      }
+    } else if (this.isExternalExecutor && !changedModel && (input.thinkingEffort === undefined || thinking === previous.thinkingLevel)) {
+      const currentDescriptor = this.executors.get?.(previous.executorId!);
+      const currentFamilyId = currentDescriptor?.instance?.source_executor ?? previous.execution?.selection.executor ?? previous.boundProfile?.executor ?? previous.executorId!;
+      const activeProfile = previous.boundProfile ?? this.resolveActiveProfile();
+      const overrides = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION);
+      const effectiveChoice = previous.execution?.schedule?.choice ?? winningScheduleChoice({
+        requestedExecutor: previous.execution?.selection.executor ?? activeProfile?.executor ?? currentFamilyId,
+        familyId: currentFamilyId,
+        sessionChoice: previous.execution?.selection.overrides?.executor_instance,
+        profileChoice: activeProfile?.executorInstance,
+        profileExecutor: activeProfile?.executor,
+        defaultsChoice: overrides?.[currentFamilyId]?.defaults?.executor_instance,
+        instances: [],
+      }).choice;
+      if (effectiveChoice === 'auto') {
+        const policy = overrides?.[currentFamilyId]?.defaults?.auto_continuation_policy ?? 'prefer_current';
+        const previousTurn = this.states.get(turnKey).lastEnded;
+        const quotaFailed = previousTurn?.reason === 'failed' && isQuotaExhaustedTurnError(previousTurn.error);
+        if (quotaFailed || policy === 'prefer_quota') {
+          const excludedInstances = quotaFailed && previous.executorId !== undefined
+            ? [previous.executorId === currentFamilyId ? 'main' : previous.executorId]
+            : undefined;
+          const candidate = await this.resolveScheduledExecutable(
+            currentFamilyId,
+            previous.boundProfile?.executorOptions ?? previous.executorOptions,
+            activeProfile,
+            previous.execution?.selection.overrides?.executor_instance,
+            previous.execution?.selection.overrides?.executor_launch,
+            model,
+            undefined,
+            excludedInstances,
+          );
+          const candidateFamilyId = candidate.executor.descriptor.instance?.source_executor ?? candidate.executor.descriptor.id;
+          const validation = this.executors.validateBinding(
+            candidate.executor.descriptor.id,
+            candidate.executor.options,
+            {
+              modelAlias: model,
+              thinkingEffort: this.profileState.thinkingEffortExplicit === true ? this.profileState.thinkingLevel : undefined,
+            },
+          );
+          const changedInstance = candidate.executor.descriptor.id !== previous.executorId ||
+            candidate.executor.descriptor.revision !== previous.executorDescriptorRevision;
+          if (candidateFamilyId === currentFamilyId && candidate.executor.descriptor.protocol === previous.executorProtocol && validation.ok &&
+              (!changedInstance || this.canSwitchSessionInstance(previous.executorId!, candidate.executor.descriptor, previous.execution?.generation))) {
+            assertResearchExecutor(previous.executionRestriction, candidate.executor.descriptor.id);
+            scheduledExecutor = candidate;
+          }
         }
       }
     }
@@ -1678,7 +1814,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     const nextExecution = scheduledExecutor === undefined || previous.execution === undefined ? undefined : {
       ...previous.execution,
-      selection: {
+      selection: input.executorInstance === undefined ? previous.execution.selection : {
         ...previous.execution.selection,
         overrides: {
           ...previous.execution.selection.overrides,

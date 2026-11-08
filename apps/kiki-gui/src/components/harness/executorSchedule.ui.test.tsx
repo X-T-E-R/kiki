@@ -120,10 +120,11 @@ describe('executor schedule controls', () => {
     await act(async () => {
       setControl(host.querySelector<HTMLSelectElement>('#agy-cli-default-instance')!, 'auto');
       setControl(host.querySelector<HTMLSelectElement>('[data-engine-quota-source]')!, 'plugin:fixture-quota/example');
+      setControl(host.querySelector<HTMLSelectElement>('#agy-cli-auto-continuation')!, 'prefer_current');
     });
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-engine-defaults-save]')!.click(); });
     expect(patchConfig).toHaveBeenCalledWith({ agent_executor_overrides: { 'agy-cli': {
-      defaults: expect.objectContaining({ executor_instance: 'auto' }),
+      defaults: expect.objectContaining({ executor_instance: 'auto', auto_continuation_policy: 'prefer_current' }),
       quota_source: 'plugin:fixture-quota/example',
     } } });
     await act(async () => {

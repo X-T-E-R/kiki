@@ -27,12 +27,13 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { durationUntil, relativeTime } from '@kiki/session-core/util/time';
-import type { WebAccessLink, WebAccessStatus } from '@kiki/protocol';
+import type { RemoteConnection, WebAccessLink, WebAccessStatus } from '@kiki/protocol';
 
 import { useHost } from '../../host';
 import { ExternalLink } from '../../host/ExternalLink';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { connectionAddress, hasGuiPurpose, useRemoteConnections } from '../../lib/remoteConnections';
 import {
   addressDraftFromStatus,
   addressIssue,
@@ -56,7 +57,7 @@ import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
-import { CopyField } from './remote/parts';
+import { CopyField, RemoteStateChip } from './remote/parts';
 
 /**
  * What a browser signed in through a web link sees in this place: that it is
@@ -144,7 +145,8 @@ export function WebAccessSection() {
   // has its own; opening it from here would be configuring somebody else's.
   const control = host.kind === 'tauri' ? localClient : client;
   const status = useWebAccessStatus(control);
-  const [busy, setBusy] = useState<null | Mode | 'off' | 'revoke' | 'link'>(null);
+  const remoteConnections = useRemoteConnections(control);
+  const [busy, setBusy] = useState<null | Mode | 'off' | 'revoke' | 'link' | 'shared'>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [issued, setIssued] = useState<WebAccessLink | null>(null);
@@ -153,9 +155,12 @@ export function WebAccessSection() {
   // reports and only reaches it when the person saves.
   const [draft, setDraft] = useState<WebAccessAddressDraft>(emptyAddressDraft);
   const [draftTouched, setDraftTouched] = useState(false);
+  const [sharedDraft, setSharedDraft] = useState<readonly string[]>([]);
+  const [sharedTouched, setSharedTouched] = useState(false);
 
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['web-access'] }); };
   const state = status.data;
+  const remoteRecords = (remoteConnections.data ?? []).filter(hasGuiPurpose);
 
   // While untouched, the editor shows the live entry rather than a stale guess;
   // once edited, the person's text wins until they save or the entry changes.
@@ -163,6 +168,11 @@ export function WebAccessSection() {
     if (state === undefined || draftTouched) return;
     setDraft(addressDraftFromStatus(state));
   }, [state, draftTouched]);
+
+  useEffect(() => {
+    if (state === undefined || sharedTouched) return;
+    setSharedDraft(state.sharedConnectionIds ?? []);
+  }, [state, sharedTouched]);
 
   const run = async (
     key: NonNullable<typeof busy>,
@@ -196,6 +206,28 @@ export function WebAccessSection() {
   const applyAddress = () => {
     if (state === undefined) return;
     void enable(state.mode ?? 'persistent', draft);
+  };
+
+  const toggleSharedConnection = (id: string, checked: boolean) => {
+    setSharedTouched(true);
+    setSharedDraft((current) => checked
+      ? current.includes(id) ? current : [...current, id]
+      : current.filter((item) => item !== id));
+  };
+
+  const saveSharedConnections = () => {
+    if (control === null) return;
+    const validIds = new Set(remoteRecords.map((record) => record.id));
+    const selectedIds = sharedDraft.filter((id) => validIds.size === 0 || validIds.has(id));
+    void run(
+      'shared',
+      () => webAccessApi(control).setSharedConnections(selectedIds),
+      (next) => {
+        setSharedDraft(next.sharedConnectionIds ?? []);
+        setSharedTouched(false);
+        return { tone: 'success', text: t('st.web.sharedSaved') };
+      },
+    );
   };
 
   const issueLink = () => {
@@ -242,9 +274,20 @@ export function WebAccessSection() {
         {/* Said once, always, in the same words: the link is full use of this
             Kiki. It is not a read-only share and not a sandbox. */}
         {state !== undefined ? (
-          <div data-web-access-powers>
-            <Hint>{t('st.web.powers')}</Hint>
-          </div>
+          <>
+            <SharedConnectionsList
+              records={remoteRecords}
+              selectedIds={sharedDraft}
+              savedIds={state.sharedConnectionIds ?? []}
+              busy={busy !== null}
+              saving={busy === 'shared'}
+              onToggle={toggleSharedConnection}
+              onSave={saveSharedConnections}
+            />
+            <div data-web-access-powers>
+              <Hint>{t('st.web.powers')}</Hint>
+            </div>
+          </>
         ) : null}
 
         <FeedbackLine feedback={feedback} />
@@ -314,7 +357,7 @@ export function WebAccessSection() {
  */
 function OpenEntry({ state, busy, onNewLink, onTurnOff, onRevoke, onRevokeAll, address }: {
   state: WebAccessStatus;
-  busy: null | Mode | 'off' | 'revoke' | 'link';
+  busy: null | Mode | 'off' | 'revoke' | 'link' | 'shared';
   details: boolean;
   onToggleDetails: () => void;
   onNewLink: () => void;
@@ -509,7 +552,7 @@ function BrowserList({ state, onRevoke, onRevokeAll, busy }: {
   state: WebAccessStatus;
   onRevoke: (entry: WebAccessStatus['sessions'][number]) => void;
   onRevokeAll: () => void;
-  busy: null | Mode | 'off' | 'revoke' | 'link';
+  busy: null | Mode | 'off' | 'revoke' | 'link' | 'shared';
 }) {
   const { t, locale } = useI18n();
   const sessions = state.sessions;
@@ -544,6 +587,72 @@ function BrowserList({ state, onRevoke, onRevokeAll, busy }: {
               </button>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function sameSelection(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const set = new Set(right);
+  return left.every((id) => set.has(id));
+}
+
+function SharedConnectionsList({ records, selectedIds, savedIds, busy, saving, onToggle, onSave }: {
+  records: readonly RemoteConnection[];
+  selectedIds: readonly string[];
+  savedIds: readonly string[];
+  busy: boolean;
+  saving: boolean;
+  onToggle: (id: string, checked: boolean) => void;
+  onSave: () => void;
+}) {
+  const { t } = useI18n();
+  const dirty = !sameSelection(selectedIds, savedIds);
+  return (
+    <div className="space-y-2 pt-1" data-web-access-shared-connections>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <p className="text-[12.5px] font-medium text-ink">{t('st.web.sharedTitle')}</p>
+          <p className="mt-0.5 max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.web.sharedHint')}</p>
+        </div>
+        {records.length > 0 || savedIds.length > 0 ? (
+          <button type="button" data-web-access-save-shared className={SECONDARY_BUTTON}
+            disabled={busy || !dirty} onClick={onSave}>
+            {saving ? t('st.web.sharedSaving') : t('st.web.sharedSave')}
+          </button>
+        ) : null}
+      </div>
+      {records.length === 0 ? (
+        <p className="text-[12px] text-ink-faint" data-web-access-shared-empty>{t('st.web.sharedEmpty')}</p>
+      ) : (
+        <div role="list" aria-label={t('st.web.sharedTitle')} className="space-y-1">
+          {records.map((record) => {
+            const checked = selectedIds.includes(record.id);
+            return (
+              <label key={record.id} role="listitem" data-web-access-shared-row={record.id}
+                className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-ink/[0.03] px-2.5 py-1.5 transition-colors hover:bg-ink/[0.05]">
+                <input
+                  type="checkbox"
+                  data-web-access-share-connection={record.id}
+                  checked={checked}
+                  disabled={busy}
+                  onChange={(event) => { onToggle(record.id, event.target.checked); }}
+                  className="h-3.5 w-3.5 shrink-0 rounded border-hairline-strong accent-accent"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={record.label}>{record.label}</span>
+                    <RemoteStateChip state={record.state} className="text-[11px]" />
+                  </div>
+                  <p className="truncate font-mono text-[11px] text-ink-faint" title={record.endpoint}>
+                    {connectionAddress(record.endpoint)}
+                  </p>
+                </div>
+              </label>
+            );
+          })}
         </div>
       )}
     </div>

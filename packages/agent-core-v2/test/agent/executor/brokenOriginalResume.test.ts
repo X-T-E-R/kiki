@@ -10,7 +10,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, IAgentExecutorRegistry, type AgentExecutorProvider } from '#/app/agentExecutor/agentExecutor';
 import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { IConfigService } from '#/app/config/config';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
@@ -103,24 +103,51 @@ function recordingClient(script: () => InProcessAgentScript, failSpawn: () => bo
   const histories: Array<ReturnType<typeof createInProcessScriptedAgent>['history']> = [];
   let spawns = 0;
   let currentChild: HostProcessLike | undefined;
-  const client = new AcpProcessClient({
-    spawn: async () => {
-      spawns += 1;
-      if (failSpawn()) throw new Error('spawn failed');
-      const { child, toAgent, fromAgent } = scriptedChild();
-      currentChild = child;
-      const fixture = createInProcessScriptedAgent(script());
-      histories.push(fixture.history);
-      connectInProcessScriptedAgent(fixture.app, Writable.toWeb(fromAgent), Readable.toWeb(toAgent));
-      return child;
-    },
-  }, { id, sourceId, command: id, startupTimeoutMs: 5_000 }, { platform: 'linux' });
-  const openSession = client.openSession.bind(client);
-  client.openSession = (async (options: AcpOpenSessionOptions) => {
-    opens.push(options);
-    return openSession(options);
-  }) as typeof client.openSession;
-  return { client, opens, histories, spawns: () => spawns, exit: async () => { await currentChild?.kill(); } };
+  let nextTurnError: Error | undefined;
+  const createClient = () => {
+    const instance = new AcpProcessClient({
+      spawn: async () => {
+        spawns += 1;
+        if (failSpawn()) throw new Error('spawn failed');
+        const { child, toAgent, fromAgent } = scriptedChild();
+        currentChild = child;
+        const fixture = createInProcessScriptedAgent(script());
+        histories.push(fixture.history);
+        connectInProcessScriptedAgent(fixture.app, Writable.toWeb(fromAgent), Readable.toWeb(toAgent));
+        return child;
+      },
+    }, { id, sourceId, command: id, startupTimeoutMs: 5_000 }, { platform: 'linux' });
+    const openSession = instance.openSession.bind(instance);
+    instance.openSession = (async (options: AcpOpenSessionOptions) => {
+      opens.push(options);
+      return openSession(options);
+    }) as typeof instance.openSession;
+    const startTurn = instance.startTurn.bind(instance);
+    instance.startTurn = (async (request) => {
+      const handle = await startTurn(request);
+      const pendingError = nextTurnError;
+      if (pendingError === undefined) return handle;
+      nextTurnError = undefined;
+      return {
+        ...handle,
+        completion: handle.completion.then(async () => {
+          await currentChild?.kill();
+          throw pendingError;
+        }),
+      };
+    }) as typeof instance.startTurn;
+    return instance;
+  };
+  const client = createClient();
+  return {
+    client,
+    createClient,
+    failNextTurn: (error: Error) => { nextTurnError = error; },
+    opens,
+    histories,
+    spawns: () => spawns,
+    exit: async () => { await currentChild?.kill(); },
+  };
 }
 
 function sessionMetadata(): ISessionMetadata & { agents: Record<string, AgentMeta> } {
@@ -145,6 +172,7 @@ function sessionMetadata(): ISessionMetadata & { agents: Record<string, AgentMet
     getAgentExecutor: async () => undefined,
     registerAgent: async () => {},
     createdByLoad: () => true,
+    onDidChangeMetadata: () => ({ dispose() {} }),
   } as unknown as ISessionMetadata & { agents: Record<string, AgentMeta> };
 }
 
@@ -838,101 +866,51 @@ describe('recoverable ACP broken resume', () => {
       sessionId: 'remote-shared-1',
       capabilities: { loadSession: true },
     }), () => false, 'instance-agy-b', 'agy-cli');
-    const harness = createExecutionHarness({
-      agentId: CHILD,
-      executorId: 'instance-agy-a',
-      client: remoteA.client,
-      modelBinding: 'argv',
-      thinkingEffort: 'medium',
-      permission: argvPermission,
-      prior: {
-        executorId: 'instance-agy-a',
-        descriptorRevision: 'r-a',
-        sessionEpoch: 1,
-        sessionRef: { executorId: 'instance-agy-a', version: 1, ref: { sessionId: 'remote-shared-1' } },
-        profileDeliveredSessionId: 'remote-shared-1',
-        profileDelivery: 'first_prompt_preamble',
-      },
-    });
-    admitBrokenResume(harness.ix);
     const descriptors = new Map([
       [familyDesc.id, familyDesc],
       [instanceADesc.id, instanceADesc],
       [instanceBDesc.id, instanceBDesc],
     ]);
-    const registry = harness.ix.get(IAgentExecutorRegistry);
-    registry.get = (id: string) => descriptors.get(id);
-    registry.validateBinding = (_id, _opts, binding) => ({ ok: true, binding });
     const { AcpAgentExecutorSession } = await import('#/agent/execution/acpAgentExecutorSession');
-    registry.resolveExecutable = async (id: string) => {
-      const desc = descriptors.get(id)!;
-      const clientForDesc = id === 'instance-agy-b' ? remoteB.client : remoteA.client;
-      return {
-        descriptor: desc,
-        options: {},
-        provider: {
-          id: desc.id,
-          protocol: desc.protocol,
-          validateOptions: () => ({}),
-          validateBinding: (binding) => ({ ok: true, binding }),
-          create: (ctx) => new AcpAgentExecutorSession(ctx, () => clientForDesc),
-        },
-      };
+    const { AGENT_EXECUTOR_INSTANCES_SECTION } = await import('#/app/agentExecutor/executorInstances');
+    const { AGENT_EXECUTOR_OVERRIDES_SECTION } = await import('#/app/agentExecutor/executorOverrides');
+    const { normalizeAgentProfile } = await import('#/app/agentProfileCatalog/agentProfileCatalog');
+    const { makeAgentScopeContext } = await import('#/agent/scopeContext/scopeContext');
+    const { AgentExecutionService } = await import('#/agent/execution/executionService');
+    const { agentService, appService, sessionService } = await import('../../harness');
+    const caps = new Map<string, NegotiatedExecutorCapabilities>();
+    const provider: AgentExecutorProvider = {
+      id: 'example-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (ctx) => new AcpAgentExecutorSession(ctx, () =>
+        (ctx.descriptor.id === 'instance-agy-b' ? remoteB : remoteA).createClient()),
     };
-    let currentBinding = {
-      ...harness.ix.get(IAgentProfileService).data(),
-      executorId: 'instance-agy-a',
-      executorProtocol: 'acp-v1',
-      executorDescriptorRevision: 'r-a',
+    const registry: IAgentExecutorRegistry = {
+      _serviceBrand: undefined,
+      list: () => [...descriptors.values()],
+      get: (id: string) => descriptors.get(id),
+      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {}, provider }),
+      validateBinding: (_id, _opts, binding) => ({ ok: true, binding }),
+      discover: async () => [],
+      provider: (protocol) => protocol === provider.protocol ? provider : undefined,
+      recordNegotiated: (id, version, capabilities) => {
+        const key = `${id}\0${version ?? ''}`;
+        caps.set(key, { ...caps.get(key), ...capabilities });
+      },
+      negotiated: (id, version) => caps.get(`${id}\0${version ?? ''}`),
+      lastNegotiated: (id) => caps.get(`${id}\0`),
+      resolveExecutable: async function (id) { return this.resolve(id); },
+    };
+    const agyProfile = normalizeAgentProfile({
+      name: 'agy-worker',
+      executor: 'agy-cli',
       modelAlias: 'model-a',
-      thinkingLevel: 'medium' as const,
-      thinkingEffortExplicit: true,
-    };
-    const state = harness.ix.get(IAgentStateService);
-    const { agentExecutorBindingFingerprint } = await import('#/app/agentExecutor/agentExecutor');
-    (state as unknown as { set(k: unknown, v: unknown): void }).set(externalExecutorKey, {
-      ...(state.get(externalExecutorKey) as object),
-      executorId: 'instance-agy-a',
-      descriptorRevision: 'r-a',
-      bindingFingerprint: agentExecutorBindingFingerprint(currentBinding),
+      thinkingEffort: 'medium',
+      systemPrompt: () => 'agy worker prompt',
     });
     const metadata = sessionMetadata();
-    const switched = modelSwitchFor(harness.ix, metadata);
-    const profileSvc = harness.ix.get(IAgentProfileService);
-    profileSvc.data = () => currentBinding;
-    profileSvc.prepareResumeBinding = async (input) => {
-      const nextId = input.executorInstance === 'instance-agy-b' || (typeof input.executorInstance === 'object' && input.executorInstance.account_id === 'acct-b')
-        ? 'instance-agy-b'
-        : typeof input.executorInstance === 'string' && input.executorInstance !== 'main' && input.executorInstance !== 'auto'
-          ? input.executorInstance
-          : currentBinding.executorId!;
-      const nextDesc = descriptors.get(nextId);
-      if (nextDesc === undefined) throw new Error(`Unknown instance ${nextId}`);
-      const nextConfig = {
-        modelAlias: currentBinding.modelAlias!,
-        thinkingEffort: currentBinding.thinkingLevel,
-        executorId: nextDesc.id,
-        executorProtocol: nextDesc.protocol,
-        executorDescriptorRevision: nextDesc.revision,
-      };
-      return {
-        model: currentBinding.modelAlias!,
-        thinking: currentBinding.thinkingLevel,
-        config: nextConfig,
-        maxContextTokens: undefined,
-        reservedTokens: undefined,
-        assertCurrent: () => {},
-        syncMetadata: async () => {
-          currentBinding = {
-            ...currentBinding,
-            executorId: nextDesc.id,
-            executorProtocol: nextDesc.protocol,
-            executorDescriptorRevision: nextDesc.revision,
-          };
-        },
-      };
-    };
-    const senderCtx = createTestAgent();
     const loop = {
       _serviceBrand: undefined,
       enqueue: () => { throw new Error('unexpected enqueue'); },
@@ -941,18 +919,70 @@ describe('recoverable ACP broken resume', () => {
       tryAcquireQuiescence: () => ({ dispose() {} }),
       hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
     } as unknown as IAgentLoopService;
+    const childCtx = createTestAgent(
+      {
+        initialConfig: {
+          [AGENT_EXECUTOR_OVERRIDES_SECTION]: {
+            'agy-cli': {
+              quotaSource: 'plugin:magpie/agy',
+              defaults: { executor_instance: 'instance-agy-a' },
+            },
+          },
+          [AGENT_EXECUTOR_INSTANCES_SECTION]: {
+            'instance-agy-a': {
+              source_executor: 'agy-cli',
+              label: 'Account A',
+              configuration: instanceADesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-a',
+            },
+            'instance-agy-b': {
+              source_executor: 'agy-cli',
+              label: 'Account B',
+              configuration: instanceBDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-b',
+            },
+          },
+        },
+      },
+      appService(IAgentExecutorRegistry, registry),
+      sessionService(ISessionMetadata, metadata),
+      sessionService(ISessionAgentProfileCatalog, {
+        _serviceBrand: undefined,
+        ready: Promise.resolve(),
+        onDidChange: (() => ({ dispose() {} })) as never,
+        get: (name: string) => name === agyProfile.name ? agyProfile : undefined,
+        getDefault: () => agyProfile,
+        list: () => [agyProfile],
+        listRoutes: () => [],
+        routeDiagnostics: () => [],
+        resolveSelection: () => ({ profile: agyProfile, baseProfile: agyProfile, route: undefined }),
+        inspect: () => undefined,
+        load: async () => {},
+        reload: async () => {},
+      }),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: CHILD, parentAgentId: 'main', agentScope: `agent/${CHILD}` })),
+      agentService(IAgentExecutionService, new SyncDescriptor(AgentExecutionService)),
+    );
+    const childProfile = childCtx.get(IAgentProfileService);
+    const childExecution = childCtx.get(IAgentExecutionService);
+    await childProfile.bind({ profile: agyProfile.name, delegationPosition: 'sub' });
+    expect(childProfile.data().executorId).toBe('instance-agy-a');
+
+    const childLoop = childCtx.get(IAgentLoopService);
+    childLoop.tryAcquireQuiescence = () => ({ dispose() {} });
+    childLoop.status = () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false });
+    const senderCtx = createTestAgent();
     const handle: IAgentScopeHandle = {
       id: CHILD,
       kind: LifecycleScope.Agent,
       accessor: {
         get<T>(id: ServiceIdentifier<T>): T {
-          if (id === IAgentExecutionService) return harness.execution as T;
-          if (id === IAgentModelSwitchService) return switched.service as T;
-          if (id === IAgentLoopService) return loop as T;
+          if (id === IAgentLoopService) return childLoop as T;
           if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
           if (id === IAgentToolPolicyService) return { isToolActive: () => false } as T;
-          if (id === ISessionMetadata) return metadata as T;
-          return harness.ix.get(id);
+          return childCtx.get(id);
         },
       },
       dispose: () => {},
@@ -979,11 +1009,11 @@ describe('recoverable ACP broken resume', () => {
       retain: () => ({ dispose: () => {} }),
       notifyAgentTaskStopped: () => {},
       run: async (_agentId: string, request: import('#/session/subagent/subagent').AgentRunRequest, options: { signal: AbortSignal }) =>
-        harness.execution.run(request, options),
+        childExecution.run(request, options),
     });
     toolIx.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), list: () => [], listRoutes: () => [], get: () => undefined });
     toolIx.stub(IAgentCollaborationRegistry, { commit: () => {}, release: () => {} });
-    toolIx.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
+    toolIx.stub(IConfigService, childCtx.get(IConfigService));
     toolIx.stub(IModelCatalog, {});
     toolIx.stub(IModelService, {});
     toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
@@ -1002,21 +1032,11 @@ describe('recoverable ACP broken resume', () => {
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
-      const startTurnA = remoteA.client.startTurn.bind(remoteA.client);
-      vi.spyOn(remoteA.client, 'startTurn').mockImplementationOnce(async (request) => {
-        const handle = await startTurnA(request);
-        return {
-          ...handle,
-          completion: handle.completion.then(async () => {
-            await remoteA.exit();
-            throw new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.');
-          }),
-        };
-      });
-      const firstRun = await harness.execution.run({ kind: 'prompt', prompt: 'first turn on A' }, { signal });
+      remoteA.failNextTurn(new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.'));
+      const firstRun = await childExecution.run({ kind: 'prompt', prompt: 'first turn on A' }, { signal });
       await expect(firstRun.completion).rejects.toThrow(/RESOURCE_EXHAUSTED/);
-      await harness.execution.settled();
-      expect(harness.execution.status()).toEqual({ state: 'idle' });
+      await childExecution.settled();
+      expect(childExecution.status()).toEqual({ state: 'idle' });
 
       const resumed = await executeTool(toolIx.get(ISubagentTool), {
         turnId: 2,
@@ -1030,9 +1050,9 @@ describe('recoverable ACP broken resume', () => {
         },
         signal,
       });
-      await harness.execution.settled();
+      await childExecution.settled();
       expect(resumed.isError, JSON.stringify(resumed.output)).toBeFalsy();
-      expect(currentBinding.executorId).toBe('instance-agy-b');
+      expect(childProfile.data().executorId).toBe('instance-agy-b');
       expect(remoteB.spawns()).toBe(1);
       expect(remoteB.opens).toHaveLength(2);
       expect(remoteB.opens[0]).toMatchObject({
@@ -1053,18 +1073,808 @@ describe('recoverable ACP broken resume', () => {
       expect(promptedB).not.toContain('first turn on A');
       expect(promptedB).not.toContain('BEGIN KIKI PRIOR TRANSCRIPT HANDOFF');
       expect(promptedB.split('second turn on B only').length - 1).toBe(1);
-      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey)).toMatchObject({
+      expect(childCtx.get(IAgentStateService).get(externalExecutorKey)).toMatchObject({
         executorId: 'instance-agy-b',
         descriptorRevision: 'r-b',
         sessionRef: { executorId: 'instance-agy-b', ref: { sessionId: 'remote-shared-1' } },
       });
     } finally {
       await toolIx.dispose();
-      await switched.dispose();
-      await harness.execution.shutdown();
+      await childExecution.shutdown();
       await remoteA.client.shutdown();
       await remoteB.client.shutdown();
-      await harness.ix.dispose();
+      await childCtx.dispose();
+      await senderCtx.dispose();
+    }
+  });
+
+  it('auto continuation policy exercises real AgentProfileService + prompt/dispatch paths: saved explicit Auto keeps A despite cached zero quota or network error, switches to B on quota failure via session/load, refuses session/new on failed load, and enforces launch home & AGY family boundaries', async () => {
+    const familyDesc = {
+      id: 'agy-cli',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      revision: 'r-family',
+    };
+    const instanceADesc = {
+      id: 'instance-agy-a',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-a',
+      instance: {
+        id: 'instance-agy-a',
+        source_executor: 'agy-cli',
+        label: 'Account A',
+        configuration: { kind: 'plugin_account' as const, source_id: 'plugin:magpie/agy', account_id: 'acct-a' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const instanceBDesc = {
+      id: 'instance-agy-b',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-b',
+      instance: {
+        id: 'instance-agy-b',
+        source_executor: 'agy-cli',
+        label: 'Account B',
+        configuration: { kind: 'plugin_account' as const, source_id: 'plugin:magpie/agy', account_id: 'acct-b' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const instanceCDesc = {
+      id: 'instance-agy-c',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-c',
+      instance: {
+        id: 'instance-agy-c',
+        source_executor: 'agy-cli',
+        label: 'Account C',
+        configuration: { kind: 'plugin_account' as const, source_id: 'plugin:magpie/agy', account_id: 'acct-c' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const instanceDifferentHomeDesc = {
+      id: 'instance-agy-diff-home',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      homeDir: '/isolated-agy-home',
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-diff-home',
+      instance: {
+        id: 'instance-agy-diff-home',
+        source_executor: 'agy-cli',
+        label: 'Isolated Home',
+        configuration: { kind: 'config_directory' as const, path: '/isolated-agy-home' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const instanceCockpitSmokeDesc = {
+      id: 'instance-agy-cockpit-smoke',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-cockpit-smoke',
+      instance: {
+        id: 'instance-agy-cockpit-smoke',
+        source_executor: 'agy-cli',
+        label: 'Legacy Cockpit Smoke',
+        configuration: { kind: 'inherit' as const },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const grokFamilyDesc = {
+      id: 'grok-acp',
+      protocol: 'acp-v1' as const,
+      command: 'grok',
+      args: [],
+      revision: 'r-grok-family',
+    };
+    const grokADesc = {
+      id: 'instance-grok-a',
+      protocol: 'acp-v1' as const,
+      command: 'grok',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-grok-a',
+      instance: {
+        id: 'instance-grok-a',
+        source_executor: 'grok-acp',
+        label: 'Grok A',
+        configuration: { kind: 'inherit' as const },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const grokBDesc = {
+      id: 'instance-grok-b',
+      protocol: 'acp-v1' as const,
+      command: 'grok',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-grok-b',
+      instance: {
+        id: 'instance-grok-b',
+        source_executor: 'grok-acp',
+        label: 'Grok B',
+        configuration: { kind: 'inherit' as const },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    let failLoadOnC = false;
+    let failQuotaRead = false;
+    const remoteMain = recordingClient(() => ({
+      sessionId: 'remote-main-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'agy-cli', 'agy-cli');
+    const remoteCockpit = recordingClient(() => ({
+      sessionId: 'remote-cockpit-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-agy-cockpit-smoke', 'agy-cli');
+    const remoteA = recordingClient(() => ({
+      sessionId: 'remote-auto-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-agy-a', 'agy-cli');
+    const remoteB = recordingClient(() => ({
+      sessionId: 'remote-auto-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-agy-b', 'agy-cli');
+    const remoteC = recordingClient(() => ({
+      sessionId: 'remote-auto-1',
+      capabilities: { loadSession: true },
+      load: failLoadOnC ? 'unknown_session' : 'ok',
+    }), () => false, 'instance-agy-c', 'agy-cli');
+    const remoteGrokA = recordingClient(() => ({
+      sessionId: 'remote-grok-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-grok-a', 'grok-acp');
+    const remoteGrokB = recordingClient(() => ({
+      sessionId: 'remote-grok-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-grok-b', 'grok-acp');
+
+    const descriptors = new Map<string, import('#/app/agentExecutor/agentExecutor').AgentExecutorDescriptor>([
+      [familyDesc.id, familyDesc],
+      [instanceADesc.id, instanceADesc],
+      [instanceBDesc.id, instanceBDesc],
+      [instanceCDesc.id, instanceCDesc],
+      [instanceDifferentHomeDesc.id, instanceDifferentHomeDesc],
+      [instanceCockpitSmokeDesc.id, instanceCockpitSmokeDesc],
+      [grokFamilyDesc.id, grokFamilyDesc],
+      [grokADesc.id, grokADesc],
+      [grokBDesc.id, grokBDesc],
+    ]);
+    const { AcpAgentExecutorSession } = await import('#/agent/execution/acpAgentExecutorSession');
+    const { AGENT_EXECUTOR_INSTANCES_SECTION } = await import('#/app/agentExecutor/executorInstances');
+    const { AGENT_EXECUTOR_OVERRIDES_SECTION } = await import('#/app/agentExecutor/executorOverrides');
+    const { IHarnessQuotaService } = await import('#/app/plugin/harnessQuota');
+    const { normalizeAgentProfile } = await import('#/app/agentProfileCatalog/agentProfileCatalog');
+    const { nativeTargets } = await import('@kiki/agent-profiles/nativeTarget');
+    const { makeAgentScopeContext } = await import('#/agent/scopeContext/scopeContext');
+    const { AgentExecutionService } = await import('#/agent/execution/executionService');
+    const { ConfigTarget } = await import('#/app/config/config');
+    const { ExecutorSessionUpdated } = await import('#/agent/execution/externalExecutorOps');
+    const { agentService, appService, sessionService } = await import('../../harness');
+
+    const caps = new Map<string, NegotiatedExecutorCapabilities>();
+    const remotes = new Map([
+      ['agy-cli', remoteMain], ['instance-agy-cockpit-smoke', remoteCockpit],
+      ['instance-agy-c', remoteC], ['instance-agy-b', remoteB],
+      ['instance-grok-a', remoteGrokA], ['instance-grok-b', remoteGrokB],
+    ]);
+    const provider: AgentExecutorProvider = {
+      id: 'example-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (ctx) => new AcpAgentExecutorSession(ctx, () =>
+        (remotes.get(ctx.descriptor.id) ?? remoteA).createClient()),
+    };
+    const registry: IAgentExecutorRegistry = {
+      _serviceBrand: undefined,
+      list: () => [...descriptors.values()],
+      get: (id: string) => descriptors.get(id),
+      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {}, provider }),
+      validateBinding: (_id, _opts, binding) => ({ ok: true, binding }),
+      discover: async () => [],
+      provider: (protocol) => protocol === provider.protocol ? provider : undefined,
+      recordNegotiated: (id, version, capabilities) => {
+        const key = `${id}\0${version ?? ''}`;
+        caps.set(key, { ...caps.get(key), ...capabilities });
+      },
+      negotiated: (id, version) => caps.get(`${id}\0${version ?? ''}`),
+      lastNegotiated: (id) => caps.get(`${id}\0`),
+      resolveExecutable: async function (id) { return this.resolve(id); },
+    };
+
+    let quotaReadings: Array<{ accountId: string; modelIds: string[]; unit: 'percent'; remaining: number | undefined }> = [
+      { accountId: 'acct-a', modelIds: ['model-a'], unit: 'percent' as const, remaining: 90 },
+      { accountId: 'acct-b', modelIds: ['model-a'], unit: 'percent' as const, remaining: 50 },
+      { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: 40 },
+    ];
+    const quotaService: import('#/app/plugin/harnessQuota').IHarnessQuotaService = {
+      _serviceBrand: undefined,
+      definitions: async () => [],
+      cached: async () => ({ sources: [] }),
+      read: async () => {
+        if (failQuotaRead) throw new Error('quota reader offline');
+        return quotaReadings;
+      },
+    };
+
+    const agyNativeTarget = nativeTargets([familyDesc])[0]!;
+    const grokProfile = normalizeAgentProfile({
+      name: 'grok-worker',
+      executor: 'grok-acp',
+      modelAlias: 'grok-4',
+      thinkingEffort: 'medium',
+      systemPrompt: () => 'grok worker',
+    });
+    const metadata = sessionMetadata();
+    const loop = {
+      _serviceBrand: undefined,
+      enqueue: () => { throw new Error('unexpected enqueue'); },
+      status: () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false }),
+      settled: () => Promise.resolve(),
+      tryAcquireQuiescence: () => ({ dispose() {} }),
+      hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
+    } as unknown as IAgentLoopService;
+    const childCtx = createTestAgent(
+      {
+        initialConfig: {
+          [AGENT_EXECUTOR_OVERRIDES_SECTION]: {
+            'agy-cli': {
+              quotaSource: 'plugin:magpie/agy',
+              defaults: {
+                executor_instance: 'auto',
+                auto_continuation_policy: 'prefer_current',
+              },
+            },
+          },
+          [AGENT_EXECUTOR_INSTANCES_SECTION]: {
+            'instance-agy-a': {
+              source_executor: 'agy-cli',
+              label: 'Account A',
+              configuration: instanceADesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-a',
+            },
+            'instance-agy-b': {
+              source_executor: 'agy-cli',
+              label: 'Account B',
+              configuration: instanceBDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-b',
+            },
+            'instance-agy-c': {
+              source_executor: 'agy-cli',
+              label: 'Account C',
+              configuration: instanceCDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-c',
+            },
+            'instance-agy-diff-home': {
+              source_executor: 'agy-cli',
+              label: 'Isolated Home',
+              configuration: instanceDifferentHomeDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+              quota_account_id: 'acct-diff',
+            },
+            'instance-agy-cockpit-smoke': {
+              source_executor: 'agy-cli',
+              label: 'Legacy Cockpit Smoke',
+              configuration: instanceCockpitSmokeDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+            },
+            'instance-grok-a': {
+              source_executor: 'grok-acp',
+              label: 'Grok A',
+              configuration: grokADesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+            },
+            'instance-grok-b': {
+              source_executor: 'grok-acp',
+              label: 'Grok B',
+              configuration: grokBDesc.instance.configuration,
+              proxy: { kind: 'inherit' },
+            },
+          },
+        },
+      },
+      appService(IAgentExecutorRegistry, registry),
+      appService(IHarnessQuotaService, quotaService),
+      sessionService(ISessionMetadata, metadata),
+      sessionService(ISessionAgentProfileCatalog, {
+        _serviceBrand: undefined,
+        ready: Promise.resolve(),
+        onDidChange: (() => ({ dispose() {} })) as never,
+        get: (name: string) => name === agyNativeTarget.name ? agyNativeTarget : name === grokProfile.name ? grokProfile : undefined,
+        getDefault: () => agyNativeTarget,
+        list: () => [agyNativeTarget, grokProfile],
+        listRoutes: () => [],
+        routeDiagnostics: () => [],
+        resolveSelection: (sel: { profile?: string }) => {
+          const picked = sel.profile === grokProfile.name ? grokProfile : agyNativeTarget;
+          return { profile: picked, baseProfile: picked, route: undefined };
+        },
+        inspect: () => undefined,
+        load: async () => {},
+        reload: async () => {},
+      }),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: CHILD, parentAgentId: 'main', agentScope: `agent/${CHILD}` })),
+      agentService(IAgentExecutionService, new SyncDescriptor(AgentExecutionService)),
+    );
+
+    const childProfile = childCtx.get(IAgentProfileService);
+    const childExecution = childCtx.get(IAgentExecutionService);
+    await childProfile.bind({
+      resolvedProfile: agyNativeTarget,
+      execution: {
+        executor: 'agy-cli',
+        overrides: {
+          model: 'model-a',
+          thinking: 'medium',
+          executor_instance: 'auto',
+        },
+      },
+      model: 'model-a',
+      thinking: 'medium',
+      delegationPosition: 'sub',
+    });
+    expect(childProfile.data().executorId).toBe('instance-agy-a');
+    expect(childProfile.data().execution?.schedule).toMatchObject({
+      instance: 'instance-agy-a',
+      choice: 'auto',
+      source: 'session',
+      quota_consulted: true,
+    });
+
+    const childLoop = childCtx.get(IAgentLoopService);
+    childLoop.tryAcquireQuiescence = () => ({ dispose() {} });
+    childLoop.status = () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false });
+    const senderCtx = createTestAgent();
+    const handle: IAgentScopeHandle = {
+      id: CHILD,
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get<T>(id: ServiceIdentifier<T>): T {
+          if (id === IAgentLoopService) return childLoop as T;
+          if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
+          if (id === IAgentToolPolicyService) return { isToolActive: () => false } as T;
+          return childCtx.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => senderCtx.get(id) },
+      dispose: () => {},
+    };
+    const lifecycle = {
+      _serviceBrand: undefined,
+      onDidCreate: () => ({ dispose() {} }),
+      onDidDispose: () => ({ dispose() {} }),
+      get: (id: string) => id === CHILD ? handle : id === 'main' ? main : undefined,
+      list: () => [main, handle],
+      create: async () => { throw new Error('unexpected create'); },
+    } as unknown as IAgentLifecycleService;
+    const toolIx = new TestInstantiationService();
+    toolIx.stub(IAgentLifecycleService, lifecycle);
+    toolIx.stub(ISessionMetadata, metadata);
+    toolIx.stub(ISessionSubagentService, {
+      hooks: createHooks(['onWillStartAgentTask']),
+      retain: () => ({ dispose: () => {} }),
+      notifyAgentTaskStopped: () => {},
+      run: async (_agentId: string, request: import('#/session/subagent/subagent').AgentRunRequest, options: { signal: AbortSignal }) =>
+        childExecution.run(request, options),
+    });
+    toolIx.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), list: () => [], listRoutes: () => [], get: () => undefined });
+    toolIx.stub(IAgentCollaborationRegistry, { commit: () => {}, release: () => {} });
+    toolIx.stub(IConfigService, childCtx.get(IConfigService));
+    toolIx.stub(IModelCatalog, {});
+    toolIx.stub(IModelService, {});
+    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
+    toolIx.stub(IAgentScopeContext, { _serviceBrand: undefined, agentId: 'main', scope: (key?: string) => `agent/main/${key ?? ''}` });
+    toolIx.stub(IAgentTaskService, senderCtx.get(IAgentTaskService));
+    toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
+    toolIx.stub(IAgentToolPolicyService, {
+      isToolActive: () => true,
+      isToolActiveForDisclosure: () => true,
+      isToolActiveForProfile: () => true,
+      setSessionDisabledTools: async () => {},
+    });
+    toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
+    toolIx.stub(IAgentExecutorRegistry, registry);
+    toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
+    try {
+      const firstOk = await childExecution.run({ kind: 'prompt', prompt: 'turn 0 opens remote-auto-1 on A' }, { signal });
+      await firstOk.completion;
+      await childExecution.settled();
+      expect(remoteA.spawns()).toBe(1);
+      expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef).toMatchObject({
+        executorId: 'instance-agy-a',
+        ref: { sessionId: 'remote-auto-1' },
+      });
+      expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref['kikiLaunchHome']).toBeUndefined();
+
+      const priorState = childCtx.get(IAgentStateService).get(externalExecutorKey);
+      await childCtx.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+        executionGeneration: priorState.executionGeneration,
+        executorId: 'instance-agy-a',
+        descriptorRevision: 'r-a',
+        bindingFingerprint: priorState.bindingFingerprint!,
+        sessionRef: { executorId: 'instance-agy-a', version: 1, ref: { sessionId: 'remote-auto-1', kikiLaunchHome: '' } },
+        sessionEpoch: priorState.sessionEpoch ?? 1,
+        profileDeliveredSessionId: priorState.profileDeliveredSessionId,
+        profileDelivery: priorState.profileDelivery,
+      }));
+      await childCtx.get(IEventDispatcher).flush();
+
+      quotaReadings = [
+        { accountId: 'acct-a', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+        { accountId: 'acct-b', modelIds: ['model-a'], unit: 'percent' as const, remaining: 85 },
+        { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: 40 },
+      ];
+      await childProfile.bind({ execution: childProfile.data().execution!.selection });
+      expect(childProfile.data().executorId).toBe('instance-agy-a');
+      expect(childProfile.data().execution?.schedule).toMatchObject({
+        instance: 'instance-agy-a',
+        choice: 'auto',
+        source: 'session',
+      });
+
+      remoteA.failNextTurn(new Error('read tcp 127.0.0.1:52100->127.0.0.1:7897: wsarecv: An existing connection was forcibly closed by the remote host.'));
+      const netFailRun = await childExecution.run({ kind: 'prompt', prompt: 'turn 1 network error on A' }, { signal });
+      await expect(netFailRun.completion).rejects.toThrow(/wsarecv/);
+      await childExecution.settled();
+
+      const resumedAfterNet = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 2,
+        toolCallId: 'toolu_resume_after_net',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 2 stays on A despite cached zero quota',
+          description: 'resume after network error',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumedAfterNet.isError, JSON.stringify(resumedAfterNet.output)).toBeFalsy();
+      expect(childProfile.data().executorId).toBe('instance-agy-a');
+      expect(remoteB.spawns()).toBe(0);
+
+      await expect(executeTool(toolIx.get(ISubagentTool), {
+        turnId: 3,
+        toolCallId: 'toolu_refuse_diff_home',
+        args: {
+          resume: CHILD,
+          executor_instance: 'instance-agy-diff-home',
+          prompt: 'must not switch to different homeDir',
+          description: 'refuse different homeDir',
+          background: true,
+        },
+        signal,
+      })).resolves.toMatchObject({
+        isError: true,
+        output: expect.stringMatching(/original remote session cannot be resumed/i),
+      });
+      expect(childProfile.data().executorId).toBe('instance-agy-a');
+      expect(childProfile.data().execution?.schedule?.choice).toBe('auto');
+
+      remoteA.failNextTurn(new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.'));
+      const quotaFailRun = await childExecution.run({ kind: 'prompt', prompt: 'turn 3 quota exhausted on A' }, { signal });
+      await expect(quotaFailRun.completion).rejects.toThrow(/RESOURCE_EXHAUSTED/);
+      await childExecution.settled();
+
+      const resumedAfterQuota = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 4,
+        toolCallId: 'toolu_resume_after_quota',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 4 auto switches to B via session/load',
+          description: 'auto switch after quota error',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumedAfterQuota.isError, JSON.stringify(resumedAfterQuota.output)).toBeFalsy();
+      expect(childProfile.data().executorId).toBe('instance-agy-b');
+      expect(childProfile.data().execution?.schedule).toMatchObject({
+        instance: 'instance-agy-b',
+        choice: 'auto',
+      });
+      expect(remoteB.spawns()).toBe(1);
+      expect(remoteB.histories[0]?.methods).toContain('session/load');
+      expect(remoteB.histories[0]?.methods).not.toContain('session/new');
+      expect(remoteB.histories[0]?.sessionLoadParams).toEqual([
+        expect.objectContaining({ sessionId: 'remote-auto-1' }),
+      ]);
+
+      childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
+        'agy-cli': {
+          quotaSource: 'plugin:magpie/agy',
+          defaults: {
+            executor_instance: 'auto',
+            auto_continuation_policy: 'prefer_quota',
+          },
+        },
+      }, ConfigTarget.Memory);
+      quotaReadings = [
+        { accountId: 'acct-a', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+        { accountId: 'acct-b', modelIds: ['model-a'], unit: 'percent' as const, remaining: 10 },
+        { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: 95 },
+      ];
+      failLoadOnC = true;
+      await childProfile.bind({ execution: childProfile.data().execution!.selection });
+      expect(childProfile.data().executorId).toBe('instance-agy-c');
+      await expect(childExecution.run({ kind: 'prompt', prompt: 'turn 5 must not send when load fails on C' }, { signal })).rejects.toThrow(/requested external session cannot be resumed or loaded/);
+      await childExecution.settled();
+      expect(remoteC.spawns()).toBe(2);
+      expect(remoteC.histories[0]?.methods).toContain('session/load');
+      expect(remoteC.histories[0]?.methods).not.toContain('session/new');
+      expect(remoteC.histories[0]?.methods).not.toContain('session/prompt');
+      expect(remoteC.histories[1]?.methods).toContain('session/load');
+      expect(remoteC.histories[1]?.methods).not.toContain('session/new');
+      expect(remoteC.histories[1]?.methods).not.toContain('session/prompt');
+
+      failLoadOnC = false;
+      const resumedPreferQuota = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 5,
+        toolCallId: 'toolu_resume_prefer_quota',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 6 prefer_quota loads session on C',
+          description: 'prefer quota switch to C',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumedPreferQuota.isError, JSON.stringify(resumedPreferQuota.output)).toBeFalsy();
+      expect(childProfile.data().executorId).toBe('instance-agy-c');
+      expect(remoteC.histories.at(-1)?.sessionLoadParams).toEqual([
+        expect.objectContaining({ sessionId: 'remote-auto-1' }),
+      ]);
+      expect(remoteC.histories.at(-1)?.methods).not.toContain('session/new');
+      expect(JSON.stringify(remoteC.histories.at(-1)?.promptParams)).toContain('turn 6 prefer_quota loads session on C');
+      expect(JSON.stringify(remoteC.histories.at(-1)?.promptParams)).not.toContain('turn 5 must not send');
+
+      quotaReadings = [
+        { accountId: 'acct-a', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+        { accountId: 'acct-b', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+        { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: undefined },
+        { accountId: 'acct-diff', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+      ];
+      childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
+        'agy-cli': {
+          quotaSource: 'plugin:magpie/agy',
+          defaults: {
+            executor_instance: 'auto',
+            auto_continuation_policy: 'prefer_current',
+          },
+        },
+      }, ConfigTarget.Memory);
+      await childProfile.bind({
+        resolvedProfile: agyNativeTarget,
+        execution: {
+          executor: 'agy-cli',
+          overrides: {
+            model: 'model-a',
+            thinking: 'medium',
+            executor_instance: 'main',
+          },
+        },
+        model: 'model-a',
+        thinking: 'medium',
+        delegationPosition: 'sub',
+      });
+      await childCtx.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+        executionGeneration: childProfile.data().execution?.generation,
+        executorId: 'agy-cli',
+        descriptorRevision: 'r-main',
+        bindingFingerprint: agentExecutorBindingFingerprint(childProfile.data()),
+        sessionRef: { executorId: 'agy-cli', version: 1, ref: { sessionId: 'remote-main-1' } },
+        sessionEpoch: 2,
+        profileDeliveredSessionId: 'remote-main-1',
+        profileDelivery: 'first_prompt_preamble',
+      }));
+      await childCtx.get(IEventDispatcher).flush();
+      await childProfile.bind({
+        resolvedProfile: agyNativeTarget,
+        execution: {
+          executor: 'agy-cli',
+          overrides: {
+            model: 'model-a',
+            thinking: 'medium',
+            executor_instance: 'auto',
+          },
+        },
+        model: 'model-a',
+        thinking: 'medium',
+        delegationPosition: 'sub',
+      });
+      expect(childProfile.data().executorId).toBe('agy-cli');
+      expect(childProfile.data().execution?.schedule).toMatchObject({
+        instance: 'main',
+        choice: 'auto',
+      });
+
+      const runOnMain = await childExecution.run({ kind: 'prompt', prompt: 'turn 7 initial run on main before quota failure' }, { signal });
+      await runOnMain.completion;
+      await childExecution.settled();
+      expect(remoteMain.histories).toHaveLength(1);
+      expect(remoteMain.histories[0]?.methods).toContain('session/load');
+      expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref).toMatchObject({
+        sessionId: 'remote-main-1',
+      });
+
+      remoteMain.failNextTurn(new Error('429 RESOURCE_EXHAUSTED: main account quota exhausted'));
+      const mainQuotaFailRun = await childExecution.run({ kind: 'prompt', prompt: 'turn 8 quota exhausted on main' }, { signal });
+      await expect(mainQuotaFailRun.completion).rejects.toThrow(/RESOURCE_EXHAUSTED/);
+      await childExecution.settled();
+
+      const histCountsBeforeExhausted = {
+        main: remoteMain.histories.length,
+        cockpit: remoteCockpit.histories.length,
+        a: remoteA.histories.length,
+        b: remoteB.histories.length,
+        c: remoteC.histories.length,
+      };
+
+      await expect(childProfile.bind({
+        execution: childProfile.data().execution!.selection,
+      })).rejects.toThrow(/No available executor instance with positive quota/i);
+
+      const resumeWhenAllZero = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 8,
+        toolCallId: 'toolu_resume_main_all_zero',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 8 must not launch when all accounts are 0 or unknown',
+          description: 'all zero after main quota failure',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumeWhenAllZero.isError).toBe(true);
+      expect(JSON.stringify(resumeWhenAllZero.output)).toMatch(/No available executor instance with positive quota/i);
+
+      failQuotaRead = true;
+      await expect(childProfile.bind({
+        execution: childProfile.data().execution!.selection,
+      })).rejects.toThrow(/No available executor instance with positive quota/i);
+
+      const resumeWhenReaderThrows = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 9,
+        toolCallId: 'toolu_resume_main_reader_throws',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 9 must not launch when quota reader throws',
+          description: 'reader throws after main quota failure',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumeWhenReaderThrows.isError).toBe(true);
+      expect(JSON.stringify(resumeWhenReaderThrows.output)).toMatch(/No available executor instance with positive quota/i);
+
+      expect({
+        main: remoteMain.histories.length,
+        cockpit: remoteCockpit.histories.length,
+        a: remoteA.histories.length,
+        b: remoteB.histories.length,
+        c: remoteC.histories.length,
+      }).toEqual(histCountsBeforeExhausted);
+      expect(remoteCockpit.histories).toHaveLength(0);
+      expect(childProfile.data().executorId).toBe('agy-cli');
+      expect(childProfile.data().execution?.schedule).toMatchObject({
+        instance: 'main',
+        choice: 'auto',
+      });
+      expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref).toMatchObject({
+        sessionId: 'remote-main-1',
+      });
+
+      failQuotaRead = false;
+      quotaReadings = [
+        { accountId: 'acct-a', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+        { accountId: 'acct-b', modelIds: ['model-a'], unit: 'percent' as const, remaining: 75 },
+        { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: undefined },
+        { accountId: 'acct-diff', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
+      ];
+      const resumeAfterQuotaRestored = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 10,
+        toolCallId: 'toolu_resume_main_to_b',
+        args: {
+          resume: CHILD,
+          prompt: 'turn 10 switches from failed main to B and loads remote-main-1',
+          description: 'recover to B after quota restored',
+          background: true,
+        },
+        signal,
+      });
+      await childExecution.settled();
+      expect(resumeAfterQuotaRestored.isError, JSON.stringify(resumeAfterQuotaRestored.output)).toBeFalsy();
+      expect(childProfile.data().executorId).toBe('instance-agy-b');
+      expect(childProfile.data().execution?.schedule).toMatchObject({
+        instance: 'instance-agy-b',
+        choice: 'auto',
+        quota_consulted: true,
+      });
+      expect(remoteB.histories.at(-1)?.sessionLoadParams).toEqual([
+        expect.objectContaining({ sessionId: 'remote-main-1' }),
+      ]);
+      expect(remoteB.histories.at(-1)?.methods).not.toContain('session/new');
+      expect(JSON.stringify(remoteB.histories.at(-1)?.promptParams)).toContain('turn 10 switches from failed main to B and loads remote-main-1');
+      expect(JSON.stringify(remoteB.histories.at(-1)?.promptParams)).not.toContain('turn 8 must not launch');
+      expect(JSON.stringify(remoteB.histories.at(-1)?.promptParams)).not.toContain('turn 9 must not launch');
+
+      const grokNativeTarget = nativeTargets([grokFamilyDesc])[0]!;
+      await childProfile.bind({
+        resolvedProfile: grokNativeTarget,
+        execution: {
+          executor: 'grok-acp',
+          overrides: {
+            model: 'grok-4',
+            thinking: 'medium',
+            executor_instance: 'instance-grok-a',
+          },
+        },
+        model: 'grok-4',
+        thinking: 'medium',
+        delegationPosition: 'sub',
+      });
+      await childCtx.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+        executionGeneration: childProfile.data().execution?.generation,
+        executorId: 'instance-grok-a',
+        descriptorRevision: 'r-grok-a',
+        bindingFingerprint: 'fp-grok-a',
+        sessionRef: { executorId: 'instance-grok-a', version: 1, ref: { sessionId: 'remote-grok-1', kikiLaunchHome: '' } },
+        sessionEpoch: 1,
+      }));
+      await childCtx.get(IEventDispatcher).flush();
+      await expect(childProfile.prepareResumeBinding({ executorInstance: 'instance-grok-b' })).rejects.toThrow(/original remote session cannot be resumed/i);
+    } finally {
+      await toolIx.dispose();
+      await childExecution.shutdown();
+      await remoteMain.client.shutdown();
+      await remoteCockpit.client.shutdown();
+      await remoteA.client.shutdown();
+      await remoteB.client.shutdown();
+      await remoteC.client.shutdown();
+      await remoteGrokA.client.shutdown();
+      await remoteGrokB.client.shutdown();
+      await childCtx.dispose();
       await senderCtx.dispose();
     }
   });

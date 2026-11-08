@@ -414,6 +414,33 @@ async function devRuntime(context) {
   expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 }
 
+async function webSharedSpaces(context) {
+  const { page, webUrl, fixtureUrl, shot, state, errors } = context;
+  await boot(context, state);
+  await page.goto(deepLink(webUrl, fixtureUrl, '/settings/connection-services?tab=web'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-web-access-shared-connections]', { timeout: 30_000 });
+  await page.waitForTimeout(250);
+
+  expect(await page.locator(`[data-web-access-share-connection="${ID_B}"]`).isChecked() === false, 'new web access starts with empty selection');
+  expect(await page.locator(`[data-web-access-share-connection="${ID_HOME}"]`).isChecked() === false, 'new web access starts with empty selection');
+  expect(await page.locator(`[data-web-access-share-connection="${ID_BRIDGE}"]`).count() === 0, 'bridge-only connections are not shown as browsable web spaces');
+  expect(await page.locator('[data-web-access-save-shared]').isDisabled() === true, 'save button starts disabled when untouched');
+
+  await page.click('[data-web-access-start-persistent]');
+  await page.waitForSelector('[data-web-access-open]');
+  await page.click(`[data-web-access-share-connection="${ID_B}"]`);
+  expect(await page.locator('[data-web-access-save-shared]').isDisabled() === false, 'checking a connection enables save');
+  await page.locator('[data-web-access]').scrollIntoViewIfNeeded();
+  await shot('web-access-shared-selected');
+
+  await page.click('[data-web-access-save-shared]');
+  await page.waitForSelector('[data-feedback-tone="success"]');
+  expect(await page.locator(`[data-web-access-share-connection="${ID_B}"]`).isChecked() === true, 'saved connection remains checked');
+  expect(await page.locator('[data-web-access-save-shared]').isDisabled() === true, 'save button disables after save');
+  await shot('web-access-shared-saved');
+  expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
+}
+
 const scenarios = [
   {
     name: 'remote-space-switcher', fixture: 'spaces', matrix: ['width'],
@@ -430,6 +457,10 @@ const scenarios = [
   {
     name: 'remote-inbound-dev-runtime', fixture: 'spaces', matrix: ['width'],
     run: (context) => devRuntime({ ...context, state: { records: recordsFixture(), inbound: inboundFixture(), calls: [] } }),
+  },
+  {
+    name: 'web-shared-spaces', fixture: 'spaces', matrix: ['theme', 'width'],
+    run: (context) => webSharedSpaces({ ...context, state: { records: recordsFixture(), inbound: inboundFixture(), calls: [] } }),
   },
 ];
 

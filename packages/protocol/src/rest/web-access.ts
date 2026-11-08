@@ -6,8 +6,13 @@ export const webAccessEnableInputSchema = z.object({
   port: z.number().int().min(0).max(65535).optional(),
   publicUrl: z.string().url().max(2048).optional(),
   insecureNoTls: z.boolean().optional(),
+  sharedConnectionIds: z.array(z.string().uuid()).max(64).optional(),
 }).strict();
 export type WebAccessEnableInput = z.infer<typeof webAccessEnableInputSchema>;
+export const webAccessSharedConnectionsInputSchema = z.object({
+  connectionIds: z.array(z.string().uuid()).max(64),
+}).strict();
+export type WebAccessSharedConnectionsInput = z.infer<typeof webAccessSharedConnectionsInputSchema>;
 export const webSessionSummarySchema = z.object({
   id: z.string().uuid(), label: z.string(), createdAt: z.number(), lastUsedAt: z.number(), expiresAt: z.number(),
 });
@@ -17,6 +22,7 @@ export const webAccessStatusSchema = z.object({
   url: z.string().nullable(), expiresAt: z.number().nullable(),
   host: z.string().nullable(), port: z.number().nullable(), insecure: z.boolean(),
   sessions: z.array(webSessionSummarySchema),
+  sharedConnectionIds: z.array(z.string().uuid()).default([]),
 });
 export type WebAccessStatus = z.infer<typeof webAccessStatusSchema>;
 export const webAccessLinkSchema = z.object({ url: z.string(), expiresAt: z.number() });
