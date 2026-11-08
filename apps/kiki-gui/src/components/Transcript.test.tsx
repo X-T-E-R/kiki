@@ -7237,6 +7237,7 @@ describe('background task notification folding (TUI-01)', () => {
           thinkingEffort: 'high',
           startedAt: '2026-01-01T00:00:01.000Z',
           endedAt: '2026-01-01T00:01:01.000Z',
+          outputTail: '',
           resultSummary: 'Completed initial remote spaces audit.',
         },
         {
@@ -7251,6 +7252,7 @@ describe('background task notification folding (TUI-01)', () => {
           model: 'axon/gpt-5.6-luna',
           startedAt: '2026-01-01T00:00:02.000Z',
           endedAt: '2026-01-01T00:00:30.000Z',
+          outputTail: '',
           error: 'Quota limit reached on initial run.',
         },
         {
@@ -7265,6 +7267,7 @@ describe('background task notification folding (TUI-01)', () => {
           model: 'axon/gpt-5.6-luna',
           startedAt: '2026-01-01T00:02:02.000Z',
           endedAt: '2026-01-01T00:02:45.000Z',
+          outputTail: '',
           resultSummary: 'Migration succeeded on resumed run.',
         },
         {
@@ -7278,6 +7281,7 @@ describe('background task notification folding (TUI-01)', () => {
           exitCode: 2,
           startedAt: '2026-01-01T00:02:10.000Z',
           endedAt: '2026-01-01T00:02:20.000Z',
+          outputTail: '',
           error: 'Build failed with exit code 2.',
         },
       ],
@@ -7354,7 +7358,7 @@ describe('background task notification folding (TUI-01)', () => {
                   state: 'done',
                   input: { name: 'web_shared_remote_spaces', description: 'Audit remote spaces', prompt: 'Inspect spaces' },
                   output: 'status: running\nagent_id: agent_web_shared\nname: web_shared_remote_spaces\ntask_id: task-web-shared-1',
-                  agentRefs: [{ agentId: 'agent_web_shared', kind: 'spawn' }],
+                  agentRefs: [{ agentId: 'agent_web_shared', role: 'child' }],
                 },
                 {
                   kind: 'tool',
@@ -7364,7 +7368,7 @@ describe('background task notification folding (TUI-01)', () => {
                   state: 'done',
                   input: { name: 'migrator', description: 'Run migration', prompt: 'Migrate DB' },
                   output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-fail',
-                  agentRefs: [{ agentId: 'agent_retry', kind: 'spawn' }],
+                  agentRefs: [{ agentId: 'agent_retry', role: 'child' }],
                 },
                 {
                   kind: 'tool',
@@ -7445,7 +7449,7 @@ describe('background task notification folding (TUI-01)', () => {
                   state: 'done',
                   input: { resume: 'agent_retry', description: 'Resume migration', prompt: 'Continue migration' },
                   output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-ok',
-                  agentRefs: [{ agentId: 'agent_retry', kind: 'resume' }],
+                  agentRefs: [{ agentId: 'agent_retry', role: 'child' }],
                 },
                 {
                   kind: 'text',

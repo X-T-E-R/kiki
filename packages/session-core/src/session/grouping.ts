@@ -170,7 +170,7 @@ export function isMediaTool(block: Block): block is ToolBlock {
 function isFailedTaskSystemBlock(node: SystemBlock): boolean {
   if (node.variant !== 'task') return false;
   if (node.taskNotification?.severity === 'warning' || node.taskNotification?.severity === 'error') return true;
-  if (node.taskNotification?.notificationType === 'task.failed') return true;
+  if (node.taskNotification?.type === 'task.failed' || node.taskNotification?.status === 'failed') return true;
   const firstLine = node.text.split('\n', 1)[0] ?? '';
   return (
     /^(?:Title:\s*)?Background \S+ (?:failed|timed_out|killed|lost)\b/i.test(firstLine) ||
@@ -365,7 +365,7 @@ export function readSubagentEndings(
       task = {
         id: taskId,
         agent_id: meta.agentId,
-        status: meta.notificationType === 'task.failed' ? 'failed' : 'completed',
+        status: meta.type === 'task.failed' || meta.status === 'failed' ? 'failed' : 'completed',
         stop_reason: meta.stopReason,
         output_preview: meta.outputPreview ?? meta.body,
       };

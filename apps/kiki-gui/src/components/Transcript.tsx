@@ -1201,7 +1201,8 @@ function PlainSystemMessage({ block }: { block: SystemBlock }) {
   const isFailed = block.variant === 'task' && (
     task?.status === 'failed' ||
     isFailedTaskNotificationText(block.text) ||
-    meta?.notificationType === 'task.failed' ||
+    meta?.type === 'task.failed' ||
+    meta?.status === 'failed' ||
     meta?.severity === 'warning' ||
     meta?.severity === 'error'
   );

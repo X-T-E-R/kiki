@@ -17,7 +17,7 @@ import {
   type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import type { AssistantBlock, Block, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
