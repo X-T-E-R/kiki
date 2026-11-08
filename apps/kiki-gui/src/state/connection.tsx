@@ -43,6 +43,7 @@ import {
 } from '@kiki/session-core/settings';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
+import { appShellConnectUrl } from '../lib/appShell';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
@@ -1400,12 +1401,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (desktopRuntime || vscodeRuntime) return;
+    if (desktopRuntime || vscodeRuntime || appShellConnectUrl() === null) return;
     const onShellToken = (event: Event): void => {
       const detail = (event as CustomEvent<{ origin?: unknown; token?: unknown }>).detail;
       if (!detail || typeof detail.origin !== 'string' || detail.origin !== window.location.origin) return;
       const token = typeof detail.token === 'string' ? detail.token.trim() : '';
       if (!token) return;
+      try {
+        if (window.sessionStorage?.getItem('kiki.peer.token') !== token) return;
+      } catch {
+        return;
+      }
       writeStoredConfig({ url: '', token });
       connect({ url: '', token }, true);
     };

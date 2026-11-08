@@ -971,6 +971,38 @@ export function stripTokenFromEntry(origin, entry) {
   }
 }
 
+export const SHELL_HANDOFF_TYPE = 'kiki:shell-handoff';
+export const SHELL_HANDOFF_MAX_AGE_MS = 30_000;
+export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
+
+export function computeShellHandoffTag(origin, token, issuedAt) {
+  const input = `kiki:shell-handoff:v1|${origin}|${token}|${String(issuedAt)}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.codePointAt(i) ?? 0;
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= code + ((i & 0xff) << 8);
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const p1 = (h1 < 0 ? h1 + 0x100000000 : h1).toString(16).padStart(8, '0');
+  const p2 = (h2 < 0 ? h2 + 0x100000000 : h2).toString(16).padStart(8, '0');
+  return `${p1}${p2}`;
+}
+
+export function createShellHandoffEnvelope(origin, token, issuedAt = Date.now()) {
+  const normalizedOrigin = new URL(origin).origin;
+  const trimmedToken = typeof token === 'string' ? token.trim() : '';
+  return {
+    type: SHELL_HANDOFF_TYPE,
+    origin: normalizedOrigin,
+    token: trimmedToken,
+    issuedAt,
+    sig: computeShellHandoffTag(normalizedOrigin, trimmedToken, issuedAt),
+  };
+}
+
 /**
  * Builds an origin-checked credential delivery script that writes the peer token
  * only when `window.location.origin === expectedOrigin` after navigation commits,
@@ -979,14 +1011,15 @@ export function stripTokenFromEntry(origin, entry) {
 export function buildCommittedCredentialScript(expectedOrigin, token) {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));}catch(e){}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
- * Delivers `resolved.sessionToken` only after verifying that the target page or
- * frame has committed at `resolved.commitOrigin` (`resolved.origin`).
- * Never attaches `#token=` to a navigation URL and refuses delivery if the
- * navigation redirected to another origin.
+ * Delivers `resolved.sessionToken` only after verifying that the target page
+ * has committed at `resolved.commitOrigin` (`resolved.origin`) or, for a top-level
+ * browser launcher window, after verifying that `resolved.finalEntry` responds
+ * directly from `expectedOrigin` without cross-origin redirection (`redirect: 'manual'`),
+ * staging a single-use origin-bound handoff without framing the target GUI.
  */
 export async function deliverCommittedServerCredential(target, resolved, options = {}) {
   if (!resolved || !resolved.ok) {
@@ -1048,6 +1081,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
         }
         try {
           window.localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: tok }));
+          window.localStorage.setItem('kiki.shell.managed', '1');
         } catch {}
         try {
           window.sessionStorage.setItem('kiki.peer.token', tok);
@@ -1076,6 +1110,23 @@ export async function deliverCommittedServerCredential(target, resolved, options
     };
   }
 
+  const win =
+    target && typeof target === 'object' && ('name' in target || 'location' in target || 'document' in target)
+      ? target
+      : globalThis.window;
+
+  if (!win) {
+    return {
+      ok: false,
+      reason: 'unsupported_target',
+      tokenDelivered: false,
+    };
+  }
+
+  try {
+    win.name = '';
+  } catch {}
+
   if (!token) {
     return {
       ok: true,
@@ -1084,16 +1135,58 @@ export async function deliverCommittedServerCredential(target, resolved, options
     };
   }
 
-  const win =
-    target && typeof target.addEventListener === 'function' && target.document
-      ? target
-      : globalThis.window;
-  const doc =
-    target && typeof target.createElement === 'function'
-      ? target
-      : win?.document ?? globalThis.document;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      tokenDelivered: false,
+    };
+  }
 
-  if (!win || !doc?.body || typeof doc.createElement !== 'function') {
+  const entryUrl =
+    typeof resolved.finalEntry === 'string' && resolved.finalEntry !== ''
+      ? resolved.finalEntry
+      : `${expectedOrigin}/`;
+  const timeoutMs = options.timeoutMs ?? 4500;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetchImpl(entryUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: controller?.signal,
+    });
+    if (!isSameOriginResponse(res, expectedOrigin)) {
+      return {
+        ok: false,
+        reason: 'cross_origin_redirect',
+        tokenDelivered: false,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'unreachable',
+        tokenDelivered: false,
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      tokenDelivered: false,
+    };
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+
+  const issuedAt = typeof options.now === 'function' ? options.now() : Date.now();
+  try {
+    win.name = JSON.stringify(createShellHandoffEnvelope(expectedOrigin, token, issuedAt));
+  } catch {
     return {
       ok: false,
       reason: 'unsupported_target',
@@ -1101,121 +1194,11 @@ export async function deliverCommittedServerCredential(target, resolved, options
     };
   }
 
-  const timeoutMs = options.timeoutMs ?? 4500;
-  const ackTimeoutMs = options.ackTimeoutMs ?? 700;
-
-  return new Promise((resolveDelivery) => {
-    const iframe = doc.createElement('iframe');
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.tabIndex = -1;
-    iframe.style.display = 'none';
-
-    let settled = false;
-    let loadTimer = null;
-    let ackTimer = null;
-    let retryTimer = null;
-
-    const cleanup = () => {
-      if (loadTimer !== null) clearTimeout(loadTimer);
-      if (ackTimer !== null) clearTimeout(ackTimer);
-      if (retryTimer !== null) clearInterval(retryTimer);
-      win.removeEventListener('message', onMessage);
-      try {
-        iframe.remove();
-      } catch {}
-    };
-
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolveDelivery(result);
-    };
-
-    const onMessage = (event) => {
-      if (event.source !== iframe.contentWindow) return;
-      if (event.origin !== expectedOrigin) {
-        finish({
-          ok: false,
-          reason: 'cross_origin_redirect',
-          committedOrigin: event.origin,
-          tokenDelivered: false,
-        });
-        return;
-      }
-      const data = event.data;
-      if (
-        data &&
-        typeof data === 'object' &&
-        data.type === 'kiki:shell-credential-ack' &&
-        data.origin === expectedOrigin
-      ) {
-        finish({
-          ok: true,
-          committedOrigin: expectedOrigin,
-          tokenDelivered: true,
-        });
-      }
-    };
-
-    const postCredential = () => {
-      try {
-        iframe.contentWindow?.postMessage(
-          {
-            type: 'kiki:shell-credential',
-            origin: expectedOrigin,
-            token,
-          },
-          expectedOrigin,
-        );
-      } catch {
-        finish({
-          ok: false,
-          reason: 'cross_origin_redirect',
-          tokenDelivered: false,
-        });
-      }
-    };
-
-    win.addEventListener('message', onMessage);
-
-    loadTimer = setTimeout(() => {
-      finish({
-        ok: false,
-        reason: 'unreachable',
-        tokenDelivered: false,
-      });
-    }, timeoutMs);
-
-    iframe.addEventListener('error', () => {
-      finish({
-        ok: false,
-        reason: 'unreachable',
-        tokenDelivered: false,
-      });
-    });
-
-    iframe.addEventListener('load', () => {
-      if (settled) return;
-      if (loadTimer !== null) {
-        clearTimeout(loadTimer);
-        loadTimer = null;
-      }
-      postCredential();
-      retryTimer = setInterval(postCredential, 50);
-      ackTimer = setTimeout(() => {
-        finish({
-          ok: false,
-          reason: 'cross_origin_redirect',
-          tokenDelivered: false,
-        });
-      }, ackTimeoutMs);
-    });
-
-    iframe.src = resolved.finalEntry;
-    doc.body.appendChild(iframe);
-  });
+  return {
+    ok: true,
+    committedOrigin: expectedOrigin,
+    tokenDelivered: true,
+  };
 }
 
 /**

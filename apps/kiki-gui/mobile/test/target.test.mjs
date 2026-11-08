@@ -13,6 +13,7 @@ import {
   buildCommittedCredentialScript,
   claimPairingOrigin,
   classifyOrigin,
+  computeShellHandoffTag,
   deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
@@ -350,11 +351,11 @@ await test('unverified origin echoing targetHomeId/targetHostId or 302-redirecti
     res.end();
   });
 
-  await new Promise((r) => serverA1.listen(0, '127.0.0.1', r));
-  await new Promise((r) => serverA2.listen(0, '127.0.0.1', r));
-  await new Promise((r) => serverSpoof.listen(0, '127.0.0.1', r));
-  await new Promise((r) => serverRedirect.listen(0, '127.0.0.1', r));
-  await new Promise((r) => serverB.listen(0, '127.0.0.1', r));
+  await new Promise((r) => { serverA1.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { serverA2.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { serverSpoof.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { serverRedirect.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { serverB.listen(0, '127.0.0.1', r); });
 
   try {
     originA1 = `http://127.0.0.1:${serverA1.address().port}`;
@@ -517,7 +518,7 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
   async function serve(handler) {
     const server = createServer(handler);
     servers.push(server);
-    await new Promise((resolveServer) => server.listen(0, '127.0.0.1', resolveServer));
+    await new Promise((resolveServer) => { server.listen(0, '127.0.0.1', resolveServer); });
     return `http://127.0.0.1:${server.address().port}`;
   }
 
@@ -684,7 +685,133 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       token: 'same-origin-token-123',
     });
 
-    // 4. Native Android & iOS plugin source contract verification:
+    // 4. Browser Window handoff under production non-loopback CSP (`frame-ancestors 'self'; default-src 'self'`)
+    // and counterexample against malicious opener postMessage / popup overwrite:
+    const productionCsp =
+      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
+    let cspTargetRedirectTo = '';
+    const cspPairedServer = await serve((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Content-Security-Policy', productionCsp);
+      if (req.url === '/api/remote-connections/handshake') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: { homeId: 'fixture-home-csp', hostId: 'csp-host', protocol: 1 },
+              serverId: 'srv-csp',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      if (req.url === '/app.js') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end(`
+          const rawName = typeof window.name === 'string' ? window.name : '';
+          if (rawName) window.name = '';
+          if (!window.opener && window.parent === window && /\\bKikiApp\\/(android|ios)\\b/.test(navigator.userAgent)) {
+            try {
+              const data = JSON.parse(rawName);
+              const computeTag = ${computeShellHandoffTag.toString()};
+              if (
+                data &&
+                data.type === 'kiki:shell-handoff' &&
+                data.origin === window.location.origin &&
+                typeof data.token === 'string' &&
+                data.token.trim() &&
+                typeof data.issuedAt === 'number' &&
+                Math.abs(Date.now() - data.issuedAt) <= 30000 &&
+                data.sig === computeTag(window.location.origin, data.token.trim(), data.issuedAt)
+              ) {
+                localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: data.token.trim() }));
+                localStorage.setItem('kiki.shell.managed', '1');
+                sessionStorage.setItem('kiki.peer.token', data.token.trim());
+              }
+            } catch {}
+          }
+          document.body.dataset.ready = 'true';
+        `);
+        return;
+      }
+      if (cspTargetRedirectTo) {
+        res.writeHead(302, { Location: cspTargetRedirectTo }).end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><html><head><meta charset="utf-8"></head><body><script type="module" src="/app.js"></script>csp-gui</body></html>');
+    });
+
+    const mockLauncherWin = {
+      name: 'stale-name',
+    };
+    const cspResolved = {
+      ok: true,
+      origin: cspPairedServer,
+      commitOrigin: cspPairedServer,
+      finalEntry: `${cspPairedServer}/`,
+      sessionToken: 'csp-paired-secret-token',
+      tokenAttached: false,
+    };
+
+    // 4a. When CSP server redirects `/` cross-origin to `receiver`, Window handoff refuses and keeps window.name empty
+    cspTargetRedirectTo = `${receiver}/`;
+    const blockedCspDelivery = await deliverCommittedServerCredential(mockLauncherWin, cspResolved);
+    assert.equal(blockedCspDelivery.ok, false);
+    assert.equal(blockedCspDelivery.reason, 'cross_origin_redirect');
+    assert.equal(blockedCspDelivery.tokenDelivered, false);
+    assert.equal(mockLauncherWin.name, '');
+
+    // 4b. When CSP server responds 200 OK on `/`, Window handoff stages signed envelope without any iframe and succeeds on navigation
+    cspTargetRedirectTo = '';
+    const stagedCspDelivery = await deliverCommittedServerCredential(mockLauncherWin, cspResolved);
+    assert.equal(stagedCspDelivery.ok, true);
+    assert.equal(stagedCspDelivery.tokenDelivered, true);
+    const parsedEnvelope = JSON.parse(mockLauncherWin.name);
+    assert.equal(parsedEnvelope.type, 'kiki:shell-handoff');
+    assert.equal(parsedEnvelope.origin, cspPairedServer);
+    assert.equal(parsedEnvelope.token, 'csp-paired-secret-token');
+
+    const shellCtx = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android',
+    });
+    try {
+      const shellPage = await shellCtx.newPage();
+      await shellPage.goto(receiver);
+      await shellPage.evaluate((handoffName) => {
+        window.name = handoffName;
+      }, mockLauncherWin.name);
+      await shellPage.goto(`${cspPairedServer}/`);
+      await shellPage.waitForSelector('body[data-ready="true"]');
+      const cspState = await shellPage.evaluate(() => ({
+        windowName: window.name,
+        storedConnection: JSON.parse(localStorage.getItem('kiki.connection') || 'null'),
+        peerToken: sessionStorage.getItem('kiki.peer.token'),
+      }));
+      assert.equal(cspState.windowName, '');
+      assert.deepEqual(cspState.storedConnection, { url: '', token: 'csp-paired-secret-token' });
+      assert.equal(cspState.peerToken, 'csp-paired-secret-token');
+
+      // 4c. Counterexample: Malicious opener / cross-window postMessage or popup window.name cannot overwrite stored connection
+      await shellPage.evaluate((origin) => {
+        window.postMessage(
+          { type: 'kiki:shell-credential', origin, token: 'attacker-forged-token' },
+          '*',
+        );
+      }, cspPairedServer);
+      const afterPostMessage = await shellPage.evaluate(() =>
+        JSON.parse(localStorage.getItem('kiki.connection') || 'null'),
+      );
+      assert.deepEqual(afterPostMessage, { url: '', token: 'csp-paired-secret-token' });
+    } finally {
+      await shellCtx.close();
+    }
+
+    // 5. Native Android & iOS plugin source contract verification:
     // Neither KikiShellPlugin.java nor SceneDelegate.swift attaches `#token=` before loadUrl/load(URLRequest);
     // both strip token fragments before loading, cancel cross-origin redirects in shouldOverrideLoad,
     // and deliver credentials only after verifying committed origin.

@@ -574,6 +574,10 @@ async function openServer(origin, entry, options = {}) {
       showProblem(unreachableMessageFor(origin));
       return;
     }
+  } else {
+    try {
+      window.name = '';
+    } catch {}
   }
 
   window.location.assign(resolved.finalEntry);
