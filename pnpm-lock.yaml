@@ -2581,7 +2581,7 @@ packages:
         optional: true
 
   '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
-    resolution: {integrity: sha512-o98CSopuAhmmTs64Ep/mSsiLYT/daZRJFfuWY1MhGW0TeUDh5hXkTaIxgc0ATkHQixDNlvC52oy6Ldoub4JjsQ==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
+    resolution: {integrity: sha512-8pkqJ+2bK/qgn0m4CnNOnqMGmVESpju1QaaURi/Fw/LJRSScj0h/aR2jIGZZALzNqWcMy75+0TBmmFsXn8PM+A==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
     version: 0.3.0
     engines: {node: '>=24.15.0'}
 

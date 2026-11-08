@@ -1,0 +1,15 @@
+diff --git a/src/session/telegram-http.ts b/src/session/telegram-http.ts
+--- a/src/session/telegram-http.ts
++++ b/src/session/telegram-http.ts
+@@ -31 +31 @@
+-    const req = request({ hostname: HOST, port: 443, path, method: 'POST', timeout: timeoutMs,
++    const req = request({ hostname: HOST, family: 4, port: 443, path, method: 'POST', timeout: timeoutMs,
+@@ -56 +56 @@
+-    const req = request({ hostname: HOST, port: 443, path, method: 'GET', timeout: 15_000,
++    const req = request({ hostname: HOST, family: 4, port: 443, path, method: 'GET', timeout: 15_000,
+diff --git a/src/providers.ts b/src/providers.ts
+--- a/src/providers.ts
++++ b/src/providers.ts
+@@ -40 +40 @@
+-    const req = request({ hostname: host, port: 443, path, method: 'POST', timeout: 15_000,
++    const req = request({ hostname: host, family: 4, port: 443, path, method: 'POST', timeout: 15_000,
