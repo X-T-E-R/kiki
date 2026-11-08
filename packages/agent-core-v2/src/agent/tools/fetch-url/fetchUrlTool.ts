@@ -1,4 +1,4 @@
-import { canonicalFetchUrl, type FetchDocument, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
+import { canonicalFetchUrl, type FetchDocument, type FetchInput, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
 import { parseNativeFetchInput, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
 import { sliceUtf16 } from '#/_base/text/utf16';
@@ -75,7 +75,7 @@ export class FetchURLTool implements IFetchURLTool {
   }
 
   private async execution(
-    args: FetchURLInput,
+    args: FetchInput,
     { toolCallId, signal }: ExecutableToolContext,
     admittedFile?: string,
     identity?: import('#/app/nbSearch/nbSearch').FetchFileIdentity,

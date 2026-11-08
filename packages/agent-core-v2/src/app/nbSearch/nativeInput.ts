@@ -1,9 +1,9 @@
-import { searchInputSchema, fetchInputSchema, type SearchInput, type SearchRunInput, type FetchInput } from '@nb-corp/nb-search';
+import { searchInputSchema, fetchInputSchema, type SearchInput, type SearchRunInput, type FetchInput, type FetchRunInput } from '@nb-corp/nb-search';
 
 export const NativeSearchInputSchema: typeof searchInputSchema = searchInputSchema;
 export const NativeFetchInputSchema: typeof fetchInputSchema = fetchInputSchema;
 export type NativeSearchInput = SearchInput | (Omit<SearchRunInput, 'action'> & { action?: 'run' });
-export type NativeFetchInput = FetchInput;
+export type NativeFetchInput = FetchInput | (Omit<FetchRunInput, 'action'> & { action?: 'run' });
 
 type ParameterSchema = Record<string, unknown>;
 
@@ -42,5 +42,8 @@ export function parseNativeSearchInput(input: NativeSearchInput): SearchInput {
 }
 
 export function parseNativeFetchInput(input: NativeFetchInput) {
-  return fetchInputSchema.parse(input);
+  const normalized = 'source' in input && input.source !== undefined && input.action === undefined && !('url' in input && input.url !== undefined)
+    ? { ...input, action: 'run' as const }
+    : input;
+  return fetchInputSchema.parse(normalized);
 }

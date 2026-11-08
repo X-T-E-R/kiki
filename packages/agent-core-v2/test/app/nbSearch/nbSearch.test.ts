@@ -310,6 +310,17 @@ const SEARCH_INPUT_CASES = [
 const FETCH_INPUT_CASES = [
   { name: 'minimal url shorthand', input: { url: 'https://example.com' } },
   {
+    name: 'url source with omitted action',
+    input: {
+      source: {
+        kind: 'url',
+        url: 'https://example.com/raw.c',
+      },
+      representation: 'text',
+      max_content_chars: 200_000,
+    },
+  },
+  {
     name: 'url shorthand with execution controls',
     input: {
       url: 'https://example.com/article',
@@ -336,6 +347,17 @@ const FETCH_INPUT_CASES = [
       execution: 'sync',
       timeout_ms: 1_000,
       max_content_chars: 5_000,
+    },
+  },
+  {
+    name: 'inline text source with omitted action',
+    input: {
+      source: {
+        kind: 'inline_text',
+        content: 'Inline plain body',
+        media_type: 'text/plain',
+      },
+      representation: 'text',
     },
   },
   {
@@ -1303,7 +1325,7 @@ describe('nb-search tool adapters', () => {
   it.each(FETCH_INPUT_CASES)('validates and forwards the complete fetch contract: $name', async ({ input }) => {
     const tool = ix.get(IFetchURLTool);
     expectToolParametersToAccept(tool.parameters, input);
-    const expected = fetchInputSchema.parse(input);
+    const expected = fetchInputSchema.parse('action' in input ? input : 'source' in input ? { ...input, action: 'run' } : input);
     expect(parseNativeFetchInput(input)).toStrictEqual(expected);
     const signal = new AbortController().signal;
     service.fetch = vi.fn().mockImplementation(async (received: unknown) => fetchEnvelopeForInput(received as {
@@ -1361,6 +1383,9 @@ describe('nb-search tool adapters', () => {
 
   it.each([
     ['sync idempotency key', { url: 'https://example.com', execution: 'sync', idempotency_key: 'sync-key' }],
+    ['source async without idempotency key', { source: { kind: 'url', url: 'https://example.com' }, execution: 'async' }],
+    ['mixed url shorthand and source', { url: 'https://example.com', source: { kind: 'url', url: 'https://example.com' } }],
+    ['get without job_id', { action: 'get' }],
     ['unknown field', { url: 'https://example.com', unexpected: true }],
   ])('rejects donor-invalid fetch input %s before calling the service', async (_name, input) => {
     const tool = ix.get(IFetchURLTool);

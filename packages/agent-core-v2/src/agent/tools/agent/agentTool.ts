@@ -280,6 +280,7 @@ export class SubagentTool implements ISubagentTool {
     return external.flatMap((path) => ToolAccesses.file('readwrite', path, {
       recursive: true,
       implicitExternal: true,
+      workspaceRoot: true,
     }));
   }
 

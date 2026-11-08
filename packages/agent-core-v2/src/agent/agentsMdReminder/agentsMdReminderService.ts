@@ -65,7 +65,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       await next();
     }));
     this._register(toolExecutor.onWillExecuteTool((event) => {
-      if (!event.execution.accesses?.some((access) => access.kind === 'file' && (access.operation === 'write' || access.operation === 'readwrite'))) return;
+      if (!event.execution.accesses?.some((access) => access.kind === 'file' && access.workspaceRoot !== true && (access.operation === 'write' || access.operation === 'readwrite'))) return;
       event.waitUntil((async () => {
         const missing = await this.discoverFor(event.execution.accesses ?? [], event.args);
         if (missing.length === 0) return;
@@ -162,7 +162,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     const host = stringArg(args, 'host');
     const lease = this.acquire(host);
     try {
-      const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
+      const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' && access.workspaceRoot !== true ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
       const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, dir)))).flat())];
       const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
       return preferredInstructions(loaded).filter((item) => !this.covered(item));
@@ -175,7 +175,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     const lease = this.acquire(stringArg(ctx.args, 'host'));
     try {
       for (const access of accesses) {
-        if (access.kind !== 'file' || basename(access.path).toLowerCase() !== 'agents.md') continue;
+        if (access.kind !== 'file' || access.workspaceRoot === true || basename(access.path).toLowerCase() !== 'agents.md') continue;
         if (access.operation === 'write' || access.operation === 'readwrite') {
           const directory = dirname(access.path);
           this.discovery.invalidate(lease.runtime, basename(directory).toLowerCase() === '.kiki' ? dirname(directory) : directory);

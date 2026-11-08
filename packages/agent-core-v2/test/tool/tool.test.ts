@@ -1800,6 +1800,7 @@ describe('AgentRun tool execution contract', () => {
         path: args.workDir,
         recursive: true,
         implicitExternal: true,
+        workspaceRoot: true,
       },
       {
         kind: 'file',
@@ -1807,6 +1808,7 @@ describe('AgentRun tool execution contract', () => {
         path: args.additionalDirs[0],
         recursive: true,
         implicitExternal: true,
+        workspaceRoot: true,
       },
     ]);
 

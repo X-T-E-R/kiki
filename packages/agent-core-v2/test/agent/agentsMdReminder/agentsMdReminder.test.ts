@@ -1597,6 +1597,67 @@ describe('agentsMdReminder first write disclosure', () => {
     await h.reminder.flushStepHead();
     expect(h.reminders).toHaveLength(1);
   });
+
+  it('allows AgentRun workspace-root delegation without triggering parent write veto or reminders, while still gating real file writes', async () => {
+    const h = createHarness({ withRealExecutor: true });
+    const externalRoot = join(workDir, 'external-worktree');
+    const instructionPath = await writeAgentsMd(externalRoot, 'External worktree instructions.');
+    const agentRunExecute = vi.fn(async () => ({ output: 'spawned child' }));
+    const writeExecute = vi.fn(async () => ({ output: 'written' }));
+    const agentRunTool: ExecutableTool = {
+      name: 'AgentRun',
+      description: 'Runs subagent',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        accesses: ToolAccesses.file('readwrite', externalRoot, {
+          recursive: true,
+          implicitExternal: true,
+          workspaceRoot: true,
+        }),
+        approvalRule: 'AgentRun',
+        execute: agentRunExecute,
+      }),
+    };
+    const writeTool: ExecutableTool = {
+      name: 'Write',
+      description: 'Writes file',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        accesses: ToolAccesses.writeFile(join(externalRoot, 'index.ts')),
+        approvalRule: 'Write',
+        execute: writeExecute,
+      }),
+    };
+    h.ix.get(IAgentToolRegistryService).register(agentRunTool);
+    h.ix.get(IAgentToolRegistryService).register(writeTool);
+    h.ix.get(IAgentToolExecutorService).onBeforeExecuteTool((event) => { event.allow(); });
+    const runTool = async (id: string, name: string) => {
+      const results = [];
+      for await (const result of h.ix.get(IAgentToolExecutorService).execute([
+        { type: 'function', id, name, arguments: '{}' },
+      ], { turnId: 1, signal: new AbortController().signal })) results.push(result.result);
+      return results[0]!;
+    };
+
+    const delegated = await runTool('call-agent-run', 'AgentRun');
+    expect(delegated.isError).not.toBe(true);
+    expect(outputText(delegated)).toBe('spawned child');
+    expect(agentRunExecute).toHaveBeenCalledTimes(1);
+    await h.reminder.flushStepHead();
+    expect(h.reminders).toHaveLength(0);
+
+    const firstWrite = await runTool('call-write-1', 'Write');
+    expect(firstWrite.isError).toBe(true);
+    expect(outputText(firstWrite)).toContain('No files were changed');
+    expect(writeExecute).not.toHaveBeenCalled();
+    await h.reminder.flushStepHead();
+    expect(reminderText(h)).toContain(instructionPath);
+    expect(reminderText(h)).toContain('External worktree instructions.');
+
+    const retryWrite = await runTool('call-write-2', 'Write');
+    expect(retryWrite.isError).not.toBe(true);
+    expect(writeExecute).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('agentsMdReminder cancellation outcomes', () => {
