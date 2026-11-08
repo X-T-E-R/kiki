@@ -33,20 +33,25 @@ import {
   type SetPluginEnabledInput,
   type SetPluginMcpServerEnabledInput,
 } from './plugin';
-import type {
-  EnabledPluginSessionStart,
-  EnabledPluginSystemPrompt,
-  PluginCommandDef,
-  PluginInfo,
-  PluginAgentRoot,
-  PluginMcpServerEntry,
-  PluginMutation,
-  PluginMutationSummary,
-  PluginReloadEvent,
-  PluginSummary,
-  PluginUpdateStatus,
-  ReloadSummary,
+import {
+  normalizePluginId,
+  type EnabledPluginRequestProjection,
+  type EnabledPluginSessionStart,
+  type EnabledPluginSystemPrompt,
+  type PluginCommandDef,
+  type PluginInfo,
+  type PluginAgentRoot,
+  type PluginMcpServerEntry,
+  type PluginMutation,
+  type PluginMutationSummary,
+  type PluginReloadEvent,
+  type PluginSummary,
+  type PluginUpdateStatus,
+  type ReloadSummary,
+  type RequestProjectionDecision,
+  type RequestProjectionMetrics,
 } from './types';
+import { requestProjectionStrategySchema } from './contributions';
 
 const KIKI_CODE_BASE_URL_ENV = 'KIKI_CODE_BASE_URL';
 const KIKI_CODE_OAUTH_HOST_ENV = 'KIKI_CODE_OAUTH_HOST';
@@ -63,6 +68,26 @@ interface PluginMutationOutcome<T> {
   readonly notification: PluginReloadNotification;
 }
 
+interface MutableRequestProjectionMetrics {
+  evaluatedRequests: number;
+  matchedRequests: number;
+  passthroughRequests: number;
+  projectedRequests: number;
+  projectedBatches: number;
+  projectedMessages: number;
+}
+
+function emptyRequestProjectionMetrics(): MutableRequestProjectionMetrics {
+  return {
+    evaluatedRequests: 0,
+    matchedRequests: 0,
+    passthroughRequests: 0,
+    projectedRequests: 0,
+    projectedBatches: 0,
+    projectedMessages: 0,
+  };
+}
+
 export class PluginService extends Service implements IPluginService {
   declare readonly _serviceBrand: undefined;
 
@@ -77,6 +102,8 @@ export class PluginService extends Service implements IPluginService {
   private readonly previewController = new AbortController();
   private readonly previews = new Set<Promise<unknown>>();
   private changing: { readonly affected?: readonly string[]; draining: boolean } | undefined;
+  private readonly projectionTotals = emptyRequestProjectionMetrics();
+  private readonly projectionByPlugin = new Map<string, MutableRequestProjectionMetrics>();
   private readonly onWillChangeEmitter = this._register(new AsyncEmitter<PluginChangeEvent>());
   readonly onWillChange: Event<PluginChangeEvent> = this.onWillChangeEmitter.event;
   private readonly onDidReloadEmitter = this._register(new AsyncEmitter<PluginReloadEvent>());
@@ -389,6 +416,70 @@ export class PluginService extends Service implements IPluginService {
     return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHookRules(), workspaceId, (entry) => entry.namespace.startsWith('plugin/') ? entry.namespace.slice(7) : undefined, sessionId));
   }
 
+  enabledRequestProjections(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginRequestProjection[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledRequestProjections(), workspaceId, (entry) => entry.pluginId, sessionId));
+  }
+
+  async resolveRequestProjection(input: {
+    readonly modelAlias: string;
+    readonly modelId?: string;
+    readonly modelName?: string;
+    readonly workspaceId?: string;
+    readonly sessionId?: string;
+  }): Promise<RequestProjectionDecision> {
+    const entries = await this.enabledRequestProjections(input.workspaceId, input.sessionId);
+    if (entries.length === 0) return { strategy: 'passthrough' };
+    const rawSettings = this.configService.get(PLUGIN_SETTINGS_SECTION);
+    const parsedSettings = PluginSettingsSectionSchema.safeParse(rawSettings);
+    const settingsByPlugin = parsedSettings.success ? parsedSettings.data : {};
+    const candidates = new Set(
+      [input.modelAlias, input.modelId, input.modelName]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.trim()),
+    );
+    for (const entry of entries) {
+      const saved = settingsByPlugin[entry.pluginId];
+      const rawStrategy = saved?.[entry.config.strategySetting];
+      const parsedStrategy = requestProjectionStrategySchema.safeParse(rawStrategy);
+      const strategy = parsedStrategy.success ? parsedStrategy.data : entry.config.defaultStrategy;
+      if (strategy !== 'tool_result_appendix') continue;
+      const rawModels = saved?.[entry.config.modelsSetting];
+      const targetModels = typeof rawModels === 'string'
+        ? parseTargetModelList(rawModels)
+        : entry.config.defaultModels.map((item) => item.trim()).filter((item) => item.length > 0);
+      if (targetModels.some((target) => candidates.has(target))) {
+        return { strategy: 'tool_result_appendix', pluginId: entry.pluginId };
+      }
+    }
+    return { strategy: 'passthrough', pluginId: entries[0]?.pluginId };
+  }
+
+  recordRequestProjectionOutcome(input: {
+    readonly pluginId?: string;
+    readonly matched: boolean;
+    readonly projectedBatches: number;
+    readonly projectedMessages: number;
+  }): void {
+    applyProjectionOutcome(this.projectionTotals, input);
+    if (input.pluginId !== undefined) {
+      const key = normalizePluginId(input.pluginId);
+      let bucket = this.projectionByPlugin.get(key);
+      if (bucket === undefined) {
+        bucket = emptyRequestProjectionMetrics();
+        this.projectionByPlugin.set(key, bucket);
+      }
+      applyProjectionOutcome(bucket, input);
+    }
+  }
+
+  requestProjectionMetrics(pluginId?: string): RequestProjectionMetrics {
+    if (pluginId === undefined) {
+      return { ...this.projectionTotals };
+    }
+    const bucket = this.projectionByPlugin.get(normalizePluginId(pluginId));
+    return bucket === undefined ? emptyRequestProjectionMetrics() : { ...bucket };
+  }
+
   private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined, sessionId?: string): Promise<readonly T[]> {
     if (workspaceId === '*') return entries;
     const allowed = await Promise.all(entries.map(async (entry) => {
@@ -482,6 +573,34 @@ export class PluginService extends Service implements IPluginService {
     if (baseUrl !== undefined) env[KIKI_CODE_BASE_URL_ENV] = baseUrl;
     if (oauthHost !== undefined) env[KIKI_CODE_OAUTH_HOST_ENV] = oauthHost;
     return env;
+  }
+}
+
+function parseTargetModelList(value: string): readonly string[] {
+  return value
+    .split(/[\n,;]+/u)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function applyProjectionOutcome(
+  target: MutableRequestProjectionMetrics,
+  input: {
+    readonly matched: boolean;
+    readonly projectedBatches: number;
+    readonly projectedMessages: number;
+  },
+): void {
+  target.evaluatedRequests += 1;
+  if (input.matched) {
+    target.matchedRequests += 1;
+  } else {
+    target.passthroughRequests += 1;
+  }
+  if (input.projectedBatches > 0 && input.projectedMessages > 0) {
+    target.projectedRequests += 1;
+    target.projectedBatches += input.projectedBatches;
+    target.projectedMessages += input.projectedMessages;
   }
 }
 

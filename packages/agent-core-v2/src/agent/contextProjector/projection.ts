@@ -1,7 +1,7 @@
 import { ErrorCodes, Error2 } from '#/errors';
 import { renderImSourceMetadata } from '@kiki-dsh/im-bridge-core/metadata';
 import { renderToolResultForModel } from '#/agent/contextMemory/toolResultRender';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
 import type { ContentPart, Message, ToolCall } from '#/kosong/contract/message';
 import { renderModelReceipt } from './modelReceipt';
@@ -59,16 +59,33 @@ export function summarizeProjectionRepairs(
   return summary;
 }
 
-export function project(history: readonly ContextMessage[], onAnomaly?: OnAnomaly): Message[] {
+export interface ProjectOptions {
+  readonly toolResultAppendix?: 'host_auto_injections';
+  readonly onToolResultAppendix?: (stats: {
+    readonly projectedBatches: number;
+    readonly projectedMessages: number;
+  }) => void;
+}
+
+export function project(
+  history: readonly ContextMessage[],
+  onAnomaly?: OnAnomaly,
+  options?: ProjectOptions,
+): Message[] {
   const layout = sliceLayout(history);
-  return flattenBlocks(pairBlocks(history, layout, onAnomaly), layout, onAnomaly);
+  return flattenBlocks(
+    applyToolResultAppendix(history, pairBlocks(history, layout, onAnomaly), options),
+    layout,
+    onAnomaly,
+  );
 }
 
 export function projectStrict(
   history: readonly ContextMessage[],
   onAnomaly?: OnAnomaly,
+  options?: ProjectOptions,
 ): Message[] {
-  const projected = project(history, onAnomaly);
+  const projected = project(history, onAnomaly, options);
   return dropLeadingNonUserMessages(
     mergeConsecutiveAssistantMessages(dedupeDuplicateToolCalls(projected, onAnomaly), onAnomaly),
     onAnomaly,
@@ -511,4 +528,259 @@ function toWireMessage(message: ContextMessage, content: ContentPart[]): Message
     partial: message.partial,
     tools: message.tools,
   };
+}
+
+const HOST_AUTO_INJECTION_VARIANTS = new Set<string>([
+  'runtime_snapshot',
+  'memory_authority',
+  'agents_md',
+  'capability_delta',
+  'loadable-tools',
+  'capabilities_rebuilt',
+  'profile_capabilities_changed',
+  'agent_profile_changes',
+  'plugin_change',
+  'plugin_session_start',
+  'plan_mode',
+  'goal',
+  'goal_cancelled',
+  'goal_budget_stop',
+  'goal_fork_cleared',
+  'model_steering',
+  'background_task_status',
+  'permission_mode',
+  'todo_list_reminder',
+  'date_change',
+  'interruption',
+  'message_delivery',
+  'init',
+  'btw',
+  'room_left',
+  'room_joined',
+  'compaction_elision',
+]);
+
+function isHostAutoInjectionVariant(variant: string | undefined): boolean {
+  if (variant === undefined) return false;
+  if (HOST_AUTO_INJECTION_VARIANTS.has(variant)) return true;
+  return variant.startsWith('hook_rule/');
+}
+
+function isHostAutoInjectionOrigin(origin: PromptOrigin | undefined): boolean {
+  if (origin === undefined) return false;
+  switch (origin.kind) {
+    case 'injection':
+      return origin.ownerPromptId === undefined && isHostAutoInjectionVariant(origin.variant);
+    case 'skill_activation':
+      return origin.trigger === 'model-tool' || origin.trigger === 'nested-skill';
+    case 'task':
+    case 'cron_missed':
+      return true;
+    case 'merged':
+      return origin.origins.length > 0 && origin.origins.every(isHostAutoInjectionOrigin);
+    default:
+      return false;
+  }
+}
+
+export function isHostAutoInjectedMessage(message: ContextMessage): boolean {
+  if (message.role !== 'user' || message.partial === true) return false;
+  if (message.toolCalls.length > 0 || hasDeclaredTools(message)) return false;
+  return isHostAutoInjectionOrigin(message.origin);
+}
+
+function collectGloballyUniqueToolCallIds(history: readonly ContextMessage[]): ReadonlySet<string> {
+  const callCounts = new Map<string, number>();
+  const resultCounts = new Map<string, number>();
+  for (const message of history) {
+    if (message.partial === true) continue;
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls) {
+        if (call.id.length === 0) continue;
+        callCounts.set(call.id, (callCounts.get(call.id) ?? 0) + 1);
+      }
+      continue;
+    }
+    if (message.role === 'tool' && message.toolCallId !== undefined && message.toolCallId.length > 0) {
+      resultCounts.set(message.toolCallId, (resultCounts.get(message.toolCallId) ?? 0) + 1);
+    }
+  }
+  const unique = new Set<string>();
+  for (const [callId, count] of callCounts) {
+    if (count === 1 && resultCounts.get(callId) === 1) {
+      unique.add(callId);
+    }
+  }
+  return unique;
+}
+
+function isCompleteCanonicalToolBatch(
+  history: readonly ContextMessage[],
+  exchange: Exchange,
+  uniqueCallIds: ReadonlySet<string>,
+): boolean {
+  const count = exchange.pending.length;
+  if (count === 0) return false;
+  if (exchange.source.partial === true) return false;
+  const expectedIds = new Set<string>();
+  for (const pending of exchange.pending) {
+    if (!uniqueCallIds.has(pending.callId)) return false;
+    if (pending.foreignBetween || pending.result === undefined || pending.result === INTERRUPTED_RESULT) {
+      return false;
+    }
+    expectedIds.add(pending.callId);
+  }
+  if (expectedIds.size !== count) return false;
+  const seenIds = new Set<string>();
+  for (let offset = 1; offset <= count; offset += 1) {
+    const candidate = history[exchange.ownerIndex + offset];
+    if (
+      candidate === undefined ||
+      candidate.partial === true ||
+      candidate.role !== 'tool' ||
+      candidate.toolCallId === undefined ||
+      !expectedIds.has(candidate.toolCallId) ||
+      seenIds.has(candidate.toolCallId)
+    ) {
+      return false;
+    }
+    seenIds.add(candidate.toolCallId);
+  }
+  return seenIds.size === count;
+}
+
+export const TOOL_RESULT_APPENDIX_OPEN = '<tool-result-appendix>';
+export const TOOL_RESULT_APPENDIX_CLOSE = '</tool-result-appendix>';
+
+function formatToolResultAppendixPart(
+  messages: readonly { readonly source: ContextMessage; readonly content: ContentPart[] }[],
+): ContentPart | undefined {
+  const texts: string[] = [];
+  for (const message of messages) {
+    const parts: string[] = [];
+    for (const part of message.content) {
+      if (part.type !== 'text') return undefined;
+      if (part.text.trim().length > 0) {
+        parts.push(part.text);
+      }
+    }
+    if (parts.length > 0) {
+      texts.push(parts.join('\n\n'));
+    }
+  }
+  if (texts.length === 0) return undefined;
+  return {
+    type: 'text',
+    text: `${TOOL_RESULT_APPENDIX_OPEN}\n${texts.join('\n\n')}\n${TOOL_RESULT_APPENDIX_CLOSE}`,
+  };
+}
+
+function applyToolResultAppendix(
+  history: readonly ContextMessage[],
+  blocks: readonly Block[],
+  options: ProjectOptions | undefined,
+): readonly Block[] {
+  if (options?.toolResultAppendix !== 'host_auto_injections') {
+    options?.onToolResultAppendix?.({ projectedBatches: 0, projectedMessages: 0 });
+    return blocks;
+  }
+  const uniqueCallIds = collectGloballyUniqueToolCallIds(history);
+  const out: Block[] = [];
+  let projectedBatches = 0;
+  let projectedMessages = 0;
+  let index = 0;
+
+  while (index < blocks.length) {
+    const block = blocks[index]!;
+    if (
+      block.kind !== 'exchange' ||
+      !isCompleteCanonicalToolBatch(history, block.exchange, uniqueCallIds)
+    ) {
+      out.push(block);
+      index += 1;
+      continue;
+    }
+
+    let cursor = index + 1;
+    const candidateBlocks: Array<{ readonly source: ContextMessage; readonly content: ContentPart[] }> = [];
+    while (cursor < blocks.length) {
+      const nextBlock = blocks[cursor]!;
+      if (
+        nextBlock.kind !== 'message' ||
+        !isHostAutoInjectedMessage(nextBlock.source) ||
+        !nextBlock.content.every((part) => part.type === 'text')
+      ) {
+        break;
+      }
+      candidateBlocks.push(nextBlock);
+      cursor += 1;
+    }
+
+    const trailingBlock = blocks[cursor];
+    if (trailingBlock?.kind === 'message') {
+      const trailingAnchor = userMergeAnchor(trailingBlock.source);
+      if (trailingAnchor !== undefined) {
+        while (candidateBlocks.length > 0) {
+          const lastCandidate = candidateBlocks.at(-1)!;
+          const candidateAnchor = userMergeAnchor(lastCandidate.source);
+          if (candidateAnchor !== undefined && sameUserMergeAnchor(candidateAnchor, trailingAnchor)) {
+            candidateBlocks.pop();
+            cursor -= 1;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+
+    const expectedHistoryStart = block.exchange.ownerIndex + block.exchange.pending.length + 1;
+    let contiguousInHistory = true;
+    for (const [offset, candidate] of candidateBlocks.entries()) {
+      if (history[expectedHistoryStart + offset] !== candidate.source) {
+        contiguousInHistory = false;
+        break;
+      }
+    }
+
+    const appendixPart =
+      contiguousInHistory && candidateBlocks.length > 0
+        ? formatToolResultAppendixPart(candidateBlocks)
+        : undefined;
+    if (appendixPart === undefined) {
+      out.push(block);
+      index += 1;
+      continue;
+    }
+
+    const lastPendingIndex = block.exchange.pending.length - 1;
+    const nextPending = block.exchange.pending.map((pending, pendingIndex) => {
+      if (
+        pendingIndex !== lastPendingIndex ||
+        pending.result === undefined ||
+        pending.result === INTERRUPTED_RESULT
+      ) {
+        return pending;
+      }
+      return {
+        ...pending,
+        result: {
+          source: pending.result.source,
+          content: [...pending.result.content, appendixPart],
+        },
+      };
+    });
+    out.push({
+      kind: 'exchange',
+      exchange: {
+        ...block.exchange,
+        pending: nextPending,
+      },
+    });
+    projectedBatches += 1;
+    projectedMessages += candidateBlocks.length;
+    index = cursor;
+  }
+
+  options.onToolResultAppendix?.({ projectedBatches, projectedMessages });
+  return out;
 }

@@ -7,13 +7,22 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { IEventBus } from '#/app/event/eventBus';
+import { IPluginService } from '#/app/plugin/plugin';
 import { PluginManager } from '#/app/plugin/manager';
+import { PLUGIN_SETTINGS_SECTION } from '#/app/plugin/settingsConfigSection';
 import { writeInstalled } from '#/app/plugin/store';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
 import type { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -25,11 +34,12 @@ import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageSe
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-import { agentService, appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext } from '../../harness';
+import { agentService, appService, createTestAgent, externalHookServices, homeDirServices, permissionModeServices, type TestAgentContext } from '../../harness';
 import { makeHookRunner } from './runner-stub';
 import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '../../../../transcript/src/index';
 
 const pluginRoot = process.env['KIKI_RECOVERY_PLUGIN_ROOT'] ?? fileURLToPath(new URL('../../fixtures/plugins/argon-error-recovery/', import.meta.url));
+const appendixPluginRoot = process.env['KIKI_APPENDIX_PLUGIN_ROOT'] ?? fileURLToPath(new URL('../../fixtures/plugins/argon-tool-result-appendix/', import.meta.url));
 const argonModel = 'axon-message/gemini-4-argon';
 const gatewayTerminalError = {
   code: 'gateway_stream_terminal_error', message: 'Upstream stream ended before a terminal event', status: 502, type: 'upstream_error',
@@ -610,5 +620,459 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(1);
     expect(continuations(replayed.local)).toEqual([]);
+  }, 60_000);
+});
+
+describe('argon-tool-result-appendix projection through real AnthropicChatProvider serialization', () => {
+  interface AppendixHarness {
+    readonly home: string;
+    readonly local: TestAgentContext;
+    readonly requests: Array<{ readonly url: string | undefined; readonly body: Record<string, unknown> }>;
+    sendWithHistory(history: readonly ContextMessage[], modelAlias?: string): Promise<Record<string, unknown>>;
+    close(): Promise<void>;
+  }
+
+  const openHarnesses: AppendixHarness[] = [];
+  afterEach(async () => {
+    const pending = openHarnesses.splice(0);
+    await Promise.all(pending.map(async (item) => item.close()));
+  });
+
+  async function createAppendixHarness(options: {
+    readonly installPlugin?: boolean;
+    readonly pluginEnabled?: boolean;
+    readonly defaultEnabled?: boolean;
+    readonly pluginSettings?: Record<string, unknown>;
+  } = {}): Promise<AppendixHarness> {
+    const home = await mkdtemp(join(tmpdir(), 'argon-appendix-serialization-'));
+    const requests: AppendixHarness['requests'] = [];
+    const server = createServer((req, res) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const raw = Buffer.concat(chunks).toString('utf8');
+        const body = (raw.length === 0 ? {} : JSON.parse(raw)) as Record<string, unknown>;
+        requests.push({ url: req.url, body });
+        writeSse(res, terminalSse('ok'));
+      })().catch((error: unknown) => {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('No loopback port');
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    if (options.installPlugin !== false) {
+      await writeInstalled(home, {
+        version: 1,
+        plugins: [
+          {
+            id: 'argon-tool-result-appendix',
+            root: appendixPluginRoot,
+            source: 'local-path',
+            enabled: options.pluginEnabled ?? true,
+            defaultEnabled: options.defaultEnabled ?? true,
+            installedAt: '2026-11-08T00:00:00.000Z',
+          },
+        ],
+      });
+    }
+
+    class DynamicAnthropicRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider {
+        return new AnthropicChatProvider({
+          model: 'example-model',
+          apiKey: 'YOUR_API_KEY',
+          baseUrl: origin,
+        });
+      }
+    }
+
+    const local = createTestAgent(
+      homeDirServices(home),
+      permissionModeServices('yolo'),
+      appService(IProtocolAdapterRegistry, new DynamicAnthropicRegistry()),
+      {
+        initialConfig: {
+          [PLUGIN_SETTINGS_SECTION]: options.pluginSettings === undefined
+            ? {}
+            : { 'argon-tool-result-appendix': options.pluginSettings },
+        },
+      },
+    );
+    await local.get(IPluginService).reloadPlugins();
+
+    return {
+      home,
+      local,
+      requests,
+      async sendWithHistory(history: readonly ContextMessage[], modelAlias = argonModel): Promise<Record<string, unknown>> {
+        local.configure({
+          provider: {
+            type: 'anthropic',
+            model: modelAlias,
+            apiKey: 'YOUR_API_KEY',
+            baseUrl: origin,
+          },
+          modelCapabilities: {
+            image_in: true,
+            video_in: true,
+            audio_in: false,
+            thinking: true,
+            tool_use: true,
+            max_context_tokens: 200_000,
+          },
+        });
+        const before = requests.length;
+        await local.get(IAgentLLMRequesterService).request({
+          messages: [...history],
+          systemPrompt: 'System prompt for serialization test.',
+        });
+        expect(requests.length).toBe(before + 1);
+        return requests[before]!.body;
+      },
+      async close() {
+        await local.dispose();
+        await server[Symbol.asyncDispose]();
+        await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      },
+    };
+  }
+
+  function buildAssistantToolUse(toolCalls: ReadonlyArray<{ readonly id: string; readonly name: string; readonly arguments?: string }>): ContextMessage {
+    return {
+      role: 'assistant',
+      content: [
+        { type: 'think', think: 'checking workspace state', encrypted: 'sig_argon_123' },
+        { type: 'text', text: 'Running tools.' },
+      ],
+      toolCalls: toolCalls.map((call) => ({
+        type: 'function',
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments ?? '{}',
+      })),
+    };
+  }
+
+  it('keeps non-target models, disabled plugin, passthrough setting, and workspace/session disabled scopes byte-for-byte identical to baseline while packing appendix for Argon', async () => {
+    const history: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Inspect files.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([{ id: 'toolu_1', name: 'ReadFile' }]),
+      { role: 'tool', content: [{ type: 'text', text: 'file contents A' }], toolCalls: [], toolCallId: 'toolu_1' },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>\nAGENTS.md loaded\n</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'agents_md' },
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>\nTools updated\n</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'capability_delta' },
+      },
+    ];
+
+    const baselineHarness = await createAppendixHarness({ installPlugin: false });
+    openHarnesses.push(baselineHarness);
+    const baselineArgonBody = await baselineHarness.sendWithHistory(history, argonModel);
+    const baselineOtherGeminiBody = await baselineHarness.sendWithHistory(history, 'axon-message/gemini-3.8-flash');
+
+    const baselineMessages = baselineArgonBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(baselineMessages).toHaveLength(3);
+    expect(baselineMessages[2]?.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_1',
+        content: [{ type: 'text', text: 'file contents A' }],
+      },
+      {
+        type: 'text',
+        text: '<system-reminder>\nAGENTS.md loaded\n</system-reminder>',
+      },
+      {
+        type: 'text',
+        text: '<system-reminder>\nTools updated\n</system-reminder>',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+
+    const activeHarness = await createAppendixHarness({ installPlugin: true });
+    openHarnesses.push(activeHarness);
+    const historySnapshot = structuredClone(history);
+    const projectedArgonBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(history).toEqual(historySnapshot);
+
+    expect(projectedArgonBody['system']).toEqual(baselineArgonBody['system']);
+    const projectedMessages = projectedArgonBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(projectedMessages).toHaveLength(3);
+    expect(projectedMessages[0]).toEqual(baselineMessages[0]);
+    expect(projectedMessages[1]).toEqual(baselineMessages[1]);
+    expect(projectedMessages[2]?.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_1',
+        content: [
+          { type: 'text', text: 'file contents A' },
+          {
+            type: 'text',
+            text: '<tool-result-appendix>\n<system-reminder>\nAGENTS.md loaded\n</system-reminder>\n\n<system-reminder>\nTools updated\n</system-reminder>\n</tool-result-appendix>',
+          },
+        ],
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+
+    const repeatedArgonBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(repeatedArgonBody).toEqual(projectedArgonBody);
+
+    const otherGeminiBody = await activeHarness.sendWithHistory(history, 'axon-message/gemini-3.8-flash');
+    expect(otherGeminiBody).toEqual(baselineOtherGeminiBody);
+
+    const pluginService = activeHarness.local.get(IPluginService);
+    const metrics = pluginService.requestProjectionMetrics('argon-tool-result-appendix');
+    expect(metrics).toEqual({
+      evaluatedRequests: 3,
+      matchedRequests: 2,
+      passthroughRequests: 1,
+      projectedRequests: 2,
+      projectedBatches: 2,
+      projectedMessages: 4,
+    });
+    expect(Object.keys(metrics).toSorted()).toEqual([
+      'evaluatedRequests',
+      'matchedRequests',
+      'passthroughRequests',
+      'projectedBatches',
+      'projectedMessages',
+      'projectedRequests',
+    ]);
+    expect(JSON.stringify(metrics)).not.toContain('file contents A');
+    expect(JSON.stringify(metrics)).not.toContain('YOUR_API_KEY');
+    expect(JSON.stringify(metrics)).not.toContain(activeHarness.home);
+
+    await activeHarness.local.get(ISessionPluginUsageService).set('argon-tool-result-appendix', 'off');
+    const sessionDisabledBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(sessionDisabledBody).toEqual(baselineArgonBody);
+
+    await activeHarness.local.get(ISessionPluginUsageService).set('argon-tool-result-appendix', 'inherit');
+    const workspaceId = activeHarness.local.get(ISessionContext).workspaceId;
+    await activeHarness.local.get(IPluginUsageService).set({
+      workspaceId,
+      pluginId: 'argon-tool-result-appendix',
+      override: 'off',
+    });
+    const workspaceDisabledBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(workspaceDisabledBody).toEqual(baselineArgonBody);
+
+    await activeHarness.local.get(IPluginUsageService).set({
+      workspaceId,
+      pluginId: 'argon-tool-result-appendix',
+      override: 'on',
+    });
+    const workspaceReenabledBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(workspaceReenabledBody).toEqual(projectedArgonBody);
+
+    await pluginService.setPluginEnabled({ id: 'argon-tool-result-appendix', enabled: false });
+    const globalDisabledBody = await activeHarness.sendWithHistory(history, argonModel);
+    expect(globalDisabledBody).toEqual(baselineArgonBody);
+
+    const passthroughHarness = await createAppendixHarness({
+      installPlugin: true,
+      pluginSettings: { strategy: 'passthrough', targetModels: argonModel },
+    });
+    openHarnesses.push(passthroughHarness);
+    const passthroughBody = await passthroughHarness.sendWithHistory(history, argonModel);
+    expect(passthroughBody).toEqual(baselineArgonBody);
+  }, 60_000);
+
+  it('covers tool_result only, multi-tool with media, real human user follow-up, failure recovery continuation, compaction summary, and undo idempotence', async () => {
+    const harness = await createAppendixHarness({ installPlugin: true });
+    openHarnesses.push(harness);
+
+    const toolOnlyHistory: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Just run one tool.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([{ id: 'toolu_only', name: 'ReadFile' }]),
+      { role: 'tool', content: [{ type: 'text', text: 'raw tool output' }], toolCalls: [], toolCallId: 'toolu_only' },
+    ];
+    const toolOnlyBody = await harness.sendWithHistory(toolOnlyHistory, argonModel);
+    const toolOnlyMessages = toolOnlyBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(toolOnlyMessages[1]?.content).toEqual([
+      {
+        type: 'thinking',
+        thinking: 'checking workspace state',
+        signature: 'sig_argon_123',
+      },
+      {
+        type: 'text',
+        text: 'Running tools.',
+      },
+      {
+        type: 'tool_use',
+        id: 'toolu_only',
+        name: 'ReadFile',
+        input: {},
+      },
+    ]);
+    expect(toolOnlyMessages[2]?.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_only',
+        content: [{ type: 'text', text: 'raw tool output' }],
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+
+    const multiMediaAndHumanHistory: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Run two tools.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([
+        { id: 'toolu_img', name: 'ReadMediaFile' },
+        { id: 'toolu_txt', name: 'ReadFile' },
+      ]),
+      {
+        role: 'tool',
+        content: [
+          { type: 'text', text: 'image header' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } },
+        ],
+        toolCalls: [],
+        toolCallId: 'toolu_img',
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'second tool verbatim' }],
+        toolCalls: [],
+        toolCallId: 'toolu_txt',
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>\nRuntime snapshot\n</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'runtime_snapshot' },
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Real human instruction after tool.' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    ];
+    const multiMediaBody = await harness.sendWithHistory(multiMediaAndHumanHistory, argonModel);
+    const multiMediaMessages = multiMediaBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(multiMediaMessages[2]?.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_img',
+        content: [
+          { type: 'text', text: 'image header' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            },
+          },
+        ],
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_txt',
+        content: [
+          { type: 'text', text: 'second tool verbatim' },
+          {
+            type: 'text',
+            text: '<tool-result-appendix>\n<system-reminder>\nRuntime snapshot\n</system-reminder>\n</tool-result-appendix>',
+          },
+        ],
+      },
+      {
+        type: 'text',
+        text: 'Real human instruction after tool.',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+
+    const continuationHistory: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Start.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([{ id: 'toolu_cont', name: 'ReadFile' }]),
+      { role: 'tool', content: [{ type: 'text', text: 'tool before failure' }], toolCalls: [], toolCallId: 'toolu_cont' },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>\nMemory authority\n</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'memory_authority' },
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '继续' }],
+        toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
+      },
+    ];
+    const continuationBody = await harness.sendWithHistory(continuationHistory, argonModel);
+    const continuationMessages = continuationBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(continuationMessages[2]?.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_cont',
+        content: [
+          { type: 'text', text: 'tool before failure' },
+          {
+            type: 'text',
+            text: '<tool-result-appendix>\n<system-reminder>\nMemory authority\n</system-reminder>\n</tool-result-appendix>',
+          },
+        ],
+      },
+      {
+        type: 'text',
+        text: '继续',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+
+    const memory = harness.local.get(IAgentContextMemoryService);
+    memory.append({
+      role: 'user',
+      content: [{ type: 'text', text: 'Summary of earlier work' }],
+      toolCalls: [],
+      origin: { kind: 'compaction_summary' },
+    });
+    memory.append(buildAssistantToolUse([{ id: 'toolu_after_compact', name: 'ReadFile' }]));
+    memory.append({
+      role: 'tool',
+      content: [{ type: 'text', text: 'post-compaction tool output' }],
+      toolCalls: [],
+      toolCallId: 'toolu_after_compact',
+    });
+    memory.append({
+      role: 'user',
+      content: [{ type: 'text', text: '<system-reminder>\nPlan mode active\n</system-reminder>' }],
+      toolCalls: [],
+      origin: { kind: 'injection', variant: 'plan_mode' },
+    });
+    const canonicalBefore = structuredClone(memory.get());
+    const afterCompactBody1 = await harness.sendWithHistory(memory.get(), argonModel);
+    const afterCompactBody2 = await harness.sendWithHistory(memory.get(), argonModel);
+    expect(afterCompactBody1).toEqual(afterCompactBody2);
+    expect(memory.get()).toEqual(canonicalBefore);
+
+    memory.append({
+      role: 'user',
+      content: [{ type: 'text', text: 'Turn to be undone' }],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+    memory.append({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Reply to be undone' }],
+      toolCalls: [],
+    });
+    await harness.local.get(IAgentConversationUndoService).undo(1);
+    expect(memory.get()).toEqual(canonicalBefore);
+    const afterUndoBody = await harness.sendWithHistory(memory.get(), argonModel);
+    expect(afterUndoBody).toEqual(afterCompactBody1);
   }, 60_000);
 });

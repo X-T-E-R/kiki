@@ -86,6 +86,18 @@ export const commandContributionSchema = z.object({
   prompt: z.string().min(1).max(16_384),
 }).strict();
 
+export const requestProjectionStrategySchema = z.enum(['passthrough', 'tool_result_appendix']);
+export type PluginRequestProjectionStrategy = z.infer<typeof requestProjectionStrategySchema>;
+
+export const requestProjectionContributionSchema = z.object({
+  schemaVersion,
+  strategySetting: z.string().min(1).default('strategy'),
+  modelsSetting: z.string().min(1).default('targetModels'),
+  defaultStrategy: requestProjectionStrategySchema.default('tool_result_appendix'),
+  defaultModels: z.array(z.string().min(1)).max(200).default([]),
+}).strict();
+export type PluginRequestProjection = z.infer<typeof requestProjectionContributionSchema>;
+
 const settingsPropertySchema = z.object({
   type: z.enum(['string', 'boolean', 'number']),
   title: z.string().optional(),
@@ -181,6 +193,7 @@ export interface PluginExtension {
   readonly entry?: string;
   readonly activation?: 'app';
   readonly settings?: PluginSettings;
+  readonly requestProjection?: PluginRequestProjection;
   /**
    * An extra management surface this package owns. The host offers it on the
    * plugin's own page, so a package with a surface is reached by installing
@@ -216,6 +229,7 @@ export async function parsePluginExtension(
     entry: z.string().startsWith('./').optional(),
     activation: z.literal('app').optional(),
     settings: settingsContributionSchema.optional(),
+    requestProjection: requestProjectionContributionSchema.optional(),
     prerequisites: z.unknown().optional(),
     mediaSurface: z.object({ view: z.literal('media') }).strict().optional(),
   }).strict().safeParse(raw);
@@ -226,7 +240,7 @@ export async function parsePluginExtension(
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
     value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
-    value.entry !== undefined || value.settings !== undefined;
+    value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
   }
@@ -345,6 +359,7 @@ export async function parsePluginExtension(
     entry: resolvedEntry,
     activation: value.activation,
     settings: value.settings,
+    requestProjection: value.requestProjection,
     mediaSurface: value.mediaSurface,
   };
 }

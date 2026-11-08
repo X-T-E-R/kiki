@@ -45,6 +45,17 @@ export function stubPluginService(options: StubPluginServiceOptions): IPluginSer
     mcpServerEntries: async () => [],
     enabledHooks: async () => [],
     enabledHookRules: async () => [],
+    enabledRequestProjections: async () => [],
+    resolveRequestProjection: async () => ({ strategy: 'passthrough' }),
+    recordRequestProjectionOutcome: () => {},
+    requestProjectionMetrics: () => ({
+      evaluatedRequests: 0,
+      matchedRequests: 0,
+      passthroughRequests: 0,
+      projectedRequests: 0,
+      projectedBatches: 0,
+      projectedMessages: 0,
+    }),
     hasLoadedSnapshot: () => true,
   };
 }

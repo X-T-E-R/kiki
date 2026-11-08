@@ -1,0 +1,57 @@
+{
+  "name": "argon-tool-result-appendix",
+  "version": "0.1.0",
+  "description": "Projects host-generated automatic reminders immediately following a complete tool batch into the last tool_result appendix for explicitly configured Argon models.",
+  "author": { "name": "Local Unofficial Plugin" },
+  "license": "MIT",
+  "keywords": ["argon", "tool-result", "projection", "appendix", "anthropic"],
+  "interface": {
+    "displayName": "Argon Tool Result Appendix",
+    "shortDescription": "Pack contiguous host auto-injections into the last tool_result appendix for selected Argon models.",
+    "longDescription": "Keeps canonical contextMemory and wire records untouched while projecting verified host auto-injections immediately following a complete, unique tool call batch into the final tool_result block as an explicitly tagged appendix text part."
+  },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.3" },
+    "requestProjection": {
+      "schemaVersion": 1,
+      "strategySetting": "strategy",
+      "modelsSetting": "targetModels",
+      "defaultStrategy": "tool_result_appendix",
+      "defaultModels": ["axon-message/gemini-4-argon"]
+    },
+    "settings": {
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "title": "Projection Strategy",
+            "description": "Choose whether host auto-injections after a complete tool batch are sent as-is (passthrough) or appended to the final tool_result block (tool_result_appendix).",
+            "default": "tool_result_appendix",
+            "enum": ["passthrough", "tool_result_appendix"],
+            "localizations": {
+              "zh-CN": {
+                "title": "发送投影策略",
+                "description": "选择同批工具完成后的自动宿主注入是原样发送（passthrough），还是并入最后一个 tool_result 的独立标识附录（tool_result_appendix）。"
+              }
+            }
+          },
+          "targetModels": {
+            "type": "string",
+            "title": "Target Models",
+            "description": "Comma, semicolon, or newline separated model aliases or IDs that opt into tool_result appendix projection.",
+            "default": "axon-message/gemini-4-argon",
+            "format": "kiki-model",
+            "localizations": {
+              "zh-CN": {
+                "title": "启用模型列表",
+                "description": "使用逗号、分号或换行分隔的目标模型别名或模型 ID（仅明确列出的模型会启用工具结果附录投影）。"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

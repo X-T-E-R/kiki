@@ -6,6 +6,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { PluginInstallPlan } from './installPlan';
 
 import type {
+  EnabledPluginRequestProjection,
   EnabledPluginSessionStart,
   EnabledPluginSystemPrompt,
   PluginAgentRoot,
@@ -17,6 +18,8 @@ import type {
   PluginSummary,
   PluginUpdateStatus,
   ReloadSummary,
+  RequestProjectionDecision,
+  RequestProjectionMetrics,
 } from './types';
 
 export interface InstallPluginInput {
@@ -78,6 +81,21 @@ export interface IPluginService {
   mcpServerEntries(): Promise<readonly PluginMcpServerEntry[]>;
   enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]>;
   enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]>;
+  enabledRequestProjections(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginRequestProjection[]>;
+  resolveRequestProjection(input: {
+    readonly modelAlias: string;
+    readonly modelId?: string;
+    readonly modelName?: string;
+    readonly workspaceId?: string;
+    readonly sessionId?: string;
+  }): Promise<RequestProjectionDecision>;
+  recordRequestProjectionOutcome(input: {
+    readonly pluginId?: string;
+    readonly matched: boolean;
+    readonly projectedBatches: number;
+    readonly projectedMessages: number;
+  }): void;
+  requestProjectionMetrics(pluginId?: string): RequestProjectionMetrics;
   hasLoadedSnapshot(): boolean;
   readonly onWillChange: Event<PluginChangeEvent>;
   readonly onDidReload: Event<PluginReloadEvent>;

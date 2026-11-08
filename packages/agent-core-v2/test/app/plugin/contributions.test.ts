@@ -318,4 +318,53 @@ describe('plugin extension compatibility and consent', () => {
     await writeFile(path.join(root, 'skin.json'), JSON.stringify({ kind: 'kiki-skin', version: 1, name: 'Paper', css: 'body{display:none}', variants: { light: {} } }));
     expect((await parseManifest(root)).diagnostics.some((item) => item.severity === 'error')).toBe(true);
   });
+
+  it('parses declarative requestProjection contributions and tracks them in install plans', async () => {
+    const root = await temp();
+    const data = {
+      name: 'argon-tool-result-appendix',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        requestProjection: {
+          schemaVersion: 1,
+          strategySetting: 'strategy',
+          modelsSetting: 'targetModels',
+          defaultStrategy: 'tool_result_appendix',
+          defaultModels: ['axon-message/gemini-4-argon'],
+        },
+        settings: {
+          schemaVersion: 1,
+          schema: {
+            type: 'object',
+            properties: {
+              strategy: {
+                type: 'string',
+                enum: ['passthrough', 'tool_result_appendix'],
+                default: 'tool_result_appendix',
+              },
+              targetModels: {
+                type: 'string',
+                default: 'axon-message/gemini-4-argon',
+                format: 'kiki-model',
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.requestProjection).toEqual({
+      schemaVersion: 1,
+      strategySetting: 'strategy',
+      modelsSetting: 'targetModels',
+      defaultStrategy: 'tool_result_appendix',
+      defaultModels: ['axon-message/gemini-4-argon'],
+    });
+    const manager = new PluginManager({ kimiHomeDir: await temp() });
+    const plan = await manager.preview(root);
+    expect(plan.contributions).toContain('request-projection');
+    expect(plan.contributions).toContain('settings');
+  });
 });

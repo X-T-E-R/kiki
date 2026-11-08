@@ -1019,4 +1019,242 @@ describe('projector tool-exchange normalization', () => {
       expect(image).toMatchObject({ imageUrl: { url, id: 'new-id' } });
     });
   });
+
+  describe('project with toolResultAppendix: host_auto_injections policy', () => {
+    function hostInjection(text: string, variant = 'agents_md', ownerPromptId?: string): ContextMessage {
+      return {
+        role: 'user',
+        content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant, ownerPromptId },
+      };
+    }
+
+    it('packs contiguous verified host auto-injections into the final tool_result appendix of a complete batch while leaving original history untouched', () => {
+      const history: readonly ContextMessage[] = [
+        user('run tools'),
+        assistant('calling two tools', ['c1', 'c2']),
+        {
+          role: 'tool',
+          content: [
+            { type: 'text', text: 'first tool output' },
+            { type: 'image_url', imageUrl: { url: 'data:image/png;base64,IMG1' } },
+          ],
+          toolCalls: [],
+          toolCallId: 'c1',
+        },
+        toolResult('c2', 'second tool output'),
+        hostInjection('AGENTS.md updated', 'agents_md'),
+        hostInjection('Loaded tool schema delta', 'capability_delta'),
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '<skill-loaded name="demo">body</skill-loaded>' }],
+          toolCalls: [],
+          origin: {
+            kind: 'skill_activation',
+            activationId: 'act-1',
+            skillName: 'demo',
+            skillPath: '/tmp/SKILL.md',
+            skillSource: 'project',
+            trigger: 'model-tool',
+          },
+        },
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '<task-notification>done</task-notification>' }],
+          toolCalls: [],
+          origin: { kind: 'task', taskId: 't-1', status: 'completed', notificationId: 'n-1' },
+        },
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '<system-reminder>Missed schedule</system-reminder>' }],
+          toolCalls: [],
+          origin: { kind: 'cron_missed', count: 1 },
+        },
+      ];
+      const snapshotBefore = structuredClone(history);
+      let stats = { projectedBatches: 0, projectedMessages: 0 };
+      const projected = projector.project(history, {
+        toolResultAppendix: 'host_auto_injections',
+        onToolResultAppendix: (observed) => {
+          stats = observed;
+        },
+      });
+
+      expect(history).toEqual(snapshotBefore);
+      expect(stats).toEqual({ projectedBatches: 1, projectedMessages: 5 });
+      expect(projected.map((m) => (m.role === 'tool' ? `tool:${m.toolCallId}` : m.role))).toEqual([
+        'user',
+        'assistant',
+        'tool:c1',
+        'tool:c2',
+      ]);
+      expect(projected[2]?.content).toEqual([
+        { type: 'text', text: 'first tool output' },
+        { type: 'image_url', imageUrl: { url: 'data:image/png;base64,IMG1' } },
+      ]);
+      expect(projected[3]?.content).toEqual([
+        { type: 'text', text: 'second tool output' },
+        {
+          type: 'text',
+          text: [
+            '<tool-result-appendix>',
+            '<system-reminder>\nAGENTS.md updated\n</system-reminder>',
+            '<system-reminder>\nLoaded tool schema delta\n</system-reminder>',
+            '<skill-loaded name="demo">body</skill-loaded>',
+            '<task-notification>done</task-notification>',
+            '<system-reminder>Missed schedule</system-reminder>',
+            '</tool-result-appendix>',
+          ].join('\n\n').replace('<tool-result-appendix>\n\n', '<tool-result-appendix>\n').replace('\n\n</tool-result-appendix>', '\n</tool-result-appendix>'),
+        },
+      ]);
+
+      const repeated = projector.project(history, {
+        toolResultAppendix: 'host_auto_injections',
+      });
+      expect(repeated).toEqual(projected);
+    });
+
+    it('stops at real user prompts, failure_recovery_hook continuations, cron_job, shell_command_backgrounded, user-slash skills, and prompt-owned injections', () => {
+      const cases: ReadonlyArray<{ readonly label: string; readonly msg: ContextMessage }> = [
+        { label: 'human user', msg: user('real human follow-up') },
+        {
+          label: 'unknown origin user',
+          msg: { role: 'user', content: [{ type: 'text', text: 'legacy user' }], toolCalls: [] },
+        },
+        {
+          label: 'failure recovery continuation',
+          msg: {
+            role: 'user',
+            content: [{ type: 'text', text: '继续' }],
+            toolCalls: [],
+            origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
+          },
+        },
+        {
+          label: 'cron_job prompt',
+          msg: {
+            role: 'user',
+            content: [{ type: 'text', text: 'scheduled user prompt' }],
+            toolCalls: [],
+            origin: {
+              kind: 'cron_job',
+              jobId: 'c1',
+              cron: '0 * * * *',
+              recurring: true,
+              coalescedCount: 1,
+              stale: false,
+            },
+          },
+        },
+        {
+          label: 'shell_command_backgrounded injection',
+          msg: hostInjection('backgrounded shell', 'shell_command_backgrounded'),
+        },
+        {
+          label: 'prompt-owned injection',
+          msg: hostInjection('attached to user prompt', 'hook_rule/prompt', 'prompt-123'),
+        },
+        {
+          label: 'user-slash skill activation',
+          msg: {
+            role: 'user',
+            content: [{ type: 'text', text: '<skill-loaded name="s">user slash</skill-loaded>' }],
+            toolCalls: [],
+            origin: {
+              kind: 'skill_activation',
+              activationId: 'act-user',
+              skillName: 's',
+              skillPath: '/tmp/SKILL.md',
+              skillSource: 'project',
+              trigger: 'user-slash',
+            },
+          },
+        },
+      ];
+
+      for (const { msg } of cases) {
+        const history: readonly ContextMessage[] = [
+          user('start'),
+          assistant('', ['c1']),
+          toolResult('c1', 'ok'),
+          hostInjection('auto reminder before boundary', 'runtime_snapshot'),
+          msg,
+          hostInjection('auto reminder after boundary', 'todo_list_reminder'),
+        ];
+        const projected = projector.project(history, {
+          toolResultAppendix: 'host_auto_injections',
+        });
+        expect(projected.map((m) => (m.role === 'tool' ? `tool:${m.toolCallId}` : m.role))).toEqual([
+          'user',
+          'assistant',
+          'tool:c1',
+          'user',
+          'user',
+        ]);
+        expect(projected[2]?.content).toHaveLength(2);
+      }
+    });
+
+    it('refuses to append into incomplete, reordered (foreignBetween), or duplicate-toolCallId batches so strict projection never drops reminders', () => {
+      const incompleteHistory: readonly ContextMessage[] = [
+        user('u1'),
+        assistant('', ['c1', 'c2']),
+        toolResult('c1', 'only first returned'),
+        hostInjection('reminder after incomplete batch', 'agents_md'),
+      ];
+      const projectedIncomplete = projector.project(incompleteHistory, {
+        toolResultAppendix: 'host_auto_injections',
+      });
+      expect(projectedIncomplete.map((m) => (m.role === 'tool' ? `tool:${m.toolCallId}` : m.role))).toEqual([
+        'user',
+        'assistant',
+        'tool:c1',
+        'tool:c2',
+        'user',
+      ]);
+      expect(projectedIncomplete[3]?.content).toEqual([
+        { type: 'text', text: expect.stringContaining(INTERRUPTED) },
+      ]);
+
+      const reorderedHistory: readonly ContextMessage[] = [
+        user('u1'),
+        assistant('', ['c1']),
+        hostInjection('interleaved reminder', 'agents_md'),
+        toolResult('c1', 'late result'),
+        hostInjection('post-late reminder', 'capability_delta'),
+      ];
+      const projectedReordered = projector.project(reorderedHistory, {
+        toolResultAppendix: 'host_auto_injections',
+      });
+      expect(projectedReordered.map((m) => (m.role === 'tool' ? `tool:${m.toolCallId}` : m.role))).toEqual([
+        'user',
+        'assistant',
+        'tool:c1',
+        'user',
+        'user',
+      ]);
+      expect(projectedReordered[2]?.content).toEqual([{ type: 'text', text: 'late result' }]);
+
+      const duplicateIdHistory: readonly ContextMessage[] = [
+        user('u1'),
+        assistant('first', ['dup']),
+        toolResult('dup', 'first result'),
+        assistant('second', ['dup']),
+        toolResult('dup', 'second result'),
+        hostInjection('must survive strict dedupe', 'agents_md'),
+      ];
+      const projectedStrictDup = projector.project(duplicateIdHistory, {
+        structure: 'strict',
+        toolResultAppendix: 'host_auto_injections',
+      });
+      const allTexts = projectedStrictDup
+        .flatMap((m) => m.content)
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text)
+        .join('\n');
+      expect(allTexts).toContain('must survive strict dedupe');
+      expect(projectedStrictDup.at(-1)?.role).toBe('user');
+    });
+  });
 });

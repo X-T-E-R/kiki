@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isRequestGovernanceError } from '#/app/requestGovernance/errors';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
+import { IPluginService } from '#/app/plugin/plugin';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -328,6 +330,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     @IRequestIdentityCatalog private readonly identityCatalog: IRequestIdentityCatalog,
     @IAppendLogStore private readonly captureLogs: IAppendLogStore,
     @IEventBus private readonly eventBus: IEventBus,
+    @ref(IPluginService) private readonly plugins?: LiveRef<IPluginService>,
   ) {
     super();
     this._register(toDisposable(() => {
@@ -598,12 +601,42 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const projection = projectionNameOf(policy);
       const fields =
         projection === undefined ? request.logFields : { ...request.logFields, projection };
+      const pluginService = this.plugins?.current;
+      const projectionDecision = pluginService === undefined
+        ? { strategy: 'passthrough' as const }
+        : await pluginService.resolveRequestProjection({
+            modelAlias: request.modelAlias,
+            modelId: request.model.id,
+            modelName: request.model.name,
+            workspaceId: this.sessionContext.workspaceId,
+            sessionId: this.sessionContext.sessionId,
+          });
+      let projectedBatches = 0;
+      let projectedMessages = 0;
+      const effectivePolicy: ProjectionPolicy | undefined =
+        projectionDecision.strategy === 'tool_result_appendix'
+          ? {
+              ...policy,
+              toolResultAppendix: 'host_auto_injections',
+              onToolResultAppendix: (stats) => {
+                projectedBatches = stats.projectedBatches;
+                projectedMessages = stats.projectedMessages;
+              },
+            }
+          : policy;
+      const projected = this.projector.project(shaped, effectivePolicy);
+      pluginService?.recordRequestProjectionOutcome({
+        pluginId: projectionDecision.pluginId,
+        matched: projectionDecision.strategy === 'tool_result_appendix',
+        projectedBatches,
+        projectedMessages,
+      });
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
         messages: projectDynamicToolSchemas(
           await this.mediaResolver.resolve(
-            this.projector.project(shaped, policy),
+            projected,
             request.requester,
             signal,
             params.headers,

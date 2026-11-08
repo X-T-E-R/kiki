@@ -90,6 +90,7 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.kiki?.panels ?? []).map((panel) => `panel:${panel.id}`),
     ...(manifest.kiki?.commands ?? []).map((command) => `command:${command.name}`),
     ...(manifest.kiki?.settings === undefined ? [] : ['settings']),
+    ...(manifest.kiki?.requestProjection === undefined ? [] : ['request-projection']),
   ];
 }
 
@@ -123,6 +124,9 @@ export function buildInstallPlan(
   }
   if (previous !== undefined && JSON.stringify(manifest.kiki?.commands ?? []) !== JSON.stringify(previous.kiki?.commands ?? [])) {
     changes.push('commands changed');
+  }
+  if (previous !== undefined && JSON.stringify(manifest.kiki?.requestProjection ?? null) !== JSON.stringify(previous.kiki?.requestProjection ?? null)) {
+    changes.push('request projection changed');
   }
   return {
     id: manifest.name.toLowerCase(),

@@ -22,6 +22,7 @@ import { readInstalled, writeInstalled, type InstalledFile, type InstalledRecord
 import type { PluginAgentRoot } from './types';
 import {
   normalizePluginId,
+  type EnabledPluginRequestProjection,
   type EnabledPluginSessionStart,
   type EnabledPluginSystemPrompt,
   type PluginCapabilityState,
@@ -617,6 +618,17 @@ export class PluginManager {
       const content = record.manifest?.systemPrompt;
       if (content === undefined) continue;
       out.push({ pluginId: record.id, content });
+    }
+    return out;
+  }
+
+  enabledRequestProjections(): readonly EnabledPluginRequestProjection[] {
+    const out: EnabledPluginRequestProjection[] = [];
+    for (const record of this.records.values()) {
+      if (!record.enabled || record.state !== 'ok') continue;
+      const config = record.manifest?.kiki?.requestProjection;
+      if (config === undefined) continue;
+      out.push({ pluginId: record.id, config });
     }
     return out;
   }

@@ -12,6 +12,11 @@ export interface MediaStripSnapshot {
 export interface ProjectionPolicy {
   readonly structure?: 'strict';
   readonly media?: 'degraded' | { readonly strip: MediaStripSnapshot };
+  readonly toolResultAppendix?: 'host_auto_injections';
+  readonly onToolResultAppendix?: (stats: {
+    readonly projectedBatches: number;
+    readonly projectedMessages: number;
+  }) => void;
 }
 
 export interface IAgentContextProjectorService {

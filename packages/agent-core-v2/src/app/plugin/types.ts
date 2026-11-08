@@ -3,7 +3,11 @@ import type { HookDefConfig, HooksV2Config } from '#/features/externalHooks/conf
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import type { PluginPrerequisites } from './prerequisites';
-import type { PluginExtension } from './contributions';
+import type {
+  PluginExtension,
+  PluginRequestProjection,
+  PluginRequestProjectionStrategy,
+} from './contributions';
 
 export type PluginDiagnosticSeverity = 'error' | 'warn' | 'info';
 
@@ -201,6 +205,25 @@ export interface EnabledPluginSessionStart {
 export interface EnabledPluginSystemPrompt {
   readonly pluginId: string;
   readonly content: string;
+}
+
+export interface EnabledPluginRequestProjection {
+  readonly pluginId: string;
+  readonly config: PluginRequestProjection;
+}
+
+export interface RequestProjectionDecision {
+  readonly strategy: PluginRequestProjectionStrategy;
+  readonly pluginId?: string;
+}
+
+export interface RequestProjectionMetrics {
+  readonly evaluatedRequests: number;
+  readonly matchedRequests: number;
+  readonly passthroughRequests: number;
+  readonly projectedRequests: number;
+  readonly projectedBatches: number;
+  readonly projectedMessages: number;
 }
 
 export interface ReloadSummary {

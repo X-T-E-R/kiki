@@ -57,10 +57,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     messages: readonly ContextMessage[],
     policy: ProjectionPolicy = {},
   ): readonly Message[] {
-    const projected = this.projectWithTrace(
-      messages,
-      policy.structure === 'strict' ? projectStrict : project,
-    );
+    const projected = this.projectWithTrace(messages, policy);
     const media = policy.media;
     if (media === undefined) return projected;
     if (media === 'degraded') return degradeOlderMediaParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
@@ -68,15 +65,23 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
   }
 
   captureMediaStripSnapshot(messages: readonly ContextMessage[]): MediaStripSnapshot {
-    return captureMediaStripSnapshot(this.projectWithTrace(messages, project));
+    return captureMediaStripSnapshot(this.projectWithTrace(messages));
   }
 
   private projectWithTrace(
     messages: readonly ContextMessage[],
-    fn: (history: readonly ContextMessage[], onAnomaly?: OnAnomaly) => Message[],
+    policy: ProjectionPolicy = {},
   ): readonly Message[] {
     const anomalies: ProjectionAnomaly[] = [];
-    const result = fn(projectCurrentMemory(messages, this.memory.current?.projectionView), (anomaly) => anomalies.push(anomaly));
+    const fn = policy.structure === 'strict' ? projectStrict : project;
+    const result = fn(
+      projectCurrentMemory(messages, this.memory.current?.projectionView),
+      (anomaly) => anomalies.push(anomaly),
+      {
+        toolResultAppendix: policy.toolResultAppendix,
+        onToolResultAppendix: policy.onToolResultAppendix,
+      },
+    );
     this.reportProjectionRepairs(anomalies);
     return result;
   }
