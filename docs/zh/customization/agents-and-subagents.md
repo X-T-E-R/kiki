@@ -342,7 +342,7 @@ disallowedTools:
 | `preferred_models` | 否 | **软**模型推荐。选另一个可执行且满足硬规则的模型时继续运行，并记录结构化 `model_not_preferred` advisory（提示性诊断）。不会自动选择模型 |
 | `discouraged_models` | 否 | **软**的不建议模型。选中时继续执行并记录 `model_discouraged` advisory；需要拒绝时用 `deny_models` |
 | `preferred_efforts` | 否 | **软**档位推荐。偏离时继续执行并记录 `effort_not_preferred` advisory；需要拒绝时用 `allowed_efforts` |
-| `model_profiles` | 否 | 按模型定义跑法，只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、上述六个硬 / 软模型列表字段、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。`when` 只出现在派发方工具说明里。Prompt 增量在模型 cognition 之前与角色正文组合；`wrap` 要求 `${parent_prompt}` 或 `${base_prompt}` 恰好一次。原生模型解析不到的 alias 不生效，也不出现在工具说明里。默认值取首个匹配条目；所有匹配条目的硬列表均生效，包括默认值已被 lease 替换的原条目 |
+| `model_profiles` | 否 | 按模型定义跑法，只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、上述六个硬 / 软模型列表字段、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget`、`auto_compact`、`context_strategy` 与 `max_completion_tokens`。`when` 只出现在派发方工具说明里。Prompt 增量在模型 cognition 之前与角色正文组合；`wrap` 要求 `${parent_prompt}` 或 `${base_prompt}` 恰好一次。原生模型解析不到的 alias 不生效，也不出现在工具说明里。默认值取首个匹配条目；所有匹配条目的硬列表均生效，包括默认值已被 lease 替换的原条目 |
 | `recipe` | 否 | 已安装 Recipe 的 id（可加 `installation:` 前缀），或本地 Recipe 文件 / 包目录。相对路径按本 profile 文件所在目录解析。只为该 profile 的原生绑定贡献提示和模型设置，位于模型 Recipe 之后、profile 显式值之前；`off` 撤回本 profile 的贡献。本地路径在绑定时直接读取，不安装。URL 包仍先预览并安装；绑定时不下载。直接引用的文件若带脚本 hooks，仍须安装确认。见 [Recipe 模型配方](./prompt-fields.md#recipe-模型配方) |
 | `prompt_overrides` | 否 | 该 profile 的提示词字段覆写，可含 `files` 与 `fields`。此层覆盖全局与模型值；匹配的 `model_profiles[].prompt_overrides` 条目再覆盖它。详见 [`prompt`](../configuration/config-files.md#prompt) |
 | `system_prompt_mode` | 否 | 提示词正文模式：`replace`（默认）、`prepend`、`append` 或 `inherit`。`inherit` 要求正文为空且 `prompt_overrides` 非空；它保留下层同名 profile 定义，并应用本文件的字段覆写 |
@@ -350,6 +350,7 @@ disallowedTools:
 | `request_params` | 否 | 附加请求参数，标量 map（值只允许字符串 / 数字 / 布尔值），该子 Agent 的每个请求都会携带。OpenAI 系协议展开进请求体（Kimi 经 `extra_body`），不会覆盖引擎生成的字段；Anthropic 协议静默忽略；与 `service_tier` 等一等字段冲突时一等字段优先。键名原样发送，provider 可能拒绝它不认识的键。`kimi` provider 的 typed 参数（如 `temperature`、`top_p`）写在这里——只有底层模型真正支持时才传 |
 | `context_budget` | 否 | 该 profile 的上下文窗口 token 上限。仅作为上限声明，不得超过所绑定模型的 `max_context_size`。生效值取所有声明层的最小值；只能缩小预算，不能放大到超过模型真实 capacity |
 | `auto_compact` | 否 | 自动压缩点，写正整数 token；匹配的 `model_profiles` 条目也可单独设置。优先于模型和全局默认值，但不会覆盖该 Agent 按模型保存的会话覆写。这是软目标，不是窗口上限 |
+| `context_strategy` | 否 | 自动压缩策略（`auto`、`summarize` 或 `fresh`）；匹配的 `model_profiles` 条目也可单独设置。优先于模型和全局默认值，但不会覆盖主 Agent 的会话覆写；外部执行器始终固定为 `summarize` |
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省、单独的 `*`、以及 `*` 与具体名字并列表，都不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效：点名某个工具，就是为该档案作为子智能体时显式开放它，因此 `tools: ["*", ThreadRead]` 保留普通工具并额外加入 `ThreadRead`，而只写 `*` 不会开放任何 opt-in；有限名单仍然有限。服务端 `subagent.allowed_tools` 点名的工具，只有在本名单也选中它时才对该档案开放，因此写了有限 `tools` 名单的档案会挡住自己没列出的工具；没写名单（或写了 `*`）的档案，则对该项开放到的工具都是开放的。`disallowedTools` 仍能禁用这两处开放中的任意一个 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
@@ -367,7 +368,7 @@ disallowedTools:
 
 原来的作者字段 `subagents`、`subagent_policy` 和宿主设置 `main_dispatch_policy`、`subagent_dispatch_policy` 已移除。只用于建议的角色名移到 `preferred_subagents`，真正的预设边界移到 `allowed_subagents` / `deny_subagents`，原来的叶子角色改用 `can_spawn_subagents: false`；source 与 lease mapping 仍放在 `allowed_subagents` 下。已保存的绑定会升级，不改变角色、模型、提示词或来源快照。结构化编辑保留你没有提到的字段，`null` 删除本地声明，`[]` 写入显式空列表。
 
-`model_profiles` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `alias`；`when` 与其他字段全部可选。命中条目的 `auto_compact` 优先于 profile 顶层值；两处都只写整数 token，不接受百分比。示例：
+`model_profiles` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `alias`；`when` 与其他字段全部可选。命中条目的 `auto_compact` 和 `context_strategy` 优先于 profile 顶层值（`auto_compact` 两处都只写整数 token，不接受百分比）。示例：
 
 ```yaml
 model_profiles:

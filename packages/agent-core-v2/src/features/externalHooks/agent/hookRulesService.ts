@@ -35,6 +35,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   private readonly providers = this._register(new DisposableStore());
   private readonly context: IAgentContextMemoryService;
   private readonly fullCompaction: IAgentFullCompactionService;
+  private readonly pendingCompactReceipts = new WeakMap<AbortController, () => void>();
   private providerRevision = '';
   private stepEvent?: HookEvent;
   private stepInjectionActive = false;
@@ -96,18 +97,20 @@ export class AgentHookRules extends Service implements IAgentHookRules {
             bindingRevision: hookHash(binding), ...binding, hookDepth: 0, isReplay: false,
             allowedActions: ['compact'], outcome: rule.rule.event === 'step.after' ? 'completed' : undefined,
           };
-          if (rule.namespace.startsWith('plugin/') && snapshot.rules.find((current) => current.id === rule.id)?.active !== true) continue;
-          if (!matchesHook(rule, event)) continue;
-          if (event.executorId !== undefined && event.executorId !== 'native') continue;
+          const receipt = this.receipt(rule, event);
+          if (receipt === undefined) continue;
           if (!evaluateCompactWindow(this.context.get(), rule.rule.action)) continue;
           task.requestedStrategy = rule.rule.action.strategy;
-          const receipt = this.receipt(rule, event);
-          if (receipt !== undefined) this.observeRule(rule, event, receipt);
+          this.pendingCompactReceipts.set(task.abortController, () => this.observeRule(rule, event, receipt));
           break;
         }
       }
       await next();
     }));
+    this._register(this.fullCompaction.hooks.onDidCommit?.register('hook-rules', async (task, next) => {
+      this.commitCompactReceipt(task.abortController);
+      await next();
+    }) ?? { dispose() {} });
     this._register(bus.subscribe(TurnEnded, (event) => {
       void this.event('turn.after', `turn/${event.turnId}/after`, { turnId: event.turnId, outcome: event.reason }).then(({ event: hookEvent, snapshot }) => { this.observe(hookEvent, snapshot); });
     }));
@@ -240,21 +243,32 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       const receipt = this.receipt(rule, event);
       if (receipt === undefined) continue;
       if (!evaluateCompactWindow(this.context.get(), rule.rule.action)) continue;
-      this.observeRule(rule, event, receipt);
-      try {
-        if (this.fullCompaction.begin({ source: 'auto', strategy: rule.rule.action.strategy })) {
-          const active = this.fullCompaction.compacting;
-          if (active !== null) {
-            signal?.addEventListener('abort', () => active.abortController.abort(), { once: true });
-            await active.promise;
-          }
-        }
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        this.log.warn('hook compact action failed; continuing step', { hookId: rule.id, error });
+      if (!this.fullCompaction.begin({ source: 'auto', strategy: rule.rule.action.strategy })) return;
+      const active = this.fullCompaction.compacting;
+      if (active === null) {
+        this.observeRule(rule, event, receipt);
+        return;
       }
+      this.pendingCompactReceipts.set(active.abortController, () => this.observeRule(rule, event, receipt));
+      const onAbort = () => {
+        if (this.fullCompaction.compacting === active) active.abortController.abort();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        await active.promise;
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+      }
+      this.commitCompactReceipt(active.abortController);
       return;
     }
+  }
+
+  private commitCompactReceipt(controller: AbortController): void {
+    const complete = this.pendingCompactReceipts.get(controller);
+    if (complete === undefined) return;
+    this.pendingCompactReceipts.delete(controller);
+    complete();
   }
 
   private receipt(rule: EffectiveHookRule, event: HookEvent): HookReceipt | undefined {

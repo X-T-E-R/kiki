@@ -361,6 +361,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `request_params` | `table` | 否 | 合并进该模型每次请求的额外请求参数（如 `temperature`、`top_p`）；取值可为字符串、数字或布尔值。跨层时按键合并 |
 | `context_budget` | `integer` | 否 | 该模型有效上下文窗口的 token 上限；不会超过模型真实容量。跨层取最小值 |
 | `auto_compact` | `integer` | 否 | 该模型的自动压缩点，写绝对 token 数。profile 或会话层的值优先；不改变模型窗口上限。该字段也可写在本模型的 `overrides` 表中 |
+| `context_strategy` | `string` | 否 | 该模型的自动压缩策略：`auto`、`summarize` 或 `fresh`。profile 或会话层的值优先；省略时继承全局策略。该字段也可写在本模型的 `overrides` 表中 |
 | `max_completion_tokens` | `integer` | 否 | 单次请求补全 token 的上限。跨层取最小值，且受模型输出上限约束 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
 | `protocol` | `string` | 否 | 此模型的请求格式：`anthropic`、`openai`、`openai_responses` 或 `google-genai`。解析顺序是该字段，然后是本身属于这四值之一的供应商类型，最后是厂商基座格式。与供应商类型不同是合法的网关选择。不接受写入 `overrides`；写在那里会给出警告且不会生效 |
@@ -438,7 +439,7 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时给出警告，且不会改到模型；请写在模型自身上。模型设置页会标出这条警告，并显示有效格式、端点和凭据来自模型、提供商还是环境变量，不显示密钥或端点地址。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
+`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact`、`context_strategy` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时给出警告，且不会改到模型；请写在模型自身上。模型设置页会标出这条警告，并显示有效格式、端点和凭据来自模型、提供商还是环境变量，不显示密钥或端点地址。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
 Recipe 可以覆盖支持的模型提示词与生成参数，但不改变模型的提供商、请求格式、端点或凭据。Recipe 中的路由字段会被拒绝；请把这些字段写在模型自身上。通过程序传入的模型设置覆盖也遵循这一规则，包括嵌套在 `overrides` 中的路由字段。
 
@@ -610,11 +611,13 @@ confirm = false
 | `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考文本、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
+| `context_strategy` | `string` | `"auto"` | 主 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
+| `subagent_context_strategy` | `string` | `"auto"` | 当 profile 与模型均未指定 `context_strategy` 时，子 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
 | `compaction_soft_context_size` | `integer` | `0` | 旧版绝对 token 上限，仅在各层都没有设置 `auto_compact` 时使用 |
 | `compaction_max_attempts` | `integer` | `3` | 压缩失败后的最大总请求次数（含首次请求）；所有恢复路径共用这份预算 |
 
-会话按模型保存的 token 覆写优先，其次为命中的 `model_profiles` 条目、profile 顶层、模型别名，最后才是全局百分比。没有任何新 `auto_compact` 时，沿用旧阈值：`min(0.85 × 可用窗口, 可用窗口 − 50000, 正值 compaction_soft_context_size)`；显式旧比例替换 0.85。保存全局新值时，会按当前模型把 token 数换算成百分比，并删除旧比例和绝对 token 上限键；换算后无法保证其他窗口大小不同的模型仍保持旧绝对上限。新阈值在下一个模型 step 前生效，不会立即压缩。用 `/autocompact` 查看当前会话的生效值。
+会话按模型保存的 token 覆写优先，其次为命中的 `model_profiles` 条目、profile 顶层、模型别名，最后才是全局百分比。压缩策略在主 Agent 上按同一优先级解析（会话覆写、命中的 `model_profiles` 条目、profile 顶层、模型别名、全局 `loop_control.context_strategy`），在子 Agent 上按命中的 `model_profiles` 条目、profile 顶层、模型别名、全局 `loop_control.subagent_context_strategy` 解析；外部执行器始终固定为 `summarize`。没有任何新 `auto_compact` 时，沿用旧阈值：`min(0.85 × 可用窗口, 可用窗口 − 50000, 正值 compaction_soft_context_size)`；显式旧比例替换 0.85。保存全局新值时，会按当前模型把 token 数换算成百分比，并删除旧比例和绝对 token 上限键；换算后无法保证其他窗口大小不同的模型仍保持旧绝对上限。新阈值在下一个模型 step 前生效，不会立即压缩。用 `/autocompact` 查看当前会话的生效值。
 
 `max_steps_per_turn` 可被环境变量 `KIKI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 

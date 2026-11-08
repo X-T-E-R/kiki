@@ -36,7 +36,7 @@ text = "继续前核对目标、已有证据和下一步。"
 
 一步指一次模型响应连同其全部工具结果已提交，不是一次工具调用。完成五步后，提醒会在下一次模型请求前注入；若第五步恰好结束了本轮，它会等该模型的下一个请求，不会为此新开一轮。计数按 Agent 和模型规范身份分别记录，A → B → A 仍保留 A 的计数，`counter_scope = "turn"` 则在新轮次清零。恢复、压缩和 undo 既不倒拨计数也不重放提醒；改 matcher 或节拍会从零开始新计数，只改文本则在下一个到期点用新文本。
 
-目前只有 `inject` 和 `observe` 两种动作。`inject` 用于 `step.before` 和 `prompt.submit`；`observe` 除这两个事件外还支持 `step.after`、`tool.before`、`tool.after`、`turn.stopping`、`turn.after` 和 `session.start`，只记录元数据。节拍仅适用于 step 事件。写 `command`、`block`、`gate` 或 `continue` 会在加载时被拒绝，它们属于下文的 legacy 协议。
+声明式规则支持 `inject`、`observe` 和 `compact` 三种动作。`inject` 用于 `step.before` 和 `prompt.submit`；`observe` 除这两个事件外还支持 `step.after`、`tool.before`、`tool.after`、`turn.stopping`、`turn.after` 和 `session.start`，只记录元数据；`compact` 用于 `step.before` 和 `step.after`（不与 `cadence` 混用），当距上次压缩以来的当前窗口满足 `min_completed_steps`、`min_read_calls`、`min_read_chars` 和 `max_write_calls`（默认 `0`）且生效压缩策略未显式固定为 `"fresh"` 时，按 `strategy`（`"summarize"` 或 `"relay"`）在每个 `counter_scope`（默认 `"turn"`，可选 `"agent"`）最多触发一次压缩。节拍仅适用于 step 事件上的 `inject` 和 `observe`。写 `command`、`block`、`gate` 或 `continue` 会在加载时被拒绝，它们属于下文的 legacy 协议。
 
 ### 来源与匹配
 

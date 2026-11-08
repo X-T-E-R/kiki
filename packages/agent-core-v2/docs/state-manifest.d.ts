@@ -2783,6 +2783,7 @@ export interface AgentStateSnapshot {
       readonly reservedContextSize: number | undefined;
       readonly globalAutoCompact?: string;
       readonly modelAutoCompact?: number;
+      readonly modelContextStrategy?: 'auto' | 'summarize' | 'fresh';
       readonly profileAutoCompact?: number;
       readonly sessionAutoCompact?: number;
       readonly compactionTriggerRatio: number | undefined;

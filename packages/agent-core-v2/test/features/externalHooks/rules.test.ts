@@ -31,6 +31,7 @@ import { IAgentCommandService } from '#/agent/command/agentCommand';
 import { IEventBus } from '#/app/event/eventBus';
 import { HookResult } from '#/features/externalHooks/agent/agentExternalHooksService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { parseManifest } from '#/app/plugin/manifest';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -793,14 +794,16 @@ describe('hooks v2 completed-step engine contract', () => {
 
     const subagent = agentWithRules(currentSnapshot, (_event, id) => observedHooks.push(id), 'sub-1320');
     const mockModel = subagent.kimiConfig.models!['mock-model']!;
-    subagent.kimiConfig = {
-      ...subagent.kimiConfig,
-      models: {
-        ...subagent.kimiConfig.models,
-        'axon-message/gemini-4-argon': { ...mockModel, model: 'gemini-4-argon' },
-      },
+    const baseModel = {
+      ...mockModel,
+      capabilities: mockModel.capabilities ? [...mockModel.capabilities] : undefined,
+      supportEfforts: mockModel.supportEfforts ? [...mockModel.supportEfforts] : undefined,
     };
-    subagent.get(IModelService).loadAll(subagent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+    const argonModels = {
+      'mock-model': baseModel,
+      'axon-message/gemini-4-argon': { ...baseModel, model: 'gemini-4-argon' },
+    };
+    subagent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
     await subagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
 
     const committedStrategies: Array<'summarize' | 'relay' | undefined> = [];
@@ -828,11 +831,22 @@ describe('hooks v2 completed-step engine contract', () => {
     await turn(subagent, 'Follow-up step');
     expect(observedHooks).toHaveLength(1);
 
+    const thresholdHooks: string[] = [];
+    const thresholdAgent = agentWithRules(currentSnapshot, (_event, id) => thresholdHooks.push(id), 'sub-threshold');
+    thresholdAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
+    await thresholdAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    seedReadHeavyWindow(thresholdAgent, { steps: 16, reads: 40, charsPerRead: 10_000 });
+    thresholdAgent.mockNextResponse({ type: 'text', text: 'Synthesized summary at 16-step 40-read 400k threshold.' });
+    thresholdAgent.mockNextResponse({ type: 'text', text: 'Continued after threshold summary.' });
+    await thresholdAgent.rpc.prompt({ input: [{ type: 'text', text: 'Continue at threshold' }] });
+    await thresholdAgent.untilTurnEnd();
+    expect(thresholdHooks).toEqual(['plugin/argon-error-recovery/early-read-summarize']);
+    expect(thresholdAgent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary')).toBe(true);
+
     pluginEnabled = false;
     const disabledHooks: string[] = [];
     const disabledSubagent = agentWithRules(currentSnapshot, (_event, id) => disabledHooks.push(id), 'sub-disabled');
-    disabledSubagent.kimiConfig = subagent.kimiConfig;
-    disabledSubagent.get(IModelService).loadAll(disabledSubagent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+    disabledSubagent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
     await disabledSubagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
     seedReadHeavyWindow(disabledSubagent, { steps: 67, reads: 196, charsPerRead: 13_500 });
     await turn(disabledSubagent, 'Continue with plugin disabled');
@@ -844,14 +858,10 @@ describe('hooks v2 completed-step engine contract', () => {
       ['short task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 6, reads: 10, charsPerRead: 2_000 })],
       ['editing task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000, includeEdit: true })],
       ['explicit fresh model strategy', (ctx: TestAgentContext) => {
-        ctx.kimiConfig = {
-          ...ctx.kimiConfig,
-          models: {
-            ...ctx.kimiConfig.models,
-            'axon-message/gemini-4-argon': { ...mockModel, model: 'gemini-4-argon', contextStrategy: 'fresh' },
-          },
-        };
-        ctx.get(IModelService).loadAll(ctx.kimiConfig.models!, 'axon-message/gemini-4-argon');
+        ctx.get(IModelService).loadAll({
+          ...argonModels,
+          'axon-message/gemini-4-argon': { ...baseModel, model: 'gemini-4-argon', contextStrategy: 'fresh' },
+        }, 'axon-message/gemini-4-argon');
         seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000 });
       }],
       ['other model', async (ctx: TestAgentContext) => {
@@ -861,8 +871,7 @@ describe('hooks v2 completed-step engine contract', () => {
     ] as const) {
       const negHooks: string[] = [];
       const negAgent = agentWithRules(currentSnapshot, (_event, id) => negHooks.push(id), `sub-${label}`);
-      negAgent.kimiConfig = subagent.kimiConfig;
-      negAgent.get(IModelService).loadAll(negAgent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+      negAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
       await negAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
       await setup(negAgent);
       expect(negAgent.get(IAgentFullCompactionService).isCompacting(), label).toBe(false);
@@ -870,5 +879,56 @@ describe('hooks v2 completed-step engine contract', () => {
       expect(negHooks, label).toEqual([]);
       expect(negAgent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary'), label).toBe(false);
     }
+
+    const budgetHooks: string[] = [];
+    const budgetAgent = agentWithRules(currentSnapshot, (_event, id) => budgetHooks.push(id), 'sub-budget');
+    budgetAgent.get(IModelService).loadAll(argonModels, 'axon-message/gemini-4-argon');
+    await budgetAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    seedReadHeavyWindow(budgetAgent, { steps: 16, reads: 40, charsPerRead: 10_000 });
+    const budgetCompaction = budgetAgent.get(IAgentFullCompactionService);
+    const beginSpy = vi.spyOn(budgetCompaction, 'begin').mockReturnValue(false);
+    await turn(budgetAgent, 'Step while begin returns false');
+    expect(budgetHooks).toEqual([]);
+    expect(budgetAgent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary')).toBe(false);
+    beginSpy.mockRestore();
+
+    const requester = budgetAgent.get(IAgentLLMRequesterService);
+    const originalStart = requester.start.bind(requester);
+    let failCompactionRequestOnce = true;
+    const startSpy = vi.spyOn(requester, 'start').mockImplementation((request, onPart, signal) => {
+      if (failCompactionRequestOnce && request?.source?.type === 'operation' && request.source.requestKind === 'full_compaction') {
+        failCompactionRequestOnce = false;
+        const rejected = Promise.reject(new Error('summary provider failure'));
+        void rejected.catch(() => undefined);
+        return { trace: { traceId: 'trace-fail' } as ReturnType<typeof requester.start>['trace'], result: rejected };
+      }
+      return originalStart(request, onPart, signal);
+    });
+    await turn(budgetAgent, 'Step hitting COMPACTION_FAILED');
+    startSpy.mockRestore();
+    expect(budgetCompaction.isCompacting()).toBe(false);
+    expect(budgetHooks).toEqual([]);
+    expect(budgetAgent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary')).toBe(false);
+
+    const dispatcher = budgetAgent.get(IEventDispatcher);
+    const originalFlush = dispatcher.flush.bind(dispatcher);
+    let blockCommitFlush = true;
+    const flushSpy = vi.spyOn(dispatcher, 'flush').mockImplementation(async () => {
+      if (blockCommitFlush && (budgetCompaction.compacting as { readonly phase?: string } | null)?.phase === 'committing') {
+        throw new Error('disk full');
+      }
+      return originalFlush();
+    });
+    budgetAgent.mockNextResponse({ type: 'text', text: 'Summary prepared before persist failure.' });
+    await turn(budgetAgent, 'Step hitting persistBlocked');
+    blockCommitFlush = false;
+    flushSpy.mockRestore();
+    expect(budgetCompaction.isCompacting()).toBe(true);
+    expect(budgetHooks).toEqual([]);
+
+    expect(budgetCompaction.begin({ source: 'auto', strategy: 'summarize' })).toBe(true);
+    await budgetCompaction.compacting?.promise;
+    expect(budgetCompaction.isCompacting()).toBe(false);
+    expect(budgetHooks).toEqual(['plugin/argon-error-recovery/early-read-summarize']);
   });
 });
