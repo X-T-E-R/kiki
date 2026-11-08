@@ -1610,11 +1610,30 @@ describe('AgentTaskService', () => {
     expect(forceStop).toHaveBeenCalledTimes(path === 'lifecycle' ? 1 : 2);
   });
 
-  it('reproduces the timed_out plus cleanupPending race and retries cleanup via stop until confirmed', async () => {
+  it('reproduces the timed_out plus cleanupPending race during commitTerminal and publishes verified receipt and notification only once after retry', async () => {
     stubTaskConfig({ killGracePeriodMs: 0 });
-    ix.stub(IAtomicDocumentStore, mapBackedDocs());
-    ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+    const docs = mapBackedDocs();
+    let releaseReceiptWrite!: () => void;
+    let blockNextReceiptWrite = false;
+    const baseSet = docs.set.bind(docs);
+    docs.set = async (scope, key, value) => {
+      if (blockNextReceiptWrite && (value as { receipt?: unknown } | null)?.receipt !== undefined) {
+        blockNextReceiptWrite = false;
+        await new Promise<void>((resolve) => { releaseReceiptWrite = resolve; });
+      }
+      await baseSet(scope, key, value);
+    };
+    const bytes = new InMemoryStorageService();
+    ix.stub(IAtomicDocumentStore, docs);
+    ix.stub(IFileSystemStorageService, bytes);
     const service = ix.get(IAgentTaskService);
+    const persistence = new AgentTaskPersistence(
+      '/tmp/test-session',
+      'sessions/test-ws/test-session/agents/main',
+      docs,
+      bytes,
+    );
+    const loop = ix.get(IAgentLoopService) as StubLoop;
     const error = new HostProcessError('os.process.kill_failed', 'Windows process helper did not confirm cleanup before its deadline.', {
       details: { cleanupComplete: false, phase: 'deadline', pid: 67460 },
     });
@@ -1631,6 +1650,7 @@ describe('AgentTaskService', () => {
       .mockResolvedValueOnce(undefined)
       .mockReturnValueOnce(lifecycleDispose)
       .mockResolvedValue(undefined);
+    const release = vi.fn();
     const proc = {
       stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
       stdout: Readable.from(['> tsc -p tsconfig.json --noEmit\n']),
@@ -1642,12 +1662,17 @@ describe('AgentTaskService', () => {
       dispose,
     } as unknown as IHostProcess;
 
-    const taskId = service.registerTask(new ProcessTask(proc, 'pnpm --filter @kiki/kap-server typecheck', 'typecheck'), { timeoutMs: 1 });
-    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    blockNextReceiptWrite = true;
+    const taskId = service.registerTask(new ProcessTask(proc, 'pnpm --filter @kiki/kap-server typecheck', 'typecheck', undefined, release), { timeoutMs: 1 });
+    const waitPromise = service.wait(taskId, 5_000);
+    await vi.waitFor(() => expect(releaseReceiptWrite).toBeTypeOf('function'));
     resolveWait(1);
     await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
     rejectLifecycleDispose(error);
     await vi.waitFor(() => expect(service.getTask(taskId)?.cleanupPending).toBe(true));
+
+    releaseReceiptWrite();
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(service.getTask(taskId)).toMatchObject({
       taskId,
@@ -1659,6 +1684,25 @@ describe('AgentTaskService', () => {
       receiptVerification: 'invalid',
       stopReason: expect.stringContaining('Windows process helper did not confirm cleanup before its deadline.'),
     });
+    expect(await persistence.readTask(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    expect(loop.queue.hasPendingRequests()).toBe(false);
+    expect(await service.wait(taskId, 0)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    let waitSettled = false;
+    void waitPromise.then(() => { waitSettled = true; });
+    await Promise.resolve();
+    expect(waitSettled).toBe(false);
     expect(service.list(true).map((info) => info.taskId)).toContain(taskId);
     expect(service.hasUnfinishedWork()).toBe(true);
 
@@ -1672,8 +1716,15 @@ describe('AgentTaskService', () => {
       receipt: undefined,
       receiptVerification: 'invalid',
     });
-    expect(service.list(true).map((info) => info.taskId)).toContain(taskId);
-    expect(service.hasUnfinishedWork()).toBe(true);
+    expect(await persistence.readTask(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    expect(loop.queue.hasPendingRequests()).toBe(false);
+    expect(waitSettled).toBe(false);
 
     const settled = await service.stop(taskId, 'second retry');
     expect(settled).toMatchObject({
@@ -1684,7 +1735,13 @@ describe('AgentTaskService', () => {
       receiptVerification: 'verified',
       stopReason: 'second retry',
     });
-    expect(service.list(true).map((info) => info.taskId)).not.toContain(taskId);
+    expect(await waitPromise).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+      stopReason: 'second retry',
+    });
     expect(await service.getTaskSnapshot(taskId)).toMatchObject({
       taskId,
       status: 'timed_out',
@@ -1692,6 +1749,23 @@ describe('AgentTaskService', () => {
       receiptVerification: 'verified',
       stopReason: 'second retry',
     });
+    expect(await persistence.readTask(taskId)).toMatchObject({
+      taskId,
+      status: 'timed_out',
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+      stopReason: 'second retry',
+    });
+    await vi.waitFor(() => expect(loop.queue.hasPendingRequests()).toBe(true));
+    loop.drainNextBatch(ix.get(IAgentContextMemoryService));
+    await runWillBeginStepHooks(loop);
+    await ix.get(IEventDispatcher).flush();
+    const notifications = ix.get(IAgentContextMemoryService).get().filter((message) =>
+      (message.origin as TaskOrigin | undefined)?.kind === 'task' &&
+      (message.origin as TaskOrigin | undefined)?.taskId === taskId);
+    expect(notifications).toHaveLength(1);
+    expect(service.list(true).map((info) => info.taskId)).not.toContain(taskId);
+    expect(release).toHaveBeenCalledTimes(1);
 
     const callsAfterSettle = kill.mock.calls.length;
     const idempotent = await service.stop(taskId, 'later stop');
@@ -1702,6 +1776,135 @@ describe('AgentTaskService', () => {
       receiptVerification: 'verified',
     });
     expect(kill).toHaveBeenCalledTimes(callsAfterSettle);
+    expect(loop.queue.hasPendingRequests()).toBe(false);
+  });
+
+  it('prevents checkpointExecutionWait and restoreExecutionWait from certifying cleanupPending tasks and reuses confirmed forceStop when initial stopPromise rejects', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    ix.stub(IAtomicDocumentStore, docs);
+    ix.stub(IFileSystemStorageService, bytes);
+    const service = ix.get(IAgentTaskService);
+    const persistence = new AgentTaskPersistence(
+      '/tmp/test-session',
+      'sessions/test-ws/test-session/agents/main',
+      docs,
+      bytes,
+    );
+    const error = new HostProcessError('os.process.kill_failed', 'Windows process helper did not confirm cleanup before its deadline.', {
+      details: { cleanupComplete: false, phase: 'deadline', pid: 67460 },
+    });
+
+    let resolveWait!: (code: number) => void;
+    const wait = new Promise<number>((resolve) => { resolveWait = resolve; });
+    let rejectInitialKill!: (reason: unknown) => void;
+    const initialKill = new Promise<void>((_resolve, reject) => { rejectInitialKill = reject; });
+    const kill = vi.fn<() => Promise<void>>()
+      .mockReturnValueOnce(initialKill)
+      .mockResolvedValueOnce(undefined);
+    const dispose = vi.fn(async () => {});
+    const proc = {
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from(['> tsc -p tsconfig.json --noEmit\n']),
+      stderr: Readable.from([]),
+      pid: 67460,
+      exitCode: 1,
+      wait: () => wait,
+      kill,
+      dispose,
+    } as unknown as IHostProcess;
+
+    const reusedTaskId = service.registerTask(new ProcessTask(proc, 'pnpm --filter @kiki/kap-server typecheck', 'reused stop confirmation'), { timeoutMs: 1 });
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    resolveWait(1);
+    rejectInitialKill(error);
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
+    expect(service.getTask(reusedTaskId)).toMatchObject({
+      taskId: reusedTaskId,
+      status: 'timed_out',
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+    });
+
+    let resolvePendingWait!: (code: number) => void;
+    const pendingWait = new Promise<number>((resolve) => { resolvePendingWait = resolve; });
+    let rejectPendingDispose!: (reason: unknown) => void;
+    const pendingDispose = new Promise<void>((_resolve, reject) => { rejectPendingDispose = reject; });
+    const pendingProc = {
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from(['partial output\n']),
+      stderr: Readable.from([]),
+      pid: 67460,
+      exitCode: 1,
+      wait: () => pendingWait,
+      kill: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+      dispose: vi.fn<() => Promise<void>>()
+        .mockResolvedValueOnce(undefined)
+        .mockReturnValueOnce(pendingDispose)
+        .mockResolvedValue(undefined),
+    } as unknown as IHostProcess;
+
+    const livePendingId = service.registerTask(new ProcessTask(pendingProc, 'pnpm --filter @kiki/kap-server typecheck', 'live pending'), { timeoutMs: 1 });
+    await vi.waitFor(() => expect(pendingProc.dispose).toHaveBeenCalledTimes(1));
+    resolvePendingWait(1);
+    await vi.waitFor(() => expect(pendingProc.dispose).toHaveBeenCalledTimes(2));
+    rejectPendingDispose(error);
+    await vi.waitFor(() => expect(service.getTask(livePendingId)?.cleanupPending).toBe(true));
+
+    await service.checkpointExecutionWait!(livePendingId);
+    expect(service.getTask(livePendingId)).toMatchObject({
+      taskId: livePendingId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    expect(await persistence.readTask(livePendingId)).toMatchObject({
+      taskId: livePendingId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+
+    const ghostPendingId = 'agent-cd8my91y';
+    await persistence.writeTask({
+      taskId: ghostPendingId,
+      description: 'ghost cleanup pending',
+      status: 'timed_out',
+      detached: true,
+      startedAt: 1_794_163_427_162,
+      endedAt: 1_794_163_612_175,
+      stopReason: 'Task cleanup is unconfirmed',
+      cleanupPending: true,
+      receiptVerification: 'invalid',
+      kind: 'agent',
+      agentId: 'agent-child',
+    });
+    await (service as TaskServiceTestManager).loadFromDisk();
+    await service.checkpointExecutionWait!(ghostPendingId);
+    expect(service.getTask(ghostPendingId)).toMatchObject({
+      taskId: ghostPendingId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+    expect(await persistence.readTask(ghostPendingId)).toMatchObject({
+      taskId: ghostPendingId,
+      status: 'timed_out',
+      cleanupPending: true,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+
+    const freshIx = buildAgentIx('main', docs, bytes);
+    const freshService = freshIx.get(IAgentTaskService);
+    await expect(freshService.restoreExecutionWait!(ghostPendingId)).rejects.toThrow(
+      'The original execution wait result is unavailable',
+    );
+    await service.stop(livePendingId, 'confirm cleanup');
   });
 
   it('does not publish a parent terminal when a descendant cleanup fails', async () => {

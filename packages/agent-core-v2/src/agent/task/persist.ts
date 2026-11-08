@@ -376,6 +376,7 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     startedAt: record.startedAt,
     endedAt: record.endedAt,
     stopReason: record.stopReason,
+    cleanupPending: record.cleanupPending,
     terminalNotificationSuppressed: record.terminalNotificationSuppressed,
     timeoutMs: record.timeoutMs,
     lifetime: record.lifetime,

@@ -27,6 +27,7 @@ export class ProcessTask implements AgentTask {
   readonly idPrefix = 'bash';
   private exitCode: number | null = null;
   private stopPromise: Promise<void> | undefined;
+  private cleanupConfirmed = false;
 
   constructor(
     readonly proc: ProcessHandle,
@@ -70,21 +71,47 @@ export class ProcessTask implements AgentTask {
       };
     } finally {
       sink.signal.removeEventListener('abort', requestStop);
+      let stopError: unknown;
       try {
         await this.stopPromise;
+      } catch (error) {
+        stopError = error;
       } finally {
-        await this.disposeProcess();
+        this.stopPromise = undefined;
+      }
+      if (stopError !== undefined) {
+        if (!this.cleanupConfirmed) throw stopError;
+        try {
+          await this.disposeProcess();
+        } catch (error) {
+          this.cleanupConfirmed = false;
+          throw error;
+        }
+      } else {
+        try {
+          await this.disposeProcess();
+          this.cleanupConfirmed = true;
+        } catch (error) {
+          this.cleanupConfirmed = false;
+          throw error;
+        }
       }
     }
     await sink.settle(settlement);
   }
 
   async forceStop(): Promise<void> {
+    if (this.cleanupConfirmed) return;
     if (this.proc.exitCode === null || process.platform === 'win32') {
-      this.stopPromise = this.proc.kill('SIGKILL');
-      await this.stopPromise;
+      try {
+        this.stopPromise = this.proc.kill('SIGKILL');
+        await this.stopPromise;
+      } finally {
+        this.stopPromise = undefined;
+      }
     }
     await this.disposeProcess();
+    this.cleanupConfirmed = true;
   }
 
   toInfo(base: AgentTaskInfoBase): ProcessTaskInfo {

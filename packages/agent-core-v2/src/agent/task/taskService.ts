@@ -182,6 +182,7 @@ interface ManagedTask extends BufferedTaskOutput {
   stopping?: Promise<AgentTaskInfo | undefined>;
   stopCleanup?: Promise<void>;
   cleanupFailure?: unknown;
+  cleanupGeneration: number;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
@@ -512,6 +513,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
       lifecyclePromise: Promise.resolve(),
+      cleanupGeneration: 0,
       persistWriteQueue: Promise.resolve(),
       outputWriteQueue: Promise.resolve(),
       pendingOutput: [],
@@ -679,6 +681,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
       lifecyclePromise: Promise.resolve(),
+      cleanupGeneration: 0,
       persistWriteQueue: Promise.resolve(),
       outputWriteQueue: Promise.resolve(),
       pendingOutput: [],
@@ -845,7 +848,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const saved = await this.persistence.readTask(taskId);
     if (this.restoreDisposed || this.tasks.has(taskId)) return;
     const projected = this.ghosts.get(taskId);
-    if (saved?.kind !== 'agent' || saved.taskId !== taskId ||
+    if (saved?.kind !== 'agent' || saved.taskId !== taskId || saved.cleanupPending === true ||
         (TERMINAL_STATUSES.has(saved.status) ? saved.receiptVerification !== 'verified'
           : projected !== undefined && TERMINAL_STATUSES.has(projected.status))) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original execution wait result is unavailable');
@@ -859,25 +862,34 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (entry === undefined) {
       const info = this.ghosts.get(taskId);
       if (info === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The task for the execution wait is unavailable');
-      if (TERMINAL_STATUSES.has(info.status) && info.receiptVerification !== 'verified') {
-        const output = info.status === 'completed' ? await this.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER) : undefined;
-        if (output !== undefined && (output.previewBytes === 0 || output.truncated)) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original execution wait result is unavailable');
+      if (TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true) {
+        if (info.receiptVerification !== 'verified') {
+          const output = info.status === 'completed' ? await this.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER) : undefined;
+          if (output !== undefined && (output.previewBytes === 0 || output.truncated)) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original execution wait result is unavailable');
+          }
+          const receipt = await this.persistence.commitTerminalTask(info, output?.preview);
+          this.ghosts.set(taskId, { ...info, receipt, receiptVerification: 'verified' });
         }
-        const receipt = await this.persistence.commitTerminalTask(info, output?.preview);
-        this.ghosts.set(taskId, { ...info, receipt, receiptVerification: 'verified' });
+        return;
       }
+      await this.persistence.writeTask({ ...info, receipt: undefined, receiptVerification: info.endedAt === null ? undefined : 'invalid' });
       return;
     }
     this.startOutputPersist(entry);
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
-      if (entry.receiptVerification !== 'verified') await this.commitTerminal(entry);
-      if (entry.receiptVerification !== 'verified') throw new Error2(ErrorCodes.REQUEST_INVALID, 'The execution wait result could not be saved');
-      return;
+      if (entry.cleanupFailure === undefined && entry.receiptVerification !== 'verified') {
+        await this.commitTerminal(entry);
+      }
+      if (entry.cleanupFailure === undefined) {
+        if (entry.receiptVerification !== 'verified') {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'The execution wait result could not be saved');
+        }
+        return;
+      }
     }
-    const info = this.toInfo(entry);
-    const saved = entry.persistWriteQueue.then(() => this.persistence.writeTask(info));
+    const saved = entry.persistWriteQueue.then(() => this.persistence.writeTask(this.toInfo(entry)));
     entry.persistWriteQueue = saved.catch(() => {});
     await saved;
   }
@@ -1273,6 +1285,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       } else if (entry.status !== 'killed') {
         entry.stopReason = undefined;
       }
+      const foregroundRelease = entry.foregroundRelease;
+      if (this.marksTerminalNotificationSuppressed(entry)) {
+        entry.terminalNotificationSuppressed = true;
+        this.fireWorkChange();
+      }
       if (entry.visible && (this.isDetached(entry) || entry.outputPersistStarted ||
         (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
         await this.commitTerminal(entry);
@@ -1281,6 +1298,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
       }
       this.fireTerminalEffects(entry);
+      foregroundRelease?.resolve('terminal');
       this.resolveWaiters(entry);
       void this.archiveTask(entry).catch((error) => {
         this.log.error('task archival failed; retaining execution record', { taskId: entry.taskId, error });
@@ -1301,6 +1319,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
+    entry.cleanupGeneration++;
     entry.cleanupFailure = error;
     if (TERMINAL_STATUSES.has(entry.status)) {
       entry.receipt = undefined;
@@ -1429,7 +1448,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   ): Promise<ForegroundTaskReleaseReason | undefined> {
     const entry = this.tasks.get(taskId);
     if (entry === undefined) return this.localTaskIds.has(taskId) ? 'terminal' : undefined;
-    if (TERMINAL_STATUSES.has(entry.status)) {
+    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
       return 'terminal';
     }
@@ -1442,7 +1461,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       foregroundReleasePromise,
       entry.lifecyclePromise.then(() => 'terminal' as const),
     ]);
-    if (reason === 'terminal') {
+    if (reason === 'terminal' && entry.cleanupFailure === undefined) {
       await entry.persistWriteQueue;
     }
     return reason;
@@ -1559,23 +1578,36 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private persistLive(entry: ManagedTask): Promise<void> {
     if (!entry.visible) return entry.persistWriteQueue;
     const persistence = this.persistence;
-    const info = this.toInfo(entry);
     entry.persistWriteQueue = entry.persistWriteQueue
-      .then(() => persistence.writeTask(info))
+      .then(() => persistence.writeTask(this.toInfo(entry)))
       .catch(() => { });
     return entry.persistWriteQueue;
   }
 
   private async commitTerminal(entry: ManagedTask): Promise<void> {
     const output = entry.outputWriteQueue;
-    const info = this.toInfo(entry);
+    const generation = entry.cleanupGeneration;
     entry.persistWriteQueue = entry.persistWriteQueue.then(async () => {
       await output;
       if (entry.outputPersistFailed) throw new Error('Task output persistence failed');
-      const receipt = await this.persistence.commitTerminalTask(info, entry.finalOutput);
+      if (entry.cleanupFailure !== undefined || entry.cleanupGeneration !== generation) {
+        entry.receipt = undefined;
+        entry.receiptVerification = 'invalid';
+        await this.persistence.writeTask(this.toInfo(entry));
+        return;
+      }
+      const info = this.toInfo(entry);
+      const finalOutput = entry.finalOutput;
+      const receipt = await this.persistence.commitTerminalTask(info, finalOutput);
+      if (entry.cleanupFailure !== undefined || entry.cleanupGeneration !== generation) {
+        entry.receipt = undefined;
+        entry.receiptVerification = 'invalid';
+        await this.persistence.writeTask(this.toInfo(entry));
+        return;
+      }
       entry.receipt = receipt;
       entry.receiptVerification = 'verified';
-      if (entry.finalOutput !== undefined) {
+      if (finalOutput !== undefined) {
         entry.outputPersistStarted = true;
         entry.pendingOutput = [];
         entry.pendingOutputBytes = 0;
@@ -1585,6 +1617,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.log.error('task receipt persistence failed; execution status retained without receipt', {
         taskId: entry.taskId, error,
       });
+      entry.receipt = undefined;
       entry.receiptVerification = 'invalid';
       await this.persistence.writeTask(this.toInfo(entry)).catch((writeError) => {
         this.log.error('task terminal metadata persistence failed', { taskId: entry.taskId, error: writeError });
