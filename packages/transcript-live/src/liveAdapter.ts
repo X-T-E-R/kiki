@@ -480,7 +480,9 @@ export class AgentTranscriptLiveAdapter {
     this.releasedTurnIds.delete(turnId);
     const existing = this.lookups?.turn?.(turnId);
     if (existing !== undefined) {
-      const current = existing.state === 'running' ? existing : { ...existing, state: 'running' as const };
+      const current = existing.state === 'running'
+        ? existing
+        : { ...existing, state: 'running' as const, endedAt: undefined, error: undefined, cancellation: undefined };
       this.currentTurn = current;
       this.currentStep = undefined;
       this.openText = undefined;

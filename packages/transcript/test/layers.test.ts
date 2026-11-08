@@ -2745,6 +2745,69 @@ describe('TranscriptWireAdapter', () => {
     },
   );
 
+  it('keeps an unprompted turn running across step.end(error) while failure recovery continues to the next step', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => transcript.getTurn(turnId),
+      task: (taskId) => transcript.getTask(taskId),
+      todo: (todoId) => transcript.getTodo(todoId),
+      prompt: (promptId) => transcript.getPrompt(promptId),
+    });
+
+    for (const record of [
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason: 'error' },
+        time: 2_000,
+      },
+    ] satisfies readonly TranscriptWireRecord[]) {
+      reducer.apply(adapter.add(record));
+    }
+
+    expect(transcript.getTurn('t0')?.state).toBe('running');
+    expect(transcript.getTurn('t0')?.endedAt).toBeUndefined();
+
+    for (const record of [
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'recovery-1',
+          role: 'user',
+          content: [{ type: 'text', text: '继续' }],
+          origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
+        },
+        delivery: {
+          deliveryId: 'dlv-1',
+          messageId: 'recovery-1',
+          turnId: 0,
+          stepId: 'step-2',
+          step: 2,
+          deliveredAt: new Date(2_500).toISOString(),
+          origin: 'system',
+        },
+        time: 2_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 3_000,
+      },
+    ] satisfies readonly TranscriptWireRecord[]) {
+      reducer.apply(adapter.add(record));
+    }
+
+    expect(transcript.getTurn('t0')?.state).toBe('running');
+    expect(transcript.getTurn('t0')?.endedAt).toBeUndefined();
+    expect(transcript.getTurn('t0')?.error).toBeUndefined();
+    expect(transcript.getTurn('t0')?.cancellation).toBeUndefined();
+  });
+
   it.each([false, true])('deduplicates a projected task notification from its context echo (canonical=%s)', (canonical) => {
     const transcript = replay([
       {
