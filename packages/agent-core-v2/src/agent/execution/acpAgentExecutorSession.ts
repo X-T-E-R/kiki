@@ -901,12 +901,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #reusablePriorState(state: ReturnType<typeof externalStateForGeneration>): boolean {
     if (agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return true;
     if (!this.#stateMatchesDescriptorOrFamily(state) || state.executorId === undefined) return false;
-    const registry = this.context.agent.accessor.get(IAgentExecutorRegistry);
-    const priorDescriptor = registry.get?.(state.executorId);
     return agentExecutorSameFamilyBindingMatches(this.context.binding, state.bindingFingerprint, {
       executorId: state.executorId,
       descriptorRevision: state.descriptorRevision,
-      executorOptions: priorDescriptor?.options,
     });
   }
 
