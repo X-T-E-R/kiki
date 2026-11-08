@@ -131,8 +131,6 @@ export interface IHistoryArchive {
     source?: 'auto' | 'transcript';
     pageSize: number;
     pageToken?: string;
-    fallbackSessionId?: string;
-    fallbackAgentId?: string;
     signal?: AbortSignal;
   }): Promise<HistorySearchPage>;
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
@@ -432,8 +430,6 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
             before: request.before === undefined ? undefined : Date.parse(request.before),
             sort: request.sort, source: request.source, pageSize: request.limit ?? SEARCH_DEFAULT_LIMIT,
             pageToken: cursor?.page ?? (cursor === undefined ? input.cursor : undefined),
-            fallbackSessionId: target.id === this.session.workspaceId ? this.session.sessionId : undefined,
-            fallbackAgentId: target.id === this.session.workspaceId ? this.caller.agentId : undefined,
             signal: context.signal,
           });
           context.signal.throwIfAborted();

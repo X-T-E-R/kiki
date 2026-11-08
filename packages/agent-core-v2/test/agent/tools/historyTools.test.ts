@@ -201,14 +201,14 @@ describe('history tools', () => {
       indexState: { state: 'unavailable', stale: true, degraded: 'search index unavailable' },
       warning: 'search index unavailable',
       fallback: {
-        reason: 'search index unavailable', scope: 'current_session_wire',
+        reason: 'search index unavailable', scope: 'requested_session_wire',
         maxBytes: 2 << 20, maxRecords: 10_000, bytesRead: 123, recordsRead: 4, truncated: false,
       },
       source: 'fallback' as const,
     }));
     const { data } = await run(new HistorySearchTool(source, session, workspaces, caller, sessions), { query: '原话' });
     expect(source.search).toHaveBeenCalledWith(expect.objectContaining({
-      fallbackSessionId: 'current', fallbackAgentId: 'main',
+      sessionId: 'current', agentId: 'main',
     }));
     expect(data.warning).toBe('search index unavailable');
     expect(data.fallback).toMatchObject({ maxBytes: 2 << 20, maxRecords: 10_000, truncated: false });

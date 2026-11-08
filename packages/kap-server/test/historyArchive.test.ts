@@ -101,44 +101,36 @@ describe('history archive', () => {
 
   it('reports unavailable workspace coverage without silently narrowing to the current session', async () => {
     const { archive, readColdSnapshotBounded } = fixture(false, true);
-    const page = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a', pageSize: 8,
-      fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
+    const page = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a', pageSize: 8 }) as HistorySearchPage;
     expect(page).toMatchObject({ items: [], hasMore: false, source: 'index', incomplete: 'index_unavailable' });
     expect(page.coverage).toMatchObject({ complete: false, gaps: ['index_unavailable'] });
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
-    const other = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a', sessionId: 'other', agentId: 'main',
-      pageSize: 8, fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
-    expect(other.items).toEqual([]);
-    expect(readColdSnapshotBounded).not.toHaveBeenCalled();
   });
 
-  it('searches the explicitly requested session and agent with bounded fallback', async () => {
-    const { archive, readColdSnapshotBounded, search } = fixture(false, true);
-    const page = await archive.search({
-      query: '原话', mode: 'terms', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
-      fallbackSessionId: 'current', fallbackAgentId: 'main',
-    }) as HistorySearchPage;
-    expect(search).toHaveBeenCalledOnce();
-    expect(readColdSnapshotBounded).toHaveBeenCalledWith(
-      'current', 'main', expect.objectContaining({ maxBytes: 2 << 20, maxRecords: 10_000 }),
-    );
-    expect(page.warning).toBe('search index unavailable');
-    expect(page.source).toBe('fallback');
-    expect(page.items).toEqual([expect.objectContaining({
-      sessionId: 'current', agentId: 'main', role: 'user', turn: 4,
-    })]);
-    expect(page.fallback).toMatchObject({
-      scope: 'current_session_wire', maxBytes: 2 << 20, maxRecords: 10_000,
-      bytesRead: 1234, recordsRead: 17, truncated: false,
-    });
-    expect(JSON.parse((await archive.readTurn('current', 'main', 4))!).user).toBe('用户压缩前的原话');
-    expect(search).toHaveBeenCalledOnce();
-  });
+  it.each([['current', 'main'], ['other', 'agent-example']])(
+    'searches the explicitly requested %s / %s with bounded fallback', async (sessionId, agentId) => {
+      const { archive, readColdSnapshotBounded, search } = fixture(false, true);
+      const page = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a',
+        sessionId, agentId, pageSize: 8 }) as HistorySearchPage;
+      expect(search).toHaveBeenCalledOnce();
+      expect(readColdSnapshotBounded).toHaveBeenCalledWith(
+        sessionId, agentId, expect.objectContaining({ maxBytes: 2 << 20, maxRecords: 10_000 }),
+      );
+      expect(page.warning).toBe('search index unavailable');
+      expect(page.source).toBe('fallback');
+      expect(page.items).toEqual([expect.objectContaining({ sessionId, agentId, role: 'user', turn: 4 })]);
+      expect(page.fallback).toMatchObject({
+        scope: 'requested_session_wire', maxBytes: 2 << 20, maxRecords: 10_000,
+        bytesRead: 1234, recordsRead: 17, truncated: false,
+      });
+      expect(JSON.parse((await archive.readTurn(sessionId, agentId, 4))!).user).toBe('用户压缩前的原话');
+      expect(search).toHaveBeenCalledOnce();
+    },
+  );
 
   it('keeps bounded history search on conversation text unless tool output is explicit', async () => {
     const { archive, readColdSnapshotBounded } = fixture(false, true);
-    const base = { workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
-      fallbackSessionId: 'current', fallbackAgentId: 'main' };
+    const base = { workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8 };
     expect((await archive.search({ ...base, query: '工具原始结果', mode: 'literal' }) as HistorySearchPage).items).toEqual([]);
     expect((await archive.search({ ...base, query: '工具原始结果', mode: 'literal', includeToolOutput: true }) as HistorySearchPage).items)
       .toEqual([expect.objectContaining({ role: 'tool', stepId: 't4.2' })]);
