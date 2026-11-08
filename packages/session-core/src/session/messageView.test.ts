@@ -227,6 +227,39 @@ describe('SendMessage channel receipts', () => {
     expect(failed.text).toBe('');
     expect(failed.reached).toBeUndefined();
   });
+
+  it('omits duplicate text in voice_only mode while keeping the voice attachment', () => {
+    const voiceOnlySent = projectSendMessage(tool({
+      args: { text: 'Spoken narration only', voice_mode: 'only' },
+      output: JSON.stringify({
+        message_id: 'send:voice-1',
+        delivered_to: ['user'],
+        delivery: 'delivered',
+        voice_only: true,
+        channels: [{ channel_id: 'internal', status: 'delivered' }],
+        attachments: [voice],
+      }),
+    }))!;
+    expect(voiceOnlySent.status).toBe('sent');
+    expect(voiceOnlySent.text).toBe('');
+    expect(voiceOnlySent.attachments).toEqual([
+      expect.objectContaining({ kind: 'voice', blobId: 'blob-2' }),
+    ]);
+
+    const appendSent = projectSendMessage(tool({
+      args: { text: 'Visible text', tts: { mode: 'append', text: 'Spoken text' } },
+      output: JSON.stringify({
+        message_id: 'send:voice-2',
+        delivered_to: ['user'],
+        delivery: 'delivered',
+        channels: [{ channel_id: 'internal', status: 'delivered' }],
+        attachments: [voice],
+      }),
+    }))!;
+    expect(appendSent.status).toBe('sent');
+    expect(appendSent.text).toBe('Visible text');
+    expect(appendSent.attachments).toHaveLength(1);
+  });
 });
 
 describe('message view', () => {

@@ -13,12 +13,99 @@ import { createImSettingsFixture, imChannelSnapshot, imSettingsSnapshot } from '
 import { ChannelsCard } from './ChannelsCard';
 
 let fixture = createImSettingsFixture();
+let configState: Record<string, unknown> = {};
+const configPatches: Record<string, unknown>[] = [];
+let managedSourcesFixture: unknown[] = [
+  {
+    provider: 'kiki-media/openai-speech',
+    sourceId: 'openai',
+    pluginId: 'kiki-media',
+    label: 'OpenAI',
+    custom: false,
+    enabled: true,
+    removed: false,
+    definitions: [{ id: 'openai-speech', kinds: ['tts'] }],
+    schema: { schema: [] },
+    values: {},
+    secretsConfigured: [],
+    missing: [],
+  },
+  {
+    provider: 'kiki-media/minimax-speech',
+    sourceId: 'minimax',
+    pluginId: 'kiki-media',
+    label: 'MiniMax',
+    custom: false,
+    enabled: true,
+    removed: false,
+    definitions: [{ id: 'minimax-speech', kinds: ['tts'] }],
+    schema: { schema: [] },
+    values: {},
+    secretsConfigured: [],
+    missing: [],
+  },
+];
 const notifications = {
   getSettings: async () => ({ global: { enabled: true, suppress_viewing_session: true, min_work_ms: 0, work_stable_ms: 3_000, question_delay_ms: 10_000 }, provider_instances: {}, channels: {}, credential_slots: {} }),
   listProviders: async () => [],
   listDeliveries: async () => [],
 };
-vi.mock('../../../state/connection', () => ({ useConnection: () => ({ scopeId: 'fixture', client: { ...fixture.client, notifications, getConfig: async () => ({}) } }) }));
+vi.mock('../../../state/connection', () => ({
+  useConnection: () => ({
+    scopeId: 'fixture',
+    client: {
+      ...fixture.client,
+      notifications,
+      klient: {
+        global: {
+          media: {
+            managedSources: async () => managedSourcesFixture,
+          },
+        },
+      },
+      getConfig: async () => configState,
+      patchConfig: async (patch: Record<string, unknown>) => {
+        configPatches.push(patch);
+        const sm = patch['send_message'] as Record<string, unknown> | undefined;
+        if (sm !== undefined) {
+          const prev = (configState['send_message'] as Record<string, unknown> | undefined) ?? { voiceMode: 'none' };
+          const next = { ...prev };
+          if ('voice_mode' in sm) next['voiceMode'] = sm['voice_mode'] ?? 'none';
+          if ('tts_provider' in sm) {
+            if (sm['tts_provider'] === null) delete next['ttsProvider'];
+            else next['ttsProvider'] = sm['tts_provider'];
+          }
+          if ('tts_voice' in sm) {
+            if (sm['tts_voice'] === null) delete next['ttsVoice'];
+            else next['ttsVoice'] = sm['tts_voice'];
+          }
+          if ('tts_model' in sm) {
+            if (sm['tts_model'] === null) delete next['ttsModel'];
+            else next['ttsModel'] = sm['tts_model'];
+          }
+          if ('tts_language' in sm) {
+            if (sm['tts_language'] === null) delete next['ttsLanguage'];
+            else next['ttsLanguage'] = sm['tts_language'];
+          }
+          if ('tts_format' in sm) {
+            if (sm['tts_format'] === null) delete next['ttsFormat'];
+            else next['ttsFormat'] = sm['tts_format'];
+          }
+          if ('tts_sample_rate_hz' in sm) {
+            if (sm['tts_sample_rate_hz'] === null) delete next['ttsSampleRateHz'];
+            else next['ttsSampleRateHz'] = sm['tts_sample_rate_hz'];
+          }
+          if ('tts_options' in sm) {
+            if (sm['tts_options'] === null) delete next['ttsOptions'];
+            else next['ttsOptions'] = sm['tts_options'];
+          }
+          configState = { ...configState, send_message: next };
+        }
+        return configState;
+      },
+    },
+  }),
+}));
 
 const empty: ImSessionSnapshot = { policy: { allowed: true, default_enabled: true }, instances: [], bindings: [], discoveries: [], strangers: [], voice_fallbacks: 0 };
 const roots: Root[] = [];
@@ -28,6 +115,8 @@ const clients: QueryClient[] = [];
 beforeAll(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
 beforeEach(() => {
   fixture = createImSettingsFixture(imChannelSnapshot());
+  configState = {};
+  configPatches.length = 0;
   localStorage.setItem('kiki.locale', 'en');
   window.history.replaceState({}, '', '/');
   clearToasts();
@@ -1270,5 +1359,115 @@ describe('ChannelsCard two-way accounts', () => {
     updateSpy.mockRejectedValueOnce(new Error('group_binding_scope_required'));
     await click(group, '[data-im-binding-scope="chat"]');
     expect(group.textContent).toContain('Only groups support topic or whole-group scope.');
+  });
+
+  it('saves and clears SendMessage TTS defaults (voice mode, installed provider chips, voice, model, and more parameters) in conversation rules', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot());
+    const container = await render();
+    await rules(container);
+
+    const ttsRules = container.querySelector<HTMLElement>('[data-im-tts-rules]')!;
+    expect(ttsRules).not.toBeNull();
+    expect(ttsRules.querySelector('[data-im-tts-mode="none"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    await click(ttsRules, '[data-im-tts-mode="append"]');
+    expect(configPatches.at(-1)).toEqual({ send_message: { voice_mode: 'append' } });
+    expect(ttsRules.querySelector('[data-im-tts-mode="append"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    await click(ttsRules, '[data-im-tts-mode="only"]');
+    expect(configPatches.at(-1)).toEqual({ send_message: { voice_mode: 'only' } });
+
+    // Select installed provider via quick chip
+    await click(ttsRules, '[data-im-tts-provider-option="kiki-media/openai-speech"]');
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_provider: 'kiki-media/openai-speech' } });
+    expect(ttsRules.querySelector<HTMLInputElement>('[data-im-tts-provider]')?.value).toBe('kiki-media/openai-speech');
+
+    // Custom input override
+    const providerInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-provider]')!;
+    providerInput.focus();
+    await input(ttsRules, '[data-im-tts-provider]', 'kiki-media/script-bailian-tts');
+    await act(async () => { providerInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_provider: 'kiki-media/script-bailian-tts' } });
+
+    const voiceInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-voice]')!;
+    voiceInput.focus();
+    await input(ttsRules, '[data-im-tts-voice]', 'Chelsie');
+    await act(async () => { voiceInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_voice: 'Chelsie' } });
+
+    const modelInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-model]')!;
+    modelInput.focus();
+    await input(ttsRules, '[data-im-tts-model]', 'qwen3-tts-flash');
+    await act(async () => { modelInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_model: 'qwen3-tts-flash' } });
+
+    // Open More parameters and edit language, format, sample rate, and options
+    const moreDetails = ttsRules.querySelector<HTMLDetailsElement>('[data-im-tts-more]')!;
+    expect(moreDetails).not.toBeNull();
+    await act(async () => { moreDetails.open = true; await settle(); });
+
+    const languageInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-language]')!;
+    languageInput.focus();
+    await input(ttsRules, '[data-im-tts-language]', 'zh-CN');
+    await act(async () => { languageInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_language: 'zh-CN' } });
+
+    const formatInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-format]')!;
+    formatInput.focus();
+    await input(ttsRules, '[data-im-tts-format]', 'wav');
+    await act(async () => { formatInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_format: 'wav' } });
+
+    const sampleRateInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-sample-rate]')!;
+    sampleRateInput.focus();
+    await input(ttsRules, '[data-im-tts-sample-rate]', '24000');
+    await act(async () => { sampleRateInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_sample_rate_hz: 24000 } });
+
+    const optionsInput = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-options]')!;
+    optionsInput.focus();
+    await input(ttsRules, '[data-im-tts-options]', '{"speed":1.15}');
+    await act(async () => { optionsInput.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_options: { speed: 1.15 } } });
+
+    // Invalid JSON shows inline error and does not send patch
+    const countBeforeInvalid = configPatches.length;
+    const optionsInputInvalid = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-options]')!;
+    optionsInputInvalid.focus();
+    await input(ttsRules, '[data-im-tts-options]', '{bad json');
+    await act(async () => { optionsInputInvalid.blur(); await settle(); });
+    expect(configPatches.length).toBe(countBeforeInvalid);
+    expect(ttsRules.textContent).toContain('Enter a valid JSON object');
+
+    // Clear fields back to empty -> sends null to remove overrides
+    const providerInputAfter = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-provider]')!;
+    providerInputAfter.focus();
+    await input(ttsRules, '[data-im-tts-provider]', '   ');
+    await act(async () => { providerInputAfter.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_provider: null } });
+
+    const langInputAfter = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-language]')!;
+    langInputAfter.focus();
+    await input(ttsRules, '[data-im-tts-language]', '');
+    await act(async () => { langInputAfter.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_language: null } });
+
+    const formatInputAfter = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-format]')!;
+    formatInputAfter.focus();
+    await input(ttsRules, '[data-im-tts-format]', '');
+    await act(async () => { formatInputAfter.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_format: null } });
+
+    const srInputAfter = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-sample-rate]')!;
+    srInputAfter.focus();
+    await input(ttsRules, '[data-im-tts-sample-rate]', '');
+    await act(async () => { srInputAfter.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_sample_rate_hz: null } });
+
+    const optInputAfter = ttsRules.querySelector<HTMLInputElement>('[data-im-tts-options]')!;
+    optInputAfter.focus();
+    await input(ttsRules, '[data-im-tts-options]', '');
+    await act(async () => { optInputAfter.blur(); await settle(); });
+    expect(configPatches.at(-1)).toEqual({ send_message: { tts_options: null } });
   });
 });

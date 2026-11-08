@@ -338,9 +338,39 @@ export const optionalCapabilitySessionRequestSchema = z.object({
 }).strict();
 export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;
 
+export const sendMessageVoiceModeSchema = z.enum(['none', 'append', 'only']);
+export type SendMessageVoiceMode = z.infer<typeof sendMessageVoiceModeSchema>;
+
+export const sendMessageConfigResponseSchema = z.object({
+  voiceMode: sendMessageVoiceModeSchema.default('none'),
+  ttsProvider: z.string().min(1).optional(),
+  ttsModel: z.string().min(1).optional(),
+  ttsVoice: z.string().min(1).optional(),
+  ttsLanguage: z.string().min(1).optional(),
+  ttsFormat: z.string().min(1).optional(),
+  ttsSampleRateHz: z.number().int().positive().optional(),
+  ttsOptions: z.record(z.string(), z.unknown()).optional(),
+  ffmpegPath: z.string().min(1).optional(),
+}).strict();
+export type SendMessageConfigResponse = z.infer<typeof sendMessageConfigResponseSchema>;
+
+export const sendMessageConfigPatchSchema = z.object({
+  voice_mode: sendMessageVoiceModeSchema.nullable().optional(),
+  tts_provider: z.string().min(1).nullable().optional(),
+  tts_model: z.string().min(1).nullable().optional(),
+  tts_voice: z.string().min(1).nullable().optional(),
+  tts_language: z.string().min(1).nullable().optional(),
+  tts_format: z.string().min(1).nullable().optional(),
+  tts_sample_rate_hz: z.number().int().positive().nullable().optional(),
+  tts_options: z.record(z.string(), z.unknown()).nullable().optional(),
+  ffmpeg_path: z.string().min(1).nullable().optional(),
+}).strict();
+export type SendMessageConfigPatch = z.infer<typeof sendMessageConfigPatchSchema>;
+
 export const configResponseSchema = z.object({
   browser_control: browserControlSettingsSchema.optional(),
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
+  send_message: sendMessageConfigResponseSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   agent_executor_instances: executorInstancesResponseSchema.optional(),
@@ -446,5 +476,6 @@ export const patchConfigRequestSchema = z.object({
   retry: retryConfigSchema.optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
   optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
+  send_message: sendMessageConfigPatchSchema.optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

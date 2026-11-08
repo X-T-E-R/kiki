@@ -144,6 +144,28 @@ describe('server-v2 /api/config', () => {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
 
+  it('saves and clears SendMessage voice defaults through real REST', async () => {
+    await boot();
+    expect((await getConfig()).send_message).toEqual({ voiceMode: 'none' });
+    const options = { speed_ratio: 1.1, vendorVoiceStyle: 'calm' };
+    const settings = {
+      voice_mode: 'append', tts_provider: 'example/speech', tts_voice: 'example-voice',
+      tts_model: 'example-tts', tts_language: 'zh-CN', tts_format: 'wav',
+      tts_sample_rate_hz: 24000, tts_options: options,
+    };
+    const resolved = {
+      voiceMode: 'append', ttsProvider: 'example/speech', ttsVoice: 'example-voice',
+      ttsModel: 'example-tts', ttsLanguage: 'zh-CN', ttsFormat: 'wav',
+      ttsSampleRateHz: 24000, ttsOptions: options,
+    };
+    expect((await patchConfig({ send_message: settings })).send_message).toEqual(resolved);
+    expect((await getConfig()).send_message).toEqual(resolved);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toContain('[send_message]');
+    const cleared = Object.fromEntries(Object.keys(settings).map((key) => [key, null]));
+    expect((await patchConfig({ send_message: cleared })).send_message).toEqual({ voiceMode: 'none' });
+    expect((await getConfig()).send_message).toEqual({ voiceMode: 'none' });
+  });
+
   it('saves and reloads nested model switch preferences through real REST with snake_case wire and TOML', async () => {
     await boot();
     expect((await getConfig()).model_switch).toEqual({ default_mode: 'direct', confirm: true, rules: [] });

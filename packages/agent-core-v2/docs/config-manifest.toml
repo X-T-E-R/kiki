@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (57 sections · 1 overlay(s))
+# Index (58 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
@@ -54,6 +54,7 @@
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
 #   responsesWebSocket              src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
+#   sendMessage                     src/agent/tools/message/configSection.ts
 #   sessionResidency                src/app/sessionManager/configSection.ts
 #   sessionTitle                    src/session/sessionTitle/configSection.ts
 #   skipBuiltinProfileInstallation  src/workspace/workspaceAgentProfileLoader/configSection.ts
@@ -989,6 +990,23 @@ rules = []
   # max_attempts: integer
   # backoff: integer
   # retry: boolean (default: true)
+
+# ##########################################################################
+# sendMessage (config.toml: send_message)
+#   owner: src/agent/tools/message/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[send_message]
+voice_mode = "none"
+# tts_provider: string
+# tts_model: string
+# tts_voice: string
+# tts_language: string
+# tts_format: string
+# tts_sample_rate_hz: integer
+# tts_options: record<string, any>
+# ffmpeg_path: string
 
 # ##########################################################################
 # sessionResidency (config.toml: session_residency)

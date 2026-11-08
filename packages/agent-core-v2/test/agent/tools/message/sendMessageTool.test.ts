@@ -1,9 +1,11 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { Event } from '#/_base/event';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -12,23 +14,36 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { TaskNotificationStepRequest } from '#/agent/task/taskService';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { ISendMessageTool } from '#/agent/tools/message/sendMessageTool';
+import { ISendMessageTool, isOggOpusAudio, runManagedFfmpeg } from '#/agent/tools/message/sendMessageTool';
 import { IBotService } from '#/app/bot/bot';
+import { IConfigService } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
+import { PluginMediaService } from '#/app/pluginMedia/pluginMediaService';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { SEND_MESSAGE_SECTION } from '#/agent/tools/message/configSection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { IRoomMessageRouter, IUserMessageRouter, type SendMessageReceipt } from '#/app/bot/messageRouting';
+import { IRoomMessageRouter, IUserMessageRouter, internalMessageChannel, routeUserMessage, type MessageChannelBinding, type SendMessageReceipt, type UserMessageChannel } from '#/app/bot/messageRouting';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { MediaGenerateInput, MediaJob } from '@kiki/protocol';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
-import { appServices, createTestAgent, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
+import { appServices, createTestAgent, homeDirServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
 
 let ctx: TestAgentContext;
 const dirs: string[] = [];
 afterEach(async () => {
   await ctx?.dispose();
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 async function messageAgent(...overrides: TestAgentServiceOverride[]): Promise<TestAgentContext> {
@@ -445,4 +460,882 @@ it('hot-enables a plain reply thread, executes named outputs, and withdraws the 
   expect(await execute({ text: 'blocked again' })).toMatchObject({ isError: true });
   expect(delivery.effectiveMode()).toBe('reply');
   expect(send).toHaveBeenCalledOnce();
+});
+
+describe('SendMessage native TTS synthesis and voice routing', () => {
+  const validOggBytes = new Uint8Array([
+    0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd,
+    0x01, 0x13,
+    0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64,
+    0x01, 0x01, 0x38, 0x01, 0x80, 0xbb, 0x00, 0x00, 0x00, 0x00, 0x00,
+  ]);
+  const oggVorbisBytes = new Uint8Array([
+    0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd,
+    0x01, 0x1e,
+    0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0xbb, 0x00, 0x00,
+  ]);
+  const rawMp3Bytes = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04]);
+
+  function createValidSineWavBytes(sampleRate = 16_000, durationMs = 200): Uint8Array {
+    const numSamples = Math.floor((sampleRate * durationMs) / 1000);
+    const dataBytes = numSamples * 2;
+    const buffer = Buffer.alloc(44 + dataBytes);
+    buffer.write('RIFF', 0, 'ascii');
+    buffer.writeUInt32LE(36 + dataBytes, 4);
+    buffer.write('WAVE', 8, 'ascii');
+    buffer.write('fmt ', 12, 'ascii');
+    buffer.writeUInt32LE(16, 16);
+    buffer.writeUInt16LE(1, 20);
+    buffer.writeUInt16LE(1, 22);
+    buffer.writeUInt32LE(sampleRate, 24);
+    buffer.writeUInt32LE(sampleRate * 2, 28);
+    buffer.writeUInt16LE(2, 32);
+    buffer.writeUInt16LE(16, 34);
+    buffer.write('data', 36, 'ascii');
+    buffer.writeUInt32LE(dataBytes, 40);
+    for (let i = 0; i < numSamples; i++) {
+      const sample = Math.round(Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 12_000);
+      buffer.writeInt16LE(sample, 44 + i * 2);
+    }
+    return new Uint8Array(buffer);
+  }
+
+  function mockTtsMediaService(options: {
+    readonly bytes?: Uint8Array;
+    readonly mime?: string;
+    readonly name?: string;
+    readonly providerId?: string;
+    readonly voices?: readonly { id: string; name: string }[];
+    readonly onStart?: (raw: MediaGenerateInput) => void;
+  } = {}) {
+    const bytes = options.bytes ?? validOggBytes;
+    const mime = options.mime ?? 'audio/ogg';
+    const name = options.name ?? 'speech.ogg';
+    const providerId = options.providerId ?? 'kiki-media/minimax-speech';
+    let jobSeq = 0;
+
+    const start = vi.fn(async (raw: MediaGenerateInput): Promise<MediaJob> => {
+      options.onStart?.(raw);
+      const id = `media-${String(++jobSeq).padStart(32, '0')}`;
+      const fileId = `f_${id}_audio`;
+      await ctx.get(ISessionMediaStore).materialize({
+        fileId,
+        name,
+        mimeType: mime,
+        size: bytes.byteLength,
+        stream: () => Readable.from([bytes]),
+      });
+      return {
+        schemaVersion: 1,
+        job_id: id,
+        request_id: raw.request_id ?? `req-${id}`,
+        owner_session_id: ctx.get(ISessionContext).sessionId,
+        owner_agent_id: 'main',
+        provider: raw.provider ?? providerId,
+        model: raw.model ?? 'speech-2.8-hd',
+        state: 'succeeded',
+        phase: 'download',
+        can_resume: false,
+        artifacts: [
+          {
+            id: 'art_1',
+            kind: 'audio',
+            role: 'original',
+            name,
+            mime,
+            file_id: fileId,
+            bytes: bytes.byteLength,
+            complete: true,
+          },
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+    });
+
+    const run = vi.fn(async (id: string): Promise<MediaJob> => {
+      throw new Error(`Unexpected run for already succeeded job ${id}`);
+    });
+
+    const stopLocal = vi.fn(async (id: string): Promise<MediaJob> => ({
+      schemaVersion: 1,
+      job_id: id,
+      request_id: `req-${id}`,
+      owner_session_id: 's',
+      owner_agent_id: 'main',
+      provider: providerId,
+      state: 'stopped',
+      phase: 'submit',
+      can_resume: false,
+      artifacts: [],
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    }));
+
+    const providers = vi.fn(async () => [
+      {
+        provider: 'kiki-media/minimax-speech',
+        definition: { schemaVersion: 1 as const, id: 'minimax-speech', label: 'MiniMax Speech', kinds: ['tts' as const], resumeVersion: 1 },
+      },
+      {
+        provider: 'kiki-media/openai-speech',
+        definition: { schemaVersion: 1 as const, id: 'openai-speech', label: 'OpenAI Speech', kinds: ['tts' as const], resumeVersion: 1 },
+      },
+      {
+        provider: 'kiki-media/script-bailian-tts',
+        definition: { schemaVersion: 1 as const, id: 'script-bailian-tts', label: 'Bailian TTS', kinds: ['tts' as const], resumeVersion: 1 },
+      },
+    ]);
+
+    const voices = vi.fn(async (query: { provider: string }) => ({
+      voices: [...(options.voices ?? (
+        query.provider.includes('script-bailian-tts')
+          ? [{ id: 'Chelsie', label: 'Chelsie' }, { id: 'Ethan', label: 'Ethan' }]
+          : []
+      ))],
+    }));
+
+    return { start, run, stopLocal, providers, voices };
+  }
+
+  it('defaults to voice_mode=none and does not call TTS unless enabled by settings or tool arguments', async () => {
+    const mediaMock = mockTtsMediaService();
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IPluginMediaService, mediaMock)));
+    const result = await execute({ text: 'Plain text message.' });
+    const wire = JSON.parse(result.output as string);
+    expect(mediaMock.start).not.toHaveBeenCalled();
+    expect(wire.delivered_to).toEqual(['user']);
+    expect(wire.attachments).toBeUndefined();
+    expect(wire.voice_only).toBeUndefined();
+  });
+
+  it('honors settings default voiceMode and TTS parameters, allows per-call overrides and separate tts.text, and lets explicit none override settings', async () => {
+    const startedRequests: MediaGenerateInput[] = [];
+    const mediaMock = mockTtsMediaService({ onStart: (raw) => startedRequests.push(raw) });
+    const sentInputs: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+    const userRouter: IUserMessageRouter = {
+      _serviceBrand: undefined,
+      listChannels: async () => [internalMessageChannel()],
+      sendMessage: async (input) => {
+        sentInputs.push(input);
+        return routeUserMessage(input, [internalMessageChannel()]);
+      },
+    };
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IUserMessageRouter, userRouter);
+      }),
+    );
+
+    const config = ctx.get(IConfigService);
+    await config.set(SEND_MESSAGE_SECTION, {
+      voiceMode: 'append',
+      ttsProvider: 'minimax-speech',
+      ttsVoice: 'female-shaonv',
+      ttsModel: 'speech-2.8-hd',
+      ttsLanguage: 'zh',
+    });
+
+    const appendRes = await execute({
+      text: 'Visible summary: 42%',
+      tts: { text: 'Spoken narration: forty-two percent.', voice: 'male-qn-qingse' },
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'tts-append-1', signal: new AbortController().signal });
+    const appendWire = JSON.parse(appendRes.output as string);
+    expect(startedRequests).toHaveLength(1);
+    expect(startedRequests[0]).toMatchObject({
+      request_id: 'send-tts:tts-append-1',
+      provider: 'kiki-media/minimax-speech',
+      model: 'speech-2.8-hd',
+      request: {
+        kind: 'tts',
+        text: 'Spoken narration: forty-two percent.',
+        voice: 'male-qn-qingse',
+        language: 'zh',
+      },
+    });
+    expect(startedRequests[0]?.request.kind === 'tts' ? startedRequests[0].request.format : undefined).toBeUndefined();
+    expect(sentInputs[0]?.text).toBe('Visible summary: 42%');
+    expect(sentInputs[0]?.attachments).toEqual([
+      expect.objectContaining({ kind: 'voice', mimeType: 'audio/ogg', size: validOggBytes.byteLength }),
+    ]);
+    expect(appendWire.voice_only).toBeUndefined();
+    expect(appendRes.stopTurn).toBe(true);
+
+    const onlyRes = await execute({
+      text: 'This text is spoken only and not sent as text.',
+      voice_mode: 'only',
+      tts: { provider: 'openai-speech', model: 'gpt-4o-mini-tts', voice: 'nova' },
+    }, { turnId: 0, toolCallId: 'tts-only-1', signal: new AbortController().signal });
+    const onlyWire = JSON.parse(onlyRes.output as string);
+    expect(startedRequests).toHaveLength(2);
+    expect(startedRequests[1]).toMatchObject({
+      request_id: 'send-tts:tts-only-1',
+      provider: 'kiki-media/openai-speech',
+      model: 'gpt-4o-mini-tts',
+      request: {
+        kind: 'tts',
+        text: 'This text is spoken only and not sent as text.',
+        voice: 'nova',
+      },
+    });
+    expect(sentInputs[1]?.text).toBe('');
+    expect(sentInputs[1]?.attachments).toEqual([
+      expect.objectContaining({ kind: 'voice', mimeType: 'audio/ogg' }),
+    ]);
+    expect(onlyWire.voice_only).toBe(true);
+
+    await execute({
+      text: 'Explicitly no voice for this message.',
+      voice_mode: 'none',
+    }, { turnId: 0, toolCallId: 'tts-none-1', signal: new AbortController().signal });
+    expect(startedRequests).toHaveLength(2);
+    expect(sentInputs[2]?.text).toBe('Explicitly no voice for this message.');
+    expect(sentInputs[2]?.attachments).toEqual([]);
+  });
+
+  it('resolves unoverridden voice from provider voices() catalog without forcing format=opus onto custom script providers', async () => {
+    const startedRequests: MediaGenerateInput[] = [];
+    const mediaMock = mockTtsMediaService({
+      providerId: 'kiki-media/script-bailian-tts',
+      onStart: (raw) => startedRequests.push(raw),
+    });
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+      }),
+    );
+
+    await execute({
+      text: 'Bailian voice test',
+      voice_mode: 'only',
+      tts: { provider: 'script-bailian-tts', model: 'qwen3-tts-flash' },
+    });
+
+    expect(mediaMock.voices).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'kiki-media/script-bailian-tts', model: 'qwen3-tts-flash' }),
+      expect.any(Object),
+    );
+    expect(startedRequests).toHaveLength(1);
+    expect(startedRequests[0]?.request).toMatchObject({
+      kind: 'tts',
+      text: 'Bailian voice test',
+      voice: 'Chelsie',
+    });
+    expect(startedRequests[0]?.request.kind === 'tts' ? startedRequests[0].request.format : undefined).toBeUndefined();
+  });
+
+  it('supports per-item voice modes in messages[] batches (none, append, only)', async () => {
+    const mediaMock = mockTtsMediaService();
+    const sentInputs: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [internalMessageChannel()],
+          sendMessage: async (input) => {
+            sentInputs.push(input);
+            return routeUserMessage(input, [internalMessageChannel()]);
+          },
+        });
+      }),
+    );
+
+    const result = await execute({
+      messages: [
+        { text: 'First plain', voice_mode: 'none' },
+        { text: 'Second append', voice_mode: 'append' },
+        { tts: { mode: 'only', text: 'Third voice only from tts.text' } },
+      ],
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'batch-tts', signal: new AbortController().signal });
+
+    const wire = JSON.parse(result.output as string);
+    expect(wire.messages).toHaveLength(3);
+    expect(mediaMock.start).toHaveBeenCalledTimes(2);
+    expect(sentInputs[0]).toMatchObject({ text: 'First plain', attachments: [] });
+    expect(sentInputs[1]).toMatchObject({ text: 'Second append', attachments: [expect.objectContaining({ kind: 'voice' })] });
+    expect(sentInputs[2]).toMatchObject({ text: '', attachments: [expect.objectContaining({ kind: 'voice' })] });
+    expect(wire.messages[2]?.voice_only).toBe(true);
+    expect(result.stopTurn).toBe(true);
+  });
+
+  it('distinguishes Ogg Opus from Ogg Vorbis and auto-transcodes non-Opus audio via managed IHostProcessService without leaking pre-transcode .mp3/.wav paths', async () => {
+    expect(isOggOpusAudio(validOggBytes)).toBe(true);
+    expect(isOggOpusAudio(oggVorbisBytes)).toBe(false);
+    expect(isOggOpusAudio(rawMp3Bytes)).toBe(false);
+
+    const mediaMock = mockTtsMediaService({
+      bytes: oggVorbisBytes,
+      mime: 'audio/ogg',
+      name: 'speech.wav',
+    });
+    const feishuChannel: UserMessageChannel = {
+      id: 'im:feishu-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'voice', mimeTypes: ['audio/ogg', 'audio/opus'], rendering: 'native_voice' }],
+      send: async () => ({ status: 'delivered', messageIds: ['om_feishu_1'] }),
+    };
+    const spawnCalls: { command: string; args: string[] }[] = [];
+    const mockHostProcess: Pick<IHostProcessService, 'spawn'> = {
+      spawn: vi.fn(async (command: string, args: string[]): Promise<IHostProcess> => {
+        spawnCalls.push({ command, args });
+        const outPath = args.at(-1)!;
+        await writeFile(outPath, validOggBytes);
+        const emitter = { on: () => emitter, off: () => emitter };
+        return {
+          _serviceBrand: undefined,
+          pid: 12345,
+          exitCode: 0,
+          stdin: { write: () => true, end: () => ({} as IHostProcess['stdin']) } as unknown as IHostProcess['stdin'],
+          stdout: emitter as unknown as IHostProcess['stdout'],
+          stderr: emitter as unknown as IHostProcess['stderr'],
+          wait: async () => 0,
+          kill: async () => {},
+          dispose: () => {},
+        };
+      }),
+    };
+    const sentInputs: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IHostProcessService, mockHostProcess);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [feishuChannel],
+          sendMessage: async (input) => {
+            sentInputs.push(input);
+            return routeUserMessage(input, [feishuChannel]);
+          },
+        });
+      }),
+    );
+
+    const result = await execute({
+      text: 'Hello Feishu',
+      voice_mode: 'only',
+      channel: 'im:feishu-1',
+    });
+    const wire = JSON.parse(result.output as string);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]?.command).toBe('ffmpeg');
+    expect(spawnCalls[0]?.args).toContain('libopus');
+    expect(sentInputs[0]?.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'voice',
+        mimeType: 'audio/ogg',
+        title: 'speech.ogg',
+        path: 'speech.ogg',
+        size: validOggBytes.byteLength,
+      }),
+    ]);
+    expect(sentInputs[0]?.attachments?.[0]?.path).not.toMatch(/\.(wav|mp3)$/i);
+    expect(wire.delivered_to).toEqual(['user']);
+    expect(wire.channels).toEqual([{ channel_id: 'im:feishu-1', status: 'delivered', message_ids: ['om_feishu_1'] }]);
+  });
+
+  it('preserves real audio/ogg MIME when non-Opus Ogg transcode fails on a non-Opus-mandatory channel, and throws when channel requires Opus', async () => {
+    const mediaMock = mockTtsMediaService({
+      bytes: oggVorbisBytes,
+      mime: 'audio/ogg',
+      name: 'vorbis.ogg',
+    });
+    const failingHostProcess: Pick<IHostProcessService, 'spawn'> = {
+      spawn: vi.fn(async (): Promise<IHostProcess> => {
+        const err = new Error('spawn ffmpeg ENOENT') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }),
+    };
+    const internalSent: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+    const feishuChannel: UserMessageChannel = {
+      id: 'im:feishu-strict',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'voice', mimeTypes: ['audio/ogg', 'audio/opus'], rendering: 'native_voice' }],
+      send: async () => ({ status: 'delivered', messageIds: ['om_feishu_strict'] }),
+    };
+
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IHostProcessService, failingHostProcess);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [internalMessageChannel(), feishuChannel],
+          sendMessage: async (input) => {
+            internalSent.push(input);
+            return routeUserMessage(input, [internalMessageChannel(), feishuChannel]);
+          },
+        });
+      }),
+    );
+
+    const internalRes = await execute({
+      text: 'Internal player accepts Ogg Vorbis as audio/ogg',
+      voice_mode: 'only',
+      channel: 'internal',
+    });
+    const internalWire = JSON.parse(internalRes.output as string);
+    expect(internalWire.delivery).toBe('delivered');
+    expect(internalSent[0]?.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'voice',
+        mimeType: 'audio/ogg',
+        title: 'vorbis.ogg',
+      }),
+    ]);
+    expect(internalSent[0]?.attachments?.[0]?.mimeType).not.toBe('audio/mpeg');
+
+    await expect(
+      execute({
+        text: 'Feishu requires Ogg Opus and must reject untranscoded Ogg Vorbis',
+        voice_mode: 'only',
+        channel: 'im:feishu-strict',
+      }),
+    ).rejects.toThrow(/requires Ogg\/Opus audio/);
+  });
+
+  it('executes real PluginMediaService.start/run with offline WAV audio and transcodes via real ffmpeg into valid Ogg/Opus when ffmpeg is available', async (testCtx) => {
+    const candidateBins = [
+      process.env['KIKI_TEST_FFMPEG_PATH'],
+      'ffmpeg',
+    ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    const realProcessService = new HostProcessService();
+    let availableFfmpeg: string | undefined;
+    for (const candidate of candidateBins) {
+      if (candidate !== 'ffmpeg' && !existsSync(candidate)) continue;
+      const probe = await runManagedFfmpeg(candidate, ['-version'], new AbortController().signal, 5_000, realProcessService).catch(() => undefined);
+      if (probe !== undefined && probe.code === 0) {
+        availableFfmpeg = candidate;
+        break;
+      }
+    }
+    if (availableFfmpeg === undefined) {
+      testCtx.skip('Real ffmpeg binary not found on PATH or KIKI_TEST_FFMPEG_PATH; skipping real ffmpeg transcode integration check.');
+      return;
+    }
+
+    const homeDir = await mkdtemp(join(tmpdir(), 'send-message-real-tts-'));
+    dirs.push(homeDir);
+    const wavBytes = createValidSineWavBytes(16_000, 150);
+    const providerDescriptor = {
+      pluginId: 'kiki-media',
+      provider: 'kiki-media/script-bailian-tts',
+      source: 'local',
+      configuration: 'cfg-1',
+      definition: {
+        schemaVersion: 1 as const,
+        id: 'script-bailian-tts',
+        label: 'Bailian TTS',
+        kinds: ['tts' as const],
+        resumeVersion: 1,
+      },
+    };
+    const hostStub: Partial<IPluginHostService> = {
+      attachQuotaCache: () => {},
+      attachOutboundIm: () => {},
+      attachImAdapters: async () => {},
+      listMediaProviders: vi.fn(async () => [providerDescriptor]),
+      requestMediaProvider: vi.fn(async (_provider, action, _input, _signal, callCtx) => {
+        if (action === 'voices') {
+          return {
+            schemaVersion: 1,
+            provider: 'kiki-media/script-bailian-tts',
+            voices: [{ id: 'Chelsie', name: 'Chelsie' }],
+          };
+        }
+        expect(action).toBe('submit');
+        const wavPath = join(callCtx.stagingDir, 'synthesized.wav');
+        await writeFile(wavPath, wavBytes);
+        return {
+          state: 'complete',
+          artifacts: [
+            {
+              kind: 'audio',
+              role: 'original',
+              name: 'synthesized.wav',
+              mime: 'audio/wav',
+              path: wavPath,
+              complete: true,
+            },
+          ],
+        };
+      }),
+    };
+
+    const feishuChannel: UserMessageChannel = {
+      id: 'im:feishu-real',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'voice', mimeTypes: ['audio/ogg', 'audio/opus'], rendering: 'native_voice' }],
+      send: async () => ({ status: 'delivered', messageIds: ['om_feishu_real_1'] }),
+    };
+    const sentInputs: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+
+    await messageAgent(
+      homeDirServices(homeDir),
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginUsageService, {
+          enabled: () => false,
+          allows: async () => true,
+          registerPluginStateReader: () => ({ dispose: () => undefined }),
+          onDidChange: Event.None as IPluginUsageService['onDidChange'],
+          onDidApply: Event.None as IPluginUsageService['onDidApply'],
+        });
+        reg.definePartialInstance(IPluginService, {
+          listPlugins: async () => [],
+          mcpServerEntries: async () => [],
+          pluginSkillRoots: async () => [],
+          hasLoadedSnapshot: () => false,
+          onDidReload: Event.None as IPluginService['onDidReload'],
+        });
+        reg.definePartialInstance(IPluginSettingsService, {
+          forExecution: async () => ({}),
+        });
+        reg.definePartialInstance(IPluginHostService, hostStub);
+        reg.define(IPluginMediaService, PluginMediaService);
+        reg.defineInstance(IHostProcessService, realProcessService);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [feishuChannel],
+          sendMessage: async (input) => {
+            sentInputs.push(input);
+            return routeUserMessage(input, [feishuChannel]);
+          },
+        });
+      }),
+    );
+
+    await ctx.get(IConfigService).set(SEND_MESSAGE_SECTION, {
+      ffmpegPath: availableFfmpeg,
+    });
+
+    const result = await execute({
+      text: 'Offline WAV to real Ogg/Opus transcode verification.',
+      voice_mode: 'only',
+      channel: 'im:feishu-real',
+    }, { turnId: 0, toolCallId: 'real-pipeline-1', signal: new AbortController().signal });
+
+    const wire = JSON.parse(result.output as string);
+    expect(wire).toMatchObject({
+      delivered_to: ['user'],
+      delivery: 'delivered',
+      voice_only: true,
+      channels: [{ channel_id: 'im:feishu-real', status: 'delivered', message_ids: ['om_feishu_real_1'] }],
+      attachments: [
+        expect.objectContaining({
+          kind: 'voice',
+          mime_type: 'audio/ogg',
+          title: 'synthesized.ogg',
+          path: 'synthesized.ogg',
+        }),
+      ],
+    });
+    const attachment = sentInputs[0]?.attachments?.[0]!;
+    expect(attachment.path).toBe('synthesized.ogg');
+    const blobHash = attachment.blobId.split(':').at(-1)!;
+    const storedBytes = await ctx.get(IBlobStore).get(ctx.get(IAgentScopeContext).scope('blobs'), blobHash);
+    expect(storedBytes).toBeDefined();
+    expect(isOggOpusAudio(storedBytes!)).toBe(true);
+  });
+
+  it('drains ffmpeg stdout/stderr, handles abort/timeout, and preserves scratch files when process cleanup is unconfirmed', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'send-message-unconfirmed-cleanup-'));
+    dirs.push(homeDir);
+    const mediaMock = mockTtsMediaService({
+      bytes: rawMp3Bytes,
+      mime: 'audio/mpeg',
+      name: 'speech.mp3',
+    });
+    const feishuChannel: UserMessageChannel = {
+      id: 'im:feishu-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'voice', mimeTypes: ['audio/ogg', 'audio/opus'], rendering: 'native_voice' }],
+      send: async () => ({ status: 'delivered', messageIds: ['om_feishu_1'] }),
+    };
+
+    let capturedInPath: string | undefined;
+    const controller = new AbortController();
+    const unconfirmedHostProcess: Pick<IHostProcessService, 'spawn'> = {
+      spawn: vi.fn(async (_command: string, args: string[]): Promise<IHostProcess> => {
+        const iIdx = args.indexOf('-i');
+        capturedInPath = iIdx >= 0 ? args[iIdx + 1] : undefined;
+        const stdoutListeners = new Set<(chunk: Uint8Array | string) => void>();
+        const stderrListeners = new Set<(chunk: Uint8Array | string) => void>();
+        const stdoutEmitter = {
+          on: (_ev: string, fn: (chunk: Uint8Array | string) => void) => { stdoutListeners.add(fn); return stdoutEmitter; },
+          off: (_ev: string, fn: (chunk: Uint8Array | string) => void) => { stdoutListeners.delete(fn); return stdoutEmitter; },
+        };
+        const stderrEmitter = {
+          on: (_ev: string, fn: (chunk: Uint8Array | string) => void) => { stderrListeners.add(fn); return stderrEmitter; },
+          off: (_ev: string, fn: (chunk: Uint8Array | string) => void) => { stderrListeners.delete(fn); return stderrEmitter; },
+        };
+        setTimeout(() => {
+          for (const fn of stdoutListeners) fn('ffmpeg stdout chunk');
+          for (const fn of stderrListeners) fn('ffmpeg stderr chunk');
+          controller.abort();
+        }, 10);
+        return {
+          _serviceBrand: undefined,
+          pid: 99999,
+          exitCode: null,
+          stdin: { write: () => true, end: () => ({} as IHostProcess['stdin']) } as unknown as IHostProcess['stdin'],
+          stdout: stdoutEmitter as unknown as IHostProcess['stdout'],
+          stderr: stderrEmitter as unknown as IHostProcess['stderr'],
+          wait: () => new Promise<number>(() => {}),
+          kill: async () => {
+            throw new Error('kill tree unconfirmed');
+          },
+          dispose: () => {},
+        };
+      }),
+    };
+
+    await messageAgent(
+      homeDirServices(homeDir),
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IHostProcessService, unconfirmedHostProcess);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [feishuChannel],
+          sendMessage: async (input) => routeUserMessage(input, [feishuChannel]),
+        });
+      }),
+    );
+
+    await expect(
+      execute(
+        { text: 'Should preserve scratch on unconfirmed kill', voice_mode: 'only', channel: 'im:feishu-1' },
+        { turnId: 0, toolCallId: 'unconfirmed-kill', signal: controller.signal },
+      ),
+    ).rejects.toThrow(/cleanup was not confirmed/);
+    expect(capturedInPath).toBeDefined();
+    expect(existsSync(capturedInPath!)).toBe(true);
+  });
+
+  it('preserves Room and @Bot messages when global TTS defaults are enabled, and reports partial/unsupported when voice is explicitly requested on Room or @Bot', async () => {
+    const mediaMock = mockTtsMediaService();
+    const postBotMessage = vi.fn(async (): Promise<SendMessageReceipt> => ({
+      messageId: 'room-msg-1',
+      deliveredTo: ['@all'],
+      delivery: 'delivered',
+    }));
+    const sendHandoff = vi.fn(async (): Promise<SendMessageReceipt> => ({
+      messageId: 'handoff-1',
+      deliveredTo: ['@helper'],
+      delivery: 'pending',
+    }));
+
+    const cwd = await mediaAgent(
+      ['report.pdf'],
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IRoomMessageRouter, { postBotMessage });
+        reg.definePartialInstance(IBotService, { sendHandoff });
+      }),
+    );
+
+    await ctx.get(IConfigService).set(SEND_MESSAGE_SECTION, {
+      voiceMode: 'only',
+    });
+
+    const botDefaultRes = await execute({ text: 'Normal handoff under global voiceMode=only', to: '@helper' });
+    const botDefaultWire = JSON.parse(botDefaultRes.output as string);
+    expect(sendHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      target: '@helper',
+      content: 'Normal handoff under global voiceMode=only',
+    }));
+    expect(botDefaultWire).toMatchObject({
+      delivered_to: ['@helper'],
+      delivery: 'pending',
+    });
+    expect(botDefaultWire.channels).toBeUndefined();
+
+    const botExplicitAppendRes = await execute({
+      text: 'Handoff with explicit append voice',
+      to: '@helper',
+      voice_mode: 'append',
+    });
+    const botExplicitAppendWire = JSON.parse(botExplicitAppendRes.output as string);
+    expect(botExplicitAppendWire).toMatchObject({
+      delivered_to: ['@helper'],
+      channels: [{ channel_id: '@helper', status: 'partial', unsupported: ['voice'] }],
+    });
+
+    const botExplicitOnlyNoAttachmentsRes = await execute({
+      text: 'Handoff with explicit voice only',
+      to: '@helper',
+      voice_mode: 'only',
+    });
+    const botExplicitOnlyNoAttachmentsWire = JSON.parse(botExplicitOnlyNoAttachmentsRes.output as string);
+    expect(botExplicitOnlyNoAttachmentsWire).toMatchObject({
+      delivered_to: [],
+      delivery: 'undeliverable',
+      voice_only: true,
+      channels: [{ channel_id: '@helper', status: 'unsupported', unsupported: ['voice'] }],
+    });
+
+    const botExplicitOnlyWithAttachmentRes = await execute({
+      text: 'Spoken note for attachment',
+      to: '@helper',
+      voice_mode: 'only',
+      attachments: [{ path: join(cwd, 'report.pdf') }],
+    });
+    const botExplicitOnlyWithAttachmentWire = JSON.parse(botExplicitOnlyWithAttachmentRes.output as string);
+    expect(botExplicitOnlyWithAttachmentWire).toMatchObject({
+      delivered_to: ['@helper'],
+      voice_only: true,
+      channels: [{ channel_id: '@helper', status: 'partial', unsupported: ['voice'] }],
+    });
+
+    await ctx.get(ISessionMetadata).update({ custom: { room_member_of: 'room-42' } });
+    const roomDefaultRes = await execute({ text: 'Room broadcast under global voiceMode=only' });
+    const roomDefaultWire = JSON.parse(roomDefaultRes.output as string);
+    expect(postBotMessage).toHaveBeenCalledWith(expect.objectContaining({
+      roomId: 'room-42',
+      text: 'Room broadcast under global voiceMode=only',
+    }));
+    expect(roomDefaultWire).toMatchObject({
+      delivered_to: ['@all'],
+      delivery: 'delivered',
+    });
+    expect(roomDefaultWire.channels).toBeUndefined();
+
+    const roomExplicitAppendRes = await execute({
+      text: 'Room broadcast with explicit append voice',
+      voice_mode: 'append',
+      end_turn: true,
+    });
+    const roomExplicitAppendWire = JSON.parse(roomExplicitAppendRes.output as string);
+    expect(roomExplicitAppendWire).toMatchObject({
+      delivered_to: ['@all'],
+      channels: [{ channel_id: 'room:room-42', status: 'partial', unsupported: ['voice'] }],
+    });
+    expect(roomExplicitAppendRes.stopTurn).toBeUndefined();
+  });
+
+  it('reflects unsupported voice channels accurately: only mode never sends text or file, append mode delivers text with partial/unsupported receipt', async () => {
+    const mediaMock = mockTtsMediaService();
+    const discordSent: { input: Parameters<UserMessageChannel['send']>[0]; skipped: readonly string[] }[] = [];
+    const discordChannel: UserMessageChannel = {
+      id: 'im:discord-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [
+        { kind: 'image', mimeTypes: ['image/*'] },
+        { kind: 'file' },
+        { kind: 'audio', mimeTypes: ['audio/*'], rendering: 'attachment' },
+      ],
+      send: async (input, skipped) => {
+        discordSent.push({ input, skipped });
+        return { status: 'delivered', messageIds: ['discord_msg_1'] };
+      },
+    };
+
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [discordChannel],
+          sendMessage: async (input) => routeUserMessage(input, [discordChannel]),
+        });
+      }),
+    );
+
+    const onlyResult = await execute({
+      text: 'Secret voice only',
+      voice_mode: 'only',
+      channel: 'im:discord-1',
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'discord-only', signal: new AbortController().signal });
+    const onlyWire = JSON.parse(onlyResult.output as string);
+    expect(discordSent).toHaveLength(0);
+    expect(mediaMock.start).not.toHaveBeenCalled();
+    expect(onlyWire).toMatchObject({
+      delivered_to: [],
+      delivery: 'undeliverable',
+      voice_only: true,
+      channels: [{ channel_id: 'im:discord-1', status: 'unsupported', unsupported: ['voice'] }],
+    });
+    expect(onlyResult.stopTurn).toBeUndefined();
+
+    const appendResult = await execute({
+      text: 'Deliverable text body',
+      voice_mode: 'append',
+      channel: 'im:discord-1',
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'discord-append', signal: new AbortController().signal });
+    const appendWire = JSON.parse(appendResult.output as string);
+    expect(mediaMock.start).toHaveBeenCalledOnce();
+    expect(discordSent).toHaveLength(1);
+    expect(discordSent[0]?.input.text).toBe('Deliverable text body');
+    expect(discordSent[0]?.input.attachments).toEqual([]);
+    expect(appendWire).toMatchObject({
+      delivered_to: ['user'],
+      delivery: 'delivered',
+      channels: [
+        {
+          channel_id: 'im:discord-1',
+          status: 'partial',
+          message_ids: ['discord_msg_1'],
+          unsupported: ['voice'],
+        },
+      ],
+      attachments: [expect.objectContaining({ kind: 'voice', mime_type: 'audio/ogg' })],
+    });
+    expect(appendResult.stopTurn).toBeUndefined();
+  });
+
+  it('fans out voice_mode=only to supported channels without sending fallback text to unsupported channels', async () => {
+    const mediaMock = mockTtsMediaService();
+    const internalCh = internalMessageChannel();
+    const discordSend = vi.fn(async () => ({ status: 'delivered' as const, messageIds: ['unexpected'] }));
+    const discordChannel: UserMessageChannel = {
+      id: 'im:discord-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'file' }, { kind: 'audio', mimeTypes: ['audio/*'] }],
+      send: discordSend,
+    };
+    const channels = [internalCh, discordChannel];
+
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => channels,
+          sendMessage: async (input) => routeUserMessage(input, channels),
+        });
+      }),
+    );
+
+    const result = await execute({
+      text: 'Fanout voice only',
+      voice_mode: 'only',
+      end_turn: true,
+    });
+    const wire = JSON.parse(result.output as string);
+    expect(discordSend).not.toHaveBeenCalled();
+    expect(wire).toMatchObject({
+      delivered_to: ['user'],
+      delivery: 'delivered',
+      voice_only: true,
+      channels: [
+        { channel_id: 'internal', status: 'delivered' },
+        { channel_id: 'im:discord-1', status: 'unsupported', unsupported: ['voice'] },
+      ],
+    });
+    expect(result.stopTurn).toBeUndefined();
+  });
 });

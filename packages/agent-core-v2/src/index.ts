@@ -615,6 +615,8 @@ export * from '#/agent/tools/agent-send/agent-send';
 import '#/agent/tools/agent-send/agentSendTool';
 export * from '#/agent/tools/thread-communication/threadCommunicationTools';
 export * from '#/agent/tools/thread-communication/threadCreateTool';
+export * from '#/agent/tools/message/configSection';
+import '#/agent/tools/message/configSection';
 export * from '#/agent/tools/message/sendMessageTool';
 import '#/agent/tools/message/sendMessageTool';
 export * from '#/agent/tools/message/readMessageHistoryTool';

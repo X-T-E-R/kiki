@@ -32,6 +32,8 @@ export { INTERNAL_MESSAGE_CAPABILITIES, internalMessageChannel, supportsMessageM
 export interface IUserMessageRouter {
   readonly _serviceBrand: undefined;
   sendMessage(input: UserMessageInput): Promise<SendMessageReceipt>;
+  listChannels?(sessionId: string): Promise<readonly MessageChannelBinding[]>;
+  allowChannelBorrowing?(): Promise<boolean> | boolean;
 }
 
 export const IUserMessageRouter = createDecorator<IUserMessageRouter>('userMessageRouter');

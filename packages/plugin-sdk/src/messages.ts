@@ -11,12 +11,28 @@ export const pluginMessageAttachmentSchema = z.union([
   z.object({ file_id: z.string().min(1), ...messageAttachmentFields }).strict(),
 ]);
 
+export const pluginMessageVoiceModeSchema = z.enum(['none', 'append', 'only']);
+
+export const pluginMessageTtsInputSchema = z.object({
+  mode: pluginMessageVoiceModeSchema.optional(),
+  text: z.string().max(20_000).optional(),
+  provider: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  voice: z.string().min(1).optional(),
+  language: z.string().min(1).optional(),
+  format: z.string().min(1).optional(),
+  sample_rate_hz: z.number().int().positive().optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
 export const pluginMessageBatchItemSchema = z.object({
   text: z.string().max(20_000).optional(),
   attachments: z.array(pluginMessageAttachmentSchema).max(32).optional(),
   reply_to: z.string().min(1).optional(),
   mention_ids: z.array(z.string().min(1).max(1024)).max(1000).optional(),
-}).strict().refine((input) => (input.text?.trim().length ?? 0) > 0 || (input.attachments?.length ?? 0) > 0, {
+  voice_mode: pluginMessageVoiceModeSchema.optional(),
+  tts: pluginMessageTtsInputSchema.optional(),
+}).strict().refine((input) => (input.text?.trim().length ?? 0) > 0 || (input.attachments?.length ?? 0) > 0 || (input.tts?.text?.trim().length ?? 0) > 0, {
   message: 'A message cannot be blank.',
 });
 
@@ -25,6 +41,8 @@ export const pluginMessageSendInputSchema = z.object({
   attachments: z.array(pluginMessageAttachmentSchema).max(32).optional(),
   reply_to: z.string().min(1).optional(),
   mention_ids: z.array(z.string().min(1).max(1024)).max(1000).optional(),
+  voice_mode: pluginMessageVoiceModeSchema.optional(),
+  tts: pluginMessageTtsInputSchema.optional(),
   messages: z.array(pluginMessageBatchItemSchema).min(1).max(32).optional(),
   to: z.string().min(1).optional(),
   channel: z.string().min(1).optional(),
@@ -32,15 +50,18 @@ export const pluginMessageSendInputSchema = z.object({
   request_id: z.string().min(1).max(256).optional(),
 }).strict().superRefine((input, ctx) => {
   const hasBatch = input.messages !== undefined;
-  const hasLegacyContent = input.text !== undefined || input.attachments !== undefined || input.reply_to !== undefined || input.mention_ids !== undefined;
+  const hasLegacyContent = input.text !== undefined || input.attachments !== undefined || input.reply_to !== undefined || input.mention_ids !== undefined || input.tts?.text !== undefined;
   if (hasBatch && hasLegacyContent) {
     ctx.addIssue({ code: 'custom', path: ['messages'], message: 'messages cannot be combined with text, attachments, or reply_to.' });
     return;
   }
-  if (!hasBatch && ((input.text?.trim().length ?? 0) === 0 && (input.attachments?.length ?? 0) === 0)) {
+  if (!hasBatch && ((input.text?.trim().length ?? 0) === 0 && (input.attachments?.length ?? 0) === 0 && (input.tts?.text?.trim().length ?? 0) === 0)) {
     ctx.addIssue({ code: 'custom', message: 'A message cannot be blank.' });
   }
 });
+
+export type PluginMessageVoiceMode = z.infer<typeof pluginMessageVoiceModeSchema>;
+export type PluginMessageTtsInput = z.infer<typeof pluginMessageTtsInputSchema>;
 
 export type PluginMessageAttachment = z.infer<typeof pluginMessageAttachmentSchema>;
 export type PluginMessageBatchItem = z.infer<typeof pluginMessageBatchItemSchema>;
@@ -85,6 +106,7 @@ export const pluginMessageReceiptSchema = z.object({
   sender: pluginMessageSenderSchema.optional(),
   handoff: pluginMessageHandoffSchema.optional(),
   deduplicated: z.boolean().optional(),
+  voice_only: z.boolean().optional(),
   delivery: z.enum(['pending', 'delivered', 'undeliverable']).optional(),
   detail: z.string().optional(),
 }).strict();

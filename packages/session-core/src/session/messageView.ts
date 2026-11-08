@@ -99,7 +99,7 @@ export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
     if (content === undefined) return [];
     const matches = receipts.filter((value) => record(value)?.['index'] === index);
     const receipt = matches.length === 1 ? record(matches[0]) : undefined;
-    const child: ToolBlock = { ...tool, id: `${tool.id}:message:${index}`, args: { to: args?.['to'], channel: args?.['channel'], channels: args?.['channels'], ...content }, argsText: '', output: receipt === undefined ? undefined : JSON.stringify(receipt) };
+    const child: ToolBlock = { ...tool, id: `${tool.id}:message:${index}`, args: { to: args?.['to'], channel: args?.['channel'], channels: args?.['channels'], voice_mode: args?.['voice_mode'], tts: args?.['tts'], ...content }, argsText: '', output: receipt === undefined ? undefined : JSON.stringify(receipt) };
     const message = projectSingleSendMessage(child);
     return message === undefined ? [] : [{ ...message, itemIndex: index, sourceTool: tool }];
   });
@@ -121,6 +121,12 @@ function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
           : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
             : 'sent';
   const spoken = status === 'sent' || status === 'sending' || status === 'pending';
+  const ttsArg = record(args?.['tts']);
+  const explicitMode = string(ttsArg?.['mode']) ?? string(args?.['voice_mode']);
+  const voiceOnly = result?.['voice_only'] === true || (result === undefined && explicitMode === 'only');
+  const rawText = string(args?.['text']);
+  const speechFallback = explicitMode === 'append' ? string(ttsArg?.['text']) : undefined;
+  const displayText = voiceOnly ? '' : (rawText !== undefined && rawText.trim().length > 0 ? rawText : speechFallback ?? rawText ?? '');
   // A refused send never produced a receipt: the call's own error text is the
   // only reason there is, and it must stay readable instead of the row alone
   // saying "not sent".
@@ -136,7 +142,7 @@ function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
   return {
     kind: 'message', id: tool.id, toolCallId: tool.toolCallId, messageId,
     origin: 'send_message', status,
-    text: spoken ? string(args?.['text']) ?? '' : '',
+    text: spoken ? displayText : '',
     to: string(args?.['to']), replyTo: string(args?.['reply_to']),
     attachments: status === 'sent' ? attachments(result?.['attachments']) : [],
     deliveredTo: status === 'sent' ? strings(result?.['delivered_to']) : [],

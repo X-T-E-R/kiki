@@ -47,8 +47,28 @@ const scenarios = [
       await makeWalker('/settings/notifications', '[data-notify-channels]', {
         name: 'notifications',
         after: async ({ page, shot }) => {
+          const rulesSummary = page.locator('[data-im-rules] > summary');
+          if (await rulesSummary.count() > 0) {
+            await rulesSummary.click();
+            await page.waitForSelector('[data-im-tts-rules]', { timeout: 10_000 });
+            const moreSummary = page.locator('[data-im-tts-more] > summary');
+            if (await moreSummary.count() > 0) await moreSummary.click();
+            await page.locator('[data-im-tts-rules]').scrollIntoViewIfNeeded();
+            await page.waitForTimeout(250);
+            await shot('list-notifications-tts-1440');
+          }
           await page.setViewportSize({ width: 390, height: 844 });
-          await page.locator('#st-card-notify-away').scrollIntoViewIfNeeded();
+          if (await page.locator('[data-im-tts-rules]').count() > 0) {
+            await page.locator('[data-im-tts-rules]').scrollIntoViewIfNeeded();
+            await page.waitForTimeout(250);
+            const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+            if (overflow) throw new Error('Notifications page overflows the 390px viewport');
+            await shot('list-notifications-tts-390');
+            await rulesSummary.click();
+            await page.waitForTimeout(150);
+          }
+          const away = page.locator('#st-card-notify-away');
+          if (await away.isVisible()) await away.scrollIntoViewIfNeeded();
           const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
           if (overflow) throw new Error('Notifications page overflows the 390px viewport');
           await shot('list-notifications-390');

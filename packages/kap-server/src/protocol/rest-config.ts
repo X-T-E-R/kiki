@@ -29,7 +29,7 @@ import { executorInstancesPatchSchema, executorInstancesResponseSchema } from '@
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema } from '@kiki/protocol';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema, sendMessageConfigPatchSchema, sendMessageConfigResponseSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -141,6 +141,7 @@ const replaceableConfigDomainSchema = z.enum([
   'loop_control',
   'worktree',
   'session_residency',
+  'send_message',
 ]);
 
 export const providerConfigResponseSchema = z.object({
@@ -212,6 +213,7 @@ export const configResponseSchema = z.object({
   plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
+  send_message: sendMessageConfigResponseSchema.optional(),
   prompt: PromptConfigSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
   retry: retryConfigResponseSchema.optional(),
@@ -281,6 +283,7 @@ export const patchConfigRequestSchema = z.object({
   plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
+  send_message: sendMessageConfigPatchSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
   retry: retryConfigSchema.optional(),

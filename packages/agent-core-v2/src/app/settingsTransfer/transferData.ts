@@ -8,7 +8,7 @@ export const TRANSFER_DOMAINS: Readonly<Record<SettingsTransferCategory, readonl
   permissions: ['permission', 'defaultPermissionMode', 'defaultPlanMode', 'plan', 'loopControl', 'retry', 'interaction', 'task', 'background', 'sessionTitle', 'sessionResidency', 'threadCommunication', 'worktree', 'hooks', 'workspaceInstance', 'taskBoard', 'experimental'],
   tools: ['tools', 'mcp', 'plugins', 'pluginSettings', 'nbSearch', 'nbSearchSource', 'optionalCapabilities'],
   browser: ['browserControl', 'computerControl'],
-  notifications: ['notifications'],
+  notifications: ['notifications', 'sendMessage'],
   appearance: ['spaceUi', 'identity'],
 };
 

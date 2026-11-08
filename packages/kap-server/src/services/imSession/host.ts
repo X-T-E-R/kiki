@@ -111,6 +111,8 @@ export async function createImSessionHost(input: {
     input.core.instantiation.provide(IUserMessageRouter, {
       _serviceBrand: undefined,
       sendMessage: (message) => bridge.sendUserMessage(message),
+      listChannels: (sessionId) => bridge.channelViews(sessionId),
+      allowChannelBorrowing: async () => (await bridge.snapshot()).policy.allow_channel_borrowing ?? false,
     });
     input.core.instantiation.provide(IImMessageHistoryReader, {
       _serviceBrand: undefined,

@@ -31,6 +31,7 @@ import { EXPERIMENTAL_SECTION, IFlagService } from '@kiki/agent-core-v2/app/flag
 import { IOptionalCapabilityPolicy } from '@kiki/agent-core-v2/app/optionalCapability/policy';
 import { OPTIONAL_CAPABILITIES_SECTION } from '@kiki/agent-core-v2/app/optionalCapability/configSection';
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
+import { SEND_MESSAGE_SECTION } from '@kiki/agent-core-v2';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
@@ -248,6 +249,20 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
           } else if (domain === THREAD_COMMUNICATION_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['enabled'] === null) {
             await config.removeOverride(THREAD_COMMUNICATION_SECTION, ['enabled']);
+          } else if (domain === SEND_MESSAGE_SECTION && isPlainObject(camelPatch[domain])) {
+            const patch = { ...camelPatch[domain] };
+            for (const [key, value] of Object.entries(patch)) {
+              if (value === null) {
+                await config.removeOverride(SEND_MESSAGE_SECTION, [key]);
+                delete patch[key];
+              }
+            }
+            if (replaceDomains.has(domain)) {
+              await config.replace(domain, null);
+              if (Object.keys(patch).length > 0) await config.replace(domain, patch);
+            } else if (Object.keys(patch).length > 0) {
+              await config.set(domain, patch);
+            }
           } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
             await config.replace(FAST_MODEL_SECTION, null, ConfigTarget.User);
           } else if (domain === 'prompt' && replaceDomains.has(domain)) {
@@ -594,7 +609,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env']);
+const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options']);
 
 function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
   if (Array.isArray(obj)) {
