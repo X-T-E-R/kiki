@@ -1593,6 +1593,127 @@ void test('legacy AGY load verifies the saved native binding without an old audi
   } finally { await b.close(); await c.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-root bindings, settled failed tools and two-step terminal errors while rejecting mismatches', { timeout: 15000 }, async () => {
+  const { mkdir, mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = await mkdtemp(join(tmpdir(), 'agy-legacy-gemini-load-'));
+  const extraA = join(root, 'extra-a');
+  const extraB = join(root, 'extra-b');
+  const unapproved = join(root, 'visited-outside');
+  const sessionId = '33333333-3333-4333-8333-333333333333';
+  const conversationId = '44444444-4444-4444-8444-444444444444';
+  const model = 'gemini-4-argon-high';
+  const terminalError = 'There was a network issue connecting to the server, please try again.';
+  const streamError = 'API error (attempt 1): doRequest: wsarecv: An existing connection was forcibly closed by the remote host.';
+  const proof = {
+    version: 1,
+    sessionId,
+    conversationId,
+    model,
+    effort: 'high',
+    terminalError,
+    additionalDirectories: [extraA, extraB],
+    tools: [
+      { stepIndex: 2, name: 'read_file', failed: true, error: 'file does not exist' },
+      { stepIndex: 3, name: 'edit_file' },
+      { stepIndex: 4, name: 'run_command' },
+    ],
+  };
+  const params = { sessionId, cwd: root, additionalDirectories: [extraA, extraB], mcpServers: [], _meta: { 'kiki.agyLegacyRecovery': proof } };
+  const auditDir = join(root, 'audit');
+  const b = bridge(model); b.auditDir = auditDir; b.nativeHome = root;
+  const dbPath = join(root, 'conversations', `${conversationId}.db`);
+  const transcriptDir = join(root, 'brain', conversationId, '.system_generated', 'logs');
+  const varint = value => {
+    const bytes = [];
+    while (value >= 128) { bytes.push((value & 127) | 128); value >>>= 7; }
+    return Buffer.from([...bytes, value]);
+  };
+  const field = (number, value) => {
+    const bytes = Buffer.from(value);
+    return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+  };
+  try {
+    await mkdir(join(root, 'conversations'));
+    await mkdir(transcriptDir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('CREATE TABLE trajectory_metadata_blob(id TEXT, data BLOB); CREATE TABLE gen_metadata(idx INTEGER, data BLOB); CREATE TABLE executor_metadata(idx INTEGER, data BLOB); CREATE TABLE steps(idx INTEGER, step_type INTEGER, status INTEGER, step_payload BLOB)');
+      const sortedUris = [extraA, extraB, root].map(dir => pathToFileURL(dir).href);
+      db.prepare('INSERT INTO trajectory_metadata_blob VALUES (?, ?)').run('main', Buffer.concat([
+        field(6, conversationId),
+        ...sortedUris.map(uri => field(7, uri)),
+      ]));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(0, field(1, field(19, 'gemini-4-argon')));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(1, field(3, field(28, `gemini-api://models/${model}`)));
+      db.prepare('INSERT INTO executor_metadata VALUES (?, ?)').run(0, field(10, field(1, field(28, `gemini-api://models/${model}`))));
+      const step = db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)');
+      step.run(0, 14, 3, field(19, field(12, Buffer.concat(sortedUris.map(uri => field(12, uri))))));
+      step.run(1, 15, 3, Buffer.alloc(0));
+      step.run(2, 132, 7, Buffer.concat([field(5, field(4, field(2, 'read_file'))), field(31, field(2, 'file does not exist'))]));
+      step.run(3, 132, 3, field(5, field(4, field(2, 'edit_file'))));
+      step.run(4, 132, 3, Buffer.concat([field(5, field(4, field(2, 'run_command'))), field(140, field(2, field(6, field(2, field(7, extraA)))))]));
+      step.run(5, 17, 3, field(24, field(3, field(2, streamError))));
+      step.run(6, 17, 3, field(24, field(3, Buffer.concat([
+        field(1, terminalError),
+        field(2, 'agent executor error: dial tcp 127.0.0.1:54555: connectex: actively refused'),
+      ]))));
+    } finally { db.close(); }
+    const writeTranscript = rows => writeFile(join(transcriptDir, 'transcript_full.jsonl'), rows.map(row => JSON.stringify(row)).join('\n'));
+    const validTranscript = [
+      { step_index: 0, type: 'USER_INPUT', status: 'DONE', content: 'prompt' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'read_file' }, { name: 'edit_file' }, { name: 'run_command' }] },
+      { step_index: 2, type: 'GENERIC', status: 'ERROR', error: 'file does not exist' },
+      { step_index: 3, type: 'GENERIC', status: 'DONE' },
+      { step_index: 4, type: 'GENERIC', status: 'DONE' },
+      { step_index: 5, type: 'ERROR_MESSAGE', status: 'DONE', error: streamError },
+    ];
+    await writeTranscript(validTranscript);
+
+    await assert.rejects(b.loadSession({ ...params, cwd: unapproved, additionalDirectories: [extraA, extraB] }), /workspace differs/);
+    await assert.rejects(b.loadSession({ ...params, cwd: extraA, additionalDirectories: [] }), /workspace differs/);
+
+    const mutateDb = fn => {
+      const mdb = new DatabaseSync(dbPath);
+      try { fn(mdb); } finally { mdb.close(); }
+    };
+    mutateDb(mdb => {
+      mdb.prepare('UPDATE gen_metadata SET data = ? WHERE idx = 1').run(field(3, field(28, 'gemini-api://models/gemini-4-argon-medium')));
+    });
+    await assert.rejects(b.loadSession(params), /native model differs/);
+    mutateDb(mdb => {
+      mdb.prepare('UPDATE gen_metadata SET data = ? WHERE idx = 1').run(field(1, field(19, 'gemini-4-argon')));
+      mdb.prepare('DELETE FROM executor_metadata').run();
+    });
+    await assert.rejects(b.loadSession(params), /native model differs/);
+    mutateDb(mdb => {
+      mdb.prepare('UPDATE gen_metadata SET data = ? WHERE idx = 1').run(field(3, field(28, `gemini-api://models/${model}`)));
+      mdb.prepare('INSERT INTO executor_metadata VALUES (?, ?)').run(0, field(10, field(1, field(28, `gemini-api://models/${model}`))));
+    });
+
+    await assert.rejects(b.loadSession({
+      ...params,
+      _meta: { 'kiki.agyLegacyRecovery': { ...proof, tools: [{ stepIndex: 2, name: 'read_file' }, proof.tools[1], proof.tools[2]] } },
+    }), /native tools differ/);
+
+    mutateDb(mdb => {
+      mdb.prepare('UPDATE steps SET step_payload = ? WHERE idx = 2').run(
+        Buffer.concat([field(5, field(4, field(2, 'read_file'))), field(31, field(2, 'tool call denied by pre-tool hook: rejected'))]),
+      );
+    });
+    await assert.rejects(b.loadSession(params), /native tools differ/);
+    mutateDb(mdb => {
+      mdb.prepare('UPDATE steps SET step_payload = ? WHERE idx = 2').run(
+        Buffer.concat([field(5, field(4, field(2, 'read_file'))), field(31, field(2, 'file does not exist'))]),
+      );
+    });
+
+    assert.equal((await b.loadSession(params)).configOptions[0].currentValue, 'high');
+    assert.deepEqual(b.session(sessionId).additionalDirectories, [extraA, extraB]);
+    assert.equal(b.session(sessionId).conversationId, conversationId);
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 void test('terminal quota or auth vendor failure stops the owned CLI process and releases its lease so another account can load the exact conversation', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-account-load-'));

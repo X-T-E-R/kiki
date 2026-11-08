@@ -540,19 +540,36 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return negotiated?.resume !== false || negotiated?.load !== false || this.#legacyAgyRecovery(state) !== undefined;
   }
 
-  #legacyAgyRecovery(state: ReturnType<typeof externalStateForGeneration>) {
+  #legacyAgyRecovery(
+    state: ReturnType<typeof externalStateForGeneration>,
+    roots = this.#runtimeLease.runtime.workspace.mapRoots({
+      workDir: this.#workspace.workDir,
+      additionalDirs: this.#workspace.additionalDirs,
+    }),
+  ) {
     const { descriptor, binding } = this.context;
     const sessionId = sessionIdFromState(state.sessionRef);
     const turn = this.#states.get(turnKey).lastEnded;
+    const disclosedCwd = binding.environmentDisclosure?.cwd;
+    const terminalError = turn?.error?.message?.startsWith(AGY_TERMINAL_ERROR_PREFIX)
+      ? turn.error.message.slice(AGY_TERMINAL_ERROR_PREFIX.length).trim()
+      : '';
     if (executorSourceId(descriptor) !== 'agy-cli' || state.executorId !== descriptor.id ||
         launchHome(descriptor) !== '' || !sameLaunchHome(state.sessionRef, descriptor) ||
         state.sessionRef?.ref['localSource'] !== undefined || state.sessionEpoch !== 1 ||
         sessionId === undefined || !AGY_UUID.test(sessionId) || state.profileDeliveredSessionId !== sessionId ||
         binding.modelAlias === undefined || !this.#reusablePriorState(state) ||
+        (disclosedCwd !== undefined && !sameWorkspacePath(disclosedCwd, roots.workDir)) ||
         turn?.turnId !== 0 || turn.reason !== 'failed' || turn.error?.code !== 'executor.protocol_error' ||
-        turn.error.message !== 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.') return undefined;
-    return legacyAgyRecoveryProof(this.#memory.get(), sessionId, binding.modelAlias,
-      binding.thinkingEffortExplicit === true ? binding.thinkingLevel : 'engine-default');
+        terminalError.length === 0 || AGY_UNRECOVERABLE_TERMINAL_ERROR.test(terminalError)) return undefined;
+    return legacyAgyRecoveryProof(
+      this.#memory.get(),
+      sessionId,
+      binding.modelAlias,
+      binding.thinkingEffortExplicit === true ? binding.thinkingLevel : 'engine-default',
+      terminalError,
+      roots.additionalDirs,
+    );
   }
 
   canRetryBrokenConstruction(): boolean {
@@ -739,7 +756,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         : acpMcpServers(mcp.connectionManager, roots.workDir,
           (name) => process.env[name], this.context.descriptor.mcpTransports,
           kikiChildDefaults(this.context.agent.accessor.get(IBootstrapService).homeDir));
-    const legacy = servers.length === 0 && (roots.additionalDirs?.length ?? 0) === 0 ? this.#legacyAgyRecovery(state) : undefined;
+    const legacy = servers.length === 0 ? this.#legacyAgyRecovery(state, roots) : undefined;
     const sessionMeta = { ...this.#harnessMcp?.sessionMeta, 'kiki.permission': externalPermissionMeta(this.context), 'kiki.agyLegacyRecovery': legacy };
     const settings = this.context.descriptor.claudeSettingsFile;
     return {
@@ -1456,11 +1473,30 @@ function originalRemoteResumeFields(
 }
 
 const AGY_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const AGY_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/i;
+const AGY_TERMINAL_ERROR_PREFIX = 'AGY terminal status ERROR: ';
+const AGY_UNRECOVERABLE_TERMINAL_ERROR = /^(?:interrupted|canceled|cancelled)$/i;
+const AGY_SYNTHETIC_TOOL_ERROR = /^(?:External tool did not report a terminal result before the turn ended\.|AGY turn (?:canceled|cancelled|interrupted)|AGY permission denied|tool call denied by pre-tool hook:|AGY terminal result arrived before a tool terminal update:|AGY terminal status )/i;
 
-function legacyAgyRecoveryProof(messages: readonly ContextMessage[], sessionId: string, model: string, effort: string | undefined) {
+function sameWorkspacePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const cleaned = value.replaceAll('\\', '/').replace(/\/+$/u, '');
+    return process.platform === 'win32' ? cleaned.toLowerCase() : cleaned;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function legacyAgyRecoveryProof(
+  messages: readonly ContextMessage[],
+  sessionId: string,
+  model: string,
+  effort: string | undefined,
+  terminalError: string,
+  additionalDirectories?: readonly string[],
+) {
   const prefix = `external:${encodeURIComponent(`${sessionId}:e1`)}:`;
   const calls = new Map<string, string>();
-  const completed = new Set<string>();
+  const completed = new Map<string, { readonly failed: boolean; readonly errorText?: string }>();
   for (const message of messages) {
     for (const call of message.toolCalls) {
       if (!call.id.startsWith(prefix)) continue;
@@ -1469,22 +1505,41 @@ function legacyAgyRecoveryProof(messages: readonly ContextMessage[], sessionId: 
     }
     const id = message.toolCallId;
     if (message.role !== 'tool' || !id?.startsWith(prefix)) continue;
-    if (message.isError === true || completed.has(id)) return undefined;
-    completed.add(id);
+    if (completed.has(id)) return undefined;
+    const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n').trim();
+    if (message.isError === true && (text.length === 0 || AGY_SYNTHETIC_TOOL_ERROR.test(text) || /execution state is unknown/i.test(text))) {
+      return undefined;
+    }
+    completed.set(id, { failed: message.isError === true, errorText: message.isError === true ? text : undefined });
   }
   if (calls.size === 0 || calls.size > 1000 || calls.size !== completed.size) return undefined;
   let conversationId: string | undefined;
-  const tools: { stepIndex: number; name: string }[] = [];
+  const tools: { stepIndex: number; name: string; failed?: true; error?: string }[] = [];
   for (const [id, name] of calls) {
     const parts = /^agy-(.+)-(\d+)$/.exec(id.slice(prefix.length));
-    if (parts === null || !AGY_UUID.test(parts[1]!) || !completed.has(id) || !['read_file', 'run_command'].includes(name)) return undefined;
+    const outcome = completed.get(id);
+    if (parts === null || !AGY_UUID.test(parts[1]!) || outcome === undefined || !AGY_TOOL_NAME.test(name)) return undefined;
     if (conversationId !== undefined && conversationId !== parts[1]) return undefined;
     conversationId = parts[1];
     const stepIndex = Number(parts[2]);
     if (!Number.isSafeInteger(stepIndex)) return undefined;
-    tools.push({ stepIndex, name });
+    tools.push({
+      stepIndex,
+      name,
+      failed: outcome.failed ? true : undefined,
+      error: outcome.errorText,
+    });
   }
-  return { version: 1, sessionId, conversationId, model, effort, tools: tools.sort((a, b) => a.stepIndex - b.stepIndex) };
+  return {
+    version: 1,
+    sessionId,
+    conversationId,
+    model,
+    effort,
+    terminalError,
+    additionalDirectories: additionalDirectories?.length ? [...additionalDirectories] : undefined,
+    tools: tools.sort((a, b) => a.stepIndex - b.stepIndex),
+  };
 }
 
 function sessionRefWithLocalSource(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {

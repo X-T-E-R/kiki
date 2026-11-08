@@ -21,15 +21,19 @@ function processAlive(pid) {
 }
 
 const NATIVE_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const NATIVE_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/i;
 const LEGACY_NATIVE_STEP = { user: 14, planner: 15, error: 17, ephemeral: 90, system: 101, tool: 132 };
 const NATIVE_DONE = 3;
+const NATIVE_ERROR = 7;
 const LEGACY_NETWORK_FAILURE = 'There was a network issue connecting to the server, please try again.';
 
-function nativeBytesAt(value, path, optionalLast = false) {
+function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
   let bytes = Buffer.from(value);
   for (const [index, field] of path.entries()) {
     let offset = 0;
     let selected;
+    const repeated = [];
+    const last = index === path.length - 1;
     const integer = () => {
       let value = 0;
       for (let shift = 0; shift <= 49 && offset < bytes.length; shift += 7) {
@@ -50,20 +54,30 @@ function nativeBytesAt(value, path, optionalLast = false) {
         const length = integer();
         if (length > bytes.length - offset) throw new Error('Truncated AGY native metadata');
         if (number === field) {
-          if (selected !== undefined) throw new Error('Ambiguous AGY native metadata binding');
-          selected = bytes.subarray(offset, offset + length);
+          const slice = bytes.subarray(offset, offset + length);
+          if (repeatedLast && last) repeated.push(slice.toString('utf8'));
+          else if (selected !== undefined) throw new Error('Ambiguous AGY native metadata binding');
+          else selected = slice;
         }
         offset += length;
       } else throw new Error('Unsupported AGY native metadata wire type');
       if (offset > bytes.length) throw new Error('Truncated AGY native metadata');
     }
+    if (repeatedLast && last) {
+      if (!repeated.length && !optionalLast) throw new Error('Unconfirmed AGY native metadata binding');
+      return repeated;
+    }
     if (selected === undefined) {
-      if (optionalLast && index === path.length - 1) return undefined;
+      if (optionalLast) return repeatedLast ? [] : undefined;
       throw new Error('Unconfirmed AGY native metadata binding');
     }
     bytes = selected;
   }
   return bytes.toString('utf8');
+}
+
+function nativeStringsAt(value, path, optionalLast = false) {
+  return nativeBytesAt(value, path, optionalLast, true);
 }
 
 async function readLegacyTranscript(path) {
@@ -79,12 +93,29 @@ async function readLegacyTranscript(path) {
   } finally { await file.close(); }
 }
 
-export async function readLegacyNativeRecovery({ nativeHome, cwd, sessionId, proof, model }) {
+export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDirectories = [], sessionId, proof, model }) {
+  const extraDirs = proof?.additionalDirectories ?? [];
+  const terminalError = proof?.terminalError ?? LEGACY_NETWORK_FAILURE;
   if (proof?.version !== 1 || proof.sessionId !== sessionId || !NATIVE_ID.test(sessionId) || !NATIVE_ID.test(proof.conversationId) || !isAbsolute(cwd) ||
-      proof.model !== model || typeof proof.effort !== 'string' || !Array.isArray(proof.tools) || !proof.tools.length || proof.tools.length > 1000 ||
-      proof.tools.some(tool => !Number.isSafeInteger(tool?.stepIndex) || tool.stepIndex < 0 || !['read_file', 'run_command'].includes(tool.name)) ||
+      !Array.isArray(additionalDirectories) || additionalDirectories.some(dir => typeof dir !== 'string' || !isAbsolute(dir)) ||
+      !Array.isArray(extraDirs) || extraDirs.some(dir => typeof dir !== 'string' || !isAbsolute(dir)) ||
+      proof.model !== model || typeof proof.effort !== 'string' || typeof terminalError !== 'string' || !terminalError.trim() ||
+      /^(?:interrupted|canceled|cancelled)$/i.test(terminalError.trim()) ||
+      !Array.isArray(proof.tools) || !proof.tools.length || proof.tools.length > 1000 ||
+      proof.tools.some(tool => !Number.isSafeInteger(tool?.stepIndex) || tool.stepIndex < 0 || !NATIVE_TOOL_NAME.test(tool.name ?? '') ||
+        (tool.failed !== undefined && tool.failed !== true) ||
+        (tool.error !== undefined && (typeof tool.error !== 'string' || !tool.error.trim()))) ||
       new Set(proof.tools.map(tool => tool.stepIndex)).size !== proof.tools.length) {
     throw new Error('AGY legacy load requires an exact original session and completed native tool mapping');
+  }
+  const canonical = value => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value);
+  if (extraDirs.length > 0 && (extraDirs.length !== additionalDirectories.length ||
+      extraDirs.some((dir, index) => canonical(dir) !== canonical(additionalDirectories[index])))) {
+    throw new Error('AGY legacy native conversation or workspace differs from its original binding');
+  }
+  const expectedRoots = new Set([cwd, ...additionalDirectories].map(canonical));
+  if (expectedRoots.size !== 1 + additionalDirectories.length) {
+    throw new Error('AGY legacy native conversation or workspace differs from its original binding');
   }
   const conversationId = proof.conversationId;
   const { DatabaseSync } = await import('node:sqlite');
@@ -93,39 +124,126 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, sessionId, pro
     db.exec('BEGIN');
     const metadata = db.prepare('SELECT data FROM trajectory_metadata_blob WHERE id = ? AND length(data) <= 65536').get('main');
     const data = metadata?.data ?? [];
-    const nativeCwd = fileURLToPath(nativeBytesAt(data, [7]));
-    const canonical = value => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value);
-    if (nativeBytesAt(data, [6]) !== conversationId || canonical(nativeCwd) !== canonical(cwd)) {
+    const nativeRootUris = nativeStringsAt(data, [7]);
+    const nativeRoots = new Set(nativeRootUris.map(uri => canonical(fileURLToPath(uri))));
+    if (nativeBytesAt(data, [6]) !== conversationId || nativeRootUris.length !== expectedRoots.size ||
+        nativeRoots.size !== expectedRoots.size || [...expectedRoots].some(root => !nativeRoots.has(root))) {
       throw new Error('AGY legacy native conversation or workspace differs from its original binding');
     }
-    const models = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM gen_metadata ORDER BY idx LIMIT 1001');
-    const names = [];
-    for (const row of models.iterate(MAX_FRAME_BYTES)) names.push(nativeBytesAt(row.data ?? [], [1, 19], true));
-    if (names[0] !== model || names.length > 1000 || names.some((name, index) =>
-      name !== model && (name !== undefined || index !== names.length - 1))) {
+    const baseModel = proof.effort !== DEFAULT && model.endsWith(`-${proof.effort}`)
+      ? model.slice(0, -(proof.effort.length + 1))
+      : model;
+    const exactModel = value => value === model || value === `gemini-api://models/${model}`;
+    const models = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM gen_metadata ORDER BY idx LIMIT 1001').all(MAX_FRAME_BYTES);
+    let sawModel = false;
+    let sawExactModel = false;
+    for (const [index, row] of models.entries()) {
+      const bytes = row.data ?? [];
+      const name = nativeBytesAt(bytes, [1, 19], true);
+      const uri = nativeBytesAt(bytes, [3, 28], true);
+      if (row.data && name === undefined && uri === undefined && index !== models.length - 1) {
+        throw new Error('AGY legacy native model differs from its original binding');
+      }
+      if (name !== undefined && name !== model && name !== baseModel) {
+        throw new Error('AGY legacy native model differs from its original binding');
+      }
+      if (uri !== undefined && !exactModel(uri)) {
+        throw new Error('AGY legacy native model differs from its original binding');
+      }
+      if (name !== undefined || uri !== undefined) sawModel = true;
+      if (name === model || (uri !== undefined && exactModel(uri))) sawExactModel = true;
+    }
+    const hasExecutorMeta = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'executor_metadata');
+    const execMeta = hasExecutorMeta
+      ? db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM executor_metadata ORDER BY idx LIMIT 10').all(MAX_FRAME_BYTES)
+      : [];
+    for (const row of execMeta) {
+      const uri = nativeBytesAt(row.data ?? [], [10, 1, 28], true);
+      if (uri !== undefined && !exactModel(uri)) {
+        throw new Error('AGY legacy native model differs from its original binding');
+      }
+      if (uri !== undefined && exactModel(uri)) sawExactModel = true;
+    }
+    if (models.length === 0 || models.length > 1000 || !sawModel || !sawExactModel) {
       throw new Error('AGY legacy native model differs from its original binding');
     }
     const steps = db.prepare('SELECT idx, step_type, status FROM steps ORDER BY idx LIMIT 10001').all();
-    if (!steps.length || steps.length > 10000 || steps.some((step, index) => step.idx !== index || step.status !== NATIVE_DONE ||
-        !Object.values(LEGACY_NATIVE_STEP).includes(step.step_type)) || steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.user).length !== 1) {
+    if (!steps.length || steps.length > 10000 || steps.some((step, index) => step.idx !== index ||
+        !Object.values(LEGACY_NATIVE_STEP).includes(step.step_type) ||
+        (step.step_type === LEGACY_NATIVE_STEP.tool ? step.status !== NATIVE_DONE && step.status !== NATIVE_ERROR : step.status !== NATIVE_DONE)) ||
+        steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.user).length !== 1) {
       throw new Error('AGY legacy native turn has unresolved steps or unknown steering; do not replay it');
+    }
+    const step0Row = db.prepare('SELECT step_payload FROM steps WHERE idx = 0 AND length(step_payload) <= 65536').get();
+    const step0Uris = nativeStringsAt(step0Row?.step_payload ?? [], [19, 12, 12], true);
+    if (step0Uris.length > 0) {
+      const step0Roots = new Set(step0Uris.map(uri => canonical(fileURLToPath(uri))));
+      if (step0Uris.length !== expectedRoots.size || step0Roots.size !== expectedRoots.size ||
+          [...expectedRoots].some(root => !step0Roots.has(root))) {
+        throw new Error('AGY legacy native conversation or workspace differs from its original binding');
+      }
     }
     const terminal = steps.at(-1);
     const payload = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND length(step_payload) <= 65536').get(terminal.idx);
-    if (terminal.step_type !== LEGACY_NATIVE_STEP.error || nativeBytesAt(payload?.step_payload ?? [], [24, 3, 1]) !== LEGACY_NETWORK_FAILURE) {
+    const terminalBytes = payload?.step_payload ?? [];
+    const terminalErr1 = nativeBytesAt(terminalBytes, [24, 3, 1], true);
+    const terminalErr2 = nativeBytesAt(terminalBytes, [24, 3, 2], true);
+    if (terminal.step_type !== LEGACY_NATIVE_STEP.error || (terminalErr1 !== terminalError && terminalErr2 !== terminalError)) {
       throw new Error('AGY legacy native turn has no confirmed terminal network failure');
     }
-    const toolIndices = new Set(steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.tool).map(step => step.idx));
-    if (toolIndices.size !== proof.tools.length || proof.tools.some(tool => !toolIndices.has(tool.stepIndex))) {
+    const toolSteps = steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.tool);
+    const toolByIndex = new Map(toolSteps.map(step => [step.idx, step]));
+    if (toolByIndex.size !== proof.tools.length || proof.tools.some(tool => !toolByIndex.has(tool.stepIndex))) {
       throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
+    }
+    const selectStepPayload = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND length(step_payload) <= 65536');
+    for (const tool of proof.tools) {
+      const step = toolByIndex.get(tool.stepIndex);
+      if ((tool.failed === true) !== (step.status === NATIVE_ERROR)) {
+        throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
+      }
+      const toolPayload = selectStepPayload.get(tool.stepIndex)?.step_payload ?? [];
+      const nativeName = nativeBytesAt(toolPayload, [5, 4, 2], true);
+      if (nativeName !== undefined && nativeName !== tool.name) {
+        throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
+      }
+      if (tool.failed === true) {
+        const nativeErr = nativeBytesAt(toolPayload, [31, 2], true) ?? nativeBytesAt(toolPayload, [31, 3], true);
+        if (!nativeErr || /^tool call denied by pre-tool hook:/i.test(nativeErr.trimStart()) ||
+            (tool.error !== undefined && nativeErr !== tool.error)) {
+          throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
+        }
+      }
+      const cmdCwd = nativeBytesAt(toolPayload, [140, 2, 3, 10, 3, 2], true) ?? nativeBytesAt(toolPayload, [140, 2, 6, 2, 7], true);
+      if (cmdCwd !== undefined && !expectedRoots.has(canonical(cmdCwd))) {
+        throw new Error('AGY legacy native conversation or workspace differs from its original binding');
+      }
     }
     const transcript = await readLegacyTranscript(resolve(nativeHome, 'brain', conversationId, '.system_generated', 'logs', 'transcript_full.jsonl'));
     const declared = transcript.flatMap(step => step.tool_calls ?? []);
-    if (transcript.some((step, index) => step.step_index !== index || step.status !== 'DONE') ||
-        transcript.length < steps.length - 1 || transcript.length > steps.length || transcript.at(-1).type !== 'ERROR_MESSAGE' ||
-        transcript.filter(step => step.type === 'USER_INPUT').length !== 1 || transcript.filter(step => step.type === 'GENERIC').length !== toolIndices.size ||
+    const transcriptErrorStep = transcript.at(-1);
+    const alignedErrorStep = steps[transcript.length - 1];
+    const alignedErrorBytes = alignedErrorStep?.step_type === LEGACY_NATIVE_STEP.error
+      ? (selectStepPayload.get(alignedErrorStep.idx)?.step_payload ?? [])
+      : undefined;
+    const alignedErr1 = alignedErrorBytes ? nativeBytesAt(alignedErrorBytes, [24, 3, 1], true) : undefined;
+    const alignedErr2 = alignedErrorBytes ? nativeBytesAt(alignedErrorBytes, [24, 3, 2], true) : undefined;
+    const transcriptErrorText = typeof transcriptErrorStep?.error === 'string' && transcriptErrorStep.error.trim()
+      ? transcriptErrorStep.error
+      : undefined;
+    if (transcript.some((step, index) => step.step_index !== index ||
+        (step.type === 'GENERIC' ? step.status !== 'DONE' && step.status !== 'ERROR' : step.status !== 'DONE')) ||
+        transcript.length < steps.length - 1 || transcript.length > steps.length ||
+        transcriptErrorStep?.type !== 'ERROR_MESSAGE' || alignedErrorStep?.step_type !== LEGACY_NATIVE_STEP.error ||
+        (transcriptErrorText !== undefined && transcriptErrorText !== alignedErr1 && transcriptErrorText !== alignedErr2 && transcriptErrorText !== terminalError) ||
+        transcript.filter(step => step.type === 'USER_INPUT').length !== 1 ||
+        transcript.filter(step => step.type === 'GENERIC').length !== toolByIndex.size ||
         declared.length !== proof.tools.length || declared.some((tool, index) => tool.name !== proof.tools[index].name) ||
-        proof.tools.some(tool => transcript[tool.stepIndex]?.type !== 'GENERIC')) {
+        proof.tools.some(tool => {
+          const entry = transcript[tool.stepIndex];
+          return entry?.type !== 'GENERIC' ||
+            (tool.failed === true ? entry.status !== 'ERROR' || (tool.error !== undefined && entry.error !== tool.error) : entry.status !== 'DONE');
+        })) {
       throw new Error('AGY legacy native transcript is not fully reconciled or differs from the completed Kiki tool mapping');
     }
     return { conversationId, model, effort: proof.effort };
@@ -448,8 +566,15 @@ export class AgyBridge {
   }
 
   async loadLegacySession(params, readAudit, previous) {
-    if ((params.additionalDirectories?.length ?? 0) !== 0 || (params.mcpServers?.length ?? 0) !== 0) {
+    const additionalDirectories = params.additionalDirectories ?? [];
+    if ((params.mcpServers?.length ?? 0) !== 0 ||
+        !Array.isArray(additionalDirectories) ||
+        additionalDirectories.some(dir => typeof dir !== 'string' || !isAbsolute(dir))) {
       throw new Error('AGY legacy native recovery requires the original default-home non-MCP binding');
+    }
+    if (previous && (resolve(params.cwd) !== resolve(previous.cwd) ||
+        JSON.stringify(additionalDirectories) !== JSON.stringify(previous.additionalDirectories ?? []))) {
+      throw new Error('AGY legacy native conversation or workspace differs from its original binding');
     }
     const proof = previous?.recovery?.proof ?? params._meta?.['kiki.agyLegacyRecovery'];
     const release = await this.claimResume(params.sessionId);
@@ -467,7 +592,7 @@ export class AgyBridge {
       if (typeof model !== 'string' || !model || (this.requestedModel !== DEFAULT && model !== this.requestedModel) ||
           (this.account && !this.account.modelIds.includes(model))) throw new Error('AGY legacy native model is not available for this binding');
       const recovered = await readLegacyNativeRecovery({ nativeHome: this.nativeHome, cwd: params.cwd,
-        sessionId: params.sessionId, proof, model });
+        additionalDirectories, sessionId: params.sessionId, proof, model });
       validateEffort(recovered.model, recovered.effort);
       await this.newSession(params, params.sessionId, previous ? 'session_loaded' : 'legacy_native_recovered', previous ? undefined : { ...recovered, proof });
       const session = this.session(params.sessionId);

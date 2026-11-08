@@ -816,11 +816,13 @@ describe('recoverable ACP broken resume', () => {
     }
   });
 
-  it.each(['account-switch', 'legacy-network', 'legacy-load-failure', 'legacy-unsettled'] as const)('uses real profile/dispatch for original-session recovery: %s', async (scenario) => {
+  it.each(['account-switch', 'legacy-network', 'legacy-settled-tool-error', 'legacy-load-failure', 'legacy-unsettled'] as const)('uses real profile/dispatch for original-session recovery: %s', async (scenario) => {
     const legacy = scenario !== 'account-switch';
     const legacySessionId = '11111111-1111-4111-8111-111111111111';
     const nativeId = '22222222-2222-4222-8222-222222222222';
-    const networkError = 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.';
+    const networkError = scenario === 'legacy-settled-tool-error'
+      ? 'AGY terminal status ERROR: The stream was interrupted. Please continue the task you were working on.'
+      : 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.';
     const familyDesc = {
       id: 'agy-cli',
       protocol: 'acp-v1' as const,
@@ -864,14 +866,20 @@ describe('recoverable ACP broken resume', () => {
     };
     let oldBridge = legacy;
     const toolCallId = `agy-${nativeId}-2`;
+    const toolName = scenario === 'legacy-settled-tool-error' ? 'edit_file' : 'read_file';
     const remoteA = recordingClient(() => ({
       sessionId: legacy ? legacySessionId : 'remote-shared-1',
       capabilities: { loadSession: !oldBridge },
       load: scenario === 'legacy-load-failure' ? 'unknown_session' : undefined,
       promptError: oldBridge ? networkError : undefined,
       promptUpdates: oldBridge ? [
-        { sessionUpdate: 'tool_call', toolCallId, title: 'read_file', kind: 'other', status: 'in_progress' },
-        ...scenario === 'legacy-unsettled' ? [] : [{ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', rawOutput: 'old tool output' }],
+        { sessionUpdate: 'tool_call', toolCallId, title: toolName, kind: 'other', status: 'in_progress' },
+        ...scenario === 'legacy-unsettled' ? [] : [{
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          status: scenario === 'legacy-settled-tool-error' ? 'failed' : 'completed',
+          rawOutput: scenario === 'legacy-settled-tool-error' ? 'file does not exist' : 'old tool output',
+        }],
       ] : undefined,
     }), () => false, 'instance-agy-a', 'agy-cli');
     const remoteB = recordingClient(() => ({
@@ -1073,7 +1081,10 @@ describe('recoverable ACP broken resume', () => {
         expect(loads.length).toBeGreaterThan(0);
         expect(loads[0]).toMatchObject({ sessionId: legacySessionId, _meta: { 'kiki.agyLegacyRecovery': {
           version: 1, sessionId: legacySessionId, conversationId: nativeId, model: 'model-a', effort: 'medium',
-          tools: [{ stepIndex: 2, name: 'read_file' }],
+          terminalError: networkError.slice('AGY terminal status ERROR: '.length),
+          tools: [scenario === 'legacy-settled-tool-error'
+            ? { stepIndex: 2, name: 'edit_file', failed: true, error: 'file does not exist' }
+            : { stepIndex: 2, name: 'read_file' }],
         } } });
         expect(remoteA.histories.slice(1).every(history => history.sessionNewParams.length === 0)).toBe(true);
         if (scenario === 'legacy-load-failure') {
