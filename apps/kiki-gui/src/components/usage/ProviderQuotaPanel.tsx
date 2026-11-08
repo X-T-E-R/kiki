@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ExecutorCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
@@ -15,10 +15,11 @@ import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '..
 import { SMALL_INPUT } from '../ui';
 import {
   arrangeQuotaSources, effectiveQuotaStatus, formatHarnessQuotaReading, formatWindowPeriod,
-  groupHarnessQuotaReadings, harnessQuotaQueryKey, isSourceLocked, isSourceRefreshable,
-  mergeHarnessQuotaSnapshots, meterToneClass, meterUtilization, meterValue, normalizeQuotaSources,
-  pluginQuotaSnapshotStatus, quotaEngineScopeOf, quotaLocalUsageHref, quotaSettingsHref,
-  signedOutProviderIds, statusBadgeInfo, useProviderQuotas,
+  groupHarnessQuotaReadings, HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaQueryKey, isSourceLocked,
+  isSourceRefreshable, mergeHarnessQuotaSnapshots, meterToneClass, meterUtilization, meterValue,
+  normalizeQuotaSources, pluginQuotaNextExpiryMs, pluginQuotaSnapshotStatus, quotaEngineScopeOf,
+  quotaLocalUsageHref, quotaSettingsHref, readCachedHarnessQuota, signedOutProviderIds, statusBadgeInfo,
+  useProviderQuotas,
   type HarnessQuotaReading, type PluginHarnessQuotaSnapshot,
   type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource, type ProviderQuotaStatus,
 } from '../../lib/providerQuota';
@@ -52,20 +53,27 @@ export function ProviderQuotaPanel() {
   const pluginQuotaKey = harnessQuotaQueryKey(scopeId, meta?.server_id);
   const harnessQuotaQuery = useQuery({
     queryKey: pluginQuotaKey,
-    queryFn: async ({ signal }) => {
-      const api = client.klient?.rest?.harnessQuota;
-      if (api === undefined) return { sources: [] as readonly PluginHarnessQuotaSnapshot[] };
-      try {
-        return await api.cached({ signal });
-      } catch {
-        return { sources: [] as readonly PluginHarnessQuotaSnapshot[] };
-      }
-    },
+    queryFn: ({ signal }) => readCachedHarnessQuota(client.klient?.rest?.harnessQuota, signal),
     enabled: client.klient?.rest?.harnessQuota !== undefined,
     refetchOnWindowFocus: false,
     retry: false,
   });
   const pluginQuotaSources = harnessQuotaQuery.data?.sources ?? [];
+  const pluginCatalogError = harnessQuotaQuery.isError ? errorText(locale, harnessQuotaQuery.error) : undefined;
+  const [expiryTick, setExpiryTick] = useState(0);
+  const now = Date.now();
+  const nextPluginExpiryMs = useMemo(
+    () => pluginQuotaNextExpiryMs(pluginQuotaSources, now),
+    [pluginQuotaSources, now, expiryTick],
+  );
+  useEffect(() => {
+    if (nextPluginExpiryMs === undefined) return;
+    const delayMs = Math.max(0, nextPluginExpiryMs - Date.now());
+    const timer = setTimeout(() => {
+      setExpiryTick((tick) => tick + 1);
+    }, delayMs);
+    return () => { clearTimeout(timer); };
+  }, [nextPluginExpiryMs]);
   const configRaw = asConfigRecord(configQuery.data?.raw);
   const sources = normalizeQuotaSources(snapshot);
   const providers = providersQuery.data?.items;
@@ -112,7 +120,7 @@ export function ProviderQuotaPanel() {
         if (current === undefined) return current;
         return {
           sources: current.sources.map((entry) =>
-            entry.id === pluginSourceId ? { ...entry, readings: undefined, error: message } : entry,
+            entry.id === pluginSourceId ? { ...entry, readings: undefined, error: HARNESS_QUOTA_UNAVAILABLE_MESSAGE } : entry,
           ),
         };
       });
@@ -313,6 +321,9 @@ export function ProviderQuotaPanel() {
             configError={configQuery.isError}
             onRetryConfig={() => { void configQuery.refetch(); }}
             pluginQuotaSources={pluginQuotaSources}
+            pluginCatalogError={pluginCatalogError}
+            onRetryPluginCatalog={() => { void harnessQuotaQuery.refetch(); }}
+            now={now}
             refreshingPluginIds={refreshingPluginIds}
             pluginErrors={pluginErrors}
             savingEngineSourceIds={savingEngineSourceIds}
@@ -661,7 +672,8 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
 
 function EngineQuotaSection({
   engines, hidden, pending, catalog, configRaw, configError, onRetryConfig,
-  pluginQuotaSources, refreshingPluginIds, pluginErrors, savingEngineSourceIds,
+  pluginQuotaSources, pluginCatalogError, onRetryPluginCatalog, now,
+  refreshingPluginIds, pluginErrors, savingEngineSourceIds,
   refreshingNativeSourceId, activeRefreshSourceIds, sourceFeedbacks, onClearFeedback,
   onSelectQuotaSource, onRefreshPluginSource, onRefreshNativeSource,
 }: {
@@ -673,6 +685,9 @@ function EngineQuotaSection({
   readonly configError: boolean;
   readonly onRetryConfig: () => void;
   readonly pluginQuotaSources: readonly PluginHarnessQuotaSnapshot[];
+  readonly pluginCatalogError: string | undefined;
+  readonly onRetryPluginCatalog: () => void;
+  readonly now: number;
   readonly refreshingPluginIds: ReadonlySet<string>;
   readonly pluginErrors: Readonly<Record<string, string>>;
   readonly savingEngineSourceIds: ReadonlySet<string>;
@@ -685,7 +700,7 @@ function EngineQuotaSection({
   readonly onRefreshNativeSource: (sourceId: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
-  if (pending || (!configError && engines.length === 0 && hidden === 0)) return null;
+  if (pending || (!configError && pluginCatalogError === undefined && engines.length === 0 && hidden === 0)) return null;
   const anyQuotaSelectorShown = engines.some((source) => {
     const engineId = source.provider_id;
     const selected = engineQuotaSourceOf(configRaw, engineId);
@@ -699,6 +714,12 @@ function EngineQuotaSection({
         <div className="mb-2 flex flex-wrap items-center gap-2" data-quota-engine-config-error>
           <FeedbackLine feedback={{ tone: 'error', text: t('usage.quota.engines.configError') }} />
           <button type="button" className={SMALL_BUTTON} onClick={onRetryConfig}>{t('st.im.retry')}</button>
+        </div>
+      ) : null}
+      {pluginCatalogError !== undefined ? (
+        <div className="mb-2 flex flex-wrap items-center gap-2" data-quota-engine-plugin-error>
+          <FeedbackLine feedback={{ tone: 'error', text: pluginCatalogError }} />
+          <button type="button" data-quota-engine-plugin-retry className={SMALL_BUTTON} onClick={onRetryPluginCatalog}>{t('st.im.retry')}</button>
         </div>
       ) : null}
       {engines.length > 0 ? (
@@ -720,6 +741,8 @@ function EngineQuotaSection({
                 selectedSourceId={selectedSourceId}
                 matchingPluginSources={matchingPluginSources}
                 selectedPluginSnapshot={selectedPluginSnapshot}
+                pluginCatalogError={pluginCatalogError}
+                now={now}
                 savingSource={savingEngineSourceIds.has(engineId)}
                 isRefreshingPlugin={selectedSourceId !== '' && refreshingPluginIds.has(selectedSourceId)}
                 pluginError={selectedSourceId !== '' ? pluginErrors[selectedSourceId] : undefined}
@@ -752,14 +775,16 @@ function EngineQuotaSection({
 
 function EngineQuotaRow({
   source, health, selectedSourceId, matchingPluginSources, selectedPluginSnapshot,
-  savingSource, isRefreshingPlugin, pluginError, isRefreshingNative, feedback: externalFeedback,
-  onClearFeedback, onSelectQuotaSource, onRefreshPluginSource, onRefreshNativeSource,
+  pluginCatalogError, now, savingSource, isRefreshingPlugin, pluginError, isRefreshingNative,
+  feedback: externalFeedback, onClearFeedback, onSelectQuotaSource, onRefreshPluginSource, onRefreshNativeSource,
 }: {
   readonly source: ProviderQuotaSource;
   readonly health: EngineHealth;
   readonly selectedSourceId: string;
   readonly matchingPluginSources: readonly PluginHarnessQuotaSnapshot[];
   readonly selectedPluginSnapshot: PluginHarnessQuotaSnapshot | undefined;
+  readonly pluginCatalogError: string | undefined;
+  readonly now: number;
   readonly savingSource: boolean;
   readonly isRefreshingPlugin: boolean;
   readonly pluginError: string | undefined;
@@ -799,7 +824,7 @@ function EngineQuotaRow({
   const isPluginMode = selectedSourceId !== '';
   const showSourceSelect = matchingPluginSources.length > 0 || selectedSourceId !== '';
   const pStatus = isPluginMode
-    ? pluginQuotaSnapshotStatus(selectedPluginSnapshot, engineId, pluginError)
+    ? pluginQuotaSnapshotStatus(selectedPluginSnapshot, engineId, pluginError, now, pluginCatalogError !== undefined)
     : undefined;
   const isNativeLocked = !isPluginMode && isSourceLocked(source);
   const nativeRefreshAfterMs = source.refresh_after ? new Date(source.refresh_after).getTime() : 0;
@@ -973,7 +998,7 @@ function EngineQuotaRow({
             </p>
           ) : pStatus === 'error' ? (
             <p className="text-[12px] text-danger" data-engine-quota-error={engineId}>
-              {pluginError ?? selectedPluginSnapshot?.error}
+              {pluginError ?? selectedPluginSnapshot?.error ?? pluginCatalogError}
             </p>
           ) : pStatus === 'unqueried' ? (
             <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft" data-engine-quota-unqueried={engineId}>

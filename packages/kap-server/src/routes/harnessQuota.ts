@@ -1,6 +1,6 @@
 import type { Scope } from '@kiki/agent-core-v2';
 import { IHarnessQuotaService } from '@kiki/agent-core-v2';
-import { harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema } from '@kiki/protocol';
+import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
@@ -45,7 +45,7 @@ export function registerHarnessQuotaRoutes(app: HarnessQuotaRouteHost, core: Sco
         await quota.read(req.body.source, signal);
       } catch (error) {
         if (signal.aborted) return;
-        const message = error instanceof Error ? error.message : 'Harness quota source is unavailable';
+        const message = error instanceof Error ? error.message : HARNESS_QUOTA_UNAVAILABLE_MESSAGE;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
         return;
       }

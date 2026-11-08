@@ -3558,7 +3558,7 @@ class FixtureServer {
       }
       if (this.harnessQuotaFailSources?.has(sourceId)) {
         const errorMsg = 'Plugin quota bridge unreachable';
-        const failed = { ...structuredClone(this.harnessQuotaSources[index]), readings: undefined, error: errorMsg };
+        const failed = { ...structuredClone(this.harnessQuotaSources[index]), readings: undefined, error: 'Harness quota source is unavailable' };
         this.harnessQuotaSources[index] = failed;
         return this.envelope(res, null, 50301, errorMsg);
       }

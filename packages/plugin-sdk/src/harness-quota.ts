@@ -5,6 +5,7 @@ const engineIds = z.array(identifier).min(1).refine((ids) => new Set(ids).size =
 
 /** Five minutes. Plugins may declare a longer interval; shorter declarations are rejected. */
 export const HARNESS_QUOTA_MIN_REFRESH_MS = 300_000;
+export const HARNESS_QUOTA_UNAVAILABLE_MESSAGE = 'Harness quota source is unavailable';
 
 export const harnessQuotaUnitSchema = z.enum(['percent', 'money', 'tokens', 'requests', 'credits', 'count']);
 
@@ -58,7 +59,7 @@ export const harnessQuotaSnapshotSchema = z.object({
   minRefreshIntervalMs: z.number().int().positive(),
   readAt: z.string().datetime({ offset: true }).optional(),
   readings: z.array(harnessQuotaReadingSchema).optional(),
-  error: z.string().min(1).optional(),
+  error: z.literal(HARNESS_QUOTA_UNAVAILABLE_MESSAGE).optional(),
 }).strict();
 
 export const harnessQuotaCacheResponseSchema = z.object({

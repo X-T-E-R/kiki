@@ -27,6 +27,7 @@ import { useConnection } from '../../state/connection';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { DisclosureChevron } from '../icons';
 import { ExecutorScheduleControl, scheduleChoiceFromDraft, scheduleChoiceValue } from '../harness/ExecutorScheduleControl';
+import { harnessQuotaQueryKey, readCachedHarnessQuota } from '../../lib/providerQuota';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalog } from './profileEditor/engines';
 import { KIKI_CONTEXT_ORDER } from './profileEditor/profileDraft';
 import { CONTEXT_BLOCKS, DELIVERIES, type ExecutorPromptDelivery } from './profileEditor/executorPromptDraft';
@@ -198,8 +199,8 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
   }
   const [saving, setSaving] = useState(false);
   const quotaQuery = useQuery({
-    queryKey: ['harness-quota', scopeId, meta?.server_id],
-    queryFn: ({ signal }) => client.klient?.rest?.harnessQuota.cached({ signal }) ?? Promise.resolve({ sources: [] }),
+    queryKey: harnessQuotaQueryKey(scopeId, meta?.server_id),
+    queryFn: ({ signal }) => readCachedHarnessQuota(client.klient?.rest?.harnessQuota, signal),
     enabled: client.klient?.rest?.harnessQuota !== undefined,
     staleTime: 60_000,
     retry: false,

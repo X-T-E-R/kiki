@@ -1,16 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  HarnessQuotaReading, PluginHarnessQuotaSnapshot, ProviderCatalogItem,
-  ProviderQuotaMeter, ProviderQuotaSnapshot, ProviderQuotaSource,
+import {
+  HARNESS_QUOTA_MIN_REFRESH_MS, HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaReading, type PluginHarnessQuotaSnapshot, type ProviderCatalogItem,
+  type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource,
 } from '@kiki/protocol';
 import { useConnection } from '../state/connection';
 import {
   asConfigRecord, configuredEngineDescriptors, engineDisplayOf, engineOverridesOf, engineVisibilityOf,
 } from '../components/settings/profileEditor/engines';
 
-export type {
-  HarnessQuotaReading, PluginHarnessQuotaSnapshot, ProviderQuotaMeter,
-  ProviderQuotaSnapshot, ProviderQuotaSource,
+export {
+  HARNESS_QUOTA_MIN_REFRESH_MS, HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaReading, type PluginHarnessQuotaSnapshot, type ProviderQuotaMeter,
+  type ProviderQuotaSnapshot, type ProviderQuotaSource,
 } from '@kiki/protocol';
 export type ProviderQuotaStatus = ProviderQuotaSource['status'];
 
@@ -20,16 +22,78 @@ export function harnessQuotaQueryKey(scopeId: string, serverId?: string) {
   return [...HARNESS_QUOTA_QUERY_KEY, scopeId, serverId] as const;
 }
 
+export function isUnsupportedHarnessQuotaError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === 404 || code === 40404) return true;
+  }
+  return error instanceof Error && /\bHTTP 404\b/i.test(error.message);
+}
+
+export async function readCachedHarnessQuota(
+  api: { cached(options?: { signal?: AbortSignal }): Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }> } | undefined,
+  signal?: AbortSignal,
+): Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }> {
+  if (api === undefined) return { sources: [] };
+  try {
+    return await api.cached({ signal });
+  } catch (error) {
+    if (isUnsupportedHarnessQuotaError(error)) return { sources: [] };
+    throw error;
+  }
+}
+
 export type PluginQuotaStatus = 'ready' | 'unqueried' | 'expired' | 'error' | 'missing';
+
+function effectivePluginQuotaIntervalMs(minRefreshIntervalMs: number): number {
+  return Math.max(
+    HARNESS_QUOTA_MIN_REFRESH_MS,
+    Number.isFinite(minRefreshIntervalMs) ? minRefreshIntervalMs : HARNESS_QUOTA_MIN_REFRESH_MS,
+  );
+}
+
+export function isPluginQuotaSnapshotFresh(
+  snapshot: PluginHarnessQuotaSnapshot,
+  now = Date.now(),
+): boolean {
+  if (snapshot.readings === undefined) return false;
+  if (snapshot.readAt === undefined) return true;
+  const readAtMs = Date.parse(snapshot.readAt);
+  if (!Number.isFinite(readAtMs)) return true;
+  return now - readAtMs < effectivePluginQuotaIntervalMs(snapshot.minRefreshIntervalMs);
+}
+
+export function pluginQuotaNextExpiryMs(
+  sources: readonly PluginHarnessQuotaSnapshot[],
+  now = Date.now(),
+): number | undefined {
+  let nextExpiry: number | undefined;
+  for (const snapshot of sources) {
+    if (snapshot.readings === undefined || snapshot.error !== undefined || snapshot.readAt === undefined) continue;
+    const readAtMs = Date.parse(snapshot.readAt);
+    if (!Number.isFinite(readAtMs)) continue;
+    const expiresAt = readAtMs + effectivePluginQuotaIntervalMs(snapshot.minRefreshIntervalMs);
+    if (expiresAt > now && (nextExpiry === undefined || expiresAt < nextExpiry)) {
+      nextExpiry = expiresAt;
+    }
+  }
+  return nextExpiry;
+}
 
 export function pluginQuotaSnapshotStatus(
   snapshot: PluginHarnessQuotaSnapshot | undefined,
   engineId: string,
   localError?: string,
+  now = Date.now(),
+  catalogError = false,
 ): PluginQuotaStatus {
-  if (snapshot === undefined || !snapshot.engineIds.includes(engineId)) return 'missing';
+  if (snapshot === undefined || !snapshot.engineIds.includes(engineId)) {
+    return catalogError ? 'error' : 'missing';
+  }
   if (localError !== undefined || snapshot.error !== undefined) return 'error';
-  if (snapshot.readings !== undefined) return 'ready';
+  if (snapshot.readings !== undefined) {
+    return isPluginQuotaSnapshotFresh(snapshot, now) ? 'ready' : 'expired';
+  }
   if (snapshot.readAt !== undefined) return 'expired';
   return 'unqueried';
 }

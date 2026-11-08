@@ -1,4 +1,9 @@
-import { HARNESS_QUOTA_MIN_REFRESH_MS, type HarnessQuotaReading, type PluginHarnessQuotaSnapshot } from '@kiki/protocol';
+import {
+  HARNESS_QUOTA_MIN_REFRESH_MS,
+  HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaReading,
+  type PluginHarnessQuotaSnapshot,
+} from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isAbortError } from '#/_base/utils/abort';
@@ -35,7 +40,7 @@ export class HarnessQuotaCache {
         engineIds: [...definition.engineIds],
         readAt: readAtMs !== undefined ? new Date(readAtMs).toISOString() : undefined,
         readings: fresh ? [...hit.readings] : undefined,
-        error: hit?.error,
+        error: hit?.error !== undefined ? HARNESS_QUOTA_UNAVAILABLE_MESSAGE : undefined,
       };
     }) };
   }
@@ -69,7 +74,7 @@ export class HarnessQuotaCache {
       }, (error: unknown) => {
         const cancelled = controller.signal.aborted || isAbortError(error);
         const rawMessage = error instanceof Error ? error.message : String(error);
-        const message = rawMessage.trim() || 'Harness quota source is unavailable';
+        const message = rawMessage.trim() || HARNESS_QUOTA_UNAVAILABLE_MESSAGE;
         if (!cancelled) {
           const previous = this.entries.get(sourceId);
           this.entries.set(sourceId, { at: this.now(), readings: [], error: message, lastSuccessAt: previous?.lastSuccessAt });

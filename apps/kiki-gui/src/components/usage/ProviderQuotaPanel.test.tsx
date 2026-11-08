@@ -385,6 +385,7 @@ describe('ProviderQuotaPanel', () => {
       configState = { ...configState, agent_executor_overrides: nextOverrides };
       return { raw: configState };
     });
+    const freshReadAt = new Date(Date.now() - 60_000).toISOString();
     harnessQuotaCached.mockResolvedValue({
       sources: [
         {
@@ -392,7 +393,7 @@ describe('ProviderQuotaPanel', () => {
           label: 'Alpha Quota Bridge',
           engineIds: ['claude-acp'],
           minRefreshIntervalMs: 300_000,
-          readAt: '2026-10-10T11:58:00Z',
+          readAt: freshReadAt,
           readings: [
             { accountId: 'alpha-work@example.test', pool: 'Claude', window: '5h', remaining: 78, unit: 'percent', resetAt: '2026-10-10T16:00:00Z' },
           ],
@@ -402,7 +403,7 @@ describe('ProviderQuotaPanel', () => {
           label: 'Beta Telemetry',
           engineIds: ['claude-acp'],
           minRefreshIntervalMs: 600_000,
-          readAt: '2026-10-10T11:50:00Z',
+          readAt: freshReadAt,
           readings: [
             { accountId: 'beta-team@example.test', pool: 'Daily budget', remaining: 42.5, unit: 'money' },
           ],
@@ -494,7 +495,7 @@ describe('ProviderQuotaPanel', () => {
           label: 'Magpie AGY Quota',
           engineIds: ['agy-cli'],
           minRefreshIntervalMs: 300_000,
-          readAt: '2026-10-10T11:57:00Z',
+          readAt: new Date(Date.now() - 60_000).toISOString(),
           readings: [
             {
               accountId: 'work@example.test',
@@ -657,7 +658,7 @@ describe('ProviderQuotaPanel', () => {
           label: 'Magpie AGY Quota',
           engineIds: ['agy-cli'],
           minRefreshIntervalMs: 300_000,
-          readAt: '2026-10-10T12:01:00Z',
+          readAt: new Date(Date.now() - 5_000).toISOString(),
           readings: [{ accountId: 'main@example.test', pool: 'Gemini', window: '5h', remaining: 91, unit: 'percent' }],
         },
       ],
@@ -690,5 +691,155 @@ describe('ProviderQuotaPanel', () => {
     expect(claudeRow.dataset.engineQuotaMode).toBe('native');
     expect(claudeRow.textContent).toContain('Native Window');
     expect(claudeRow.querySelector('[data-engine-quota-source="claude-acp"]')).toBeNull();
+  });
+  it('treats HTTP 404 on harnessQuota.cached as an older server while surfacing non-404 catalog errors with retry and preserving loaded sources', async () => {
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'claude-acp': { show_in_profile_list: true, quota_source: 'plugin:alpha/claude' },
+        },
+      },
+    });
+    show([
+      source({
+        id: 'executor:claude-acp',
+        provider_id: 'claude-acp',
+        label: 'Claude Code',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        meters: [meter({ id: 'm-native', label: 'Native Window', unit: 'percent', unit_label: '%', used: 10, limit: 100 })],
+      }),
+    ]);
+
+    // 1. Explicit 404 is treated as an older server (no plugin catalog error banner)
+    harnessQuotaCached.mockRejectedValueOnce(Object.assign(new Error('HTTP 404: Not Found'), { code: 404 }));
+    const oldServerContainer = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    expect(oldServerContainer.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
+
+    // 2. Non-404 failure on initial load surfaces error + retry and does not masquerade as pluginMissing
+    const freshReadAt = new Date(Date.now() - 30_000).toISOString();
+    harnessQuotaCached
+      .mockRejectedValueOnce(new Error('Quota service offline'))
+      .mockResolvedValueOnce({
+        sources: [
+          {
+            id: 'plugin:alpha/claude',
+            label: 'Alpha Quota Bridge',
+            engineIds: ['claude-acp'],
+            minRefreshIntervalMs: 300_000,
+            readAt: freshReadAt,
+            readings: [{ accountId: 'alpha@example.test', pool: 'Claude', window: '5h', remaining: 75, unit: 'percent' }],
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error('Transient network failure'))
+      .mockResolvedValueOnce({
+        sources: [
+          {
+            id: 'plugin:alpha/claude',
+            label: 'Alpha Quota Bridge',
+            engineIds: ['claude-acp'],
+            minRefreshIntervalMs: 300_000,
+            readAt: freshReadAt,
+            readings: [{ accountId: 'alpha@example.test', pool: 'Claude', window: '5h', remaining: 75, unit: 'percent' }],
+          },
+        ],
+      });
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+
+    const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
+    expect(container.querySelector('[data-quota-engine-plugin-error]')?.textContent).toContain('Quota service offline');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('error');
+    expect(claudeRow.textContent).not.toContain('unavailable or not enabled');
+
+    // Retry initial load -> succeeds and renders readings
+    await click(container, '[data-quota-engine-plugin-retry]');
+    expect(container.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(claudeRow.textContent).toContain('alpha@example.test');
+    expect(claudeRow.textContent).toContain('Remaining 75%');
+
+    // Trigger a config save that invalidates queries while next cached() refetch fails -> preserves loaded catalog & readings
+    await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:alpha/claude');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(claudeRow.textContent).toContain('alpha@example.test');
+  });
+  it('transitions cached plugin readings from ready to expired once minRefreshIntervalMs elapses on an open page without polling', async () => {
+    vi.useFakeTimers();
+    try {
+      const baseTime = new Date('2026-11-08T12:00:00Z').getTime();
+      vi.setSystemTime(baseTime);
+      const readAt = new Date(baseTime - 180_000).toISOString();
+      client.getConfig.mockResolvedValue({
+        raw: {
+          agent_executor_overrides: {
+            'agy-cli': { show_in_profile_list: true, quota_source: 'plugin:magpie/agy' },
+          },
+        },
+      });
+      harnessQuotaCached.mockResolvedValue({
+        sources: [
+          {
+            id: 'plugin:magpie/agy',
+            label: 'Magpie AGY Quota',
+            engineIds: ['agy-cli'],
+            minRefreshIntervalMs: 300_000,
+            readAt,
+            readings: [{ accountId: 'work@example.test', pool: 'Gemini', window: '5h', remaining: 80, unit: 'percent' }],
+          },
+        ],
+      });
+      show([
+        source({
+          id: 'executor:agy-cli',
+          provider_id: 'agy-cli',
+          label: 'AGY CLI',
+          kind: 'executor',
+          supported: false,
+          status: 'unsupported',
+          meters: [],
+        }),
+      ]);
+
+      const container = document.createElement('div');
+      document.body.append(container);
+      const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={query}>
+            <MemoryRouter initialEntries={['/usage?panel=quota']}>
+              <I18nProvider><ProviderQuotaPanel /></I18nProvider>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      });
+      disposals.push(() => { root.unmount(); query.clear(); container.remove(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+
+      const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+      expect(agyRow.textContent).toContain('Remaining 80%');
+      expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
+      expect(harnessQuotaRead).not.toHaveBeenCalled();
+
+      // Advance 119 seconds (total age 299.02s < 300s): still ready
+      await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+
+      // Advance past the 300s minRefreshIntervalMs boundary: transitions to expired without polling
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('expired');
+      expect(agyRow.querySelector('[data-engine-quota-expired="agy-cli"]')).not.toBeNull();
+      expect(agyRow.textContent).not.toContain('Remaining 80%');
+      expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
+      expect(harnessQuotaRead).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { HarnessQuotaCache } from '#/app/plugin/harnessQuota';
-import type { HarnessQuotaReading, PluginHarnessQuotaSnapshot } from '@kiki/protocol';
+import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, type HarnessQuotaReading, type PluginHarnessQuotaSnapshot } from '@kiki/protocol';
 
 const definition: PluginHarnessQuotaSnapshot = {
   id: 'plugin:fixture-quota/example', label: 'Fixture', engineIds: ['agy-cli'], minRefreshIntervalMs: 300_000,
@@ -98,7 +98,8 @@ describe('harness quota cache', () => {
     await expect(cache.read(definition.id, 600_000, load)).rejects.toThrow('quota down');
     expect(calls).toBe(1);
     expect(cache.snapshots([definition]).sources[0]?.readings).toBeUndefined();
-    expect(cache.snapshots([definition]).sources[0]?.error).toBe('quota down');
+    expect(cache.snapshots([definition]).sources[0]?.error).toBe(HARNESS_QUOTA_UNAVAILABLE_MESSAGE);
+    expect(cache.snapshots([definition]).sources[0]?.error).not.toContain('quota down');
     now += 2;
     await expect(cache.read(definition.id, 600_000, load)).rejects.toThrow('quota down');
     expect(calls).toBe(2);

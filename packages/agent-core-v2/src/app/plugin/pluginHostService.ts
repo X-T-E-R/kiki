@@ -350,7 +350,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     const byId = new Map(cached.sources.map((source) => [source.id, source]));
     return { sources: sources.map((source) => {
       const hit = byId.get(source.id);
-      return { ...source, engineIds: [...source.engineIds], readAt: hit?.readAt, readings: hit?.readings === undefined ? undefined : [...hit.readings] };
+      return { ...source, engineIds: [...source.engineIds], readAt: hit?.readAt, readings: hit?.readings === undefined ? undefined : [...hit.readings], error: hit?.error };
     }) };
   }
 
