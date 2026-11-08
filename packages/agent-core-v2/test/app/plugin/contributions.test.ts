@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
 import { parseManifest } from '#/app/plugin/manifest';
@@ -150,6 +150,26 @@ describe('plugin extension compatibility and consent', () => {
         { accountId: 'work', modelIds: ['fixture-model'], unit: 'percent', remaining: 80 },
       ]);
     } finally { await host.stopAndWait(); }
+  });
+
+  it('reads quota again after the plugin child retires on idle', async () => {
+    const root = await temp();
+    const source = { schemaVersion: 1 as const, id: 'example', label: 'Example', engineIds: ['agy-cli'] };
+    const entry = path.join(root, 'entry.mjs');
+    await writeFile(entry, `export function register(api) { api.registerHarnessQuotaSource(${JSON.stringify(source)}, { async read() { return { readings: [{ accountId: 'work', unit: 'percent', remaining: 80 }] }; } }); }`);
+    const host = new PluginHost('example', entry, [], [], [], undefined, root, [], [], undefined, [source]);
+    const signal = new AbortController().signal;
+    const readings = [{ accountId: 'work', unit: 'percent', remaining: 80 }];
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      await expect(host.readHarnessQuota('example', signal, {})).resolves.toEqual(readings);
+      await vi.advanceTimersByTimeAsync(90_000);
+      vi.useRealTimers();
+      await expect(host.readHarnessQuota('example', signal, {})).resolves.toEqual(readings);
+    } finally {
+      vi.useRealTimers();
+      await host.stopAndWait();
+    }
   });
 
   it('accepts a plugin that requires the 0.4.1 home bridge', async () => {

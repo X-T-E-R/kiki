@@ -773,6 +773,7 @@ export class PluginHost {
     this.registeredProviders.clear();
     this.registeredImAdapters.clear();
     this.registeredHarnessAccountSources.clear();
+    this.registeredHarnessQuotaSources.clear();
     this.harnessAccountLeases.clear();
     for (const adapterId of this.imAssemblies.keys()) this.clearImAssembly(adapterId);
     this.imListeners.clear();
