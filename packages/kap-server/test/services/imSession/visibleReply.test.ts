@@ -30,4 +30,17 @@ describe('visible IM reply messages', () => {
     ];
     expect(visibleReplyMessages(messages, 'im:1').map((item) => item.id)).toEqual(['assistant']);
   });
+
+  it('returns only assistant replies generated after an accepted steer prompt in the same turn', () => {
+    const messages = [
+      { id: 'im:1', role: 'user', origin: { kind: 'user' }, source: { turnId: 0 }, content: [{ type: 'text', text: 'first' }] },
+      { id: 'step-1', role: 'assistant', source: { turnId: 0 }, content: [{ type: 'text', text: 'step-one-reply' }] },
+      { id: 'im:2', role: 'user', origin: { kind: 'user' }, source: { turnId: 0 }, content: [{ type: 'text', text: 'steered' }] },
+      { id: 'reminder', role: 'user', origin: { kind: 'injection' }, content: [{ type: 'text', text: '<system-reminder>\nx\n</system-reminder>' }] },
+      { id: 'step-2', role: 'assistant', source: { turnId: 0 }, content: [{ type: 'text', text: 'step-two-reply' }] },
+      { id: 'turn-1', role: 'assistant', source: { turnId: 1 }, content: [{ type: 'text', text: 'other-turn' }] },
+    ];
+    expect(visibleReplyMessages(messages, 'im:2', 0).map((item) => item.id)).toEqual(['step-2']);
+    expect(visibleReplyMessages(messages, 'im:2').map((item) => item.id)).toEqual(['step-2']);
+  });
 });

@@ -343,6 +343,30 @@ describe('im session bridge', () => {
     } finally { await harness.bridge.close(); }
   });
 
+  it('skips secondary steer and queued notice when submit returns accepted', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const deliveries: string[] = [];
+    let steers = 0;
+    const harness = bridgeFor(adapter, ports({
+      submit: async (input) => {
+        deliveries.push(input.delivery);
+        return { duplicate: false, promptId: input.promptId, deliveryState: 'accepted' };
+      },
+      steer: async () => { steers++; return 'accepted'; },
+    }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'hello' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await adapter.emit({ eventId: 'accepted-now', identity, kind: 'text', text: 'append now' });
+      expect(deliveries).toEqual(['immediate']);
+      expect(steers).toBe(0);
+      expect(adapter.sent.some((item) => item.code === 'queued')).toBe(false);
+      await vi.waitFor(() => expect(adapter.sent.some((item) => item.code === 'reply' && item.text === 'Hello from the session')).toBe(true));
+    } finally { await harness.bridge.close(); }
+  });
+
   it('runs slash help and known commands locally, rejects unknown slash without a prompt', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);

@@ -867,6 +867,34 @@ describe('history navigation source rows', () => {
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
+  it('continues an exact-target literal search on the same transcript after the index recovers', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-fallback-cursor-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, [0, 1].map((turnId) => line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`,
+        input: [{ type: 'text', text: 'needle' }], time: 1000 + turnId })).join(''));
+      const historyWireLocation = vi.fn(async () => ({ workspaceId: 'ws', wirePath }));
+      const transcript = { historyWireLocation } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const search = vi.fn()
+        .mockResolvedValueOnce({ items: [], indexState: { state: 'unavailable' } })
+        .mockResolvedValue({ items: [], indexState: { state: 'ready' } });
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ search, get: async () => undefined }) } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', mode: 'literal' as const, workspaceId: 'ws',
+        sessionId: 'older', agentId: 'agent-example', pageSize: 1, sort: 'newest' as const };
+      const first = await archive.search(request);
+      expect(first).toMatchObject({ source: 'fallback', items: [{ sessionId: 'older', agentId: 'agent-example', turn: 1 }], hasMore: true });
+      expect(first.pageToken).toBeDefined();
+      const second = await archive.search({ ...request, pageToken: first.pageToken });
+      expect(second).toMatchObject({ source: 'fallback', items: [{ sessionId: 'older', agentId: 'agent-example', turn: 0 }], hasMore: false });
+      expect(search).toHaveBeenCalledOnce();
+      expect(historyWireLocation).toHaveBeenCalledWith('older', 'agent-example');
+      await expect(archive.search({ ...request, agentId: 'different', pageToken: first.pageToken })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('finishes undo and clear visibility before sorted search returns any hits', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-sort-visibility-'));
     const wirePath = join(dir, 'wire.jsonl');

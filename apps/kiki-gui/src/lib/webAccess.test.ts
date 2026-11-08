@@ -144,21 +144,21 @@ describe('webAccessAddress', () => {
   it('is host alone when there is no port', () => {
     expect(webAccessAddress({
       enabled: true, mode: 'temporary', url: null, expiresAt: null,
-      host: '127.0.0.1', port: null, insecure: false, sessions: [],
+      host: '127.0.0.1', port: null, insecure: false, sessions: [], sharedConnectionIds: [],
     })).toBe('127.0.0.1');
   });
 
   it('is host and port when the server reports one', () => {
     expect(webAccessAddress({
       enabled: true, mode: 'temporary', url: null, expiresAt: null,
-      host: '0.0.0.0', port: 58627, insecure: true, sessions: [],
+      host: '0.0.0.0', port: 58627, insecure: true, sessions: [], sharedConnectionIds: [],
     })).toBe('0.0.0.0:58627');
   });
 
   it('is absent when the server reports no host', () => {
     expect(webAccessAddress({
       enabled: false, mode: null, url: null, expiresAt: null,
-      host: null, port: 58627, insecure: false, sessions: [],
+      host: null, port: 58627, insecure: false, sessions: [], sharedConnectionIds: [],
     })).toBeNull();
   });
 });
@@ -215,7 +215,7 @@ describe('address options', () => {
   it('opens the editor on the address the server actually reported', () => {
     expect(addressDraftFromStatus({
       enabled: true, mode: 'persistent', url: 'http://x/', expiresAt: null,
-      host: '192.168.1.20', port: 58627, insecure: true, sessions: [],
+      host: '192.168.1.20', port: 58627, insecure: true, sessions: [], sharedConnectionIds: [],
     })).toEqual({ host: '192.168.1.20', port: '58627', publicUrl: '', insecureNoTls: true });
   });
 });

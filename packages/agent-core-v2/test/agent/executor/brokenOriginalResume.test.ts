@@ -10,7 +10,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { agentExecutorBindingFingerprint, IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, IAgentExecutorRegistry, type AgentExecutorProvider } from '#/app/agentExecutor/agentExecutor';
 import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { IConfigService } from '#/app/config/config';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
@@ -879,33 +879,29 @@ describe('recoverable ACP broken resume', () => {
     const { AgentExecutionService } = await import('#/agent/execution/executionService');
     const { agentService, appService, sessionService } = await import('../../harness');
     const caps = new Map<string, NegotiatedExecutorCapabilities>();
+    const provider: AgentExecutorProvider = {
+      id: 'example-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (ctx) => new AcpAgentExecutorSession(ctx, () =>
+        (ctx.descriptor.id === 'instance-agy-b' ? remoteB : remoteA).createClient()),
+    };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
       list: () => [...descriptors.values()],
       get: (id: string) => descriptors.get(id),
-      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {} }),
+      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {}, provider }),
       validateBinding: (_id, _opts, binding) => ({ ok: true, binding }),
+      discover: async () => [],
+      provider: (protocol) => protocol === provider.protocol ? provider : undefined,
       recordNegotiated: (id, version, capabilities) => {
         const key = `${id}\0${version ?? ''}`;
         caps.set(key, { ...caps.get(key), ...capabilities });
       },
       negotiated: (id, version) => caps.get(`${id}\0${version ?? ''}`),
       lastNegotiated: (id) => caps.get(`${id}\0`),
-      resolveExecutable: async (id: string) => {
-        const desc = descriptors.get(id)!;
-        const remote = id === 'instance-agy-b' ? remoteB : remoteA;
-        return {
-          descriptor: desc,
-          options: {},
-          provider: {
-            id: desc.id,
-            protocol: desc.protocol,
-            validateOptions: () => ({}),
-            validateBinding: (binding) => ({ ok: true, binding }),
-            create: (ctx) => new AcpAgentExecutorSession(ctx, () => remote.createClient()),
-          },
-        };
-      },
+      resolveExecutable: async function (id) { return this.resolve(id); },
     };
     const agyProfile = normalizeAgentProfile({
       name: 'agy-worker',
@@ -1283,39 +1279,34 @@ describe('recoverable ACP broken resume', () => {
     const { agentService, appService, sessionService } = await import('../../harness');
 
     const caps = new Map<string, NegotiatedExecutorCapabilities>();
+    const remotes = new Map([
+      ['agy-cli', remoteMain], ['instance-agy-cockpit-smoke', remoteCockpit],
+      ['instance-agy-c', remoteC], ['instance-agy-b', remoteB],
+      ['instance-grok-a', remoteGrokA], ['instance-grok-b', remoteGrokB],
+    ]);
+    const provider: AgentExecutorProvider = {
+      id: 'example-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (ctx) => new AcpAgentExecutorSession(ctx, () =>
+        (remotes.get(ctx.descriptor.id) ?? remoteA).createClient()),
+    };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
       list: () => [...descriptors.values()],
       get: (id: string) => descriptors.get(id),
-      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {} }),
+      resolve: (id: string) => ({ descriptor: descriptors.get(id)!, options: {}, provider }),
       validateBinding: (_id, _opts, binding) => ({ ok: true, binding }),
+      discover: async () => [],
+      provider: (protocol) => protocol === provider.protocol ? provider : undefined,
       recordNegotiated: (id, version, capabilities) => {
         const key = `${id}\0${version ?? ''}`;
         caps.set(key, { ...caps.get(key), ...capabilities });
       },
       negotiated: (id, version) => caps.get(`${id}\0${version ?? ''}`),
       lastNegotiated: (id) => caps.get(`${id}\0`),
-      resolveExecutable: async (id: string) => {
-        const desc = descriptors.get(id)!;
-        const remote = id === 'agy-cli' ? remoteMain
-          : id === 'instance-agy-cockpit-smoke' ? remoteCockpit
-            : id === 'instance-agy-c' ? remoteC
-              : id === 'instance-agy-b' ? remoteB
-                : id === 'instance-grok-a' ? remoteGrokA
-                  : id === 'instance-grok-b' ? remoteGrokB
-                    : remoteA;
-        return {
-          descriptor: desc,
-          options: {},
-          provider: {
-            id: desc.id,
-            protocol: desc.protocol,
-            validateOptions: () => ({}),
-            validateBinding: (binding) => ({ ok: true, binding }),
-            create: (ctx) => new AcpAgentExecutorSession(ctx, () => remote.createClient()),
-          },
-        };
-      },
+      resolveExecutable: async function (id) { return this.resolve(id); },
     };
 
     let quotaReadings: Array<{ accountId: string; modelIds: string[]; unit: 'percent'; remaining: number | undefined }> = [

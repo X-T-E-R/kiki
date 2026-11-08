@@ -228,6 +228,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private notifyTurnStarted(event: TurnStarted): void {
+    this.failureTurnId = event.turnId;
+    this.failureRecoveries = 0;
+    this.observedFailureTurnId = undefined;
     this.fireAndForget(
       'TurnStarted',
       {
@@ -248,10 +251,10 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     }, { phase: 'fallback' }));
     this._register(
       loop.hooks.onDidFinishStep.register('externalHooks', async (ctx, next) => {
-        await next();
         if (ctx.modelResponseCompleted === true) {
           this.failureRecoveries = 0;
         }
+        await next();
         if (
           ctx.finishReason === 'tool_calls' ||
           ctx.finishReason === 'filtered' ||

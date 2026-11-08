@@ -9856,6 +9856,12 @@ export const en = {
   'st.web.unavailable': 'Web access is not available on this runtime.',
   'st.web.readFailed': 'The web access status could not be read.',
   'st.web.failed': 'That did not work. {reason}',
+  'st.web.sharedTitle': 'Connected Kikis available in browsers',
+  'st.web.sharedHint': 'Signed-in browsers can switch into the connected remote Kikis you select here. Unselected Kikis stay local to this machine.',
+  'st.web.sharedEmpty': 'No remote Kikis are connected to this machine yet.',
+  'st.web.sharedSave': 'Save shared Kikis',
+  'st.web.sharedSaving': 'Saving…',
+  'st.web.sharedSaved': 'Saved which connected Kikis browsers can use.',
   // ---- away notifications, activity inbox ----
   'st.away.title': 'System notifications',
   'st.away.hint': 'Controls session notifications and pending-input reminders from other spaces on this device. Click a notification to return.',

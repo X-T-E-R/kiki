@@ -895,8 +895,8 @@ describe('SessionController pipeline', () => {
     const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test');
     try {
       await controller.open();
-      const before = controller.getState();
       for (let visit = 0; visit < 3; visit++) {
+        const before = controller.getState();
         reads.mockRejectedValueOnce(new Error('temporary snapshot reader failure'));
         controller.suspend();
         await controller.resume();
@@ -2664,19 +2664,22 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
-  it('persists an advanced partial cursor for the next retry', async () => {
+  it('advances empty budget pages to the next real page within one older load', async () => {
     const { controller, client } = await openTranscriptController();
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'initial-cursor' }), 1, true));
     client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'partial-cursor',
-      read: { source: 'cold', readiness: 'partial' } });
+      read: { source: 'cold', readiness: 'partial', reason: 'budget' } });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'partial-cursor',
+      read: { source: 'cold', readiness: 'partial', reason: 'budget' } });
     client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: false,
       coverage: { kind: 'full', hasMoreOlder: false } });
     try {
-      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'preparing', changed: false });
-      expect(controller.getState()).toMatchObject({ hasMoreHistory: true, olderError: undefined });
       await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
       expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'partial-cursor', beforeTurn: undefined });
+      expect(client.getAgentTranscript.mock.calls[2]?.[2]).toMatchObject({ beforeItem: 'partial-cursor', beforeTurn: undefined });
       expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
     } finally { controller.close(); }
   });
 
@@ -6339,7 +6342,7 @@ it('publishes main and focused child tails before the bootstrap shell and preser
     fixture.send({ type: 'snapshot', generation: 1, snapshot: shell });
     await opening;
     controller.flushFrames(); flushAll();
-    expect(controller.getState()).toMatchObject({ session: shell.session, cursor: { seq: 10, epoch: 'epoch-1' }, busy: true });
+    expect(controller.getState()).toMatchObject({ session: { ...shell.session, last_seq: 10 }, cursor: { seq: 10, epoch: 'epoch-1' }, busy: true });
     expect(controller.getState().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
     expect(controller.getAgentState(CHILD_AGENT_ID).blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
     expect(fixture.controls.updateSessionCursor).toHaveBeenLastCalledWith({ seq: 10, epoch: 'epoch-1' });

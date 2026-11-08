@@ -40,6 +40,7 @@ function state(server) {
       port: seed.port ?? 58627,
       insecure: seed.insecure ?? false,
       sessions: seed.sessions ?? [],
+      sharedConnectionIds: seed.sharedConnectionIds ?? [],
       failEnable: seed.failEnable,
       failLink: seed.failLink,
     };
@@ -74,6 +75,7 @@ function status(web) {
           expiresAt: now + (entry.expiresInMs ?? 3_600_000),
         }))
       : [],
+    sharedConnectionIds: web.sharedConnectionIds ?? [],
   };
 }
 
@@ -102,9 +104,16 @@ export function handleWebAccess(server, res, path, method, body, request) {
     if (body?.port !== undefined) web.port = body.port;
     if (body?.publicUrl !== undefined) web.url = body.publicUrl;
     if (body?.insecureNoTls !== undefined) web.insecure = body.insecureNoTls;
+    if (Array.isArray(body?.sharedConnectionIds)) web.sharedConnectionIds = [...new Set(body.sharedConnectionIds)];
     if (web.url === null) {
       web.url = `http://${web.insecure ? web.host : '127.0.0.1'}:${web.port}/`;
     }
+    server.envelope(res, status(web));
+    return true;
+  }
+
+  if (path === '/web-access/shared-connections' && method === 'PUT') {
+    web.sharedConnectionIds = Array.isArray(body?.connectionIds) ? [...new Set(body.connectionIds)] : [];
     server.envelope(res, status(web));
     return true;
   }

@@ -3,15 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { createKlient, type HttpChannelOptions } from '@kiki/klient/http';
+import { createKlient, createConnectionKlient, type HttpChannelOptions } from '@kiki/klient/http';
 import { applyContentSegment } from '@kiki/transcript';
-import { IAgentLoopService, IAgentContextMemoryService, IWireService, ensureMainAgent, getLiveSessionById } from '@kiki/agent-core-v2';
+import { IAgentLoopService, IAgentContextMemoryService, IFileService, IWireService, ensureMainAgent, getLiveSessionById } from '@kiki/agent-core-v2';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { buildContentDisposition } from '../src/lib/contentDisposition';
+import { writePrivateFile } from '../src/services/auth/privateFiles';
 import type { WebAccessStatus } from '@kiki/protocol';
 
 describe('shared daemon Web access', () => {
@@ -67,6 +70,20 @@ describe('shared daemon Web access', () => {
     }
     const correct = await fetch(browser.origin + '/api/web-access/exchange', { method: 'POST', headers: { origin: browser.origin, 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
     expect(correct.status).toBe(200);
+    const badCode = await fetch(browser.origin + '/api/web-access/exchange', { method: 'POST', headers: { origin: browser.origin, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'a'.repeat(43) }) });
+    expect(badCode.status).toBe(401);
+    const badCodeBody = await badCode.json() as { code: number; msg: string; stack?: unknown };
+    expect(badCodeBody.msg).toBe('invalid_web_access_code');
+    expect(badCodeBody.stack).toBeUndefined();
+    for (const invalidBody of [JSON.stringify({ code: 'short' }), JSON.stringify({}), JSON.stringify({ code: 'a'.repeat(43), extra: true }), '{bad json']) {
+      const shortRes = await fetch(browser.origin + '/api/web-access/exchange', { method: 'POST', headers: { origin: browser.origin, 'content-type': 'application/json' }, body: invalidBody });
+      expect(shortRes.status).toBe(400);
+      const shortText = await shortRes.text();
+      expect(shortText).toContain('invalid_web_access');
+      expect(shortText).not.toContain('stack');
+      expect(shortText).not.toContain('50001');
+      expect(shortText).not.toContain('ZodError');
+    }
     for (const authorization of ['Bearer invalid', 'Bearer ', 'Basic invalid']) {
       const rejected = await fetch(browser.origin + '/api/meta', { headers: { cookie: browser.cookie, authorization } }); expect(rejected.status).toBe(401);
     }
@@ -226,5 +243,278 @@ describe('shared daemon Web access', () => {
     expect(buildContentDisposition('photo.png', 'image/png')).toMatch(/^inline/);
     expect(buildContentDisposition('movie.mp4', 'video/mp4')).toMatch(/^inline/);
     expect(buildContentDisposition('doc.pdf', 'application/pdf')).toMatch(/^attachment/);
+  });
+  it('shares only owner-selected remote Kikis with Web browsers across three isolated hosts, revoking active streams without logging out local Web', async () => {
+    const homeA = await mkdtemp(join(tmpdir(), 'kiki-web-remote-a-'));
+    const homeB = await mkdtemp(join(tmpdir(), 'kiki-web-remote-b-'));
+    let remoteA: RunningServer | undefined;
+    let remoteB: RunningServer | undefined;
+    let localOwner: ReturnType<typeof createKlient> | undefined;
+    let ownerA: ReturnType<typeof createKlient> | undefined;
+    let ownerB: ReturnType<typeof createKlient> | undefined;
+    let browser1: ReturnType<typeof createKlient> | undefined;
+    let browser2: ReturnType<typeof createKlient> | undefined;
+    let browser1RemoteA: ReturnType<typeof createConnectionKlient> | undefined;
+    let browser1RemoteB: ReturnType<typeof createConnectionKlient> | undefined;
+    try {
+      await writeFile(join(homeA, 'config.toml'), '[search]\nenabled = false\n');
+      await writeFile(join(homeB, 'config.toml'), '[search]\nenabled = false\n');
+      remoteA = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: homeA, port: 0, logLevel: 'silent' });
+      remoteB = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: homeB, port: 0, logLevel: 'silent' });
+      const baseA = `http://127.0.0.1:${remoteA.port}`;
+      const baseB = `http://127.0.0.1:${remoteB.port}`;
+      ownerA = createKlient({ endpoint: baseA, token: remoteA.localOwnerToken });
+      ownerB = createKlient({ endpoint: baseB, token: remoteB.localOwnerToken });
+      localOwner = createKlient({ endpoint: base, token: server.localOwnerToken });
+
+      await ownerA.rest!.connections.setInbound(true);
+      await ownerB.rest!.connections.setInbound(true);
+      const inviteA = await ownerA.rest!.connections.invite({ source: server.admission.identity, label: 'Main host to A' });
+      const inviteB = await ownerB.rest!.connections.invite({ source: server.admission.identity, label: 'Main host to B' });
+      const connA = await localOwner.rest!.connections.add({
+        label: 'Remote Alpha',
+        endpoint: baseA,
+        target: remoteA.admission.identity,
+        ownerToken: remoteA.authTokenService.getToken(),
+        invitation: inviteA.invitation,
+        backgroundSummary: false,
+      });
+      const connB = await localOwner.rest!.connections.add({
+        label: 'Remote Beta',
+        endpoint: baseB,
+        target: remoteB.admission.identity,
+        ownerToken: remoteB.authTokenService.getToken(),
+        invitation: inviteB.invitation,
+        backgroundSummary: false,
+      });
+      const sessionA = await ownerA.rest!.sessions.create({ metadata: { cwd: homeA }, title: 'Alpha session' });
+      const fileServiceA = remoteA.core.accessor.get(IFileService);
+      const savedFileA = await fileServiceA.save(Readable.from([Buffer.alloc(512 * 1024, 9)]), 'stream.bin');
+      const getFileA = fileServiceA.get.bind(fileServiceA);
+      const slowFileSpy = vi.spyOn(fileServiceA, 'get').mockImplementation(async (id) => {
+        const file = await getFileA(id);
+        return {
+          ...file,
+          stream: (range) => {
+            const source = file.stream(range);
+            return Readable.from((async function* () {
+              try {
+                for await (const chunk of source) {
+                  yield chunk;
+                  await delay(50);
+                }
+              } finally {
+                source.destroy();
+              }
+            })());
+          },
+        };
+      });
+
+      const status = await localOwner.rest!.webAccess.enable({ mode: 'persistent', port: 0 });
+      expect(status.sharedConnectionIds).toEqual([]);
+      const origin = status.url!;
+
+      const makeBrowser = async (label: string) => {
+        const link = await localOwner!.rest!.webAccess.issueLink();
+        let cookie = '';
+        const browserFetch: typeof fetch = async (input, init) => {
+          const headers = new Headers(init?.headers);
+          headers.set('origin', origin);
+          if (cookie !== '') headers.set('cookie', cookie);
+          const response = await fetch(input, { ...init, headers });
+          const setCookie = response.headers.get('set-cookie');
+          if (setCookie !== null) cookie = setCookie.split(';')[0]!;
+          return response;
+        };
+        class BrowserSocket extends WebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols ?? [], { headers: { origin, cookie } });
+            sockets.push(this);
+          }
+        }
+        const client = createKlient({ endpoint: origin, fetch: browserFetch, WebSocket: BrowserSocket as unknown as HttpChannelOptions['WebSocket'] });
+        const exchanged = await client.rest!.webAccess.exchange({ code: new URL(link.url).hash.slice(8), label });
+        return { client, cookie: () => cookie, sessionId: exchanged.session!.id, fetch: browserFetch, WebSocket: BrowserSocket as unknown as HttpChannelOptions['WebSocket'] };
+      };
+
+      const b1 = await makeBrowser('Browser One');
+      const b2 = await makeBrowser('Browser Two');
+      browser1 = b1.client;
+      browser2 = b2.client;
+      const localWs = await socket(origin, b1.cookie());
+
+      expect(await browser1.rest!.connections.list()).toEqual([]);
+      expect((await localOwner.rest!.connections.list()).map((r) => r.id).sort()).toEqual([connA.id, connB.id].sort());
+
+      const setSharedForbidden = await b1.fetch(origin + '/api/web-access/shared-connections', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ connectionIds: [connA.id] }),
+      });
+      expect(setSharedForbidden.status).toBe(403);
+
+      const saved = await localOwner.rest!.webAccess.setSharedConnections([connA.id]);
+      expect(saved.sharedConnectionIds).toEqual([connA.id]);
+
+      const listedB1 = await browser1.rest!.connections.list();
+      const listedB2 = await browser2.rest!.connections.list();
+      expect(listedB1.map((r) => r.id)).toEqual([connA.id]);
+      expect(listedB2.map((r) => r.id)).toEqual([connA.id]);
+      expect(JSON.stringify(listedB1)).not.toContain(remoteA.authTokenService.getToken());
+      expect((await localOwner.rest!.connections.list()).map((r) => r.id).sort()).toEqual([connA.id, connB.id].sort());
+
+      browser1RemoteA = createConnectionKlient({ endpoint: origin, connectionId: connA.id, fetch: b1.fetch, WebSocket: b1.WebSocket });
+      browser1RemoteB = createConnectionKlient({ endpoint: origin, connectionId: connB.id, fetch: b1.fetch, WebSocket: b1.WebSocket });
+
+      const metaA = await browser1RemoteA.rest!.meta();
+      expect(metaA.server_home_id).toBe(remoteA.admission.identity.homeId);
+      const sessionsOnA = await browser1RemoteA.rest!.sessions.list();
+      expect(sessionsOnA.items.some((s) => s.id === sessionA.id)).toBe(true);
+
+      await expect(browser1RemoteB.rest!.meta()).rejects.toThrow();
+      const manualCallB = await b1.fetch(`${origin}/api/remote-connections/${connB.id}/call`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'meta' }),
+      });
+      expect(manualCallB.status).toBe(403);
+      expect((await manualCallB.json() as { msg: string }).msg).toBe('connection_not_shared');
+
+      const manualDownloadB = await b1.fetch(`${origin}/api/remote-connections/${connB.id}/download`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'file', params: { fileId: savedFileA.id } }),
+      });
+      expect(manualDownloadB.status).toBe(403);
+
+      await expect(new Promise<void>((resolve, reject) => {
+        const wsB = new WebSocket(`${origin.replace('http:', 'ws:')}/api/remote-connections/${connB.id}/events`, {
+          headers: { origin, cookie: b1.cookie() },
+        });
+        sockets.push(wsB);
+        wsB.once('open', () => reject(new Error('unexpected open on unshared B')));
+        wsB.once('unexpected-response', (_req, res) => {
+          res.resume();
+          expect(res.statusCode).toBe(403);
+          resolve();
+        });
+        wsB.once('error', () => resolve());
+      })).resolves.toBeUndefined();
+
+      const brokerWsA = new WebSocket(`${origin.replace('http:', 'ws:')}/api/remote-connections/${connA.id}/events`, {
+        headers: { origin, cookie: b1.cookie() },
+      });
+      sockets.push(brokerWsA);
+      await once(brokerWsA, 'open');
+
+      const dlController = new AbortController();
+      const dlResponse = await b1.fetch(`${origin}/api/remote-connections/${connA.id}/download`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'file', params: { fileId: savedFileA.id } }),
+        signal: dlController.signal,
+      });
+      expect(dlResponse.status).toBe(200);
+      const reader = dlResponse.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+
+      const brokerClosed = once(brokerWsA, 'close');
+      const unshared = await localOwner.rest!.webAccess.setSharedConnections([]);
+      expect(unshared.sharedConnectionIds).toEqual([]);
+      await brokerClosed;
+
+      let streamError: unknown;
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+        }
+      } catch (err) {
+        streamError = err;
+      } finally {
+        dlController.abort();
+        reader.releaseLock();
+      }
+      await dlController.abort();
+      slowFileSpy.mockRestore();
+      expect(streamError).toBeDefined();
+
+      expect((await b1.fetch(`${origin}/api/remote-connections/${connA.id}/call`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'meta' }),
+      })).status).toBe(403);
+      expect(await browser1.rest!.connections.list()).toEqual([]);
+
+      expect(localWs.readyState).toBe(WebSocket.OPEN);
+      expect((await browser1.rest!.webAccess.current()).authenticated).toBe(true);
+      expect((await browser2.rest!.webAccess.current()).authenticated).toBe(true);
+
+      await localOwner.rest!.webAccess.revoke(b1.sessionId);
+      expect((await browser1.rest!.webAccess.current()).authenticated).toBe(false);
+      expect((await browser2.rest!.webAccess.current()).authenticated).toBe(true);
+
+      await localOwner.rest!.webAccess.setSharedConnections([connA.id]);
+      expect((await browser2.rest!.connections.list()).map((r) => r.id)).toEqual([connA.id]);
+
+      const wsGrantRevoke = new WebSocket(`${origin.replace('http:', 'ws:')}/api/remote-connections/${connA.id}/events`, {
+        headers: { origin, cookie: b2.cookie() },
+      });
+      sockets.push(wsGrantRevoke);
+      await once(wsGrantRevoke, 'open');
+      await delay(150);
+      const wsGrantClosed = once(wsGrantRevoke, 'close');
+      await ownerA.rest!.connections.revoke(inviteA.grant.id);
+      const revCall = await b2.fetch(`${origin}/api/remote-connections/${connA.id}/call`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'meta' }),
+      });
+      expect(revCall.status).toBeGreaterThanOrEqual(401);
+      await wsGrantClosed;
+      expect(await browser2.rest!.connections.list()).toEqual([]);
+
+      for (const socket of sockets.splice(0)) socket.terminate();
+      await browser1RemoteA.close(); browser1RemoteA = undefined;
+      await browser1RemoteB.close(); browser1RemoteB = undefined;
+      await browser1.close(); browser1 = undefined;
+      await browser2.close(); browser2 = undefined;
+      await localOwner.close();
+      await server.close();
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, port: 0, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      localOwner = createKlient({ endpoint: base, token: server.localOwnerToken });
+      const afterRestart = await localOwner.rest!.webAccess.status();
+      expect(afterRestart.enabled).toBe(true);
+      expect(afterRestart.sharedConnectionIds).toEqual([connA.id]);
+
+      const rawStore = JSON.parse(await readFile(join(home, 'server', 'web-access.json'), 'utf8')) as Record<string, unknown>;
+      delete rawStore['sharedConnectionIds'];
+      if (typeof rawStore['input'] === 'object' && rawStore['input'] !== null) {
+        delete (rawStore['input'] as Record<string, unknown>)['sharedConnectionIds'];
+      }
+      await localOwner.close();
+      await server.close();
+      await writePrivateFile(join(home, 'server', 'web-access.json'), JSON.stringify(rawStore));
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, port: 0, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      localOwner = createKlient({ endpoint: base, token: server.localOwnerToken });
+      const legacyStatus = await localOwner.rest!.webAccess.status();
+      expect(legacyStatus.enabled).toBe(true);
+      expect(legacyStatus.sharedConnectionIds).toEqual([]);
+    } finally {
+      await browser1RemoteA?.close();
+      await browser1RemoteB?.close();
+      await browser1?.close();
+      await browser2?.close();
+      await localOwner?.close();
+      await ownerA?.close();
+      await ownerB?.close();
+      await remoteA?.close();
+      await remoteB?.close();
+      await rm(homeA, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(homeB, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

@@ -1900,17 +1900,7 @@ export class SessionController {
         }
         if (page.read !== undefined) this.historyReads.set(agentId, page.read);
         if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
-        if (readIsPartial) {
-          rememberContinuationCursor(page.next_cursor);
-          this.publishProjectedAgent(agentId, store, {
-            loadingOlder: false,
-            fetchedOlder: true,
-            olderError: undefined,
-            historyCoverageKind: 'unknown',
-          });
-          return { kind: 'preparing', changed: false };
-        }
-        if (readIsPreparing) {
+        if (readIsPreparing || readIsPartial) {
           rememberContinuationCursor(page.next_cursor);
           if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) throw new Error('Earlier history is still preparing. Retry to continue.');
           this.publishProjectedAgent(agentId, store, {
@@ -2661,10 +2651,11 @@ export class SessionController {
       ), signal);
       if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
       const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
-      if (preview !== undefined && (!openingOnly || preview.startedAt !== undefined)) return preview;
-      if (page.items.length === 0 && page.has_more && page.read?.readiness === 'preparing') {
-        if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) return undefined;
-        beforeItem = page.next_cursor ?? beforeItem;
+      if (preview !== undefined && (openingOnly ? preview.startedAt !== undefined : preview.stepsPartial !== true)) return preview;
+      const budgeted = page.items.length === 0 && page.has_more && (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
+      if (budgeted || (preview !== undefined && !openingOnly)) {
+        if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) return preview;
+        if (budgeted) beforeItem = page.next_cursor ?? beforeItem;
         await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
         signal.throwIfAborted();
         continue;

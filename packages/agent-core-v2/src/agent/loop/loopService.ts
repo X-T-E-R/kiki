@@ -1005,7 +1005,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               throw error;
             }
             const stopped = await this.runAfterStep(runtime.turnId, runtime.turnSignal, step.step, step.step === 1,
-              step.response.usage, reason, step);
+              step.response.usage, reason, step, hasCompletedModelResponse(step.response, reason));
             await this.runBoundaryRequests(runtime.turnId, runtime.turnSignal);
             runtime.lastStopReason = reason;
             if (stopped) return { type: 'completed', steps: runtime.steps, truncated: reason === 'truncated' };

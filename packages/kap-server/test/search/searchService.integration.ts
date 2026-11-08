@@ -377,6 +377,68 @@ describe('GlobalSearchService', () => {
       expect(cleared.coverage?.complete).toBe(true);
     });
 
+    it('S2 keeps paging a stable live watermark while the running turn streams, new turns append and older history is prepended', async () => {
+      const store = makeLiveStore('s1');
+      addLiveTurn(store, 'main', { ordinal: 1, startedAt: T2, state: 'running', prompt: '苹果还在路上',
+        steps: [{ stepId: 't1.1', state: 'running', texts: ['苹果正在比较'] }] });
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      const query = { query: '苹果', mode: 'literal' as const, container: { sessionId: 's1' }, pageSize: 1, sort: 'time_asc' as const };
+      let page = await service.search(query);
+      const hits = [...page.items];
+      const residents = () => [...service['liveSearch']['states'].values()].flatMap(state => [...state.agents.values()]);
+      expect(page.hasMore).toBe(true);
+      expect(residents().length).toBeGreaterThan(0);
+      expect(residents().every(resident => resident.snapshot === undefined)).toBe(true);
+      const agent = store.getAgent('main')!;
+      agent.apply([
+        { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'text', frameId: 't1.1.f0', role: 'assistant', text: '苹果正在比较，继续流式输出' } },
+        { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'text', frameId: 't1.1.f9', role: 'assistant', text: '苹果流式追加' } },
+      ]);
+      addLiveTurn(store, 'main', { ordinal: 2, startedAt: T3, prompt: '苹果新消息' });
+      const resident = agent.snapshot();
+      agent.apply([{ op: 'reset', agentId: 'main', snapshot: { ...resident, items: [
+        { kind: 'turn', turnId: 't-older', ordinal: -1, state: 'completed', origin: { kind: 'user' }, prompt: '更早的历史', steps: [], startedAt: new Date(T1 - 1).toISOString() },
+        ...structuredClone(resident.items),
+      ] } }]);
+      for (let pages = 0; page.hasMore && pages < 10; pages += 1) {
+        page = await service.search({ ...query, pageToken: page.pageToken });
+        hits.push(...page.items);
+        addLiveTurn(store, 'main', { ordinal: 3 + pages, startedAt: T3 + pages + 1, prompt: `苹果并行写入 ${pages}` });
+      }
+      expect(page.hasMore).toBe(false);
+      expect(hits.map(hit => hit.snippet).toSorted()).toEqual(['帮我看看苹果怎么挑', '苹果要挑红富士。', '苹果还在路上', '苹果正在比较'].toSorted());
+      const fresh = await service.search({ ...query, pageSize: 50 });
+      expect(fresh.items.map(hit => hit.snippet)).toEqual(expect.arrayContaining(['苹果流式追加', '苹果新消息']));
+    });
+
+    const rewrites = [
+      ['an edited answer', (agent: NonNullable<ReturnType<TranscriptStore['getAgent']>>) => agent.apply([{ op: 'frame.upsert', turnId: 't0', stepId: 't0.1',
+        frame: { kind: 'text', frameId: 't0.1.f3', role: 'assistant', text: '改写后的回答没有那个词' } }])],
+      ['an edited prompt', (agent: NonNullable<ReturnType<TranscriptStore['getAgent']>>) => agent.apply([{ op: 'turn.upsert', turn: { ...agent.getTurn('t0')!, prompt: '改写后的问题' } }])],
+      ['a shortened streaming answer', (agent: NonNullable<ReturnType<TranscriptStore['getAgent']>>) => agent.apply([{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1',
+        frame: { kind: 'text', frameId: 't1.1.f0', role: 'assistant', text: '苹果' } }])],
+    ] as const;
+    it.each(rewrites.flatMap(([name, rewrite]) => [[name, 'after', rewrite], [name, 'during', rewrite]] as const))(
+      'S2 rejects a live continuation after %s keeps its id but rewrites captured text %s the resident scan', async (_name, phase, rewrite) => {
+      const store = makeLiveStore('s1');
+      addLiveTurn(store, 'main', { ordinal: 1, startedAt: T2, state: 'running', prompt: '苹果还在路上',
+        steps: [{ stepId: 't1.1', state: 'running', texts: ['苹果正在比较'] }] });
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      if (phase === 'during') service.queryTextBudgetChars = 1;
+      const query = { query: '苹果', mode: 'literal' as const, container: { sessionId: 's1' }, pageSize: 1 };
+      const first = await service.search(query);
+      expect(first.hasMore).toBe(true);
+      expect(first.incomplete === 'deadline').toBe(phase === 'during');
+      rewrite(store.getAgent('main')!);
+      await expect(service.search({ ...query, pageToken: first.pageToken }))
+        .rejects.toMatchObject({ reason: 'invalid_page_token', message: expect.stringContaining('rewritten') });
+      service.queryTextBudgetChars = 16_000_000;
+      const restarted = await service.search({ ...query, pageSize: 50 });
+      expect(restarted.items.length).toBeGreaterThan(0);
+    });
+
     it('S2 resumes text-budgeted extraction without repeated readiness and cancels tokenization', async () => {
       const store = makeLiveStore('s1');
       const service = track(makeService(home!, gettableIndex([summary('s1', '')])));

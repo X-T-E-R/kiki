@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
-import { webAccessEnableInputSchema, webSessionSummarySchema, type WebAccessEnableInput, type WebAccessStatus, type WebSessionSummary, type WebAccessLink } from '@kiki/protocol';
+import { webAccessEnableInputSchema, webAccessSharedConnectionsInputSchema, webSessionSummarySchema, type WebAccessEnableInput, type WebAccessStatus, type WebSessionSummary, type WebAccessLink } from '@kiki/protocol';
 import { readPrivateFile, writePrivateFile } from './auth/privateFiles';
 import { AdmissionError } from './connections/admission';
 
@@ -25,6 +25,8 @@ export class WebAccess {
   private readonly sessions = new Map<string, StoredSession>();
   private readonly codes = new Map<string, { expiresAt: number; origin: string }>();
   private readonly leases = new Map<string, Set<() => void>>();
+  private readonly sharedConnections = new Set<string>();
+  private readonly connectionLeases = new Map<string, Set<() => void>>();
   private tail: Promise<unknown> = Promise.resolve();
   private readonly path: string;
   private lastWrite = 0;
@@ -38,17 +40,23 @@ export class WebAccess {
   }
   async ready(): Promise<void> {
     try {
-      const state = JSON.parse((await readPrivateFile(this.path)).toString('utf8')) as { input?: unknown; sessions?: unknown[] };
+      const state = JSON.parse((await readPrivateFile(this.path)).toString('utf8')) as { input?: unknown; sessions?: unknown[]; sharedConnectionIds?: unknown };
+      if (state.sharedConnectionIds !== undefined) {
+        for (const id of webAccessSharedConnectionsInputSchema.parse({ connectionIds: state.sharedConnectionIds }).connectionIds) this.sharedConnections.add(id);
+      }
       if (state.input === undefined) return;
       const input = webAccessEnableInputSchema.parse(state.input);
       if (input.mode !== 'persistent' || !Array.isArray(state.sessions)) throw new Error('Invalid Web access store');
+      if (state.sharedConnectionIds === undefined && input.sharedConnectionIds !== undefined) {
+        for (const id of input.sharedConnectionIds) this.sharedConnections.add(id);
+      }
       for (const raw of state.sessions) {
         const entry = webSessionSummarySchema.parse(raw);
         const hash = (raw as StoredSession).digest;
         if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash) || this.sessions.has(entry.id)) throw new Error('Invalid Web session digest');
         if (entry.lastUsedAt + IDLE_TTL > this.now()) this.sessions.set(entry.id, { ...entry, digest: hash });
       }
-      this.listener = await this.startListener(input); this.input = input;
+      this.listener = await this.startListener(input); this.input = { ...input, sharedConnectionIds: [...this.sharedConnections] };
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   status(): WebAccessStatus {
@@ -56,19 +64,41 @@ export class WebAccess {
     return { enabled, mode: enabled ? this.input!.mode : null, url: enabled ? this.listener!.url : null,
       expiresAt: enabled ? this.expiresAt : null, host: enabled ? this.listener!.host : null, port: enabled ? this.listener!.port : null,
       insecure: enabled && this.listener!.url.startsWith('http:') && !isLoopback(new URL(this.listener!.url).hostname),
-      sessions: [...this.sessions.values()].filter((s) => this.valid(s)).map((s) => this.summary(s)) };
+      sessions: [...this.sessions.values()].filter((s) => this.valid(s)).map((s) => this.summary(s)),
+      sharedConnectionIds: [...this.sharedConnections] };
   }
   enable(input: WebAccessEnableInput): Promise<WebAccessStatus> {
     return this.change(async () => {
       const parsed = webAccessEnableInputSchema.parse(input);
-      if (this.status().enabled && parsed.mode === this.input?.mode && (parsed.host === undefined || parsed.host === this.input.host) && (parsed.port === undefined || parsed.port === this.input.port) && (parsed.publicUrl === undefined || new URL(parsed.publicUrl).origin === this.input.publicUrl) && (parsed.insecureNoTls === undefined || parsed.insecureNoTls === this.input.insecureNoTls)) return this.status();
+      if (parsed.sharedConnectionIds !== undefined) this.replaceSharedConnections(parsed.sharedConnectionIds);
+      if (this.status().enabled && parsed.mode === this.input?.mode && (parsed.host === undefined || parsed.host === this.input.host) && (parsed.port === undefined || parsed.port === this.input.port) && (parsed.publicUrl === undefined || new URL(parsed.publicUrl).origin === this.input.publicUrl) && (parsed.insecureNoTls === undefined || parsed.insecureNoTls === this.input.insecureNoTls)) {
+        if (parsed.sharedConnectionIds !== undefined) await this.persist();
+        return this.status();
+      }
       await this.stop();
       this.listener = await this.startListener(parsed);
-      this.input = { ...parsed, host: this.listener.host, port: this.listener.port, publicUrl: this.listener.url };
+      this.input = { ...parsed, host: this.listener.host, port: this.listener.port, publicUrl: this.listener.url, sharedConnectionIds: [...this.sharedConnections] };
       this.expiresAt = parsed.mode === 'temporary' ? this.now() + TEMPORARY_TTL : null;
       if (this.expiresAt !== null) { this.expiryTimer = setTimeout(() => { void this.disable().catch(() => {}); }, TEMPORARY_TTL); this.expiryTimer.unref(); }
       await this.persist(); return this.status();
     });
+  }
+  setSharedConnections(connectionIds: readonly string[]): Promise<WebAccessStatus> {
+    return this.change(async () => {
+      const parsed = webAccessSharedConnectionsInputSchema.parse({ connectionIds });
+      this.replaceSharedConnections(parsed.connectionIds);
+      if (this.input !== undefined) this.input = { ...this.input, sharedConnectionIds: [...this.sharedConnections] };
+      await this.persist(); return this.status();
+    });
+  }
+  isConnectionShared(connectionId: string): boolean {
+    return this.statusEnabled() && this.sharedConnections.has(connectionId);
+  }
+  attachConnection(connectionId: string, close: () => void): () => void {
+    if (!this.isConnectionShared(connectionId)) { close(); return () => {}; }
+    const set = this.connectionLeases.get(connectionId) ?? new Set<() => void>();
+    set.add(close); this.connectionLeases.set(connectionId, set);
+    return () => { set.delete(close); if (set.size === 0) this.connectionLeases.delete(connectionId); };
   }
   disable(): Promise<WebAccessStatus> { return this.change(async () => { await this.stop(); await this.persist(); return this.status(); }); }
   issueLink(): WebAccessLink {
@@ -159,9 +189,16 @@ export class WebAccess {
   private requireEnabled(): void { if (!this.statusEnabled()) throw new AdmissionError(401, 'web_access_disabled'); }
   private summary({ digest: _digest, ...session }: StoredSession): WebSessionSummary { return session; }
   private remove(id: string): void { this.sessions.delete(id); const set = this.leases.get(id); this.leases.delete(id); for (const close of set ?? []) close(); }
+  private revokeConnection(id: string): void { const set = this.connectionLeases.get(id); this.connectionLeases.delete(id); for (const close of set ?? []) close(); }
+  private replaceSharedConnections(ids: readonly string[]): void {
+    const next = new Set(ids);
+    for (const id of [...this.sharedConnections]) if (!next.has(id)) { this.sharedConnections.delete(id); this.revokeConnection(id); }
+    for (const id of next) this.sharedConnections.add(id);
+  }
   private async stop(): Promise<void> {
     if (this.expiryTimer !== undefined) { clearTimeout(this.expiryTimer); this.expiryTimer = undefined; }
     this.codes.clear(); for (const id of this.sessions.keys()) this.remove(id);
+    for (const id of [...this.connectionLeases.keys()]) this.revokeConnection(id);
     const listener = this.listener; this.listener = undefined; this.input = undefined; this.expiresAt = null;
     await listener?.close();
   }
@@ -171,7 +208,11 @@ export class WebAccess {
   }
   private async persist(): Promise<void> {
     this.lastWrite = this.now();
-    await writePrivateFile(this.path, JSON.stringify(this.input?.mode === 'persistent' ? { input: this.input, sessions: [...this.sessions.values()] } : {}));
+    const sharedConnectionIds = [...this.sharedConnections];
+    const body = this.input?.mode === 'persistent'
+      ? { input: { ...this.input, sharedConnectionIds }, sessions: [...this.sessions.values()], sharedConnectionIds }
+      : sharedConnectionIds.length > 0 ? { sharedConnectionIds } : {};
+    await writePrivateFile(this.path, JSON.stringify(body));
   }
   private change<T>(fn: () => Promise<T>): Promise<T> { const result = this.tail.then(fn); this.tail = result.catch(() => {}); return result; }
   async close(): Promise<void> { clearInterval(this.timer); await this.change(async () => { await this.persist(); await this.stop(); }); }

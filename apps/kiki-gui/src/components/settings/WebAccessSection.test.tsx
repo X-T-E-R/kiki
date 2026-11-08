@@ -27,13 +27,17 @@ const webAccess = {
   disable: vi.fn(),
   issueLink: vi.fn(),
   revoke: vi.fn(),
+  setSharedConnections: vi.fn(),
   current: vi.fn(),
   exchange: vi.fn(),
   logout: vi.fn(),
 };
+const connections = {
+  list: vi.fn(),
+};
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { klient: { rest: { webAccess } } }, localClient: null }),
+  useConnection: () => ({ client: { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { webAccess, connections } } }, localClient: null }),
 }));
 
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'web' }) }));
@@ -48,7 +52,7 @@ const NOW = Date.UTC(2026, 9, 4, 12, 0, 0);
 function status(over: Partial<WebAccessStatus> = {}): WebAccessStatus {
   return {
     enabled: false, mode: null, url: null, expiresAt: null,
-    host: '127.0.0.1', port: 58627, insecure: false, sessions: [], ...over,
+    host: '127.0.0.1', port: 58627, insecure: false, sessions: [], sharedConnectionIds: [], ...over,
   };
 }
 
@@ -67,6 +71,8 @@ afterEach(() => {
   webAccess.disable.mockReset();
   webAccess.issueLink.mockReset();
   webAccess.revoke.mockReset();
+  webAccess.setSharedConnections.mockReset();
+  connections.list.mockReset();
 });
 
 afterAll(() => {
@@ -113,7 +119,10 @@ const find = (container: HTMLElement, selector: string): HTMLElement | null =>
   container.querySelector<HTMLElement>(selector);
 
 describe('closed entry', () => {
-  beforeEach(() => { webAccess.status.mockResolvedValue(status()); });
+  beforeEach(() => {
+    webAccess.status.mockResolvedValue(status());
+    connections.list.mockResolvedValue([]);
+  });
 
   it('offers both ways to open, and says the link is full use of this Kiki', async () => {
     const container = await render();
@@ -158,6 +167,7 @@ describe('closed entry', () => {
 
 describe('open entry', () => {
   beforeEach(() => {
+    connections.list.mockResolvedValue([]);
     webAccess.status.mockResolvedValue(status({
       enabled: true, mode: 'persistent', url: 'http://192.168.1.20:58627/',
     }));
@@ -247,12 +257,109 @@ describe('signed-in browsers', () => {
 
 describe('unencrypted entry', () => {
   it('says the connection is not encrypted without being asked', async () => {
+    connections.list.mockResolvedValue([]);
     webAccess.status.mockResolvedValue(status({
       enabled: true, mode: 'persistent', url: 'http://192.168.1.20:58627/', insecure: true,
     }));
     const container = await render();
     const note = find(container, '[data-web-access-insecure]')!;
     expect(note.textContent).toBe('This connection is not encrypted. Anyone on the network can read what is sent.');
+  });
+});
+
+describe('shared connected Kikis', () => {
+  const connA = '11111111-1111-4111-8111-111111111111';
+  const connB = '22222222-2222-4222-8222-222222222222';
+  const connBridgeOnly = '33333333-3333-4333-8333-333333333333';
+
+  it('defaults to empty selection, lets the owner select, save, read back, and revoke shared remote Kikis', async () => {
+    connections.list.mockResolvedValue([
+      {
+        id: connA,
+        label: 'Lab Workstation A',
+        endpoint: 'http://127.0.0.1:59001',
+        target: { homeId: connA, hostId: 'host-a', protocol: 1 },
+        credentialRef: connA,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+      },
+      {
+        id: connB,
+        label: 'Lab Workstation B',
+        endpoint: 'http://127.0.0.1:59002',
+        target: { homeId: connB, hostId: 'host-b', protocol: 1 },
+        credentialRef: connB,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'offline',
+        activeLeases: 0,
+      },
+      {
+        id: connBridgeOnly,
+        label: 'Bridge Only Peer',
+        endpoint: 'http://127.0.0.1:59003',
+        target: { homeId: connBridgeOnly, hostId: 'host-c', protocol: 1 },
+        credentialRef: connBridgeOnly,
+        enabled: true,
+        purposes: ['bridge'],
+        backgroundSummary: false,
+        state: 'online',
+        activeLeases: 0,
+      },
+    ]);
+    let currentShared: string[] = [];
+    webAccess.status.mockImplementation(async () => status({
+      enabled: true,
+      mode: 'persistent',
+      url: 'https://example.test/',
+      sharedConnectionIds: currentShared,
+    }));
+    webAccess.setSharedConnections.mockImplementation(async (ids: readonly string[]) => {
+      currentShared = [...ids];
+      return status({
+        enabled: true,
+        mode: 'persistent',
+        url: 'https://example.test/',
+        sharedConnectionIds: currentShared,
+      });
+    });
+
+    const container = await render();
+    const checkA = find(container, `[data-web-access-share-connection="${connA}"]`) as HTMLInputElement | null;
+    const checkB = find(container, `[data-web-access-share-connection="${connB}"]`) as HTMLInputElement | null;
+    const checkBridge = find(container, `[data-web-access-share-connection="${connBridgeOnly}"]`);
+    const saveBtn = find(container, '[data-web-access-save-shared]') as HTMLButtonElement | null;
+
+    expect(checkA).not.toBeNull();
+    expect(checkB).not.toBeNull();
+    expect(checkBridge).toBeNull();
+    expect(checkA!.checked).toBe(false);
+    expect(checkB!.checked).toBe(false);
+    expect(saveBtn!.disabled).toBe(true);
+
+    await click(checkA);
+    expect(checkA!.checked).toBe(true);
+    expect(saveBtn!.disabled).toBe(false);
+
+    await click(saveBtn);
+    expect(webAccess.setSharedConnections).toHaveBeenCalledWith([connA]);
+    expect(checkA!.checked).toBe(true);
+    expect(checkB!.checked).toBe(false);
+    expect(saveBtn!.disabled).toBe(true);
+    expect(find(container, '[data-feedback-tone="success"]')?.textContent).toContain('Saved which connected Kikis browsers can use.');
+
+    await click(checkA);
+    expect(checkA!.checked).toBe(false);
+    expect(saveBtn!.disabled).toBe(false);
+
+    await click(saveBtn);
+    expect(webAccess.setSharedConnections).toHaveBeenLastCalledWith([]);
+    expect(checkA!.checked).toBe(false);
+    expect(saveBtn!.disabled).toBe(true);
   });
 });
 
@@ -263,6 +370,7 @@ describe('copy', () => {
       'st.web.persistent', 'st.web.startTemporary', 'st.web.startPersistent', 'st.web.turnOff',
       'st.web.newLink', 'st.web.address', 'st.web.signedIn', 'st.web.revoke', 'st.web.revokeAll',
       'st.web.linkTitle', 'st.web.linkCopy', 'st.web.insecureHint',
+      'st.web.sharedTitle', 'st.web.sharedHint', 'st.web.sharedEmpty', 'st.web.sharedSave', 'st.web.sharedSaving', 'st.web.sharedSaved',
     ] as const;
     for (const key of keys) {
       expect(translate('en', key), `en ${key}`).not.toBe(key);

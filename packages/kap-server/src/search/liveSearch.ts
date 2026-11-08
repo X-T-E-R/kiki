@@ -3,7 +3,7 @@ import { setImmediate } from 'node:timers/promises';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import type { SessionSummary } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/lexical';
-import { projectTranscriptUserOrigin, type TranscriptItem, type TranscriptStore } from '@kiki/transcript';
+import { projectTranscriptUserOrigin, type TranscriptFrame, type TranscriptItem, type TranscriptStore } from '@kiki/transcript';
 import type { HistoryLocatorStore } from '../services/history/historyLocatorStore';
 import type { HistorySortedCursor } from '../services/history/historySortedSearch';
 import { GlobalSearchError, type GlobalSearchHit, type GlobalSearchPage } from './contract';
@@ -13,8 +13,16 @@ import { makeSnippet } from './snippet';
 
 type LiveDoc = { key: string; value: MessageDoc | TitleDoc };
 type Navigation = Pick<HistoryLocatorStore, 'scan'>;
+interface TextMark {
+  readonly id: string;
+  readonly length: number;
+  readonly digest: number;
+  readonly pending: boolean;
+}
 interface ResidentAgent {
-  readonly items: WeakRef<readonly TranscriptItem[]>;
+  snapshot?: readonly TranscriptItem[];
+  readonly keys: readonly string[];
+  readonly marks: Map<string, readonly TextMark[]>;
   readonly completeTurns: Set<number>;
 }
 interface LiveSearchState {
@@ -22,6 +30,7 @@ interface LiveSearchState {
   readonly fingerprint: string;
   readonly store: WeakRef<TranscriptStore>;
   readonly agents: Map<string, ResidentAgent>;
+  readonly verified: WeakSet<TranscriptItem>;
   readonly historical: Map<string, HistorySortedCursor | undefined>;
   readonly gaps: Set<string>;
   readonly rows: MatchedRow[];
@@ -71,6 +80,32 @@ export class LiveSearch {
 
   clear(): void { for (const id of this.states.keys()) this.evict(id); }
 
+  /**
+   * A continuation searches the transcript as captured on its first page. Appends, text streaming onto
+   * captured text, and older history loaded in front keep that capture valid; a store that drops,
+   * reorders or rewrites captured searchable text under the same ids (undo, edit-resend, a replaced
+   * generation) ends it. The captured array is held only until the resident scan finishes; afterwards
+   * per-text digests carry the check, so the search never pins history the store has released.
+   */
+  private assertWatermark(state: LiveSearchState, store: TranscriptStore, includeToolOutput: boolean): void {
+    for (const [agent, captured] of state.agents) {
+      const current = store.getAgent(agent)?.getItems();
+      const start = current === undefined ? -1 : startOfKeys(current, captured.keys);
+      let intact = start >= 0;
+      for (let index = 0; intact && index < captured.keys.length; index += 1) {
+        const item = current![start + index]!;
+        if (state.verified.has(item)) continue;
+        const marks = captured.marks.get(captured.keys[index]!)
+          ?? (captured.snapshot === undefined ? [] : marksOf(captured.snapshot[index]!, includeToolOutput));
+        intact = extendsMarks(item, marks, includeToolOutput);
+        if (intact) state.verified.add(item);
+      }
+      if (intact) continue;
+      this.evict(state.id);
+      throw new GlobalSearchError('invalid_page_token', 'live transcript was rewritten since this search started; restart the search');
+    }
+  }
+
   async search(input: LiveSearchInput): Promise<GlobalSearchPage> {
     const q = input.query;
     const fingerprint = `${tokenFingerprint(q, 'live')}:${q.pageSize}`;
@@ -78,7 +113,7 @@ export class LiveSearch {
     let sequence = 0;
     if (input.pageToken === undefined) {
       while (this.states.size >= 8) this.evict(this.states.keys().next().value!);
-      state = { id: randomUUID(), fingerprint, store: new WeakRef(input.store), agents: new Map(), historical: new Map(),
+      state = { id: randomUUID(), fingerprint, store: new WeakRef(input.store), agents: new Map(), verified: new WeakSet(), historical: new Map(),
         gaps: new Set(), rows: [], touchedAt: Date.now(), sequence: 0, residentDone: false,
         emitted: 0, documents: 0, bytes: 0, records: 0 };
       this.states.set(state.id, state);
@@ -93,12 +128,7 @@ export class LiveSearch {
       }
       state = saved;
       sequence = cursor.sequence!;
-      for (const [agent, captured] of state.agents) {
-        if (input.store.getAgent(agent)?.getItems() !== captured.items.deref()) {
-          this.evict(state.id);
-          throw new GlobalSearchError('invalid_page_token', 'live transcript changed; restart the search');
-        }
-      }
+      this.assertWatermark(state, input.store, q.includeToolOutput === true);
       if (state.last?.sequence === sequence) return state.last.page;
       if (state.sequence !== sequence) throw new GlobalSearchError('invalid_page_token', 'live search cursor was already consumed');
     }
@@ -131,7 +161,9 @@ export class LiveSearch {
           check();
           const transcript = input.store.getAgent(agent);
           if (transcript === undefined) { state.historical.set(agent, undefined); continue; }
-          state.agents.set(agent, { items: new WeakRef(transcript.getItems()), completeTurns: new Set() });
+          const items = transcript.getItems();
+          for (const item of items) state.verified.add(item);
+          state.agents.set(agent, { snapshot: items, keys: items.map(itemKey), marks: new Map(), completeTurns: new Set() });
           if (transcript.hasMoreOlder) state.historical.set(agent, undefined);
         }
         state.iterator = residentDocs(input.sessionId, state, q);
@@ -144,9 +176,7 @@ export class LiveSearch {
         if (nodes >= 4096) break;
         const next = state.iterator!.next();
         if (next.done) {
-          state.residentDone = true;
-          state.iterator = undefined;
-          state.rows.sort((left, right) => compareRows(q, left, right));
+          finishResident(state, q);
           break;
         }
         const doc = next.value;
@@ -160,9 +190,7 @@ export class LiveSearch {
                 matched.anchor === undefined || q.literalQuery === undefined ? undefined : { at: matched.anchor, len: q.literalQuery.length }) } });
             if (state.rows.length >= Math.min(input.maxHits, 4096)) {
               state.gaps.add('candidate_cap');
-              state.residentDone = true;
-              state.iterator = undefined;
-              state.rows.sort((left, right) => compareRows(q, left, right));
+              finishResident(state, q);
             }
           }
         }
@@ -229,12 +257,7 @@ export class LiveSearch {
         throw error;
       }
     } finally { clearTimeout(timer); state.active = false; }
-    for (const [agent, captured] of state.agents) {
-      if (input.store.getAgent(agent)?.getItems() !== captured.items.deref()) {
-        this.evict(state.id);
-        throw new GlobalSearchError('invalid_page_token', 'live transcript changed; restart the search');
-      }
-    }
+    this.assertWatermark(state, input.store, q.includeToolOutput === true);
     const scanPending = !state.residentDone || state.historical.size > 0;
     const hasMore = scanPending || state.emitted < state.rows.length;
     const gaps = [...state.gaps];
@@ -262,17 +285,18 @@ function* residentDocs(sessionId: string, state: LiveSearchState, q: NormalizedQ
     const time = iso === undefined ? NaN : Date.parse(iso);
     return Number.isNaN(time) ? summary?.updatedAt ?? 0 : time;
   };
-  for (const [agentId, { items, completeTurns }] of state.agents) {
-    const captured = items.deref();
-    if (captured === undefined) throw new GlobalSearchError('invalid_page_token', 'live transcript expired; restart the search');
+  for (const [agentId, resident] of state.agents) {
+    const captured = resident.snapshot;
+    if (captured === undefined) continue;
     for (const item of captured) {
       yield undefined;
-      if (item.kind !== 'turn') continue;
-      if (item.contentRefs?.length) {
-        state.historical.set(agentId, undefined);
+      if (item.kind !== 'turn' || item.contentRefs?.length) {
+        resident.marks.set(itemKey(item), []);
+        if (item.kind === 'turn') state.historical.set(agentId, undefined);
         continue;
       }
       let complete = true;
+      const marks: TextMark[] = [];
       const doc = (key: string, role: MessageDoc['role'], text: string, time: number, stepId?: string): LiveDoc | undefined => {
         if (text.length > MAX_DOC_TEXT_CHARS) {
           complete = false;
@@ -284,35 +308,103 @@ function* residentDocs(sessionId: string, state: LiveSearchState, q: NormalizedQ
         return { key, value: { kind: 'message', sessionId, workspaceId, sessionTitle, agentId, role,
           text: bounded, time, turn: item.ordinal, stepId } };
       };
-      if (item.prompt !== undefined) yield doc(`${sessionId}/${agentId}/live/u/t${item.ordinal}`, 'user', item.prompt, timeOf(item.startedAt));
+      if (item.prompt !== undefined) {
+        marks.push(markOf('prompt', item.prompt, false));
+        yield doc(`${sessionId}/${agentId}/live/u/t${item.ordinal}`, 'user', item.prompt, timeOf(item.startedAt));
+      }
       for (const step of item.steps) {
         yield undefined;
         const time = timeOf(step.endedAt ?? step.startedAt ?? item.startedAt);
         for (const frame of step.frames) {
           yield undefined;
-          const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text'
-            ? frame.role === 'assistant' ? 'assistant' : projectTranscriptUserOrigin(frame.origin) !== undefined ? 'user' : undefined
-            : undefined;
-          if (role === undefined || role === 'tool' && !q.includeToolOutput) continue;
+          const role = frameRole(frame, q.includeToolOutput === true);
+          if (role === undefined) continue;
           if (frame.contentRefs?.length) { complete = false; state.historical.set(agentId, undefined); continue; }
-          let text = '';
-          if (frame.kind === 'text') text = frame.text ?? '';
-          if (frame.kind === 'tool') {
-            if (typeof frame.output === 'string') text = frame.output;
-            else if (Array.isArray(frame.output)) for (const part of frame.output) {
-              yield undefined;
-              if (part.type === 'text') text += part.text.slice(0, MAX_DOC_TEXT_CHARS + 1 - text.length);
-              if (text.length > MAX_DOC_TEXT_CHARS) break;
-            }
-          }
+          const text = frameText(frame);
+          marks.push(markOf(frame.frameId, text, frame.kind === 'tool' && frame.state === 'running'));
           yield doc(`${sessionId}/${agentId}/live/${role}/${frame.frameId}`, role, text, time, step.stepId);
         }
       }
-      if (complete) completeTurns.add(item.ordinal);
+      resident.marks.set(itemKey(item), marks);
+      if (complete) resident.completeTurns.add(item.ordinal);
     }
   }
   if (sessionTitle) yield { key: `${sessionId}/$title`, value: { kind: 'title', sessionId, workspaceId, sessionTitle,
     agentId: '', role: 'title', text: sessionTitle.slice(0, MAX_DOC_TEXT_CHARS), time: summary?.updatedAt ?? 0 } };
+}
+
+function finishResident(state: LiveSearchState, q: NormalizedQuery): void {
+  state.residentDone = true;
+  state.iterator = undefined;
+  state.rows.sort((left, right) => compareRows(q, left, right));
+  for (const resident of state.agents.values()) resident.snapshot = undefined;
+}
+
+function frameRole(frame: TranscriptFrame, includeToolOutput: boolean): MessageDoc['role'] | undefined {
+  if (frame.kind === 'tool') return includeToolOutput ? 'tool' : undefined;
+  if (frame.kind !== 'text') return undefined;
+  return frame.role === 'assistant' ? 'assistant' : projectTranscriptUserOrigin(frame.origin) !== undefined ? 'user' : undefined;
+}
+
+function frameText(frame: TranscriptFrame): string {
+  if (frame.kind === 'text') return frame.text ?? '';
+  if (frame.kind !== 'tool') return '';
+  if (typeof frame.output === 'string') return frame.output;
+  let text = '';
+  if (Array.isArray(frame.output)) for (const part of frame.output) {
+    if (part.type === 'text') text += part.text.slice(0, MAX_DOC_TEXT_CHARS + 1 - text.length);
+    if (text.length > MAX_DOC_TEXT_CHARS) break;
+  }
+  return text;
+}
+
+function markOf(id: string, text: string, pending: boolean): TextMark {
+  const length = Math.min(text.length, MAX_DOC_TEXT_CHARS + 1);
+  return { id, length, digest: digestOf(text, length), pending };
+}
+
+function digestOf(text: string, length: number): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < length; index += 1) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+  return hash >>> 0;
+}
+
+function searchableTexts(item: TranscriptItem, includeToolOutput: boolean): Map<string, { text?: string; pending: boolean }> {
+  const texts = new Map<string, { text?: string; pending: boolean }>();
+  if (item.kind !== 'turn' || item.contentRefs?.length) return texts;
+  if (item.prompt !== undefined) texts.set('prompt', { text: item.prompt, pending: false });
+  for (const step of item.steps) for (const frame of step.frames) {
+    if (frameRole(frame, includeToolOutput) === undefined) continue;
+    texts.set(frame.frameId, frame.contentRefs?.length ? { pending: true }
+      : { text: frameText(frame), pending: frame.kind === 'tool' && frame.state === 'running' });
+  }
+  return texts;
+}
+
+function marksOf(item: TranscriptItem, includeToolOutput: boolean): TextMark[] {
+  return [...searchableTexts(item, includeToolOutput)].flatMap(([id, { text, pending }]) => text === undefined ? [] : [markOf(id, text, pending)]);
+}
+
+function extendsMarks(item: TranscriptItem, marks: readonly TextMark[], includeToolOutput: boolean): boolean {
+  if (marks.length === 0) return true;
+  const texts = searchableTexts(item, includeToolOutput);
+  return marks.every((mark) => {
+    const current = texts.get(mark.id);
+    if (current === undefined) return false;
+    if (mark.pending || current.text === undefined) return true;
+    return current.text.length >= mark.length && digestOf(current.text, mark.length) === mark.digest;
+  });
+}
+
+function itemKey(item: TranscriptItem): string {
+  return item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`;
+}
+
+function startOfKeys(items: readonly TranscriptItem[], keys: readonly string[]): number {
+  if (keys.length === 0) return 0;
+  const start = items.findIndex((item) => itemKey(item) === keys[0]);
+  if (start < 0 || items.length - start < keys.length) return -1;
+  return keys.every((key, index) => itemKey(items[start + index]!) === key) ? start : -1;
 }
 
 function matchResident(q: NormalizedQuery, doc: LiveDoc): MatchedRow | undefined {

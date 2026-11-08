@@ -16,6 +16,7 @@ import type { RemoteConnectionManager } from '../services/connections/manager';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { stripPort } from '../middleware/hostnames';
 import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
+import { webPrincipal, type WebAccess } from '../services/webAccess';
 
 export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; object-src 'none'`;
 export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace('allow-same-origin ', '')}; object-src 'none'`;
@@ -27,6 +28,7 @@ interface HtmlPreviewOptions {
   readonly allowAutomaticRoot?: boolean;
   readonly registeredRoots?: () => Promise<readonly string[]>;
   readonly privateHomes?: readonly string[];
+  readonly web?: WebAccess;
 }
 
 async function nearestProjectRoot(fs: IHostFileSystem, directory: string, registeredRoots: Promise<readonly string[]> | undefined): Promise<string> {
@@ -234,6 +236,13 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     try {
       requireLocalClient(req);
       reserve(); const { connectionId } = req.params as { connectionId: string };
+      if (webPrincipal(req) !== undefined) {
+        let record: ReturnType<RemoteConnectionManager['get']> | undefined;
+        try { record = manager.get(connectionId); } catch { record = undefined; }
+        if (options.web === undefined || !options.web.isConnectionShared(connectionId) || record === undefined || !record.enabled || ['disabled', 'authentication_required', 'identity_changed'].includes(record.state) || !record.purposes.includes('gui')) {
+          throw new AdmissionError(403, 'connection_not_shared');
+        }
+      }
       const input = htmlPreviewRequestSchema.parse(req.body);
       const root = input.root ?? input.workspace_root;
       if (root === undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
@@ -243,7 +252,9 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
       const previewId = id;
       const stop = () => release(previewId);
       lease.signal.addEventListener('abort', stop, { once: true });
-      remote.set(id, { connectionId, remoteId: result.preview_id, expiresAt: result.expires_at, dispose: () => { lease.signal.removeEventListener('abort', stop); lease.release(); } });
+      const detachWeb = webPrincipal(req) !== undefined && options.web !== undefined ? options.web.attachConnection(connectionId, stop) : () => {};
+      remote.set(id, { connectionId, remoteId: result.preview_id, expiresAt: result.expires_at, dispose: () => { detachWeb(); lease.signal.removeEventListener('abort', stop); lease.release(); } });
+      if (!remote.has(id)) throw new AdmissionError(403, 'connection_not_shared');
       const prefix = `/html-preview/${result.preview_id}/`;
       const pathname = new URL(result.url, 'http://target.invalid').pathname;
       if (!pathname.startsWith(prefix)) throw new AdmissionError(502, 'invalid_html_preview_resource_url');

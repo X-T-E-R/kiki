@@ -178,7 +178,7 @@ async function fallbackSearch(
     warning: SEARCH_INDEX_UNAVAILABLE,
     fallback: {
       reason: SEARCH_INDEX_UNAVAILABLE,
-      scope: 'current_session_wire',
+      scope: 'requested_session_wire',
       maxBytes: HISTORY_FALLBACK_MAX_BYTES,
       maxRecords: HISTORY_FALLBACK_MAX_RECORDS,
       bytesRead: scan?.bytesRead ?? 0,
@@ -209,6 +209,17 @@ function parseScanCursor(value: string | undefined): ScanCursor | undefined {
       !Number.isSafeInteger(c.asOf) || c.asOf! < c.offset! ||
       c.v === 3 && (typeof c.requestHash !== 'string' || !/^[a-f0-9]{64}$/u.test(c.requestHash))) throw new Error('invalid_scan_cursor');
   return c as ScanCursor;
+}
+
+function isTranscriptSearchCursor(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  try {
+    decodeHistorySortedCursor(value);
+    return true;
+  } catch {
+    try { return parseScanCursor(value) !== undefined; }
+    catch { return false; }
+  }
 }
 
 function scanRequestHash(input: FallbackInput): string {
@@ -347,8 +358,6 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       source,
       pageSize,
       pageToken,
-      fallbackSessionId,
-      fallbackAgentId,
       signal,
     }) => {
       signal?.throwIfAborted();
@@ -360,7 +369,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       let unavailablePage: HistorySearchPage | undefined;
       const summary=sessionId===undefined?undefined:await getCore().accessor.get(ISessionIndex).get(sessionId);
       const externalMaterials=summary?.custom?.['externalClient']!==undefined||summary?.custom?.['externalSource']!==undefined;
-      const useIndex=source!=='transcript'&&role!=='record'&&!externalMaterials;
+      const continueTranscript = getNavigation !== undefined && sessionId !== undefined && agentId !== undefined &&
+        isTranscriptSearchCursor(pageToken);
+      const useIndex = source !== 'transcript' && role !== 'record' && !externalMaterials && !continueTranscript;
       const indexedPhrases = useIndex && sessionId === undefined &&
         (mode === 'auto' || mode === 'all' || mode === 'any');
       if (useIndex && (indexedPhrases || mode === 'terms' || mode === 'literal')) {
@@ -386,12 +397,11 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           } : page;
           unavailablePage = page;
         } catch (error) {
+          if (error instanceof GlobalSearchError && error.reason === 'invalid_page_token' && pageToken !== undefined) throw new Error('stale_scan_cursor');
           if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable')) throw error;
         }
       }
-      if (sessionId === undefined || agentId === undefined || includeSubagents === true ||
-          (source !== 'transcript' && mode !== undefined && mode !== 'auto' && mode !== 'all' && mode !== 'any' &&
-           (sessionId !== fallbackSessionId || agentId !== fallbackAgentId))) {
+      if (sessionId === undefined || agentId === undefined || includeSubagents === true) {
         return { ...unavailablePage, items: [], hasMore: false, source: 'index',
           indexState: unavailablePage?.indexState ?? { state: 'unavailable', degraded: SEARCH_INDEX_UNAVAILABLE },
           incomplete: 'index_unavailable',

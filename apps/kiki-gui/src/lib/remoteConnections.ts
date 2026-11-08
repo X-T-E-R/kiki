@@ -77,12 +77,12 @@ export function connectionsApi(client: KikiClient): ConnectionsFacade {
 
 export function useRemoteConnections(client: KikiClient | null) {
   return useQuery({
-    queryKey: remoteConnectionKeys.list(),
+    queryKey: [...remoteConnectionKeys.list(), client?.baseUrl ?? null],
     queryFn: async () => {
       if (client === null) throw new Error('The local control connection is not ready.');
       return connectionsApi(client).list();
     },
-    enabled: client !== null,
+    enabled: client !== null && client.klient?.rest?.connections !== undefined,
     refetchInterval: 8_000,
     staleTime: 4_000,
   });

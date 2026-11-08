@@ -41,9 +41,10 @@ export function browsableSourceSpace(
  * connection records, so the offer to open it is a fact about this window.
  */
 export function BridgedOriginRow({ block }: { block: UserBlock }) {
-  const { localClient } = useConnection();
+  const { client, localClient, connectionSource } = useConnection();
   const enter = useBridgedSourceEntry();
-  const records = useRemoteConnections(localClient).data;
+  const controlClient = localClient ?? (connectionSource === 'remote' || connectionSource === 'ssh' ? null : client);
+  const records = useRemoteConnections(controlClient).data;
   return <BridgedOriginLine block={block} records={records} onOpen={enter} />;
 }
 
@@ -72,7 +73,7 @@ export function BridgedOriginLine({ block, records, onOpen }: {
 ${address}`;
   // A remote window has no control home to switch the directory with, so the
   // source is stated there rather than offered as a way in.
-  const target = host.kind === 'tauri' ? browsableSourceSpace(block, records) : undefined;
+  const target = host.kind === 'tauri' || onOpen !== undefined ? browsableSourceSpace(block, records) : undefined;
 
   return (
     <div data-bridged-origin className="flex min-w-0 items-center gap-2">

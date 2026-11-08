@@ -1208,17 +1208,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }));
     if (prior !== undefined && prior.sessionRef !== undefined && prior.executorId !== undefined && prior.descriptorRevision !== undefined) {
       const nextBinding = this.data();
-      const priorDescriptor = this.executors.get?.(prior.executorId);
       if (agentExecutorBindingMatches(previousBinding, prior.bindingFingerprint) ||
           agentExecutorSameFamilyBindingMatches(nextBinding, prior.bindingFingerprint, {
             executorId: prior.executorId,
             descriptorRevision: prior.descriptorRevision,
-            executorOptions: priorDescriptor?.options,
           }) ||
           agentExecutorSameFamilyBindingMatches({ ...nextBinding, renderGeneration: previousBinding.renderGeneration }, prior.bindingFingerprint, {
             executorId: prior.executorId,
             descriptorRevision: prior.descriptorRevision,
-            executorOptions: priorDescriptor?.options,
           })) {
         await this.dispatcher.dispatch(new ExecutorSessionUpdated({
           ...prior, executionGeneration: execution.generation, executorId: executor.descriptor.id,

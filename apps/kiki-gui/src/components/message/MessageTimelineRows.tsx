@@ -66,10 +66,13 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
   summary,
   renderMember,
   onOpenProcess,
+  openReader,
 }: {
   readonly summary: ActivitySummary;
   readonly renderMember: (member: Block) => ReactNode;
   readonly onOpenProcess?: () => void;
+  /** Mounted only while the summary is open, so the stretch's full steps are read on demand and released on collapse. */
+  readonly openReader?: ReactNode;
 }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
@@ -103,6 +106,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
       </div>
       {open ? (
         <div data-activity-summary-members className="mt-1 ml-8 min-w-0 max-sm:ml-7">
+          {openReader}
           <div className="flex min-w-0 flex-col gap-0.5 border-l border-hairline pl-[17px] max-sm:pl-3">
             {summary.members.map((member) => (
               <div key={member.id} data-block-id={member.id} className="min-w-0 overflow-hidden">{renderMember(member)}</div>
