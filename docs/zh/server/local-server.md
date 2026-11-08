@@ -36,7 +36,7 @@ daemon 本身只监听 `127.0.0.1`。不带 `--port` 时，Web 访问复用 daem
 
 本地管理与远端 peer 访问使用不同凭据。可信本地启动器读取 `<home>/server.local-owner`，这是跨重启保存的私有本地管理凭据（Unix 文件权限为 0600）。桌面 GUI、TUI 和本地 CLI 用它连接同一 home。请保持私有，不要复制给远端 home，也不要填进远端连接配置。公开健康检查不要求 API 鉴权。
 
-远端 GUI 访问还要求目标开启入站开关、提供 `server.token` 中的当前 owner token，并持有针对源 home 审批的 grant（连接许可）。单独的 owner token、loopback 隧道或代理请求头都不能获得普通 REST/WebSocket 访问。源后端保存远端凭据，只为固定连接转发受支持的操作；renderer 不保留远端秘密。邀请与 SSH 配置见 [`kiki connections`](../reference/command.md#kiki-connections)。Thread bridge 使用独立凭据，不复用 GUI grant。
+远端 GUI 访问要求目标开启入站开关，并持有针对源 home 审批的 grant（连接许可）。使用十分钟有效的一次性配对码（`kiki pair`）或一步式 SSH 连接（`kiki connections ssh connect`）会为该条授权签发独立的对等凭据，并在 daemon 绑定回环地址时自动在本机可达的局域网和 Tailscale IPv4 地址上开启直连对等监听；旧版邀请连接则额外校验目标 `server.token` 中的当前 owner token。单独的 owner token、loopback 隧道或代理请求头都不能获得普通 REST/WebSocket 访问。源后端保存远端凭据，只为固定连接转发受支持的操作；renderer 不保留远端秘密。配对、邀请与 SSH 配置见 [`kiki pair` 与 `kiki connections`](../reference/command.md#kiki-pair)。Thread bridge 使用独立凭据，撤销某次配对授权会同时撤销随该次配对签发的 bridge 授权。
 
 可信本地客户端可按以下方式携带 local-owner 凭据：
 

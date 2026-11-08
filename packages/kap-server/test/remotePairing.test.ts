@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
 import { ConnectionAdmission } from '../src/services/connections/admission';
 import { validateEndpoint } from '../src/services/connections/manager';
-import { PairingRateLimit } from '../src/services/connections/pairing';
+import { directEndpoints, PairingRateLimit } from '../src/services/connections/pairing';
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true }); });
@@ -19,6 +20,26 @@ describe('direct endpoints', () => {
     expect(validateEndpoint('https://b.example.test')).toBe('https://b.example.test');
     expect(() => validateEndpoint('http://b.example.test')).toThrow('connection_requires_tls');
     expect(() => validateEndpoint('https://b.example.test/api')).toThrow('invalid_connection_endpoint');
+  });
+
+  it('does not fabricate LAN or Tailscale URLs from a loopback bind', () => {
+    const fakeInterfaces = {
+      eth0: [{ address: '192.168.1.40', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:01', internal: false, cidr: '192.168.1.40/24' }],
+      tailscale0: [{ address: '100.88.1.2', netmask: '255.192.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:02', internal: false, cidr: '100.88.1.2/10' }],
+    };
+    expect(directEndpoints({ host: '127.0.0.1', port: 58627 }, [], fakeInterfaces)).toEqual([]);
+    expect(directEndpoints({ host: '127.0.0.1', port: 58627 }, ['http://192.168.1.40:58627'], fakeInterfaces)).toEqual(['http://192.168.1.40:58627']);
+    expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], fakeInterfaces)).toEqual(['http://192.168.1.40:58627', 'http://100.88.1.2:58627']);
+    expect(directEndpoints({ host: '192.168.1.40', port: 58627 }, [], fakeInterfaces)).toEqual(['http://192.168.1.40:58627']);
+  });
+
+  it('formats and parses short-lived kiki://pair URIs without long-lived tokens', () => {
+    const uri = formatPairingUri({ endpoint: 'http://192.168.1.40:58627', code: 'k9f2 7x4m' });
+    expect(uri).toBe('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A58627&code=K9F2-7X4M');
+    expect(parsePairingUri(uri)).toEqual({ endpoint: 'http://192.168.1.40:58627', code: 'K9F2-7X4M' });
+    expect(parsePairingUri('kiki:///pair?endpoint=https%3A%2F%2Fb.example.test&code=K9F2-7X4M')).toEqual({ endpoint: 'https://b.example.test', code: 'K9F2-7X4M' });
+    expect(parsePairingUri('kiki://pair?endpoint=&code=K9F2-7X4M')).toBeUndefined();
+    expect(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A58627&code=1111-1111')).toBeUndefined();
   });
 });
 

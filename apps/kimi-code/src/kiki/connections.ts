@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createKlient } from '@kiki/klient/http';
-import { connectionAddInputSchema, connectionInviteInputSchema, connectionPairInputSchema, sshRemoteProfileSchema, sshConnectionRegisterInputSchema } from '@kiki/protocol';
+import { connectionAddInputSchema, connectionInviteInputSchema, connectionPairInputSchema, parsePairingUri, sshRemoteProfileSchema, sshConnectionRegisterInputSchema } from '@kiki/protocol';
 import type { Command } from 'commander';
 import { ensureServer } from './serve';
 import { resolveKikiHome } from './home';
@@ -52,8 +52,11 @@ export function registerConnectionsCommand(program: Command): void {
         process.stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n`);
         return;
       }
-      if (endpoint === undefined || code === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
-      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint, code, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true }));
+      const parsedUri = endpoint !== undefined && code === undefined ? parsePairingUri(endpoint) : undefined;
+      const targetEndpoint = parsedUri?.endpoint ?? endpoint;
+      const targetCode = parsedUri?.code ?? code;
+      if (targetEndpoint === undefined || targetCode === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
+      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint: targetEndpoint, code: targetCode, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true }));
       process.stdout.write(`Connected to ${record.label} at ${record.endpoint}.\n`);
     } finally { await client.close(); }
   });

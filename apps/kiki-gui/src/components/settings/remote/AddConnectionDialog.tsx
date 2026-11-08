@@ -12,7 +12,7 @@ import type { RemoteConnection, SshHost } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
-import { completeConnectionEndpoint, connectionsApi, endpointIssue, formatPairingCode, labelIssue, pairingCodeIssue } from '../../../lib/remoteConnections';
+import { completeConnectionEndpoint, connectionsApi, endpointIssue, formatPairingCode, labelIssue, pairingCodeIssue, parsePairingUri } from '../../../lib/remoteConnections';
 import { useNativeSshEnabled, useSshHosts } from '../../../lib/ssh';
 import { MAIN_SPACE_ID, useSpaces } from '../../../lib/spaces';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
@@ -145,7 +145,15 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
           help={t('st.remote.endpointHint')}>
           <input id="remote-connection-endpoint" data-remote-endpoint className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
             value={endpoint} spellCheck={false} placeholder="http://192.168.1.20:58627"
-            onChange={(event) => { setEndpoint(event.target.value); }}
+            onChange={(event) => {
+              const parsed = parsePairingUri(event.target.value);
+              if (parsed !== undefined) {
+                setEndpoint(completeConnectionEndpoint(parsed.endpoint));
+                setCode(parsed.code);
+                return;
+              }
+              setEndpoint(event.target.value);
+            }}
             onBlur={() => { setEndpoint((value) => completeConnectionEndpoint(value)); setTouched((state) => ({ ...state, endpoint: true })); }} />
           {touched.endpoint && endpointProblem !== null ? <p className="text-[12px] text-danger" role="alert" data-remote-endpoint-problem>{t(endpointProblem)}</p> : null}
         </SettingField>
@@ -154,7 +162,15 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
           help={t('st.remote.codeHint')}>
           <input id="remote-connection-code" data-remote-code className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[18px] tracking-[0.14em] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
             value={code} spellCheck={false} autoCapitalize="characters" autoCorrect="off" placeholder="XXXX-XXXX"
-            onChange={(event) => { setCode(formatPairingCode(event.target.value)); }}
+            onChange={(event) => {
+              const parsed = parsePairingUri(event.target.value);
+              if (parsed !== undefined) {
+                setEndpoint(completeConnectionEndpoint(parsed.endpoint));
+                setCode(parsed.code);
+                return;
+              }
+              setCode(formatPairingCode(event.target.value));
+            }}
             onBlur={() => { setTouched((state) => ({ ...state, code: true })); }} />
           {touched.code && codeProblem !== null ? <p className="text-[12px] text-danger" role="alert" data-remote-code-problem>{t(codeProblem)}</p> : null}
         </SettingField>

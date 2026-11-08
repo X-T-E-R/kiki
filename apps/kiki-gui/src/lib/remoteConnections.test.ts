@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { RemoteConnection } from '@kiki/protocol';
 
 import {
-  browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, formatPairingCode, identityBlock, pairingCodeIssue,
+  browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, formatPairingCode, formatPairingUri, identityBlock, pairingCodeIssue, parsePairingUri,
   invitationBlock, labelIssue, readIdentityBlock, readInvitationBlock, remoteSpaceKey, remoteSpaceScope,
   remoteSummaryView, purposeKeys,
 } from './remoteConnections';
@@ -153,6 +153,11 @@ describe('field checks', () => {
     expect(pairingCodeIssue('k9f2 7x4m')).toBeNull();
     expect(pairingCodeIssue('')).toBe('st.remote.code.required');
     expect(pairingCodeIssue('K9F2-7X4')).toBe('st.remote.code.invalid');
+    const uri = formatPairingUri({ endpoint: 'http://192.168.1.40:5523', code: 'k9f27x4m' });
+    expect(uri).toBe('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5523&code=K9F2-7X4M');
+    expect(parsePairingUri(uri)).toEqual({ endpoint: 'http://192.168.1.40:5523', code: 'K9F2-7X4M' });
+    expect(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5523&code=bad')).toBeUndefined();
+    expect(parsePairingUri('https://b.example.test')).toBeUndefined();
   });
 });
 

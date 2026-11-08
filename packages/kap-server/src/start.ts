@@ -109,7 +109,7 @@ import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpa
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
-import type { PairingHooks } from './services/connections/pairing';
+import { PeerListeners, type PairingHooks } from './services/connections/pairing';
 import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
 import { registerHostMediaPreviewRoutes } from './routes/hostMediaPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
@@ -591,6 +591,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const usageExport = new UsageExportRuntime(core, homeDir);
   app.addHook('preClose', () => usageExport.close());
   const webRequests = new WeakSet<IncomingMessage>();
+  const peerRequests = new WeakSet<IncomingMessage>();
+  let peerListeners: PeerListeners | undefined;
+  let peerAdmissionHook: { dispose(): void } | undefined;
   const web = new WebAccess(homeDir, serverHomeId, (input) => {
     if (opts.sshManaged === true || opts.disableAuth === true) throw new AdmissionError(403, 'web_access_unavailable');
     return startWebListener(app, input, webRequests);
@@ -600,7 +603,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     ? createSeatKlientDelegationAuth(() => seatResolver)
     : undefined;
   if (seatDelegationAuth !== undefined) {
-    app.addHook('onRequest', (request, reply) => seatDelegationAuth.onRequest(request, reply));
+    app.addHook('onRequest', async (request, reply) => peerRequests.has(request.raw) ? undefined : seatDelegationAuth.onRequest(request, reply));
   }
   app.server.requestTimeout = 0;
   registerRequestLogging(app);
@@ -625,6 +628,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     validateCredential,
     authorizeCookie: async (request, reply) => {
       try {
+        if (peerRequests.has(request.raw)) throw new AdmissionError(401, 'web_session_required');
         const principal = web.authenticate(request.raw);
         const path = decodeURIComponent(request.url.split('?', 1)[0]!);
         if (!isWebPathAllowed(request.method, path)) throw new AdmissionError(403, 'local_owner_required');
@@ -656,10 +660,11 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       return;
     }
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
-    if (request.headers.authorization === undefined && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
+    if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown|sessions\/[^/]+\/terminals)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
     const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|storage)(?:\/|$)/.test(path);
-    if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined) return authHook(request, reply);
+    if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined || peerRequests.has(request.raw)) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {
     logger.warn(
@@ -738,6 +743,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     if (idleTimer !== undefined) clearInterval(idleTimer);
     if (authMonitor !== undefined) clearInterval(authMonitor);
     const steps: ServerCleanupStep[] = [
+      { run: () => { peerAdmissionHook?.dispose(); return peerListeners?.close(); } },
       { run: () => web.close() },
       { run: () => externalClientListener.close() },
       { run: () => externalClients.close() },
@@ -1140,7 +1146,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     installBridge: async (connectionId, grant, credential) => { await pairedBridge.install({ connectionId, grant, credential }); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),
     enableThreads: () => pairedBridge.enableThreads(),
-    webUrl: () => { const status = web.status(); return status.enabled && status.url !== null ? status.url : undefined; },
+    endpoints: async () => {
+      const urls = [...await (peerListeners?.ensure() ?? Promise.resolve([]))];
+      const status = web.status();
+      if (status.enabled && status.url !== null) urls.push(status.url);
+      return urls;
+    },
   };
   registerUsageExportRoutes(app, usageExport.service);
   const providerQuota = createProviderQuotaService(core);
@@ -1208,13 +1219,14 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const admittedGeneration = managedTokenStore?.generation();
     let admitted: Awaited<ReturnType<ConnectionAudience['authorizeSocket']>> = 'local';
     let browser: WebPrincipal | undefined;
-    if (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined) {
+    if (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined || peerRequests.has(req)) {
       const header = req.headers.authorization;
       const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
       const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
       const candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
       try {
         if (header === undefined && !hasBearerProtocol) {
+          if (peerRequests.has(req)) throw new AdmissionError(401, 'connection_not_approved');
           web.requireOrigin(req); browser = web.authenticate(req); setWebPrincipal(req, browser);
         } else admitted = await audience.authorizeSocket(candidate, req);
         if (isBroker && admitted !== 'local') throw new AdmissionError(403, 'local_owner_required');
@@ -1298,9 +1310,15 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  peerListeners = new PeerListeners(app, boundPort, peerRequests, exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true);
+  peerAdmissionHook = admission.onDidChange((change) => change.enabled ? peerListeners?.ensure().then(() => undefined) : undefined);
 
   await preparing(registration.update({ port: boundPort }));
-  try { await preparing(web.ready()); continuation?.signal.throwIfAborted(); }
+  try {
+    await preparing(web.ready());
+    if (admission.status().enabled) await preparing(peerListeners.ensure());
+    continuation?.signal.throwIfAborted();
+  }
   catch (error) { if (startup === undefined) await close(); throw error; }
   remoteConnections.start();
   usageExport.start();

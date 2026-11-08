@@ -149,7 +149,7 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`pair`（用一次性短码配对两台 Kiki）、`connections`（管理远端连接与 SSH 链路）、`bridges`（管理 thread bridge）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki session`
 
@@ -229,33 +229,53 @@ kiki serve --stop
 
 Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。可信本地客户端使用私有的 `<home>/server.local-owner` 凭据连接；远端连接使用独立凭据，见[鉴权](../server/local-server.md#鉴权)。`--idle-exit` 默认是 `30m`；活跃客户端 lease 和运行中的派遣会让 daemon 保持运行。设置 `--idle-exit 0ms` 后，新启动的 daemon 会持续运行到显式停止。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI 时，请用 [`kiki web`](#kiki-web)。
 
-### `kiki connections`
+### `kiki pair` 与 `kiki connections` {#kiki-pair}
 
-管理 home 之间有方向的 GUI 连接。`--home` 选择本地源或提供方 home；管理操作使用其 local-owner 凭据。接收入站默认关闭，开启开关本身不会批准任何源。
+配对两个 Kiki home 或管理它们之间有方向的 GUI 连接。`--home` 选择本地 home；管理操作使用其 local-owner 凭据，`kiki pair` 与 `kiki connections` 会在需要时自动连接或启动本机共享 daemon。
+
+使用一次性短码一步配对：
+
+```sh
+kiki pair --home /path/to/target
+kiki pair http://192.168.1.40:58627 K9F2-7X4M --home /path/to/source
+```
+
+在目标端不带位置参数运行 `kiki pair`（或 `kiki connections pair`），会自动开启入站访问、在本机可达的局域网和 Tailscale IPv4 地址上启用直连对等监听，并打印十分钟内有效的一次性 `XXXX-XXXX` 配对码及建议直连地址。在来源端运行 `kiki pair <endpoint> <code>` 即可用配对码兑换每条连接独立的对等凭据（不暴露目标的全局 `server.token`），并在两端都有工作区时自动建立从来源主工作区到目标最近工作区的默认 thread bridge。回环地址、RFC1918 局域网、Tailscale（`100.64.0.0/10` 与 `.ts.net`）及 `.local` 地址支持明文 `http://`；公网地址必须使用 `https://`。
+
+通过 SSH 一步连接：
+
+```sh
+kiki connections --home /path/to/source ssh connect --host example@work-host --name "Work home"
+```
+
+`ssh connect --host <alias|user@host[:port]>` 通过 SSH 探测远端主机，附着已运行的 daemon 或按需启动它，开启入站访问、签发独立对等凭据并安装默认 thread bridge。两端只需连接主协议版本一致，Kiki 构建版本与发布通道可以不同。
+
+需要脚本化或分步控制时，仍可使用显式邀请与 SSH 规划命令：
 
 ```sh
 kiki connections --home /path/to/source status
 kiki connections --home /path/to/target inbound enable
+kiki connections --home /path/to/target inbound pair-code
 kiki connections --home /path/to/target inbound invite --input source.json
 kiki connections --home /path/to/source add --input connection.json
 ```
 
 把源 `status` 返回的 `identity` 填入 `source.json`：`{ "source": { "homeId": "...", "hostId": "...", "protocol": 1 }, "label": "Source home" }`。目标会返回短时、一次性的 `invitation`。`connection.json` 包含 `label`、`endpoint`、以目标 `identity` 填写的 `target`、目标当前的 `ownerToken` 以及该 `invitation`；可用 `backgroundSummary` 开启轻量状态轮询。`homeId` 是标识 home 的 UUID，不是 GUI space ID。含秘密的文件应保持私有，成功配置后删除，不要把 token 放进命令参数。`--input -` 从 stdin（命令的标准输入通道）读取 JSON。
 
-在目标运行 `inbound revoke <grantId>`，可停止一个源的读取和流，不影响其他已批准源。`inbound disable` 关闭所有 peer 访问并保留允许清单。在源使用 `disable <connectionId>`、`enable <connectionId>`、`retry <connectionId>` 和 `remove <connectionId>` 管理单个连接。移除只释放本地凭据和自有隧道，不停止目标 daemon，也不撤销已在目标开始的工作。离线状态保留最后测量值与时间戳，不编造零计数。
+在目标运行 `inbound revoke <grantId>`，可停止该来源的读取、事件流以及随该次配对签发的 thread bridge，不影响其他已批准源或单独审批的 bridge。`inbound disable` 关闭所有 peer 访问并保留允许清单。在源使用 `disable <connectionId>`、`enable <connectionId>`、`retry <connectionId>` 和 `remove <connectionId>` 管理单个连接。移除只释放本地凭据和自有隧道，不停止目标 daemon，也不撤销已在目标开始的工作。离线状态保留最后测量值与时间戳，不编造零计数。
 
-SSH 要求两端已安装兼容的 Kiki，源已配置可用的 SSH 登录与 known-host 校验。Kiki 不会安装远端软件。保存不含秘密的 profile，例如：
+分步 SSH 规划要求两端已安装主协议兼容的 Kiki，源已配置可用的 SSH 登录与 known-host 校验。Kiki 不会安装远端软件。保存不含秘密的 profile，例如：
 
 ```json
 {
   "id": "work-host", "label": "Work home",
   "target": { "kind": "alias", "alias": "work-host" },
-  "releaseChannel": "stable", "remoteHome": "/home/example/.kiki",
+  "remoteHome": "/home/example/.kiki",
   "remoteExecutable": "kiki", "remoteShell": "posix"
 }
 ```
 
-也可将 target 写成 `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`；`identityFile` 可选。先生成计划，再核对返回的目标、身份和效果：
+也可将 target 写成 `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`；`identityFile` 与 `releaseChannel` 可选。先生成计划，再核对返回的目标、身份和效果：
 
 ```sh
 kiki connections --home /path/to/source ssh plan --input profile.json

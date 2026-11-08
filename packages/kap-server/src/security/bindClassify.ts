@@ -64,6 +64,7 @@ export function classify(host: string, opts?: ClassifyOptions): BindClass {
   if (family === 4) {
     if (host.startsWith('127.')) return 'loopback';
     if (ipv4InCidr(host, '10.0.0.0', 8)) return 'lan';
+    if (ipv4InCidr(host, '100.64.0.0', 10)) return 'lan';
     if (ipv4InCidr(host, '172.16.0.0', 12)) return 'lan';
     if (ipv4InCidr(host, '192.168.0.0', 16)) return 'lan';
     if (ipv4InCidr(host, '169.254.0.0', 16)) return 'lan';

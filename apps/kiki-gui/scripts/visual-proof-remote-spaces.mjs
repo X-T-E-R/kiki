@@ -371,6 +371,7 @@ async function inbound(context) {
   await page.waitForSelector('[data-inbound-code]');
   expect(await page.textContent('[data-inbound-code]') === 'K9F2-7X4M', 'the code is the one the server issued');
   expect(await page.locator('[data-inbound-code-address]').count() === 1, 'a direct address is shown with the code');
+  expect(await page.getAttribute('[data-inbound-qr]', 'data-inbound-qr-uri') === 'kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5523&code=K9F2-7X4M', 'the QR code carries the short-lived pairing URI');
   const hint = await page.textContent('[data-copy-field="inbound-pair-code"]');
   expect(hint?.includes(ONCE[await locale(page)]) === true, `the code says it is single use: ${hint}`);
   expect(hint?.includes(NOT_SAVED[await locale(page)]) === true, `and that it is not saved: ${hint}`);

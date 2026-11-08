@@ -6,6 +6,10 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
+import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
+import { IConfigService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
+import { SEND_PEER_THREAD_MESSAGE, type IThreadPeerSendCapability } from '@kiki/agent-core-v2/app/threadCommunication/peerThreadCapability';
+import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { startServer, type RunningServer } from '../src/start';
 import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -29,31 +33,104 @@ async function claim(server: RunningServer, body: unknown, token?: string) {
 }
 
 describe('short-code pairing on two real servers', () => {
-  it('pairs GUI and bridge together, keeps an old connection on the server token, and heals inbound without replaying', async () => {
+  it('pairs GUI and bridge over a real non-loopback endpoint, defers thread enablement until claim succeeds, and revokes only the paired bridge grant', async () => {
     const source = await boot(); const target = await boot();
     const sourceClient = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
     const targetClient = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
-    const workspace = join(homes[0]!, 'workspace');
+    const sourceWorkDir = join(homes[0]!, 'workspace');
+    const targetWorkDir = join(homes[1]!, 'workspace');
+    const extraSourceWorkDir = join(homes[0]!, 'workspace-extra');
+    await mkdir(extraSourceWorkDir, { recursive: true });
     try {
-      await sourceClient.rest!.config.patch({ thread_communication: { enabled: true } });
-      await targetClient.rest!.config.patch({ thread_communication: { enabled: true } });
-      await sourceClient.global.sessions.create({ sessionId: 'pair-source', workDir: workspace });
-      await targetClient.global.sessions.create({ sessionId: 'pair-target', workDir: join(homes[1]!, 'workspace') });
+      await sourceClient.global.sessions.create({ sessionId: 'pair-source-extra', workDir: extraSourceWorkDir });
+      await sourceClient.global.sessions.create({ sessionId: 'pair-source', workDir: sourceWorkDir });
+      await targetClient.global.sessions.create({ sessionId: 'pair-target', workDir: targetWorkDir });
+      await target.core.accessor.get(ISessionManager).close('pair-target');
+      const sourceConfig = source.core.accessor.get(IConfigService);
+      const targetConfig = target.core.accessor.get(IConfigService);
+      expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
+      expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
       const created = await targetClient.rest!.connections.createPairCode({});
       expect(created.code).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$/);
       expect(target.admission.status().enabled).toBe(true);
-      const record = await sourceClient.rest!.connections.pair({ endpoint: endpoint(target), code: created.code, backgroundSummary: true });
+      expect(created.suggestedEndpoints.length).toBeGreaterThan(0);
+      const nonLoopback = created.suggestedEndpoints[0]!;
+      expect(['127.0.0.1', 'localhost', '::1', '[::1]']).not.toContain(new URL(nonLoopback).hostname);
+      const pairUri = formatPairingUri({ endpoint: nonLoopback, code: created.code });
+      expect(parsePairingUri(pairUri)).toEqual({ endpoint: nonLoopback, code: created.code });
+      const unauthOwnerRoute = await fetch(`${nonLoopback}/api/remote-connections`);
+      expect(unauthOwnerRoute.status).toBe(401);
+      await expect(sourceClient.rest!.connections.pair({ endpoint: nonLoopback, code: 'BBBB-BBBB', backgroundSummary: true })).rejects.toThrow('invalid_pairing_code');
+      expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
+      expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
+      const record = await sourceClient.rest!.connections.pair({ endpoint: pairUri, code: created.code, backgroundSummary: true });
+      expect(record.endpoint).toBe(nonLoopback);
       expect(record.purposes).toEqual(['gui', 'bridge']);
       expect(record.label.length).toBeGreaterThan(0);
+      expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).toBe(true);
+      expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).toBe(true);
       const secret = await source.remoteConnections.secrets.read<{ ownerToken: string; grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
       expect(secret.ownerToken).toBe(secret.grant);
       expect(secret.ownerToken).not.toBe(target.authTokenService.getToken());
-      expect((await targetClient.rest!.threadBridges.status()).inbound).toHaveLength(1);
+      expect(secret.ownerToken).not.toBe(target.localOwnerToken);
+      const peerOwnerAttempt = await fetch(`${nonLoopback}/api/remote-connections`, { headers: { authorization: `Bearer ${secret.ownerToken}`, 'x-kiki-connection-grant': secret.grant } });
+      expect(peerOwnerAttempt.status).toBe(403);
+      const peerShutdownAttempt = await fetch(`${nonLoopback}/api/shutdown`, { method: 'POST', headers: { authorization: `Bearer ${target.localOwnerToken}` } });
+      expect(peerShutdownAttempt.status).toBe(403);
+      const targetBridgesBefore = await targetClient.rest!.threadBridges.status();
+      expect(targetBridgesBefore.inbound).toHaveLength(1);
       expect((await sourceClient.rest!.threadBridges.status()).outbound).toHaveLength(1);
+      const mobileCreated = await targetClient.rest!.connections.createPairCode({});
+      const mobileScanned = parsePairingUri(formatPairingUri({ endpoint: nonLoopback, code: mobileCreated.code }))!;
+      const mobileClaimRes = await fetch(`${mobileScanned.endpoint}/api/remote-connections/pair/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: mobileScanned.code, source: { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'mobile-device', protocol: 1 }, sourceLabel: 'Mobile Phone', requestBridge: false }),
+      });
+      expect(mobileClaimRes.status).toBe(200);
+      const mobileClaimed = (await mobileClaimRes.json() as { data: { peerToken: string; grantId: string; bridge?: unknown } }).data;
+      expect(mobileClaimed.bridge).toBeUndefined();
+      expect((await targetClient.rest!.threadBridges.status()).inbound).toHaveLength(1);
+      const mobileMetaRes = await fetch(`${mobileScanned.endpoint}/api/meta`, { headers: { authorization: `Bearer ${mobileClaimed.peerToken}`, 'x-kiki-connection-grant': mobileClaimed.peerToken } });
+      expect(mobileMetaRes.status).toBe(200);
+      const sourceWorkspaces = await source.core.accessor.get(IWorkspaceService).list();
+      const targetWorkspaces = await target.core.accessor.get(IWorkspaceService).list();
+      const primarySourceWorkspace = sourceWorkspaces.find((ws) => ws.root === sourceWorkDir) ?? sourceWorkspaces[0]!;
+      const extraSourceWorkspace = sourceWorkspaces.find((ws) => ws.root === extraSourceWorkDir) ?? sourceWorkspaces[1]!;
+      const targetWorkspace = targetWorkspaces[0]!;
+      const separateBridge = await targetClient.rest!.threadBridges.approve({
+        source: source.admission.identity,
+        target: target.admission.identity,
+        sourceScope: { workspaceId: extraSourceWorkspace.id, sessionId: 'pair-source-extra' },
+        targetScope: { workspaceId: targetWorkspace.id, sessionId: 'pair-target' },
+        operations: ['read', 'send', 'wait'],
+        expiresAt: Date.now() + 600_000,
+        pendingLimit: 10,
+        messagesPerMinute: 20,
+        location: 'network',
+        label: 'Same Identity Separate Grant',
+      });
+      await sourceClient.rest!.threadBridges.install({ connectionId: record.id, grant: separateBridge.grant, credential: separateBridge.credential });
+      const sourceThreads = source.core.accessor.get(IThreadCommunicationService);
+      const peerSend = sourceThreads as unknown as IThreadPeerSendCapability;
+      const listed = await sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, connectionId: record.id });
+      const targetThread = listed.threads.find((item) => item.ref.sessionId === 'pair-target');
+      expect(targetThread?.ref).toMatchObject({ hostId: target.admission.identity.hostId, workspaceId: targetWorkspace.id, sessionId: 'pair-target', connectionId: record.id });
+      const sent = await peerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: source.admission.identity.hostId, workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' },
+        target: targetThread!.ref,
+        content: 'hello over non-loopback pair',
+        idempotencyKey: 'pair-send-1',
+      });
+      expect(sent.delivery).toBe('delivered');
+      const targetMailbox = target.core.accessor.get(IThreadMailboxStore);
+      const mailboxBefore = await targetMailbox.readMessages({ group: 'session:pair-target', limit: 10 });
+      expect(mailboxBefore.items).toHaveLength(1);
+      expect(mailboxBefore.items[0]!.message.producer).toMatchObject({ kind: 'bridged_peer', sourceHomeId: source.admission.identity.homeId, bridgeId: targetBridgesBefore.inbound[0]!.id });
       const paired = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: record.id });
       expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
       const invitation = await targetClient.rest!.connections.invite({ source: source.admission.identity, label: 'Legacy' });
-      const legacy = await sourceClient.rest!.connections.add({ label: 'Legacy', endpoint: endpoint(target), target: target.admission.identity, ownerToken: target.authTokenService.getToken(), invitation: invitation.invitation, backgroundSummary: false });
+      const legacy = await sourceClient.rest!.connections.add({ label: 'Legacy', endpoint: nonLoopback, target: target.admission.identity, ownerToken: target.authTokenService.getToken(), invitation: invitation.invitation, backgroundSummary: false });
       const legacySecret = await source.remoteConnections.secrets.read<{ ownerToken: string }>({ connectionId: legacy.credentialRef, purpose: 'gui' });
       expect(legacySecret.ownerToken).toBe(target.authTokenService.getToken());
       const legacyView = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: legacy.id });
@@ -63,12 +140,30 @@ describe('short-code pairing on two real servers', () => {
       expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
       await target.admission.setEnabled(false);
       await expect(paired.rest!.meta()).rejects.toThrow('inbound_disabled');
+      await expect(sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, connectionId: record.id })).rejects.toThrow('inbound_disabled');
       expect(source.remoteConnections.get(record.id)).toMatchObject({ state: 'offline', lastError: 'inbound_disabled' });
       await target.admission.setEnabled(true);
       expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
+      const recoveredList = await sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, connectionId: record.id });
+      expect(recoveredList.threads.some((item) => item.ref.sessionId === 'pair-target')).toBe(true);
+      expect((await targetMailbox.readMessages({ group: 'session:pair-target', limit: 10 })).items).toHaveLength(1);
       await target.admission.revoke(secret.grantId);
       await expect(paired.rest!.meta()).rejects.toThrow('connection_not_approved');
       expect(source.remoteConnections.get(record.id).state).toBe('authentication_required');
+      await expect(sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, bridgeId: targetBridgesBefore.inbound[0]!.id, connectionId: record.id })).rejects.toThrow('bridge_revoked');
+      const revokedSend = await peerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: source.admission.identity.hostId, workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' },
+        target: targetThread!.ref,
+        content: 'after pair revoke',
+        idempotencyKey: 'pair-send-revoked',
+      });
+      expect(revokedSend.delivery).toBe('undeliverable');
+      expect((await targetMailbox.readMessages({ group: 'session:pair-target', limit: 10 })).items).toHaveLength(1);
+      const targetBridgesAfter = await targetClient.rest!.threadBridges.status();
+      expect(targetBridgesAfter.inbound.find((g) => g.id === targetBridgesBefore.inbound[0]!.id)?.revoked).toBe(true);
+      expect(targetBridgesAfter.inbound.find((g) => g.id === separateBridge.grant.id)?.revoked).toBe(false);
+      const separateList = await sourceThreads.listThreads({ caller: { workspaceId: extraSourceWorkspace.id, sessionId: 'pair-source-extra' }, bridgeId: separateBridge.grant.id, connectionId: record.id });
+      expect(separateList.threads.map((item) => item.ref.sessionId)).toEqual(['pair-target']);
       await paired.close(); await legacyView.close();
     } finally { await sourceClient.close(); await targetClient.close(); }
   }, 120_000);

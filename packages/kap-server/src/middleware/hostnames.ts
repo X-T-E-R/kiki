@@ -99,7 +99,7 @@ export function isAllowedHost(host: string | undefined, opts: HostCheckOptions):
   if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]') {
     return true;
   }
-  if (h.endsWith('.localhost')) {
+  if (h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.ts.net')) {
     return true;
   }
   if (net.isIP(h) !== 0) {

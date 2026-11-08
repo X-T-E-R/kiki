@@ -28,12 +28,12 @@ export class ConnectionAdmission {
   private readonly leases = new Map<string, Set<() => void>>();
   private tail: Promise<unknown> = Promise.resolve();
   private readonly path: string;
-  private readonly changeListeners = new Set<(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void>();
-  onDidChange(listener: (change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void): { dispose(): void } {
+  private readonly changeListeners = new Set<(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>>();
+  onDidChange(listener: (change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>): { dispose(): void } {
     this.changeListeners.add(listener); return { dispose: () => { this.changeListeners.delete(listener); } };
   }
-  private emit(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }): void {
-    for (const listener of this.changeListeners) { try { listener(change); } catch {} }
+  private async emit(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }): Promise<void> {
+    await Promise.allSettled([...this.changeListeners].map((listener) => listener(change)));
   }
   constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly unavailableReason?: 'dangerous_auth_bypass') { this.path = join(homeDir, 'server', 'inbound-connections.json'); }
   private requireEnabled(): void {
@@ -60,7 +60,7 @@ export class ConnectionAdmission {
   setEnabled(enabled: boolean): Promise<InboundStatus> {
     return this.change(async () => {
       if (enabled && this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
-      this.state.enabled = enabled; if (!enabled) this.closeAll(); this.emit({ kind: 'enabled', enabled: this.status().enabled }); return this.status();
+      this.state.enabled = enabled; if (!enabled) this.closeAll(); await this.emit({ kind: 'enabled', enabled: this.status().enabled }); return this.status();
     });
   }
   invite(source: ConnectionIdentity, label: string, expiresInMs = 600000): Promise<{ grant: ConnectionGrant; invitation: string }> {
@@ -88,7 +88,7 @@ export class ConnectionAdmission {
       const entry = this.state.grants.find((g) => g.id === id);
       if (entry === undefined) throw new AdmissionError(404, 'grant_not_found');
       entry.status = 'revoked'; entry.revision += 1;
-      this.closeGrant(id); this.emit({ kind: 'revoked', enabled: this.state.enabled, grantId: id, source: entry.source }); return this.status();
+      this.closeGrant(id); await this.emit({ kind: 'revoked', enabled: this.state.enabled, grantId: id, source: entry.source }); return this.status();
     });
   }
   authorize(secret: string | undefined): StoredGrant {
@@ -114,7 +114,7 @@ export class ConnectionAdmission {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
       this.state.enabled = true;
-      if (!enabled) this.emit({ kind: 'enabled', enabled: this.status().enabled });
+      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled });
       const bytes = randomBytes(8);
       let compact = '';
       for (const byte of bytes) compact += PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length];
@@ -152,7 +152,9 @@ export class ConnectionAdmission {
   approvePeer(source: ConnectionIdentity, label: string): Promise<PeerApproval> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
+      const enabled = this.state.enabled;
       this.state.enabled = true;
+      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled });
       if (sameIdentity(source, this.identity)) throw new AdmissionError(409, 'identity_changed');
       const peerToken = generateServerToken();
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken) };

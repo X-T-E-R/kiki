@@ -25,7 +25,7 @@ import { bridgeTargetInputSchema, localBridgePolicySchema } from '@kiki/protocol
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { provisionLocalBridge } from './localProvision';
 
-interface Inbound { grant: BridgeGrant; digest: string }
+interface Inbound { grant: BridgeGrant; digest: string; connectionGrantId?: string }
 interface Outbox { receipt: BridgeReceipt; request?: BridgeSend; fingerprint: string; attempts?: number; nextAttemptAt?: number; finishedAt?: number }
 interface State { inbound: Inbound[]; outbound: BridgeLink[]; outbox: Outbox[]; nextSeq: number; targets?: ThreadRef[]; inboundKeys?: { key: string; grantId: string; at: number }[] }
 interface RemoteEnvelope<T> { code: number; msg: string; data: { identity: ConnectionAdmission['identity']; result: T } }
@@ -80,16 +80,29 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     const page = this.state.outbox.slice(offset, offset + count);
     return { items: page.map((entry) => ({ ...entry.receipt })), nextCursor: offset + count < this.state.outbox.length ? page.at(-1)?.receipt.id : undefined };
   }
-  async issuePairingBridges(input: { source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[] }): Promise<{ grant: BridgeGrant; credential: string }[]> {
+  async issuePairingBridges(input: { grantId?: string; source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[] }): Promise<{ grant: BridgeGrant; credential: string }[]> {
     const sourceWorkspace = input.sourceWorkspaces[0];
     if (sourceWorkspace === undefined || !this.admission.status().enabled) return [];
-    await this.enableThreads();
     const workspaces = [...await this.core.accessor.get(IWorkspaceService).list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    if (workspaces.length === 0) return [];
+    await this.enableThreads();
     let targetWorkspace: string | undefined;
     for (const workspace of workspaces) if (await this.threads.isWorkspaceEnabled(workspace.id)) { targetWorkspace = workspace.id; break; }
     if (targetWorkspace === undefined) return [];
     const label = input.sourceLabel.trim().slice(0, 128) || 'Kiki';
-    return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: sourceWorkspace }, targetScope: { workspaceId: targetWorkspace }, operations: ['read', 'send', 'wait', 'wake'], expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label })];
+    return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: sourceWorkspace }, targetScope: { workspaceId: targetWorkspace }, operations: ['read', 'send', 'wait', 'wake'], expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label }, input.grantId)];
+  }
+  async revokeForConnectionGrant(connectionGrantId: string): Promise<void> {
+    let changed = false;
+    await this.change(() => {
+      for (const entry of this.state.inbound) {
+        if (entry.connectionGrantId !== connectionGrantId || entry.grant.revoked) continue;
+        entry.grant.revoked = true; entry.grant.enabled = false; entry.grant.revision++; this.cancelIncoming(entry.grant.id); changed = true;
+      }
+    });
+    if (!changed) return;
+    await this.retryFlight;
+    await this.retry();
   }
   async revokeInboundFrom(id: string, source: ConnectionIdentity): Promise<void> {
     const entry = this.state.inbound.find((value) => value.grant.id === id);
@@ -106,7 +119,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
       for (const item of page.items) snapshot.refresh(item.workspaceId, item.id);
     } catch { return; }
   }
-  async approve(policy: BridgePolicy) {
+  async approve(policy: BridgePolicy, connectionGrantId?: string) {
     if (!this.admission.status().enabled) denied('inbound_disabled');
     if (!sameIdentity(policy.target, this.admission.identity) || sameIdentity(policy.source, policy.target)) denied('bridge_identity_mismatch');
     if (policy.expiresAt <= Date.now()) denied('bridge_expired');
@@ -114,7 +127,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     else if (!(await this.threads.isWorkspaceEnabled(policy.targetScope.workspaceId))) denied('workspace_disabled');
     const credential = randomBytes(32).toString('base64url');
     const grant: BridgeGrant = { ...policy, id: randomUUID(), revision: 1, enabled: true, revoked: false, createdAt: Date.now() };
-    await this.change(() => { if (this.state.inbound.length >= 1000) throw new AdmissionError(429, 'bridge_grant_limit'); this.state.inbound.push({ grant, digest: hash(credential) }); });
+    await this.change(() => { if (this.state.inbound.length >= 1000) throw new AdmissionError(429, 'bridge_grant_limit'); this.state.inbound.push({ grant, digest: hash(credential), connectionGrantId }); });
     return { grant, credential };
   }
   async install(input: ReturnType<typeof bridgeInstallSchema.parse>): Promise<BridgeLink> {
@@ -149,7 +162,11 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     await this.retryFlight;
     await this.retry();
   }
-  onAdmissionChange(): void { if (!this.admission.status().enabled) for (const id of this.incoming.keys()) this.cancelIncoming(id); void this.retry().catch(() => {}); }
+  async onAdmissionChange(change?: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string }): Promise<void> {
+    if (!this.admission.status().enabled) for (const id of this.incoming.keys()) this.cancelIncoming(id);
+    if (change?.kind === 'revoked' && change.grantId !== undefined) { await this.revokeForConnectionGrant(change.grantId); return; }
+    void this.retry().catch(() => {});
+  }
   authorizeCredential(credential: string): BridgeGrant {
     if (!this.admission.status().enabled) denied('inbound_disabled');
     const candidate = Buffer.from(hash(credential));
@@ -408,7 +425,7 @@ export async function authorizeSpaceThreadBridgeRequest(bridge: SpaceThreadBridg
 
 export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scope, admission: ConnectionAdmission, connections: RemoteConnectionManager, transcript: TranscriptService, shutdownSignal?: AbortSignal): Promise<SpaceThreadBridge> {
   const bridge = new SpaceThreadBridge(core, admission, connections, transcript); await bridge.ready();
-  const hook = admission.onDidChange(() => bridge.onAdmissionChange());
+  const hook = admission.onDidChange((change) => bridge.onAdmissionChange(change));
   app.addHook('preClose', async () => { hook.dispose(); await bridge.close(); });
   const respond = async (req: FastifyRequest, reply: FastifyReply, work: () => unknown) => {
     try { return await reply.send(okEnvelope(await work(), req.id)); }

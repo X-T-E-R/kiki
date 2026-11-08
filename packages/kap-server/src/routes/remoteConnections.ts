@@ -39,8 +39,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
-      const extra = hooks.current?.webUrl();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, suggestedEndpoints: directEndpoints(req.socket.localPort ?? 0, extra === undefined ? [] : [extra]) };
+      const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
+      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras) };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 8192 }, async (req, reply) => {
@@ -50,7 +50,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const input = pairClaimInputSchema.parse(req.body);
       const claimed = await admission.claimPair(input.code, input.source, input.sourceLabel);
       try {
-        const bridge = claimed.allowBridge && input.requestBridge !== false && hooks.current !== undefined ? await hooks.current.issueBridges({ source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
+        const bridge = claimed.allowBridge && input.requestBridge !== false && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
         return { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, ...bridge.length > 0 ? { bridge } : {} };
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
@@ -58,9 +58,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/pair/cancel', { bodyLimit: 8192 }, async (req, reply) => respond(req.id, reply, async () => {
     const body = z.object({ grantId: z.string().uuid(), bridgeGrantIds: z.array(z.string().uuid()).max(64).optional() }).strict().parse(req.body);
     if (peerAudience(req)?.grantId !== body.grantId) throw new AdmissionError(403, 'connection_not_approved');
-    const source = admission.status().grants.find((grant) => grant.id === body.grantId)?.source;
     await admission.revoke(body.grantId);
-    if (source !== undefined && hooks.current !== undefined) for (const id of body.bridgeGrantIds ?? []) await hooks.current.revokeBridge(id, source);
     return { revoked: true };
   }));
   app.post('/api/remote-connections/inbound/peer-grant', { bodyLimit: 16384 }, async (req, reply) => {
@@ -71,7 +69,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       await admission.setEnabled(true);
       const claimed = await admission.approvePeer(input.source, input.label);
       try {
-        const bridge = input.requestBridge !== false && hooks.current !== undefined ? await hooks.current.issueBridges({ source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
+        const bridge = input.requestBridge !== false && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
         return { peerToken: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision, target: claimed.target, targetLabel: machineLabel(), ...bridge.length > 0 ? { bridge } : {} };
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
@@ -99,10 +97,12 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         const plan = await ssh.plan(input.profile, controller.signal);
         const ready = await ssh.execute(plan.id, { ensure: plan.state !== 'attach' }, controller.signal);
         const workspaces = hooks.current === undefined ? [] : await hooks.current.workspaces();
-        if (hooks.current !== undefined) await hooks.current.enableThreads().catch(() => undefined);
         return manager.registerSsh({ purpose: 'gui', planId: ready.id, label: input.label?.trim() || input.profile.label, enableInbound: true, backgroundSummary: input.backgroundSummary }, controller.signal, hooks.current === undefined ? undefined : {
           sourceWorkspaces: workspaces,
-          install: async (connectionId, bundle) => { await hooks.current?.installBridge(connectionId, bridgeGrantSchema.parse(bundle.grant), bundle.credential); },
+          install: async (connectionId, bundle) => {
+            await hooks.current?.enableThreads().catch(() => undefined);
+            await hooks.current?.installBridge(connectionId, bridgeGrantSchema.parse(bundle.grant), bundle.credential);
+          },
         });
       }); }
       finally { reply.raw.off('close', stop); }

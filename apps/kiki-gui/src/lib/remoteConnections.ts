@@ -19,8 +19,10 @@
 import { useQuery } from '@tanstack/react-query';
 
 import type { ConnectionsFacade } from '@kiki/klient/http';
-import { isDirectConnectionHost, normalizePairingCode, type ConnectionIdentity, type RemoteConnection, type SshRemoteProfile } from '@kiki/protocol';
+import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SshRemoteProfile } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
+
+export { formatPairingUri, parsePairingUri };
 
 import type { KikiClient } from './client';
 import { readHomeViewRoute } from './spaceViewState';

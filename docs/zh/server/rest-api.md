@@ -22,7 +22,7 @@
 - `GET /api/healthz`（探活）
 - 静态 web 资源（非 `/api/` 路径）
 
-可信本地客户端使用私有的 `server.local-owner` 凭据。REST 通过 `Authorization: Bearer <token>` 携带；本地 WebSocket 升级接受该请求头或 `kimi-code.bearer.<token>`。远端 GUI peer 则需要有效入站开关、当前 owner 凭据及逐源 grant（HTTP 使用 `X-Kiki-Connection-Grant`）。它们连接 `/api/klient/events`，不使用旧 `/api/ws`。连接管理与转发限 local-owner；四个 thread-bridge 数据端点使用独立桥凭据。配置与轮换见[鉴权](./local-server.md#鉴权)和 [`kiki connections`](../reference/command.md#kiki-connections)。
+可信本地客户端使用私有的 `server.local-owner` 凭据。REST 通过 `Authorization: Bearer <token>` 携带；本地 WebSocket 升级接受该请求头或 `kimi-code.bearer.<token>`。远端 GUI peer 则需要有效入站开关及已批准的逐源 grant（HTTP 使用 `X-Kiki-Connection-Grant`），使用短码配对／SSH 连接签发的独立对等凭据，或使用当前 owner 凭据配合旧版邀请 grant。它们连接 `/api/klient/events`，不使用旧 `/api/ws`。连接管理与转发限 local-owner；`POST /api/remote-connections/pair/claim` 提供带限流的免预置短码兑换，四个 thread-bridge 数据端点使用独立桥凭据。配置与轮换见[鉴权](./local-server.md#鉴权)和 [`kiki pair` 与 `kiki connections`](../reference/command.md#kiki-pair)。
 
 鉴权失败返回 HTTP 401，信封 `code` 为 `40101`。在非 loopback 绑定上，同一来源 60 秒内鉴权失败 10 次会被封禁 60 秒，期间一律返回 HTTP 429（`code` 为 `42901`）。
 

@@ -149,7 +149,7 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), [`tools`](../server/script-tools.md) (call shared tools and download saved results as JSON), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `pair` (pair two Kikis with a single-use code), `connections` (manage remote connections and SSH links), `bridges` (manage thread bridges), `seat` (manage external-caller seats), [`tools`](../server/script-tools.md) (call shared tools and download saved results as JSON), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki session`
 
@@ -229,33 +229,53 @@ kiki serve --stop
 
 Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Trusted local clients attach with the private `<home>/server.local-owner` capability; remote connections use separate credentials described under [Authentication](../server/local-server.md#authentication). `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Set `--idle-exit 0ms` to keep a newly started daemon running until explicitly stopped. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) for a compatible foreground server and browser UI.
 
-### `kiki connections`
+### `kiki pair` and `kiki connections` {#kiki-pair}
 
-Manage directed GUI connections between homes. `--home` selects the local source or provider home; management uses its local-owner credential. Receiving is off by default, and enabling the gate does not approve any source by itself.
+Pair two Kiki homes or manage directed GUI connections between them. `--home` selects the local home; management uses its local-owner credential, and `kiki pair` / `kiki connections` automatically starts or attaches to the local shared daemon when needed.
+
+For one-step pairing with a single-use short code:
+
+```sh
+kiki pair --home /path/to/target
+kiki pair http://192.168.1.40:58627 K9F2-7X4M --home /path/to/source
+```
+
+Running `kiki pair` (or `kiki connections pair`) with no positional arguments on the target enables inbound access, binds a direct peer listener on reachable LAN and Tailscale IPv4 addresses, and prints a ten-minute single-use `XXXX-XXXX` code along with suggested direct endpoints. Running `kiki pair <endpoint> <code>` on the source redeems that code for a dedicated per-peer credential (never the target's global `server.token`) and installs a default thread bridge between the source's primary workspace and the target's most recently opened workspace when both sides have a workspace. Plain `http://` is accepted for loopback, RFC1918 LAN, Tailscale (`100.64.0.0/10` and `.ts.net`), and `.local` addresses; public internet endpoints must use `https://`.
+
+For one-step SSH connection:
+
+```sh
+kiki connections --home /path/to/source ssh connect --host example@work-host --name "Work home"
+```
+
+`ssh connect --host <alias|user@host[:port]>` inspects the remote host over SSH, attaches to an already-running daemon or starts one if needed, enables inbound access, issues a dedicated peer credential, and installs the default thread bridge. Both hosts must speak the same connection protocol version; their Kiki build versions and release channels may differ.
+
+For scripted or step-by-step control, explicit invitations and SSH plans remain available:
 
 ```sh
 kiki connections --home /path/to/source status
 kiki connections --home /path/to/target inbound enable
+kiki connections --home /path/to/target inbound pair-code
 kiki connections --home /path/to/target inbound invite --input source.json
 kiki connections --home /path/to/source add --input connection.json
 ```
 
 Use the source `identity` from `status` in `source.json`: `{ "source": { "homeId": "...", "hostId": "...", "protocol": 1 }, "label": "Source home" }`. The target returns a short-lived, one-use `invitation`. `connection.json` contains `label`, `endpoint`, the target `identity` as `target`, its current `ownerToken`, and that `invitation`; `backgroundSummary` optionally enables lightweight status polling. `homeId` is a UUID identifying the home, not a GUI space ID. Keep secret-bearing files private, delete them after successful setup, and never put tokens in command arguments. `--input -` reads JSON from stdin (the input channel of the command).
 
-Use `inbound revoke <grantId>` on the target to stop one source's reads and streams without affecting other approved sources. `inbound disable` closes all peer access while retaining the allow list. On the source, `disable <connectionId>`, `enable <connectionId>`, `retry <connectionId>`, and `remove <connectionId>` manage that connection. Removal releases local credentials and owned tunnels; it does not stop the target daemon or undo work already started there. Offline status retains last-known measurements and their timestamp, rather than reporting invented zero counts.
+Use `inbound revoke <grantId>` on the target to stop one source's reads, streams, and the thread bridge issued with that pairing grant without affecting other approved sources or standalone bridge grants. `inbound disable` closes all peer access while retaining the allow list. On the source, `disable <connectionId>`, `enable <connectionId>`, `retry <connectionId>`, and `remove <connectionId>` manage that connection. Removal releases local credentials and owned tunnels; it does not stop the target daemon or undo work already started there. Offline status retains last-known measurements and their timestamp, rather than reporting invented zero counts.
 
-For SSH, both hosts need a compatible Kiki installation, and the source needs working SSH authentication and known-host verification. Kiki does not install remote software. Save a non-secret profile such as:
+For step-by-step SSH planning, both hosts need a protocol-compatible Kiki installation, and the source needs working SSH authentication and known-host verification. Kiki does not install remote software. Save a non-secret profile such as:
 
 ```json
 {
   "id": "work-host", "label": "Work home",
   "target": { "kind": "alias", "alias": "work-host" },
-  "releaseChannel": "stable", "remoteHome": "/home/example/.kiki",
+  "remoteHome": "/home/example/.kiki",
   "remoteExecutable": "kiki", "remoteShell": "posix"
 }
 ```
 
-The target may instead be `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`; `identityFile` is optional. Plan first, then review the returned target, identity and effects:
+The target may instead be `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`; `identityFile` and `releaseChannel` are optional. Plan first, then review the returned target, identity and effects:
 
 ```sh
 kiki connections --home /path/to/source ssh plan --input profile.json

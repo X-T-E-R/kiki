@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isDirectConnectionHost, normalizePairingCode } from '../rest/connections';
+import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri } from '../rest/connections';
 
 describe('pairing code', () => {
   it('folds case and an optional hyphen into XXXX-XXXX', () => {
@@ -7,6 +7,15 @@ describe('pairing code', () => {
     expect(normalizePairingCode('  k9f27x4m ')).toBe('K9F2-7X4M');
     expect(normalizePairingCode('K9F2-7X4')).toBeUndefined();
     expect(normalizePairingCode('K9F2-7X4I')).toBeUndefined();
+  });
+
+  it('round-trips kiki://pair?endpoint=<encoded>&code=<encoded> without long-lived secrets', () => {
+    const uri = formatPairingUri({ endpoint: 'http://192.168.1.40:58627', code: 'k9f27x4m' });
+    expect(uri).toBe('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A58627&code=K9F2-7X4M');
+    expect(parsePairingUri(uri)).toEqual({ endpoint: 'http://192.168.1.40:58627', code: 'K9F2-7X4M' });
+    expect(parsePairingUri('kiki:///pair?endpoint=https%3A%2F%2Fb.example.test&code=K9F2-7X4M')).toEqual({ endpoint: 'https://b.example.test', code: 'K9F2-7X4M' });
+    expect(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A58627&code=invalid')).toBeUndefined();
+    expect(parsePairingUri('https://b.example.test/pair')).toBeUndefined();
   });
 
   it('treats loopback, LAN, link-local and Tailscale names as direct', () => {

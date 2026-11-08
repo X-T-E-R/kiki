@@ -43,7 +43,7 @@ describe('formatHostErrorMessage', () => {
 });
 
 describe('isAllowedHost (default allow set)', () => {
-  const allow = ['localhost', 'localhost:80', 'foo.localhost', '127.0.0.1', '127.0.0.1:58627', '[::1]', '::1', '8.8.8.8'];
+  const allow = ['localhost', 'localhost:80', 'foo.localhost', 'box.local', 'node.tailnet.ts.net', '127.0.0.1', '127.0.0.1:58627', '[::1]', '::1', '8.8.8.8'];
 
   for (const host of allow) {
     it(`allows ${host}`, () => {

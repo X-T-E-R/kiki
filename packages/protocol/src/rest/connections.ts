@@ -42,10 +42,34 @@ export const connectionAddInputSchema = z.object({
 }).strict();
 export type ConnectionAddInput = z.infer<typeof connectionAddInputSchema>;
 export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+export const PAIRING_URI_PREFIX = 'kiki://pair';
 export function normalizePairingCode(raw: string): string | undefined {
   const compact = raw.trim().toUpperCase().replace(/[\s-]/g, '');
   if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(compact)) return undefined;
   return `${compact.slice(0, 4)}-${compact.slice(4)}`;
+}
+export function formatPairingUri(input: { readonly endpoint: string; readonly code: string }): string {
+  const endpoint = input.endpoint.trim();
+  const code = normalizePairingCode(input.code);
+  if (endpoint === '' || code === undefined) throw new Error('Invalid pairing URI payload');
+  return `${PAIRING_URI_PREFIX}?endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`;
+}
+export function parsePairingUri(raw: string): { readonly endpoint: string; readonly code: string } | undefined {
+  const text = raw.trim();
+  if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(text)) return undefined;
+  try {
+    const url = new URL(text);
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.toLowerCase();
+    if (url.protocol.toLowerCase() !== 'kiki:' || url.username !== '' || url.password !== '' || url.port !== '' || url.hash !== '') return undefined;
+    if (!((host === 'pair' && (path === '' || path === '/')) || (host === '' && path === '/pair'))) return undefined;
+    const endpoint = url.searchParams.get('endpoint')?.trim() ?? '';
+    const code = normalizePairingCode(url.searchParams.get('code') ?? '');
+    if (endpoint === '' || code === undefined) return undefined;
+    return { endpoint, code };
+  } catch {
+    return undefined;
+  }
 }
 export function isDirectConnectionHost(hostname: string): boolean {
   const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
