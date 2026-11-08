@@ -30,6 +30,9 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentCommandService } from '#/agent/command/agentCommand';
 import { IEventBus } from '#/app/event/eventBus';
 import { HookResult } from '#/features/externalHooks/agent/agentExternalHooksService';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { parseManifest } from '#/app/plugin/manifest';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HookRuleSchema, hookHash, matchesHook, renderHookInjection, type HookRule, type HookRulesSnapshot, type HookEvent } from '#/features/externalHooks/internal/rules';
 import { loadHookRules } from '#/features/externalHooks/internal/loadRules';
@@ -661,5 +664,211 @@ describe('hooks v2 completed-step engine contract', () => {
     expect(injections(ctx)).toHaveLength(0);
     await ctx.expectResumeMatches();
     expect(events).toHaveLength(5);
+  });
+
+  it('parses plugin hook_rules alongside legacy StopFailure hooks and triggers early summarize once for read-heavy 0-write subagents', async () => {
+    const pluginDir = await mkdtemp(nodePath.join(tmpdir(), 'argon-plugin-'));
+    temporary.push(pluginDir);
+    await writeFile(nodePath.join(pluginDir, 'kimi.plugin.json'), JSON.stringify({
+      name: 'argon-error-recovery',
+      version: '0.3.0',
+      hooks: [{ event: 'StopFailure', command: 'node ./scripts/recover.mjs', timeout: 5 }],
+      hook_rules: {
+        schema_version: 2,
+        rules: [{
+          id: 'early-read-summarize',
+          event: 'step.before',
+          match: { models: ['axon-message/gemini-4-argon'], executors: ['native'], agent_roles: ['subagent'] },
+          action: {
+            type: 'compact',
+            strategy: 'summarize',
+            counter_scope: 'turn',
+            min_completed_steps: 16,
+            min_read_calls: 40,
+            min_read_chars: 400_000,
+            max_write_calls: 0,
+          },
+        }],
+      },
+    }));
+    const parsedManifest = await parseManifest(pluginDir);
+    expect(parsedManifest.diagnostics).toEqual([]);
+    expect(parsedManifest.manifest?.hooks).toEqual([{ event: 'StopFailure', command: 'node ./scripts/recover.mjs', timeout: 5 }]);
+    expect(parsedManifest.manifest?.hookRules?.rules).toHaveLength(1);
+
+    const loaded = await loadHookRules([{
+      namespace: 'plugin/argon-error-recovery',
+      path: nodePath.join(pluginDir, 'kimi.plugin.json'),
+      root: pluginDir,
+      config: parsedManifest.manifest!.hookRules,
+      mutable: false,
+      trusted: true,
+    }], fs, path, () => undefined);
+    expect(loaded.diagnostics).toEqual([]);
+    const pluginRule = loaded.rules[0]!;
+    expect(pluginRule).toMatchObject({
+      id: 'plugin/argon-error-recovery/early-read-summarize',
+      active: true,
+      models: ['axon-message/gemini-4-argon'],
+    });
+
+    function seedReadHeavyWindow(
+      ctx: TestAgentContext,
+      options: { steps: number; reads: number; charsPerRead: number; includeEdit?: boolean },
+    ): void {
+      const memory = ctx.get(IAgentContextMemoryService);
+      memory.append({
+        role: 'user',
+        content: [{ type: 'text', text: 'Audit the repository architecture and report concrete findings.\nRecipe directive: keep verified file references.' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+        source: { turnId: 0, step: 0, stepId: 't0.0' },
+      });
+      let readIndex = 0;
+      const chunk = 'x'.repeat(options.charsPerRead);
+      for (let step = 1; step <= options.steps; step++) {
+        const callsInStep = step === options.steps
+          ? Math.max(1, options.reads - readIndex)
+          : Math.min(3, Math.max(1, Math.ceil((options.reads - readIndex) / (options.steps - step + 1))));
+        const toolCalls = Array.from({ length: callsInStep }, (_, i) => {
+          readIndex++;
+          return {
+            type: 'function' as const,
+            id: `read-${step}-${i}`,
+            name: 'Read',
+            arguments: JSON.stringify({ path: `/workspace/src/mod-${readIndex}.ts` }),
+          };
+        });
+        if (options.includeEdit && step === options.steps) {
+          toolCalls.push({
+            type: 'function' as const,
+            id: `edit-${step}`,
+            name: 'Edit',
+            arguments: JSON.stringify({ path: '/workspace/src/mod-1.ts' }),
+          });
+        }
+        memory.append({
+          role: 'assistant',
+          content: [{ type: 'text', text: `Inspecting batch ${step}` }],
+          toolCalls,
+          source: { turnId: 0, step, stepId: `t0.${step}` },
+        });
+        for (const call of toolCalls) {
+          const isRead = call.name === 'Read';
+          const body = isRead ? `1\t${chunk}\n<system>1 line read starting at line 1. Total lines in file: 10.</system>` : 'Edited /workspace/src/mod-1.ts';
+          memory.append({
+            role: 'tool',
+            toolCallId: call.id,
+            content: [{ type: 'text', text: body }],
+            toolCalls: [],
+            source: { turnId: 0, step, stepId: `t0.${step}` },
+          });
+        }
+      }
+      vi.spyOn(ctx.get(ISessionTodoService), 'getNotes').mockReturnValue({
+        notes: {
+          goal: 'Audit the repository architecture and report concrete findings.',
+          directives: 'Recipe directive: keep verified file references.\nSteer: prioritize module boundaries.',
+          decided: 'Surveyed 67 steps of module definitions.',
+          open: 'Synthesize final report.',
+        },
+        meta: {
+          rev: 1,
+          hash: 'h1',
+          writtenTurn: 0,
+          writtenStep: `t0.${options.steps}`,
+          coveredMessageId: '',
+          windowEpoch: 0,
+        },
+      });
+    }
+
+    let pluginEnabled = true;
+    const observedHooks: string[] = [];
+    const currentSnapshot = (): HookRulesSnapshot => ({
+      ...loaded,
+      revision: `${loaded.revision}:${String(pluginEnabled)}`,
+      rules: loaded.rules.map((entry) => ({ ...entry, active: pluginEnabled })),
+    });
+
+    const subagent = agentWithRules(currentSnapshot, (_event, id) => observedHooks.push(id), 'sub-1320');
+    const mockModel = subagent.kimiConfig.models!['mock-model']!;
+    subagent.kimiConfig = {
+      ...subagent.kimiConfig,
+      models: {
+        ...subagent.kimiConfig.models,
+        'axon-message/gemini-4-argon': { ...mockModel, model: 'gemini-4-argon' },
+      },
+    };
+    subagent.get(IModelService).loadAll(subagent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+    await subagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+
+    const committedStrategies: Array<'summarize' | 'relay' | undefined> = [];
+    subagent.get(IAgentFullCompactionService).hooks.onDidCommit.register('test-commit', async (task, next) => {
+      committedStrategies.push(task.committedStrategy);
+      await next();
+    });
+    seedReadHeavyWindow(subagent, { steps: 67, reads: 196, charsPerRead: 13_500 });
+    subagent.mockNextResponse({ type: 'text', text: 'Synthesized summary of the 196 read files.' });
+    subagent.mockNextResponse({ type: 'text', text: 'Final subagent report after early summary.' });
+    await subagent.rpc.prompt({ input: [{ type: 'text', text: 'Continue synthesis' }] });
+    await subagent.untilTurnEnd();
+
+    expect(observedHooks).toEqual(['plugin/argon-error-recovery/early-read-summarize']);
+    expect(committedStrategies).toEqual(['summarize']);
+    const compactedMessage = subagent.get(IAgentContextMemoryService).get().find((m) => m.origin?.kind === 'compaction_summary');
+    expect(compactedMessage?.origin).toMatchObject({ kind: 'compaction_summary' });
+    const summaryText = JSON.stringify(compactedMessage?.content ?? []);
+    expect(summaryText).toContain('Synthesized summary of the 196 read files.');
+    expect(summaryText).toContain('Recipe directive: keep verified file references.');
+    expect(summaryText).toContain('Steer: prioritize module boundaries.');
+    expect(summaryText).toContain('/workspace/src/mod-194.ts');
+    expect(subagent.get(ISessionTodoService).getNotes('sub-1320').notes?.decided).toBe('Surveyed 67 steps of module definitions.');
+
+    await turn(subagent, 'Follow-up step');
+    expect(observedHooks).toHaveLength(1);
+
+    pluginEnabled = false;
+    const disabledHooks: string[] = [];
+    const disabledSubagent = agentWithRules(currentSnapshot, (_event, id) => disabledHooks.push(id), 'sub-disabled');
+    disabledSubagent.kimiConfig = subagent.kimiConfig;
+    disabledSubagent.get(IModelService).loadAll(disabledSubagent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+    await disabledSubagent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+    seedReadHeavyWindow(disabledSubagent, { steps: 67, reads: 196, charsPerRead: 13_500 });
+    await turn(disabledSubagent, 'Continue with plugin disabled');
+    expect(disabledHooks).toEqual([]);
+    expect(disabledSubagent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary')).toBe(false);
+
+    pluginEnabled = true;
+    for (const [label, setup] of [
+      ['short task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 6, reads: 10, charsPerRead: 2_000 })],
+      ['editing task', (ctx: TestAgentContext) => seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000, includeEdit: true })],
+      ['explicit fresh model strategy', (ctx: TestAgentContext) => {
+        ctx.kimiConfig = {
+          ...ctx.kimiConfig,
+          models: {
+            ...ctx.kimiConfig.models,
+            'axon-message/gemini-4-argon': { ...mockModel, model: 'gemini-4-argon', contextStrategy: 'fresh' },
+          },
+        };
+        ctx.get(IModelService).loadAll(ctx.kimiConfig.models!, 'axon-message/gemini-4-argon');
+        seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000 });
+      }],
+      ['other model', async (ctx: TestAgentContext) => {
+        await ctx.get(IAgentProfileService).bind({ profile: 'agent', model: 'mock-model' });
+        seedReadHeavyWindow(ctx, { steps: 20, reads: 45, charsPerRead: 10_000 });
+      }],
+    ] as const) {
+      const negHooks: string[] = [];
+      const negAgent = agentWithRules(currentSnapshot, (_event, id) => negHooks.push(id), `sub-${label}`);
+      negAgent.kimiConfig = subagent.kimiConfig;
+      negAgent.get(IModelService).loadAll(negAgent.kimiConfig.models!, 'axon-message/gemini-4-argon');
+      await negAgent.get(IAgentProfileService).bind({ profile: 'agent', model: 'axon-message/gemini-4-argon' });
+      await setup(negAgent);
+      expect(negAgent.get(IAgentFullCompactionService).isCompacting(), label).toBe(false);
+      await turn(negAgent, `Check ${label}`);
+      expect(negHooks, label).toEqual([]);
+      expect(negAgent.get(IAgentContextMemoryService).get().some((m) => m.origin?.kind === 'compaction_summary'), label).toBe(false);
+    }
   });
 });

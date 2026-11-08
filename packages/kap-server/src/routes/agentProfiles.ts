@@ -877,6 +877,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           promptOverrides: req.body.prompt_overrides,
           serviceTier: req.body.service_tier,
           autoCompact: req.body.auto_compact,
+          contextStrategy: req.body.context_strategy,
           tools: req.body.tools,
           disallowedTools: req.body.disallowed_tools,
           routes: req.body.routes?.map((route) => ({
@@ -1149,6 +1150,7 @@ function toNamedAgentProfile(
     request_params: profile.requestParams === undefined ? undefined : { ...profile.requestParams },
     context_budget: profile.contextBudget,
     auto_compact: profile.autoCompact,
+    context_strategy: profile.contextStrategy,
     max_completion_tokens: profile.maxCompletionTokens,
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
@@ -1228,6 +1230,7 @@ function executorFields(
     disallowed_tools: ignored('Tools are controlled by the external executor'),
     context_budget: ignored('Context budgets are controlled by the external executor'),
     auto_compact: ignored('Compaction is controlled by the external executor'),
+    context_strategy: ignored('Compaction is controlled by the external executor'),
     max_completion_tokens: ignored('Output limits are controlled by the external executor'),
     can_spawn_subagents: applied,
     allowed_subagents: applied,

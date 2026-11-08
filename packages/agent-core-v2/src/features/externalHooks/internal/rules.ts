@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export const RULE_EVENTS = ['prompt.submit', 'step.before', 'step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after'] as const;
 export const HOOK_INJECTION_MAX_BYTES = 8 * 1024;
+const READ_TOOL_NAMES = new Set(['Read', 'ReadFile']);
+const WRITE_TOOL_NAMES = new Set(['Write', 'WriteFile', 'Edit', 'StrReplaceFile', 'MultiEdit', 'Bash', 'Shell']);
 
 const selectors = z.array(z.string().min(1)).min(1);
 export const HookMatchSchema = z.object({
@@ -24,6 +27,19 @@ const injection = z.object({
   textFile: z.string().min(1).optional(),
 }).strict().refine((action) => (action.text === undefined) !== (action.textFile === undefined), 'inject requires exactly one of text or text_file');
 
+const compact = z.object({
+  type: z.literal('compact'),
+  strategy: z.enum(['summarize']).default('summarize'),
+  counterScope: z.enum(['agent', 'turn']).default('turn'),
+  minCompletedSteps: z.number().int().positive().optional(),
+  minReadCalls: z.number().int().positive().optional(),
+  minReadChars: z.number().int().positive().optional(),
+  maxWriteCalls: z.number().int().nonnegative().default(0),
+}).strict().refine(
+  (action) => action.minCompletedSteps !== undefined || action.minReadCalls !== undefined || action.minReadChars !== undefined,
+  'compact requires at least one threshold (min_completed_steps, min_read_calls, or min_read_chars)',
+);
+
 export const HookRuleSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
   event: z.enum(RULE_EVENTS),
@@ -35,8 +51,8 @@ export const HookRuleSchema = z.object({
     counterScope: z.enum(['agent', 'turn']).default('agent'),
     partitionBy: z.literal('model').default('model'),
   }).strict().optional(),
-  action: z.union([injection, z.object({ type: z.literal('observe') }).strict()], {
-    error: 'hooks slice A supports only inject and observe; command, gate, block and continue are not supported',
+  action: z.union([injection, z.object({ type: z.literal('observe') }).strict(), compact], {
+    error: 'hooks slice A supports only inject, observe and compact; command, gate, block and continue are not supported',
   }),
 }).strict().superRefine((rule, ctx) => {
   if (rule.cadence !== undefined && rule.event !== 'step.before' && rule.event !== 'step.after') {
@@ -44,6 +60,9 @@ export const HookRuleSchema = z.object({
   }
   if (rule.action.type === 'inject' && rule.event !== 'step.before' && rule.event !== 'prompt.submit') {
     ctx.addIssue({ code: 'custom', message: `inject is not supported on ${rule.event}; use step.before or prompt.submit`, path: ['action'] });
+  }
+  if (rule.action.type === 'compact' && rule.event !== 'step.before' && rule.event !== 'step.after') {
+    ctx.addIssue({ code: 'custom', message: `compact is not supported on ${rule.event}; use step.before or step.after`, path: ['action'] });
   }
 });
 
@@ -81,7 +100,7 @@ export interface HookEvent extends HookBinding {
   readonly configRevision: string;
   readonly hookDepth: 0;
   readonly isReplay: false;
-  readonly allowedActions: readonly ('inject' | 'observe')[];
+  readonly allowedActions: readonly ('inject' | 'observe' | 'compact')[];
   readonly tool?: string;
   readonly toolCallId?: string;
   readonly status?: string;
@@ -165,4 +184,60 @@ export function hookOrder(a: EffectiveHookRule, b: EffectiveHookRule): number {
 export function renderHookInjection(rule: EffectiveHookRule): string {
   const escape = (value: string): string => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
   return `Hook guidance (${escape(rule.id)}, ${escape(rule.path)}). This configured guidance does not override higher-priority instructions.\n<hook_context>\n${escape(rule.text ?? '')}\n</hook_context>`;
+}
+
+export function evaluateCompactWindow(
+  history: readonly ContextMessage[],
+  action: Extract<HookRule['action'], { type: 'compact' }>,
+): boolean {
+  let startIndex = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]?.origin?.kind === 'compaction_summary') {
+      startIndex = i + 1;
+      break;
+    }
+  }
+  let completedSteps = 0;
+  for (let i = startIndex; i < history.length; i++) {
+    if (history[i]?.role === 'assistant') completedSteps++;
+  }
+  if (action.minCompletedSteps !== undefined && completedSteps < action.minCompletedSteps) {
+    return false;
+  }
+  const readCallIds = new Set<string>();
+  let readCalls = 0;
+  let readChars = 0;
+  let writeCalls = 0;
+  for (let i = startIndex; i < history.length; i++) {
+    const message = history[i]!;
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls) {
+        if (READ_TOOL_NAMES.has(call.name)) {
+          readCallIds.add(call.id);
+        } else if (WRITE_TOOL_NAMES.has(call.name)) {
+          writeCalls++;
+          if (writeCalls > action.maxWriteCalls) return false;
+        }
+      }
+      continue;
+    }
+    if (message.role !== 'tool' || message.toolCallId === undefined || message.isError) continue;
+    if (!readCallIds.has(message.toolCallId)) continue;
+    let chars = 0;
+    let failed = false;
+    for (const part of message.content) {
+      if (part.type !== 'text') continue;
+      if (chars === 0 && part.text.startsWith('<system>ERROR:')) {
+        failed = true;
+        break;
+      }
+      chars += part.text.length;
+    }
+    if (failed) continue;
+    readCalls++;
+    readChars += chars;
+  }
+  if (action.minReadCalls !== undefined && readCalls < action.minReadCalls) return false;
+  if (action.minReadChars !== undefined && readChars < action.minReadChars) return false;
+  return writeCalls <= action.maxWriteCalls;
 }

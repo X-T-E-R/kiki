@@ -1,5 +1,6 @@
 import { AGENT_NAME_PATTERN } from '../agentName';
 import { z } from 'zod';
+import { contextStrategySchema } from '../contextStrategy';
 import { executorPromptSchema } from '../executorPrompt';
 import { modelPromptOverridesSchema } from '../modelCatalog';
 import { recipeModelBindingSchema, recipeOptionValuesSchema } from '../recipe';
@@ -37,6 +38,7 @@ export const namedAgentModelProfileSchema = z.object({
   when: z.string().optional(),
   context_budget: z.number().int().min(1).optional(),
   auto_compact: z.number().int().positive().safe().optional(),
+  context_strategy: contextStrategySchema.optional(),
   max_completion_tokens: z.number().int().min(1).optional(),
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
@@ -196,6 +198,7 @@ export const namedAgentProfileSchema = z.object({
   request_params: requestParamsSchema.optional(),
   context_budget: z.number().int().min(1).optional(),
   auto_compact: z.number().int().positive().safe().optional(),
+  context_strategy: contextStrategySchema.optional(),
   max_completion_tokens: z.number().int().min(1).optional(),
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
@@ -654,6 +657,7 @@ export const updateNamedAgentModelProfileEntrySchema = namedAgentModelProfileSch
   alias: modelAliasSchema,
   when: optionalProfileStringSchema,
   thinking_effort: optionalProfileStringSchema,
+  context_strategy: contextStrategySchema.nullable().optional(),
   prompt_mode: promptModeSchema.nullable().optional(),
   prompt: z.string().nullable().optional(),
   main: agentModelPromptBranchSchema.nullable().optional(),
@@ -735,6 +739,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
   service_tier: serviceTierSchema.nullable().optional(),
   auto_compact: z.number().int().positive().safe().nullable().optional(),
+  context_strategy: contextStrategySchema.nullable().optional(),
   tools: profileStringListSchema,
   disallowed_tools: profileStringListSchema,
   routes: z.array(updateNamedAgentRouteSchema).optional(),
@@ -769,6 +774,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.prompt_overrides !== undefined ||
     value.service_tier !== undefined ||
     value.auto_compact !== undefined ||
+    value.context_strategy !== undefined ||
     value.tools !== undefined ||
     value.disallowed_tools !== undefined ||
     value.prompt !== undefined ||

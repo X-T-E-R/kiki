@@ -81,6 +81,7 @@ export interface AgentProfileWriteRequest {
   readonly promptOverrides?: import('@kiki/agent-profiles/promptOverrides').PromptOverrides | null;
   readonly serviceTier?: ServiceTier | null;
   readonly autoCompact?: number | null;
+  readonly contextStrategy?: import('@kiki/agent-profiles/agentProfile').ContextStrategy | null;
   readonly tools?: readonly string[] | null;
   readonly disallowedTools?: readonly string[] | null;
   readonly routes?: readonly AgentProfileRouteUpdate[];

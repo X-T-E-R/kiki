@@ -18,6 +18,7 @@ export interface FullCompactionTask {
   readonly trigger: CompactionSource;
   readonly tokenCount: number;
   readonly traceId?: string;
+  requestedStrategy?: 'summarize' | 'relay';
   /** Strategy recorded on the durable result. Absent until that result is committed. */
   readonly committedStrategy?: 'summarize' | 'relay';
 }

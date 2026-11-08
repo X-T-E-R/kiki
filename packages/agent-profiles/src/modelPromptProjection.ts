@@ -1,9 +1,10 @@
 import type { AgentModelProfile } from './agentProfile';
 import type { NamedAgentModelProfile, UpdateNamedAgentModelProfileEntry } from '@kiki/protocol';
 
-export interface AgentModelProfilePatch extends Omit<AgentModelProfile, 'when' | 'thinkingEffort' | 'promptMode' | 'prompt' | 'main' | 'independent' | 'promptOverrides'> {
+export interface AgentModelProfilePatch extends Omit<AgentModelProfile, 'when' | 'thinkingEffort' | 'contextStrategy' | 'promptMode' | 'prompt' | 'main' | 'independent' | 'promptOverrides'> {
   readonly when?: string | null;
   readonly thinkingEffort?: string | null;
+  readonly contextStrategy?: AgentModelProfile['contextStrategy'] | null;
   readonly promptMode?: AgentModelProfile['promptMode'] | null;
   readonly prompt?: string | null;
   readonly main?: AgentModelProfile['main'] | null;
@@ -22,7 +23,7 @@ export function modelPromptBranchFromWire(branch: NamedAgentModelProfile['main']
 export function modelProfilePatchToWire(entry: AgentModelProfilePatch): UpdateNamedAgentModelProfileEntry {
   return {
     alias: entry.alias, when: entry.when, thinking_effort: entry.thinkingEffort,
-    context_budget: entry.contextBudget, auto_compact: entry.autoCompact, max_completion_tokens: entry.maxCompletionTokens,
+    context_budget: entry.contextBudget, auto_compact: entry.autoCompact, context_strategy: entry.contextStrategy, max_completion_tokens: entry.maxCompletionTokens,
     service_tier: entry.serviceTier, request_params: entry.requestParams,
     allowed_models: entry.allowedModels === undefined ? undefined : [...entry.allowedModels],
     deny_models: entry.denyModels === undefined ? undefined : [...entry.denyModels],
@@ -44,7 +45,7 @@ export function modelProfileToWire(entry: AgentModelProfile): NamedAgentModelPro
 export function modelProfileUpdateFromWire(entry: UpdateNamedAgentModelProfileEntry): AgentModelProfilePatch {
   return {
     alias: entry.alias, when: entry.when, thinkingEffort: entry.thinking_effort,
-    contextBudget: entry.context_budget, autoCompact: entry.auto_compact, maxCompletionTokens: entry.max_completion_tokens,
+    contextBudget: entry.context_budget, autoCompact: entry.auto_compact, contextStrategy: entry.context_strategy, maxCompletionTokens: entry.max_completion_tokens,
     serviceTier: entry.service_tier, requestParams: entry.request_params,
     allowedModels: entry.allowed_models, denyModels: entry.deny_models, allowedEfforts: entry.allowed_efforts,
     preferredModels: entry.preferred_models, discouragedModels: entry.discouraged_models, preferredEfforts: entry.preferred_efforts,

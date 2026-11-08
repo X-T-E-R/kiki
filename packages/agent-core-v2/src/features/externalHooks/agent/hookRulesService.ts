@@ -7,6 +7,8 @@ import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { TurnEnded } from '#/agent/loop/turnOps';
@@ -22,7 +24,7 @@ import { IModelService } from '#/kosong/model/model';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IHookRulesSession, ISessionHookWorkspace } from '../session/hookRules';
-import { hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
+import { evaluateCompactWindow, hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
 import { hookPartition, hookStateKey, HookRulesConfigured, HookStepPrepared, HookObserved, semanticRevision, type HookReceipt } from './hookState';
 import { projectHookInspection } from '../internal/inspection';
 import { IAgentHookRules } from './hookRules';
@@ -31,6 +33,8 @@ import { IAgentExternalHooksService } from './agentExternalHooks';
 export class AgentHookRules extends Service implements IAgentHookRules {
   declare readonly _serviceBrand: undefined;
   private readonly providers = this._register(new DisposableStore());
+  private readonly context: IAgentContextMemoryService;
+  private readonly fullCompaction: IAgentFullCompactionService;
   private providerRevision = '';
   private stepEvent?: HookEvent;
   private stepInjectionActive = false;
@@ -54,6 +58,8 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   ) {
     super();
     this.states.contributeState(hookStateKey);
+    this.context = instantiation.invokeFunction((accessor) => accessor.get(IAgentContextMemoryService));
+    this.fullCompaction = instantiation.invokeFunction((accessor) => accessor.get(IAgentFullCompactionService));
     this._register(loop.hooks.onWillBeginStep.register('hook-rules', async (ctx, next) => {
       await this.beforeStep(ctx);
       this.stepInjectionActive = true;
@@ -65,13 +71,43 @@ export class AgentHookRules extends Service implements IAgentHookRules {
         const clock = this.states.get(hookStateKey);
         const snapshot = this.rules.snapshot();
         const event = { ...this.stepEvent, configRevision: snapshot.revision, completedSteps: Object.values(clock.completed).reduce((a, b) => a + b, 0), stepInTurn: Object.values(clock.completedInTurn).reduce((a, b) => a + b, 0) };
-        this.observe({ ...event, event: 'step.after', eventId: `${event.eventId}/after`, allowedActions: ['observe'], outcome: 'completed', usage: ctx.usage, finishReason: ctx.finishReason }, snapshot);
+        const afterEvent: HookEvent = { ...event, event: 'step.after', eventId: `${event.eventId}/after`, allowedActions: ['observe', 'compact'], outcome: 'completed', usage: ctx.usage, finishReason: ctx.finishReason };
+        this.observe(afterEvent, snapshot);
+        await this.applyCompactRules(afterEvent, snapshot, ctx.signal);
         if (ctx.finishReason !== 'tool_calls' && ctx.finishReason !== 'filtered' && !loop.hasPendingRequests() && !ctx.signal.aborted) {
           this.observe({ ...event, event: 'turn.stopping', eventId: `${event.eventId}/stopping`, allowedActions: ['observe'], finishReason: ctx.finishReason }, snapshot);
         }
       }
       await next();
     }, { before: 'externalHooks' }));
+    this._register(this.fullCompaction.hooks.onWillCompact.register('hook-rules', async (task, next) => {
+      if (task.trigger === 'auto' && task.requestedStrategy === undefined && this.fullCompaction.getContextStrategy().strategy !== 'fresh') {
+        await this.rules.ready;
+        const snapshot = this.rules.snapshot();
+        this.configure(snapshot);
+        const binding = this.binding();
+        for (const rule of snapshot.rules) {
+          if (rule.rule.action.type !== 'compact') continue;
+          const event: HookEvent = {
+            schemaVersion: 2, event: rule.rule.event, eventId: `compact/${randomUUID()}`,
+            occurredAt: new Date().toISOString(), sessionId: this.session.sessionId,
+            agentId: this.agent.agentId, parentAgentId: this.agent.parentAgentId,
+            turnId: this.stepEvent?.turnId, configRevision: snapshot.revision,
+            bindingRevision: hookHash(binding), ...binding, hookDepth: 0, isReplay: false,
+            allowedActions: ['compact'], outcome: rule.rule.event === 'step.after' ? 'completed' : undefined,
+          };
+          if (rule.namespace.startsWith('plugin/') && snapshot.rules.find((current) => current.id === rule.id)?.active !== true) continue;
+          if (!matchesHook(rule, event)) continue;
+          if (event.executorId !== undefined && event.executorId !== 'native') continue;
+          if (!evaluateCompactWindow(this.context.get(), rule.rule.action)) continue;
+          task.requestedStrategy = rule.rule.action.strategy;
+          const receipt = this.receipt(rule, event);
+          if (receipt !== undefined) this.observeRule(rule, event, receipt);
+          break;
+        }
+      }
+      await next();
+    }));
     this._register(bus.subscribe(TurnEnded, (event) => {
       void this.event('turn.after', `turn/${event.turnId}/after`, { turnId: event.turnId, outcome: event.reason }).then(({ event: hookEvent, snapshot }) => { this.observe(hookEvent, snapshot); });
     }));
@@ -153,7 +189,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       executionTarget: this.workspace.current?.runtime.identity.runtimeId,
       configRevision: snapshot.revision, bindingRevision: hookHash(binding),
       ...binding, hookDepth: 0, isReplay: false,
-      allowedActions: name === 'step.before' || name === 'prompt.submit' ? ['inject', 'observe'] : ['observe'],
+      allowedActions: name === 'step.before' ? ['inject', 'observe', 'compact'] : name === 'prompt.submit' ? ['inject', 'observe'] : name === 'step.after' ? ['observe', 'compact'] : ['observe'],
       ...fields,
     };
     return { event, snapshot };
@@ -162,7 +198,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   private configure(snapshot: HookRulesSnapshot): void {
     const state = this.states.get(hookStateKey);
     if (snapshot.rules.length === Object.keys(state.rules).length && snapshot.rules.every((rule) => state.rules[rule.id]?.semanticHash === rule.semanticHash)) return;
-    void this.dispatcher.dispatch(new HookRulesConfigured({ rules: snapshot.rules.map((rule) => ({ id: rule.id, semanticHash: rule.semanticHash, counterScope: rule.rule.cadence?.counterScope ?? 'agent' })) }));
+    void this.dispatcher.dispatch(new HookRulesConfigured({ rules: snapshot.rules.map((rule) => ({ id: rule.id, semanticHash: rule.semanticHash, counterScope: rule.rule.action.type === 'compact' ? rule.rule.action.counterScope : rule.rule.cadence?.counterScope ?? 'agent' })) }));
   }
 
   private async beforeStep(ctx: BeforeStepContext): Promise<void> {
@@ -193,6 +229,32 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       this.providerRevision = snapshot.revision;
     }
     this.observe(this.stepEvent, snapshot);
+    await this.applyCompactRules(this.stepEvent, snapshot, ctx.signal);
+  }
+
+  private async applyCompactRules(event: HookEvent, snapshot: HookRulesSnapshot, signal?: AbortSignal): Promise<void> {
+    if (this.fullCompaction.isCompacting() || this.fullCompaction.getContextStrategy().strategy === 'fresh') return;
+    this.configure(snapshot);
+    for (const rule of snapshot.rules) {
+      if (rule.rule.action.type !== 'compact') continue;
+      const receipt = this.receipt(rule, event);
+      if (receipt === undefined) continue;
+      if (!evaluateCompactWindow(this.context.get(), rule.rule.action)) continue;
+      this.observeRule(rule, event, receipt);
+      try {
+        if (this.fullCompaction.begin({ source: 'auto', strategy: rule.rule.action.strategy })) {
+          const active = this.fullCompaction.compacting;
+          if (active !== null) {
+            signal?.addEventListener('abort', () => active.abortController.abort(), { once: true });
+            await active.promise;
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        this.log.warn('hook compact action failed; continuing step', { hookId: rule.id, error });
+      }
+      return;
+    }
   }
 
   private receipt(rule: EffectiveHookRule, event: HookEvent): HookReceipt | undefined {
@@ -201,6 +263,16 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     if (event.executorId !== undefined && event.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(event.event)) return undefined;
     const state = this.states.get(hookStateKey).rules[rule.id];
     if (state === undefined || state.semanticHash !== rule.semanticHash) return undefined;
+    if (rule.rule.action.type === 'compact') {
+      const partition = hookPartition(event.modelId ?? '', event.turnId, rule.rule.action.counterScope);
+      const bucket = state.buckets[partition];
+      if ((bucket?.delivered ?? 0) >= 1) return undefined;
+      const revision = semanticRevision(state);
+      return {
+        hookId: rule.id, semanticRevision: revision, partition, milestone: 1, eventId: event.eventId,
+        key: JSON.stringify([rule.id, revision, this.agent.agentId, partition, 1]),
+      };
+    }
     const cadence = rule.rule.cadence;
     const partition = hookPartition(event.modelId ?? '', event.turnId, cadence?.counterScope ?? 'agent');
     const bucket = state.buckets[partition];

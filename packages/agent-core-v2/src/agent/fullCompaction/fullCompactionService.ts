@@ -514,6 +514,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         tokenCount,
         data.source === 'auto' ? this.activeTurnId : undefined,
         quiescence,
+        data.strategy,
       );
       this._compacting = active.task;
       active.task.abortController.signal.addEventListener(
@@ -556,6 +557,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     tokenCount: number,
     originTurnId: number | undefined,
     quiescence: IDisposable | undefined,
+    requestedStrategy?: 'summarize' | 'relay',
   ): {
     readonly task: ActiveCompaction;
     readonly resolve: (result: CompactionResult) => void;
@@ -576,6 +578,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         tokenCount,
         originTurnId,
         quiescence,
+        requestedStrategy,
         get traceId() {
           return this.trace?.traceId;
         },
@@ -978,20 +981,21 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
       }).trimEnd();
 
-      const choice = data.strategy === undefined ? this.getContextStrategy() : {
-        strategy: data.strategy === 'relay' ? 'fresh' as const : 'summarize' as const,
+      const requested = data.strategy ?? active.requestedStrategy;
+      const choice = requested === undefined ? this.getContextStrategy() : {
+        strategy: requested === 'relay' ? 'fresh' as const : 'summarize' as const,
         source: 'session' as const, shadow: false,
       };
-      const requestedStrategy = data.strategy ?? choice.strategy;
-      const selectionSource = data.strategy === undefined ? choice.source : 'request';
+      const requestedStrategy = requested ?? choice.strategy;
+      const selectionSource = requested === undefined ? choice.source : 'request';
       const modelCompactCount = this.strategy.computeCompactCount(originalHistory, data.source, true);
       const relayCompactCount = this.strategy.computeCompactCount(originalHistory, data.source, false);
-      let compactCount = (data.strategy === 'relay' || choice.strategy !== 'summarize') && relayCompactCount > 0
+      let compactCount = (requested === 'relay' || choice.strategy !== 'summarize') && relayCompactCount > 0
         ? relayCompactCount : modelCompactCount;
       if (compactCount <= 0) {
         throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
       }
-      if (data.strategy === 'relay') attemptedStrategy = 'relay';
+      if (requested === 'relay') attemptedStrategy = 'relay';
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
       const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([

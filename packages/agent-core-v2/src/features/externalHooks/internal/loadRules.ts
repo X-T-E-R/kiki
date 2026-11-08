@@ -59,7 +59,7 @@ export async function loadHookRules(
       let text = rule.action.type === 'inject' ? rule.action.text : undefined;
       try {
         models = rule.match.models?.map((alias) => {
-          const canonical = resolveModel(alias);
+          const canonical = resolveModel(alias) ?? (source.namespace.startsWith('plugin/') ? alias : undefined);
           if (canonical === undefined) throw new Error(`unknown model alias: ${alias}`);
           return canonical;
         });
@@ -74,7 +74,7 @@ export async function loadHookRules(
       const effective: EffectiveHookRule = {
         rule, id, namespace: source.namespace, path: source.path, mutable: source.mutable,
         contentHash: hookHash({ rule, text }),
-        semanticHash: hookHash({ event: rule.event, match: Object.fromEntries(Object.entries({ ...rule.match, models }).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, values]) => [key, values?.toSorted()])), cadence: rule.cadence, action: rule.action.type }),
+        semanticHash: hookHash({ event: rule.event, match: Object.fromEntries(Object.entries({ ...rule.match, models }).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, values]) => [key, values?.toSorted()])), cadence: rule.cadence, action: rule.action.type === 'compact' ? rule.action : rule.action.type }),
         models, text, active: reason === undefined, reason,
       };
       if (rule.action.type === 'inject' && Buffer.byteLength(wrapSystemReminder(renderHookInjection(effective)), 'utf8') > HOOK_INJECTION_MAX_BYTES) {

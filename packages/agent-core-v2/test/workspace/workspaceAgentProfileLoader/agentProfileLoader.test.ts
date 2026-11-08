@@ -948,6 +948,7 @@ describe('agent profile loaders + session catalog', () => {
         'model_profiles:',
         '  - alias: fixture/a',
         '    when: long tasks',
+        '    context_strategy: summarize',
         '    request_params: { temperature: 0.2 }',
         'tools: [Read,',
         '  Bash]',
@@ -988,6 +989,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(result.profile.subagentLeases?.['review']).toMatchObject({ modelAlias: 'fixture/b' });
         expect(result.profile.modelProfiles?.map((entry) => [entry.alias, entry.when, entry.thinkingEffort]))
           .toEqual([['fixture/b', 'short reviews', 'high'], ['fixture/a', 'very long tasks', undefined]]);
+        expect(result.profile.modelProfiles?.[1]?.contextStrategy).toBe('summarize');
         expect(result.profile.modelProfiles?.[1]?.requestParams).toEqual({ temperature: 0.2 });
         const text = await readFile(profilePath, 'utf8');
         expect(text).toContain('"source":"./_private/worker.md"');

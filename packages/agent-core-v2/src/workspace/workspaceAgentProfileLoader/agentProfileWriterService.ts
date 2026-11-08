@@ -96,6 +96,7 @@ const TOP_LEVEL_KEYS = new Set([
   'promptOverrides',
   'serviceTier',
   'autoCompact',
+  'contextStrategy',
   'tools',
   'disallowedTools',
   'routes',
@@ -331,6 +332,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.autoCompact !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'auto_compact', request.autoCompact);
     }
+    if (request.contextStrategy !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'context_strategy', request.contextStrategy);
+    }
     if (request.tools !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'tools', request.tools);
     }
@@ -547,6 +551,10 @@ function validateRequest(request: AgentProfileWriteRequest): void {
       (!Number.isSafeInteger(request.autoCompact) || request.autoCompact <= 0)) {
     issues.push({ path: 'autoCompact', message: 'profile auto_compact must be an absolute positive integer token count' });
   }
+  if (request.contextStrategy !== undefined && request.contextStrategy !== null &&
+      request.contextStrategy !== 'summarize' && request.contextStrategy !== 'auto' && request.contextStrategy !== 'fresh') {
+    issues.push({ path: 'contextStrategy', message: 'contextStrategy must be summarize, auto, or fresh' });
+  }
   validateStringList(request.tools, 'tools', issues);
   validateStringList(request.disallowedTools, 'disallowedTools', issues);
   if (request.main !== undefined && request.main !== null && typeof request.main !== 'boolean') {
@@ -655,6 +663,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.promptOverrides,
     request.serviceTier,
     request.autoCompact,
+    request.contextStrategy,
     request.tools,
     request.disallowedTools,
     request.prompt,
@@ -882,7 +891,7 @@ function validateModelProfileUpdates(value: unknown, issues: ValidationIssue[]):
     if (seen.has(entry['alias'])) issues.push({ path, message: `duplicate model profile ${entry['alias']}` });
     seen.add(entry['alias']);
     for (const key of Object.keys(entry)) {
-      if (!['alias', 'when', 'thinkingEffort', 'promptMode', 'prompt', 'main', 'independent', 'promptOverrides', 'contextBudget', 'autoCompact', 'maxCompletionTokens', 'serviceTier', 'requestParams', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts'].includes(key)) {
+      if (!['alias', 'when', 'thinkingEffort', 'promptMode', 'prompt', 'main', 'independent', 'promptOverrides', 'contextBudget', 'autoCompact', 'contextStrategy', 'maxCompletionTokens', 'serviceTier', 'requestParams', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts'].includes(key)) {
         issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
       }
     }

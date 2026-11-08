@@ -65,6 +65,7 @@ export function applyAgentModelMenuDraft(profile: AgentProfile, draft: AgentMode
       alias: entry.alias,
       when: entry.when === undefined ? existing.get(entry.alias)?.when : entry.when ?? undefined,
       thinkingEffort: entry.thinking_effort === undefined ? existing.get(entry.alias)?.thinkingEffort : entry.thinking_effort ?? undefined,
+      contextStrategy: entry.context_strategy === undefined ? existing.get(entry.alias)?.contextStrategy : entry.context_strategy ?? undefined,
     })),
   };
 }

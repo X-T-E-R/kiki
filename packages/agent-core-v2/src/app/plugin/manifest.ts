@@ -184,7 +184,7 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
     sessionStart: readSessionStart(raw['sessionStart'], diagnostics),
     mcpServers: await readMcpServers(pluginRoot, raw['mcpServers'], diagnostics, signal),
     hooks: readHooks(raw['hooks'], diagnostics),
-    hookRules: readHookRules(raw['hooks'], diagnostics),
+    hookRules: readHookRules(raw['hook_rules'] ?? raw['hookRules'] ?? (!Array.isArray(raw['hooks']) ? raw['hooks'] : undefined), diagnostics),
     commands: await readCommands(pluginRoot, raw['commands'], diagnostics, signal),
     interface: readInterface(raw['interface']),
     icon: await readIcon(pluginRoot, raw['icon'], diagnostics, signal),

@@ -11,7 +11,7 @@ export const agentHooksInspectSchema = z.object({
   rules: z.array(z.object({
     id: z.string(), path: z.string(), namespace: z.string(),
     event: z.enum(['prompt.submit', 'step.before', 'step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after']),
-    action: z.object({ type: z.enum(['inject', 'observe']) }),
+    action: z.object({ type: z.enum(['inject', 'observe', 'compact']) }),
     active: z.boolean(), reason: z.string().optional(),
     completedSteps: z.number().int().nonnegative(), nextDue: z.number().int().positive().optional(),
     semanticRevision: z.string().optional(), order: z.number().int().nonnegative(), resetPending: z.boolean(),

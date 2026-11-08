@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
 import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
+import { modelProfilePatchToWire, modelProfileToWire, modelProfileUpdateFromWire } from '@kiki/agent-profiles/modelPromptProjection';
+import { namedAgentModelProfileSchema, updateNamedAgentModelProfileEntrySchema } from '@kiki/protocol';
 
 import { AgentFullCompactionService } from '#/agent/fullCompaction/fullCompactionService';
 import { AgentProfileService } from '#/agent/profile/profileService';
@@ -77,5 +79,14 @@ describe('context strategy profile precedence', () => {
     expect(effective('child-4', undefined, null, { subagentContextStrategy: 'fresh' })).toMatchObject({ strategy: 'fresh', source: 'subagent' });
     expect(effective('child-5', 'auto', null, {}, 'codex', 'fresh')).toMatchObject({ strategy: 'summarize', source: 'executor' });
     expect(effective('main', undefined, null)).toMatchObject({ strategy: 'auto', source: 'global' });
+  });
+
+  it('projects and round-trips context_strategy on model_profiles wire contracts', () => {
+    const wire = namedAgentModelProfileSchema.parse(modelProfileToWire(profile.modelProfiles![0]!));
+    expect(wire).toMatchObject({ alias: 'test', context_strategy: 'fresh' });
+    const parsedUpdate = updateNamedAgentModelProfileEntrySchema.parse({ alias: 'test', context_strategy: 'summarize' });
+    expect(modelProfileUpdateFromWire(parsedUpdate)).toMatchObject({ alias: 'test', contextStrategy: 'summarize' });
+    const clearedUpdate = updateNamedAgentModelProfileEntrySchema.parse({ alias: 'test', context_strategy: null });
+    expect(modelProfilePatchToWire(modelProfileUpdateFromWire(clearedUpdate))).toMatchObject({ alias: 'test', context_strategy: null });
   });
 });
