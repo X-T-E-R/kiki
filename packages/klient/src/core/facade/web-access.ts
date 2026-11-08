@@ -6,6 +6,7 @@ export interface WebAccessFacade {
   disable(): Promise<WebAccessStatus>;
   issueLink(): Promise<WebAccessLink>;
   revoke(sessionId?: string): Promise<WebAccessStatus>;
+  setSharedConnections(connectionIds: readonly string[]): Promise<WebAccessStatus>;
   current(): Promise<WebAccessSession>;
   exchange(input: WebAccessExchangeInput): Promise<WebAccessSession>;
   logout(): Promise<WebAccessSession>;

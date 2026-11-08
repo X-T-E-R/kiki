@@ -1133,11 +1133,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       allowAutomaticRoot: opts.sshManaged !== true,
       registeredRoots: async () => (await core.accessor.get(IWorkspacePersistence).load())?.workspaces.map(({ root }) => root) ?? [],
       privateHomes: baseHomeDir === undefined ? [homeDir] : [homeDir, baseHomeDir],
+      web,
     });
     registerHostMediaPreviewRoutes(app, core, transcriptService);
   }
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks);
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
   const pairedBridge = threadBridge;
   pairingHooks.current = {
@@ -1228,6 +1229,14 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         if (header === undefined && !hasBearerProtocol) {
           if (peerRequests.has(req)) throw new AdmissionError(401, 'connection_not_approved');
           web.requireOrigin(req); browser = web.authenticate(req); setWebPrincipal(req, browser);
+          if (isBroker) {
+            const brokerId = CONNECTION_BROKER_WS.exec(url)?.[1];
+            let record: ReturnType<typeof remoteConnections.get> | undefined;
+            try { record = brokerId === undefined ? undefined : remoteConnections.get(brokerId); } catch { record = undefined; }
+            if (brokerId === undefined || !web.isConnectionShared(brokerId) || record === undefined || !record.enabled || ['disabled', 'authentication_required', 'identity_changed'].includes(record.state) || !record.purposes.includes('gui')) {
+              throw new AdmissionError(403, 'connection_not_shared');
+            }
+          }
         } else admitted = await audience.authorizeSocket(candidate, req);
         if (isBroker && admitted !== 'local') throw new AdmissionError(403, 'local_owner_required');
         if (admittedGeneration !== undefined && admittedGeneration !== managedTokenStore?.generation()) throw new AdmissionError(401, 'authentication_changed');

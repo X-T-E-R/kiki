@@ -9773,6 +9773,12 @@ export const zh = {
   'st.web.unavailable': '这个运行环境不支持 Web 访问。',
   'st.web.readFailed': '读取 Web 访问状态失败。',
   'st.web.failed': '操作没有成功。{reason}',
+  'st.web.sharedTitle': '允许在浏览器切换的已连接远端 Kiki',
+  'st.web.sharedHint': '已登录的浏览器可以在空间切换器里使用这里勾选的已连接远端 Kiki；未勾选的远端不会在网页端共享。',
+  'st.web.sharedEmpty': '这台 Kiki 还没有连接其他远端 Kiki。',
+  'st.web.sharedSave': '保存共享远端',
+  'st.web.sharedSaving': '保存中…',
+  'st.web.sharedSaved': '已保存网页端可用的远端 Kiki。',
   // ---- away notifications, activity inbox ----
   'st.away.title': '系统通知',
   'st.away.hint': '控制本设备的会话通知和跨空间待处理提醒。点通知可返回查看。',

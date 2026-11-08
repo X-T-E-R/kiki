@@ -375,6 +375,45 @@ describe('SpaceSwitcher', () => {
     expect(connection.activateLocal).not.toHaveBeenCalled();
   });
 
+  it('lists shared remote Kikis in a browser client and switches into the selected remote space', async () => {
+    host.kind = 'browser';
+    const remoteConnId = '11111111-1111-4111-8111-111111111111';
+    const connectionsList = vi.fn().mockResolvedValue([
+      {
+        id: remoteConnId,
+        label: 'Shared Remote Alpha',
+        endpoint: 'http://127.0.0.1:59001',
+        target: { homeId: remoteConnId, hostId: 'host-alpha', protocol: 1 },
+        credentialRef: remoteConnId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+      },
+    ]);
+    connection.client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes: { list }, connections: { list: connectionsList } } } } as unknown as typeof connection.client;
+    connection.localClient = null;
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      expect(list).not.toHaveBeenCalled();
+      expect(connectionsList).toHaveBeenCalledTimes(1);
+      const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
+      expect(item).not.toBeNull();
+      expect(item?.textContent).toContain('Shared Remote Alpha');
+      await act(async () => { item!.click(); });
+      expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({
+        homeId: `remote:${remoteConnId}`,
+        scopeId: `remote:${remoteConnId}`,
+      });
+    } finally {
+      unregister();
+    }
+  });
+
   it('keeps windows mode status quiet and uses openSpace without changing its local target', async () => {
     writeDesktopPrefs({ windowMode: 'windows' });
     list.mockResolvedValue(TWO);

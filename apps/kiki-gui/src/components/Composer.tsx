@@ -728,10 +728,11 @@ export function Composer({
     }
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
-  const { client, connectionId, scopeId, localClient, meta } = useConnection();
+  const { client, connectionId, connectionSource, scopeId, localClient, meta } = useConnection();
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
-  const remoteRecords = useRemoteConnections(localClient);
+  const remoteControlClient = localClient ?? (connectionSource === 'remote' || connectionSource === 'ssh' ? null : client);
+  const remoteRecords = useRemoteConnections(remoteControlClient);
   const remoteTarget = connectionId === null
     ? null
     : remoteRecords.data?.find((record) => record.id === connectionId) ?? null;
