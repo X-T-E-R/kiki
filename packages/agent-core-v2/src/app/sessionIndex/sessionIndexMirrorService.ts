@@ -149,10 +149,14 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   async drain(): Promise<void> {
     this.timer.cancel();
     if (!this.observeReadModelFlag() || this.isDirty()) return;
-    while (this.pendingMap.size > 0) {
-      const before = this.pendingMap.size;
+    if (this.flushing !== undefined) await this.flushing;
+    while (this.pendingMap.size > 0 && this.observeReadModelFlag() && !this.isDirty()) {
+      const before = new Map(this.pendingMap);
       await this.flush();
-      if (this.pendingMap.size >= before) {
+      if (!this.observeReadModelFlag() || this.isDirty()) return;
+      const progressed = this.consecutiveFailures === 0 &&
+        [...before.entries()].some(([id, summary]) => this.pendingMap.get(id) !== summary);
+      if (!progressed && this.pendingMap.size > 0) {
         this.log.warn('session index mirror drain made no progress; leaving the rest dirty', {
           pending: this.pendingMap.size,
         });

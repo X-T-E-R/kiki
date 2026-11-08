@@ -7,20 +7,26 @@ import { event2FromRecord } from '#/app/event/event2';
 import { promptQueueKey } from './promptService';
 import { modelSwitchQueueKey, type QueuedModelSwitch } from './modelSwitchQueueOps';
 import { expandedStateFolds } from '#/state/state';
-import { decodeReplayCheckpointGraph, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
-import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
+import { decodeReplayCheckpointStates, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import {
+  REPLAY_ABI_VERSION,
+  verifyReplayCheckpointWire,
+  type ReplayCheckpointWire,
+} from '#/state/eventDispatcherService';
 import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { isWireRecord, AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 
 const PREFIX = '\u0000model-switch:';
 const READ_BYTES = 8 * 1024 * 1024;
 const PROOF_BYTES = 64 * 1024;
+const CHECKPOINT_STATE_NAMES = new Set([modelSwitchQueueKey.name, promptQueueKey.name]);
 type SwitchState = ReturnType<typeof modelSwitchQueueKey.initial>;
 type QueueState = ReturnType<typeof promptQueueKey.initial>;
 interface Checkpoint {
   readonly format: number;
   readonly replayAbi: number;
-  readonly wire: { readonly size: number; readonly mtimeMs: number; readonly headHash?: string };
+  readonly wire: ReplayCheckpointWire;
   readonly graph: ReplayCheckpointGraph;
 }
 interface ReaderHost {
@@ -88,17 +94,46 @@ export class PersistedModelSwitchReader {
 
   private async checkpoint(scope: string, size: number, mtimeMs: number) {
     const checkpoint = await this.host.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
-    if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION ||
-      size !== checkpoint.wire.size || mtimeMs !== checkpoint.wire.mtimeMs) return undefined;
-    const hash = createHash('sha256');
-    for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: 64 * 1024 - 1 })) hash.update(chunk);
-    if (hash.digest('hex').slice(0, 32) !== checkpoint.wire.headHash) return undefined;
+    if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
+    const digestRange = async (start: number, byteLength: number): Promise<string | undefined> => {
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > size || start < 0 || start > byteLength) {
+        return undefined;
+      }
+      const hash = createHash('sha256');
+      let read = 0;
+      if (start < byteLength) {
+        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: byteLength - 1 })) {
+          hash.update(chunk);
+          read += chunk.byteLength;
+        }
+      }
+      if (read !== byteLength - start) return undefined;
+      return hash.digest('hex');
+    };
+    const verified = await verifyReplayCheckpointWire(checkpoint.wire, {
+      size,
+      mtimeMs,
+      headHash: async () => {
+        const hash = createHash('sha256');
+        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: JOURNAL_HEAD_HASH_BYTES - 1 })) {
+          hash.update(chunk);
+        }
+        return hash.digest('hex').slice(0, 32);
+      },
+      storeGeneration: async () => {
+        const genBytes = await this.host.storage.read(scope, `${AGENT_WIRE_RECORD_KEY}.generation`);
+        return genBytes === undefined ? 'legacy' : new TextDecoder().decode(genBytes);
+      },
+      boundarySha256: (byteLength) => digestRange(Math.max(0, byteLength - JOURNAL_BOUNDARY_HASH_BYTES), byteLength),
+      prefixSha256: (byteLength) => digestRange(0, byteLength),
+    });
+    if (verified === undefined) return undefined;
     try {
-      const payload = decodeReplayCheckpointGraph(checkpoint.graph) as { states?: readonly { name: string; value: unknown }[] };
-      const switches = payload.states?.find((state) => state.name === modelSwitchQueueKey.name)?.value;
-      const queue = payload.states?.find((state) => state.name === promptQueueKey.name)?.value;
+      const states = decodeReplayCheckpointStates(checkpoint.graph, CHECKPOINT_STATE_NAMES);
+      const switches = states.get(modelSwitchQueueKey.name);
+      const queue = states.get(promptQueueKey.name);
       if (!(switches instanceof Map) || typeof queue !== 'object' || queue === null || !('order' in queue) || !Array.isArray(queue.order)) return undefined;
-      return { switches: switches as SwitchState, queue: queue as QueueState };
+      return { switches: switches as SwitchState, queue: queue as QueueState, offset: verified.offset };
     } catch { return undefined; }
   }
 
@@ -166,9 +201,10 @@ export class PersistedModelSwitchReader {
     if (state === undefined) {
       const proof = await this.prefixProof(scope, source.size);
       const checkpoint = changed ? undefined : await this.checkpoint(scope, source.size, source.mtimeMs);
+      const offset = checkpoint?.offset ?? 0;
       state = { source, watermark: source.size, proof, switches: checkpoint?.switches ?? modelSwitchQueueKey.initial(),
-        queue: checkpoint?.queue ?? promptQueueKey.initial(), offset: checkpoint === undefined ? 0 : source.size,
-        pending: Buffer.alloc(0), skip: false, complete: checkpoint !== undefined };
+        queue: checkpoint?.queue ?? promptQueueKey.initial(), offset,
+        pending: Buffer.alloc(0), skip: false, complete: checkpoint !== undefined && offset >= source.size };
     } else if (state.complete && source.size > state.watermark) {
       state.watermark = source.size;
       state.proof = await this.prefixProof(scope, state.watermark);

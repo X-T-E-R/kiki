@@ -803,4 +803,106 @@ describe('EventDispatcherService', () => {
     await expect(dispatcher.dispatch(new CounterAdd({ by: 3 }))).resolves.toBeUndefined();
     expect(agentState.get(counterKey).value).toBe(5);
   });
+
+  it('omits non-undoable histories from persisted checkpoints while preserving conversation undo across restore', async () => {
+    const sharedBlob = 's'.repeat(4096);
+    interface SnapshotState {
+      readonly revision: number;
+      readonly shared: string;
+      readonly constructor?: string;
+    }
+    const snapshotKey = defineState('state.test.snapshot', (): SnapshotState => ({
+      revision: 0,
+      shared: sharedBlob,
+      constructor: 'initial',
+    }))
+      .replayable({ schema: z.custom<SnapshotState>() })
+      .on(CounterAdd, (prev, event) => ({
+        revision: prev.revision + event.by,
+        shared: prev.shared,
+        constructor: `rev-${prev.revision + event.by}`,
+      }));
+    const undoableTodoKey = defineState('state.test.undoable_todo', (): { readonly items: string[] } => ({ items: [] }))
+      .replayable({ schema: z.custom<{ readonly items: string[] }>() })
+      .undoable()
+      .on(ItemAdd, (draft, event) => {
+        draft.items.push(event.item);
+      });
+
+    const documents = new Map<string, unknown>();
+    const docs = {
+      _serviceBrand: undefined,
+      get: async <T>(scope: string, key: string) => documents.get(`${scope}/${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => {
+        documents.set(`${scope}/${key}`, structuredClone(value));
+      },
+      update: async () => undefined,
+      delete: async () => {},
+      list: async () => [],
+      watch: () => () => ({ dispose: () => {} }),
+      acquire: () => ({ dispose: () => {} }),
+    } as unknown as IAtomicDocumentStore;
+    const scope = {
+      _serviceBrand: undefined,
+      agentId: 'main',
+      agentScope: 'sessions/ws/s1/agents/main',
+      parentAgentId: undefined,
+      scope: (subKey?: string) =>
+        subKey === undefined ? 'sessions/ws/s1/agents/main' : `sessions/ws/s1/agents/main/${subKey}`,
+    } as unknown as IAgentScopeContext;
+    const wire: IWireService = {
+      ...stubWireJournal([]),
+      journalIdentity: async () => ({ size: 64, mtimeMs: 100, headHash: 'head-snap', storeGeneration: 'gen-1' }),
+      journalSha256: async () => 'a'.repeat(64),
+    };
+    const createHost = () => {
+      const host = disposables.add(new TestInstantiationService());
+      host.set(IEventBus, new SyncDescriptor(EventBusService));
+      host.set(IAgentBlobService, noopBlob);
+      host.set(IWireService, wire);
+      host.set(IAtomicDocumentStore, docs);
+      host.set(IAgentScopeContext, scope);
+      host.set(IAgentStateService, new AgentStateService());
+      host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const d = host.get(IEventDispatcher);
+      const s = host.get(IAgentStateService);
+      s.contributeState(snapshotKey);
+      s.contributeState(undoableTodoKey);
+      s.contributeState(contextMemoryKey);
+      return { dispatcher: d, state: s };
+    };
+
+    const first = createHost();
+    await first.dispatcher.restore();
+    await first.dispatcher.dispatch(new CounterAdd({ by: 5 }));
+    expect(first.dispatcher.history(snapshotKey)).toHaveLength(1);
+    first.dispatcher.undo(snapshotKey, first.dispatcher.history(snapshotKey)[0]!.id);
+    expect(first.state.get(snapshotKey).constructor).toBe('initial');
+    await first.dispatcher.dispatch(new CounterAdd({ by: 5 }));
+    await first.dispatcher.dispatch(new ItemAdd({ item: 'before-anchor' }));
+    await first.dispatcher.dispatch(new ContextAppendMessage({
+      message: { role: 'user', content: [{ type: 'text', text: 'User turn 1' }], toolCalls: [], origin: { kind: 'user' } },
+    }));
+    await first.dispatcher.dispatch(new ItemAdd({ item: 'after-anchor' }));
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const saved = documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1') as { graph: ReplayCheckpointGraph };
+    const decoded = decodeReplayCheckpointGraph(saved.graph) as { states: { name: string; meta: { history: PatchEntry[]; nextPatchId: number } }[] };
+    expect(decoded.states.find((entry) => entry.name === snapshotKey.name)?.meta).toEqual({
+      history: [],
+      checkpoints: [],
+      nextPatchId: 3,
+    });
+    expect(decoded.states.find((entry) => entry.name === undoableTodoKey.name)?.meta.history.length).toBeGreaterThan(0);
+
+    const second = createHost();
+    await second.dispatcher.restore();
+    expect(second.state.get(snapshotKey).revision).toBe(5);
+    expect(second.state.get(undoableTodoKey).items).toEqual(['before-anchor', 'after-anchor']);
+    expect(second.dispatcher.checkpointDepth(undoableTodoKey)).toBe(1);
+    await second.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(second.state.get(undoableTodoKey).items).toEqual(['before-anchor']);
+    expect(second.dispatcher.checkpointDepth(undoableTodoKey)).toBe(0);
+    expect(second.state.get(contextMemoryKey)).toEqual([]);
+  });
 });

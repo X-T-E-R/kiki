@@ -1,6 +1,12 @@
+import { createHash } from 'node:crypto';
 import { enableMapSet } from 'immer';
 import { expect, it, vi } from 'vitest';
 import { PersistedModelSwitchReader, ModelSwitchQueuePreparingError } from '#/agent/prompt/modelSwitchQueueRead';
+import { modelSwitchQueueKey } from '#/agent/prompt/modelSwitchQueueOps';
+import { promptQueueKey } from '#/agent/prompt/promptService';
+import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
+import { encodeReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 
 enableMapSet();
 const queued = (id: string, index: number) => ({ type: 'prompt.model_switch_queued', time: 1,
@@ -128,8 +134,170 @@ it('returns a durable failure from a ready read rather than retrying malformed s
   await expect(fixture.reader.readReady('s')).rejects.toThrow();
   expect(fixture.scans()).toHaveLength(1);
 });
-it('rejects an aborted caller without changing any queue state', async () => {
+it('rejects an aborted caller without changing any queue state', () => {
   const fixture = host([queued('one', 0)]); const controller = new AbortController(); controller.abort();
   expect(() => fixture.reader.read('s', controller.signal)).toThrow();
   expect(fixture.reads).not.toHaveBeenCalled();
+});
+it('uses boundary-verified replay checkpoints and scans only appended tail records', async () => {
+  const prefixRecords = [
+    { type: 'llm.request', ignored: 'x'.repeat(JOURNAL_HEAD_HASH_BYTES + 1024) },
+    queued('from-checkpoint', 0),
+  ];
+  const prefixBytes = Buffer.from(prefixRecords.map((record) => JSON.stringify(record)).join('\n') + '\n');
+  const tailRecord = queued('from-tail', 1);
+  const fullBytes = Buffer.concat([prefixBytes, Buffer.from(JSON.stringify(tailRecord) + '\n')]);
+  const headHash = createHash('sha256').update(prefixBytes.subarray(0, JOURNAL_HEAD_HASH_BYTES)).digest('hex').slice(0, 32);
+  const boundarySha256 = createHash('sha256')
+    .update(prefixBytes.subarray(prefixBytes.length - JOURNAL_BOUNDARY_HASH_BYTES))
+    .digest('hex');
+  const switches = new Map([[
+    'from-checkpoint',
+    queued('from-checkpoint', 0).entry,
+  ]]);
+  const queue = {
+    ...promptQueueKey.initial(),
+    order: ['\u0000model-switch:from-checkpoint', '\u0000model-switch:from-tail'],
+  };
+  const graph = encodeReplayCheckpointGraph({
+    states: [
+      { name: 'unrelated.large', value: { text: 'y'.repeat(1024) }, meta: { history: [], checkpoints: [], nextPatchId: 1 } },
+      { name: modelSwitchQueueKey.name, value: switches, meta: { history: [], checkpoints: [], nextPatchId: 1 } },
+      { name: promptQueueKey.name, value: queue, meta: { history: [], checkpoints: [], nextPatchId: 1 } },
+    ],
+  });
+  const reads: { start: number; end: number; chunkBytes?: number }[] = [];
+  const reader = new PersistedModelSwitchReader({
+    docs: {
+      get: async () => ({
+        format: 1,
+        replayAbi: REPLAY_ABI_VERSION,
+        wire: {
+          size: prefixBytes.length,
+          mtimeMs: 1,
+          headHash,
+          boundarySha256,
+          storeGeneration: 'gen-1',
+        },
+        graph,
+      }),
+    } as never,
+    files: { stat: async () => ({ isFile: true, isDirectory: false, size: fullBytes.length, mtimeMs: 2, ino: 1 }) },
+    storage: {
+      size: async () => fullBytes.length,
+      mtime: async () => 2,
+      pathFor: () => 'example-wire',
+      read: async (_scope: string, key: string) =>
+        key === 'wire.jsonl.generation' ? new TextEncoder().encode('gen-1') : undefined,
+      readStream: async function* (_scope: string, _key: string, range: { start: number; end: number }, options?: { chunkBytes?: number }) {
+        reads.push({ ...range, chunkBytes: options?.chunkBytes });
+        yield fullBytes.subarray(range.start, range.end + 1);
+      },
+    } as never,
+  });
+  const result = await reader.read('s');
+  expect(result.map((entry) => [entry.input.operationId, entry.queueIndex])).toEqual([
+    ['from-checkpoint', 0],
+    ['from-tail', 1],
+  ]);
+  const bodyScans = reads.filter((range) => range.chunkBytes !== 64 * 1024 && range.end - range.start + 1 !== JOURNAL_HEAD_HASH_BYTES && range.end - range.start + 1 !== JOURNAL_BOUNDARY_HASH_BYTES);
+  expect(bodyScans).toEqual([{ start: prefixBytes.length, end: fullBytes.length - 1, chunkBytes: undefined }]);
+});
+it('supports small prefix-verified checkpoints on append and falls back to offset 0 on generation or boundary changes or invalid sizes', async () => {
+  const smallPrefix = Buffer.from(JSON.stringify(queued('small-cp', 0)) + '\n');
+  const smallTail = Buffer.from(JSON.stringify(queued('small-tail', 1)) + '\n');
+  const smallFull = Buffer.concat([smallPrefix, smallTail]);
+  const smallHeadHash = createHash('sha256').update(smallFull.subarray(0, Math.min(smallFull.length, JOURNAL_HEAD_HASH_BYTES))).digest('hex').slice(0, 32);
+  const prefixSha256 = createHash('sha256').update(smallPrefix).digest('hex');
+  const smallSwitches = new Map([['small-cp', queued('small-cp', 0).entry]]);
+  const smallQueue = { ...promptQueueKey.initial(), order: ['\u0000model-switch:small-cp'] };
+  const smallGraph = encodeReplayCheckpointGraph({
+    states: [
+      { name: modelSwitchQueueKey.name, value: smallSwitches, meta: { history: [], checkpoints: [], nextPatchId: 1 } },
+      { name: promptQueueKey.name, value: smallQueue, meta: { history: [], checkpoints: [], nextPatchId: 1 } },
+    ],
+  });
+  let checkpointWire: Record<string, unknown> = {
+    size: smallPrefix.length,
+    mtimeMs: 1,
+    headHash: smallHeadHash,
+    prefixSha256,
+    storeGeneration: 'gen-1',
+  };
+  let storedGen = 'gen-1';
+  let currentBytes = smallFull;
+  const scanStarts: number[] = [];
+  const makeReader = () => new PersistedModelSwitchReader({
+    docs: {
+      get: async () => ({
+        format: 1,
+        replayAbi: REPLAY_ABI_VERSION,
+        wire: checkpointWire,
+        graph: smallGraph,
+      }),
+    } as never,
+    files: { stat: async () => ({ isFile: true, isDirectory: false, size: currentBytes.length, mtimeMs: 2, ino: 1 }) },
+    storage: {
+      size: async () => currentBytes.length,
+      mtime: async () => 2,
+      pathFor: () => 'example-wire',
+      read: async (_scope: string, key: string) =>
+        key === 'wire.jsonl.generation' ? new TextEncoder().encode(storedGen) : undefined,
+      readStream: async function* (_scope: string, _key: string, range: { start: number; end: number }, options?: { chunkBytes?: number }) {
+        expect(range.start).toBeGreaterThanOrEqual(0);
+        if (options?.chunkBytes !== 64 * 1024 && range.end - range.start + 1 !== JOURNAL_HEAD_HASH_BYTES && range.end - range.start + 1 !== smallPrefix.length && range.end - range.start + 1 !== JOURNAL_BOUNDARY_HASH_BYTES) {
+          scanStarts.push(range.start);
+        }
+        yield currentBytes.subarray(range.start, range.end + 1);
+      },
+    } as never,
+  });
+
+  const hitResult = await makeReader().read('small');
+  expect(hitResult.map((entry) => [entry.input.operationId, entry.queueIndex])).toEqual([
+    ['small-cp', 0],
+    ['small-tail', 1],
+  ]);
+  expect(scanStarts).toEqual([smallPrefix.length]);
+
+  const largePrefix = Buffer.from([
+    { type: 'llm.request', ignored: 'x'.repeat(JOURNAL_HEAD_HASH_BYTES + 1024) },
+    queued('large-cp', 0),
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+  const largeFull = Buffer.concat([largePrefix, smallTail]);
+  const largeHeadHash = createHash('sha256').update(largeFull.subarray(0, JOURNAL_HEAD_HASH_BYTES)).digest('hex').slice(0, 32);
+  const validBoundarySha256 = createHash('sha256').update(largePrefix.subarray(largePrefix.length - JOURNAL_BOUNDARY_HASH_BYTES)).digest('hex');
+
+  scanStarts.length = 0;
+  checkpointWire = { ...checkpointWire, size: -5 };
+  const negativeOffsetResult = await makeReader().read('small-negative');
+  expect(negativeOffsetResult.map((entry) => entry.input.operationId)).toEqual(['small-cp', 'small-tail']);
+  expect(scanStarts).toEqual([0]);
+
+  currentBytes = largeFull;
+  storedGen = 'gen-2';
+  checkpointWire = {
+    size: largePrefix.length,
+    mtimeMs: 1,
+    headHash: largeHeadHash,
+    boundarySha256: validBoundarySha256,
+    storeGeneration: 'gen-1',
+  };
+  scanStarts.length = 0;
+  const genMismatchResult = await makeReader().read('large-gen-changed');
+  expect(genMismatchResult.map((entry) => entry.input.operationId)).toEqual(['large-cp', 'small-tail']);
+  expect(scanStarts).toEqual([0]);
+
+  storedGen = 'gen-1';
+  checkpointWire = {
+    size: largePrefix.length,
+    mtimeMs: 1,
+    headHash: largeHeadHash,
+    boundarySha256: 'f'.repeat(64),
+    storeGeneration: 'gen-1',
+  };
+  scanStarts.length = 0;
+  const boundaryMismatchResult = await makeReader().read('large-boundary-changed');
+  expect(boundaryMismatchResult.map((entry) => entry.input.operationId)).toEqual(['large-cp', 'small-tail']);
+  expect(scanStarts).toEqual([0]);
 });

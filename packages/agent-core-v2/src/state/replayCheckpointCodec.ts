@@ -96,19 +96,22 @@ export async function encodeReplayCheckpointGraphAsync(value: unknown): Promise<
   return step.value;
 }
 
-export function decodeReplayCheckpointGraph(graph: ReplayCheckpointGraph): unknown {
+function* decodeCheckpointGraph(graph: ReplayCheckpointGraph): Generator<void, unknown> {
   if (graph.version !== 1 || !Array.isArray(graph.nodes) || graph.nodes.length > MAX_NODES) {
     throw new Error('replay checkpoint graph is invalid');
   }
-  const values: unknown[] = graph.nodes.map((node) => {
-    if (node.kind === 'array') return [];
-    if (node.kind === 'object') return {};
-    if (node.kind === 'map') return new Map();
-    if (node.kind === 'set') return new Set();
-    if (node.kind === 'date') return new Date(node.value);
-    if (node.kind === 'bytes') return Uint8Array.from(Buffer.from(node.value, 'base64'));
-    throw new Error('replay checkpoint graph node is invalid');
-  });
+  const values: unknown[] = [];
+  for (let index = 0; index < graph.nodes.length; index += 1) {
+    yield;
+    const node = graph.nodes[index]!;
+    if (node.kind === 'array') values.push([]);
+    else if (node.kind === 'object') values.push({});
+    else if (node.kind === 'map') values.push(new Map());
+    else if (node.kind === 'set') values.push(new Set());
+    else if (node.kind === 'date') values.push(new Date(node.value));
+    else if (node.kind === 'bytes') values.push(Uint8Array.from(Buffer.from(node.value, 'base64')));
+    else throw new Error('replay checkpoint graph node is invalid');
+  }
   const decode = (encoded: EncodedValue): unknown => {
     if (encoded === null || typeof encoded === 'boolean' || typeof encoded === 'number' || typeof encoded === 'string') {
       return encoded;
@@ -124,7 +127,9 @@ export function decodeReplayCheckpointGraph(graph: ReplayCheckpointGraph): unkno
     if (encoded.type === 'bigint' && encoded.value !== undefined) return BigInt(encoded.value);
     throw new Error('replay checkpoint graph scalar is invalid');
   };
-  graph.nodes.forEach((node, index) => {
+  for (let index = 0; index < graph.nodes.length; index += 1) {
+    yield;
+    const node = graph.nodes[index]!;
     const target = values[index];
     if (node.kind === 'array') {
       for (const entry of node.values) (target as unknown[]).push(decode(entry));
@@ -142,6 +147,130 @@ export function decodeReplayCheckpointGraph(graph: ReplayCheckpointGraph): unkno
     } else if (node.kind === 'set') {
       for (const entry of node.values) (target as Set<unknown>).add(decode(entry));
     }
-  });
+  }
   return decode(graph.root);
+}
+
+export function decodeReplayCheckpointGraph(graph: ReplayCheckpointGraph): unknown {
+  const decoder = decodeCheckpointGraph(graph);
+  let step = decoder.next();
+  while (!step.done) step = decoder.next();
+  return step.value;
+}
+
+export async function decodeReplayCheckpointGraphAsync(graph: ReplayCheckpointGraph): Promise<unknown> {
+  const decoder = decodeCheckpointGraph(graph);
+  let deadline = performance.now() + 4;
+  let steps = 0;
+  let step = decoder.next();
+  while (!step.done) {
+    if (++steps % 64 === 0 && performance.now() >= deadline) {
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      deadline = performance.now() + 4;
+    }
+    step = decoder.next();
+  }
+  return step.value;
+}
+
+export function decodeReplayCheckpointStates(
+  graph: ReplayCheckpointGraph,
+  stateNames: ReadonlySet<string>,
+): ReadonlyMap<string, unknown> {
+  if (graph.version !== 1 || !Array.isArray(graph.nodes) || graph.nodes.length > MAX_NODES) {
+    throw new Error('replay checkpoint graph is invalid');
+  }
+  const values = new Map<number, unknown>();
+  const decode = (encoded: EncodedValue, depth: number): unknown => {
+    if (depth > MAX_DEPTH) throw new Error('replay checkpoint graph exceeds maximum depth');
+    if (encoded === null || typeof encoded === 'boolean' || typeof encoded === 'number' || typeof encoded === 'string') {
+      return encoded;
+    }
+    if ('ref' in encoded) {
+      const ref = encoded.ref;
+      if (!Number.isSafeInteger(ref) || ref < 0 || ref >= graph.nodes.length) {
+        throw new Error('replay checkpoint graph reference is invalid');
+      }
+      if (values.has(ref)) return values.get(ref);
+      const node = graph.nodes[ref]!;
+      if (node.kind === 'array') {
+        const target: unknown[] = [];
+        values.set(ref, target);
+        for (const entry of node.values) target.push(decode(entry, depth + 1));
+        return target;
+      }
+      if (node.kind === 'object') {
+        const target: Record<string, unknown> = {};
+        values.set(ref, target);
+        for (const [key, entry] of node.values) {
+          Object.defineProperty(target, key, {
+            value: decode(entry, depth + 1),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        }
+        return target;
+      }
+      if (node.kind === 'map') {
+        const target = new Map<unknown, unknown>();
+        values.set(ref, target);
+        for (const [key, entry] of node.values) target.set(decode(key, depth + 1), decode(entry, depth + 1));
+        return target;
+      }
+      if (node.kind === 'set') {
+        const target = new Set<unknown>();
+        values.set(ref, target);
+        for (const entry of node.values) target.add(decode(entry, depth + 1));
+        return target;
+      }
+      if (node.kind === 'date') {
+        const target = new Date(node.value);
+        values.set(ref, target);
+        return target;
+      }
+      if (node.kind === 'bytes') {
+        const target = Uint8Array.from(Buffer.from(node.value, 'base64'));
+        values.set(ref, target);
+        return target;
+      }
+      throw new Error('replay checkpoint graph node is invalid');
+    }
+    if (encoded.type === 'undefined') return undefined;
+    if (encoded.type === 'bigint' && encoded.value !== undefined) return BigInt(encoded.value);
+    throw new Error('replay checkpoint graph scalar is invalid');
+  };
+  if (graph.root === null || typeof graph.root !== 'object' || !('ref' in graph.root)) {
+    throw new Error('replay checkpoint graph is invalid');
+  }
+  const rootNode = graph.nodes[graph.root.ref];
+  if (rootNode?.kind !== 'object') throw new Error('replay checkpoint graph is invalid');
+  const statesEntry = findObjectEntry(rootNode.values, 'states');
+  if (statesEntry === null || typeof statesEntry !== 'object' || !('ref' in statesEntry)) {
+    throw new Error('replay checkpoint graph is invalid');
+  }
+  const statesNode = graph.nodes[statesEntry.ref];
+  if (statesNode?.kind !== 'array') throw new Error('replay checkpoint graph is invalid');
+  const result = new Map<string, unknown>();
+  for (const item of statesNode.values) {
+    if (item === null || typeof item !== 'object' || !('ref' in item)) continue;
+    const stateNode = graph.nodes[item.ref];
+    if (stateNode?.kind !== 'object') continue;
+    const name = findObjectEntry(stateNode.values, 'name');
+    if (typeof name !== 'string' || !stateNames.has(name)) continue;
+    const valueEntry = findObjectEntry(stateNode.values, 'value');
+    if (valueEntry === undefined) continue;
+    result.set(name, decode(valueEntry, 0));
+  }
+  return result;
+}
+
+function findObjectEntry(
+  entries: readonly [string, EncodedValue][],
+  targetKey: string,
+): EncodedValue | undefined {
+  for (const [key, value] of entries) {
+    if (key === targetKey) return value;
+  }
+  return undefined;
 }

@@ -24,7 +24,7 @@ import type { PartsTransformer } from '#/wire/record';
 import { IEventDispatcher } from './eventDispatcher';
 import { StateError, StateErrors } from './errors';
 import {
-  decodeReplayCheckpointGraph,
+  decodeReplayCheckpointGraphAsync,
   encodeReplayCheckpointGraphAsync,
   type ReplayCheckpointGraph,
 } from './replayCheckpointCodec';
@@ -49,17 +49,19 @@ export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
 const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
 export const REPLAY_ABI_VERSION = 2;
 
+export interface ReplayCheckpointWire {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly headHash?: string;
+  readonly prefixSha256?: string;
+  readonly boundarySha256?: string;
+  readonly storeGeneration?: string;
+}
+
 interface ReplayCheckpointEnvelope {
   readonly format: 1;
   readonly replayAbi: number;
-  readonly wire: {
-    readonly size: number;
-    readonly mtimeMs: number;
-    readonly headHash?: string;
-    readonly prefixSha256?: string;
-    readonly boundarySha256?: string;
-    readonly storeGeneration?: string;
-  };
+  readonly wire: ReplayCheckpointWire;
   readonly stateNames: readonly string[];
   readonly graph: ReplayCheckpointGraph;
 }
@@ -552,11 +554,16 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (!this.checkpointStable(generation, revision)) return false;
       phase = 'encode';
       const payload: ReplayCheckpointPayload = {
-        states: keys.map((key) => ({
-          name: key.name,
-          value: this.agentState.get(key),
-          meta: this.ensureMeta(key),
-        })),
+        states: keys.map((key) => {
+          const meta = this.ensureMeta(key);
+          return {
+            name: key.name,
+            value: this.agentState.get(key),
+            meta: keepsUndoCheckpoints(key) || meta.checkpoints.length > 0
+              ? meta
+              : { history: [], checkpoints: [], nextPatchId: meta.nextPatchId },
+          };
+        }),
       };
       const graph = await encodeReplayCheckpointGraphAsync(payload);
       if (!this.checkpointStable(generation, revision)) return false;
@@ -592,8 +599,6 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       );
       if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
       const wire = await this.wire.journalIdentity();
-      if (envelope.wire.headHash === undefined) return undefined;
-      const headMatches = envelope.wire.headHash === wire.headHash;
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
@@ -603,35 +608,18 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       ) {
         return undefined;
       }
-      const sameGeneration = envelope.wire.storeGeneration !== undefined &&
-        envelope.wire.storeGeneration === wire.storeGeneration;
-      const generationChanged = envelope.wire.storeGeneration !== undefined && !sameGeneration;
-      const unboundBoundaryOnly = envelope.wire.storeGeneration === undefined &&
-        envelope.wire.boundarySha256 !== undefined && !isSha256(envelope.wire.prefixSha256);
-      const exact = headMatches && !generationChanged && !unboundBoundaryOnly && wire.size === envelope.wire.size &&
-        wire.mtimeMs === envelope.wire.mtimeMs;
-      let tailByte: number | undefined;
-      if (!exact) {
-        if (wire.size < envelope.wire.size) return undefined;
-        if (!headMatches && envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
-        const boundary = isSha256(envelope.wire.boundarySha256) && headMatches && sameGeneration &&
-          this.wire.journalBoundarySha256 !== undefined
-          ? await this.wire.journalBoundarySha256(envelope.wire.size)
-          : undefined;
-        if (boundary !== undefined && boundary !== envelope.wire.boundarySha256) return undefined;
-        const sealed = this.wire.sealedJournalDigest?.();
-        const prefixSha256 = boundary !== undefined ? undefined : isSha256(envelope.wire.prefixSha256)
-          ? envelope.wire.prefixSha256
-          : sealed !== undefined && sealed.size === envelope.wire.size && isSha256(sealed.sha256)
-            ? sealed.sha256
-            : undefined;
-        if (boundary === undefined) {
-          if (envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES || prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
-          if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
-        }
-        if (wire.size > envelope.wire.size) tailByte = envelope.wire.size;
-      }
-      const payload = decodeReplayCheckpointGraph(envelope.graph) as ReplayCheckpointPayload;
+      const verified = await verifyReplayCheckpointWire(envelope.wire, {
+        size: wire.size,
+        mtimeMs: wire.mtimeMs,
+        headHash: () => Promise.resolve(wire.headHash),
+        storeGeneration: () => Promise.resolve(wire.storeGeneration),
+        boundarySha256: (byteLength) => this.wire.journalBoundarySha256?.(byteLength) ?? Promise.resolve(undefined),
+        prefixSha256: (byteLength) => this.wire.journalSha256?.(byteLength) ?? Promise.resolve(undefined),
+        sealedDigest: this.wire.sealedJournalDigest === undefined ? undefined : () => this.wire.sealedJournalDigest!(),
+      });
+      if (verified === undefined) return undefined;
+      const { tailByte } = verified;
+      const payload = await decodeReplayCheckpointGraphAsync(envelope.graph) as ReplayCheckpointPayload;
       if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return undefined;
       const restored: { readonly key: ReplayableStateKey<any>; readonly value: unknown; readonly meta: StateMeta }[] = [];
       for (let index = 0; index < keys.length; index += 1) {
@@ -689,10 +677,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       }
       await phase('state_rehydrate', () => this.rehydrateStates());
       this.restorePhase = 'ready';
+      await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
       if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
         void this.saveReplayCheckpoint().catch(onUnexpectedError);
       }
-      await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
     } catch (error) {
       this.restorePhase = 'failed';
       throw error;
@@ -748,6 +736,65 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   async flush(): Promise<void> {
     await this.wire.flush();
   }
+}
+
+export interface ReplayCheckpointWireAccess {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly headHash: () => Promise<string | undefined>;
+  readonly storeGeneration: () => Promise<string | undefined>;
+  readonly boundarySha256: (byteLength: number) => Promise<string | undefined>;
+  readonly prefixSha256: (byteLength: number) => Promise<string | undefined>;
+  readonly sealedDigest?: () => { readonly size: number; readonly sha256: string } | undefined;
+}
+
+export async function verifyReplayCheckpointWire(
+  checkpointWire: ReplayCheckpointWire | undefined,
+  access: ReplayCheckpointWireAccess,
+): Promise<{ readonly offset: number; readonly tailByte?: number } | undefined> {
+  if (
+    checkpointWire === undefined ||
+    checkpointWire.headHash === undefined ||
+    !Number.isSafeInteger(checkpointWire.size) ||
+    checkpointWire.size < 0 ||
+    !Number.isSafeInteger(access.size) ||
+    access.size < checkpointWire.size
+  ) {
+    return undefined;
+  }
+  const headHash = await access.headHash();
+  const headMatches = checkpointWire.headHash === headHash;
+  let sameGeneration = false;
+  let generationChanged = false;
+  if (checkpointWire.storeGeneration !== undefined) {
+    const currentGeneration = await access.storeGeneration();
+    sameGeneration = checkpointWire.storeGeneration === currentGeneration;
+    generationChanged = !sameGeneration;
+  }
+  const unboundBoundaryOnly = checkpointWire.storeGeneration === undefined &&
+    checkpointWire.boundarySha256 !== undefined && !isSha256(checkpointWire.prefixSha256);
+  const exact = headMatches && !generationChanged && !unboundBoundaryOnly &&
+    access.size === checkpointWire.size && access.mtimeMs === checkpointWire.mtimeMs;
+  let tailByte: number | undefined;
+  if (!exact) {
+    if (!headMatches && checkpointWire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
+    const boundary = isSha256(checkpointWire.boundarySha256) && headMatches && sameGeneration
+      ? await access.boundarySha256(checkpointWire.size)
+      : undefined;
+    if (boundary !== undefined && boundary !== checkpointWire.boundarySha256) return undefined;
+    const sealed = access.sealedDigest?.();
+    const prefixSha256 = boundary !== undefined ? undefined : isSha256(checkpointWire.prefixSha256)
+      ? checkpointWire.prefixSha256
+      : sealed !== undefined && sealed.size === checkpointWire.size && isSha256(sealed.sha256)
+        ? sealed.sha256
+        : undefined;
+    if (boundary === undefined) {
+      if (checkpointWire.size >= JOURNAL_HEAD_HASH_BYTES || prefixSha256 === undefined) return undefined;
+      if (await access.prefixSha256(checkpointWire.size) !== prefixSha256) return undefined;
+    }
+    if (access.size > checkpointWire.size) tailByte = checkpointWire.size;
+  }
+  return { offset: checkpointWire.size, tailByte };
 }
 
 function compactArrayReplacement(

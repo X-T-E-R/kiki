@@ -2494,6 +2494,127 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
   });
 
+  it('drain flushes concurrent record updates without false no-progress warnings', async () => {
+    await seedSession('a', { createdAt: 1, updatedAt: 2 });
+
+    let batchGate: Promise<void> | undefined;
+    let releaseBatch: () => void = () => {};
+    let notifyBatchEntered: (() => void) | undefined;
+    class GatedQueryStore extends MiniDbQueryStore {
+      override async batch(ops: readonly WriteOp[]): Promise<void> {
+        notifyBatchEntered?.();
+        const gate = batchGate;
+        batchGate = undefined;
+        if (gate !== undefined) await gate;
+        return super.batch(ops);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      GatedQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
+    const warnings: string[] = [];
+    const log = {
+      ...stubLog(),
+      warn: (msg: string) => {
+        warnings.push(msg);
+      },
+    };
+    const fileStorage = new FileStorageService(homeDir);
+    const host = createScopedTestHost([
+      stubPair(IFileSystemStorageService, fileStorage),
+      stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(ILogService, log),
+      stubPair(IFlagService, stubFlag(true)),
+    ]);
+    disposeHost = () => host.dispose();
+    queryStore = host.app.accessor.get(IQueryStore);
+    mirror = host.app.accessor.get(ISessionIndexMirror);
+    const store = host.app.accessor.get(ISessionIndex) as FileSessionIndex;
+    await store.prepare();
+
+    const entered = new Promise<void>((resolve) => {
+      notifyBatchEntered = resolve;
+    });
+    batchGate = new Promise<void>((resolve) => {
+      releaseBatch = resolve;
+    });
+    await seedSession('fresh', { createdAt: 3, updatedAt: 20 });
+    mirror.record(summary('fresh', { createdAt: 3, updatedAt: 10 }));
+    const draining = mirror.drain();
+    await entered;
+
+    mirror.record(summary('fresh', { createdAt: 3, updatedAt: 20 }));
+    releaseBatch();
+    await draining;
+
+    expect(warnings).toEqual([]);
+    expect(mirror.pending()).toEqual([]);
+    const page = await store.listRecent({ workspaceIds: [workspaceId] });
+    expect(page.items[0]?.updatedAt).toBe(20);
+  });
+
+  it('drain exits after a single failed flush attempt without busy-spinning', async () => {
+    await seedSession('a', { createdAt: 1, updatedAt: 2 });
+
+    let batchCalls = 0;
+    let failBatches = false;
+    class FailingQueryStore extends MiniDbQueryStore {
+      override async batch(ops: readonly WriteOp[]): Promise<void> {
+        if (failBatches) {
+          batchCalls += 1;
+          mirror.record(summary('fresh', { createdAt: 3, updatedAt: 20 + batchCalls }));
+          throw new Error('simulated batch write failure');
+        }
+        return super.batch(ops);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      FailingQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
+    const warnings: string[] = [];
+    const log = {
+      ...stubLog(),
+      warn: (msg: string) => {
+        warnings.push(msg);
+      },
+    };
+    const fileStorage = new FileStorageService(homeDir);
+    const host = createScopedTestHost([
+      stubPair(IFileSystemStorageService, fileStorage),
+      stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(ILogService, log),
+      stubPair(IFlagService, stubFlag(true)),
+    ]);
+    disposeHost = () => {
+      failBatches = false;
+      return host.dispose();
+    };
+    queryStore = host.app.accessor.get(IQueryStore);
+    mirror = host.app.accessor.get(ISessionIndexMirror);
+    const store = host.app.accessor.get(ISessionIndex) as FileSessionIndex;
+    await store.prepare();
+
+    failBatches = true;
+    mirror.record(summary('fresh', { createdAt: 3, updatedAt: 10 }));
+    await mirror.drain();
+
+    expect(batchCalls).toBe(1);
+    expect(warnings).toContain('session index mirror drain made no progress; leaving the rest dirty');
+    failBatches = false;
+  });
+
   it('removes from a concurrently published generation and decrements its counter once', async () => {
     await seedSession('a', { createdAt: 1, updatedAt: 2 });
 

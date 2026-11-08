@@ -118,20 +118,22 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private detached: { readonly source: SessionMeta; readonly value: SessionMeta } | undefined;
   private readonly outcomes: AgentOutcomeDocuments;
 
-  private async persist(): Promise<void> {
-    await this.store.set(this.scope, META_KEY, encodeSessionMeta(await this.outcomes.project(this.data)), { cooperative: true });
+  private async persist(): Promise<PersistedSessionMeta> {
+    const encoded = encodeSessionMeta(await this.outcomes.project(this.data));
+    await this.store.set(this.scope, META_KEY, encoded, { cooperative: true });
+    return encoded;
   }
 
-  private async persistAbsorbingDeferred(): Promise<readonly (keyof SessionMeta)[]> {
+  private async persistAbsorbingDeferred(): Promise<{ readonly absorbed: readonly (keyof SessionMeta)[]; readonly encoded: PersistedSessionMeta }> {
     const generation = this.deferredGeneration;
     const absorbed = [...this.deferredChanges];
-    await this.persist();
-    if (!this.usageDirty || this.deferredGeneration !== generation) return [];
+    const encoded = await this.persist();
+    if (!this.usageDirty || this.deferredGeneration !== generation) return { absorbed: [], encoded };
     this.usageDirty = false;
     this.deferredChanges.clear();
     if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
     this.usageTimer = undefined;
-    return absorbed;
+    return { absorbed, encoded };
   }
 
   private deferChanges(changed: readonly (keyof SessionMeta)[]): void {
@@ -157,9 +159,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       try {
         await this.enqueueUpdate(async () => {
           if (this.disposed) return;
-          await this.persist();
+          const encoded = await this.persist();
           if (this.disposed) return;
-          this.mirrorToReadModel();
+          this.mirrorToReadModel(encoded);
           this._onDidChangeMetadata.fire({ changed });
         });
       } catch (error) {
@@ -307,9 +309,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     await this.ready;
     if (this.disposed) return false;
     this.mergePatch(patch, opts);
-    const absorbed = await this.persistAbsorbingDeferred();
+    const { absorbed, encoded } = await this.persistAbsorbingDeferred();
     if (this.disposed) return false;
-    this.mirrorToReadModel();
+    this.mirrorToReadModel(encoded);
     this._onDidChangeMetadata.fire({
       changed: [...new Set([...Object.keys(patch) as (keyof SessionMeta)[], ...absorbed])],
     });
@@ -400,15 +402,15 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         }
         if (!changed || this.disposed) return;
         this.data = { ...this.data, agents, updatedAt: touched ? Date.now() : previousUpdatedAt };
-        let absorbed: readonly (keyof SessionMeta)[];
+        let persisted: { readonly absorbed: readonly (keyof SessionMeta)[]; readonly encoded: PersistedSessionMeta };
         try {
-          absorbed = await this.persistAbsorbingDeferred();
+          persisted = await this.persistAbsorbingDeferred();
         } catch (error) {
           this.data = { ...this.data, agents: previous, updatedAt: previousUpdatedAt };
           throw error;
         }
-        this.mirrorToReadModel();
-        this._onDidChangeMetadata.fire({ changed: [...new Set<keyof SessionMeta>(['agents', ...absorbed])] });
+        this.mirrorToReadModel(persisted.encoded);
+        this._onDidChangeMetadata.fire({ changed: [...new Set<keyof SessionMeta>(['agents', ...persisted.absorbed])] });
       }, false);
       void run.then(
         () => { for (const mutation of batch.mutations) mutation.resolve(); },
@@ -449,28 +451,28 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     return this.trackWrite(run);
   }
 
-  private mirrorToReadModel(): void {
+  private mirrorToReadModel(source: SessionMeta = this.data): void {
     if (this.ctx.ephemeral === true) return;
     try {
       this.mirror.record(
         buildSessionSummary({
-          id: this.data.id,
+          id: source.id,
           workspaceId: this.ctx.workspaceId,
           cwd: this.ctx.cwd,
-          worktree: this.data.worktree,
-          title: this.data.title,
-          lastPrompt: this.data.lastPrompt,
-          delivery: this.data.delivery,
-          createdAt: this.data.createdAt,
-          updatedAt: this.data.updatedAt,
-          activityUpdatedAt: this.data.activityUpdatedAt,
-          archived: this.data.archived === true,
-          archivedAt: this.data.archivedAt,
-          executionPhase: this.data.executionPhase,
-          custom: this.data.custom,
-          lastTurnReason: this.data.lastTurnReason,
-          usage: this.data.usage,
-          agents: this.data.agents,
+          worktree: source.worktree,
+          title: source.title,
+          lastPrompt: source.lastPrompt,
+          delivery: source.delivery,
+          createdAt: source.createdAt,
+          updatedAt: source.updatedAt,
+          activityUpdatedAt: source.activityUpdatedAt,
+          archived: source.archived === true,
+          archivedAt: source.archivedAt,
+          executionPhase: source.executionPhase,
+          custom: source.custom,
+          lastTurnReason: source.lastTurnReason,
+          usage: source.usage,
+          agents: source.agents,
         }),
       );
     } catch (error) {
@@ -514,9 +516,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       agents: {},
       custom: {},
     };
-    await this.persist();
+    const encoded = await this.persist();
     this.createdDocument = true;
-    this.mirrorToReadModel();
+    this.mirrorToReadModel(encoded);
     this.log.debug('session metadata created', { sessionId: this.ctx.sessionId });
   }
 }
