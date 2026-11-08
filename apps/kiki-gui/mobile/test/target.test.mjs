@@ -6,6 +6,7 @@ import { test } from 'node:test';
 // oxlint-disable-next-line import/extensions
 import {
   STORE_ORIGIN_KEY,
+  claimPairingOrigin,
   classifyOrigin,
   displayOrigin,
   formatPairingCodeInput,
@@ -13,6 +14,7 @@ import {
   isServerOriginVerified,
   normalizePairingCode,
   parsePairingUri,
+  probeOriginHandshake,
   readConnectInput,
   readDeviceIdentity,
   readSavedServers,
@@ -165,7 +167,7 @@ await test('classifyOrigin distinguishes LAN, Tailscale/VPN, and external HTTPS'
   });
 });
 
-await test('saved computers preserve paired device trust across network address changes', () => {
+await test('saved computers require pairing to trust a new network address and preserve already-paired addresses', () => {
   const storage = createMemoryStorage({
     [STORE_ORIGIN_KEY]: 'http://192.168.1.5:5494',
   });
@@ -180,34 +182,51 @@ await test('saved computers preserve paired device trust across network address 
     targetHomeId: '22222222-2222-4222-8222-222222222222',
     targetHostId: 'studio-mac',
     grantId: 'grant-1',
+    verified: true,
   });
   assert.equal(paired.id, '22222222-2222-4222-8222-222222222222');
   assert.equal(paired.paired, true);
   assert.equal(paired.label, 'Studio Mac');
   assert.equal(isServerOriginVerified(paired, 'http://192.168.1.5:5494'), true);
 
-  const moved = updateSavedServerOrigin(storage, paired.id, '100.90.1.8:5494');
-  assert.equal(moved.ok, true);
-  assert.equal(moved.server.id, '22222222-2222-4222-8222-222222222222');
-  assert.equal(moved.server.paired, true);
-  assert.equal(moved.server.grantId, 'grant-1');
-  assert.equal(moved.server.origin, 'http://100.90.1.8:5494');
-  assert.deepEqual(moved.server.origins, ['http://100.90.1.8:5494', 'http://192.168.1.5:5494']);
-  assert.equal(isServerOriginVerified(moved.server, 'http://100.90.1.8:5494'), false);
-  assert.equal(isServerOriginVerified(moved.server, 'http://192.168.1.5:5494'), true);
-  assert.equal(storage.getItem(STORE_ORIGIN_KEY), 'http://100.90.1.8:5494');
+  // Attempting to switch a paired computer to an unverified origin without pairing refuses to overwrite
+  const unverifiedMove = updateSavedServerOrigin(storage, paired.id, '100.90.1.8:5494');
+  assert.equal(unverifiedMove.ok, false);
+  assert.equal(unverifiedMove.reason, 'pairing_required');
+  assert.equal(unverifiedMove.origin, 'http://100.90.1.8:5494');
+  assert.equal(unverifiedMove.server.origin, 'http://192.168.1.5:5494');
+  assert.deepEqual(unverifiedMove.server.origins, ['http://192.168.1.5:5494']);
+  assert.equal(storage.getItem(STORE_ORIGIN_KEY), 'http://192.168.1.5:5494');
 
-  const sameHomeVerified = verifySavedServerOrigin(storage, paired.id, 'http://100.90.1.8:5494', {
+  // Even if public handshake echoes matching targetHomeId/targetHostId, verifySavedServerOrigin requires pairing
+  const spoofAttempt = verifySavedServerOrigin(storage, paired.id, 'http://100.90.1.8:5494', {
     ok: true,
     targetHomeId: '22222222-2222-4222-8222-222222222222',
     targetHostId: 'studio-mac',
   });
-  assert.equal(sameHomeVerified.ok, true);
-  assert.equal(isServerOriginVerified(sameHomeVerified.server, 'http://100.90.1.8:5494'), true);
+  assert.equal(spoofAttempt.ok, false);
+  assert.equal(spoofAttempt.reason, 'pairing_required');
+  assert.equal(isServerOriginVerified(spoofAttempt.server, 'http://100.90.1.8:5494'), false);
+  assert.equal(spoofAttempt.server.origin, 'http://192.168.1.5:5494');
 
-  const wrongHome = updateSavedServerOrigin(storage, paired.id, '192.168.1.99:5494');
-  assert.equal(wrongHome.ok, true);
-  assert.equal(isServerOriginVerified(wrongHome.server, 'http://192.168.1.99:5494'), false);
+  // After pairing the new address (verified: true), both addresses are verified and can switch freely
+  const pairedSecondOrigin = upsertSavedServer(storage, {
+    id: paired.id,
+    origin: 'http://100.90.1.8:5494',
+    label: 'Studio Mac',
+    paired: true,
+    targetHomeId: '22222222-2222-4222-8222-222222222222',
+    targetHostId: 'studio-mac',
+    grantId: 'grant-2',
+    verified: true,
+  });
+  assert.equal(isServerOriginVerified(pairedSecondOrigin, 'http://100.90.1.8:5494'), true);
+  assert.equal(isServerOriginVerified(pairedSecondOrigin, 'http://192.168.1.5:5494'), true);
+
+  const switchBackToLan = updateSavedServerOrigin(storage, paired.id, 'http://192.168.1.5:5494');
+  assert.equal(switchBackToLan.ok, true);
+  assert.equal(switchBackToLan.server.origin, 'http://192.168.1.5:5494');
+
   const mismatch = verifySavedServerOrigin(storage, paired.id, 'http://192.168.1.99:5494', {
     ok: true,
     targetHomeId: '99999999-9999-4999-8999-999999999999',
@@ -217,10 +236,9 @@ await test('saved computers preserve paired device trust across network address 
   assert.equal(mismatch.reason, 'identity_mismatch');
   assert.equal(mismatch.server.id, '22222222-2222-4222-8222-222222222222');
   assert.equal(mismatch.server.paired, true);
-  assert.equal(mismatch.server.grantId, 'grant-1');
-  assert.equal(mismatch.server.origin, 'http://100.90.1.8:5494');
+  assert.equal(mismatch.server.origin, 'http://192.168.1.5:5494');
   assert.equal(mismatch.server.origins.includes('http://192.168.1.99:5494'), false);
-  assert.equal(storage.getItem(STORE_ORIGIN_KEY), 'http://100.90.1.8:5494');
+  assert.equal(storage.getItem(STORE_ORIGIN_KEY), 'http://192.168.1.5:5494');
 
   const identity1 = readDeviceIdentity(storage, 'android');
   const identity2 = readDeviceIdentity(storage, 'android');
@@ -231,7 +249,7 @@ await test('saved computers preserve paired device trust across network address 
   assert.equal(storage.getItem(STORE_ORIGIN_KEY), null);
 });
 
-await test('dual-KAP A/B address change opens alternate path of same home and withholds token from different home', async () => {
+await test('unverified origin echoing targetHomeId/targetHostId or 302-redirecting never receives old token; new code pairs new origin while old origin still opens', async () => {
   const identityA = {
     homeId: '11111111-1111-4111-8111-111111111111',
     hostId: 'workstation-a',
@@ -242,9 +260,11 @@ await test('dual-KAP A/B address change opens alternate path of same home and wi
     hostId: 'workstation-b',
     protocol: 1,
   };
+  const requestsToSpoof = [];
+  const requestsToRedirect = [];
   const requestsToB = [];
 
-  function makeKapListener(identity, label, serverId, logList = null) {
+  function makeKapListener(identity, label, serverId, logList = null, claimGrants = {}) {
     return createServer((req, res) => {
       if (logList) {
         logList.push({
@@ -269,72 +289,146 @@ await test('dual-KAP A/B address change opens alternate path of same home and wi
         );
         return;
       }
+      if (req.method === 'POST' && req.url === '/api/remote-connections/pair/claim') {
+        let raw = '';
+        req.on('data', (c) => {
+          raw += c;
+        });
+        req.on('end', () => {
+          const body = JSON.parse(raw || '{}');
+          const match = claimGrants[body.code];
+          if (!match) {
+            res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ code: 40101, message: 'invalid_pairing_code' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(
+            JSON.stringify({
+              code: 0,
+              data: {
+                target: identity,
+                targetLabel: label,
+                grantId: match.grantId,
+                peerToken: match.peerToken,
+              },
+            }),
+          );
+        });
+        return;
+      }
       res.writeHead(404);
       res.end('not found');
     });
   }
 
-  const serverA1 = makeKapListener(identityA, 'Studio A', 'srv-a-1');
-  const serverA2 = makeKapListener(identityA, 'Studio A', 'srv-a-2');
+  const serverA1 = makeKapListener(identityA, 'Studio A', 'srv-a-1', null, {
+    'AAAA-2222': { grantId: 'grant-a-1', peerToken: 'peer_token_secret_a1' },
+  });
+  const serverA2 = makeKapListener(identityA, 'Studio A', 'srv-a-2', null, {
+    'AAAA-3333': { grantId: 'grant-a-2', peerToken: 'peer_token_secret_a2' },
+  });
+  const serverSpoof = makeKapListener(identityA, 'Studio A', 'srv-a-spoof', requestsToSpoof);
   const serverB = makeKapListener(identityB, 'Office B', 'srv-b-1', requestsToB);
 
-  await new Promise((r) => {
-    serverA1.listen(0, '127.0.0.1', r);
-  });
-  await new Promise((r) => {
-    serverA2.listen(0, '127.0.0.1', r);
-  });
-  await new Promise((r) => {
-    serverB.listen(0, '127.0.0.1', r);
+  let originA1 = '';
+  const serverRedirect = createServer((req, res) => {
+    requestsToRedirect.push({
+      method: req.method,
+      url: req.url ?? '/',
+      authorization: req.headers.authorization ?? '',
+    });
+    res.writeHead(302, { Location: `${originA1}${req.url ?? '/'}` });
+    res.end();
   });
 
+  await new Promise((r) => serverA1.listen(0, '127.0.0.1', r));
+  await new Promise((r) => serverA2.listen(0, '127.0.0.1', r));
+  await new Promise((r) => serverSpoof.listen(0, '127.0.0.1', r));
+  await new Promise((r) => serverRedirect.listen(0, '127.0.0.1', r));
+  await new Promise((r) => serverB.listen(0, '127.0.0.1', r));
+
   try {
-    const originA1 = `http://127.0.0.1:${serverA1.address().port}`;
+    originA1 = `http://127.0.0.1:${serverA1.address().port}`;
     const originA2 = `http://127.0.0.1:${serverA2.address().port}`;
+    const originSpoof = `http://127.0.0.1:${serverSpoof.address().port}`;
+    const originRedirect = `http://127.0.0.1:${serverRedirect.address().port}`;
     const originB = `http://127.0.0.1:${serverB.address().port}`;
 
     const storage = createMemoryStorage();
-    const tokenStore = new Map([[identityA.homeId, 'peer_token_secret_for_home_a_only']]);
+    const tokenStore = new Map();
+    const saveToken = (serverId, token, origin) => {
+      if (origin) tokenStore.set(`${serverId}@${origin}`, token);
+      tokenStore.set(serverId, token);
+    };
+    const getToken = (serverId, origin) =>
+      (origin && tokenStore.get(`${serverId}@${origin}`)) || tokenStore.get(serverId) || null;
 
-    // 1. Pair with Computer A at originA1
-    const pairedA = upsertSavedServer(storage, {
-      id: identityA.homeId,
+    // 1. Pair with Computer A at originA1 using short code AAAA-2222
+    const claimA1 = await claimPairingOrigin(storage, {
       origin: originA1,
-      label: 'Studio A',
-      paired: true,
-      targetHomeId: identityA.homeId,
-      targetHostId: identityA.hostId,
-      grantId: 'grant-a-1',
-      verified: true,
+      code: 'AAAA-2222',
+      platform: 'android',
+      saveToken,
     });
+    assert.equal(claimA1.ok, true);
+    const pairedA = claimA1.server;
     assert.equal(isServerOriginVerified(pairedA, originA1), true);
 
-    // 2. Edit Computer A's address to originA2 (same computer, alternate path)
-    const editedToA2 = updateSavedServerOrigin(storage, pairedA.id, originA2);
-    assert.equal(editedToA2.ok, true);
-    assert.equal(isServerOriginVerified(editedToA2.server, originA2), false);
-
-    const openA2 = await resolveVerifiedServerOpen(storage, {
+    // 2. Counterexample 1: Spoof server echoes identical targetHomeId/targetHostId on handshake
+    const openSpoof = await resolveVerifiedServerOpen(storage, {
       serverId: pairedA.id,
-      origin: originA2,
-      entry: `${originA2}/`,
+      origin: originSpoof,
+      entry: `${originSpoof}/`,
       label: pairedA.label,
       paired: true,
       targetHomeId: pairedA.targetHomeId,
       targetHostId: pairedA.targetHostId,
       grantId: pairedA.grantId,
-      getToken: (id) => tokenStore.get(id),
+      getToken,
     });
-    assert.equal(openA2.ok, true);
-    assert.equal(openA2.tokenAttached, true);
-    assert.equal(openA2.finalEntry, `${originA2}/#token=peer_token_secret_for_home_a_only`);
-    assert.equal(isServerOriginVerified(openA2.server, originA2), true);
+    assert.equal(openSpoof.ok, false);
+    assert.equal(openSpoof.reason, 'pairing_required');
+    assert.equal(isServerOriginVerified(openSpoof.server, originSpoof), false);
+    assert.equal(openSpoof.server.origin, originA1);
+    for (const reqInfo of requestsToSpoof) {
+      assert.equal(reqInfo.authorization, '');
+      assert.equal(reqInfo.url.includes('token='), false);
+    }
 
-    // 3. Edit Computer A's address to originB (different KAP home B)
-    const editedToB = updateSavedServerOrigin(storage, pairedA.id, originB);
-    assert.equal(editedToB.ok, true);
-    assert.equal(isServerOriginVerified(editedToB.server, originB), false);
+    // 3. Counterexample 2: Redirect server 302s handshake and pair/claim to real originA1
+    const redirectedHandshake = await probeOriginHandshake(originRedirect);
+    assert.equal(redirectedHandshake.ok, false);
 
+    const redirectedClaim = await claimPairingOrigin(storage, {
+      origin: originRedirect,
+      code: 'AAAA-2222',
+      platform: 'android',
+      saveToken,
+    });
+    assert.equal(redirectedClaim.ok, false);
+    assert.equal(redirectedClaim.reason, 'rejected');
+
+    const openRedirect = await resolveVerifiedServerOpen(storage, {
+      serverId: pairedA.id,
+      origin: originRedirect,
+      entry: `${originRedirect}/`,
+      label: pairedA.label,
+      paired: true,
+      targetHomeId: pairedA.targetHomeId,
+      targetHostId: pairedA.targetHostId,
+      grantId: pairedA.grantId,
+      getToken,
+    });
+    assert.equal(openRedirect.ok, false);
+    assert.equal(openRedirect.reason, 'unreachable');
+    assert.equal(isServerOriginVerified(openRedirect.server, originRedirect), false);
+    for (const reqInfo of requestsToRedirect) {
+      assert.equal(reqInfo.authorization, '');
+      assert.equal(reqInfo.url.includes('token='), false);
+    }
+
+    // 4. Counterexample 3: Different KAP home B returns identity_mismatch
     const openB = await resolveVerifiedServerOpen(storage, {
       serverId: pairedA.id,
       origin: originB,
@@ -344,29 +438,64 @@ await test('dual-KAP A/B address change opens alternate path of same home and wi
       targetHomeId: pairedA.targetHomeId,
       targetHostId: pairedA.targetHostId,
       grantId: pairedA.grantId,
-      getToken: (id) => tokenStore.get(id),
+      getToken,
     });
     assert.equal(openB.ok, false);
     assert.equal(openB.reason, 'identity_mismatch');
-
-    // Zero token was sent to Server B
     assert.equal(requestsToB.length, 1);
-    assert.equal(requestsToB[0].url, '/api/remote-connections/handshake');
     assert.equal(requestsToB[0].authorization, '');
     assert.equal(requestsToB[0].url.includes('token='), false);
 
-    // Saved Computer A and its verified address originA2 & trust are preserved unchanged
-    const savedAfterMismatch = readSavedServers(storage);
-    assert.equal(savedAfterMismatch.length, 1);
-    assert.equal(savedAfterMismatch[0].id, identityA.homeId);
-    assert.equal(savedAfterMismatch[0].paired, true);
-    assert.equal(savedAfterMismatch[0].grantId, 'grant-a-1');
-    assert.equal(savedAfterMismatch[0].origin, originA2);
-    assert.equal(savedAfterMismatch[0].origins.includes(originB), false);
-    assert.equal(storage.getItem(STORE_ORIGIN_KEY), originA2);
+    // Saved Computer A and its verified address originA1 & grant-a-1 are preserved untouched
+    const savedBeforeRePair = readSavedServers(storage);
+    assert.equal(savedBeforeRePair.length, 1);
+    assert.equal(savedBeforeRePair[0].origin, originA1);
+    assert.equal(savedBeforeRePair[0].grantId, 'grant-a-1');
+    assert.deepEqual(savedBeforeRePair[0].origins, [originA1]);
+
+    // 5. Positive: Changing address to originA2 with a new short code (AAAA-3333) issues its own grant & token
+    const openA2WithCode = await resolveVerifiedServerOpen(storage, {
+      serverId: pairedA.id,
+      origin: originA2,
+      entry: `${originA2}/`,
+      label: pairedA.label,
+      paired: true,
+      targetHomeId: pairedA.targetHomeId,
+      targetHostId: pairedA.targetHostId,
+      grantId: pairedA.grantId,
+      code: 'AAAA-3333',
+      platform: 'android',
+      saveToken,
+      getToken,
+    });
+    assert.equal(openA2WithCode.ok, true);
+    assert.equal(openA2WithCode.tokenAttached, true);
+    assert.equal(openA2WithCode.finalEntry, `${originA2}/#token=peer_token_secret_a2`);
+    assert.equal(isServerOriginVerified(openA2WithCode.server, originA2), true);
+    assert.equal(isServerOriginVerified(openA2WithCode.server, originA1), true);
+
+    // 6. Positive: Selecting the original saved address originA1 still opens smoothly with originA1's token
+    const switchToA1 = updateSavedServerOrigin(storage, pairedA.id, originA1);
+    assert.equal(switchToA1.ok, true);
+    const reopenA1 = await resolveVerifiedServerOpen(storage, {
+      serverId: pairedA.id,
+      origin: originA1,
+      entry: `${originA1}/`,
+      label: pairedA.label,
+      paired: true,
+      targetHomeId: pairedA.targetHomeId,
+      targetHostId: pairedA.targetHostId,
+      grantId: pairedA.grantId,
+      getToken,
+    });
+    assert.equal(reopenA1.ok, true);
+    assert.equal(reopenA1.tokenAttached, true);
+    assert.equal(reopenA1.finalEntry, `${originA1}/#token=peer_token_secret_a1`);
   } finally {
     serverA1.close();
     serverA2.close();
+    serverSpoof.close();
+    serverRedirect.close();
     serverB.close();
   }
 });

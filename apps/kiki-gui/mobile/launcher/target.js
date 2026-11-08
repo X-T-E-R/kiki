@@ -452,20 +452,24 @@ export function readSavedServers(storage = globalThis.localStorage) {
 
   if (legacyOrigin !== null) {
     const existingIndex = list.findIndex(
-      (item) => item.origin === legacyOrigin || item.origins.includes(legacyOrigin),
+      (item) =>
+        (!item.paired && (item.origin === legacyOrigin || item.origins.includes(legacyOrigin))) ||
+        (item.paired && isServerOriginVerified(item, legacyOrigin)),
     );
     if (existingIndex === -1) {
-      list.unshift(
-        sanitizeServerRecord({
-          id: `origin:${legacyOrigin}`,
-          label: defaultLabelForOrigin(legacyOrigin),
-          origin: legacyOrigin,
-          origins: [legacyOrigin],
-          verifiedOrigins: [],
-          paired: false,
-          updatedAt: Date.now(),
-        }),
-      );
+      if (!list.some((item) => item.paired)) {
+        list.unshift(
+          sanitizeServerRecord({
+            id: `origin:${legacyOrigin}`,
+            label: defaultLabelForOrigin(legacyOrigin),
+            origin: legacyOrigin,
+            origins: [legacyOrigin],
+            verifiedOrigins: [],
+            paired: false,
+            updatedAt: Date.now(),
+          }),
+        );
+      }
     } else if (existingIndex > 0) {
       const [matched] = list.splice(existingIndex, 1);
       matched.origin = legacyOrigin;
@@ -516,6 +520,9 @@ export function upsertSavedServer(storage, input) {
   const resolvedId = resolvedHomeId ?? (existing?.id && !existing.id.startsWith('origin:') ? existing.id : desiredId);
   const isPaired = Boolean(input?.paired || existing?.paired || resolvedHomeId);
   const markVerified = isPaired && input?.verified !== false;
+  if (isPaired && !markVerified && existing && !isServerOriginVerified(existing, origin)) {
+    return existing;
+  }
   const verifiedOrigins = markVerified ? [origin] : [];
   if (existing && Array.isArray(existing.verifiedOrigins)) {
     for (const prev of existing.verifiedOrigins) {
@@ -558,8 +565,8 @@ export function upsertSavedServer(storage, input) {
 }
 
 /**
- * Returns whether `rawOrOrigin` has been verified via pairing or handshake to
- * belong to the paired computer `server`.
+ * Returns whether `rawOrOrigin` has been verified via pairing to belong to
+ * the paired computer `server`.
  */
 export function isServerOriginVerified(server, rawOrOrigin) {
   if (!server || !server.paired || !server.targetHomeId) return false;
@@ -569,18 +576,35 @@ export function isServerOriginVerified(server, rawOrOrigin) {
 }
 
 /**
- * Updates the candidate network address (`origin`) of an existing saved computer
- * while keeping `verifiedOrigins` limited to identity-confirmed endpoints.
+ * Switches the active network address (`origin`) of an existing saved computer.
+ * For paired computers, only origins already verified via pairing can be selected;
+ * a new unpaired origin returns `reason: 'pairing_required'` without overwriting
+ * the saved computer.
  */
 export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
   const target = readTarget(rawNewOrigin);
   if (!target.ok) return { ok: false, reason: target.reason };
   const current = readSavedServers(storage);
-  const index = current.findIndex((item) => item.id === serverId || item.origin === serverId);
+  const index = current.findIndex(
+    (item) => item.id === serverId || item.targetHomeId === serverId || item.origin === serverId,
+  );
   if (index === -1) return { ok: false, reason: 'not_found' };
   const existing = current[index];
   const nextOrigin = target.origin;
+
+  if ((existing.paired || existing.targetHomeId) && !isServerOriginVerified(existing, nextOrigin)) {
+    return {
+      ok: false,
+      reason: 'pairing_required',
+      origin: nextOrigin,
+      server: existing,
+    };
+  }
+
   const nextOrigins = [nextOrigin, ...existing.origins.filter((o) => o !== nextOrigin)].slice(0, 6);
+  const nextVerified = existing.verifiedOrigins.includes(nextOrigin)
+    ? [nextOrigin, ...existing.verifiedOrigins.filter((o) => o !== nextOrigin)].slice(0, 6)
+    : existing.verifiedOrigins;
   const nextId = existing.id.startsWith('origin:') && !existing.paired ? `origin:${nextOrigin}` : existing.id;
   const nextLabel =
     existing.label === defaultLabelForOrigin(existing.origin)
@@ -593,7 +617,7 @@ export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
     label: nextLabel,
     origin: nextOrigin,
     origins: nextOrigins,
-    verifiedOrigins: existing.verifiedOrigins,
+    verifiedOrigins: nextVerified,
     updatedAt: Date.now(),
   });
   const next = [updated, ...current.filter((_, idx) => idx !== index)];
@@ -601,22 +625,54 @@ export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
   return { ok: true, server: updated };
 }
 
+function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reason, keepVerified = false) {
+  const existing = current[index];
+  const verifiedOrigins = keepVerified
+    ? existing.verifiedOrigins
+    : existing.verifiedOrigins.filter((o) => o !== candidateOrigin);
+  const fallbackOrigin =
+    verifiedOrigins[0] ?? existing.origins.find((o) => o !== candidateOrigin) ?? existing.origin;
+  const nextOrigins = existing.origins.filter((o) => o !== candidateOrigin || verifiedOrigins.includes(o));
+  if (nextOrigins.length === 0) nextOrigins.push(fallbackOrigin);
+  const restoredLabel =
+    existing.label === defaultLabelForOrigin(candidateOrigin)
+      ? defaultLabelForOrigin(fallbackOrigin)
+      : existing.label;
+
+  const restored = sanitizeServerRecord({
+    ...existing,
+    label: restoredLabel,
+    origin: fallbackOrigin,
+    origins: nextOrigins,
+    verifiedOrigins: verifiedOrigins.length > 0 ? verifiedOrigins : [fallbackOrigin],
+    updatedAt: existing.updatedAt || Date.now(),
+  });
+  const next = current.map((item, idx) => (idx === index ? restored : item));
+  writeServers(storage, next);
+  return { ok: false, reason, server: restored };
+}
+
 /**
- * Verifies a candidate `rawOrigin` against a handshake probe result (`{ ok, targetHomeId, targetHostId }`).
- * Only promotes `rawOrigin` into `verifiedOrigins` when `targetHomeId` (and `targetHostId` when known)
- * matches the paired computer; on identity mismatch, rolls back the unverified address and preserves
- * the paired computer's previous verified address and trust.
+ * Checks a candidate `rawOrigin` against a handshake probe result (`{ ok, targetHomeId, targetHostId }`).
+ * Because `/api/remote-connections/handshake` is unauthenticated public metadata, a handshake probe
+ * never promotes an unpaired origin into `verifiedOrigins`; new origins must be paired with a code
+ * (`reason: 'pairing_required'`), while mismatched homes are rejected (`reason: 'identity_mismatch'`).
  */
 export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake) {
   const target = readTarget(rawOrigin);
   if (!target.ok) return { ok: false, reason: target.reason };
   const current = readSavedServers(storage);
-  const index = current.findIndex((item) => item.id === serverId || item.targetHomeId === serverId);
+  const index = current.findIndex(
+    (item) => item.id === serverId || item.targetHomeId === serverId || item.origin === serverId,
+  );
   if (index === -1) return { ok: false, reason: 'not_found' };
   const existing = current[index];
   const candidateOrigin = target.origin;
 
   if (!handshake?.ok) {
+    if (existing.origin === candidateOrigin && !isServerOriginVerified(existing, candidateOrigin)) {
+      return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'unreachable', true);
+    }
     return { ok: false, reason: 'unreachable', server: existing };
   }
 
@@ -630,51 +686,37 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
       : undefined;
 
   const homeMatches = Boolean(existing.targetHomeId && probeHomeId === existing.targetHomeId);
-  const hostMatches = !existing.targetHostId || !probeHostId || probeHostId === existing.targetHostId;
+  const hostMatches = Boolean(
+    probeHomeId && (!existing.targetHostId || (probeHostId && probeHostId === existing.targetHostId)),
+  );
 
-  if (homeMatches && hostMatches) {
-    const verifiedOrigins = [
-      candidateOrigin,
-      ...existing.verifiedOrigins.filter((o) => o !== candidateOrigin),
-    ].slice(0, 6);
-    const origins = [
-      candidateOrigin,
-      ...existing.origins.filter((o) => o !== candidateOrigin),
-    ].slice(0, 6);
-    const updated = sanitizeServerRecord({
-      ...existing,
-      origin: candidateOrigin,
-      origins,
-      verifiedOrigins,
-      targetHostId: existing.targetHostId ?? probeHostId,
-      updatedAt: Date.now(),
-    });
-    const next = [updated, ...current.filter((_, idx) => idx !== index)];
-    writeServers(storage, next);
-    return { ok: true, verified: true, server: updated };
+  if (!homeMatches || !hostMatches) {
+    return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'identity_mismatch', false);
   }
 
-  const verifiedOrigins = existing.verifiedOrigins.filter((o) => o !== candidateOrigin);
-  const fallbackOrigin =
-    verifiedOrigins[0] ?? existing.origins.find((o) => o !== candidateOrigin) ?? existing.origin;
-  const nextOrigins = existing.origins.filter((o) => o !== candidateOrigin);
-  if (nextOrigins.length === 0) nextOrigins.push(fallbackOrigin);
-  const restoredLabel =
-    existing.label === defaultLabelForOrigin(candidateOrigin)
-      ? defaultLabelForOrigin(fallbackOrigin)
-      : existing.label;
+  if (!isServerOriginVerified(existing, candidateOrigin)) {
+    return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'pairing_required', true);
+  }
 
-  const restored = sanitizeServerRecord({
+  const verifiedOrigins = [
+    candidateOrigin,
+    ...existing.verifiedOrigins.filter((o) => o !== candidateOrigin),
+  ].slice(0, 6);
+  const origins = [
+    candidateOrigin,
+    ...existing.origins.filter((o) => o !== candidateOrigin),
+  ].slice(0, 6);
+  const updated = sanitizeServerRecord({
     ...existing,
-    label: restoredLabel,
-    origin: fallbackOrigin,
-    origins: nextOrigins,
-    verifiedOrigins: verifiedOrigins.length > 0 ? verifiedOrigins : [fallbackOrigin],
+    origin: candidateOrigin,
+    origins,
+    verifiedOrigins,
+    targetHostId: existing.targetHostId ?? probeHostId,
     updatedAt: Date.now(),
   });
-  const next = current.map((item, idx) => (idx === index ? restored : item));
+  const next = [updated, ...current.filter((_, idx) => idx !== index)];
   writeServers(storage, next);
-  return { ok: false, reason: 'identity_mismatch', server: restored };
+  return { ok: true, verified: true, server: updated };
 }
 
 /** Removes a saved computer and updates `kiki.shell.origin`. */
@@ -685,10 +727,24 @@ export function removeSavedServer(storage, serverId) {
   return next;
 }
 
+function isSameOriginResponse(res, expectedOrigin) {
+  if (!res) return false;
+  if (res.type === 'opaqueredirect' || res.redirected === true) return false;
+  if (typeof res.status === 'number' && res.status >= 300 && res.status < 400) return false;
+  if (typeof res.url === 'string' && res.url !== '') {
+    try {
+      if (new URL(res.url).origin !== new URL(expectedOrigin).origin) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Probes a Kiki server's zero-token handshake (`/api/remote-connections/handshake`)
- * with fallback to `/api/meta` for unauthenticated reachability.
- * Never attaches any bearer token or credentials.
+ * with fallback to `/api/meta` for unauthenticated reachability and hints.
+ * Never follows redirects, never mutates saved computers, and never attaches credentials.
  */
 export async function probeOriginHandshake(origin, options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -699,8 +755,12 @@ export async function probeOriginHandshake(origin, options = {}) {
     const handshakeRes = await fetchImpl(`${origin}/api/remote-connections/handshake`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
+      redirect: 'manual',
       signal: controller.signal,
     });
+    if (!isSameOriginResponse(handshakeRes, origin)) {
+      return { ok: false };
+    }
     if (handshakeRes.ok) {
       const payload = await handshakeRes.json().catch(() => null);
       const data = payload?.data;
@@ -726,9 +786,16 @@ export async function probeOriginHandshake(origin, options = {}) {
     }
     const metaRes = await fetchImpl(`${origin}/api/meta`, {
       method: 'GET',
+      redirect: 'manual',
       signal: controller.signal,
     });
-    return { ok: metaRes.status > 0 };
+    if (!isSameOriginResponse(metaRes, origin)) {
+      return { ok: false };
+    }
+    const status = metaRes.status;
+    return {
+      ok: (status >= 200 && status < 300) || status === 401 || status === 403,
+    };
   } catch {
     return { ok: false };
   } finally {
@@ -737,50 +804,239 @@ export async function probeOriginHandshake(origin, options = {}) {
 }
 
 /**
- * Verifies a paired computer's target identity at `input.origin` before any
- * bearer token is attached or the address is trusted.
+ * Redeems a short-lived pairing code or `kiki://pair` URI at `input.endpoint`
+ * (`POST /api/remote-connections/pair/claim`) without following redirects, stores
+ * the issued peer token, and records the endpoint in the computer's `verifiedOrigins`.
  */
-export async function resolveVerifiedServerOpen(storage, input) {
-  const origin = input.origin;
-  const entry = input.entry ?? `${origin}/`;
-  const isPairedTarget = Boolean(input.paired || input.targetHomeId);
-  const targetServerId = input.serverId ?? input.targetHomeId;
-  const probeFn =
-    input.probe ??
-    ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: input.fetchImpl }));
+export async function claimPairingOrigin(storage, input) {
+  let rawEndpoint = input?.endpoint ?? input?.origin ?? '';
+  let rawCode = input?.code ?? '';
+  if (/^kiki:\/\//i.test(String(rawEndpoint).trim())) {
+    const parsedUri = parsePairingUri(rawEndpoint);
+    if (!parsedUri) return { ok: false, reason: 'invalid_code' };
+    rawEndpoint = parsedUri.endpoint;
+    if (!rawCode) rawCode = parsedUri.code;
+  }
+  const normalizedEndpoint = normalizePairingEndpoint(rawEndpoint);
+  const target = readTarget(normalizedEndpoint ?? rawEndpoint);
+  const code = normalizePairingCode(rawCode);
+  if (!target.ok) return { ok: false, reason: target.reason };
+  if (!code) return { ok: false, reason: 'invalid_code' };
 
-  if (isPairedTarget && targetServerId && input.verified !== true) {
-    const probe = await probeFn(origin);
-    if (!probe.ok) {
-      return { ok: false, reason: 'unreachable' };
+  const origin = target.origin;
+  const endpointBase = normalizedEndpoint ?? origin;
+  const identity = input?.identity ?? readDeviceIdentity(storage, input?.platform);
+
+  if (typeof input?.nativeClaim === 'function') {
+    const res = await input.nativeClaim({
+      endpoint: endpointBase,
+      origin,
+      code,
+      homeId: identity.homeId,
+      hostId: identity.hostId,
+      sourceLabel: identity.label,
+    });
+    if (res?.ok && res.targetHomeId) {
+      const server = upsertSavedServer(storage, {
+        id: res.serverId ?? res.targetHomeId,
+        origin,
+        label: res.targetLabel,
+        paired: true,
+        targetHomeId: res.targetHomeId,
+        targetHostId: res.targetHostId,
+        grantId: res.grantId,
+        verified: true,
+      });
+      return {
+        ok: true,
+        origin,
+        serverId: server?.id ?? res.serverId ?? res.targetHomeId,
+        targetHomeId: res.targetHomeId,
+        targetHostId: res.targetHostId,
+        targetLabel: res.targetLabel,
+        grantId: res.grantId,
+        server,
+      };
     }
-    const verified = verifySavedServerOrigin(storage, targetServerId, origin, probe);
-    if (!verified.ok) {
+    return {
+      ok: false,
+      reason: res?.reason === 'rejected' ? 'rejected' : 'unreachable',
+    };
+  }
+
+  const fetchImpl = input?.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = input?.timeoutMs ?? 6000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${endpointBase}/api/remote-connections/pair/claim`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      redirect: 'manual',
+      body: JSON.stringify({
+        code,
+        source: {
+          homeId: identity.homeId,
+          hostId: identity.hostId,
+          protocol: 1,
+        },
+        sourceLabel: identity.label,
+        requestBridge: false,
+      }),
+      signal: controller.signal,
+    });
+    if (!isSameOriginResponse(response, origin)) {
+      return { ok: false, reason: 'rejected' };
+    }
+    if (!response.ok) {
       return {
         ok: false,
-        reason: verified.reason,
-        server: verified.server,
+        reason: response.status >= 400 && response.status < 500 ? 'rejected' : 'unreachable',
+      };
+    }
+    const payload = await response.json().catch(() => null);
+    const data = payload?.data;
+    if (
+      !data ||
+      typeof data.peerToken !== 'string' ||
+      data.peerToken === '' ||
+      typeof data.target?.homeId !== 'string' ||
+      data.target.homeId === ''
+    ) {
+      return { ok: false, reason: 'rejected' };
+    }
+    if (typeof input?.saveToken === 'function') {
+      await input.saveToken(data.target.homeId, data.peerToken, origin);
+    }
+    const server = upsertSavedServer(storage, {
+      id: data.target.homeId,
+      origin,
+      label: data.targetLabel,
+      paired: true,
+      targetHomeId: data.target.homeId,
+      targetHostId: data.target.hostId,
+      grantId: data.grantId,
+      verified: true,
+    });
+    return {
+      ok: true,
+      origin,
+      serverId: server?.id ?? data.target.homeId,
+      targetHomeId: data.target.homeId,
+      targetHostId: data.target.hostId,
+      targetLabel: data.targetLabel,
+      grantId: data.grantId,
+      revision: data.revision,
+      peerToken: data.peerToken,
+      server,
+    };
+  } catch {
+    return { ok: false, reason: 'unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Opens `input.origin` only when it has established pairing trust (`verifiedOrigins`)
+ * or redeems a pairing code (`input.code`) first. Never promotes an unpaired origin
+ * via public handshake metadata, never follows cross-origin redirects, and never
+ * overwrites an existing paired computer before pairing succeeds.
+ */
+export async function resolveVerifiedServerOpen(storage, input) {
+  const parsedTarget = readTarget(input?.origin ?? '');
+  if (!parsedTarget.ok) {
+    return { ok: false, reason: parsedTarget.reason };
+  }
+  const origin = parsedTarget.origin;
+  const entry = input.entry ?? `${origin}/`;
+  let current = readSavedServers(storage);
+  const requestedServerId = input.serverId ?? input.targetHomeId;
+  let existing =
+    current.find(
+      (item) =>
+        (requestedServerId && (item.id === requestedServerId || item.targetHomeId === requestedServerId)) ||
+        (input.targetHomeId && item.targetHomeId === input.targetHomeId) ||
+        isServerOriginVerified(item, origin) ||
+        (!item.paired && !item.targetHomeId && (item.origin === origin || item.origins.includes(origin))),
+    ) ?? null;
+
+  let claimedToken;
+  if (typeof input.code === 'string' && input.code.trim() !== '') {
+    const claim = await claimPairingOrigin(storage, {
+      endpoint: input.endpoint ?? origin,
+      origin,
+      code: input.code,
+      platform: input.platform,
+      identity: input.identity,
+      fetchImpl: input.fetchImpl,
+      timeoutMs: input.timeoutMs,
+      saveToken: input.saveToken,
+      nativeClaim: input.nativeClaim,
+    });
+    if (!claim.ok) {
+      return {
+        ok: false,
+        reason: claim.reason,
+        server: existing ?? undefined,
+      };
+    }
+    claimedToken = claim.peerToken;
+    current = readSavedServers(storage);
+    existing =
+      current.find((item) => item.id === claim.serverId || item.targetHomeId === claim.targetHomeId) ??
+      claim.server ??
+      null;
+  }
+
+  const isPairedTarget = Boolean(
+    input.paired || input.targetHomeId || existing?.paired || existing?.targetHomeId,
+  );
+  const targetServerId = existing?.id ?? requestedServerId;
+
+  if (isPairedTarget) {
+    if (!existing || !isServerOriginVerified(existing, origin)) {
+      const probeFn =
+        input.probe ??
+        ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: input.fetchImpl }));
+      const probe = await probeFn(origin);
+      if (existing && targetServerId) {
+        const verified = verifySavedServerOrigin(storage, targetServerId, origin, probe);
+        return {
+          ok: false,
+          reason: verified.reason,
+          server: verified.server,
+        };
+      }
+      return {
+        ok: false,
+        reason: probe.ok ? 'pairing_required' : 'unreachable',
+        server: existing ?? undefined,
       };
     }
   }
 
   const saved = upsertSavedServer(storage, {
-    id: input.serverId,
+    id: existing?.id ?? input.serverId,
     origin,
-    label: input.label,
-    paired: input.paired,
-    targetHomeId: input.targetHomeId,
-    targetHostId: input.targetHostId,
-    grantId: input.grantId,
+    label: existing?.label ?? input.label,
+    paired: isPairedTarget,
+    targetHomeId: existing?.targetHomeId ?? input.targetHomeId,
+    targetHostId: existing?.targetHostId ?? input.targetHostId,
+    grantId: existing?.grantId ?? input.grantId,
     verified: isPairedTarget,
   });
-  const serverId = saved?.id ?? input.serverId;
+  const serverId = saved?.id ?? targetServerId;
 
   let finalEntry = entry;
   const sessionToken =
-    isPairedTarget && serverId && isServerOriginVerified(saved, origin) && typeof input.getToken === 'function'
-      ? await input.getToken(serverId)
-      : undefined;
+    claimedToken ??
+    (isPairedTarget && serverId && isServerOriginVerified(saved, origin) && typeof input.getToken === 'function'
+      ? await input.getToken(serverId, origin)
+      : undefined);
   if (sessionToken && !/(?:^#|&)token=/.test(finalEntry) && !/(?:^#|&)access=/.test(finalEntry)) {
     finalEntry = `${origin}/#token=${encodeURIComponent(sessionToken)}`;
   }

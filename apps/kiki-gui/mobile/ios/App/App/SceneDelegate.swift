@@ -45,8 +45,8 @@ class KikiBridgeViewController: CAPBridgeViewController {
 /// Same contract as the Android `KikiShellPlugin`: the bundled launcher pairs or
 /// opens one Kiki server; that origin stays inside the app, every other site goes
 /// to Safari (Capacitor's default policy), per-computer bearer tokens live in the
-/// iOS Keychain, and any paired origin is verified via the zero-token handshake
-/// before credentials are attached.
+/// iOS Keychain, and only origins established via the pairing claim receive
+/// credentials.
 @objc(KikiShellPlugin)
 public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "KikiShellPlugin"
@@ -59,6 +59,25 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "claimPair", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "forgetServer", returnType: CAPPluginReturnPromise)
     ]
+
+    private final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
+    }
+
+    private static let noRedirectSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5.0
+        config.timeoutIntervalForResource = 6.0
+        return URLSession(configuration: config, delegate: NoRedirectSessionDelegate(), delegateQueue: nil)
+    }()
 
     private static let trustedOriginKey = "kiki.shell.trustedOrigin"
     private static let tokenService = "ai.easyagent.kiki.peerToken"
@@ -105,16 +124,15 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["ok": false])
             return
         }
-        Self.fetchHandshake(origin: normalized) { ok, homeId, hostId, label in
+        Self.fetchHandshake(origin: normalized) { ok, redirected, homeId, hostId, label in
+            if redirected {
+                call.resolve(["ok": false])
+                return
+            }
             if ok {
                 var out: [String: Any] = ["ok": true]
                 if let label, !label.isEmpty { out["targetLabel"] = label }
-                if let homeId, !homeId.isEmpty {
-                    out["targetHomeId"] = homeId
-                    if Self.hasStoredToken(for: homeId) && Self.matchesStoredHostId(serverId: homeId, candidateHostId: hostId) {
-                        Self.recordVerifiedOrigin(origin: normalized, for: homeId, hostId: hostId)
-                    }
-                }
+                if let homeId, !homeId.isEmpty { out["targetHomeId"] = homeId }
                 if let hostId, !hostId.isEmpty { out["targetHostId"] = hostId }
                 call.resolve(out)
                 return
@@ -125,8 +143,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             var metaReq = URLRequest(url: metaURL)
             metaReq.timeoutInterval = 3.5
-            URLSession.shared.dataTask(with: metaReq) { _, metaRes, _ in
-                let metaOk = (metaRes as? HTTPURLResponse)?.statusCode ?? 0 > 0
+            Self.noRedirectSession.dataTask(with: metaReq) { _, metaRes, _ in
+                let status = (metaRes as? HTTPURLResponse)?.statusCode ?? 0
+                let metaOk = (200..<300).contains(status) || status == 401 || status == 403
                 call.resolve(["ok": metaOk])
             }.resume()
         }
@@ -164,9 +183,17 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         req.httpBody = payload
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: req) { data, response, _ in
+        Self.noRedirectSession.dataTask(with: req) { data, response, _ in
             guard let http = response as? HTTPURLResponse else {
                 call.resolve(["ok": false, "reason": "unreachable"])
+                return
+            }
+            if (300..<400).contains(http.statusCode) {
+                call.resolve(["ok": false, "reason": "rejected"])
+                return
+            }
+            if let finalURL = http.url, Self.origin(of: finalURL) != base {
+                call.resolve(["ok": false, "reason": "rejected"])
                 return
             }
             guard (200..<300).contains(http.statusCode),
@@ -181,7 +208,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             let targetHostId = (target["hostId"] as? String) ?? ""
-            Self.savePeerToken(peerToken, for: targetHomeId)
+            guard Self.savePeerToken(peerToken, for: targetHomeId, origin: base) else {
+                call.resolve(["ok": false, "reason": "unreachable"])
+                return
+            }
             Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId)
             call.resolve([
                 "ok": true,
@@ -204,7 +234,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let serverId = call.getString("serverId")
-        guard let serverId, !serverId.isEmpty, Self.hasStoredToken(for: serverId) else {
+        guard let serverId, !serverId.isEmpty else {
             UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
             DispatchQueue.main.async { [weak self] in
                 self?.webView?.load(URLRequest(url: entryURL))
@@ -212,31 +242,23 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             return
         }
-        Self.fetchHandshake(origin: origin) { [weak self] ok, homeId, hostId, _ in
-            guard ok else {
-                call.resolve(["ok": false, "reason": "unreachable"])
-                return
-            }
-            guard homeId == serverId, Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId) else {
-                Self.removeVerifiedOrigin(origin: origin, for: serverId)
-                call.resolve([
-                    "ok": false,
-                    "reason": "identity_mismatch",
-                    "targetHomeId": homeId ?? ""
-                ])
-                return
-            }
-            Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId)
-            let targetString = Self.attachStoredTokenIfNeeded(origin: origin, entry: entry, serverId: serverId)
-            guard let finalURL = URL(string: targetString) else {
-                call.reject("invalid_origin")
-                return
-            }
-            UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
-            DispatchQueue.main.async {
-                self?.webView?.load(URLRequest(url: finalURL))
-                call.resolve(["ok": true, "origin": origin])
-            }
+        guard Self.isOriginVerified(origin: origin, for: serverId),
+              Self.hasStoredToken(for: serverId, origin: origin) else {
+            call.resolve([
+                "ok": false,
+                "reason": "pairing_required"
+            ])
+            return
+        }
+        let targetString = Self.attachStoredTokenIfNeeded(origin: origin, entry: entry, serverId: serverId)
+        guard let finalURL = URL(string: targetString) else {
+            call.reject("invalid_origin")
+            return
+        }
+        UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.load(URLRequest(url: finalURL))
+            call.resolve(["ok": true, "origin": origin])
         }
     }
 
@@ -253,7 +275,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         if entry.contains("#access=") || entry.contains("&access=") || entry.contains("token=") {
             return entry
         }
-        guard let token = readPeerToken(for: serverId), !token.isEmpty else {
+        guard let token = readPeerToken(for: serverId, origin: origin), !token.isEmpty else {
             return entry
         }
         let encoded = token.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? token
@@ -262,18 +284,30 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private static func fetchHandshake(
         origin: String,
-        completion: @escaping (_ ok: Bool, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?) -> Void
+        completion: @escaping (_ ok: Bool, _ redirected: Bool, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?) -> Void
     ) {
         guard let handshakeURL = URL(string: "\(origin)/api/remote-connections/handshake") else {
-            completion(false, nil, nil, nil)
+            completion(false, false, nil, nil, nil)
             return
         }
         var req = URLRequest(url: handshakeURL)
         req.timeoutInterval = 3.5
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: req) { data, response, _ in
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                completion(false, nil, nil, nil)
+        noRedirectSession.dataTask(with: req) { data, response, _ in
+            guard let http = response as? HTTPURLResponse else {
+                completion(false, false, nil, nil, nil)
+                return
+            }
+            if (300..<400).contains(http.statusCode) {
+                completion(false, true, nil, nil, nil)
+                return
+            }
+            if let finalURL = http.url, Self.origin(of: finalURL) != origin {
+                completion(false, true, nil, nil, nil)
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(false, false, nil, nil, nil)
                 return
             }
             var label: String?
@@ -287,59 +321,104 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 homeId = identityObj?["homeId"] as? String
                 hostId = identityObj?["hostId"] as? String
             }
-            completion(true, homeId, hostId, label)
+            completion(true, false, homeId, hostId, label)
         }.resume()
     }
 
-    private static func savePeerToken(_ token: String, for serverId: String) {
-        guard !serverId.isEmpty, let data = token.data(using: .utf8) else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: tokenService,
-            kSecAttrAccount as String: serverId
-        ]
-        SecItemDelete(query as CFDictionary)
-        var attributes = query
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(attributes as CFDictionary, nil)
-        UserDefaults.standard.removeObject(forKey: legacyTokenPrefix + serverId)
+    private static func scopedTokenAccount(serverId: String, origin: String?) -> String {
+        guard let origin, !origin.isEmpty else { return serverId }
+        return "\(serverId)@\(origin)"
     }
 
-    private static func readPeerToken(for serverId: String) -> String? {
-        guard !serverId.isEmpty else { return nil }
+    private static func writeKeychainToken(_ token: String, account: String) -> Bool {
+        guard !account.isEmpty, let data = token.data(using: .utf8) else { return false }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: tokenService,
-            kSecAttrAccount as String: serverId,
+            kSecAttrAccount as String: account
+        ]
+        let updateAttributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        var status = SecItemUpdate(query as CFDictionary, updateAttributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addAttributes = query
+            addAttributes.merge(updateAttributes) { _, new in new }
+            status = SecItemAdd(addAttributes as CFDictionary, nil)
+        } else if status != errSecSuccess {
+            SecItemDelete(query as CFDictionary)
+            var addAttributes = query
+            addAttributes.merge(updateAttributes) { _, new in new }
+            status = SecItemAdd(addAttributes as CFDictionary, nil)
+        }
+        return status == errSecSuccess
+    }
+
+    private static func readKeychainToken(account: String) -> String? {
+        guard !account.isEmpty else { return nil }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tokenService,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecSuccess, let data = item as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty {
+        if status == errSecSuccess,
+           let data = item as? Data,
+           let token = String(data: data, encoding: .utf8),
+           !token.isEmpty {
+            return token
+        }
+        return nil
+    }
+
+    private static func deleteKeychainToken(account: String) {
+        guard !account.isEmpty else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tokenService,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    @discardableResult
+    private static func savePeerToken(_ token: String, for serverId: String, origin: String? = nil) -> Bool {
+        guard !serverId.isEmpty else { return false }
+        let primarySaved = writeKeychainToken(token, account: serverId)
+        if let origin, !origin.isEmpty {
+            _ = writeKeychainToken(token, account: scopedTokenAccount(serverId: serverId, origin: origin))
+        }
+        if primarySaved {
+            UserDefaults.standard.removeObject(forKey: legacyTokenPrefix + serverId)
+        }
+        return primarySaved
+    }
+
+    private static func readPeerToken(for serverId: String, origin: String? = nil) -> String? {
+        guard !serverId.isEmpty else { return nil }
+        if let origin, !origin.isEmpty {
+            let scoped = scopedTokenAccount(serverId: serverId, origin: origin)
+            if let scopedToken = readKeychainToken(account: scoped) {
+                return scopedToken
+            }
+        }
+        if let token = readKeychainToken(account: serverId) {
             return token
         }
         if let legacy = UserDefaults.standard.string(forKey: legacyTokenPrefix + serverId), !legacy.isEmpty {
-            savePeerToken(legacy, for: serverId)
+            _ = savePeerToken(legacy, for: serverId, origin: origin)
             return legacy
         }
         return nil
     }
 
-    private static func hasStoredToken(for serverId: String) -> Bool {
-        guard let token = readPeerToken(for: serverId) else { return false }
+    private static func hasStoredToken(for serverId: String, origin: String? = nil) -> Bool {
+        guard let token = readPeerToken(for: serverId, origin: origin) else { return false }
         return !token.isEmpty
-    }
-
-    private static func matchesStoredHostId(serverId: String, candidateHostId: String?) -> Bool {
-        guard let stored = UserDefaults.standard.string(forKey: hostIdPrefix + serverId), !stored.isEmpty else {
-            return true
-        }
-        guard let candidateHostId, !candidateHostId.isEmpty else {
-            return true
-        }
-        return stored == candidateHostId
     }
 
     private static func isOriginVerified(origin: String, for serverId: String) -> Bool {
@@ -359,26 +438,18 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    private static func removeVerifiedOrigin(origin: String, for serverId: String) {
-        guard !serverId.isEmpty, !origin.isEmpty else { return }
-        var list = UserDefaults.standard.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
-        if let idx = list.firstIndex(of: origin) {
-            list.remove(at: idx)
-            UserDefaults.standard.set(list, forKey: verifiedOriginsPrefix + serverId)
-        }
-    }
-
     private static func forgetServerData(serverId: String?, origin: String?) {
         let defaults = UserDefaults.standard
         let trusted = defaults.string(forKey: trustedOriginKey)
         if let serverId, !serverId.isEmpty {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: tokenService,
-                kSecAttrAccount as String: serverId
-            ]
-            SecItemDelete(query as CFDictionary)
             let verified = defaults.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
+            for vOrigin in verified {
+                deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: vOrigin))
+            }
+            if let origin, !origin.isEmpty {
+                deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: origin))
+            }
+            deleteKeychainToken(account: serverId)
             if let trusted, verified.contains(trusted) {
                 defaults.removeObject(forKey: trustedOriginKey)
             }

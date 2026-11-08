@@ -67,12 +67,14 @@ public class KikiShellPlugin extends Plugin {
 
     private static final class HandshakeResult {
         final boolean ok;
+        final boolean redirected;
         final String targetHomeId;
         final String targetHostId;
         final String targetLabel;
 
-        HandshakeResult(boolean ok, String targetHomeId, String targetHostId, String targetLabel) {
+        HandshakeResult(boolean ok, boolean redirected, String targetHomeId, String targetHostId, String targetLabel) {
             this.ok = ok;
+            this.redirected = redirected;
             this.targetHomeId = targetHomeId;
             this.targetHostId = targetHostId;
             this.targetLabel = targetLabel;
@@ -158,6 +160,11 @@ public class KikiShellPlugin extends Plugin {
         new Thread(() -> {
             JSObject result = new JSObject();
             HandshakeResult hs = fetchHandshake(normalizedOrigin);
+            if (hs.redirected) {
+                result.put("ok", false);
+                call.resolve(result);
+                return;
+            }
             if (hs.ok) {
                 result.put("ok", true);
                 if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
@@ -165,9 +172,6 @@ public class KikiShellPlugin extends Plugin {
                 }
                 if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
                     result.put("targetHomeId", hs.targetHomeId);
-                    if (hasStoredToken(hs.targetHomeId) && matchesStoredHostId(hs.targetHomeId, hs.targetHostId)) {
-                        recordVerifiedOrigin(hs.targetHomeId, normalizedOrigin, hs.targetHostId);
-                    }
                 }
                 if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
                     result.put("targetHostId", hs.targetHostId);
@@ -180,11 +184,12 @@ public class KikiShellPlugin extends Plugin {
             try {
                 URL metaUrl = new URL(normalizedOrigin + "/api/meta");
                 metaConn = (HttpURLConnection) metaUrl.openConnection();
+                metaConn.setInstanceFollowRedirects(false);
                 metaConn.setRequestMethod("GET");
                 metaConn.setConnectTimeout(3500);
                 metaConn.setReadTimeout(3500);
                 int status = metaConn.getResponseCode();
-                result.put("ok", status > 0);
+                result.put("ok", (status >= 200 && status < 300) || status == 401 || status == 403);
             } catch (Exception e) {
                 result.put("ok", false);
             } finally {
@@ -228,6 +233,7 @@ public class KikiShellPlugin extends Plugin {
                 byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
                 URL url = new URL(base + "/api/remote-connections/pair/claim");
                 conn = (HttpURLConnection) url.openConnection();
+                conn.setInstanceFollowRedirects(false);
                 conn.setRequestMethod("POST");
                 conn.setConnectTimeout(5000);
                 conn.setReadTimeout(5000);
@@ -239,6 +245,12 @@ public class KikiShellPlugin extends Plugin {
                 }
 
                 int status = conn.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    result.put("ok", false);
+                    result.put("reason", "rejected");
+                    call.resolve(result);
+                    return;
+                }
                 if (status < 200 || status >= 300) {
                     result.put("ok", false);
                     result.put("reason", (status >= 400 && status < 500) ? "rejected" : "unreachable");
@@ -259,7 +271,7 @@ public class KikiShellPlugin extends Plugin {
                     return;
                 }
 
-                storePeerToken(targetHomeId, peerToken);
+                storePeerToken(targetHomeId, base, peerToken);
                 recordVerifiedOrigin(targetHomeId, base, targetHostId);
 
                 result.put("ok", true);
@@ -291,7 +303,7 @@ public class KikiShellPlugin extends Plugin {
             call.reject("invalid_origin");
             return;
         }
-        if (serverId == null || serverId.isEmpty() || !hasStoredToken(serverId)) {
+        if (serverId == null || serverId.isEmpty()) {
             prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
             getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(entry));
             JSObject result = new JSObject();
@@ -300,35 +312,20 @@ public class KikiShellPlugin extends Plugin {
             call.resolve(result);
             return;
         }
-        new Thread(() -> {
-            HandshakeResult hs = fetchHandshake(origin);
-            if (!hs.ok) {
-                JSObject failed = new JSObject();
-                failed.put("ok", false);
-                failed.put("reason", "unreachable");
-                call.resolve(failed);
-                return;
-            }
-            if (!serverId.equals(hs.targetHomeId) || !matchesStoredHostId(serverId, hs.targetHostId)) {
-                removeVerifiedOrigin(serverId, origin);
-                JSObject mismatch = new JSObject();
-                mismatch.put("ok", false);
-                mismatch.put("reason", "identity_mismatch");
-                if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
-                    mismatch.put("targetHomeId", hs.targetHomeId);
-                }
-                call.resolve(mismatch);
-                return;
-            }
-            recordVerifiedOrigin(serverId, origin, hs.targetHostId);
-            prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
-            String targetUrl = attachStoredTokenIfNeeded(origin, entry, serverId);
-            getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(targetUrl));
-            JSObject result = new JSObject();
-            result.put("ok", true);
-            result.put("origin", origin);
-            call.resolve(result);
-        }).start();
+        if (!isOriginVerified(serverId, origin) || !hasStoredToken(serverId, origin)) {
+            JSObject untrusted = new JSObject();
+            untrusted.put("ok", false);
+            untrusted.put("reason", "pairing_required");
+            call.resolve(untrusted);
+            return;
+        }
+        prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
+        String targetUrl = attachStoredTokenIfNeeded(origin, entry, serverId);
+        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(targetUrl));
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        result.put("origin", origin);
+        call.resolve(result);
     }
 
     @PluginMethod
@@ -347,7 +344,7 @@ public class KikiShellPlugin extends Plugin {
         if (entry.contains("#access=") || entry.contains("&access=") || entry.contains("token=")) {
             return entry;
         }
-        String token = readPeerToken(serverId);
+        String token = readPeerToken(serverId, origin);
         if (token == null || token.isEmpty()) return entry;
         return origin + "/#token=" + Uri.encode(token);
     }
@@ -357,11 +354,15 @@ public class KikiShellPlugin extends Plugin {
         try {
             URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
             conn = (HttpURLConnection) handshakeUrl.openConnection();
+            conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3500);
             conn.setReadTimeout(3500);
             conn.setRequestProperty("Accept", "application/json");
             int code = conn.getResponseCode();
+            if (code >= 300 && code < 400) {
+                return new HandshakeResult(false, true, "", "", "");
+            }
             if (code >= 200 && code < 300) {
                 JSONObject body = readJson(conn.getInputStream());
                 JSONObject data = body == null ? null : body.optJSONObject("data");
@@ -370,27 +371,29 @@ public class KikiShellPlugin extends Plugin {
                 String label = data == null ? "" : data.optString("targetLabel", "");
                 String homeId = target == null ? "" : target.optString("homeId", "");
                 String hostId = target == null ? "" : target.optString("hostId", "");
-                return new HandshakeResult(true, homeId, hostId, label);
+                return new HandshakeResult(true, false, homeId, hostId, label);
             }
         } catch (Exception ignored) {
             /* unreachable or non-JSON */
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return new HandshakeResult(false, "", "", "");
+        return new HandshakeResult(false, false, "", "", "");
     }
 
-    private boolean hasStoredToken(String serverId) {
+    private static String scopedTokenId(String serverId, String origin) {
+        return (origin == null || origin.isEmpty()) ? serverId : (serverId + "@" + origin);
+    }
+
+    private boolean hasStoredToken(String serverId, String origin) {
         if (serverId == null || serverId.isEmpty()) return false;
         SharedPreferences sp = prefs();
-        return sp.contains(TOKEN_PREFIX + serverId) || sp.contains(LEGACY_TOKEN_PREFIX + serverId);
-    }
-
-    private boolean matchesStoredHostId(String serverId, String candidateHostId) {
-        String storedHostId = prefs().getString(HOST_ID_PREFIX + serverId, null);
-        if (storedHostId == null || storedHostId.isEmpty()) return true;
-        if (candidateHostId == null || candidateHostId.isEmpty()) return true;
-        return storedHostId.equals(candidateHostId);
+        String scoped = scopedTokenId(serverId, origin);
+        return (
+            sp.contains(TOKEN_PREFIX + scoped) ||
+            sp.contains(TOKEN_PREFIX + serverId) ||
+            sp.contains(LEGACY_TOKEN_PREFIX + serverId)
+        );
     }
 
     private boolean isOriginVerified(String serverId, String origin) {
@@ -411,24 +414,22 @@ public class KikiShellPlugin extends Plugin {
         editor.apply();
     }
 
-    private void removeVerifiedOrigin(String serverId, String origin) {
-        if (serverId == null || serverId.isEmpty() || origin == null || origin.isEmpty()) return;
-        SharedPreferences sp = prefs();
-        Set<String> existing = sp.getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
-        if (existing == null || !existing.contains(origin)) return;
-        Set<String> updated = new HashSet<>(existing);
-        updated.remove(origin);
-        sp.edit().putStringSet(VERIFIED_ORIGINS_PREFIX + serverId, updated).apply();
-    }
-
     private void forgetServerData(String serverId, String origin) {
         SharedPreferences sp = prefs();
         SharedPreferences.Editor editor = sp.edit();
         String trusted = sp.getString(TRUSTED_ORIGIN, null);
         if (serverId != null && !serverId.isEmpty()) {
             Set<String> verified = sp.getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
-            if (trusted != null && verified != null && verified.contains(trusted)) {
-                editor.remove(TRUSTED_ORIGIN);
+            if (verified != null) {
+                for (String vOrigin : verified) {
+                    editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, vOrigin));
+                }
+                if (trusted != null && verified.contains(trusted)) {
+                    editor.remove(TRUSTED_ORIGIN);
+                }
+            }
+            if (origin != null && !origin.isEmpty()) {
+                editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, origin));
             }
             editor
                 .remove(TOKEN_PREFIX + serverId)
@@ -462,41 +463,70 @@ public class KikiShellPlugin extends Plugin {
         return keyGenerator.generateKey();
     }
 
-    private void storePeerToken(String serverId, String token) throws Exception {
-        SecretKey key = getOrCreateSecretKey();
+    private String encryptTokenValue(SecretKey key, String aadKey, String token) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key);
-        cipher.updateAAD(serverId.getBytes(StandardCharsets.UTF_8));
+        cipher.updateAAD(aadKey.getBytes(StandardCharsets.UTF_8));
         byte[] cipherBytes = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
-        String encoded =
+        return (
             Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) +
             ":" +
-            Base64.encodeToString(cipherBytes, Base64.NO_WRAP);
-        prefs()
-            .edit()
-            .putString(TOKEN_PREFIX + serverId, encoded)
-            .remove(LEGACY_TOKEN_PREFIX + serverId)
-            .apply();
+            Base64.encodeToString(cipherBytes, Base64.NO_WRAP)
+        );
     }
 
-    private String readPeerToken(String serverId) {
+    private String decryptTokenValue(SecretKey key, String aadKey, String stored) {
+        if (stored == null || stored.isEmpty()) return null;
+        try {
+            int sep = stored.indexOf(':');
+            if (sep <= 0) return null;
+            byte[] iv = Base64.decode(stored.substring(0, sep), Base64.NO_WRAP);
+            byte[] cipherBytes = Base64.decode(stored.substring(sep + 1), Base64.NO_WRAP);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
+            cipher.updateAAD(aadKey.getBytes(StandardCharsets.UTF_8));
+            byte[] plain = cipher.doFinal(cipherBytes);
+            return new String(plain, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void storePeerToken(String serverId, String origin, String token) throws Exception {
+        SecretKey key = getOrCreateSecretKey();
+        String encodedServer = encryptTokenValue(key, serverId, token);
+        SharedPreferences.Editor editor = prefs()
+            .edit()
+            .putString(TOKEN_PREFIX + serverId, encodedServer)
+            .remove(LEGACY_TOKEN_PREFIX + serverId);
+        if (origin != null && !origin.isEmpty()) {
+            String scoped = scopedTokenId(serverId, origin);
+            editor.putString(TOKEN_PREFIX + scoped, encryptTokenValue(key, scoped, token));
+        }
+        editor.apply();
+    }
+
+    private String readPeerToken(String serverId, String origin) {
         SharedPreferences sp = prefs();
-        String stored = sp.getString(TOKEN_PREFIX + serverId, null);
-        if (stored != null && !stored.isEmpty()) {
-            try {
-                int sep = stored.indexOf(':');
-                if (sep <= 0) return null;
-                byte[] iv = Base64.decode(stored.substring(0, sep), Base64.NO_WRAP);
-                byte[] cipherBytes = Base64.decode(stored.substring(sep + 1), Base64.NO_WRAP);
-                SecretKey key = getOrCreateSecretKey();
-                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
-                cipher.updateAAD(serverId.getBytes(StandardCharsets.UTF_8));
-                byte[] plain = cipher.doFinal(cipherBytes);
-                return new String(plain, StandardCharsets.UTF_8);
-            } catch (Exception e) {
-                return null;
+        try {
+            SecretKey key = null;
+            if (origin != null && !origin.isEmpty()) {
+                String scoped = scopedTokenId(serverId, origin);
+                String storedScoped = sp.getString(TOKEN_PREFIX + scoped, null);
+                if (storedScoped != null && !storedScoped.isEmpty()) {
+                    key = getOrCreateSecretKey();
+                    String plain = decryptTokenValue(key, scoped, storedScoped);
+                    if (plain != null && !plain.isEmpty()) return plain;
+                }
             }
+            String stored = sp.getString(TOKEN_PREFIX + serverId, null);
+            if (stored != null && !stored.isEmpty()) {
+                if (key == null) key = getOrCreateSecretKey();
+                String plain = decryptTokenValue(key, serverId, stored);
+                if (plain != null && !plain.isEmpty()) return plain;
+            }
+        } catch (Exception ignored) {
+            /* fall back to legacy if present */
         }
         return sp.getString(LEGACY_TOKEN_PREFIX + serverId, null);
     }
