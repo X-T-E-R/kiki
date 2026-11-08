@@ -18,8 +18,8 @@ async function invokeHook(payload, key = 'kiki-agy-steering-bridge', event = 'Po
   return JSON.parse(output);
 }
 let turns = 0;
-const conversation = 'fixture-conversation';
 const args = process.argv.slice(2);
+const conversation = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'fixture-conversation';
 if (args[0] === 'models') {
   process.stdout.write('fixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n');
   process.exit(0);

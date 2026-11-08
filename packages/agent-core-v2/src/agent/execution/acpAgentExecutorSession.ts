@@ -537,7 +537,22 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       this.context.descriptor.id,
       this.context.descriptor.version,
     );
-    return negotiated?.resume !== false || negotiated?.load !== false;
+    return negotiated?.resume !== false || negotiated?.load !== false || this.#legacyAgyRecovery(state) !== undefined;
+  }
+
+  #legacyAgyRecovery(state: ReturnType<typeof externalStateForGeneration>) {
+    const { descriptor, binding } = this.context;
+    const sessionId = sessionIdFromState(state.sessionRef);
+    const turn = this.#states.get(turnKey).lastEnded;
+    if (executorSourceId(descriptor) !== 'agy-cli' || state.executorId !== descriptor.id ||
+        launchHome(descriptor) !== '' || !sameLaunchHome(state.sessionRef, descriptor) ||
+        state.sessionRef?.ref['localSource'] !== undefined || state.sessionEpoch !== 1 ||
+        sessionId === undefined || !AGY_UUID.test(sessionId) || state.profileDeliveredSessionId !== sessionId ||
+        binding.modelAlias === undefined || !this.#reusablePriorState(state) ||
+        turn?.turnId !== 0 || turn.reason !== 'failed' || turn.error?.code !== 'executor.protocol_error' ||
+        turn.error.message !== 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.') return undefined;
+    return legacyAgyRecoveryProof(this.#memory.get(), sessionId, binding.modelAlias,
+      binding.thinkingEffortExplicit === true ? binding.thinkingLevel : 'engine-default');
   }
 
   canRetryBrokenConstruction(): boolean {
@@ -724,7 +739,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         : acpMcpServers(mcp.connectionManager, roots.workDir,
           (name) => process.env[name], this.context.descriptor.mcpTransports,
           kikiChildDefaults(this.context.agent.accessor.get(IBootstrapService).homeDir));
-    const sessionMeta = { ...this.#harnessMcp?.sessionMeta, 'kiki.permission': externalPermissionMeta(this.context) };
+    const legacy = servers.length === 0 && (roots.additionalDirs?.length ?? 0) === 0 ? this.#legacyAgyRecovery(state) : undefined;
+    const sessionMeta = { ...this.#harnessMcp?.sessionMeta, 'kiki.permission': externalPermissionMeta(this.context), 'kiki.agyLegacyRecovery': legacy };
     const settings = this.context.descriptor.claudeSettingsFile;
     return {
       cwd: roots.workDir,
@@ -1435,8 +1451,40 @@ function originalRemoteResumeFields(
         ? { ...sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource']), executorId: descriptor.id }
         : undefined,
     requireResume: homeMatches && (state.sessionRef?.ref['localSource'] !== undefined ||
-      ((broken || changedInstance || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined)),
+      ((broken || changedInstance || binding.execution !== undefined || descriptor.permission?.via === 'argv' || executorSourceId(descriptor) === 'agy-cli') && state.sessionRef !== undefined)),
   };
+}
+
+const AGY_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+function legacyAgyRecoveryProof(messages: readonly ContextMessage[], sessionId: string, model: string, effort: string | undefined) {
+  const prefix = `external:${encodeURIComponent(`${sessionId}:e1`)}:`;
+  const calls = new Map<string, string>();
+  const completed = new Set<string>();
+  for (const message of messages) {
+    for (const call of message.toolCalls) {
+      if (!call.id.startsWith(prefix)) continue;
+      if (calls.has(call.id)) return undefined;
+      calls.set(call.id, call.name);
+    }
+    const id = message.toolCallId;
+    if (message.role !== 'tool' || !id?.startsWith(prefix)) continue;
+    if (message.isError === true || completed.has(id)) return undefined;
+    completed.add(id);
+  }
+  if (calls.size === 0 || calls.size > 1000 || calls.size !== completed.size) return undefined;
+  let conversationId: string | undefined;
+  const tools: { stepIndex: number; name: string }[] = [];
+  for (const [id, name] of calls) {
+    const parts = /^agy-(.+)-(\d+)$/.exec(id.slice(prefix.length));
+    if (parts === null || !AGY_UUID.test(parts[1]!) || !completed.has(id) || !['read_file', 'run_command'].includes(name)) return undefined;
+    if (conversationId !== undefined && conversationId !== parts[1]) return undefined;
+    conversationId = parts[1];
+    const stepIndex = Number(parts[2]);
+    if (!Number.isSafeInteger(stepIndex)) return undefined;
+    tools.push({ stepIndex, name });
+  }
+  return { version: 1, sessionId, conversationId, model, effort, tools: tools.sort((a, b) => a.stepIndex - b.stepIndex) };
 }
 
 function sessionRefWithLocalSource(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {

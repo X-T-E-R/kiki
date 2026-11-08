@@ -164,7 +164,7 @@ describe('AgentExecutorRegistryService', () => {
 
   it('inherits only AGY program dependencies through instance preparation and launch', async () => {
     const dependencies = { AGY_ACP_SDK_PATH: '/program/acp-sdk.mjs', AGY_CLI_PATH: '/program/agy' };
-    let env = { ...dependencies, GEMINI_API_KEY: 'synthetic-default-account' };
+    let env: typeof dependencies & { GEMINI_API_KEY: string; AGY_BRIDGE_AUDIT_DIR?: string } = { ...dependencies, GEMINI_API_KEY: 'synthetic-default-account' };
     const instance = (source_executor: string, kind: 'inherit' | 'plugin_account' = 'inherit') => ({
       source_executor, label: 'Work', configuration: kind === 'inherit' ? { kind } : {
         kind, source: 'plugin:example/accounts', account_id: 'work',
@@ -233,7 +233,15 @@ describe('AgentExecutorRegistryService', () => {
     env = { ...env, GEMINI_API_KEY: 'synthetic-other-default-account' };
     expect(registry.get('instance-work')!.revision).toBe(first.revision);
     expect(registry.get('agy-cli')!.revision).not.toBe(original.revision);
+    env = { ...env, AGY_BRIDGE_AUDIT_DIR: '/kiki/tools/agy-cli/audit' };
+    expect(registry.get('instance-work')!.revision).toBe(first.revision);
+    expect(executorProcessEnv(registry.get('instance-work')!)).toEqual({ ...dependencies, AGY_BRIDGE_AUDIT_DIR: env['AGY_BRIDGE_AUDIT_DIR'] });
+    expect(executorProcessEnv(registry.get('instance-inherit')!)).toEqual({ ...dependencies, AGY_BRIDGE_AUDIT_DIR: env['AGY_BRIDGE_AUDIT_DIR'] });
+    expect(registry.get('instance-other')!.revision).toBe(other.revision);
     registry.recordNegotiated!('instance-work', undefined, { models: ['example-model'] }, first.revision);
+    env = { ...env, AGY_BRIDGE_AUDIT_DIR: '/kiki/another-audit' };
+    expect(registry.get('instance-work')!.revision).toBe(first.revision);
+    expect(registry.lastNegotiated!('instance-work')?.models).toEqual(['example-model']);
     env = { ...env, AGY_ACP_SDK_PATH: '/program/updated-sdk.mjs' };
     expect(registry.get('instance-work')!.revision).not.toBe(first.revision);
     expect(registry.lastNegotiated!('instance-work')).toBeUndefined();

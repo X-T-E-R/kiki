@@ -816,7 +816,11 @@ describe('recoverable ACP broken resume', () => {
     }
   });
 
-  it('switches a broken external child to another same-family executor_instance via session/load while preserving agent and ACP session IDs', async () => {
+  it.each(['account-switch', 'legacy-network', 'legacy-load-failure', 'legacy-unsettled'] as const)('uses real profile/dispatch for original-session recovery: %s', async (scenario) => {
+    const legacy = scenario !== 'account-switch';
+    const legacySessionId = '11111111-1111-4111-8111-111111111111';
+    const nativeId = '22222222-2222-4222-8222-222222222222';
+    const networkError = 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.';
     const familyDesc = {
       id: 'agy-cli',
       protocol: 'acp-v1' as const,
@@ -858,9 +862,17 @@ describe('recoverable ACP broken resume', () => {
         proxy: { kind: 'inherit' as const },
       },
     };
+    let oldBridge = legacy;
+    const toolCallId = `agy-${nativeId}-2`;
     const remoteA = recordingClient(() => ({
-      sessionId: 'remote-shared-1',
-      capabilities: { loadSession: true },
+      sessionId: legacy ? legacySessionId : 'remote-shared-1',
+      capabilities: { loadSession: !oldBridge },
+      load: scenario === 'legacy-load-failure' ? 'unknown_session' : undefined,
+      promptError: oldBridge ? networkError : undefined,
+      promptUpdates: oldBridge ? [
+        { sessionUpdate: 'tool_call', toolCallId, title: 'read_file', kind: 'other', status: 'in_progress' },
+        ...scenario === 'legacy-unsettled' ? [] : [{ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', rawOutput: 'old tool output' }],
+      ] : undefined,
     }), () => false, 'instance-agy-a', 'agy-cli');
     const remoteB = recordingClient(() => ({
       sessionId: 'remote-shared-1',
@@ -1032,10 +1044,51 @@ describe('recoverable ACP broken resume', () => {
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
-      remoteA.failNextTurn(new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.'));
+      if (!legacy) remoteA.failNextTurn(new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.'));
       const firstRun = await childExecution.run({ kind: 'prompt', prompt: 'first turn on A' }, { signal });
-      await expect(firstRun.completion).rejects.toThrow(/RESOURCE_EXHAUSTED/);
+      await expect(firstRun.completion).rejects.toThrow(legacy ? networkError : /RESOURCE_EXHAUSTED/);
       await childExecution.settled();
+      if (legacy) {
+        expect(childExecution.status()).toEqual({ state: 'broken' });
+        expect(caps.get('instance-agy-a\0')).toMatchObject({ resume: false, load: false });
+        const saved = childCtx.get(IAgentStateService).get(externalExecutorKey);
+        const { turnKey } = await import('#/agent/loop/turnOps');
+        const lastTurn = childCtx.get(IAgentStateService).get(turnKey).lastEnded;
+        expect(lastTurn).toMatchObject({ turnId: 0, reason: 'failed', error: { code: 'executor.protocol_error', message: networkError } });
+        expect(childExecution.canResumeBrokenOriginal()).toBe(scenario !== 'legacy-unsettled');
+        oldBridge = false;
+        const resumed = await executeTool(toolIx.get(ISubagentTool), {
+          turnId: 2, toolCallId: 'toolu_legacy_resume',
+          args: { resume: CHILD, prompt: 'new input only', description: 'resume original native task', background: true },
+          signal,
+        });
+        await childExecution.settled();
+        if (scenario === 'legacy-unsettled') {
+          expect(resumed.isError).toBe(true);
+          expect(remoteA.spawns()).toBe(1);
+          expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef).toEqual(saved.sessionRef);
+          return;
+        }
+        const loads = remoteA.histories.slice(1).flatMap(history => history.sessionLoadParams);
+        expect(loads.length).toBeGreaterThan(0);
+        expect(loads[0]).toMatchObject({ sessionId: legacySessionId, _meta: { 'kiki.agyLegacyRecovery': {
+          version: 1, sessionId: legacySessionId, conversationId: nativeId, model: 'model-a', effort: 'medium',
+          tools: [{ stepIndex: 2, name: 'read_file' }],
+        } } });
+        expect(remoteA.histories.slice(1).every(history => history.sessionNewParams.length === 0)).toBe(true);
+        if (scenario === 'legacy-load-failure') {
+          expect(resumed.isError).toBe(true);
+          expect(remoteA.histories.slice(1).every(history => history.promptParams.length === 0)).toBe(true);
+          expect(childCtx.get(IAgentStateService).get(externalExecutorKey).sessionRef).toEqual(saved.sessionRef);
+        } else {
+          expect(resumed.isError, JSON.stringify(resumed.output)).toBeFalsy();
+          expect(childProfile.data().executorId).toBe('instance-agy-a');
+          expect(remoteA.histories[1]?.promptParams).toEqual([expect.objectContaining({ sessionId: legacySessionId,
+            prompt: [{ type: 'text', text: 'new input only' }] })]);
+          expect(remoteB.spawns()).toBe(0);
+        }
+        return;
+      }
       expect(childExecution.status()).toEqual({ state: 'idle' });
 
       const resumed = await executeTool(toolIx.get(ISubagentTool), {

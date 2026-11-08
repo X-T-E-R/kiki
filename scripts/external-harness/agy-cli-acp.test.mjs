@@ -1507,6 +1507,92 @@ void test('real ACP session/load restores exact native argv after adapter EOF wi
 });
 
 
+void test('legacy AGY load verifies the saved native binding without an old audit or prompt replay', { timeout: 15000 }, async () => {
+  const { mkdir, mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = await mkdtemp(join(tmpdir(), 'agy-legacy-native-load-'));
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const conversationId = '22222222-2222-4222-8222-222222222222';
+  const model = 'claude-opus-5-5-high';
+  const proof = { version: 1, sessionId, conversationId, model, effort: 'high', tools: [{ stepIndex: 2, name: 'read_file' }] };
+  const params = { sessionId, cwd: root, mcpServers: [], _meta: { 'kiki.agyLegacyRecovery': proof } };
+  const auditDir = join(root, 'audit');
+  const b = bridge(model); b.auditDir = auditDir; b.nativeHome = root;
+  const c = bridge(model); c.auditDir = auditDir; c.nativeHome = root;
+  const dbPath = join(root, 'conversations', `${conversationId}.db`);
+  const transcriptDir = join(root, 'brain', conversationId, '.system_generated', 'logs');
+  const varint = value => {
+    const bytes = [];
+    while (value >= 128) { bytes.push((value & 127) | 128); value >>>= 7; }
+    return Buffer.from([...bytes, value]);
+  };
+  const field = (number, value) => {
+    const bytes = Buffer.from(value);
+    return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+  };
+  const setStatus = status => {
+    const db = new DatabaseSync(dbPath);
+    try { db.prepare('UPDATE steps SET status = ? WHERE idx = 2').run(status); } finally { db.close(); }
+  };
+  const launches = [];
+  const originalSpawn = c.spawnProcess;
+  c.spawnProcess = (cmd, args, opts) => { launches.push(args); return originalSpawn(cmd, args, opts); };
+  try {
+    await mkdir(join(root, 'conversations'));
+    await mkdir(transcriptDir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('CREATE TABLE trajectory_metadata_blob(id TEXT, data BLOB); CREATE TABLE gen_metadata(idx INTEGER, data BLOB); CREATE TABLE steps(idx INTEGER, step_type INTEGER, status INTEGER, step_payload BLOB)');
+      db.prepare('INSERT INTO trajectory_metadata_blob VALUES (?, ?)').run('main', Buffer.concat([field(6, conversationId), field(7, pathToFileURL(root).href)]));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(0, field(1, field(19, model)));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(1, Buffer.concat([field(1, Buffer.alloc(0)), field(4, Buffer.alloc(360_000))]));
+      const step = db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)');
+      [14, 15, 132, 17].forEach((type, index) => step.run(index, type, 3, index === 3
+        ? field(24, field(3, field(1, 'There was a network issue connecting to the server, please try again.'))) : Buffer.alloc(0)));
+    } finally { db.close(); }
+    await writeFile(join(transcriptDir, 'transcript_full.jsonl'), [
+      { type: 'USER_INPUT', content: 'do not replay original prompt' },
+      { type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'read_file' }] },
+      { type: 'GENERIC', content: 'completed tool' },
+      { type: 'ERROR_MESSAGE' },
+    ].map((row, index) => JSON.stringify({ ...row, status: 'DONE', step_index: index })).join('\n'));
+    await assert.rejects(b.loadSession({ ...params, _meta: undefined }), { code: 'ENOENT' });
+    await assert.rejects(b.loadSession({ ...params, cwd }), /workspace differs/);
+    await assert.rejects(b.loadSession({ ...params, _meta: { 'kiki.agyLegacyRecovery': { ...proof, model: 'other-model-high' } } }), /native model is not available/);
+    await assert.rejects(b.loadSession({ ...params, _meta: { 'kiki.agyLegacyRecovery': { ...proof, tools: [{ stepIndex: 1, name: 'read_file' }] } } }), /native tools differ/);
+    setStatus(2);
+    await assert.rejects(b.loadSession(params), /unresolved steps/);
+    setStatus(3);
+    const failedDb = new DatabaseSync(dbPath);
+    try {
+      const terminal = failedDb.prepare('UPDATE steps SET step_payload = ? WHERE idx = 3');
+      for (const error of ['429 quota exhausted', 'Invalid authentication', 'UNKNOWN']) {
+        terminal.run(field(24, field(3, field(1, error))));
+        await assert.rejects(b.loadSession(params), /no confirmed terminal network failure/);
+      }
+      terminal.run(field(24, field(3, field(1, 'There was a network issue connecting to the server, please try again.'))));
+      failedDb.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(4, 14, 3, Buffer.alloc(0));
+      await assert.rejects(b.loadSession(params), /unknown steering/);
+      failedDb.prepare('DELETE FROM steps WHERE idx = 4').run();
+    } finally { failedDb.close(); }
+    await assert.rejects(readFile(join(auditDir, `${sessionId}.ndjson`)), { code: 'ENOENT' });
+    assert.equal((await b.loadSession(params)).configOptions[0].currentValue, 'high');
+    assert.equal(b.session(sessionId).child, undefined);
+    await assert.rejects(c.loadSession(params), /already being loaded/);
+    await b.close();
+    await c.loadSession({ ...params, _meta: undefined });
+    assert.deepEqual(launches, []);
+    assert.deepEqual(await turn(c, sessionId, 'new input only', []), { stopReason: 'end_turn' });
+    assert.equal(c.session(sessionId).init.conversation_id, conversationId);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0][launches[0].indexOf('--conversation') + 1], conversationId);
+    const rows = (await readFile(join(auditDir, `${sessionId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(rows.some(row => row.type === 'session_new'), false);
+    assert.equal(rows.filter(row => row.type === 'legacy_native_recovered').length, 1);
+    assert.equal(rows.filter(row => row.type === 'prompt_sent').length, 1);
+  } finally { await b.close(); await c.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 void test('terminal quota or auth vendor failure stops the owned CLI process and releases its lease so another account can load the exact conversation', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-account-load-'));

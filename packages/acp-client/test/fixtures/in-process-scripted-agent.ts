@@ -20,6 +20,7 @@ export interface InProcessAgentScript {
   readonly load?: ScriptedOpenBehavior;
   readonly loadReplay?: readonly unknown[];
   readonly promptUpdates?: readonly unknown[];
+  readonly promptError?: string;
   readonly permissionOptions?: readonly PermissionOption[];
   readonly permissionToolCall?: RequestPermissionRequest['toolCall'];
   readonly permissionSessionId?: string;
@@ -182,6 +183,7 @@ export function createInProcessScriptedAgent(
         });
         history.permissionResponses.push(response);
       }
+      if (script.promptError !== undefined) throw new RequestError(-32603, script.promptError);
       if (script.hangPrompt === true) {
         const stopReason = await new Promise<StopReason>((resolve) => {
           settlePrompt = resolve;

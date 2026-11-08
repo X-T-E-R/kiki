@@ -9,6 +9,7 @@ import { registerProjectHook, recoverProjectHook, AGY_STEERING_HOOK_KEY, AGY_COM
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { openPermissionChannel, permissionChannelIdentity, requestHookPermission } from './agy-permission-hook.mjs';
+import { homedir } from 'node:os';
 
 const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT = 'engine-default';
@@ -17,6 +18,118 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 function processAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return true;
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+}
+
+const NATIVE_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const LEGACY_NATIVE_STEP = { user: 14, planner: 15, error: 17, ephemeral: 90, system: 101, tool: 132 };
+const NATIVE_DONE = 3;
+const LEGACY_NETWORK_FAILURE = 'There was a network issue connecting to the server, please try again.';
+
+function nativeBytesAt(value, path, optionalLast = false) {
+  let bytes = Buffer.from(value);
+  for (const [index, field] of path.entries()) {
+    let offset = 0;
+    let selected;
+    const integer = () => {
+      let value = 0;
+      for (let shift = 0; shift <= 49 && offset < bytes.length; shift += 7) {
+        const byte = bytes[offset++];
+        value += (byte & 127) * 2 ** shift;
+        if (!(byte & 128)) return value;
+      }
+      throw new Error('Unsupported AGY native metadata encoding');
+    };
+    while (offset < bytes.length) {
+      const key = integer();
+      const number = Math.floor(key / 8);
+      const wire = key % 8;
+      if (!number) throw new Error('Unsupported AGY native metadata field');
+      if (wire === 0) integer();
+      else if (wire === 1 || wire === 5) offset += wire === 1 ? 8 : 4;
+      else if (wire === 2) {
+        const length = integer();
+        if (length > bytes.length - offset) throw new Error('Truncated AGY native metadata');
+        if (number === field) {
+          if (selected !== undefined) throw new Error('Ambiguous AGY native metadata binding');
+          selected = bytes.subarray(offset, offset + length);
+        }
+        offset += length;
+      } else throw new Error('Unsupported AGY native metadata wire type');
+      if (offset > bytes.length) throw new Error('Truncated AGY native metadata');
+    }
+    if (selected === undefined) {
+      if (optionalLast && index === path.length - 1) return undefined;
+      throw new Error('Unconfirmed AGY native metadata binding');
+    }
+    bytes = selected;
+  }
+  return bytes.toString('utf8');
+}
+
+async function readLegacyTranscript(path) {
+  const file = await open(path, 'r');
+  try {
+    const before = await file.stat();
+    if (!before.isFile() || before.size > 2 * MAX_FRAME_BYTES) throw new Error('AGY legacy transcript exceeds the recovery limit');
+    const data = Buffer.alloc(before.size + 1);
+    const { bytesRead } = await file.read(data, 0, data.length, 0);
+    const after = await file.stat();
+    if (bytesRead !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error('AGY legacy transcript changed during recovery');
+    return data.subarray(0, bytesRead).toString('utf8').trim().split('\n').map(JSON.parse);
+  } finally { await file.close(); }
+}
+
+export async function readLegacyNativeRecovery({ nativeHome, cwd, sessionId, proof, model }) {
+  if (proof?.version !== 1 || proof.sessionId !== sessionId || !NATIVE_ID.test(sessionId) || !NATIVE_ID.test(proof.conversationId) || !isAbsolute(cwd) ||
+      proof.model !== model || typeof proof.effort !== 'string' || !Array.isArray(proof.tools) || !proof.tools.length || proof.tools.length > 1000 ||
+      proof.tools.some(tool => !Number.isSafeInteger(tool?.stepIndex) || tool.stepIndex < 0 || !['read_file', 'run_command'].includes(tool.name)) ||
+      new Set(proof.tools.map(tool => tool.stepIndex)).size !== proof.tools.length) {
+    throw new Error('AGY legacy load requires an exact original session and completed native tool mapping');
+  }
+  const conversationId = proof.conversationId;
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(resolve(nativeHome, 'conversations', `${conversationId}.db`), { readOnly: true });
+  try {
+    db.exec('BEGIN');
+    const metadata = db.prepare('SELECT data FROM trajectory_metadata_blob WHERE id = ? AND length(data) <= 65536').get('main');
+    const data = metadata?.data ?? [];
+    const nativeCwd = fileURLToPath(nativeBytesAt(data, [7]));
+    const canonical = value => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value);
+    if (nativeBytesAt(data, [6]) !== conversationId || canonical(nativeCwd) !== canonical(cwd)) {
+      throw new Error('AGY legacy native conversation or workspace differs from its original binding');
+    }
+    const models = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM gen_metadata ORDER BY idx LIMIT 1001');
+    const names = [];
+    for (const row of models.iterate(MAX_FRAME_BYTES)) names.push(nativeBytesAt(row.data ?? [], [1, 19], true));
+    if (names[0] !== model || names.length > 1000 || names.some((name, index) =>
+      name !== model && (name !== undefined || index !== names.length - 1))) {
+      throw new Error('AGY legacy native model differs from its original binding');
+    }
+    const steps = db.prepare('SELECT idx, step_type, status FROM steps ORDER BY idx LIMIT 10001').all();
+    if (!steps.length || steps.length > 10000 || steps.some((step, index) => step.idx !== index || step.status !== NATIVE_DONE ||
+        !Object.values(LEGACY_NATIVE_STEP).includes(step.step_type)) || steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.user).length !== 1) {
+      throw new Error('AGY legacy native turn has unresolved steps or unknown steering; do not replay it');
+    }
+    const terminal = steps.at(-1);
+    const payload = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND length(step_payload) <= 65536').get(terminal.idx);
+    if (terminal.step_type !== LEGACY_NATIVE_STEP.error || nativeBytesAt(payload?.step_payload ?? [], [24, 3, 1]) !== LEGACY_NETWORK_FAILURE) {
+      throw new Error('AGY legacy native turn has no confirmed terminal network failure');
+    }
+    const toolIndices = new Set(steps.filter(step => step.step_type === LEGACY_NATIVE_STEP.tool).map(step => step.idx));
+    if (toolIndices.size !== proof.tools.length || proof.tools.some(tool => !toolIndices.has(tool.stepIndex))) {
+      throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
+    }
+    const transcript = await readLegacyTranscript(resolve(nativeHome, 'brain', conversationId, '.system_generated', 'logs', 'transcript_full.jsonl'));
+    const declared = transcript.flatMap(step => step.tool_calls ?? []);
+    if (transcript.some((step, index) => step.step_index !== index || step.status !== 'DONE') ||
+        transcript.length < steps.length - 1 || transcript.length > steps.length || transcript.at(-1).type !== 'ERROR_MESSAGE' ||
+        transcript.filter(step => step.type === 'USER_INPUT').length !== 1 || transcript.filter(step => step.type === 'GENERIC').length !== toolIndices.size ||
+        declared.length !== proof.tools.length || declared.some((tool, index) => tool.name !== proof.tools[index].name) ||
+        proof.tools.some(tool => transcript[tool.stepIndex]?.type !== 'GENERIC')) {
+      throw new Error('AGY legacy native transcript is not fully reconciled or differs from the completed Kiki tool mapping');
+    }
+    return { conversationId, model, effort: proof.effort };
+  } finally { db.close(); }
 }
 
 export function launchArgs(session) {
@@ -182,7 +295,7 @@ async function terminate(child) {
 }
 
 export class AgyBridge {
-  constructor({ cliPath, cliPrefix = [], auditDir, model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit } = {}) {
+  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit } = {}) {
     this.stopProcess = stopProcess;
     if (!isAbsolute(cliPath ?? '')) throw new Error('Pass the exact absolute AGY executable path');
     if (typeof model !== 'string' || !model || /\s/.test(model)) throw new Error('AGY model must be a nonempty engine ID');
@@ -194,6 +307,7 @@ export class AgyBridge {
     this.cliPath = cliPath;
     this.cliPrefix = cliPrefix;
     this.auditDir = auditDir;
+    this.nativeHome = nativeHome;
     this.spawnProcess = spawnProcess;
     this.sessions = new Map();
   }
@@ -215,7 +329,7 @@ export class AgyBridge {
     return { decision: 'ask' };
   }
 
-  async newSession(params, id = randomUUID(), event = 'session_new') {
+  async newSession(params, id = randomUUID(), event = 'session_new', recovery) {
     const mcpServers = params.mcpServers ?? [];
     if (!Array.isArray(mcpServers) || mcpServers.some(server => !server || typeof server.name !== 'string' ||
       !server.name || typeof server.command !== 'string' || !server.command ||
@@ -235,7 +349,7 @@ export class AgyBridge {
     this.sessions.set(session.id, session);
     try {
       await this.recoverDeadOwnedResources(session);
-      await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false });
+      await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false, recovery });
       return { sessionId: session.id, configOptions: configOptions(session) };
     } catch (error) {
       await session.permissionChannel?.close();
@@ -251,9 +365,15 @@ export class AgyBridge {
     if (this.sessions.has(params.sessionId)) throw new Error('AGY session is already owned by this connection');
     const auditPath = resolve(this.auditDir, `${params.sessionId}.ndjson`);
     const readAudit = async () => (await readFile(auditPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    const records = await readAudit();
-    const workspace = records.find(record => record.type === 'session_new');
-    const launch = records.findLast(record => record.type === 'launch');
+    const records = await readAudit().catch(error => {
+      if (error.code !== 'ENOENT' || params._meta?.['kiki.agyLegacyRecovery'] === undefined) throw error;
+      return undefined;
+    });
+    const workspace = records?.find(record => ['session_new', 'legacy_native_recovered'].includes(record.type));
+    const launch = records?.findLast(record => record.type === 'launch');
+    if (records === undefined || !launch && workspace?.type === 'legacy_native_recovered') {
+      return this.loadLegacySession(params, readAudit, workspace);
+    }
     const init = records.findLast(record => record.type === 'agy_init');
     if (!workspace || !launch || !init?.conversationId || records.indexOf(init) < records.indexOf(launch)) {
       throw new Error('AGY session has no confirmed native conversation to load; retain the failed attempt and create a new session');
@@ -279,22 +399,7 @@ export class AgyBridge {
     const effort = launch.effort ?? argValue('--effort');
     validateEffort(model, effort);
     if (processAlive(launch.pid)) throw new Error('AGY native conversation still has an owned process; close it before loading');
-    const path = resolve(this.auditDir, `${params.sessionId}.resume-lock`);
-    const claim = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
-    let file;
-    try { file = await open(path, 'wx'); }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const previous = await readFile(path, 'utf8');
-      if (processAlive(JSON.parse(previous).pid)) throw new Error('AGY native conversation is already being loaded');
-      throw new Error(`AGY native load lease is stale; recover only this exact owned lease after confirming no live adapter: ${path}`);
-    }
-    await file.writeFile(claim);
-    await file.close();
-    const release = async () => {
-      try { if (await readFile(path, 'utf8') === claim) await unlink(path); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    };
+    const release = await this.claimResume(params.sessionId);
     try {
       const latest = await readAudit();
       const retired = latest.findLast(record => record.type === 'cancel_requested' || record.type === 'cancel_failed'
@@ -318,6 +423,57 @@ export class AgyBridge {
       session.effort = effort;
       session.conversationId = init.conversationId;
       session.mcpNamespace = mcpBinding?.name;
+      session.releaseResume = release;
+      return { configOptions: configOptions(session) };
+    } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }
+  }
+
+  async claimResume(sessionId) {
+    await mkdir(this.auditDir, { recursive: true });
+    const path = resolve(this.auditDir, `${sessionId}.resume-lock`);
+    const claim = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
+    let file;
+    try { file = await open(path, 'wx'); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const previous = await readFile(path, 'utf8');
+      if (processAlive(JSON.parse(previous).pid)) throw new Error('AGY native conversation is already being loaded');
+      throw new Error(`AGY native load lease is stale; recover only this exact owned lease after confirming no live adapter: ${path}`);
+    }
+    try { await file.writeFile(claim); } finally { await file.close(); }
+    return async () => {
+      try { if (await readFile(path, 'utf8') === claim) await unlink(path); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    };
+  }
+
+  async loadLegacySession(params, readAudit, previous) {
+    if ((params.additionalDirectories?.length ?? 0) !== 0 || (params.mcpServers?.length ?? 0) !== 0) {
+      throw new Error('AGY legacy native recovery requires the original default-home non-MCP binding');
+    }
+    const proof = previous?.recovery?.proof ?? params._meta?.['kiki.agyLegacyRecovery'];
+    const release = await this.claimResume(params.sessionId);
+    try {
+      const latest = await readAudit().catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return [];
+      });
+      const latestRecovery = latest.find(record => record.type === 'legacy_native_recovered');
+      if (JSON.stringify(latestRecovery) !== JSON.stringify(previous) ||
+          latest.some(record => !['legacy_native_recovered', 'session_loaded', 'owned_recovery', 'permission_mode_configured', 'close'].includes(record.type))) {
+        throw new Error('AGY legacy recovery state changed; preserve the original session without replay');
+      }
+      const model = proof?.model;
+      if (typeof model !== 'string' || !model || (this.requestedModel !== DEFAULT && model !== this.requestedModel) ||
+          (this.account && !this.account.modelIds.includes(model))) throw new Error('AGY legacy native model is not available for this binding');
+      const recovered = await readLegacyNativeRecovery({ nativeHome: this.nativeHome, cwd: params.cwd,
+        sessionId: params.sessionId, proof, model });
+      validateEffort(recovered.model, recovered.effort);
+      await this.newSession(params, params.sessionId, previous ? 'session_loaded' : 'legacy_native_recovered', previous ? undefined : { ...recovered, proof });
+      const session = this.session(params.sessionId);
+      session.model = recovered.model;
+      session.effort = recovered.effort;
+      session.conversationId = recovered.conversationId;
       session.releaseResume = release;
       return { configOptions: configOptions(session) };
     } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }

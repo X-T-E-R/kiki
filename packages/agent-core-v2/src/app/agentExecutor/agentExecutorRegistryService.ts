@@ -120,14 +120,16 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const parsed = raw === undefined ? undefined : AgentExecutorOverrideSchema.safeParse(raw);
     const override = parsed?.success === true ? parsed.data : undefined;
     const programEnv = programOnly && id === 'agy-cli' && override?.env !== undefined
-      ? Object.entries(override.env).filter(([name]) => name === 'AGY_ACP_SDK_PATH' || name === 'AGY_CLI_PATH' || name === 'AGY_BRIDGE_AUDIT_DIR')
+      ? Object.entries(override.env).filter(([name]) => name === 'AGY_ACP_SDK_PATH' || name === 'AGY_CLI_PATH')
       : [];
-    return applyExecutorOverride(
+    const descriptor = applyExecutorOverride(
       descriptorFromConfig(id, entry),
       programOnly && override !== undefined
         ? { binPath: override.binPath, env: programEnv.length > 0 ? Object.fromEntries(programEnv) : undefined }
         : override,
     );
+    const auditDir = programOnly && id === 'agy-cli' ? override?.env?.['AGY_BRIDGE_AUDIT_DIR'] : undefined;
+    return auditDir === undefined ? descriptor : { ...descriptor, env: { ...descriptor.env, AGY_BRIDGE_AUDIT_DIR: auditDir } };
   }
 
   list(): readonly AgentExecutorDescriptor[] {
