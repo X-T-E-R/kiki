@@ -1910,8 +1910,10 @@ export class AgentTranscriptLiveAdapter {
     const built = build(previous);
     const next = built.runtimeControls !== undefined || previous?.runtimeControls === undefined
       ? built : { ...built, runtimeControls: previous.runtimeControls };
-    const prompt = previous?.originKind === undefined ? next : {
-      ...next,
+    const withSteer = next.steerAccepted !== undefined || previous?.steerAccepted === undefined
+      ? next : { ...next, steerAccepted: previous.steerAccepted };
+    const prompt = previous?.originKind === undefined ? withSteer : {
+      ...withSteer,
       originKind: previous.originKind,
       originDeliveryMode: previous.originDeliveryMode,
     };

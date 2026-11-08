@@ -8,7 +8,7 @@ export { ImIdentityAlreadyBoundError };
 
 export class ImSessionBridge extends CoreImSessionBridge {
   constructor(options: ImSessionBridgeOptions) {
-    super(options);
+    super(options as ConstructorParameters<typeof CoreImSessionBridge>[0]);
   }
 
   override async sendUserMessage(

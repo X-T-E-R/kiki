@@ -8,22 +8,31 @@ import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 
 import {
   ErrorCodes,
+  IAgentLifecycleService,
   IAgentLoopService,
+  IAgentProfileService,
   IAgentPromptService,
   IBootstrapService,
   IAgentContextMemoryService,
   IBotService,
+  IEventService,
   IFileService,
   ISessionActivityView,
   ISessionApprovalService,
   ISessionContext,
   ISessionIndex,
   ISessionInteractionService,
+  ISessionManager,
   ISessionMediaStore,
+  ISessionMetadata,
   ISessionQuestionService,
+  ITelemetryService,
+  applyPromptMetadataUpdate,
   ensureMainAgent,
   isError2,
+  promptMetadataTextFromContentParts,
   reservePrompt,
+  sessionMediaOriginalsDir,
   type ContentPart,
   type QuestionRequest,
   type Scope,
@@ -226,14 +235,17 @@ class NotificationSessionPorts implements ImSessionPorts {
     }),
     submit: (input) => this.submit(input),
     steer: (sessionId, promptId) => this.inSession(sessionId, async (session) => {
-      const prompt = (await ensureMainAgent(session)).accessor.get(IAgentPromptService);
-      if (!prompt.list().pending.some((item) => item.id === promptId)) return 'started' as const;
+      const agent = await ensureMainAgent(session);
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const activeTurnId = agent.accessor.get(IAgentLoopService).status().activeTurnId;
+      const pending = () => prompt.list().pending.some((item) => item.id === promptId);
+      if (!pending()) return imNativeSteerState(prompt, promptId) ?? 'started';
       try {
-        const [handle] = await prompt.steer([promptId]);
-        return handle?.state === 'steered' ? 'steered' as const : prompt.list().pending.some((item) => item.id === promptId) ? 'queued' as const : 'started' as const;
+        const [handle] = await prompt.acceptSteer([promptId], activeTurnId);
+        return imNativeSteerState(prompt, promptId) ?? (wasSteeredIntoTurn(prompt, handle, activeTurnId) ? 'steered' : pending() ? 'queued' : 'started');
       } catch (error) {
         if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
-        return prompt.list().pending.some((item) => item.id === promptId) ? 'queued' as const : 'started' as const;
+        return imNativeSteerState(prompt, promptId) ?? (pending() ? 'queued' : 'started');
       }
     }),
     abort: (sessionId, promptId, turnId) => this.inSession(sessionId, async (session) => {
@@ -337,26 +349,114 @@ class NotificationSessionPorts implements ImSessionPorts {
   }
 
   private async submit(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
+    const isSteer = input.delivery !== 'queue';
+    const live = isSteer ? this.core.accessor.get(ISessionManager).get(input.sessionId) : undefined;
+    const liveAgent = isSteer ? live?.accessor.get(IAgentLifecycleService).get('main') : undefined;
+    const steerTarget = isSteer
+      ? {
+          turnId: liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId,
+          promptId: liveAgent?.accessor.get(IAgentPromptService).list().active?.id ?? liveAgent?.accessor.get(IAgentPromptService).list().launching?.id,
+        }
+      : undefined;
     return this.inSession(input.sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
       const prompt = agent.accessor.get(IAgentPromptService);
       const known = prompt.lookup(input.promptId);
-      if (known !== undefined) return { duplicate: true, promptId: input.promptId, turnId: known.turnId, deliveryState: prompt.list().pending.some((item) => item.id === input.promptId) ? 'queued' : 'pending' };
+      if (known !== undefined) {
+        return {
+          duplicate: true,
+          promptId: input.promptId,
+          turnId: known.turnId,
+          deliveryState: imDuplicateDeliveryState(prompt, input.promptId),
+        };
+      }
       const content = input.content.map((part) => messageContentSchema.parse(part));
+      const profile = agent.accessor.get(IAgentProfileService);
+      const sessionMedia = session.accessor.get(ISessionMediaStore);
+      const sessionDir = session.accessor.get(ISessionContext).sessionDir;
       const prepared = await resolvePromptMediaFiles(content, this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
-        resolveAttachmentsDir: async () => join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
-        sessionMedia: session.accessor.get(ISessionMediaStore),
+        telemetry: this.core.accessor.get(ITelemetryService).withContext({ sessionId: input.sessionId }),
+        sessionMedia,
+        providerType: profile.getModelProviderType(),
+        resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
+        resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
       });
-      const reservation = reservePrompt(prompt, input.promptId, true);
+      const isNative = (profile.data().executorId ?? 'native') === 'native';
+      const reservation = reservePrompt(prompt, input.promptId, true, undefined, {
+        waitForLaunch: isSteer ? false : undefined,
+        nativeSteer: isSteer && isNative ? { turnId: steerTarget?.turnId } : undefined,
+        contentRanges: prepared.sourceRanges,
+      });
+      let enqueued = false;
       try {
-        const handle = await reservation.submit({ role: 'user', content: contentToCoreParts(prepared.content), toolCalls: [], providerMessageId: input.im?.source_message_id, origin: { kind: 'user', im: input.im } });
+        const parts = contentToCoreParts(prepared.content);
+        await applyPromptMetadataUpdate(
+          {
+            metadata: session.accessor.get(ISessionMetadata),
+            eventService: this.core.accessor.get(IEventService),
+            sessionId: input.sessionId,
+          },
+          promptMetadataTextFromContentParts(parts),
+        );
+        const handle = await reservation.submit({
+          role: 'user',
+          content: parts,
+          toolCalls: [],
+          providerMessageId: input.im?.source_message_id,
+          origin: { kind: 'user', im: input.im },
+        });
+        enqueued = true;
         void Promise.race([handle.launched, handle.completion]).then(() => prepared.discard(), () => prepared.discard());
+        if (!isSteer) {
+          const pending = prompt.list().pending.some((item) => item.id === handle.id);
+          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: pending ? 'queued' : 'pending' };
+        }
+        const native = imNativeSteerState(prompt, handle.id);
+        if (native !== undefined) {
+          return {
+            duplicate: false,
+            promptId: handle.id,
+            turnId: prompt.lookup(handle.id)?.turnId,
+            deliveryState: native === 'started' ? 'pending' : native,
+          };
+        }
         const queue = prompt.list();
-        const pending = queue.pending.some((item) => item.id === handle.id);
-        return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: pending ? 'queued' : 'pending' };
+        const pending = queue.pending.find((item) => item.id === handle.id);
+        if (pending === undefined) {
+          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'pending' };
+        }
+        const activeTurnId = agent.accessor.get(IAgentLoopService).status().activeTurnId;
+        const activePromptId = queue.active?.id ?? queue.launching?.id;
+        if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
+            (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
+          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'queued' };
+        }
+        let steered: typeof handle | undefined;
+        try {
+          [steered] = await prompt.acceptSteer([handle.id], activeTurnId);
+        } catch (error) {
+          if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
+          const stillPending = prompt.list().pending.some((item) => item.id === handle.id);
+          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: stillPending ? 'queued' : 'pending' };
+        }
+        const steeredIntoTurn = wasSteeredIntoTurn(prompt, steered, activeTurnId);
+        const stillPending = steered?.state === 'pending' || prompt.list().pending.some((item) => item.id === handle.id);
+        return {
+          duplicate: false,
+          promptId: handle.id,
+          turnId: prompt.lookup(handle.id)?.turnId,
+          deliveryState: steeredIntoTurn ? 'steered' : stillPending ? 'queued' : 'pending',
+        };
       } catch (error) {
-        await prepared.discard();
-        if (isError2(error) && error.code === ErrorCodes.PROMPT_ID_CONFLICT) return { duplicate: true, promptId: input.promptId, deliveryState: 'pending' };
+        if (!enqueued) await prepared.discard();
+        if (isError2(error) && error.code === ErrorCodes.PROMPT_ID_CONFLICT) {
+          return {
+            duplicate: true,
+            promptId: input.promptId,
+            turnId: prompt.lookup(input.promptId)?.turnId,
+            deliveryState: imDuplicateDeliveryState(prompt, input.promptId),
+          };
+        }
         throw error;
       } finally {
         await reservation.dispose();
@@ -381,8 +481,10 @@ class NotificationSessionPorts implements ImSessionPorts {
   private async readVisible(sessionId: string, promptId: string, turnId?: number): Promise<ImVisibleReply> {
     return this.inSession(sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const resolvedTurnId = turnId ?? prompt.lookup(promptId)?.turnId;
       const messages = agent.accessor.get(IAgentContextMemoryService).get();
-      const selected = visibleReplyMessages(messages, promptId, turnId);
+      const selected = visibleReplyMessages(messages, promptId, resolvedTurnId);
       const text = selected.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('');
       const media: ImVisibleMedia[] = [];
       const store = session.accessor.get(ISessionMediaStore);
@@ -392,10 +494,11 @@ class NotificationSessionPorts implements ImSessionPorts {
           if (item !== undefined) media.push(item);
         }
       }
-      const queue = agent.accessor.get(IAgentPromptService).list();
+      const queue = prompt.list();
       const live = queue.active?.id === promptId || queue.launching?.id === promptId || queue.pending.some((item) => item.id === promptId);
-      const turnLive = turnId !== undefined && agent.accessor.get(IAgentLoopService).status().activeTurnId === turnId;
-      return { text, done: !live && !turnLive, media };
+      const turnLive = resolvedTurnId !== undefined && agent.accessor.get(IAgentLoopService).status().activeTurnId === resolvedTurnId;
+      const inFlight = prompt.lookup(promptId)?.terminal === undefined;
+      return { text, done: !live && !turnLive && !inFlight, media };
     });
   }
 
@@ -517,6 +620,28 @@ function recordOf(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function imNativeSteerState(prompt: IAgentPromptService, id: string): 'accepted' | 'steered' | 'started' | undefined {
+  const receipt = prompt.lookup(id);
+  if (!receipt?.steerAccepted) return undefined;
+  if (receipt.steered) return 'steered';
+  if (receipt.turnId !== undefined || receipt.terminal !== undefined) return 'started';
+  return 'accepted';
+}
+
+function imDuplicateDeliveryState(prompt: IAgentPromptService, id: string): ImSubmitResult['deliveryState'] {
+  const native = imNativeSteerState(prompt, id);
+  if (native !== undefined) return native === 'started' ? 'pending' : native;
+  return prompt.list().pending.some((item) => item.id === id) ? 'queued' : 'pending';
+}
+
+function wasSteeredIntoTurn(
+  prompt: IAgentPromptService,
+  handle: { readonly id: string; readonly state: string } | undefined,
+  turnId?: number,
+): boolean {
+  return handle !== undefined && (handle.state === 'steered' || (turnId !== undefined && prompt.lookup(handle.id)?.turnId === turnId));
+}
+
 interface ReplySelectorMessage {
   readonly id?: string;
   readonly role: string;
@@ -525,14 +650,15 @@ interface ReplySelectorMessage {
 }
 
 export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number): T[] {
-  const resolved = turnId ?? messages.find((message) => message.id === promptId)?.source?.turnId;
+  const promptIndex = messages.findIndex((message) => message.id === promptId);
+  const resolved = turnId ?? (promptIndex >= 0 ? messages[promptIndex]?.source?.turnId : undefined);
   if (typeof resolved === 'number') {
-    return messages.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
+    const scope = promptIndex >= 0 ? messages.slice(promptIndex + 1) : messages;
+    return scope.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
   }
-  const start = messages.findIndex((message) => message.id === promptId);
-  if (start < 0) return [];
+  if (promptIndex < 0) return [];
   const selected: T[] = [];
-  for (const message of messages.slice(start + 1)) {
+  for (const message of messages.slice(promptIndex + 1)) {
     if (message.role === 'user' && message.origin?.kind !== 'injection') break;
     if (message.role === 'assistant') selected.push(message);
   }
