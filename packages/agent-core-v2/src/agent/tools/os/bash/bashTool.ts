@@ -354,7 +354,13 @@ export class BashTool implements IBashTool {
     const current = this.tasks.getTask(taskId);
     const exitCode = current?.kind === 'process' ? current.exitCode : proc.exitCode;
     let result: ToolOutputAccumulatorResult;
-    if (current?.status === 'timed_out') {
+    if (current?.cleanupPending === true) {
+      const reason =
+        current.stopReason ??
+        `Task cleanup is unconfirmed; retry TaskStop for the same task (${taskId}) before replacing its work.`;
+      const detail = reason.includes(taskId) ? reason : `task_id: ${taskId}\n${reason}`;
+      result = builder.error(detail, { brief: reason });
+    } else if (current?.status === 'timed_out') {
       const timeoutLabel = formatTimeoutLabel(foregroundTimeoutMs);
       result = builder.error(`Command killed by timeout (${timeoutLabel})`, {
         brief: `Killed by timeout (${timeoutLabel})`,

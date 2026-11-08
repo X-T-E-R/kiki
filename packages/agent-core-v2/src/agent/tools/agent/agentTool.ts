@@ -813,7 +813,7 @@ export class SubagentTool implements ISubagentTool {
     timeoutMs: number,
   ): Promise<ExecutableToolResult> {
     const info = this.tasks.getTask(taskId);
-    if (info?.status === 'completed') {
+    if (info?.status === 'completed' && info.cleanupPending !== true) {
       const snapshot = await this.tasks.getOutputSnapshot(taskId, 32 * 1024);
       const large = snapshot.outputSizeBytes > 1024 * 1024;
       const result = large ? snapshot.preview : await this.tasks.readOutput(taskId);
@@ -823,11 +823,13 @@ export class SubagentTool implements ISubagentTool {
       };
     }
     const timedOut = info?.status === 'timed_out';
-    const message = timedOut
-      ? `Agent timed out after ${formatSubagentTimeoutDescription(timeoutMs)}.`
-      : formatSubagentStoppedMessage(info?.stopReason);
+    const message = info?.cleanupPending === true && info.stopReason !== undefined
+      ? formatSubagentStoppedMessage(info.stopReason)
+      : timedOut
+        ? `Agent timed out after ${formatSubagentTimeoutDescription(timeoutMs)}.`
+        : formatSubagentStoppedMessage(info?.stopReason);
     return {
-      output: this.withMainProfileNotice(handle, formatForegroundAgentFailure(taskId, handle, message, timedOut)),
+      output: this.withMainProfileNotice(handle, formatForegroundAgentFailure(taskId, handle, message, timedOut && info?.cleanupPending !== true)),
       isError: true,
     };
   }

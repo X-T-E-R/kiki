@@ -27,10 +27,20 @@ import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { TaskNotified, TaskStarted, TaskTerminated, TaskWaitDelivered } from '#/agent/task/taskOps';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { BashTool } from '#/agent/tools/os/bash/bashTool';
+import { SubagentTool } from '#/agent/tools/agent/agentTool';
+import { LocalRuntime } from '#/runtime/localRuntime';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { stubWorkspaceContext } from '../../session/workspaceContext/stub-workspace-context';
+import { stubPermissionModeService } from '../permissionMode/stubs';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { HostProcessError, type IHostProcess } from '#/os/interface/hostProcess';
+import { HostProcessError, type IHostProcess, type IHostProcessService } from '#/os/interface/hostProcess';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, TaskOrigin } from '#/agent/contextMemory/types';
@@ -1930,6 +1940,155 @@ describe('AgentTaskService', () => {
     expect(rootTasks.getTask(taskId)?.stopReason).toContain('os.process.kill_failed');
     expect((await rootTasks.stop(taskId))?.status).toBe('killed');
     expect(childTasks.getTask(descendantId)?.status).toBe('killed');
+  });
+
+  it('releases foreground Bash and AgentRun waits with a retryable cleanup error including task_id, then settles after TaskStop', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0, bashAutoBackgroundOnTimeout: false });
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    ix.stub(IAtomicDocumentStore, docs);
+    ix.stub(IFileSystemStorageService, bytes);
+    const service = ix.get(IAgentTaskService);
+    const error = new HostProcessError('os.process.kill_failed', 'Windows process helper did not confirm cleanup before its deadline.', {
+      details: { cleanupComplete: false, phase: 'deadline', pid: 67460 },
+    });
+
+    const proc = {
+      _serviceBrand: undefined,
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: Readable.from(['partial stdout\n']),
+      stderr: Readable.from([]),
+      pid: 67460,
+      exitCode: 0,
+      wait: async () => 0,
+      kill: vi.fn(async () => {}),
+      dispose: vi.fn<() => Promise<void>>()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue(undefined),
+    } as unknown as IHostProcess;
+
+    const env: IHostEnvironment = {
+      _serviceBrand: undefined,
+      osKind: 'Linux',
+      osArch: 'x64',
+      osVersion: 'test',
+      shellPath: '/bin/bash',
+      shellName: 'bash',
+      pathClass: 'posix',
+      homeDir: '/home/test',
+      ready: Promise.resolve(),
+    };
+    const runner: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn: vi.fn(async () => proc),
+    };
+    const backend = disposables.add(new LocalRuntime('test-ws', env, undefined, runner, undefined, undefined));
+    const runtime: IAgentRuntimeService = {
+      _serviceBrand: undefined,
+      onDidChange: () => ({ dispose: () => {} }),
+      isAvailable: () => true,
+      inspect: () => backend,
+      prepareFor: async () => backend,
+      acquire: () => ({ runtime: backend, track: (r) => r, dispose: () => {} }),
+    };
+    const toolPolicy: IAgentToolPolicyService = {
+      _serviceBrand: undefined,
+      isToolActive: () => true,
+    } as unknown as IAgentToolPolicyService;
+    const bash = new BashTool(
+      runtime,
+      ix.get(ISessionContext),
+      stubWorkspaceContext('/tmp/test-session'),
+      service,
+      toolPolicy,
+      ix.get(IConfigService),
+      stubFlag(),
+      stubPermissionModeService(() => 'manual'),
+    );
+
+    let bashTaskId!: string;
+    const bashResult = await executeTool(bash, {
+      turnId: 1,
+      toolCallId: 'call_fg_bash',
+      args: { command: 'echo ok' },
+      signal: new AbortController().signal,
+      onForegroundTaskStart: (id) => { bashTaskId = id; },
+    });
+    expect(bashResult.isError).toBe(true);
+    expect(String(bashResult.output)).toContain(bashTaskId);
+    expect(String(bashResult.output)).toContain('Task cleanup is unconfirmed; retry TaskStop');
+    expect(String(bashResult.output)).not.toContain('Command executed successfully');
+    expect(service.getTask(bashTaskId)).toMatchObject({
+      taskId: bashTaskId,
+      cleanupPending: true,
+    });
+
+    const settledBash = await service.stop(bashTaskId, 'Confirm bash cleanup');
+    expect(settledBash).toMatchObject({
+      taskId: bashTaskId,
+      status: 'killed',
+      cleanupPending: undefined,
+      stopReason: 'Confirm bash cleanup',
+    });
+
+    const childIx = buildAgentIx('agent-fg-child', docs, bytes);
+    childIx.stub(IConfigService, { get: (() => ({ killGracePeriodMs: 0 })) as IConfigService['get'] });
+    agentHandles.set('agent-fg-child', { id: 'agent-fg-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    const childTasks = childIx.get(IAgentTaskService);
+    const childForceStop = vi.fn(async () => {}).mockRejectedValueOnce(error);
+    childTasks.registerTask({
+      ...fakeProcessTask(),
+      start: () => new Promise<void>(() => {}),
+      forceStop: childForceStop,
+    });
+
+    const subagentController = new AbortController();
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      subagentController.signal.addEventListener('abort', () => reject(subagentController.signal.reason), { once: true });
+    });
+    const agentTaskId = service.registerTask(
+      new SubagentTask({ agentId: 'agent-fg-child', profileName: 'worker', completion }, 'fg agent', subagentController),
+      { detached: false, timeoutMs: 1 },
+    );
+
+    const subagentTool = Object.assign(Object.create(SubagentTool.prototype), {
+      tasks: service,
+      isMainCaller: false,
+      withMainProfileNotice: (_handle: unknown, text: string) => text,
+    }) as SubagentTool;
+
+    const agentResult = await subagentTool.resumeExecutionWait(
+      { prompt: 'work', description: 'fg agent' },
+      {
+        turnId: 1,
+        toolCallId: 'call_fg_agent',
+        signal: new AbortController().signal,
+        executionWait: {
+          kind: 'agent',
+          taskId: agentTaskId,
+          handle: { agentId: 'agent-fg-child', profileName: 'worker' },
+          runLabel: 'fg agent',
+          timeoutMs: 1,
+        },
+      },
+    );
+    expect(agentResult.isError).toBe(true);
+    expect(String(agentResult.output)).toContain(`task_id: ${agentTaskId}`);
+    expect(String(agentResult.output)).toContain(agentTaskId);
+    expect(String(agentResult.output)).toContain('Task cleanup is unconfirmed; retry TaskStop');
+    expect(String(agentResult.output)).not.toContain('resume_hint:');
+    expect(service.getTask(agentTaskId)).toMatchObject({
+      taskId: agentTaskId,
+      cleanupPending: true,
+    });
+
+    const settledAgent = await service.stop(agentTaskId, 'Confirm agent cleanup');
+    expect(settledAgent).toMatchObject({
+      taskId: agentTaskId,
+      status: 'killed',
+      cleanupPending: undefined,
+      stopReason: 'Confirm agent cleanup',
+    });
   });
 
   function mapBackedDocs(): IAtomicDocumentStore {

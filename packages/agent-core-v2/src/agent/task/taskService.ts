@@ -1327,9 +1327,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
     this.fireWorkChange();
     const diagnostic = error as { code?: unknown; details?: unknown } | null;
-    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
+    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task (${entry.taskId}) before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
     this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
     await this.persistLive(entry);
+    entry.foregroundRelease?.resolve('terminal');
   }
 
   async stopAll(reason?: string): Promise<readonly AgentTaskInfo[]> {
@@ -1448,7 +1449,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   ): Promise<ForegroundTaskReleaseReason | undefined> {
     const entry = this.tasks.get(taskId);
     if (entry === undefined) return this.localTaskIds.has(taskId) ? 'terminal' : undefined;
-    if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) {
+    if (TERMINAL_STATUSES.has(entry.status) || entry.cleanupFailure !== undefined) {
       await entry.persistWriteQueue;
       return 'terminal';
     }
@@ -1461,7 +1462,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       foregroundReleasePromise,
       entry.lifecyclePromise.then(() => 'terminal' as const),
     ]);
-    if (reason === 'terminal' && entry.cleanupFailure === undefined) {
+    if (reason === 'terminal') {
       await entry.persistWriteQueue;
     }
     return reason;
