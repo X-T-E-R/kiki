@@ -12,6 +12,7 @@ import { writeInstalled } from '#/app/plugin/store';
 import type { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
@@ -24,7 +25,7 @@ import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageSe
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-import { appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext } from '../../harness';
+import { agentService, appService, createTestAgent, externalHookServices, permissionModeServices, type TestAgentContext } from '../../harness';
 import { makeHookRunner } from './runner-stub';
 import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '../../../../transcript/src/index';
 
@@ -127,7 +128,15 @@ interface Replay {
   close(): Promise<void>;
 }
 
-async function replay(choose: (requestNumber: number, continued: boolean) => Buffer | string, options: { readonly maxAttempts?: number; readonly tool?: boolean; readonly modelAlias?: string; readonly pluginEnabled?: boolean } = {}): Promise<Replay> {
+async function replay(choose: (requestNumber: number, continued: boolean) => Buffer | string, options: {
+  readonly maxAttempts?: number;
+  readonly tool?: boolean;
+  readonly modelAlias?: string;
+  readonly pluginEnabled?: boolean;
+  readonly agentId?: string;
+  readonly parentAgentId?: string;
+  readonly profileName?: string;
+} = {}): Promise<Replay> {
   const home = await mkdtemp(join(tmpdir(), 'upstream-retry-continuation-'));
   const requests: Replay['requests'] = [];
   const responseBodies: Buffer[] = [];
@@ -181,9 +190,17 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
     appService(IProtocolAdapterRegistry, new FixtureRegistry()),
     appService(IFileSystemStorageService, new FileStorageService(join(home, 'persistence'))),
     appService(IAppendLogStore, new SyncDescriptor(AppendLogStore)),
+    ...(options.agentId === undefined ? [] : [
+      agentService(IAgentScopeContext, makeAgentScopeContext({
+        agentId: options.agentId,
+        agentScope: `agents/${options.agentId}`,
+        parentAgentId: options.parentAgentId,
+      })),
+    ]),
     { initialConfig: { retry: { maxAttempts: options.maxAttempts ?? 5, policies: [{ match: '.+', backoff: 0 }] } } },
   );
   if (options.modelAlias !== undefined) local.configure({ provider: { type: 'anthropic', model: options.modelAlias, apiKey: 'YOUR_API_KEY', baseUrl: origin } });
+  if (options.profileName !== undefined) local.get(IAgentProfileService).update({ profileName: options.profileName, executorId: 'native' });
   if (options.tool === true) {
     local.get(IAgentToolRegistryService).register({
       name: 'SaveWork', description: 'Save work', parameters: { type: 'object' },
@@ -301,8 +318,9 @@ describe('provider failures through the real Messages SDK', () => {
       if (requestNumber === 3) return encryptedEmptyMissingTerminal;
       if (requestNumber === 4) return terminalSse('Completed after recovering two separate failure streaks.');
       return encryptedEmptyMissingTerminal;
-    }, { tool: true, modelAlias: argonModel });
+    }, { tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
     try {
+      expect(replayed.local.get(IAgentScopeContext)).toMatchObject({ agentId: 'agent-314', parentAgentId: 'main' });
       expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
       expect(replayed.requests).toHaveLength(4);
       expect(replayed.retryEvents).toHaveLength(0);
@@ -320,7 +338,7 @@ describe('provider failures through the real Messages SDK', () => {
       if (requestNumber === 1) return encryptedEmptyMissingTerminal;
       if (requestNumber === 2) return toolSse();
       return encryptedEmptyMissingTerminal;
-    }, { tool: true, modelAlias: argonModel });
+    }, { tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
     open.push(repeatedAfterReset);
     expect(await (await prompt(repeatedAfterReset)).completion).toMatchObject({ state: 'failed' });
     expect(repeatedAfterReset.requests).toHaveLength(4);
