@@ -442,7 +442,7 @@ describe('ProviderQuotaPanel', () => {
 
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
     const codexRow = container.querySelector<HTMLElement>('[data-quota-engine="codex-acp"]')!;
-    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.dataset['engineQuotaMode']).toBe('native');
     expect(claudeRow.textContent).toContain('Native 5h window');
     expect(claudeRow.textContent).toContain('35%');
     expect(container.querySelector('[data-quota-engines-auto-note="true"]')?.textContent).toContain('Auto instance selection');
@@ -453,7 +453,7 @@ describe('ProviderQuotaPanel', () => {
       agent_executor_overrides: { 'claude-acp': { quota_source: 'plugin:alpha/claude' } },
     });
     expect(harnessQuotaRead).not.toHaveBeenCalled();
-    expect(claudeRow.dataset.engineQuotaMode).toBe('plugin');
+    expect(claudeRow.dataset['engineQuotaMode']).toBe('plugin');
     expect(claudeRow.textContent).not.toContain('Native 5h window');
     expect(claudeRow.textContent).toContain('alpha-work@example.test');
     expect(claudeRow.textContent).toContain('Remaining 78%');
@@ -468,7 +468,7 @@ describe('ProviderQuotaPanel', () => {
     expect(claudeRow.textContent).toContain('42.50 USD');
 
     // Other engine and native provider remain completely unaffected
-    expect(codexRow.dataset.engineQuotaMode).toBe('native');
+    expect(codexRow.dataset['engineQuotaMode']).toBe('native');
     expect(codexRow.textContent).toContain('Codex window');
     expect(container.querySelector('[data-quota-item="provider-native"]')?.textContent).toContain('19.50 USD');
 
@@ -477,7 +477,7 @@ describe('ProviderQuotaPanel', () => {
     expect(patchConfig).toHaveBeenLastCalledWith({
       agent_executor_overrides: { 'claude-acp': { quota_source: null } },
     });
-    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.dataset['engineQuotaMode']).toBe('native');
     expect(claudeRow.textContent).toContain('Native 5h window');
   });
   it('fills in an engine without native quota using multi-bucket plugin readings, distinguishing 0 from unknown and folding model lists', async () => {
@@ -551,8 +551,8 @@ describe('ProviderQuotaPanel', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
 
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
-    expect(agyRow.dataset.engineQuotaMode).toBe('plugin');
-    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(agyRow.dataset['engineQuotaMode']).toBe('plugin');
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(agyRow.querySelectorAll('[data-quota-account]')).toHaveLength(2);
 
     const workAccount = agyRow.querySelector('[data-quota-account="work@example.test"]')!;
@@ -634,12 +634,12 @@ describe('ProviderQuotaPanel', () => {
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
 
     // Expired state on claude-acp (readAt present, readings cleared after TTL)
-    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('expired');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('expired');
     expect(claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')).not.toBeNull();
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
 
     // Unqueried state on agy-cli (never queried)
-    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('unqueried');
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('unqueried');
     expect(agyRow.querySelector('[data-engine-quota-unqueried="agy-cli"]')).not.toBeNull();
 
     // Failing refresh on claude-acp shows error and never falls back to Native Claude Meter
@@ -665,7 +665,7 @@ describe('ProviderQuotaPanel', () => {
     });
     await click(container, '[data-engine-quota-query="agy-cli"]');
     expect(harnessQuotaRead).toHaveBeenLastCalledWith('plugin:magpie/agy');
-    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(agyRow.textContent).toContain('main@example.test');
     expect(agyRow.textContent).toContain('Remaining 91%');
   });
@@ -688,7 +688,7 @@ describe('ProviderQuotaPanel', () => {
     const container = await mount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
-    expect(claudeRow.dataset.engineQuotaMode).toBe('native');
+    expect(claudeRow.dataset['engineQuotaMode']).toBe('native');
     expect(claudeRow.textContent).toContain('Native Window');
     expect(claudeRow.querySelector('[data-engine-quota-source="claude-acp"]')).toBeNull();
   });
@@ -753,19 +753,19 @@ describe('ProviderQuotaPanel', () => {
 
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
     expect(container.querySelector('[data-quota-engine-plugin-error]')?.textContent).toContain('Quota service offline');
-    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('error');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('error');
     expect(claudeRow.textContent).not.toContain('unavailable or not enabled');
 
     // Retry initial load -> succeeds and renders readings
     await click(container, '[data-quota-engine-plugin-retry]');
     expect(container.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
-    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(claudeRow.textContent).toContain('alpha@example.test');
     expect(claudeRow.textContent).toContain('Remaining 75%');
 
     // Trigger a config save that invalidates queries while next cached() refetch fails -> preserves loaded catalog & readings
     await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:alpha/claude');
-    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset.engineQuotaStatus).toBe('ready');
+    expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(claudeRow.textContent).toContain('alpha@example.test');
   });
   it('transitions cached plugin readings from ready to expired once minRefreshIntervalMs elapses on an open page without polling', async () => {
@@ -822,18 +822,18 @@ describe('ProviderQuotaPanel', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(20); });
 
       const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
-      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
       expect(agyRow.textContent).toContain('Remaining 80%');
       expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
       expect(harnessQuotaRead).not.toHaveBeenCalled();
 
       // Advance 119 seconds (total age 299.02s < 300s): still ready
       await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
-      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('ready');
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
 
       // Advance past the 300s minRefreshIntervalMs boundary: transitions to expired without polling
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
-      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset.engineQuotaStatus).toBe('expired');
+      expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('expired');
       expect(agyRow.querySelector('[data-engine-quota-expired="agy-cli"]')).not.toBeNull();
       expect(agyRow.textContent).not.toContain('Remaining 80%');
       expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
