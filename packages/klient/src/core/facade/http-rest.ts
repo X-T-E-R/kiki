@@ -8,6 +8,10 @@ import type {
   ArchiveSessionResponse,
   AuthSummary,
   ConfigResponse,
+  CronRunResult,
+  CronScriptExecution,
+  CronTrigger,
+  CronTriggerCheck,
   FsSearchResponse,
   GetTaskQuery,
   GoalSnapshot,
@@ -308,6 +312,9 @@ export interface HttpRestCronTask {
   readonly stale: boolean;
   readonly created_at: string;
   readonly last_fired_at: string | null;
+  readonly trigger?: CronTrigger;
+  readonly approved_script?: CronScriptExecution;
+  readonly last_trigger_check?: CronTriggerCheck;
 }
 
 export interface HttpRestCronTaskDetail extends HttpRestCronTask {
@@ -320,10 +327,14 @@ export interface HttpRestCreateCronTask {
   readonly prompt: string;
   readonly recurring?: boolean;
   readonly delivery_mode?: import('@kiki/protocol').CronDeliveryMode;
+  readonly trigger?: CronTrigger;
+  readonly script_confirmation?: CronScriptExecution;
   readonly paused?: boolean;
 }
 
-export type HttpRestUpdateCronTask = Partial<Omit<HttpRestCreateCronTask, 'paused'>>;
+export type HttpRestUpdateCronTask = Omit<Partial<Omit<HttpRestCreateCronTask, 'paused'>>, 'trigger'> & {
+  readonly trigger?: CronTrigger | null;
+};
 
 /** `session_id` disambiguates a task id that exists in several sessions. */
 export interface HttpRestCronTaskQuery {
@@ -733,6 +744,7 @@ export interface HttpRestFacade {
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */
   readonly cron: {
+    script(sessionId: string, script: string): Promise<{ readonly execution: CronScriptExecution | null }>;
     get(taskId: string, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
     create(input: HttpRestCreateCronTask): Promise<{ readonly task: HttpRestCronTaskDetail }>;
     update(taskId: string, input: HttpRestUpdateCronTask, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
@@ -753,7 +765,7 @@ export interface HttpRestFacade {
     run(
       taskId: string,
       query?: HttpRestCronTaskQuery,
-    ): Promise<{ readonly triggered: true }>;
+    ): Promise<CronRunResult>;
     remove(
       taskId: string,
       query?: HttpRestCronTaskQuery,

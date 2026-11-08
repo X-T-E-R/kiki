@@ -23,6 +23,8 @@ import type {
   ActivateSkillRequest,
   AuthSummary,
   ConfigResponse,
+  CronRunResult,
+  CronScriptExecution,
   FsSearchResponse,
   GetCatalogProviderResponse,
   ListMcpServersResponse,
@@ -756,6 +758,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     cron: {
+      script: (sessionId, script) => transport.json<{ readonly execution: CronScriptExecution | null }>(
+        '/cron/scripts', { query: { session_id: sessionId, script } },
+      ),
       get: (taskId, query = {}) => transport.json<{ readonly task: HttpRestCronTaskDetail }>(
         `/cron/${encodeURIComponent(taskId)}`, { query: { session_id: query.session_id } },
       ),
@@ -781,7 +786,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/cron/${encodeURIComponent(taskId)}:resume`,
         { method: 'POST', body: {}, query: { session_id: query.session_id } },
       ),
-      run: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly triggered: true }>(
+      run: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<CronRunResult>(
         `/cron/${encodeURIComponent(taskId)}:run`,
         { method: 'POST', body: {}, query: { session_id: query.session_id } },
       ),

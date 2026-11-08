@@ -552,10 +552,19 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
 
   const runMutation = useMutation({
     mutationFn: (task: CronTask) => client.runCronTask(task.id, task.session_id ?? undefined),
-    onSuccess: () => {
-      pushToast({ tone: 'success', text: t('cron.toast.triggered') });
+    onSuccess: (result) => {
+      if (result.triggered) {
+        pushToast({ tone: 'success', text: t('cron.toast.triggered') });
+      } else if (result.check.outcome === 'skipped') {
+        pushToast({ tone: 'info', text: t('cron.toast.skipped') });
+      } else {
+        pushToast({ tone: 'error', text: t('cron.toast.failed') });
+      }
     },
     onError: reportError,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CRON_TASKS_QUERY_KEY });
+    },
   });
 
   const deleteMutation = useMutation({

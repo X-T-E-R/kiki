@@ -543,6 +543,7 @@ export type CronTask = HttpRestCronTask;
 export type CronTaskDetail = HttpRestCronTaskDetail;
 export type CreateCronTaskRequest = HttpRestCreateCronTask;
 export type UpdateCronTaskRequest = HttpRestUpdateCronTask;
+export type CronRunResult = import('@kiki/protocol').CronRunResult;
 
 export interface ListCronTasksResponse {
   readonly items: readonly CronTask[];
@@ -3036,6 +3037,10 @@ export class KikiClient {
     return this.run(this.rest.cron.list(query));
   }
 
+  getCronScript(sessionId: string, script: string): Promise<{ readonly execution: import('@kiki/protocol').CronScriptExecution | null }> {
+    return this.run(this.rest.cron.script(sessionId, script));
+  }
+
   getCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTaskDetail }> {
     return this.run(this.rest.cron.get(taskId, { session_id: sessionId }));
   }
@@ -3058,7 +3063,7 @@ export class KikiClient {
   }
 
   /** Fire the task once immediately; its schedule is untouched. */
-  runCronTask(taskId: string, sessionId?: string): Promise<{ readonly triggered: true }> {
+  runCronTask(taskId: string, sessionId?: string): Promise<CronRunResult> {
     return this.run(this.rest.cron.run(taskId, { session_id: sessionId }));
   }
 

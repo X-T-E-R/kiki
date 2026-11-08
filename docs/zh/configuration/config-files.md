@@ -767,6 +767,39 @@ backoff = 15000
 
 在 print 模式（`kiki -p "<prompt>"`）下，只要还有未决的后台任务，Kiki 在 main agent 的 turn 结束后不会退出：每个任务完成都会以合成 user 消息回馈给 main agent，steer 出新的 turn（默认 `print_background_mode = "steer"`），直到某 turn 结束时没有任何未决任务才退出。该循环受 `print_wait_ceiling_s` 与 `print_max_turns` 约束，默认值都近似不设限。print 模式下后台工作也不会被墙钟超时杀掉：后台 `Bash` 任务默认无超时（`bash_task_timeout_s = 0`），subagent 默认无超时（`[subagent] timeout_ms = 0`），只有模型自己能停止任务。将 `print_background_mode` 设为 `"drain"` 可等待任务结束但不回馈结果，设为 `"exit"` 则在 main agent 结束后立即退出。
 
+## `cron`
+
+`cron` 控制内置定时调度器（`Cron` 工具与 `/api/cron`），并登记可供定时任务在唤醒模型前执行的受控脚本。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `disabled` | `boolean` | `false` | 禁用所有定时触发与新建 `Cron` 任务（可被 `KIKI_DISABLE_CRON=1` 覆盖） |
+| `no_jitter` | `boolean` | `false` | 禁用确定性调度抖动（可被 `KIKI_CRON_NO_JITTER=1` 覆盖） |
+| `no_stale` | `boolean` | `false` | 禁用周期任务的 7 天自动过期（可被 `KIKI_CRON_NO_STALE=1` 覆盖） |
+| `poll_interval_ms` | `integer \| null` | `600000`（10 分钟） | 全量任务清单兜底刷新间隔（毫秒；`0` 或 `null` 关闭自动触发，可被 `KIKI_CRON_POLL_INTERVAL_MS` 覆盖） |
+| `scripts` | `object[]` | — | owner 登记的触发检查脚本列表（`[[cron.scripts]]`），供匹配工作区中的 `trigger.script` 引用 |
+
+每个 `[[cron.scripts]]` 条目定义一个脚本 ID：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `string` | 必填 | 唯一脚本 ID，需匹配 `^[a-z][a-z0-9-]{0,63}$` |
+| `command` | `string` | 必填 | 可执行文件的绝对路径（Windows 下必须以 `.exe` 结尾） |
+| `args` | `string[]` | `[]` | 直接传给可执行文件的固定参数数组，不经过 Shell |
+| `workspaces` | `string[]` | 必填 | 允许使用该脚本的工作区根目录绝对路径非空列表 |
+| `timeout` | `integer` | `10` | 单次检查超时秒数（`1`–`60`） |
+
+```toml
+[[cron.scripts]]
+id = "inbox-gate"
+command = "/usr/local/bin/node"
+args = ["/Users/alice/.kiki/scripts/inbox-gate.mjs"]
+workspaces = ["/Users/alice/projects/assistant"]
+timeout = 10
+```
+
+在 `[[cron.scripts]]` 中登记条目仅代表允许匹配工作区选择该 `id`，本身不会自动执行脚本。创建或更新带 `trigger.script` 的计划时，仍需由 owner 批准解析后的 `{ command, args, cwd, timeout, environment: "isolated" }` 快照（通过 `Cron` 工具审批弹窗，或 [`POST /api/cron`](../server/rest-api.md#后台任务) 中的 `script_confirmation`）。之后若在 `config.toml` 中修改了 `command`、`args`、`workspaces` 或 `timeout`，已有任务不会自动切换去跑新命令，而是返回 `not_authorized`，直到重新创建或重新批准。`trigger` 用例与退出码语义见[定时任务](../reference/tools.md#定时任务)。
+
 ## `subagent`
 
 `subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents-and-subagents.md#agent-文件格式)；原宿主派发策略设置已移除。`engine:claude-acp` 这类保留的原生引擎目标也按稳定名称参与这些检查：显式写出的 `allowed_subagents` 必须包含准确的 `engine:<executor-id>` 名称，才能允许启动这个 child。执行器描述符自动投影目标不会放宽已有 allowlist。

@@ -9,6 +9,10 @@ import {
   ISessionIndex,
   computeNextCronRun,
   cronToHuman,
+  cronScheduleBase,
+  findCronScript,
+  isConsumedOneShot,
+  matchesCronScript,
   jitteredNextCronRunMs,
   oneShotJitteredNextCronRunMs,
   parseCronExpression,
@@ -36,6 +40,8 @@ import {
   cronTaskDetailResponseSchema,
   createCronTaskRequestSchema,
   updateCronTaskRequestSchema,
+  cronScriptPreviewQuerySchema,
+  cronScriptPreviewResponseSchema,
 } from '../protocol/rest-cron';
 import { parseActionSuffix } from './action-suffix';
 
@@ -87,6 +93,9 @@ interface CronTaskWire {
   readonly stale: boolean;
   readonly created_at: string;
   readonly last_fired_at: string | null;
+  readonly trigger?: import('@kiki/protocol').CronTrigger;
+  readonly approved_script?: import('@kiki/protocol').CronScriptExecution;
+  readonly last_trigger_check?: import('@kiki/protocol').CronTriggerCheck;
 }
 
 const actionParamsSchema = z.object({ tail: z.string().min(1) });
@@ -94,6 +103,22 @@ const taskParamsSchema = z.object({ task_id: z.string().min(1) });
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
 export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
+  const scriptRoute = defineRoute({
+    method: 'GET', path: '/cron/scripts', querystring: cronScriptPreviewQuerySchema,
+    success: { data: cronScriptPreviewResponseSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.SESSION_NOT_FOUND]: {} },
+    description: 'Preview a registered cron script before approving its execution for a session', tags: ['cron'],
+  }, async (req, reply) => {
+    const session = await sessionWorkspace(core, req.query.session_id);
+    if (session === undefined) {
+      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'target session does not exist', req.id));
+      return;
+    }
+    const execution = await lookupCronScript(core, req.query.script, req.query.session_id);
+    reply.send(okEnvelope({ execution: execution ?? null }, req.id));
+  });
+  app.get(scriptRoute.path, scriptRoute.options, scriptRoute.handler as Parameters<CronRouteHost['get']>[2]);
+
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -168,7 +193,10 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
         }
         const context = await presentationContext(core);
         const cron = live?.accessor.get(ISessionCronService);
-        const init = { cron: req.body.cron, prompt: req.body.prompt, recurring: req.body.recurring ?? true, paused: req.body.paused ?? false, deliveryMode: req.body.delivery_mode ?? 'idle' };
+        const trigger = req.body.trigger;
+        const approvedScript = req.body.script_confirmation;
+        if (!(await validateScriptConfirmation(core, trigger?.script, approvedScript, req.body.session_id, reply, req.id))) return;
+        const init = { cron: req.body.cron, prompt: req.body.prompt, recurring: req.body.recurring ?? true, paused: req.body.paused ?? false, deliveryMode: req.body.delivery_mode ?? 'idle', trigger, approvedScript };
         let task: CronTask;
         if (cron !== undefined) {
           task = await cron.addTask(init);
@@ -202,7 +230,7 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
         return;
       }
       const located = resolved.task;
-      const { session_id: requestedSessionId, delivery_mode: deliveryMode, ...editable } = req.body;
+      const { session_id: requestedSessionId, delivery_mode: deliveryMode, trigger: requestedTrigger, script_confirmation: confirmation, ...editable } = req.body;
       const targetSessionId = requestedSessionId ?? located.sessionId;
       await withCronSessions(core, [located.sessionId, targetSessionId], async () => {
         const manager = core.accessor.get(ISessionManager);
@@ -228,11 +256,16 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
             return;
           }
         }
-        const patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'tags' | 'deliveryMode'>> = {
+        const trigger = requestedTrigger === undefined ? current.trigger : requestedTrigger ?? undefined;
+        const updateApproval = requestedTrigger !== undefined || confirmation !== undefined ||
+          (trigger?.script !== undefined && targetSessionId !== located.sessionId);
+        if (updateApproval && !(await validateScriptConfirmation(core, trigger?.script, confirmation, targetSessionId, reply, req.id))) return;
+        const patch = {
           ...editable,
           deliveryMode: deliveryMode ?? current.deliveryMode,
           tags: targetSessionId === undefined ? current.tags : { ...current.tags, [CRON_SESSION_TAG]: targetSessionId },
         };
+        if (updateApproval) Object.assign(patch, { trigger, approvedScript: confirmation, lastTriggerCheck: undefined });
         let task: CronTask | undefined;
         if (liveCron !== undefined) task = await liveCron.updateTask(current.id, patch);
         else {
@@ -321,16 +354,16 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
             reply.send(taskNotFound(parsed.id, req.id));
             return;
           }
-          if (!(await cron.fireTaskNow(parsed.id))) {
-            throw new Error(`cron task ${parsed.id} could not be triggered`);
-          }
-          requestLog(req)?.info({ task_id: parsed.id, session_id: resolved.task.sessionId }, 'cron task triggered');
-          reply.send(okEnvelope({ triggered: true as const }, req.id));
+          const result = await cron.fireTaskNow(parsed.id);
+          if (result === undefined) throw new Error(`cron task ${parsed.id} could not be triggered`);
+          requestLog(req)?.info({ task_id: parsed.id, session_id: resolved.task.sessionId, triggered: result.triggered }, 'cron task checked');
+          reply.send(okEnvelope(result, req.id));
         });
         return;
       }
 
       const paused = parsed.action === 'pause';
+      if (!paused && !(await validateScriptConfirmation(core, resolved.task.task.trigger?.script, resolved.task.task.approvedScript, resolved.task.sessionId, reply, req.id))) return;
       const updated = await setCronTaskPaused(core, resolved.task, paused);
       if (updated === undefined) {
         reply.send(taskNotFound(parsed.id, req.id));
@@ -411,6 +444,30 @@ function validateCron(cron: string, reply: { send(payload: unknown): unknown }, 
 
 function ambiguousTask(taskId: string, requestId: string): unknown {
   return errEnvelope(ErrorCode.VALIDATION_FAILED, `cron task ${taskId} exists in multiple sessions; pass session_id`, requestId);
+}
+
+async function lookupCronScript(core: Scope, scriptId: string, sessionId: string | undefined): Promise<import('@kiki/protocol').CronScriptExecution | undefined> {
+  if (sessionId === undefined) return undefined;
+  const live = core.accessor.get(ISessionManager).get(sessionId);
+  const cwd = live === undefined ? (await core.accessor.get(ISessionIndex).get(sessionId))?.cwd : live.accessor.get(ISessionContext).cwd;
+  if (cwd === undefined) return undefined;
+  const config = core.accessor.get(IConfigService);
+  await config.ready;
+  return findCronScript(config.get<CronConfig>(CRON_SECTION), scriptId, cwd);
+}
+
+async function validateScriptConfirmation(
+  core: Scope,
+  scriptId: string | undefined,
+  confirmation: import('@kiki/protocol').CronScriptExecution | undefined,
+  sessionId: string | undefined,
+  reply: { send(payload: unknown): unknown },
+  requestId: string,
+): Promise<boolean> {
+  if (scriptId === undefined && confirmation === undefined) return true;
+  if (scriptId !== undefined && matchesCronScript(confirmation, await lookupCronScript(core, scriptId, sessionId))) return true;
+  reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Review the registered script in GET /api/cron/scripts and send the current execution as script_confirmation.', requestId));
+  return false;
 }
 
 async function sessionWorkspace(core: Scope, sessionId: string): Promise<string | undefined> {
@@ -584,6 +641,9 @@ function toWireTask(located: LocatedCronTask, context: CronPresentationContext):
     stale,
     created_at: new Date(task.createdAt).toISOString(),
     last_fired_at: task.lastFiredAt === undefined ? null : new Date(task.lastFiredAt).toISOString(),
+    trigger: task.trigger,
+    approved_script: task.approvedScript,
+    last_trigger_check: task.lastTriggerCheck,
   };
 }
 
@@ -592,13 +652,8 @@ function nextFireForColdTask(
   parsed: ReturnType<typeof parseCronExpression>,
   context: CronPresentationContext,
 ): number | null {
-  if (task.paused === true) return null;
-  const cursor =
-    task.lastFiredAt !== undefined && Number.isFinite(task.lastFiredAt) && task.lastFiredAt <= context.now
-      ? task.lastFiredAt
-      : undefined;
-  const base = cursor !== undefined && cursor > task.createdAt ? cursor : task.createdAt;
-  const ideal = computeNextCronRun(parsed, base);
+  if (task.paused === true || isConsumedOneShot(task)) return null;
+  const ideal = computeNextCronRun(parsed, cronScheduleBase(task, context.now));
   if (ideal === null) return null;
   return task.recurring === false
     ? oneShotJitteredNextCronRunMs(task, ideal, undefined, context.noJitter)

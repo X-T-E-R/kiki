@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { cronDeliveryModeSchema } from '@kiki/protocol';
+import { cronDeliveryModeSchema, cronRunResultSchema, cronScriptExecutionSchema, cronTriggerCheckSchema, cronTriggerSchema, cronTriggerScriptIdSchema } from '@kiki/protocol';
 
 export const cronTaskSchema = z.object({
   id: z.string(),
@@ -16,11 +16,17 @@ export const cronTaskSchema = z.object({
   stale: z.boolean(),
   created_at: z.string(),
   last_fired_at: z.string().nullable(),
+  trigger: cronTriggerSchema.optional(),
+  approved_script: cronScriptExecutionSchema.optional(),
+  last_trigger_check: cronTriggerCheckSchema.optional(),
 });
 
 export const cronTaskDetailSchema = cronTaskSchema.extend({ prompt: z.string() });
 
 export const cronTaskDetailResponseSchema = z.object({ task: cronTaskDetailSchema });
+
+export const cronScriptPreviewQuerySchema = z.object({ session_id: z.string().min(1), script: cronTriggerScriptIdSchema });
+export const cronScriptPreviewResponseSchema = z.object({ execution: cronScriptExecutionSchema.nullable() });
 
 export const createCronTaskRequestSchema = z.object({
   session_id: z.string().min(1),
@@ -28,12 +34,15 @@ export const createCronTaskRequestSchema = z.object({
   prompt: z.string().refine((value) => value.trim().length > 0, 'prompt must not be blank'),
   recurring: z.boolean().optional(),
   delivery_mode: cronDeliveryModeSchema.optional(),
+  trigger: cronTriggerSchema.optional(),
+  script_confirmation: cronScriptExecutionSchema.optional(),
   paused: z.boolean().optional(),
 }).strict();
 
 export const updateCronTaskRequestSchema = createCronTaskRequestSchema
   .omit({ paused: true })
   .partial()
+  .extend({ trigger: cronTriggerSchema.nullish() })
   .refine((value) => Object.keys(value).length > 0, 'at least one editable field is required');
 
 export const listCronTasksQuerySchema = z.object({
@@ -60,6 +69,4 @@ export const deleteCronTaskResponseSchema = z.object({
   deleted: z.literal(true),
 });
 
-export const runCronTaskResponseSchema = z.object({
-  triggered: z.literal(true),
-});
+export const runCronTaskResponseSchema = cronRunResultSchema;

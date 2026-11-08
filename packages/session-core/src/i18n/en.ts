@@ -304,6 +304,8 @@ export const en = {
   'cron.toast.paused': 'Scheduled task paused',
   'cron.toast.resumed': 'Scheduled task resumed',
   'cron.toast.triggered': 'Scheduled task triggered',
+  'cron.toast.skipped': 'Scheduled task skipped; it was not triggered',
+  'cron.toast.failed': 'Scheduled task check failed; it was not triggered',
   'cron.toast.deleted': 'Scheduled task deleted',
   'cron.error.notFound': 'This task no longer exists; the list was refreshed.',
   'cron.error.ambiguous': 'This task id exists in several sessions; refresh and try again.',

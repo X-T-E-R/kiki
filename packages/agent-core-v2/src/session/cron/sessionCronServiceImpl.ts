@@ -1,4 +1,8 @@
 import { ulid } from 'ulid';
+import { cronTriggerSchema, type CronRunResult, type CronScriptExecution, type CronTrigger, type CronTriggerCheck } from '@kiki/protocol';
+
+import { ILogService } from '#/_base/log/log';
+import { IHostProcessService } from '#/os/interface/hostProcess';
 
 import type { ContentPart } from '#/kosong/contract/message';
 import type {
@@ -16,9 +20,10 @@ import { IConfigService } from '#/app/config/config';
 import type { CronDeletedEvent, CronScheduledEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { type ClockSources, resolveClockSources, SYSTEM_CLOCKS } from '#/app/cron/clock';
-import { type CronConfig, CRON_SECTION } from '#/app/cron/configSection';
+import { type CronConfig, CRON_SECTION, findCronScript, matchesCronScript } from '#/app/cron/configSection';
 import { computeNextCronRun, parseCronExpression, type ParsedCronExpression } from '#/app/cron/cron-expr';
-import { CRON_SESSION_TAG, type CronTask, type CronTaskInit } from '#/app/cron/cronTask';
+import { CRON_SESSION_TAG, cronScheduleBase, isConsumedOneShot, type CronTask, type CronTaskInit, type CronTaskPatch } from '#/app/cron/cronTask';
+import { runCronScript, type CronScriptResult } from '#/app/cron/runCronScript';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from '#/app/cron/jitter';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -28,7 +33,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { Turn } from '#/agent/loop/loop';
-import { BugIndicatingError } from '#/errors';
+import { BugIndicatingError, Error2, ErrorCodes } from '#/errors';
 
 import '#/agent/tools/cron/cron-create/cronCreateTool';
 import '#/agent/tools/cron/cron-list/cronListTool';
@@ -57,10 +62,18 @@ const MAX_COALESCE_ITERATIONS = 10_000;
 const CRON_ID_REGEX: RegExp = /^(?:[0-9a-f]{8}|[0-9A-HJKMNP-TV-Z]{26})$/i;
 const MAX_ID_ATTEMPTS = 8;
 
+type CronFire = { readonly coalescedCount: number; readonly firedAt: number };
+
+function hasTrigger(task: CronTask): boolean {
+  return task.trigger?.probability !== undefined || task.trigger?.script !== undefined;
+}
+
 export class SessionCronServiceImpl extends Disposable implements ISessionCronService {
   declare readonly _serviceBrand: undefined;
 
   private readonly persistQueues = new Map<string, Promise<void>>();
+  private readonly activeChecks = new Map<string, { controller: AbortController; work: Promise<CronScriptResult> }>();
+  private stopping = false;
 
   private clocks: ClockSources = SYSTEM_CLOCKS;
   readonly isEnabled: boolean = true;
@@ -72,6 +85,8 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IConfigService private readonly config: IConfigService,
+    @IHostProcessService private readonly processes: IHostProcessService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
 
@@ -98,11 +113,17 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       this.bindMainAgent(existingMain);
     }
 
-    this._register(
-      toDisposable(() => {
-        void this.stop();
-      }),
-    );
+    this._register(this.config.onDidSectionChange((event) => {
+      if (event.domain !== CRON_SECTION) return;
+      for (const [id, { controller }] of this.activeChecks) {
+        const task = this.tasks.get(id);
+        const scriptId = task?.trigger?.script;
+        if (this.isDisabled() || scriptId === undefined || !matchesCronScript(task?.approvedScript, this.getScriptExecution(scriptId))) {
+          controller.abort('not_authorized');
+        }
+      }
+    }));
+    this._register(toDisposable(() => this.stop()));
   }
 
   private get tasks(): Map<string, CronTask> {
@@ -169,8 +190,20 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return this.getCronConfig().disabled;
   }
 
+  getScriptExecution(id: string): CronScriptExecution | undefined {
+    return findCronScript(this.getCronConfig(), id, this.ctx.cwd);
+  }
+
+  private validateTrigger(trigger: CronTrigger | undefined, approved: CronScriptExecution | undefined): void {
+    if (trigger !== undefined) cronTriggerSchema.parse(trigger);
+    if (trigger?.script !== undefined && !matchesCronScript(approved, this.getScriptExecution(trigger.script))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Approve the current script execution for this workspace before scheduling it.');
+    }
+  }
+
   async addTask(init: CronTaskInit): Promise<CronTask> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot schedule cron tasks');
+    this.validateTrigger(init.trigger, init.approvedScript);
     const task: CronTask = {
       ...init,
       deliveryMode: init.deliveryMode ?? 'idle',
@@ -193,6 +226,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       await this.persistEnqueue(id, async () => {
         if (!this.tasks.has(id)) return;
         await this.store.delete(this.ctx.workspaceId, id);
+        this.activeChecks.get(id)?.controller.abort('cancelled');
         const deleted = this.removeByIds([id]);
         this.dispatchCron(new CronDelete({ ids: deleted }));
         removed = deleted.length > 0;
@@ -206,7 +240,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return this.updateTask(id, { paused });
   }
 
-  async updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags' | 'deliveryMode'>>): Promise<CronTask | undefined> {
+  async updateTask(id: string, patch: CronTaskPatch): Promise<CronTask | undefined> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
     if (patch.cron !== undefined) parseCronExpression(patch.cron);
     let updated: CronTask | undefined;
@@ -214,6 +248,11 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       const existing = this.tasks.get(id);
       if (existing === undefined) return;
       updated = { ...existing, ...patch };
+      if (patch.paused === false) this.validateTrigger(updated.trigger, updated.approvedScript);
+      if (Object.hasOwn(patch, 'trigger') || Object.hasOwn(patch, 'approvedScript')) {
+        this.validateTrigger(updated.trigger, updated.approvedScript);
+        updated = { ...updated, lastTriggerCheck: undefined };
+      }
       await this.store.save(this.ctx.workspaceId, updated);
       this.syncTask(updated, id);
     });
@@ -227,6 +266,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   private syncTask(task: CronTask | undefined, id: string): void {
+    this.activeChecks.get(id)?.controller.abort('cancelled');
     if (task === undefined || task.tags?.[CRON_SESSION_TAG] !== this.ctx.sessionId) {
       this.removeByIds([id]);
       this.lastSeenAt.delete(id);
@@ -238,12 +278,14 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     this.dispatchCron(new CronAdd({ task }));
   }
 
-  async fireTaskNow(id: string): Promise<boolean> {
+  async fireTaskNow(id: string): Promise<CronRunResult | undefined> {
     const task = this.tasks.get(id);
-    if (task === undefined || this.inFlight.has(id)) return false;
+    if (this.stopping || task === undefined || this.inFlight.has(id) || isConsumedOneShot(task)) return undefined;
     this.inFlight.add(id);
     try {
-      return await this.deliverFire(task, { coalescedCount: 1, firedAt: this.clocks.wallNow() });
+      const fire = { coalescedCount: 1, firedAt: this.clocks.wallNow() };
+      if (hasTrigger(task)) return await this.deliverConditional(task, fire);
+      return await this.deliverFire(task, fire) ? { triggered: true } : undefined;
     } finally {
       this.inFlight.delete(id);
     }
@@ -304,10 +346,14 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   async start(): Promise<void> {
     if (this.started) return;
     await this.config.ready;
+    this.stopping = false;
     this.started = true;
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    for (const { controller } of this.activeChecks.values()) controller.abort('cancelled');
+    await Promise.allSettled([...this.activeChecks.values()].map(({ work }) => work));
     this.inFlight.clear();
     this.lastSeenAt.clear();
     this.seededFromStore.clear();
@@ -318,8 +364,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
   async tick(): Promise<void> {
     await this.config.ready;
-    if (this.getCronConfig().disabled) return;
-    if (this.tasks.size === 0) return;
+    if (this.stopping || this.getCronConfig().disabled || this.tasks.size === 0) return;
 
     const mainHandle = this.agentLifecycle.get('main');
     if (!mainHandle) return;
@@ -335,6 +380,10 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
   private async processDue(task: CronTask, now: number): Promise<void> {
     if (task.paused === true || this.inFlight.has(task.id)) return;
+    if (isConsumedOneShot(task)) {
+      await this.removeTasks([task.id]);
+      return;
+    }
 
     let parsed: ParsedCronExpression;
     try {
@@ -360,8 +409,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     this.seededFromStore.add(task.id);
 
     const seen = this.lastSeenAt.get(task.id);
-    const baseFromMs =
-      seen !== undefined && seen > task.createdAt ? seen : task.createdAt;
+    const baseFromMs = Math.max(cronScheduleBase(task, now), seen ?? task.createdAt);
 
     const nextFireAt = this.computeJitteredNext(task, parsed, baseFromMs);
     if (nextFireAt === null) return;
@@ -378,6 +426,20 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
     this.inFlight.add(task.id);
     try {
+      const advancedTo = lastDueMs ?? ideal ?? now;
+      if (hasTrigger(task)) {
+        const claimed = await this.writeIfCurrent(task, { scheduleCursorAt: advancedTo, oneShotClaimed: task.recurring === false ? true : undefined });
+        if (claimed === undefined || this.stopping) return;
+        const fire = { coalescedCount, firedAt: this.clocks.wallNow() };
+        const result = await this.deliverConditional(claimed, fire, advancedTo);
+        const current = this.tasks.get(task.id);
+        if (current?.paused !== true && current !== undefined && (isConsumedOneShot(current) ||
+          (result !== undefined && this.isStaleAt(current, fire.firedAt)))) {
+          const removed = await this.removeTasks([task.id]);
+          if (removed.length > 0 && current.recurring !== false) this.emitDeleted(task.id);
+        }
+        return;
+      }
       const delivered = await this.deliverDue(task, coalescedCount);
       if (!delivered) return;
       if (task.recurring === false) {
@@ -385,7 +447,6 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
         this.lastSeenAt.delete(task.id);
         this.seededFromStore.delete(task.id);
       } else {
-        const advancedTo = lastDueMs ?? now;
         this.lastSeenAt.set(task.id, advancedTo);
         await this.advanceCursor(task.id, advancedTo);
       }
@@ -449,9 +510,64 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return delivered;
   }
 
+  private async deliverConditional(task: CronTask, fire: CronFire, scheduledAt?: number): Promise<CronRunResult | undefined> {
+    const result = await this.evaluateTrigger(task, fire.coalescedCount);
+    const check: CronTriggerCheck = { checkedAt: fire.firedAt, outcome: result.outcome, reason: result.reason, exitCode: result.exitCode };
+    if (result.outcome === 'error') this.log.warn('Cron trigger check failed', { taskId: task.id, reason: result.reason });
+    if (this.stopping) return undefined;
+    const recorded = await this.writeIfCurrent(task, { lastTriggerCheck: check });
+    if (result.outcome !== 'allowed') return { triggered: false, check };
+    const canAdmit = (): boolean => !this.stopping && recorded !== undefined && this.tasks.get(task.id) === recorded &&
+      (task.trigger?.script === undefined || matchesCronScript(task.approvedScript, this.getScriptExecution(task.trigger.script)));
+    if (recorded === undefined || !canAdmit()) {
+      return { triggered: false, check: { checkedAt: fire.firedAt, outcome: 'error', reason: 'cancelled' } };
+    }
+    if (!(await this.deliverFire(recorded, fire, result.stdout, canAdmit))) return undefined;
+    if (scheduledAt !== undefined) await this.advanceCursor(task.id, scheduledAt);
+    return { triggered: true };
+  }
+
+  private async evaluateTrigger(task: CronTask, coalescedCount: number): Promise<CronScriptResult> {
+    const probability = task.trigger?.probability;
+    if (probability === 0 || (probability !== undefined && probability !== 1 && Math.random() >= probability)) {
+      return { outcome: 'skipped', reason: 'probability' };
+    }
+    const scriptId = task.trigger?.script;
+    if (scriptId === undefined) return { outcome: 'allowed' };
+    const approved = task.approvedScript;
+    if (approved === undefined || !matchesCronScript(approved, this.getScriptExecution(scriptId))) {
+      return { outcome: 'error', reason: 'not_authorized' };
+    }
+    const controller = new AbortController();
+    const work = runCronScript(this.processes, approved, { jobId: task.id, cron: task.cron, coalescedCount }, controller.signal);
+    this.activeChecks.set(task.id, { controller, work });
+    try {
+      const result = await work;
+      if (result.reason === 'cleanup_failed') return result;
+      if (!controller.signal.aborted) return result;
+      return { outcome: 'error', reason: controller.signal.reason === 'not_authorized' ? 'not_authorized' : 'cancelled' };
+    } finally {
+      this.activeChecks.delete(task.id);
+    }
+  }
+
+  private async writeIfCurrent(task: CronTask, patch: Partial<CronTask>): Promise<CronTask | undefined> {
+    let updated: CronTask | undefined;
+    await this.persistEnqueue(task.id, async () => {
+      if (this.stopping || this.tasks.get(task.id) !== task) return;
+      updated = { ...task, ...patch };
+      await this.store.save(this.ctx.workspaceId, updated);
+      this.tasks.set(task.id, updated);
+      this.dispatchCron(new CronAdd({ task: updated }));
+    });
+    return updated;
+  }
+
   private async deliverFire(
     task: CronTask,
-    ctx: { readonly coalescedCount: number; readonly firedAt: number },
+    ctx: CronFire,
+    scriptOutput?: string,
+    canAdmit?: () => boolean,
   ): Promise<boolean> {
     const mainHandle = this.agentLifecycle.get('main');
     if (!mainHandle) return false;
@@ -469,7 +585,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     };
 
     try {
-      const handle = await promptService.enqueueCron({ origin, prompt: task.prompt });
+      const handle = await promptService.enqueueCron({ origin, prompt: task.prompt, scriptOutput, canAdmit });
       this.signalCron(new CronFired({ origin, prompt: task.prompt }));
       this.telemetry.track2(CRON_FIRED, {
         recurring: task.recurring !== false,
@@ -570,25 +686,11 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   private nextFireFor(task: CronTask): number | null {
-    if (task.paused === true) return null;
+    if (task.paused === true || isConsumedOneShot(task)) return null;
     try {
       const parsed = this.getParsed(task.cron);
-      const seen = this.lastSeenAt.get(task.id);
-      const persistedCursor =
-        task.lastFiredAt !== undefined &&
-        Number.isFinite(task.lastFiredAt) &&
-        task.lastFiredAt <= this.clocks.wallNow()
-          ? task.lastFiredAt
-          : undefined;
-      const cursor =
-        seen !== undefined
-          ? seen
-          : persistedCursor !== undefined
-            ? persistedCursor
-            : undefined;
-      const baseFromMs =
-        cursor !== undefined && cursor > task.createdAt ? cursor : task.createdAt;
-      return this.computeJitteredNext(task, parsed, baseFromMs);
+      const base = Math.max(this.lastSeenAt.get(task.id) ?? task.createdAt, cronScheduleBase(task, this.clocks.wallNow()));
+      return this.computeJitteredNext(task, parsed, base);
     } catch (error) {
       this.debugLog(
         `nextFireFor skipping task ${task.id}: ${

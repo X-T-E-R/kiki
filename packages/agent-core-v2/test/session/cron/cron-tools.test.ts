@@ -110,7 +110,8 @@ function createToolHarness(options: {
       return updated;
     },
     syncTaskFromStore: async () => {},
-    fireTaskNow: async (id) => tasks.has(id),
+    fireTaskNow: async (id) => tasks.has(id) ? { triggered: true } : undefined,
+    getScriptExecution: () => undefined,
     isStale(task) {
       const age = now - task.createdAt;
       return task.recurring !== false && Number.isFinite(age) && age >= 7 * MS_PER_DAY;
@@ -235,6 +236,7 @@ describe('CronCreateTool', () => {
       await runTool<CronCreateInput>(tool, {
         cron: '*/5 * * * *',
         prompt: 'ping',
+        trigger: { probability: 0.25 },
         recurring: true,
       }),
     );
@@ -243,6 +245,7 @@ describe('CronCreateTool', () => {
     expect(task).toMatchObject({
       cron: '*/5 * * * *',
       prompt: 'ping',
+      trigger: { probability: 0.25 },
       recurring: true,
       createdAt: WALL_ANCHOR,
     });
@@ -255,6 +258,7 @@ describe('CronCreateTool', () => {
       humanSchedule: every 5 minutes
       recurring: true
       deliveryMode: idle
+      trigger: {"probability":0.25}
       nextFireAt: <iso>"
     `);
   });

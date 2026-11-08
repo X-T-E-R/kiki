@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cronTriggerProbabilitySchema, cronTriggerScriptIdSchema, type CronTrigger } from '@kiki/protocol';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import type { AgentTool } from '#/tool/toolContract';
@@ -20,6 +21,10 @@ export const CronCreateInputSchema = z.object({
     .describe('The prompt to deliver at each fire time. Limited to 8 KiB (UTF-8).'),
   delivery_mode: z.enum(['queue', 'steer', 'idle']).optional()
     .describe('idle (default): wait for current work to finish, then run before ordinary queued messages; repeated fires of this job merge with their count. queue: retain each fire in normal FIFO order. steer: insert at the next safe step without interrupting the current request.'),
+  trigger: z.strictObject({
+    probability: cronTriggerProbabilitySchema.optional().describe('Chance from 0 (never) to 1 (always). Checked before the script if both are set.'),
+    script: cronTriggerScriptIdSchema.optional().describe('ID of an owner-registered script for this workspace. Do not pass a path or a command.'),
+  }).optional().describe('Optional trigger conditions checked before admitting the scheduled prompt.'),
   recurring: z
     .boolean()
     .optional()
@@ -37,6 +42,7 @@ export interface CronCreateOutput {
   readonly humanSchedule: string;
   readonly recurring: boolean;
   readonly deliveryMode: import('@kiki/protocol').CronDeliveryMode;
+  readonly trigger?: CronTrigger;
   readonly nextFireAt: number | null;
 }
 

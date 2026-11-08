@@ -295,6 +295,8 @@ export const zh = {
   'cron.toast.paused': '已暂停定时任务',
   'cron.toast.resumed': '已恢复定时任务',
   'cron.toast.triggered': '已触发一次定时任务',
+  'cron.toast.skipped': '定时任务已跳过，未触发',
+  'cron.toast.failed': '定时任务检查失败，未触发',
   'cron.toast.deleted': '已删除定时任务',
   'cron.error.notFound': '该任务已不存在，列表已刷新。',
   'cron.error.ambiguous': '该任务 ID 在多个会话中存在，请刷新后重试。',

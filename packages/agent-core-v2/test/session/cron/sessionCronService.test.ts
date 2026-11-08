@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServices } from '#/_base/di/test';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { Event } from '#/_base/event';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { registerLogServices } from '../../_base/log/stubs';
 import { IConfigService } from '#/app/config/config';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import type { CronTask } from '#/app/cron/cronTask';
@@ -23,7 +25,8 @@ function fixture() {
   const tasks = new Map<string, CronTask>();
   const save = vi.fn(async (_workspace: string, task: CronTask) => { tasks.set(task.id, task); });
   const remove = vi.fn(async (_workspace: string, id: string) => { tasks.delete(id); });
-  const services = createServices(disposables, { additionalServices: (reg) => {
+  const services = createServices(disposables, { base: [registerLogServices], additionalServices: (reg) => {
+    reg.definePartialInstance(IHostProcessService, { spawn: async () => { throw new Error('no script expected'); } });
     reg.define(ISessionCronService, SessionCronServiceImpl);
     reg.define(ISessionStateService, SessionStateService);
     reg.define(ICronCreateTool, CronCreateTool);
@@ -32,7 +35,7 @@ function fixture() {
     reg.definePartialInstance(ISessionContext, { sessionId: 'fixture', workspaceId: 'fixture' });
     reg.definePartialInstance(IAgentLifecycleService, { onWillCreate: Event.None as IAgentLifecycleService['onWillCreate'], list: () => [], get: () => undefined });
     reg.definePartialInstance(ITelemetryService, { track2: () => {} });
-    reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: <T,>() => ({ disabled: false, noJitter: true }) as T });
+    reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), onDidSectionChange: Event.None as IConfigService['onDidSectionChange'], get: <T,>() => ({ disabled: false, noJitter: true }) as T });
     reg.defineInstance(ICronTaskPersistence, { _serviceBrand: undefined, save, delete: remove, get: async (_workspace, id) => tasks.get(id), list: async () => [...tasks.values()], listWorkspaceIds: async () => ['fixture'] });
   } });
   return { disposables, services, cron: services.get(ISessionCronService), tasks, save, remove };

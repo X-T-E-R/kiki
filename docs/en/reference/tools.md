@@ -419,7 +419,7 @@ Scheduled task tools allow the Agent to re-inject a prompt into the current sess
 | `Cron` (`action: "list"`) | Auto-allow | List scheduled tasks |
 | `Cron` (`action: "delete"`) | Requires approval | Cancel a scheduled task |
 
-The single `Cron` tool selects an operation with `action`; the old names `CronCreate`, `CronList`, and `CronDelete` remain callable for existing profiles and approval rules but are not offered as separate tools to the model. For `action: "create"`, `Cron` accepts `cron` (a standard 5-field cron expression in the user's local timezone: `minute hour day-of-month month day-of-week`), `prompt` (the text to inject when triggered; UTF-8 limit 8 KB), and optional `recurring` (defaults to `true`; pass `false` for a one-time reminder that auto-deletes after firing). On success, returns a ULID `id`, a human-readable `humanSchedule` (e.g., `every 5 minutes`), `deliveryMode`, and `nextFireAt` (the ISO timestamp of the next fire time).
+The single `Cron` tool selects an operation with `action`; the old names `CronCreate`, `CronList`, and `CronDelete` remain callable for existing profiles and approval rules but are not offered as separate tools to the model. For `action: "create"`, `Cron` accepts `cron` (a standard 5-field cron expression in the user's local timezone: `minute hour day-of-month month day-of-week`), `prompt` (the text to inject when triggered; UTF-8 limit 8 KB), optional `recurring` (defaults to `true`; pass `false` for a one-time reminder that auto-deletes after firing), optional `delivery_mode`, and optional `trigger` (`{ probability?, script? }`). On success, returns a ULID `id`, a human-readable `humanSchedule` (e.g., `every 5 minutes`), `deliveryMode`, optional `trigger`, and `nextFireAt` (the ISO timestamp of the next fire time).
 
 Choose delivery with optional `delivery_mode`:
 
@@ -429,11 +429,35 @@ Choose delivery with optional `delivery_mode`:
 
 Older tasks without a saved mode use `idle` on their next fire. Already queued messages keep their saved mode and position; legacy queued cron messages are not silently reordered. After restart, pending deliveries retain their mode and count and wait for the existing queue recovery action. Deleting or pausing a schedule stops future automatic fires, not messages already admitted.
 
+Use optional `trigger` (`{ probability?, script? }`) when a due tick should check a condition before waking the model:
+
+- `probability`: a number from `0` (never fires) to `1` (always passes the probability gate). When both `probability` and `script` are configured, `probability` is evaluated first; if it skips the check, the script is not started.
+- `script`: the ID (`^[a-z][a-z0-9-]{0,63}$`) of an owner-registered script under [`[[cron.scripts]]`](../configuration/config-files.md#cron) for the current workspace. Never pass a file path or raw shell command. Scheduling a script requires explicit user approval of the resolved executable, arguments, working directory, timeout, and isolated environment (even in Auto mode). If `[[cron.scripts]]` is later edited or removed so it no longer matches the approved snapshot, checks record `not_authorized` without running the new command until the task is recreated or re-approved.
+- The script runs in the session working directory without a shell, in an isolated environment (`KIKI_HOME` and ambient secrets stripped), and receives `{"jobId","cron","coalescedCount"}` on `stdin` (the channel a program reads input from). An `exit code` (the status number a program returns when it finishes) of `0` admits the prompt and appends up to 8 KB of XML-escaped `stdout` inside `<script-output trust="untrusted">`; any positive exit code (such as `3` or `4`) skips the fire; timeout or process failure records an `error` diagnostic in `lastTriggerCheck` without starting a turn. Every conditional check advances the schedule cursor before running (and claims one-time tasks), so skipped or failed checks are not replayed on the next tick or after a restart.
+
+```json
+{
+  "action": "create",
+  "cron": "*/15 * * * *",
+  "prompt": "Check whether any watched item needs a follow-up.",
+  "trigger": { "probability": 0.25 }
+}
+```
+
+```json
+{
+  "action": "create",
+  "cron": "*/30 * * * *",
+  "prompt": "Review the script output and summarize only actionable changes.",
+  "trigger": { "script": "inbox-gate" }
+}
+```
+
 To prevent all users from firing at the same time on the hour, the scheduler applies deterministic jitter: recurring tasks are shifted forward by `min(10% of the period, 15 minutes)`; one-time tasks that fall exactly on `:00` or `:30` are moved earlier by up to 90 seconds. If the scheduler misses several fire times (e.g., because the laptop was sleeping), it fires only once on wake-up — the prompt is wrapped in a `<cron-fire>` envelope with a `coalescedCount`. Recurring tasks that have been alive for more than 7 days fire one final time with `stale="true"` and are then automatically deleted; call `Cron` with `action: "create"` again to keep them.
 
-**`Cron` with `action: "list"`** is read-only and needs no other parameters. It returns one record per active task with fields: `id`, `cron`, `humanSchedule`, `nextFireAt`, `recurring`, `deliveryMode`, `ageDays`, and `stale`. Records are separated by `---` in insertion order.
+**`Cron` with `action: "list"`** is read-only and needs no other parameters. It returns one record per active task with fields: `id`, `cron`, `humanSchedule`, `nextFireAt`, `recurring`, `deliveryMode`, optional `trigger` and `lastTriggerCheck`, `ageDays`, and `stale`. Records are separated by `---` in insertion order.
 
-**`Cron` with `action: "delete"`** accepts a single `id`. For recurring tasks, all future fires stop immediately; for one-time tasks, a fire not yet admitted is cancelled. One-time tasks that have already fired are auto-deleted, so deleting an already-fired one-time task returns `No cron job with id ...`. Deletion is irreversible — use `Cron` with `action: "create"` again to restore. This action is blocked in Plan mode.
+**`Cron` with `action: "delete"`** accepts a single `id`. For recurring tasks, all future fires stop immediately and any in-flight trigger script is terminated; for one-time tasks, a fire not yet admitted is cancelled. One-time tasks that have already fired are auto-deleted, so deleting an already-fired one-time task returns `No cron job with id ...`. Deletion is irreversible — use `Cron` with `action: "create"` again to restore. This action is blocked in Plan mode.
 
 A `create` or `delete` that reports success has already been written to disk. When the save itself fails, the tool returns the error and the stored schedule stays as it was, so a success receipt never describes a task that only exists in memory.
 

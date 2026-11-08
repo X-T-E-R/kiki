@@ -1295,8 +1295,9 @@ export class AgentPromptService implements IAgentPromptService {
       steerAccepted: persisted.steerAccepted, steered: persisted.steered };
   }
 
-  async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle> {
+  async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string; readonly scriptOutput?: string; readonly canAdmit?: () => boolean }): Promise<PromptHandle> {
     const handle = await this.historyMutation.runAdmission(undefined, async () => {
+      if (input.canAdmit?.() === false) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cron trigger authorization changed before admission.');
       let origin = input.origin;
       const existing = origin.deliveryMode === 'idle'
         ? this.pending.find((item) => item.message.origin?.kind === 'cron_job' &&
@@ -1307,7 +1308,7 @@ export class AgentPromptService implements IAgentPromptService {
         origin = { ...origin, coalescedCount: existing.message.origin.coalescedCount + origin.coalescedCount,
           stale: existing.message.origin.stale || origin.stale };
       }
-      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: renderCronFireXml(origin, input.prompt) }], toolCalls: [], origin };
+      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: renderCronFireXml(origin, input.prompt, input.scriptOutput) }], toolCalls: [], origin };
       if (existing === undefined) return this.enqueueNow({ message });
       existing.message = { ...message, id: existing.id };
       existing.revision++;

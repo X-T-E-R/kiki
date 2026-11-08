@@ -781,6 +781,39 @@ Each restore has a 60-second deadline, including its queue wait. A timed-out res
 
 In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's turn as long as background tasks are still pending: each completion is fed back to the main agent as a synthetic user message, steering it into a new turn (`print_background_mode = "steer"` by default), and the run exits once a turn ends with nothing pending. The loop is bounded by `print_wait_ceiling_s` and `print_max_turns`, both effectively unbounded by default. Background work is never killed by a wall-clock cap in print mode either: background `Bash` tasks default to no timeout (`bash_task_timeout_s = 0`), and subagents run without a timeout (`[subagent] timeout_ms = 0`), so only the model itself stops a task. Set `print_background_mode` to `"drain"` to wait for tasks without feeding results back, or `"exit"` to end the run as soon as the main agent finishes.
 
+## `cron`
+
+`cron` controls the built-in scheduler (`Cron` tool and `/api/cron`) and registers owner-approved scripts that scheduled tasks can run before waking the model.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `disabled` | `boolean` | `false` | Disable all scheduled cron firing and new `Cron` creations (`KIKI_DISABLE_CRON=1` overrides) |
+| `no_jitter` | `boolean` | `false` | Disable deterministic schedule jitter (`KIKI_CRON_NO_JITTER=1` overrides) |
+| `no_stale` | `boolean` | `false` | Disable the 7-day auto-expiry for recurring tasks (`KIKI_CRON_NO_STALE=1` overrides) |
+| `poll_interval_ms` | `integer \| null` | `600000` (10 min) | Full-inventory safety refresh interval in milliseconds (`0` or `null` disables automatic firing; `KIKI_CRON_POLL_INTERVAL_MS` overrides) |
+| `scripts` | `object[]` | — | Owner-registered trigger scripts (`[[cron.scripts]]`) available to `trigger.script` in matching workspaces |
+
+Each `[[cron.scripts]]` entry defines one script ID:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | required | Unique script ID matching `^[a-z][a-z0-9-]{0,63}$` |
+| `command` | `string` | required | Absolute path to the executable (on Windows, must end in `.exe`) |
+| `args` | `string[]` | `[]` | Fixed argument array passed directly to the executable without a shell |
+| `workspaces` | `string[]` | required | Non-empty list of absolute workspace root paths allowed to use this script |
+| `timeout` | `integer` | `10` | Per-check timeout in seconds (`1`–`60`) |
+
+```toml
+[[cron.scripts]]
+id = "inbox-gate"
+command = "/usr/local/bin/node"
+args = ["/Users/alice/.kiki/scripts/inbox-gate.mjs"]
+workspaces = ["/Users/alice/projects/assistant"]
+timeout = 10
+```
+
+Registering an entry under `[[cron.scripts]]` makes its `id` selectable for matching workspaces; it does not run the script by itself. When a schedule is created or updated with `trigger.script`, the owner approves the resolved `{ command, args, cwd, timeout, environment: "isolated" }` snapshot (via the `Cron` tool approval prompt or `script_confirmation` in [`POST /api/cron`](../server/rest-api.md#background-tasks)). If you later edit `command`, `args`, `workspaces`, or `timeout` in `config.toml`, existing tasks keep their previous snapshot and stop passing authorization (`not_authorized`) until recreated or re-approved. See [Scheduled tasks](../reference/tools.md#scheduled-tasks) for `trigger` examples and exit-code semantics.
+
 ## `subagent`
 
 `subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents-and-subagents.md#agent-file-format); the former host dispatch-policy settings are removed. Reserved native engine targets such as `engine:claude-acp` are ordinary stable target names for these checks: an explicit `allowed_subagents` list must include the exact `engine:<executor-id>` name to permit that child. Projecting a target from an executor descriptor never widens an existing allowlist.

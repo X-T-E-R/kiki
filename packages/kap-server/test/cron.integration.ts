@@ -1,15 +1,20 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import type { CronScriptExecution } from '@kiki/protocol';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   IModelCatalog,
+  IConfigService,
+  ICronScheduler,
   ICronTaskPersistence,
   ISessionCronService,
+  ISessionContext,
   ISessionManager,
   getLiveSessionById,
   type CronTask,
 } from '@kiki/agent-core-v2';
+import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -43,10 +48,17 @@ describe('cron management routes', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
+  let modelCatalog: IModelCatalog;
+
+  async function boot() {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', seeds: [[IModelCatalog, modelCatalog]] });
+    base = `http://127.0.0.1:${server.port}`;
+  }
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-cron-routes-'));
-    const modelCatalog: IModelCatalog = {
+    await writeFile(join(home, 'config.toml'), '[cron]\nmanual_tick = true\nno_jitter = true\n');
+    modelCatalog = {
       _serviceBrand: undefined,
       get: () => {
         throw new Error('modelCatalog.get not exercised in this test');
@@ -72,15 +84,7 @@ describe('cron management routes', () => {
         throw new Error('modelCatalog.setDefaultModel not exercised in this test');
       },
     };
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      seeds: [[IModelCatalog, modelCatalog]],
-    });
-    base = `http://127.0.0.1:${server.port}`;
+    await boot();
   });
 
   afterEach(async () => {
@@ -354,7 +358,7 @@ describe('cron management routes', () => {
     const sessionId = await createSession();
     const task = await addTask(sessionId);
     const cron = cronFor(sessionId);
-    const fire = vi.spyOn(cron, 'fireTaskNow').mockResolvedValue(true);
+    const fire = vi.spyOn(cron, 'fireTaskNow').mockResolvedValue({ triggered: true });
 
     const triggered = await request<{ triggered: true }>(
       `/api/cron/${task.id}:run?session_id=${encodeURIComponent(sessionId)}`,
@@ -364,6 +368,56 @@ describe('cron management routes', () => {
     expect(triggered.data).toEqual({ triggered: true });
     expect(fire).toHaveBeenCalledOnce();
     expect(fire).toHaveBeenCalledWith(task.id);
+  });
+
+  it('confirms an owner script, consumes its skip, and retains its cursor across a server restart', async () => {
+    const clock = join(home!, 'clock.txt');
+    const start = new Date(2026, 0, 1, 12, 1).getTime();
+    await writeFile(clock, String(start));
+    const config = server!.core.accessor.get(IConfigService);
+    const script = { id: 'check', command: process.execPath, args: ['-e', 'process.exit(3)'], workspaces: [home!], timeout: 5 };
+    await config.set('cron', { clock: `file:${clock}`, scripts: [script] });
+    expect(config.get('cron')).toMatchObject({ scripts: [script] });
+    const sessionId = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, sessionId)!;
+    expect(session.accessor.get(ISessionContext).cwd).toBe(home);
+    await ensureMainAgent(session);
+    const previewPath = `/api/cron/scripts?session_id=${sessionId}&script=check`;
+    expect((await fetch(`${base}${previewPath}`)).status).toBe(401);
+    const preview = await request<{ execution: CronScriptExecution }>(previewPath);
+    expect(preview.data.execution).toMatchObject({ command: process.execPath, args: script.args, cwd: home, environment: 'isolated' });
+    const create = { session_id: sessionId, cron: '*/30 * * * *', prompt: 'only when the check hits', trigger: { script: 'check' } };
+    expect((await request('/api/cron', 'POST', create)).code).toBe(40001);
+    for (const trigger of [{ probability: -0.01 }, { probability: 1.01 }, { probability: '1' }, { script: 'node.exe -e code' }, { script: 'check', command: 'ignored' }]) {
+      expect((await request('/api/cron', 'POST', { ...create, trigger })).code).toBe(40001);
+    }
+    const created = await request<{ task: CronTaskWire }>('/api/cron', 'POST', { ...create, script_confirmation: preview.data.execution });
+    expect(created.code).toBe(0);
+    const task = created.data.task;
+    const detailPath = `/api/cron/${task.id}?session_id=${sessionId}`;
+    const run = await request(`/api/cron/${task.id}:run?session_id=${sessionId}`, 'POST');
+    expect(run.data).toMatchObject({ triggered: false, check: { reason: 'exit_code', exitCode: 3 } });
+    await writeFile(clock, String(start + 30 * 60_000));
+    await server!.core.accessor.get(ICronScheduler).tick();
+    const afterSkip = await request<{ task: CronTaskWire }>(detailPath);
+    expect(afterSkip.data.task).toMatchObject({ last_fired_at: null, trigger: create.trigger, approved_script: preview.data.execution, last_trigger_check: { checkedAt: start + 30 * 60_000, reason: 'exit_code', exitCode: 3 } });
+    await server!.close();
+    server = undefined;
+    await writeFile(clock, String(start + 32 * 60_000));
+    await boot();
+    await server!.core.accessor.get(ICronScheduler).tick();
+    const restored = await request<{ task: CronTaskWire }>(detailPath);
+    const { age_days: _beforeAge, ...beforeRestart } = afterSkip.data.task;
+    const { age_days: _afterAge, ...afterRestart } = restored.data.task;
+    expect(afterRestart).toEqual(beforeRestart);
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+    await server!.core.accessor.get(IConfigService).set('cron', { scripts: [{ ...script, args: ['-e', 'process.exit(4)'] }] });
+    expect((await request(detailPath, 'PATCH', { script_confirmation: preview.data.execution })).code).toBe(40001);
+    const updatedPreview = await request<{ execution: CronScriptExecution }>(previewPath);
+    expect((await request(detailPath, 'PATCH', { script_confirmation: updatedPreview.data.execution })).code).toBe(0);
+    const cleared = await request<{ task: CronTaskWire }>(detailPath, 'PATCH', { trigger: null });
+    expect(cleared.data.task).not.toHaveProperty('trigger');
+    expect(cleared.data.task).not.toHaveProperty('approved_script');
   });
 
   it('returns task-not-found business errors for missing task operations', async () => {

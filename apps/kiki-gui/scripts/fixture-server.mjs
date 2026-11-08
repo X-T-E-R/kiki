@@ -3194,7 +3194,9 @@ class FixtureServer {
         return this.envelope(res, { task: structuredClone(task) });
       }
       if (action === 'run') {
-        return this.envelope(res, { triggered: true });
+        const nextRunResult = this.cronNextRunResult;
+        this.cronNextRunResult = undefined;
+        return this.envelope(res, nextRunResult ?? { triggered: true });
       }
       if (action === undefined && method === 'DELETE' && rows !== undefined) {
         rows.splice(rows.indexOf(task), 1);
@@ -5348,6 +5350,9 @@ class FixtureServer {
         // panel's real-failure path (draft kept, panel open) is walkable
         // against the mock rather than asserted in the abstract.
         this.cronFailNextWrite = true;
+        return this.envelope(res, { armed: true });
+      case 'cron_next_run_result':
+        this.cronNextRunResult = body.result;
         return this.envelope(res, { armed: true });
       case 'archive_stall_next':
         // Holds the next thread archive open, so the row's in-flight state is

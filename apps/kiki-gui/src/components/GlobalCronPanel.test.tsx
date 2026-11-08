@@ -340,9 +340,43 @@ describe('CronPage', () => {
     await flush();
 
     expect(runCronTask).toHaveBeenCalledWith('task-1', 'sess-1');
-    expect(getToasts().some((toast) => toast.text === 'Scheduled task triggered')).toBe(true);
-    // The list is not re-sorted or refetched for a fire; the row stays as-is.
+    expect(getToasts().some((toast) => toast.tone === 'success' && toast.text === 'Scheduled task triggered')).toBe(true);
+    expect(listCronTasks.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(dialog.querySelector('[data-cron-task="task-1"]')).not.toBeNull();
+  });
+
+  it('reports a skipped run without claiming that the task triggered', async () => {
+    runCronTask.mockResolvedValueOnce({
+      triggered: false,
+      check: { checkedAt: 1, outcome: 'skipped', reason: 'probability' },
+    });
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    await mount();
+    const dialog = await openPanel();
+    await expandRow(dialog, 'task-1');
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-cron-action="run"]')!.click(); });
+    await flush();
+
+    expect(getToasts().some((toast) => toast.tone === 'info' && toast.text === 'Scheduled task skipped; it was not triggered')).toBe(true);
+    expect(getToasts().some((toast) => toast.text === 'Scheduled task triggered')).toBe(false);
+  });
+
+  it('reports a failed run without claiming that the task triggered', async () => {
+    runCronTask.mockResolvedValueOnce({
+      triggered: false,
+      check: { checkedAt: 1, outcome: 'error', reason: 'process_failed' },
+    });
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    await mount();
+    const dialog = await openPanel();
+    await expandRow(dialog, 'task-1');
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-cron-action="run"]')!.click(); });
+    await flush();
+
+    expect(getToasts().some((toast) => toast.tone === 'error' && toast.text === 'Scheduled task check failed; it was not triggered')).toBe(true);
+    expect(getToasts().some((toast) => toast.text === 'Scheduled task triggered')).toBe(false);
   });
 
   it('requires confirmation before deleting and removes the row on confirm', async () => {

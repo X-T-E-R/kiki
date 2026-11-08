@@ -334,6 +334,12 @@ disabled = false
 manual_tick = false
 # clock: string
 # poll_interval_ms: integer | null
+# scripts: object[] — one entry per item:
+  # id: string
+  # command: string
+  # args: string[] (default: [])
+  # workspaces: string[]
+  # timeout: integer (default: 10)
 
 # ##########################################################################
 # defaultPermissionMode (config.toml: default_permission_mode)

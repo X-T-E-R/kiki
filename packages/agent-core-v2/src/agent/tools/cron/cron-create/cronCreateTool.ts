@@ -42,6 +42,11 @@ export class CronCreateTool implements ICronCreateTool {
       };
     }
 
+    const scriptId = args.trigger?.script;
+    const approvedScript = scriptId === undefined ? undefined : this.cron.getScriptExecution(scriptId);
+    if (scriptId !== undefined && approvedScript === undefined) {
+      return { isError: true, output: `Cron script ${JSON.stringify(scriptId)} is not registered for this workspace. Ask the owner to register it in config.toml.` };
+    }
     const normalizedCron = args.cron.trim().split(/\s+/).join(' ');
 
     let parsed: ParsedCronExpression;
@@ -104,16 +109,22 @@ export class CronCreateTool implements ICronCreateTool {
       }
     }
 
+    const description = recurring ? `Scheduling cron ${normalizedCron}` : `Scheduling one-shot ${normalizedCron}`;
     return {
-      description: recurring
-        ? `Scheduling cron ${normalizedCron}`
-        : `Scheduling one-shot ${normalizedCron}`,
+      description: approvedScript === undefined ? description : `${description} with script ${scriptId}`,
+      requireApprovalInAuto: approvedScript !== undefined,
+      display: approvedScript === undefined ? undefined : {
+        kind: 'generic', summary: `${description} with script ${scriptId}`,
+        detail: { ...args, cron: normalizedCron, scriptExecution: approvedScript },
+      },
       approvalRule: literalRulePattern(
         this.name,
         JSON.stringify({
           cron: normalizedCron,
           prompt: args.prompt,
           deliveryMode: args.delivery_mode ?? 'idle',
+          trigger: args.trigger,
+          approvedScript,
           recurring,
         }),
       ),
@@ -133,6 +144,8 @@ export class CronCreateTool implements ICronCreateTool {
           cron: normalizedCron,
           prompt: args.prompt,
           deliveryMode: args.delivery_mode ?? 'idle',
+          trigger: args.trigger,
+          approvedScript,
           recurring,
         });
 
@@ -149,6 +162,7 @@ export class CronCreateTool implements ICronCreateTool {
           cron: normalizedCron,
           humanSchedule,
           deliveryMode: task.deliveryMode ?? 'idle',
+          trigger: task.trigger,
           recurring,
           nextFireAt,
         };
@@ -169,10 +183,11 @@ function formatOutput(o: CronCreateOutput): string {
     `humanSchedule: ${o.humanSchedule}`,
     `recurring: ${String(o.recurring)}`,
     `deliveryMode: ${o.deliveryMode}`,
+    o.trigger === undefined ? undefined : `trigger: ${JSON.stringify(o.trigger)}`,
     `nextFireAt: ${
       o.nextFireAt === null ? 'null' : formatLocalIsoWithOffset(o.nextFireAt)
     }`,
-  ];
+  ].filter((line) => line !== undefined);
   return lines.join('\n');
 }
 
