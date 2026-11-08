@@ -162,6 +162,7 @@ export class CronCreateTool implements ICronCreateTool {
           cron: normalizedCron,
           humanSchedule,
           deliveryMode: task.deliveryMode ?? 'idle',
+          trigger: task.trigger,
           recurring,
           nextFireAt,
         };
@@ -182,10 +183,11 @@ function formatOutput(o: CronCreateOutput): string {
     `humanSchedule: ${o.humanSchedule}`,
     `recurring: ${String(o.recurring)}`,
     `deliveryMode: ${o.deliveryMode}`,
+    o.trigger === undefined ? undefined : `trigger: ${JSON.stringify(o.trigger)}`,
     `nextFireAt: ${
       o.nextFireAt === null ? 'null' : formatLocalIsoWithOffset(o.nextFireAt)
     }`,
-  ];
+  ].filter((line) => line !== undefined);
   return lines.join('\n');
 }
 

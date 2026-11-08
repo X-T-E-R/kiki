@@ -587,6 +587,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | 读取任务（可选输出预览） |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | 取消任务 |
 | `GET /api/cron` | 跨工作区列出定时任务 |
+| `GET /api/cron/scripts` | 预览已登记的定时任务脚本（`session_id`、`script`） |
 | `POST /api/cron` | 为 `session_id` 创建定时消息 |
 | `GET /api/cron/{task_id}` | 读取完整定时消息 |
 | `PATCH /api/cron/{task_id}` | 编辑调度或在同工作区内重绑定会话 |
@@ -595,7 +596,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 任务和定时任务列表支持 `page_size`（1–100，默认 100）与 `offset`（默认 0）。响应包含 `items`、`has_more`，有下一页时还包含 `next_offset`。后台任务列表另支持 `status`，定时任务列表另支持 `session_id`。若两次请求之间任务发生变化，按偏移量翻页可能出现位置偏移。
 
-创建定时消息接受 `session_id`、`cron`、`prompt`，以及可选的 `recurring`、`paused` 和 `delivery_mode`。编辑请求接受除 `paused` 以外的任意非空字段子集；暂停与恢复使用对应操作。`delivery_mode` 可选 `idle`（默认，等待当前工作完成后优先普通消息）、`queue`（按正常消息顺序排队）或 `steer`（下一安全步骤插入，不取消当前请求）。同一任务在空闲等待期间重复触发会合并，并保留总次数。任务响应包含生效的 `delivery_mode`；旧任务未保存模式时，下次触发默认使用 idle，不改变已经入队的投递。投递时机与恢复语义详见[定时任务](../reference/tools.md#定时任务)。
+创建定时消息接受 `session_id`、`cron`、`prompt`，以及可选的 `recurring`、`paused`、`delivery_mode`、`trigger`（`{ probability?, script? }`）和 `script_confirmation`。编辑请求接受除 `paused` 以外的任意非空字段子集（传 `trigger: null` 可清除触发条件）；暂停与恢复使用对应操作。`delivery_mode` 可选 `idle`（默认，等待当前工作完成后优先普通消息）、`queue`（按正常消息顺序排队）或 `steer`（下一安全步骤插入，不取消当前请求）。同一任务在空闲等待期间重复触发会合并，并保留总次数。设置 `trigger.script`（或将带脚本的任务重绑定到另一会话）时，需先调用 `GET /api/cron/scripts?session_id=...&script=...` 预览解析出的 `{ execution }`（含 `command`、`args`、`cwd`、`timeout`、`environment: "isolated"`），再将该对象原样作为 `script_confirmation` 传给 `POST /api/cron` 或 `PATCH /api/cron/{task_id}`。恢复（`:resume`）带脚本的任务时，同样会校验已保存的 `approved_script` 是否仍与当前 [`[[cron.scripts]]`](../configuration/config-files.md#cron) 配置一致。任务响应包含生效的 `delivery_mode` 以及已设置的 `trigger`、`approved_script` 和 `last_trigger_check`；旧任务未保存模式时，下次触发默认使用 idle，不改变已经入队的投递。`POST /api/cron/{task_id}:run` 在消息获准入队时返回 `{ triggered: true }`，在触发条件跳过或报错时返回 `{ triggered: false, check }`。投递时机与恢复语义详见[定时任务](../reference/tools.md#定时任务)。
 
 ### 技能、工具与 MCP
 

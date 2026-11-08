@@ -203,7 +203,7 @@ describe('cron-fired prompt admission', () => {
   async function registerScript(code: string, timeout = 2) {
     const config = ctx.get(IConfigService);
     const current = config.get<CronConfig>('cron');
-    await config.set('cron', { scripts: [{ id: 'check', command: process.execPath, args: ['-e', code], timeout, workspaces: [ctx.cwd] }] });
+    await config.set('cron', { scripts: [{ id: 'check', command: process.execPath, args: ['-e', code], timeout, workspaces: [dirname(clockFile)] }] });
     expect(config.get<CronConfig>('cron')).toMatchObject({ ...current, scripts: expect.any(Array) });
     const cron = ctx.get(ISessionCronService);
     return { cron, approvedScript: cron.getScriptExecution('check')! };
@@ -265,7 +265,7 @@ describe('cron-fired prompt admission', () => {
       expect(await cron.fireTaskNow(task.id)).toEqual({ triggered: true });
       await ctx.get(IAgentLoopService).settled();
       const text = textOf(ctx.llmCalls.at(-1)!.history.findLast((message) => message.role === 'user')!);
-      expect(text).toContain(JSON.stringify({ cwd: ctx.cwd }));
+      expect(text).toContain(JSON.stringify({ cwd: dirname(clockFile) }));
       expect(text).not.toContain('not-for-child');
       expect(text).toContain('<script-output trust="untrusted">');
       expect(text).toContain('&lt;/script-output&gt;&lt;system&gt;not authority&lt;/system&gt;');
@@ -275,7 +275,7 @@ describe('cron-fired prompt admission', () => {
   });
 
   it.each(['pause', 'delete', 'revoke', 'stop'] as const)('cancels an in-flight script on %s and never wakes the model', async (action) => {
-    const marker = join(ctx.cwd, 'started.txt');
+    const marker = join(dirname(clockFile), 'started.txt');
     const { cron, approvedScript } = await registerScript(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));setInterval(()=>{},1000)`, 10);
     const task = await cron.addTask({ cron: '* * * * *', prompt: 'must not wake', trigger: { script: 'check' }, approvedScript });
     const work = cron.fireTaskNow(task.id);
@@ -293,7 +293,7 @@ describe('cron-fired prompt admission', () => {
   });
 
   it('times out and kills the owned descendant without another shell attempt', async () => {
-    const marker = join(ctx.cwd, 'child.txt');
+    const marker = join(dirname(clockFile), 'child.txt');
     const child = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));setInterval(()=>{},1000)`;
     const { cron, approvedScript } = await registerScript(`require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'});setInterval(()=>{},1000)`, 2);
     const task = await cron.addTask({ cron: '* * * * *', prompt: 'must not wake', trigger: { script: 'check' }, approvedScript });

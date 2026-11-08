@@ -407,7 +407,7 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 | `Cron`（`action: "list"`） | 自动放行 | 列出已安排的定时任务 |
 | `Cron`（`action: "delete"`） | 需审批 | 取消已安排的定时任务 |
 
-`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 ULID 格式的 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）、`deliveryMode` 和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB），以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）、`delivery_mode` 和 `trigger`（`{ probability?, script? }`）。成功时返回 ULID 格式的 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）、`deliveryMode`、可选的 `trigger` 和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
 
 可选参数 `delivery_mode` 决定投递时机：
 
@@ -417,11 +417,35 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 旧任务未保存投递模式时，下次触发采用 `idle`。已经入队的消息保留原有模式与位置，旧版定时消息不会被暗中重排。重启后，待投递消息保留模式和次数，等待原有队列恢复操作。删除或暂停任务只阻止未来自动触发，不撤回已经投递的消息。
 
+需要在到点后先判定条件、命中才唤醒模型时，可传入可选的 `trigger`（`{ probability?, script? }`）：
+
+- `probability`：`0`（从不触发）到 `1`（必过概率关）之间的数值。同时配置 `probability` 与 `script` 时，先判定 `probability`；概率未命中会直接跳过，不启动脚本。
+- `script`：owner 在 [`[[cron.scripts]]`](../configuration/config-files.md#cron) 中为当前工作区登记的脚本 ID（`^[a-z][a-z0-9-]{0,63}$`），不要传文件路径或原始 Shell 命令。创建带脚本的计划需要用户明确批准解析后的可执行文件、参数、工作目录、超时与隔离环境（即使在 Auto 模式下也会请求审批）。若之后修改或移除了 `[[cron.scripts]]` 中的定义，使其与已批准快照不一致，检查会记录 `not_authorized` 并拒绝运行新命令，需重新创建或重新批准。
+- 脚本在会话工作目录下以无 Shell 方式运行，处于隔离环境中（剥离 `KIKI_HOME` 与宿主环境凭证），通过 `stdin`（程序读取输入的通道）接收 `{"jobId","cron","coalescedCount"}`。`exit code`（程序结束时返回的状态码）为 `0` 时放行 prompt，并将最多 8 KB 经 XML 转义的 `stdout` 附在 `<script-output trust="untrusted">` 中作为不可信数据提供给模型；任意正退出码（如 `3` 或 `4`）跳过本次触发；超时或进程启动失败在 `lastTriggerCheck` 中记录 `error` 诊断，且不唤醒模型。每次条件检查在执行前都会先推进持久化计划游标（一次性任务同时标记已消费），因此跳过或失败的检查在下一轮 tick 或服务重启后不会重复补发。
+
+```json
+{
+  "action": "create",
+  "cron": "*/15 * * * *",
+  "prompt": "检查是否有需要跟进的事项。",
+  "trigger": { "probability": 0.25 }
+}
+```
+
+```json
+{
+  "action": "create",
+  "cron": "*/30 * * * *",
+  "prompt": "查看脚本输出，仅在有实际变化时汇总处理。",
+  "trigger": { "script": "inbox-gate" }
+}
+```
+
 为避免整批用户在整点同时触发，调度器会做确定性抖动：周期任务向后偏移 `min(周期的 10%, 15 分钟)`；一次性任务若恰好落在 `:00` 或 `:30` 则向前提前最多 90 秒。如果调度器错过了若干触发时刻（如笔记本合盖），唤醒后只会触发一次，prompt 会包裹在 `<cron-fire>` 信封里并附带 `coalescedCount`。周期任务存活超过 7 天后会以 `stale="true"` 做最后一次触发后自动删除；想继续保留时，再次调用 `Cron` 的 `action: "create"` 即可。
 
-**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`deliveryMode`、`ageDays` 和 `stale`。记录用 `---` 分隔，按创建顺序排列。
+**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`deliveryMode`、可选的 `trigger` 与 `lastTriggerCheck`、`ageDays` 和 `stale`。记录用 `---` 分隔，按创建顺序排列。
 
-**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，尚未投递的触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
+**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止，且正在运行的触发检查脚本会被终止；对一次性任务，尚未投递的触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
 
 报告成功的 `create` 或 `delete` 表示该变化已经落盘。保存本身失败时，工具返回错误且已存储的调度保持原样，因此成功回执不会对应一个只存在于内存中的任务。
 

@@ -19,6 +19,8 @@ Each record carries:
   next fire after jitter, or `null` if none occurs within 5 years.
 - `recurring` — `true` for cadenced jobs, `false` for one-shots.
 - `deliveryMode` — `idle` (default, before ordinary messages once idle), `queue` (normal order), or `steer` (next safe step).
+- `trigger` — present when the task has optional pre-fire conditions (`{"probability":...,"script":"..."}`).
+- `lastTriggerCheck` — present after a conditional check runs: `{"checkedAt":...,"outcome":"allowed"|"skipped"|"error","reason":"probability"|"exit_code"|"not_authorized"|"timeout"|"cancelled"|"process_failed"|"cleanup_failed","exitCode":...}`.
 - `ageDays` — `(now - createdAt) / day`, two decimal places. Useful
   when deciding whether a long-running cron is still relevant.
 - `stale` — `true` when a recurring task is older than 7 days. The system

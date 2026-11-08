@@ -367,6 +367,25 @@ async function walk(page, tag) {
     return node !== null && node.textContent.trim() === '暂停';
   }, PAUSED, { timeout: 20_000 }).catch(() => { errors.push(`${tag}: resuming the paused task did not settle on its label`); });
   await shot(page, `resumed-${tag}`);
+
+  // Run now distinguishes triggered, condition-skipped, and failed checks.
+  await expandRow(page, HOURLY);
+  await clickRow(page, HOURLY, 'run');
+  await page.waitForSelector('[data-toast="success"]', { timeout: 15_000 })
+    .catch(() => { errors.push(`${tag}: run-now triggered did not show a success toast`); });
+  await shot(page, `run-triggered-${tag}`);
+
+  await control({ action: 'cron_next_run_result', result: { triggered: false, check: { checkedAt: Date.now(), outcome: 'skipped', reason: 'probability' } } });
+  await clickRow(page, HOURLY, 'run');
+  await page.waitForSelector('[data-toast="info"]', { timeout: 15_000 })
+    .catch(() => { errors.push(`${tag}: run-now skipped did not show an info toast`); });
+  await shot(page, `run-skipped-${tag}`);
+
+  await control({ action: 'cron_next_run_result', result: { triggered: false, check: { checkedAt: Date.now(), outcome: 'error', reason: 'timeout' } } });
+  await clickRow(page, HOURLY, 'run');
+  await page.waitForSelector('[data-toast="error"]', { timeout: 15_000 })
+    .catch(() => { errors.push(`${tag}: run-now failed check did not show an error toast`); });
+  await shot(page, `run-failed-${tag}`);
 }
 
 try {

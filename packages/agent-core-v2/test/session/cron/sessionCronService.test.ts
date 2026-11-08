@@ -35,7 +35,7 @@ function fixture() {
     reg.definePartialInstance(ISessionContext, { sessionId: 'fixture', workspaceId: 'fixture' });
     reg.definePartialInstance(IAgentLifecycleService, { onWillCreate: Event.None as IAgentLifecycleService['onWillCreate'], list: () => [], get: () => undefined });
     reg.definePartialInstance(ITelemetryService, { track2: () => {} });
-    reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), onDidSectionChange: Event.None, get: <T,>() => ({ disabled: false, noJitter: true }) as T });
+    reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), onDidSectionChange: Event.None as IConfigService['onDidSectionChange'], get: <T,>() => ({ disabled: false, noJitter: true }) as T });
     reg.defineInstance(ICronTaskPersistence, { _serviceBrand: undefined, save, delete: remove, get: async (_workspace, id) => tasks.get(id), list: async () => [...tasks.values()], listWorkspaceIds: async () => ['fixture'] });
   } });
   return { disposables, services, cron: services.get(ISessionCronService), tasks, save, remove };

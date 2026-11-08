@@ -236,6 +236,7 @@ describe('CronCreateTool', () => {
       await runTool<CronCreateInput>(tool, {
         cron: '*/5 * * * *',
         prompt: 'ping',
+        trigger: { probability: 0.25 },
         recurring: true,
       }),
     );
@@ -244,6 +245,7 @@ describe('CronCreateTool', () => {
     expect(task).toMatchObject({
       cron: '*/5 * * * *',
       prompt: 'ping',
+      trigger: { probability: 0.25 },
       recurring: true,
       createdAt: WALL_ANCHOR,
     });
@@ -256,6 +258,7 @@ describe('CronCreateTool', () => {
       humanSchedule: every 5 minutes
       recurring: true
       deliveryMode: idle
+      trigger: {"probability":0.25}
       nextFireAt: <iso>"
     `);
   });
