@@ -5294,11 +5294,24 @@ class FixtureServer {
           if (previous.get(completion.session_id) === completion.episode_id) continue;
           const session = this.sessions.get(completion.session_id);
           if (session !== undefined) {
-            session.seq += 1;
-            session.record.last_seq = session.seq;
-            session.record.busy = false;
-            session.record.last_turn_reason = 'completed';
             session.record.updated_at = new Date(completion.completed_at).toISOString();
+            this.emit(completion.session_id, {
+              type: 'event.session.work_changed',
+              payload: {
+                busy: false,
+                executing: false,
+                main_turn_active: false,
+                pending_interaction: 'none',
+                last_turn_reason: 'completed',
+              },
+            });
+            this.emit(completion.session_id, {
+              type: 'session.meta.updated',
+              payload: {
+                title: session.record.title,
+                patch: { title: session.record.title },
+              },
+            });
           }
         }
         return this.envelope(res, this.notifications.completions);

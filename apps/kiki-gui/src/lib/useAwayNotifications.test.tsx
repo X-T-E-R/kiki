@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@kiki/protocol';
-import { resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
+import { markSessionsSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
 import { configureSpaceStorage } from '@kiki/session-core/storage';
 import {
   buildInboxModel,
@@ -302,5 +302,52 @@ describe('conversation completion and read confirmation', () => {
     expect(buildInboxModel(rowsAfterSecond, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['b', 'c']);
     expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
     expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not bounce B back to unread when its completion receipt arrives after opening B or Mark all as read', async () => {
+    await mount('/s/a');
+    const finishedB: Session = {
+      ...sessions[1]!,
+      last_seq: 14,
+      updated_at: '2026-10-07T00:00:05Z',
+      last_turn_reason: 'completed',
+    };
+    const currentRows = [sessions[0]!, finishedB];
+    await act(async () => { replaceSessions(currentRows); });
+
+    // User opens and focuses B before the 5s completion poll observes the episode, then switches back to A.
+    await act(async () => { await navigate('/s/b'); });
+    await flush();
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 14 });
+    await act(async () => { await navigate('/s/a'); });
+    await flush();
+
+    // The completion receipt for that same episode arrives on the next poll tick.
+    completions = [{ session_id: 'b', episode_id: 'late-episode-b-1', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 14 });
+    expect(sessionRowState(finishedB, sessionSeenSnapshot())).toBe('read');
+    expect(buildInboxModel(currentRows, sessionSeenSnapshot()).unread).toEqual([]);
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
+
+    // Next episode: B finishes at seq 18, user clicks "Mark all as read" before the completion poll arrives.
+    const nextFinishedB: Session = {
+      ...finishedB,
+      last_seq: 18,
+      updated_at: '2026-10-07T00:01:00Z',
+    };
+    const nextRows = [sessions[0]!, nextFinishedB];
+    await act(async () => {
+      replaceSessions(nextRows);
+      markSessionsSeen([{ sessionId: 'b', lastSeq: 18 }]);
+    });
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 18 });
+
+    completions = [{ session_id: 'b', episode_id: 'late-episode-b-2', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 18 });
+    expect(sessionRowState(nextFinishedB, sessionSeenSnapshot())).toBe('read');
+    expect(buildInboxModel(nextRows, sessionSeenSnapshot()).unread).toEqual([]);
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
   });
 });
