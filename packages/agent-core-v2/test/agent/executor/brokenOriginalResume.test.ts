@@ -899,13 +899,17 @@ describe('recoverable ACP broken resume', () => {
     const { AgentExecutionService } = await import('#/agent/execution/executionService');
     const { agentService, appService, sessionService } = await import('../../harness');
     const caps = new Map<string, NegotiatedExecutorCapabilities>();
+    let createdSession: import('#/agent/execution/acpAgentExecutorSession').AcpAgentExecutorSession | undefined;
     const provider: AgentExecutorProvider = {
       id: 'example-acp',
       protocol: 'acp-v1',
       validateOptions: () => ({}),
       validateBinding: (binding) => ({ ok: true, binding }),
-      create: (ctx) => new AcpAgentExecutorSession(ctx, () =>
-        (ctx.descriptor.id === 'instance-agy-b' ? remoteB : remoteA).createClient()),
+      create: (ctx) => {
+        createdSession = new AcpAgentExecutorSession(ctx, () =>
+          (ctx.descriptor.id === 'instance-agy-b' ? remoteB : remoteA).createClient());
+        return createdSession;
+      },
     };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
@@ -1063,6 +1067,18 @@ describe('recoverable ACP broken resume', () => {
         const { turnKey } = await import('#/agent/loop/turnOps');
         const lastTurn = childCtx.get(IAgentStateService).get(turnKey).lastEnded;
         expect(lastTurn).toMatchObject({ turnId: 0, reason: 'failed', error: { code: 'executor.protocol_error', message: networkError } });
+        if (scenario === 'legacy-settled-tool-error') {
+          const originalBinding = childProfile.data();
+          createdSession?.updateBinding({
+            ...originalBinding,
+            environmentDisclosure: {
+              ...originalBinding.environmentDisclosure!,
+              cwd: '/spoofed-cwd',
+            },
+          });
+          expect(childExecution.canResumeBrokenOriginal()).toBe(false);
+          createdSession?.updateBinding(originalBinding);
+        }
         expect(childExecution.canResumeBrokenOriginal()).toBe(scenario !== 'legacy-unsettled');
         oldBridge = false;
         const resumed = await executeTool(toolIx.get(ISubagentTool), {

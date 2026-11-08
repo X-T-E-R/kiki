@@ -551,6 +551,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const sessionId = sessionIdFromState(state.sessionRef);
     const turn = this.#states.get(turnKey).lastEnded;
     const disclosedCwd = binding.environmentDisclosure?.cwd;
+    const hasAdditionalDirs = (roots.additionalDirs?.length ?? 0) > 0;
     const terminalError = turn?.error?.message?.startsWith(AGY_TERMINAL_ERROR_PREFIX)
       ? turn.error.message.slice(AGY_TERMINAL_ERROR_PREFIX.length).trim()
       : '';
@@ -559,6 +560,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         state.sessionRef?.ref['localSource'] !== undefined || state.sessionEpoch !== 1 ||
         sessionId === undefined || !AGY_UUID.test(sessionId) || state.profileDeliveredSessionId !== sessionId ||
         binding.modelAlias === undefined || !this.#reusablePriorState(state) ||
+        (hasAdditionalDirs && disclosedCwd === undefined) ||
         (disclosedCwd !== undefined && !sameWorkspacePath(disclosedCwd, roots.workDir)) ||
         turn?.turnId !== 0 || turn.reason !== 'failed' || turn.error?.code !== 'executor.protocol_error' ||
         terminalError.length === 0 || AGY_UNRECOVERABLE_TERMINAL_ERROR.test(terminalError)) return undefined;
@@ -568,6 +570,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       binding.modelAlias,
       binding.thinkingEffortExplicit === true ? binding.thinkingLevel : 'engine-default',
       terminalError,
+      disclosedCwd,
       roots.additionalDirs,
     );
   }
@@ -1492,6 +1495,7 @@ function legacyAgyRecoveryProof(
   model: string,
   effort: string | undefined,
   terminalError: string,
+  disclosedCwd?: string,
   additionalDirectories?: readonly string[],
 ) {
   const prefix = `external:${encodeURIComponent(`${sessionId}:e1`)}:`;
@@ -1537,6 +1541,7 @@ function legacyAgyRecoveryProof(
     model,
     effort,
     terminalError,
+    disclosedCwd,
     additionalDirectories: additionalDirectories?.length ? [...additionalDirectories] : undefined,
     tools: tools.sort((a, b) => a.stepIndex - b.stepIndex),
   };

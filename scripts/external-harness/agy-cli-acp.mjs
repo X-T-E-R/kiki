@@ -95,10 +95,12 @@ async function readLegacyTranscript(path) {
 
 export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDirectories = [], sessionId, proof, model }) {
   const extraDirs = proof?.additionalDirectories ?? [];
+  const disclosedCwd = proof?.disclosedCwd;
   const terminalError = proof?.terminalError ?? LEGACY_NETWORK_FAILURE;
   if (proof?.version !== 1 || proof.sessionId !== sessionId || !NATIVE_ID.test(sessionId) || !NATIVE_ID.test(proof.conversationId) || !isAbsolute(cwd) ||
       !Array.isArray(additionalDirectories) || additionalDirectories.some(dir => typeof dir !== 'string' || !isAbsolute(dir)) ||
       !Array.isArray(extraDirs) || extraDirs.some(dir => typeof dir !== 'string' || !isAbsolute(dir)) ||
+      (disclosedCwd !== undefined && (typeof disclosedCwd !== 'string' || !isAbsolute(disclosedCwd))) ||
       proof.model !== model || typeof proof.effort !== 'string' || typeof terminalError !== 'string' || !terminalError.trim() ||
       /^(?:interrupted|canceled|cancelled)$/i.test(terminalError.trim()) ||
       !Array.isArray(proof.tools) || !proof.tools.length || proof.tools.length > 1000 ||
@@ -109,8 +111,11 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
     throw new Error('AGY legacy load requires an exact original session and completed native tool mapping');
   }
   const canonical = value => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value);
-  if (extraDirs.length > 0 && (extraDirs.length !== additionalDirectories.length ||
-      extraDirs.some((dir, index) => canonical(dir) !== canonical(additionalDirectories[index])))) {
+  if ((disclosedCwd !== undefined && canonical(disclosedCwd) !== canonical(cwd)) ||
+      (additionalDirectories.length > 0 && (disclosedCwd === undefined || extraDirs.length !== additionalDirectories.length ||
+        extraDirs.some((dir, index) => canonical(dir) !== canonical(additionalDirectories[index])))) ||
+      (extraDirs.length > 0 && (extraDirs.length !== additionalDirectories.length ||
+        extraDirs.some((dir, index) => canonical(dir) !== canonical(additionalDirectories[index]))))) {
     throw new Error('AGY legacy native conversation or workspace differs from its original binding');
   }
   const expectedRoots = new Set([cwd, ...additionalDirectories].map(canonical));
@@ -134,14 +139,21 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
       ? model.slice(0, -(proof.effort.length + 1))
       : model;
     const exactModel = value => value === model || value === `gemini-api://models/${model}`;
-    const models = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM gen_metadata ORDER BY idx LIMIT 1001').all(MAX_FRAME_BYTES);
+    const totalModels = Number(db.prepare('SELECT COUNT(*) AS count FROM (SELECT 1 FROM gen_metadata LIMIT 1001)').get()?.count ?? 0);
+    if (totalModels === 0 || totalModels > 1000) {
+      throw new Error('AGY legacy native model differs from its original binding');
+    }
+    const models = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM gen_metadata ORDER BY idx LIMIT 1001');
+    let rowIndex = 0;
     let sawModel = false;
     let sawExactModel = false;
-    for (const [index, row] of models.entries()) {
+    for (const row of models.iterate(MAX_FRAME_BYTES)) {
+      const isLast = rowIndex === totalModels - 1;
+      rowIndex += 1;
       const bytes = row.data ?? [];
       const name = nativeBytesAt(bytes, [1, 19], true);
       const uri = nativeBytesAt(bytes, [3, 28], true);
-      if (row.data && name === undefined && uri === undefined && index !== models.length - 1) {
+      if (name === undefined && uri === undefined && !isLast) {
         throw new Error('AGY legacy native model differs from its original binding');
       }
       if (name !== undefined && name !== model && name !== baseModel) {
@@ -153,18 +165,17 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
       if (name !== undefined || uri !== undefined) sawModel = true;
       if (name === model || (uri !== undefined && exactModel(uri))) sawExactModel = true;
     }
-    const hasExecutorMeta = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'executor_metadata');
-    const execMeta = hasExecutorMeta
-      ? db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM executor_metadata ORDER BY idx LIMIT 10').all(MAX_FRAME_BYTES)
-      : [];
-    for (const row of execMeta) {
-      const uri = nativeBytesAt(row.data ?? [], [10, 1, 28], true);
-      if (uri !== undefined && !exactModel(uri)) {
-        throw new Error('AGY legacy native model differs from its original binding');
+    if (db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'executor_metadata')) {
+      const execMeta = db.prepare('SELECT CASE WHEN length(data) <= ? THEN data END AS data FROM executor_metadata ORDER BY idx LIMIT 10');
+      for (const row of execMeta.iterate(MAX_FRAME_BYTES)) {
+        const uri = nativeBytesAt(row.data ?? [], [10, 1, 28], true);
+        if (uri !== undefined && !exactModel(uri)) {
+          throw new Error('AGY legacy native model differs from its original binding');
+        }
+        if (uri !== undefined && exactModel(uri)) sawExactModel = true;
       }
-      if (uri !== undefined && exactModel(uri)) sawExactModel = true;
     }
-    if (models.length === 0 || models.length > 1000 || !sawModel || !sawExactModel) {
+    if (rowIndex !== totalModels || !sawModel || !sawExactModel) {
       throw new Error('AGY legacy native model differs from its original binding');
     }
     const steps = db.prepare('SELECT idx, step_type, status FROM steps ORDER BY idx LIMIT 10001').all();
@@ -213,10 +224,6 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
             (tool.error !== undefined && nativeErr !== tool.error)) {
           throw new Error('AGY legacy native tools differ from the completed Kiki tool mapping');
         }
-      }
-      const cmdCwd = nativeBytesAt(toolPayload, [140, 2, 3, 10, 3, 2], true) ?? nativeBytesAt(toolPayload, [140, 2, 6, 2, 7], true);
-      if (cmdCwd !== undefined && !expectedRoots.has(canonical(cmdCwd))) {
-        throw new Error('AGY legacy native conversation or workspace differs from its original binding');
       }
     }
     const transcript = await readLegacyTranscript(resolve(nativeHome, 'brain', conversationId, '.system_generated', 'logs', 'transcript_full.jsonl'));

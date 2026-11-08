@@ -1597,6 +1597,7 @@ void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-
   const { mkdir, mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { DatabaseSync } = await import('node:sqlite');
   const root = await mkdtemp(join(tmpdir(), 'agy-legacy-gemini-load-'));
+  const subdir = join(root, 'packages', 'agent-core-v2');
   const extraA = join(root, 'extra-a');
   const extraB = join(root, 'extra-b');
   const unapproved = join(root, 'visited-outside');
@@ -1612,6 +1613,7 @@ void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-
     model,
     effort: 'high',
     terminalError,
+    disclosedCwd: root,
     additionalDirectories: [extraA, extraB],
     tools: [
       { stepIndex: 2, name: 'read_file', failed: true, error: 'file does not exist' },
@@ -1652,7 +1654,7 @@ void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-
       step.run(1, 15, 3, Buffer.alloc(0));
       step.run(2, 132, 7, Buffer.concat([field(5, field(4, field(2, 'read_file'))), field(31, field(2, 'file does not exist'))]));
       step.run(3, 132, 3, field(5, field(4, field(2, 'edit_file'))));
-      step.run(4, 132, 3, Buffer.concat([field(5, field(4, field(2, 'run_command'))), field(140, field(2, field(6, field(2, field(7, extraA)))))]));
+      step.run(4, 132, 3, Buffer.concat([field(5, field(4, field(2, 'run_command'))), field(140, field(2, field(6, field(2, field(7, subdir)))))]));
       step.run(5, 17, 3, field(24, field(3, field(2, streamError))));
       step.run(6, 17, 3, field(24, field(3, Buffer.concat([
         field(1, terminalError),
@@ -1672,6 +1674,18 @@ void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-
 
     await assert.rejects(b.loadSession({ ...params, cwd: unapproved, additionalDirectories: [extraA, extraB] }), /workspace differs/);
     await assert.rejects(b.loadSession({ ...params, cwd: extraA, additionalDirectories: [] }), /workspace differs/);
+    await assert.rejects(b.loadSession({
+      ...params,
+      cwd: extraA,
+      additionalDirectories: [root, extraB],
+      _meta: { 'kiki.agyLegacyRecovery': { ...proof, additionalDirectories: [root, extraB] } },
+    }), /workspace differs/);
+    await assert.rejects(b.loadSession({
+      ...params,
+      cwd: extraA,
+      additionalDirectories: [root, extraB],
+      _meta: { 'kiki.agyLegacyRecovery': { ...proof, disclosedCwd: undefined, additionalDirectories: [root, extraB] } },
+    }), /workspace differs/);
 
     const mutateDb = fn => {
       const mdb = new DatabaseSync(dbPath);
