@@ -2451,7 +2451,11 @@ export function SessionView({
 
   // Advance this conversation's seen-mark only while its route is visible
   // and focused. Other conversations and hidden mounted views stay unread.
-  useViewedSession(host, sessionId, state.session?.last_seq);
+  const listedLastSeq = sessions.find((item) => item.id === sessionId)?.last_seq;
+  const viewedSeq = state.session === undefined && listedLastSeq === undefined
+    ? undefined
+    : Math.max(state.session?.last_seq ?? 0, state.cursor.seq, listedLastSeq ?? 0);
+  useViewedSession(host, sessionId, viewedSeq);
 
   const permissionMode = resolveControlledValue(
     permissionOverride,

@@ -1456,6 +1456,31 @@ describe('server-v2 /api/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('retains a monotonic last_seq across point reads, list polling, live snapshots, and cold restarts', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+
+    const pointBefore = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointBefore.body.data.last_seq).toBeGreaterThan(0);
+    const listBefore = await getJson<PageWire>('/api/sessions');
+    expect(listBefore.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointBefore.body.data.last_seq);
+    const liveSnapshot = await getJson<{ as_of_seq: number; session: SessionWire }>(`/api/sessions/${id}/snapshot`);
+    expect(liveSnapshot.body.data.session.last_seq).toBe(liveSnapshot.body.data.as_of_seq);
+    expect(liveSnapshot.body.data.session.last_seq).toBe(pointBefore.body.data.last_seq);
+
+    await postJson<SessionWire>(`/api/sessions/${id}/profile`, { title: 'Updated title' });
+    const pointAfter = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointAfter.body.data.last_seq).toBeGreaterThan(pointBefore.body.data.last_seq);
+    const listAfter = await getJson<PageWire>('/api/sessions');
+    expect(listAfter.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointAfter.body.data.last_seq);
+
+    await closeSessionById((server as RunningServer).core.accessor, id);
+    const coldList = await getJson<PageWire>('/api/sessions');
+    expect(coldList.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointAfter.body.data.last_seq);
+  });
+
   it('keeps every canonical sidebar ID reachable under preview pressure and does not resolve missing prefixes', async () => {
     const metadata = { cwd: home, coverUrl: 'u'.repeat(70000), ...Object.fromEntries(Array.from({ length: 36 }, (_, index) => [`p${index}`, 'body'.repeat(1000)])) };
     const ids: string[] = [];

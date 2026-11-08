@@ -129,6 +129,28 @@ export class SessionEventJournal {
     return new SessionEventJournal(filePath, logger, epoch, lastSeq, false, capacity);
   }
 
+  /**
+   * Read the persisted watermark without creating, truncating, or flushing the
+   * journal file. Used for cold watermark queries (such as `GET /api/sessions`).
+   */
+  static async peekWatermark(
+    filePath: string,
+    logger: JournalLogger = noopLogger,
+  ): Promise<{ seq: number; epoch: string }> {
+    try {
+      const watermark = await readWatermark(filePath);
+      if (watermark.epoch !== undefined) {
+        return { seq: watermark.lastSeq, epoch: watermark.epoch };
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logger.warn({ filePath, err: String(error) }, 'event journal watermark read failed');
+      }
+    }
+    return { seq: 0, epoch: '' };
+  }
+
   /** Reserve the next durable seq. The caller must follow with `append()`. */
   nextSeq(): number {
     this._seq += 1;

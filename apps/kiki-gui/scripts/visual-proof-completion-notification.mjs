@@ -55,11 +55,15 @@ const result = await runProof({
     });
     const state = () => page.evaluate(() => window.__completionBridge.state);
     const open = async (route) => { await page.goto(link(route)); await page.waitForResponse((response) => response.url().endsWith('/api/notifications/completions')); };
+    await open('/s/conversation-b');
+    await page.locator('[data-composer-session]').first().waitFor();
+    await page.waitForFunction(() => window.__completionBridge.state.acknowledged.some((entry) => entry.sessionId === 'conversation-b'));
     await page.goto(link('/s/conversation-a'));
     await page.locator('[data-composer-session]').first().waitFor();
     await page.waitForFunction(() => window.__completionBridge.state.acknowledged.some((entry) => entry.sessionId === 'conversation-a')).catch(async (error) => {
       console.log('acknowledgment diagnostic', await state()); throw error;
     });
+    assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'read');
     await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith('kiki.completionObserved.v1:') && key.includes('"scopeId":"local","serverHomeId":"fixture-home"')));
     const b = { session_id: 'conversation-b', episode_id: 'finished-b', completed_at: Date.now() };
     await control({ action: 'notification_completions', completions: [b] });
@@ -70,12 +74,15 @@ const result = await runProof({
       throw error;
     });
     assert.equal((await state()).sent[0].route, '/s/conversation-b');
+    assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'unread');
     await shot('completion-b-unread-while-viewing-a');
     await page.evaluate(() => { window.dispatchEvent(new Event('focus')); });
     await open('/settings');
     await open('/s/conversation-a');
-    assert.equal((await state()).retained.length, 1);
-    assert.equal((await state()).acknowledged.some((entry) => entry.sessionId === 'conversation-b'), false);
+    assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'unread');
+    const afterA = await state();
+    assert.equal(afterA.retained.length, 1);
+    assert.equal(afterA.acknowledged.filter((entry) => entry.sessionId === 'conversation-b').length, 1);
     const c = { session_id: 'conversation-c', episode_id: 'finished-c', completed_at: Date.now() };
     await control({ action: 'notification_completions', completions: [b, c] });
     await page.waitForFunction(() => window.__completionBridge.state.sent.length === 2);
@@ -83,6 +90,8 @@ const result = await runProof({
     await page.locator('[data-composer-session]').first().waitFor();
     await page.waitForResponse((response) => response.url().endsWith('/api/notifications/completions'));
     assert.equal((await state()).sent.length, 2);
+    assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'unread');
+    assert.equal(await page.locator('[data-session-row="conversation-c"]').getAttribute('data-session-row-state'), 'unread');
     await control({ action: 'drop_ws' });
     await page.evaluate(() => { window.__completionBridge.focused = false; });
     await page.evaluate(() => window.__completionBridge.click(window.__completionBridge.state.sent[0]));
@@ -91,6 +100,8 @@ const result = await runProof({
     assert.equal((await state()).retained.length, 2);
     await page.evaluate(() => { window.__completionBridge.focused = true; window.dispatchEvent(new Event('focus')); });
     await page.waitForFunction(() => window.__completionBridge.state.retained.length === 1);
+    assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'read');
+    assert.equal(await page.locator('[data-session-row="conversation-c"]').getAttribute('data-session-row-state'), 'unread');
     const final = await state();
     assert.deepEqual(final.retained[0].sessionIds, ['conversation-c']);
     assert.equal(final.acknowledged.at(-1).sessionId, 'conversation-b');

@@ -88,6 +88,12 @@ export async function readSessionFirstPage(
   return head;
 }
 
+function retainSessionSeq(next: Session, currentSeq: number | undefined): Session {
+  return currentSeq !== undefined && currentSeq > next.last_seq
+    ? { ...next, last_seq: currentSeq }
+    : next;
+}
+
 /**
  * Poll merge keeps the loaded boundary after the newest overlapping row.
  * Only the head is refreshed; rows displaced by new sessions remain loaded,
@@ -98,13 +104,24 @@ export function mergeSessionFirstPage(
   first: SessionListPage,
 ): SessionListData | undefined {
   if (old === undefined) return old;
+  const knownSeqs = new Map<string, number>();
+  for (const page of old.pages) {
+    for (const item of page.items) {
+      const prev = knownSeqs.get(item.id) ?? 0;
+      if (item.last_seq > prev) knownSeqs.set(item.id, item.last_seq);
+    }
+  }
+  const normalizedFirst: SessionListPage = {
+    ...first,
+    items: first.items.map((item) => retainSessionSeq(item, knownSeqs.get(item.id))),
+  };
   const previous = old.pages[0];
-  if (previous === undefined || !first.has_more) return { pages: [first], pageParams: [undefined] };
-  const ids = new Set(first.items.map((item) => item.id));
+  if (previous === undefined || !normalizedFirst.has_more) return { pages: [normalizedFirst], pageParams: [undefined] };
+  const ids = new Set(normalizedFirst.items.map((item) => item.id));
   const overlap = previous.items.findLastIndex((item) => ids.has(item.id));
   const retained = previous.items.slice(overlap + 1);
-  const head = retained.length === 0 ? first : {
-    ...first, items: [...first.items, ...retained], has_more: previous.has_more,
+  const head = retained.length === 0 ? normalizedFirst : {
+    ...normalizedFirst, items: [...normalizedFirst.items, ...retained], has_more: previous.has_more,
     next_cursor: previous.next_cursor ?? previous.items.at(-1)?.id,
   };
   return { ...old, pages: [head, ...old.pages.slice(1)] };
@@ -119,7 +136,9 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
   if (old === undefined) return old;
   return { ...old, pages: old.pages.map((page) => ({
     ...page,
-    items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at) ? fresh : session),
+    items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at)
+      ? retainSessionSeq(fresh, session.last_seq)
+      : session),
   })) };
 }
 

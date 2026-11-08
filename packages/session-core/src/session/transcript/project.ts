@@ -3634,11 +3634,14 @@ export function applyTranscriptShell(
   previous?: SessionViewState,
 ): SessionViewState {
   const base = previous ?? createViewState(sessionId);
+  const cursor = sessionCursorFromSnapshot(snapshot, previous);
+  const lastSeq = Math.max(snapshot.session.last_seq, snapshot.as_of_seq, cursor.seq, previous?.session?.last_seq ?? 0);
+  const session = lastSeq > snapshot.session.last_seq ? { ...snapshot.session, last_seq: lastSeq } : snapshot.session;
   return {
     ...base,
     version: base.version + 1,
-    session: snapshot.session,
-    cursor: sessionCursorFromSnapshot(snapshot, previous),
+    session,
+    cursor,
     busy: snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
     abortablePromptId: snapshot.in_flight_turn?.current_prompt_id,
     abortableTurnId: snapshot.in_flight_turn?.turn_id,

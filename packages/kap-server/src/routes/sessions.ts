@@ -349,7 +349,7 @@ export function registerSessionsRoutes(
       if (items.length >= (query.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE)) break;
       const ctx = handle.accessor.get(ISessionContext);
       const meta = await handle.accessor.get(ISessionMetadata).read();
-      const session = boundedListPreview(toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), undefined, true));
+      const session = boundedListPreview(toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), (await broadcaster?.getCursor(handle.id))?.seq, true));
       const size = jsonBytes(session) + 1;
       if (bytes + size > budget) break;
       items.push(session);
@@ -549,7 +549,8 @@ export function registerSessionsRoutes(
           core.accessor.get(IEventService).publish(
             new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
           );
-          return session;
+          const cursor = await broadcaster?.getCursor(meta.id);
+          return cursor === undefined ? session : { ...session, last_seq: cursor.seq };
         } catch (error) {
           if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
             externalClients?.cancelPreparedSession(createdSessionId);
@@ -701,7 +702,8 @@ export function registerSessionsRoutes(
             } } };
           }
         }
-        return toWireSession(summary, cwd, facts);
+        const cursor = await broadcaster?.getCursor(summary.id);
+        return toWireSession(summary, cwd, facts, cursor?.seq);
       };
 
       interface Eligible {
@@ -879,6 +881,7 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const { session_id } = req.params;
+      const cursor = await broadcaster?.getCursor(session_id);
       const manager = core.accessor.get(ISessionManager);
       if (manager.isEphemeral(session_id)) {
         const handle = manager.get(session_id);
@@ -890,7 +893,7 @@ export function registerSessionsRoutes(
         const meta = await handle.accessor.get(ISessionMetadata).read();
         reply.send(okEnvelope(toWireSession(
           { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
-          resolveSessionFacts(core, session_id), undefined, true,
+          resolveSessionFacts(core, session_id), cursor?.seq, true,
         ), req.id));
         return;
       }
@@ -919,6 +922,7 @@ export function registerSessionsRoutes(
             summary,
             cwd,
             await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage),
+            cursor?.seq,
           ),
           req.id,
         ),
@@ -954,19 +958,20 @@ export function registerSessionsRoutes(
           if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
           const fields = await updateSessionProfile(handle, profileBody);
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
-          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), undefined, core.accessor.get(ISessionManager).isEphemeral(fields.id));
           if (typeof req.body.title === 'string' && req.body.title.trim().length > 0) {
             core.accessor.get(IEventService).publish(
               new SessionMetaUpdated({
                 payload: {
                   agentId: 'main',
                   sessionId: session_id,
-                  title: session.title,
-                  patch: { title: session.title, isCustomTitle: true },
+                  title: fields.title,
+                  patch: { title: fields.title, isCustomTitle: true },
                 },
               }),
             );
           }
+          const cursor = await broadcaster?.getCursor(fields.id);
+          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id));
           reply.send(okEnvelope(session, req.id));
         });
       } catch (error) {
@@ -1071,7 +1076,8 @@ export function registerSessionsRoutes(
           await manager.saveEphemeral(id);
           const summary = await core.accessor.get(ISessionIndex).get(id);
           if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `saved session ${id} not found`);
-          reply.send(okEnvelope(toWireSession(summary, summary.cwd ?? '', resolveSessionFacts(core, id, summary.usage)), req.id));
+          const cursor = await broadcaster?.getCursor(id);
+          reply.send(okEnvelope(toWireSession(summary, summary.cwd ?? '', resolveSessionFacts(core, id, summary.usage), cursor?.seq), req.id));
         } catch (error) {
           sendMappedError(reply, req, error);
         }
@@ -1200,11 +1206,12 @@ export function registerSessionsRoutes(
           core.accessor.get(IEventService).publish(
             new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
           );
+          const cursor = await broadcaster?.getCursor(meta.id);
           requestLog(req)?.info(
             { session_id: parsed.id, action: 'fork', new_session_id: session.id },
             'session action completed',
           );
-          reply.send(okEnvelope(session, req.id));
+          reply.send(okEnvelope(cursor === undefined ? session : { ...session, last_seq: cursor.seq }, req.id));
           return;
         }
 
@@ -1269,10 +1276,12 @@ export function registerSessionsRoutes(
           }
           const meta = await restored.accessor.get(ISessionMetadata).read();
           const ctx = restored.accessor.get(ISessionContext);
+          const cursor = await broadcaster?.getCursor(meta.id);
           const session = toWireSession(
             { ...meta, workspaceId: ctx.workspaceId },
             ctx.cwd,
             resolveSessionFacts(core, meta.id),
+            cursor?.seq,
           );
           requestLog(req)?.info({ session_id: parsed.id, action: 'restore' }, 'session action completed');
           reply.send(okEnvelope(session, req.id));
@@ -1343,13 +1352,14 @@ export function registerSessionsRoutes(
         const roots = new Map(
           (await core.accessor.get(IWorkspaceService).list()).map((w) => [w.id, w.root]),
         );
-        const projected = window.map((summary) =>
+        const projected = await Promise.all(window.map(async (summary) =>
           toWireSession(
             summary,
             summary.cwd ?? roots.get(summary.workspaceId) ?? '',
             resolveSessionFacts(core, summary.id, summary.usage),
+            (await broadcaster?.getCursor(summary.id))?.seq,
           ),
-        );
+        ));
         const items =
           req.query.busy !== undefined
             ? projected.filter((session) => session.busy === req.query.busy)
@@ -1404,7 +1414,8 @@ export function registerSessionsRoutes(
         core.accessor.get(IEventService).publish(
           new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
         );
-        reply.send(okEnvelope(session, req.id));
+        const cursor = await broadcaster?.getCursor(meta.id);
+        reply.send(okEnvelope(cursor === undefined ? session : { ...session, last_seq: cursor.seq }, req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
       }

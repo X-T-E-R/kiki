@@ -1686,6 +1686,7 @@ class FixtureServer {
       if (partial.offset !== undefined) frame.offset = partial.offset;
     } else {
       session.seq += 1;
+      session.record.last_seq = session.seq;
       frame.seq = session.seq;
       frame.epoch = session.epoch;
       // Journal durable frames for subscribe replay; the advertised buffer
@@ -5286,9 +5287,22 @@ class FixtureServer {
 
   async handleControl(body, res) {
     switch (body.action) {
-      case 'notification_completions':
+      case 'notification_completions': {
+        const previous = new Map((this.notifications?.completions ?? []).map((item) => [item.session_id, item.episode_id]));
         this.notifications.completions = structuredClone(body.completions);
+        for (const completion of this.notifications.completions) {
+          if (previous.get(completion.session_id) === completion.episode_id) continue;
+          const session = this.sessions.get(completion.session_id);
+          if (session !== undefined) {
+            session.seq += 1;
+            session.record.last_seq = session.seq;
+            session.record.busy = false;
+            session.record.last_turn_reason = 'completed';
+            session.record.updated_at = new Date(completion.completed_at).toISOString();
+          }
+        }
         return this.envelope(res, this.notifications.completions);
+      }
       case 'recipe_read_fail_next':
         // Refuses the next Recipe reads, so a page's load failure and its retry
         // are walkable on screen.

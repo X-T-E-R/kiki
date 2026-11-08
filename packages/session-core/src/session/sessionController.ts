@@ -853,9 +853,13 @@ export class SessionController {
     const current = this.state.cursor;
     if (cursor.seq < current.seq) return;
     if (cursor.seq === current.seq && cursor.epoch === current.epoch) return;
+    const session = this.state.session !== undefined && cursor.seq > this.state.session.last_seq
+      ? { ...this.state.session, last_seq: cursor.seq }
+      : this.state.session;
     this.setState({
       ...this.state,
       version: this.state.version + 1,
+      session,
       cursor: { seq: cursor.seq, epoch: cursor.epoch },
     });
     this.viewHandle?.updateSessionCursor(cursor);

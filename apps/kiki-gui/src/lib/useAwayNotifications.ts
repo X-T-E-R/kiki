@@ -26,7 +26,7 @@ import {
   type AttentionNotification,
   type StableCompletion,
 } from '@kiki/session-core/sessions';
-import { markSessionSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
+import { forgetSessionSeen, markSessionSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { spaceStorage, spaceStorageKey } from '@kiki/session-core/storage';
 
 import type { HostAdapter, HostNotification } from '../host';
@@ -114,6 +114,7 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   useEffect(() => {
     if (host.notify === undefined) return;
     const storage = spaceStorage.capture();
+    const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
     const key = `kiki.completionObserved.v1:${scopeKey}`;
     let checkpoint: readonly StableCompletion[] | undefined;
     try { checkpoint = readCompletionCheckpoint(storage.getItem(key)); } catch { checkpoint = undefined; }
@@ -126,7 +127,25 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       try {
         const completions = await client.notifications.listCompletions();
         if (stopped) return;
-        await awayNotifier.report(observer.observe(completions, sessionsRef.current));
+        const observed = observer.observe(completions, sessionsRef.current);
+        if (observed.length > 0 && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
+          const focused = await isConversationWindowFocused(host);
+          if (!stopped && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
+            const seen = sessionSeenSnapshot();
+            for (const event of observed) {
+              const route = `/s/${encodeURIComponent(event.sessionId)}`;
+              const viewing = focused && (routeRef.current === route || routeRef.current.startsWith(`${route}/`));
+              if (viewing) continue;
+              const session = sessionsRef.current.find((item) => item.id === event.sessionId);
+              const seenSeq = seen[event.sessionId];
+              if (seenSeq !== undefined && (session === undefined || seenSeq >= session.last_seq)) {
+                forgetSessionSeen(event.sessionId);
+              }
+            }
+          }
+        }
+        if (stopped) return;
+        await awayNotifier.report(observed);
         if (!stopped) storage.setItem(key, JSON.stringify(observer.checkpoint()));
       } catch {
         // Retain the episode cursor across a temporary transport failure.

@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@kiki/protocol';
 import { resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
 import { configureSpaceStorage } from '@kiki/session-core/storage';
-import type { StableCompletion } from '@kiki/session-core/sessions';
+import {
+  buildInboxModel,
+  mergeSessionActivity,
+  mergeSessionFirstPage,
+  sessionRowState,
+  type SessionListData,
+  type StableCompletion,
+} from '@kiki/session-core/sessions';
 import type { HostAdapter } from '../host';
 import { awayNotifier } from './awayNotify';
 import { useAwayNotifications, useViewedSession } from './useAwayNotifications';
@@ -36,10 +43,11 @@ const acknowledge = vi.fn(async (_sessionId: string, _scope: unknown, _deliveryI
 const host = { kind: 'browser', notify, setUnreadBadge: badge, acknowledgeNotifications: acknowledge,
   isWindowVisibleAndFocused: async () => focused } as unknown as HostAdapter;
 
-function Viewed() {
+function Viewed({ sessions }: { readonly sessions: readonly Session[] }) {
   const location = useLocation();
   const id = /^\/s\/([^/]+)/u.exec(location.pathname)?.[1] ?? '';
-  useViewedSession(host, id, id === '' ? undefined : 10);
+  const current = sessions.find((session) => session.id === id);
+  useViewedSession(host, id, id === '' ? undefined : (current?.last_seq ?? 10));
   return <div data-session={id}>{id || 'Home'}</div>;
 }
 function Surface() {
@@ -47,7 +55,7 @@ function Surface() {
   replaceSessions = setRows;
   navigate = useNavigate();
   useAwayNotifications({ host, sessions: rows, listSessions: async () => rows, navigate: (target) => { void navigate(target); } });
-  return <Viewed />;
+  return <Viewed sessions={rows} />;
 }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
@@ -201,5 +209,98 @@ describe('conversation completion and read confirmation', () => {
     completions = ['a', 'b'].map((session_id) => ({ session_id, episode_id: `finished-${session_id}`, completed_at: Date.now() }));
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ route: '/s/b' }));
+  });
+
+  it('retains B hollow unread mark, Activity inbox and badge across list refreshes and late point reads while A stays open, clears only B on open, and re-flags B on a later completion', async () => {
+    const c = { ...sessions[1]!, id: 'c', title: 'c', last_seq: 10 };
+    let listData: SessionListData = {
+      pages: [{ items: [sessions[0]!, sessions[1]!, c], has_more: false }],
+      pageParams: [undefined],
+    };
+    await mount('/s/a');
+    await act(async () => { replaceSessions(listData.pages[0]!.items); });
+    await act(async () => { await navigate('/s/b'); });
+    await flush();
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 10 });
+    await act(async () => { await navigate('/s/a'); });
+    await flush();
+
+    // B finishes a new episode: point read from metaUpdated arrives with last_seq: 14, then
+    // a periodic list poll or late point read arrives with an older/zero last_seq.
+    const completedB: Session = {
+      ...sessions[1]!,
+      last_seq: 14,
+      updated_at: '2026-10-07T00:00:05Z',
+      last_turn_reason: 'completed',
+    };
+    listData = mergeSessionActivity(listData, completedB)!;
+    await act(async () => { replaceSessions(listData.pages[0]!.items); });
+    completions = [{ session_id: 'b', episode_id: 'episode-b-1', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
+
+    // Simulate the periodic first-page list refresh returning last_seq: 0 (or a stale lower watermark)
+    // and a late point read with a newer metadata timestamp but stale watermark.
+    listData = mergeSessionFirstPage(listData, {
+      items: [
+        { ...sessions[0]!, last_seq: 0 },
+        { ...completedB, last_seq: 0, updated_at: '2026-10-07T00:00:15Z' },
+        { ...c, last_seq: 0 },
+      ],
+      has_more: false,
+    })!;
+    listData = mergeSessionActivity(listData, {
+      ...completedB,
+      title: 'b-renamed',
+      last_seq: 0,
+      updated_at: '2026-10-07T00:00:20Z',
+    })!;
+    await act(async () => { replaceSessions(listData.pages[0]!.items); });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await navigate('/');
+      await navigate('/s/a');
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    const currentRows = listData.pages[0]!.items;
+    const rowB = currentRows.find((row) => row.id === 'b')!;
+    const rowC = currentRows.find((row) => row.id === 'c')!;
+    expect(sessionRowState(rowB, sessionSeenSnapshot())).toBe('unread');
+    expect(sessionRowState(rowC, sessionSeenSnapshot())).toBe('unread');
+    expect(buildInboxModel(currentRows, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['b', 'c']);
+    expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    // Opening B acknowledges only B (leaving C unread) and does not re-send the notification.
+    await act(async () => { await navigate('/s/b'); });
+    await flush();
+    expect(sessionSeenSnapshot()).toEqual({ a: 10, b: 14 });
+    expect(sessionRowState(rowB, sessionSeenSnapshot())).toBe('read');
+    expect(sessionRowState(rowC, sessionSeenSnapshot())).toBe('unread');
+    expect(buildInboxModel(currentRows, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['c']);
+    expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['c']);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    // Return to A; B completes a second episode and becomes unread + notified again.
+    await act(async () => { await navigate('/s/a'); });
+    await flush();
+    const secondB: Session = {
+      ...rowB,
+      last_seq: 18,
+      updated_at: '2026-10-07T00:01:00Z',
+      last_turn_reason: 'completed',
+    };
+    listData = mergeSessionActivity(listData, secondB)!;
+    await act(async () => { replaceSessions(listData.pages[0]!.items); });
+    completions = [{ session_id: 'b', episode_id: 'episode-b-2', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const rowsAfterSecond = listData.pages[0]!.items;
+    expect(sessionRowState(rowsAfterSecond.find((row) => row.id === 'b')!, sessionSeenSnapshot())).toBe('unread');
+    expect(buildInboxModel(rowsAfterSecond, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['b', 'c']);
+    expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
+    expect(notify).toHaveBeenCalledTimes(2);
   });
 });

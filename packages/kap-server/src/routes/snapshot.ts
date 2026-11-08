@@ -379,7 +379,7 @@ async function assembleSnapshotFromLease(
   return {
     as_of_seq: snapState.seq,
     epoch: snapState.epoch,
-    session: { ...session, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
+    session: { ...session, last_seq: snapState.seq, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
     in_flight_turn: inFlightTurn,
     subagents,
@@ -557,7 +557,7 @@ export async function readBrowseSnapshotContent(
       let source: object;
       if (field === 'session') {
         if (state.captured?.session === undefined) return undefined;
-        source = { session: { ...state.captured.session, message_count: state.captured.session.message_count ?? state.contextMessageCount } };
+        source = { session: { ...state.captured.session, last_seq: state.seq, message_count: state.captured.session.message_count ?? state.contextMessageCount } };
       } else if (field === 'subagents') {
         if (state.captured === undefined) return undefined;
         const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);

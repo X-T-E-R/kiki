@@ -120,6 +120,9 @@ class FakeEventBus {
       },
     };
   }
+  publish(e: { type: string; payload: unknown }): void {
+    this.emit(e);
+  }
   emit(e: { type: string; payload: unknown }): void {
     for (const h of [...this.handlers]) h(e);
   }
@@ -2261,6 +2264,50 @@ describe('SessionEventBroadcaster', () => {
       },
     });
     expect(durable[3]!.volatile).toBeUndefined();
+  });
+
+  it('publishes event.session.work_changed onto the core IEventService bus for Klient subscribers', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    const published: Array<{ type: string; payload: unknown }> = [];
+    eventBus.subscribe((event) => {
+      if (event.type === 'event.session.work_changed') published.push(event);
+    });
+    const { target } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+    await bc.getCursor('s1');
+    main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+    await bc.getCursor('s1');
+
+    expect(published).toEqual([
+      {
+        type: 'event.session.work_changed',
+        payload: {
+          sessionId: 's1',
+          busy: true,
+          executing: true,
+          cleanup_pending: undefined,
+          main_turn_active: true,
+          pending_interaction: 'none',
+          last_turn_reason: undefined,
+        },
+      },
+      {
+        type: 'event.session.work_changed',
+        payload: {
+          sessionId: 's1',
+          busy: false,
+          executing: false,
+          cleanup_pending: undefined,
+          main_turn_active: false,
+          pending_interaction: 'none',
+          last_turn_reason: 'completed',
+        },
+      },
+    ]);
   });
 
   it('maps the main turn outcome into last_turn_reason on the post-turn work_changed', async () => {

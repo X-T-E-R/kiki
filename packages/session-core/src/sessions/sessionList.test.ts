@@ -74,6 +74,20 @@ describe('mergeSessionFirstPage', () => {
   it('is a no-op before the first load', () => {
     expect(mergeSessionFirstPage(undefined, page(['s1'], false))).toBeUndefined();
   });
+
+  it('never regresses a cached session last_seq on first-page poll or late activity merge', () => {
+    const initial = data({ items: [session('s1', '2026-01-01T00:00:00.000Z', { last_seq: 12 })], has_more: false });
+    const afterPoll = mergeSessionFirstPage(initial, {
+      items: [session('s1', '2026-01-01T00:00:10.000Z', { last_seq: 0 })],
+      has_more: false,
+    });
+    expect(afterPoll?.pages[0]?.items[0]?.last_seq).toBe(12);
+    const afterActivity = mergeSessionActivity(
+      afterPoll,
+      session('s1', '2026-01-01T00:00:20.000Z', { last_seq: 5, title: 'renamed' }),
+    );
+    expect(afterActivity?.pages[0]?.items[0]).toMatchObject({ title: 'renamed', last_seq: 12 });
+  });
 });
 
 describe('activity recency', () => {

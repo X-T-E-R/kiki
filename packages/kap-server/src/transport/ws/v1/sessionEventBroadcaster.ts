@@ -1102,14 +1102,10 @@ export class SessionEventBroadcaster {
   ): Promise<{ seq: number; epoch: string } | undefined> {
     const summary = await this.opts.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
-    const journal = await SessionEventJournal.open(
+    return SessionEventJournal.peekWatermark(
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,
-      this.maxBufferSize,
     );
-    const watermark = { seq: journal.seq, epoch: journal.epoch };
-    await journal.close();
-    return watermark;
   }
 
   async close(): Promise<void> {
@@ -1641,23 +1637,33 @@ export class SessionEventBroadcaster {
    */
   private enqueueWorkChanged(state: SessionState, work: SessionActivityState): void {
     state.queue = state.queue
-      .then(() =>
-        this.dispatch(
-          state,
-          {
-            type: 'event.session.work_changed',
+      .then(async () => {
+        const event = {
+          type: 'event.session.work_changed',
+          busy: work.busy,
+          executing: work.executing,
+          cleanup_pending: work.cleanupPending,
+          main_turn_active: work.mainTurnActive,
+          pending_interaction: work.pendingInteraction,
+          last_turn_reason: work.lastTurnReason,
+          agentId: 'main',
+          sessionId: state.sessionId,
+        } as Event;
+        await this.dispatch(state, event, false);
+        const coreEvents = this.opts.core.accessor.get(IEventService) as { publish?: (event: unknown) => void };
+        coreEvents.publish?.({
+          type: 'event.session.work_changed',
+          payload: {
+            sessionId: state.sessionId,
             busy: work.busy,
             executing: work.executing,
             cleanup_pending: work.cleanupPending,
             main_turn_active: work.mainTurnActive,
             pending_interaction: work.pendingInteraction,
             last_turn_reason: work.lastTurnReason,
-            agentId: 'main',
-            sessionId: state.sessionId,
-          } as Event,
-          false,
-        ),
-      )
+          },
+        });
+      })
       .catch((error: unknown) =>
         this.logDispatchDropped(state.sessionId, 'event.session.work_changed', error),
       );

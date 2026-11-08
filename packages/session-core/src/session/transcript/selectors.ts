@@ -155,7 +155,9 @@ export function setLoadError(state: SessionViewState, error: string | undefined)
 }
 
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
-  return bump(state, { session, profile: session.agent_config.profile ?? state.profile });
+  const lastSeq = Math.max(session.last_seq, state.session?.last_seq ?? 0, state.cursor.seq);
+  const nextSession = lastSeq > session.last_seq ? { ...session, last_seq: lastSeq } : session;
+  return bump(state, { session: nextSession, profile: nextSession.agent_config.profile ?? state.profile });
 }
 
 export function setTasks(state: SessionViewState, tasks: SessionViewState['tasks']): SessionViewState {
