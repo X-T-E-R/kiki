@@ -190,7 +190,7 @@ import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescen
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
-import { AgentRefText, AgentRefResolutionProvider } from './AgentRefChip';
+import { AgentRefText, AgentRefResolutionProvider, useAgentRefResolution } from './AgentRefChip';
 import { ThreadRefText } from './ThreadRefChip';
 import { PeerThreadSource } from './PeerThreadSource';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -1191,16 +1191,49 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
 
 function PlainSystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
+  const resolution = useAgentRefResolution();
   const [open, setOpen] = useState(block.variant === 'injection');
   useFindReveal(block.id, open, setOpen);
-  const failed = block.variant === 'task' && isFailedTaskNotificationText(block.text);
+  const task = block.variant === 'task' && block.taskId !== undefined
+    ? resolution?.tasks.find((candidate) => candidate.id === block.taskId)
+    : undefined;
+  const meta = block.taskNotification;
+  const isFailed = block.variant === 'task' && (
+    task?.status === 'failed' ||
+    isFailedTaskNotificationText(block.text) ||
+    meta?.notificationType === 'task.failed' ||
+    meta?.severity === 'warning' ||
+    meta?.severity === 'error'
+  );
+  const isProcess = block.variant === 'task' && (
+    task?.kind === 'bash' ||
+    task?.task_kind === 'process' ||
+    task?.command !== undefined ||
+    (meta?.title !== undefined && /^Background process\b/i.test(meta.title))
+  );
+  let label = t(SYSTEM_VARIANT_KEYS[block.variant]);
+  let detail: ReactNode = block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined);
+  if (block.variant === 'task') {
+    const desc = (task?.description || task?.command || meta?.description)?.trim();
+    const exitCode = task?.exit_code ?? meta?.exitCode;
+    if (isProcess) {
+      label = t(isFailed ? 'transcript.task.commandFailed' : 'transcript.task.commandCompleted');
+      const parts = [
+        desc !== undefined && desc !== '' ? desc : systemHeadline(block.text),
+        exitCode !== undefined && exitCode !== null ? t('transcript.task.exitCode', { code: exitCode }) : undefined,
+      ].filter((part): part is string => part !== undefined && part !== '');
+      detail = parts.join(' · ');
+    } else if (block.source === undefined && meta?.sourceKind === undefined && task === undefined && meta?.title === undefined) {
+      label = t('transcript.task.neutralNotification');
+    }
+  }
   return (
     <ActivityRow
       attrs={{ 'data-system': block.variant }}
       glyph={<Icon name={block.variant === 'task' ? 'task' : block.variant === 'cron_job' || block.variant === 'cron_missed' ? 'clock' : 'system'} />}
-      tone={failed ? 'danger' : 'plain'}
-      label={t(SYSTEM_VARIANT_KEYS[block.variant])}
-      detail={block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined)}
+      tone={isFailed ? 'danger' : 'plain'}
+      label={label}
+      detail={detail}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
       onToggle={() => { setOpen((value) => !value); }}
@@ -1435,6 +1468,7 @@ function useSubagentElapsed(
   block: SubagentBlock,
   node: AgentTreeNode | undefined,
   status: AgentTreeNode['status'] | SubagentBlock['status'],
+  isLatestRun = true,
 ): number | undefined {
   const live = status === 'running' || status === 'background' || status === 'suspended';
   const [now, setNow] = useState(() => Date.now());
@@ -1443,9 +1477,15 @@ function useSubagentElapsed(
     const timer = setInterval(() => { setNow(Date.now()); }, 1000);
     return () => { clearInterval(timer); };
   }, [live]);
-  const start = parseTimelineMs(node?.startedAt) ?? parseTimelineMs(block.startedAt);
+  const start = isLatestRun
+    ? (parseTimelineMs(node?.startedAt) ?? parseTimelineMs(block.startedAt))
+    : (parseTimelineMs(block.startedAt) ?? parseTimelineMs(node?.startedAt));
   if (start === undefined) return undefined;
-  const end = live ? now : (parseTimelineMs(node?.endedAt) ?? parseTimelineMs(block.endedAt));
+  const end = live
+    ? now
+    : isLatestRun
+      ? (parseTimelineMs(node?.endedAt) ?? parseTimelineMs(block.endedAt))
+      : (parseTimelineMs(block.endedAt) ?? parseTimelineMs(node?.endedAt));
   if (end === undefined) return undefined;
   return Math.max(0, end - start);
 }
@@ -1760,16 +1800,15 @@ const SubagentCard = memo(function SubagentCard({
   const { t, tp } = useI18n();
   const node = forest?.byId[block.subagentId];
   const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
-  const status = displayStatus ?? node?.status ?? block.status;
-  const elapsed = useSubagentElapsed(block, node, status);
+  const latestCard = childBlocks?.get(block.subagentId);
+  const isLatestRun = latestCard === undefined || latestCard.id === block.id;
+  const status = displayStatus ?? (isLatestRun ? (node?.status ?? block.status) : block.status);
+  const elapsed = useSubagentElapsed(block, node, status, isLatestRun);
   const runIsLive = status === 'running' || status === 'background' || status === 'suspended';
-  // The forest node tracks the CURRENT run (a resume re-stamps model, effort
-  // and timing and clears the terminal error); the block is a frozen dispatch
-  // snapshot. Live values win; the block is the fallback when no node exists.
-  const model = node?.model ?? block.model;
-  const thinkingEffort = node?.thinkingEffort ?? block.thinkingEffort;
-  const runError = runIsLive ? undefined : (node?.error ?? block.error);
-  const runSummary = node?.summary ?? block.summary;
+  const model = isLatestRun ? (node?.model ?? block.model) : (block.model ?? node?.model);
+  const thinkingEffort = isLatestRun ? (node?.thinkingEffort ?? block.thinkingEffort) : (block.thinkingEffort ?? node?.thinkingEffort);
+  const runError = runIsLive ? undefined : (isLatestRun ? (node?.error ?? block.error) : (block.error ?? node?.error));
+  const runSummary = isLatestRun ? (node?.summary ?? block.summary) : (block.summary ?? node?.summary);
   // Only a genuinely active run owns the full card; a completed parent whose
   // child still runs stays compact — the child has its own card. A nested
   // card (a subagent's own subagent) follows the view's fold rule instead:
@@ -1958,15 +1997,12 @@ const SubagentEventRow = memo(function SubagentEventRow({
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
+  const [openMessage, setOpenMessage] = useState(false);
+  useFindReveal(block.id, openMessage, setOpenMessage);
   const invocation = useInvocationDetails(block.anchorToolCallId);
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
   const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);
-  // The EVENT is the label ("Dispatched", "Reported") and the agent plus what
-  // it carried is the detail, so a column of these reads as a sequence of
-  // things that happened rather than a list of names. A queued delivery is
-  // NAMED rather than reduced to a glyph — "waiting to be delivered" is not
-  // something a reader should have to decode from a symbol.
   const line = block.error ?? messageSummary;
   const detail = (
     <>
@@ -1981,6 +2017,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
       )}
     </>
   );
+  const canToggleMessage = block.message !== undefined && block.message.trim() !== '' && invocation.button === null;
   return (
     <ActivityRow
       glyph={
@@ -1993,6 +2030,8 @@ const SubagentEventRow = memo(function SubagentEventRow({
       detail={detail}
       title={block.error ?? t('subagent.openAgent', { name: block.name })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
+      expanded={canToggleMessage ? openMessage : undefined}
+      onToggle={canToggleMessage ? () => { setOpenMessage((value) => !value); } : undefined}
       meta={
         block.delivery !== undefined ? (
           <span
@@ -2009,10 +2048,23 @@ const SubagentEventRow = memo(function SubagentEventRow({
       attrs={{
         'data-subagent-event': block.subagentId,
         'data-agent-event': block.event,
+        'data-agent-message-id': block.messageId,
       }}
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
       aside={invocation.button}
-    >{invocation.body}</ActivityRow>
+    >
+      {invocation.body ?? (openMessage && block.message !== undefined ? (
+        <div
+          data-agent-message-body
+          className="mt-1 max-h-60 overflow-auto border-l border-hairline pl-3 text-[13px] leading-relaxed whitespace-pre-wrap break-words text-ink"
+        >
+          {block.messageId !== undefined ? (
+            <div className="mb-1 font-mono text-[11px] text-ink-faint">message_id: {block.messageId}</div>
+          ) : null}
+          {block.message}
+        </div>
+      ) : null)}
+    </ActivityRow>
   );
 });
 
@@ -2285,16 +2337,16 @@ function EndedRow({
 }) {
   const { time } = useI18n();
   const node = forest?.byId[ending.agentId];
-  const card = childBlocks.get(ending.agentId);
+  const card = (ending.dispatchCardId === undefined ? undefined : childBlocks.get(ending.dispatchCardId)) ?? childBlocks.get(ending.agentId);
   const start = parseTimelineMs(ending.task?.started_at);
   const end = parseTimelineMs(ending.task?.completed_at);
   const elapsed = start === undefined || end === undefined ? undefined : Math.max(0, end - start);
-  const model = ending.task?.model ?? node?.model ?? card?.model;
-  const effort = ending.task?.thinking_effort ?? node?.thinkingEffort ?? card?.thinkingEffort;
+  const model = ending.task?.model ?? card?.model ?? node?.model;
+  const effort = ending.task?.thinking_effort ?? card?.thinkingEffort ?? node?.thinkingEffort;
   return (
     <SubagentEndedRow
       ending={ending}
-      name={node?.label ?? card?.name ?? ending.agentId}
+      name={card?.name ?? node?.label ?? ending.agentId}
       model={model === undefined ? undefined : [model.replace(/^.*\//, ''), effort].filter(Boolean).join(' · ')}
       summary={ending.task?.output_preview}
       elapsed={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
@@ -2326,11 +2378,15 @@ function HistoryFoldRow({
   renderMember: (member: DisplayNode) => ReactNode;
 }) {
   const { t, tp, time } = useI18n();
+  const sentParts = (fold.sentMessages ?? []).map((item) =>
+    t('transcript.fold.sentTo', { name: item.name, count: item.count }),
+  );
   const parts = [
     fold.steps > 0 ? tp('transcript.fold.steps', fold.steps) : null,
     fold.thoughts > 0 ? tp('transcript.fold.thoughts', fold.thoughts) : null,
     fold.agents > 0 ? tp('transcript.fold.agents', fold.agents) : null,
     fold.agentsDone > 0 ? tp('transcript.fold.agentsDone', fold.agentsDone) : null,
+    ...sentParts,
     fold.notes > 0 ? tp('transcript.fold.notes', fold.notes) : null,
   ].filter((part): part is string => part !== null);
   const summary = parts.join(' · ');
@@ -2702,6 +2758,8 @@ const MessageViewRow = memo(function MessageViewRow({
             </p>
           ) : member.kind === 'subagent' ? (
             <SubagentEventLine name={member.name} status={member.status} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
+          ) : member.kind === 'subagent-event' ? (
+            <SubagentEventRow block={member} onOpenAgent={onOpenAgent} />
           ) : null)
         }
       />
@@ -2789,30 +2847,48 @@ const CARD_ABSORBED_EVENTS: ReadonlySet<SubagentEventBlock['event']> = new Set([
  * is not on the card. Returns the input array when nothing merges, so row
  * memos keep their identity.
  */
-export function mergeSubagentRows(nodes: readonly DisplayNode[]): readonly DisplayNode[] {
+  export function mergeSubagentRows(nodes: readonly DisplayNode[]): readonly DisplayNode[] {
   const cards = new Set<string>();
+  const cardTaskIds = new Set<string>();
+  const cardCountByAgent = new Map<string, number>();
   const dispatchCalls = new Set<string>();
-  // An AgentSend call already reads as its "Input sent" entry (message and
-  // delivery included), so a settled call gives way to the entry it anchors.
   const sentCalls = new Set<string>();
+  const questionCalls = new Set<string>();
   for (const node of nodes) {
+    if (node.kind === 'question' && node.request.tool_call_id !== undefined && node.request.tool_call_id !== '') {
+      questionCalls.add(node.request.tool_call_id);
+    }
     if (node.kind === 'subagent-event' && node.event === 'sent' && node.anchorToolCallId !== undefined) {
       sentCalls.add(node.anchorToolCallId);
     }
     if (node.kind !== 'subagent') continue;
     cards.add(node.subagentId);
+    cardCountByAgent.set(node.subagentId, (cardCountByAgent.get(node.subagentId) ?? 0) + 1);
+    if (node.taskId !== undefined && node.taskId !== '') cardTaskIds.add(node.taskId);
     if (node.parentToolCallId !== undefined) dispatchCalls.add(node.parentToolCallId);
   }
-  if (cards.size === 0 && sentCalls.size === 0) return nodes;
+  if (cards.size === 0 && sentCalls.size === 0 && questionCalls.size === 0) return nodes;
   const absorbed = (node: DisplayNode): boolean => {
     if (node.kind === 'subagent-event') {
-      return cards.has(node.subagentId) && CARD_ABSORBED_EVENTS.has(node.event);
+      if (node.event === 'resumed' && node.anchorToolCallId !== undefined && dispatchCalls.has(node.anchorToolCallId)) {
+        return true;
+      }
+      if (!cards.has(node.subagentId) || !CARD_ABSORBED_EVENTS.has(node.event)) return false;
+      const prefix = `subagent-event-${node.subagentId}-${node.event}-`;
+      if (node.id.startsWith(prefix)) {
+        const eventTaskId = node.id.slice(prefix.length);
+        if (eventTaskId !== '' && cardTaskIds.size > 0 && (cardCountByAgent.get(node.subagentId) ?? 0) > 1) {
+          return cardTaskIds.has(eventTaskId);
+        }
+      }
+      return true;
     }
     if (node.kind !== 'tool' || node.status === 'error' || node.isError === true) return false;
     if (dispatchCalls.has(node.toolCallId)) return true;
     if (node.status === 'done' && sentCalls.has(node.toolCallId)) return true;
+    if (questionCalls.has(node.toolCallId)) return true;
     const refs = node.agentRefs ?? [];
-    return refs.length > 0 && refs.every((ref) => cards.has(ref.agentId));
+    return refs.length > 0 && refs.every((ref) => cards.has(ref.agentId) && (cardCountByAgent.get(ref.agentId) ?? 0) <= 1);
   };
   const merged = nodes.filter((node) => !absorbed(node));
   return merged.length === nodes.length ? nodes : merged;
@@ -4147,7 +4223,10 @@ export function Transcript({
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
-      if (block.kind === 'subagent') map.set(block.subagentId, block);
+      if (block.kind === 'subagent') {
+        map.set(block.id, block);
+        map.set(block.subagentId, block);
+      }
     }
     return map;
   });
@@ -4892,8 +4971,12 @@ export function Transcript({
       isAtTarget: isAtRecordedTarget,
     });
   }, [sessionIdForLocate, agentId, locate, isAtRecordedTarget]);
-  const handleLocateDispatch = useCallback((subagentId: string) => {
-    void locate({ kind: 'subagent', agentId: subagentId });
+  const handleLocateDispatch = useCallback((target: string) => {
+    if (target.startsWith('subagent-')) {
+      void locate({ kind: 'block', blockId: target });
+      return;
+    }
+    void locate({ kind: 'subagent', agentId: target });
   }, [locate]);
 
   // ---- per-visit reading snapshot (see lib/navViewState.ts) ----

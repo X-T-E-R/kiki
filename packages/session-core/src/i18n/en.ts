@@ -13037,4 +13037,9 @@ export const en = {
   'st.notify.guide.discord_webhook': 'In the channel settings, create a webhook and copy its ID and token from the URL.',
   'st.notify.guide.slack_webhook': 'Create an incoming webhook for the workspace and paste the path after hooks.slack.com/services/.',
   'st.notify.guide.http': 'Kiki posts each notification as JSON to this address.',
+  'transcript.fold.sentTo': 'Sent to {name}: {count}',
+  'transcript.task.commandFailed': 'Background command failed',
+  'transcript.task.commandCompleted': 'Background command completed',
+  'transcript.task.exitCode': 'exit {code}',
+  'transcript.task.neutralNotification': 'Task notification',
 } as const;

@@ -480,7 +480,9 @@ export class AgentTranscriptLiveAdapter {
     this.releasedTurnIds.delete(turnId);
     const existing = this.lookups?.turn?.(turnId);
     if (existing !== undefined) {
-      const current = existing.state === 'running' ? existing : { ...existing, state: 'running' as const };
+      const current = existing.state === 'running'
+        ? existing
+        : { ...existing, state: 'running' as const, endedAt: undefined, error: undefined, cancellation: undefined };
       this.currentTurn = current;
       this.currentStep = undefined;
       this.openText = undefined;
@@ -1226,7 +1228,15 @@ export class AgentTranscriptLiveAdapter {
       receiptVerification?: TranscriptTask['receiptVerification'];
       agentId?: string;
       profile?: string;
+      model?: string;
+      thinkingEffort?: string;
+      thinkingEffortExplicit?: boolean;
+      executorId?: string;
+      executorProtocol?: string;
       sourceRef?: TranscriptTask['sourceRef'];
+      toolCallId?: string;
+      questionCount?: number;
+      exitCode?: number | null;
       collaborationTaskName?: string;
       stopReason?: string;
       startedAt: number;
@@ -1235,6 +1245,7 @@ export class AgentTranscriptLiveAdapter {
   }): TranscriptOperation[] {
     const { info } = event;
     const task = this.upsertTask(info.taskId, (prev) => ({
+      ...prev,
       taskId: info.taskId,
       kind: mapTaskKind(info.kind),
       state: info.status,
@@ -1247,7 +1258,16 @@ export class AgentTranscriptLiveAdapter {
       receiptVerification: info.receiptVerification ?? prev?.receiptVerification,
       name: info.collaborationTaskName ?? prev?.name,
       subagentName: info.profile ?? prev?.subagentName,
+      model: info.model ?? prev?.model,
+      thinkingEffort: info.thinkingEffort ?? prev?.thinkingEffort,
+      thinkingEffortExplicit: info.thinkingEffortExplicit ?? prev?.thinkingEffortExplicit,
+      executorId: info.executorId ?? prev?.executorId,
+      executorProtocol: info.executorProtocol ?? prev?.executorProtocol,
       sourceRef: info.sourceRef ?? prev?.sourceRef,
+      toolCallId: info.toolCallId ?? prev?.toolCallId,
+      questionCount: info.questionCount ?? prev?.questionCount,
+      exitCode: info.exitCode !== undefined ? info.exitCode : prev?.exitCode,
+      taskKind: info.kind ?? prev?.taskKind,
       description: info.description,
       command: info.command ?? prev?.command,
       agentId: info.agentId ?? prev?.agentId,
@@ -1431,6 +1451,7 @@ export class AgentTranscriptLiveAdapter {
         thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous.thinkingEffortExplicit,
         executorId: event.executorId ?? previous.executorId,
         executorProtocol: event.executorProtocol ?? previous.executorProtocol,
+        parentToolCallId: event.parentToolCallId ?? previous.parentToolCallId,
         description: event.description ?? previous.description,
       };
       const enriched = transcriptResidentValueEquals(previous, task) ? previous : task;
@@ -1446,14 +1467,15 @@ export class AgentTranscriptLiveAdapter {
         detached: event.runInBackground,
         name: event.name,
         subagentName: event.subagentName,
-        model: event.model ?? previous?.model,
-        thinkingEffort: event.thinkingEffort ?? previous?.thinkingEffort,
-        thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous?.thinkingEffortExplicit,
-        executorId: event.executorId ?? previous?.executorId,
-        executorProtocol: event.executorProtocol ?? previous?.executorProtocol,
-        description: event.description ?? previous?.description,
+        model: event.model,
+        thinkingEffort: event.thinkingEffort,
+        thinkingEffortExplicit: event.thinkingEffortExplicit,
+        executorId: event.executorId,
+        executorProtocol: event.executorProtocol,
+        parentToolCallId: event.parentToolCallId,
+        description: event.description,
         agentId: event.subagentId,
-        outputTail: previous?.outputTail ?? '',
+        outputTail: '',
         startedAt: event.taskId === undefined ? startedAt : previous?.startedAt ?? startedAt,
       };
       this.tasks.set(taskKey, task);
@@ -1497,6 +1519,7 @@ export class AgentTranscriptLiveAdapter {
     this.replayedSubagentSpawns.delete(event.subagentId);
     if (event.type === 'subagent.started') {
       const task = this.upsertTask(taskKey, (prev) => ({
+        ...prev,
         taskId: taskKey,
         kind: 'subagent',
         state: 'running',
@@ -1525,6 +1548,7 @@ export class AgentTranscriptLiveAdapter {
             : 'failed'
           : 'running';
     const task = this.upsertTask(taskKey, (prev) => ({
+      ...prev,
       taskId: taskKey,
       kind: 'subagent',
       state,
@@ -2079,8 +2103,10 @@ function mapTurnEndState(reason: 'completed' | 'cancelled' | 'failed' | 'blocked
 function mapTaskKind(kind: string): TranscriptTask['kind'] {
   switch (kind) {
     case 'process':
+    case 'shell':
       return 'shell';
     case 'agent':
+    case 'subagent':
       return 'subagent';
     default:
       return 'other';

@@ -7005,7 +7005,7 @@ describe('a dispatch card lays out only the descendants it provably created', ()
 });
 
 describe('background question tool history', () => {
-  it.each(['pending', 'answered', 'dismissed', 'unknown'] as const)('keeps the tool receipt neutral beside the %s interaction facts', async (status) => {
+  it.each(['pending', 'answered', 'dismissed', 'unknown'] as const)('absorbs the AskUserQuestion tool row into the %s interaction row while preserving the tool receipt when unknown', async (status) => {
     const questions = [{ id: 'q1', question: 'Which checks?', options: [{ id: 'a', label: 'Typecheck' }] }];
     const receipt = 'task_id: question-example\ndescription: Which checks?\nstatus: running\nautomatic_notification: true\nnext_step: Continue your current work; the answer will arrive automatically when the user responds.';
     const snapshot: AgentTranscriptSnapshot = {
@@ -7030,16 +7030,18 @@ describe('background question tool history', () => {
     const fold = container.querySelector('[data-history-fold]:not([data-history-fold-open])');
     if (fold !== null) await act(async () => { click(fold.querySelector('button')!); });
     const tool = container.querySelector('[data-tool-id="ask-bg"]');
-    expect(tool).not.toBeNull();
-    expect(tool!.textContent).toContain('Which checks?');
-    expect(tool!.querySelector('[data-tool-state]')).toBeNull();
     expect(state.blocks.find((block) => block.kind === 'tool')).toMatchObject({ output: receipt });
-    if (status === 'pending') {
+    if (status === 'unknown') {
+      expect(tool).not.toBeNull();
+      expect(tool!.textContent).toContain('Which checks?');
+      expect(tool!.querySelector('[data-tool-state]')).toBeNull();
+      expect(container.querySelector('[data-question-card], [data-question-history]')).toBeNull();
+    } else if (status === 'pending') {
+      expect(tool).toBeNull();
       expect(container.querySelector('[data-question-card]')).not.toBeNull();
       expect(container.querySelector('[data-question-history]')).toBeNull();
-    } else if (status === 'unknown') {
-      expect(container.querySelector('[data-question-card], [data-question-history]')).toBeNull();
     } else {
+      expect(tool).toBeNull();
       expect(container.querySelector(`[data-question-history="${status}"]`)).not.toBeNull();
       expect(container.querySelector('[data-question-card]')).toBeNull();
     }
@@ -7104,16 +7106,17 @@ describe('background task notification folding (TUI-01)', () => {
       }],
     });
     const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [item('question-1', 1, 'Postgres', true), item('question-2', 2, 'SQLite', false)] });
-    expect(blocks.flatMap((block) => block.kind === 'system' && block.variant === 'task' ? [block.taskId] : [])).toEqual(['question-1', 'question-2']);
+    expect(blocks.flatMap((block) => block.kind === 'question' ? [block.request.question_id] : [])).toEqual(['question-1', 'question-2']);
     const container = await renderTranscript(blocks);
-    const rows = [...container.querySelectorAll('[data-system="task"]')];
+    const rows = [...container.querySelectorAll('[data-question-history="answered"]')];
     expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain('Which database? · Postgres');
+    expect(rows[1]?.textContent).toContain('Which database? · SQLite');
     for (const row of rows) {
-      expect(row.textContent).toContain('Background question answered');
       await act(async () => { click(row.querySelector('[data-activity-toggle]')!); });
     }
-    expect(rows[0]?.textContent).toContain('<answer>\n{"answers":{"Which database?":"Postgres"}}\n</answer>');
-    expect(rows[1]?.textContent).toContain('<answer>\n{"answers":{"Which database?":"SQLite"}}\n</answer>');
+    expect(rows[0]?.textContent).toContain('Postgres');
+    expect(rows[1]?.textContent).toContain('SQLite');
   });
 
   it('counts one completion per execution and keeps resumed receipts independent of the latest roster summary', async () => {
@@ -7141,9 +7144,7 @@ describe('background task notification folding (TUI-01)', () => {
       note('system-receipt-second', 'second', 'Second execution result.'),
       { ...assistantBlock('reply', 'Reviewed.'), turnId: 't2' },
     ], undefined, { tasks }, { onOpenAgent: openAgent });
-    const fold = container.querySelector('[data-history-fold]')!;
-    expect(fold.textContent).toContain('2 subagents finished');
-    await act(async () => { flushSync(() => { click(fold.querySelector('button')!); }); });
+    expect(container.querySelector('[data-history-fold]')).toBeNull();
     const endings = [...container.querySelectorAll('[data-subagent-ended]')];
     expect(endings).toHaveLength(2);
     expect(endings[0]?.textContent).toContain('First execution result.');
@@ -7211,6 +7212,340 @@ describe('background task notification folding (TUI-01)', () => {
     expect(rows[1]?.textContent).toContain('Background agent completed');
     // The body stays folded until the row is opened.
     expect(rows[1]?.textContent).not.toContain('Index rebuild completed.');
+  });
+
+  it('correlates 4x web_shared_remote_spaces activity, same-agent fail-then-succeed runs, and independent questions/bash failures', async () => {
+    const snapshot: AgentTranscriptSnapshot = {
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      hasMoreOlder: false,
+      tasks: [
+        {
+          taskId: 'task-web-shared-1',
+          kind: 'subagent',
+          state: 'completed',
+          detached: true,
+          agentId: 'agent_web_shared',
+          name: 'web_shared_remote_spaces',
+          parentToolCallId: 'call-web-1',
+          description: 'Audit remote spaces',
+          model: 'axon/gpt-5.6-luna',
+          thinkingEffort: 'high',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:01:01.000Z',
+          resultSummary: 'Completed initial remote spaces audit.',
+        },
+        {
+          taskId: 'task-worker-fail',
+          kind: 'subagent',
+          state: 'failed',
+          detached: true,
+          agentId: 'agent_retry',
+          name: 'migrator',
+          parentToolCallId: 'call-retry-1',
+          description: 'Run migration',
+          model: 'axon/gpt-5.6-luna',
+          startedAt: '2026-01-01T00:00:02.000Z',
+          endedAt: '2026-01-01T00:00:30.000Z',
+          error: 'Quota limit reached on initial run.',
+        },
+        {
+          taskId: 'task-worker-ok',
+          kind: 'subagent',
+          state: 'completed',
+          detached: true,
+          agentId: 'agent_retry',
+          name: 'migrator',
+          parentToolCallId: 'call-retry-2',
+          description: 'Resume migration',
+          model: 'axon/gpt-5.6-luna',
+          startedAt: '2026-01-01T00:02:02.000Z',
+          endedAt: '2026-01-01T00:02:45.000Z',
+          resultSummary: 'Migration succeeded on resumed run.',
+        },
+        {
+          taskId: 'task-bash-fail',
+          kind: 'shell',
+          state: 'failed',
+          detached: true,
+          toolCallId: 'call-bash-bg',
+          description: 'Build production bundle',
+          command: 'pnpm build',
+          exitCode: 2,
+          startedAt: '2026-01-01T00:02:10.000Z',
+          endedAt: '2026-01-01T00:02:20.000Z',
+          error: 'Build failed with exit code 2.',
+        },
+      ],
+      interactions: [
+        {
+          interactionId: 'question-db-1',
+          interactionKind: 'question',
+          toolCallId: 'call-ask-1',
+          state: 'answered',
+          anchor: { kind: 'tool_call', toolCallId: 'call-ask-1' },
+          origin: { agentId: 'main', turnId: 1 },
+          request: {
+            questions: [{ id: 'db', question: 'Which database?', options: [{ id: 'pg', label: 'Postgres' }, { id: 'sq', label: 'SQLite' }] }],
+            created_at: '2026-01-01T00:00:05.000Z',
+          },
+          response: { answers: { 'Which database?': 'Postgres' } },
+        },
+        {
+          interactionId: 'question-db-2',
+          interactionKind: 'question',
+          toolCallId: 'call-ask-2',
+          state: 'answered',
+          anchor: { kind: 'tool_call', toolCallId: 'call-ask-2' },
+          origin: { agentId: 'main', turnId: 2 },
+          request: {
+            questions: [{ id: 'db', question: 'Which database?', options: [{ id: 'pg', label: 'Postgres' }, { id: 'sq', label: 'SQLite' }] }],
+            created_at: '2026-01-01T00:01:55.000Z',
+          },
+          response: { answers: { 'Which database?': 'SQLite' } },
+        },
+        {
+          interactionId: 'question-skip-3',
+          interactionKind: 'question',
+          toolCallId: 'call-ask-3',
+          state: 'dismissed',
+          anchor: { kind: 'tool_call', toolCallId: 'call-ask-3' },
+          origin: { agentId: 'main', turnId: 2 },
+          request: {
+            questions: [{ id: 'opt', question: 'Enable verbose telemetry?', options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }] }],
+            created_at: '2026-01-01T00:02:00.000Z',
+          },
+        },
+      ],
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'Coordinate remote spaces and migration.',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [
+                {
+                  kind: 'tool',
+                  frameId: 'f-ask-1',
+                  toolCallId: 'call-ask-1',
+                  name: 'AskUserQuestion',
+                  state: 'done',
+                  input: { background: true, questions: [{ id: 'db', question: 'Which database?' }] },
+                  output: 'task_id: question-db-1\ndescription: Which database?\nstatus: running\nautomatic_notification: true',
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-call-web-1',
+                  toolCallId: 'call-web-1',
+                  name: 'AgentRun',
+                  state: 'done',
+                  input: { name: 'web_shared_remote_spaces', description: 'Audit remote spaces', prompt: 'Inspect spaces' },
+                  output: 'status: running\nagent_id: agent_web_shared\nname: web_shared_remote_spaces\ntask_id: task-web-shared-1',
+                  agentRefs: [{ agentId: 'agent_web_shared', kind: 'spawn' }],
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-call-retry-1',
+                  toolCallId: 'call-retry-1',
+                  name: 'AgentRun',
+                  state: 'done',
+                  input: { name: 'migrator', description: 'Run migration', prompt: 'Migrate DB' },
+                  output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-fail',
+                  agentRefs: [{ agentId: 'agent_retry', kind: 'spawn' }],
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-send-1',
+                  toolCallId: 'call-send-1',
+                  name: 'AgentSend',
+                  state: 'done',
+                  input: { target: 'web_shared_remote_spaces', message: 'Check SSH host config first.' },
+                  output: JSON.stringify({ status: 'delivered', message_id: 'msg-web-1', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-send-2',
+                  toolCallId: 'call-send-2',
+                  name: 'AgentSend',
+                  state: 'done',
+                  input: { target: 'web_shared_remote_spaces', message: 'Also verify workspace permissions.' },
+                  output: JSON.stringify({ status: 'delivered', message_id: 'msg-web-2', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-send-queued',
+                  toolCallId: 'call-send-queued',
+                  name: 'AgentSend',
+                  state: 'done',
+                  input: { target: 'web_shared_remote_spaces', message: 'Hold until lock releases.' },
+                  output: JSON.stringify({ status: 'queued', message_id: 'msg-web-queued', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
+                },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'turn',
+          turnId: 't2',
+          ordinal: 2,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'Resume failed migration and check outputs.',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't2.1',
+              turnId: 't2',
+              ordinal: 1,
+              state: 'completed',
+              frames: [
+                {
+                  kind: 'text',
+                  frameId: 'f-note-web-1',
+                  role: 'user',
+                  origin: { kind: 'task', taskId: 'task-web-shared-1' },
+                  text: '<notification id="task:task-web-shared-1:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-web-shared-1" agent_id="agent_web_shared">\nTitle: Background agent completed (web_shared_remote_spaces)\nSeverity: success\nSummary: Completed initial remote spaces audit.\n</notification>',
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-ask-2',
+                  toolCallId: 'call-ask-2',
+                  name: 'AskUserQuestion',
+                  state: 'done',
+                  input: { background: true, questions: [{ id: 'db', question: 'Which database?' }] },
+                  output: 'task_id: question-db-2\ndescription: Which database?\nstatus: running\nautomatic_notification: true',
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-ask-3',
+                  toolCallId: 'call-ask-3',
+                  name: 'AskUserQuestion',
+                  state: 'done',
+                  input: { background: true, questions: [{ id: 'opt', question: 'Enable verbose telemetry?' }] },
+                  output: 'task_id: question-skip-3\ndescription: Enable verbose telemetry?\nstatus: running\nautomatic_notification: true',
+                },
+                {
+                  kind: 'tool',
+                  frameId: 'f-call-retry-2',
+                  toolCallId: 'call-retry-2',
+                  name: 'AgentRun',
+                  state: 'done',
+                  input: { resume: 'agent_retry', description: 'Resume migration', prompt: 'Continue migration' },
+                  output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-ok',
+                  agentRefs: [{ agentId: 'agent_retry', kind: 'resume' }],
+                },
+                {
+                  kind: 'text',
+                  frameId: 'f-note-retry-ok',
+                  role: 'user',
+                  origin: { kind: 'task', taskId: 'task-worker-ok' },
+                  text: '<notification id="task:task-worker-ok:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-worker-ok" agent_id="agent_retry">\nTitle: Background agent completed (migrator)\nSeverity: success\nSummary: Migration succeeded on resumed run.\n</notification>',
+                },
+                {
+                  kind: 'text',
+                  frameId: 'f-note-bash-fail',
+                  role: 'user',
+                  origin: { kind: 'task', taskId: 'task-bash-fail' },
+                  text: '<notification id="task:task-bash-fail:failed" category="task" type="task.failed" source_kind="background_task" source_id="task-bash-fail">\nTitle: Background command failed\nSeverity: error\nTask ID: task-bash-fail\nDescription: Build production bundle\nCommand: pnpm build\nExit code: 2\n</notification>',
+                },
+                {
+                  kind: 'text',
+                  frameId: 'f-note-unproven',
+                  role: 'user',
+                  origin: { kind: 'task', taskId: 'task-unproven' },
+                  text: 'Unclassified background payload arrived.',
+                },
+                {
+                  kind: 'text',
+                  frameId: 'f-reply-t2',
+                  role: 'assistant',
+                  text: 'All checks reconciled.',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state));
+    const scroll = container.querySelector('[data-transcript-scroll]') as HTMLElement;
+
+    // 1) Cross-turn completion for web_shared_remote_spaces stays visible outside any fold at its first result position
+    const endings = [...container.querySelectorAll('[data-subagent-ended]')];
+    expect(endings).toHaveLength(1);
+    expect(endings[0]?.closest('[data-history-fold]')).toBeNull();
+    expect(endings[0]?.textContent).toContain('web_shared_remote_spaces');
+    expect(endings[0]?.textContent).toContain('Completed initial remote spaces audit.');
+
+    // 2) Settled questions absorb their AskUserQuestion tool row: one collapsible summary per questionId
+    expect(state.blocks.filter((block) => block.kind === 'question')).toHaveLength(3);
+    expect(container.querySelector('[data-tool-id="call-ask-2"]')).toBeNull();
+    expect(container.querySelector('[data-tool-id="call-ask-3"]')).toBeNull();
+    expect(container.textContent).toContain('Which database? · SQLite');
+    const dismissedRows = [...container.querySelectorAll('[data-question-history="dismissed"]')];
+    expect(dismissedRows).toHaveLength(1);
+    expect(dismissedRows[0]?.textContent).toContain('Enable verbose telemetry?');
+
+    // 3) Real Bash failure shows description & exit code outside fold; unproven notification shows neutral "Task notification"
+    const taskRows = [...container.querySelectorAll('[data-system="task"]')];
+    const bashFailRow = taskRows.find((row) => row.textContent?.includes('Background command failed'));
+    expect(bashFailRow).toBeDefined();
+    expect(bashFailRow?.textContent).toContain('Build production bundle · exit 2');
+    expect(bashFailRow?.closest('[data-history-fold]')).toBeNull();
+    const unprovenRow = taskRows.find((row) => row.textContent?.includes('Task notification'));
+    expect(unprovenRow).toBeDefined();
+
+    // 4) Same-agent fail-then-succeed keeps both run cards distinct (resumed run at bottom, failed first run at top)
+    expect([...container.querySelectorAll('[data-subagent-id="agent_retry"]')].some(
+      (card) => card.textContent?.includes('Migration succeeded on resumed run.'),
+    )).toBe(true);
+
+    const turn1State = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      ...snapshot,
+      items: [snapshot.items[0]!],
+      interactions: [snapshot.interactions[0]!],
+    });
+    await renderSettled(root, virtualTranscript(turn1State));
+    expect(container.querySelector('[data-tool-id="call-ask-1"]')).toBeNull();
+    expect(container.textContent).toContain('Which database? · Postgres');
+
+    // 5) Delivered AgentSends fold into the contiguous HistoryFold with "Sent to web_shared_remote_spaces: 2"
+    const folds = [...container.querySelectorAll('[data-history-fold]')];
+    expect(folds[0]?.textContent).toContain('Sent to web_shared_remote_spaces: 2');
+    // Queued AgentSend stays visible outside the fold
+    const queuedRow = container.querySelector('[data-agent-message-delivery="queued"]')?.closest('[data-agent-event="sent"]');
+    expect(queuedRow).not.toBeNull();
+    expect(queuedRow?.closest('[data-history-fold]')).toBeNull();
+
+    // Expanding the fold reveals the 2 delivered messages with individual message_id expandable details
+    for (const fold of folds) {
+      await act(async () => { click(fold.querySelector('button')!); });
+    }
+    const deliveredRows = [...container.querySelectorAll('[data-agent-message-delivery="delivered"]')].map(
+      (node) => node.closest('[data-agent-event="sent"]')!,
+    );
+    expect(deliveredRows).toHaveLength(2);
+    expect(deliveredRows[0]?.getAttribute('data-agent-message-id')).toBe('msg-web-1');
+    expect(deliveredRows[1]?.getAttribute('data-agent-message-id')).toBe('msg-web-2');
+    const toggleBtn = (deliveredRows[0]!.querySelector('[data-invocation-toggle]') ??
+      deliveredRows[0]!.querySelector('[data-activity-toggle]')) as HTMLElement;
+    await act(async () => { click(toggleBtn); });
+    expect(deliveredRows[0]?.textContent).toContain('msg-web-1');
+    expect(deliveredRows[0]?.textContent).toContain('Check SSH host config first.');
+    expect(container.querySelector('[data-subagent-id="agent_retry"]')?.textContent).toContain('Quota limit reached on initial run.');
   });
 });
 

@@ -12943,4 +12943,9 @@ export const zh = {
   'st.notify.guide.discord_webhook': '在频道设置中创建 webhook，从地址中复制 ID 和 token。',
   'st.notify.guide.slack_webhook': '为工作区创建 incoming webhook，粘贴 hooks.slack.com/services/ 之后的路径。',
   'st.notify.guide.http': 'Kiki 会把每条通知以 JSON 发送到这个地址。',
+  'transcript.fold.sentTo': '发给 {name}：{count} 条',
+  'transcript.task.commandFailed': '后台命令失败',
+  'transcript.task.commandCompleted': '后台命令完成',
+  'transcript.task.exitCode': '退出码 {code}',
+  'transcript.task.neutralNotification': '任务通知',
 };

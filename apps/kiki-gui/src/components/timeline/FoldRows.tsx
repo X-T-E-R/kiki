@@ -251,7 +251,7 @@ export function SubagentEndedRow({
               className={ICON_ACTION}
               title={t('transcript.agentEnd.toDispatchTitle')}
               aria-label={t('transcript.agentEnd.toDispatchTitle')}
-              onClick={() => { onLocateDispatch(ending.agentId); }}
+              onClick={() => { onLocateDispatch(ending.dispatchCardId ?? ending.agentId); }}
             >
               <Icon name="arrowUp" size={12} />
             </button>

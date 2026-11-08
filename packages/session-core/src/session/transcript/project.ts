@@ -266,7 +266,8 @@ function classifiedTextToBlocks(input: {
           turnId: input.turnId,
           source: producerFromOrigin(classified.origin),
           ownerPromptId: classified.origin?.kind === 'injection' ? classified.origin.ownerPromptId : undefined,
-          taskId: classified.systemVariant === 'task' ? classified.origin?.taskId : undefined,
+          taskId: classified.systemVariant === 'task' ? (classified.origin?.taskId ?? classified.taskNotification?.sourceId) : undefined,
+          taskNotification: classified.taskNotification,
           hookEvent: classified.systemVariant === 'hook_result' ? classified.origin?.event : undefined,
         } satisfies SystemBlock);
       }
@@ -1312,7 +1313,20 @@ function subagentBlocksFromSnapshot(
         : [[task.name, task.agentId] as const],
     ),
   );
-  const byAgent = new Map<string, SubagentBlock>();
+  const latestByAgent = new Map<string, SubagentBlock>();
+  const runsByKey = new Map<string, SubagentBlock>();
+  const runKeysByAgent = new Map<string, string[]>();
+  const recordRun = (runKey: string, block: SubagentBlock) => {
+    const isNew = !runsByKey.has(runKey);
+    runsByKey.set(runKey, block);
+    latestByAgent.set(block.subagentId, block);
+    if (isNew) {
+      const list = runKeysByAgent.get(block.subagentId);
+      if (list === undefined) runKeysByAgent.set(block.subagentId, [runKey]);
+      else list.push(runKey);
+    }
+  };
+  const pendingResumeByAgent = new Map<string, { toolCallId: string; turnId: string; instruction?: string; at?: string }[]>();
   const rawEvents: RawSubagentEvent[] = [];
   const spawnMarked = new Set<string>();
   let previousTurnId: string | undefined;
@@ -1320,46 +1334,76 @@ function subagentBlocksFromSnapshot(
     if (item.kind === 'taskref') {
       const task = taskById.get(item.taskId);
       if (task?.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
-      const existing = byAgent.get(task.agentId);
-      const startedAt = item.at ?? task.startedAt ?? existing?.startedAt;
-      byAgent.set(task.agentId, {
+      const priorAgentBlock = latestByAgent.get(task.agentId);
+      const pendingList = pendingResumeByAgent.get(task.agentId);
+      const pendingResume = pendingList?.shift();
+      const existingRun = runsByKey.get(`task:${task.taskId}`);
+      const unanchoredKey = [`agent:${task.agentId}`, ...(runKeysByAgent.get(task.agentId) ?? [])].find((key) => {
+        if (key === `task:${task.taskId}`) return false;
+        const candidate = runsByKey.get(key);
+        if (candidate === undefined) return false;
+        if (task.parentToolCallId !== undefined && candidate.parentToolCallId === task.parentToolCallId) return true;
+        return !admittedTaskIds.has(candidate.taskId ?? '') &&
+          candidate.parentToolCallId !== undefined &&
+          sameTurnId(candidate.parentTurnId, previousTurnId);
+      });
+      const unanchored = unanchoredKey === undefined ? undefined : runsByKey.get(unanchoredKey);
+      if (unanchoredKey !== undefined && unanchored !== undefined) {
+        runsByKey.delete(unanchoredKey);
+        const list = runKeysByAgent.get(task.agentId);
+        if (list !== undefined) {
+          const idx = list.indexOf(unanchoredKey);
+          if (idx >= 0) list.splice(idx, 1);
+        }
+      }
+      const base = existingRun ?? unanchored;
+      const existingCount = runKeysByAgent.get(task.agentId)?.length ?? 0;
+      const cardId = base?.id ?? (existingCount === 0 ? `subagent-${task.agentId}` : `subagent-${task.agentId}-${task.taskId}`);
+      const startedAt = item.at ?? task.startedAt ?? base?.startedAt ?? pendingResume?.at;
+      const isEarliestRun = earliestTaskIdByAgent.get(task.agentId) === task.taskId;
+      const parentToolCallId = task.parentToolCallId ?? base?.parentToolCallId ?? pendingResume?.toolCallId;
+      const parentTurnId =
+        base?.parentTurnId ??
+        pendingResume?.turnId ??
+        normalizeTurnId(task.ownerTurnId) ??
+        (timestampMs(startedAt) === undefined ? previousTurnId : undefined);
+      recordRun(`task:${task.taskId}`, {
         kind: 'subagent',
-        id: `subagent-${task.agentId}`,
+        id: cardId,
         subagentId: task.agentId,
+        taskId: task.taskId,
+        resumed: !isEarliestRun || pendingResume !== undefined || base?.resumed === true ? true : undefined,
         parentAgentId,
-        parentToolCallId: existing?.parentToolCallId,
-        parentTurnId:
-          existing?.parentTurnId ?? (timestampMs(startedAt) === undefined ? previousTurnId : undefined),
-        name: task.name ?? task.subagentName ?? task.agentId,
-        description: existing?.description ?? task.description,
-        instruction: existing?.instruction,
-        model: task.model ?? existing?.model,
-        thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,
-        thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
-        executorId: task.executorId ?? existing?.executorId,
-        executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
+        parentToolCallId,
+        parentTurnId,
+        name: task.name ?? task.subagentName ?? priorAgentBlock?.name ?? task.agentId,
+        description: base?.description ?? task.description ?? pendingResume?.instruction ?? priorAgentBlock?.description,
+        instruction: base?.instruction ?? pendingResume?.instruction ?? priorAgentBlock?.instruction,
+        model: task.model ?? base?.model ?? priorAgentBlock?.model,
+        thinkingEffort: task.thinkingEffort ?? base?.thinkingEffort ?? priorAgentBlock?.thinkingEffort,
+        thinkingEffortExplicit: task.thinkingEffortExplicit ?? base?.thinkingEffortExplicit ?? priorAgentBlock?.thinkingEffortExplicit,
+        executorId: task.executorId ?? base?.executorId ?? priorAgentBlock?.executorId,
+        executorProtocol: task.executorProtocol ?? base?.executorProtocol ?? priorAgentBlock?.executorProtocol,
         status: mapTaskState(task.state),
-        summary: task.resultSummary ?? (task.outputTail === '' ? existing?.summary : task.outputTail),
-        error: task.error ?? task.stateReason ?? existing?.error,
-        usage: task.usage ?? existing?.usage,
+        summary: task.resultSummary ?? (task.outputTail === '' ? base?.summary : task.outputTail),
+        error: task.error ?? task.stateReason ?? base?.error,
+        usage: task.usage ?? base?.usage,
         startedAt,
-        endedAt: task.endedAt ?? existing?.endedAt,
-        toolCallCount: existing?.toolCallCount ?? 0,
-        toolCallCountKnown: existing?.toolCallCountKnown ?? false,
+        endedAt: task.endedAt ?? base?.endedAt,
+        toolCallCount: base?.toolCallCount ?? 0,
+        toolCallCountKnown: base?.toolCallCountKnown ?? false,
         transcript: [],
       });
       admittedTaskIds.add(task.taskId);
-      taskTurns.set(task.taskId, previousTurnId);
-      // "spawned" describes only the agent's globally-first run: a taskref for
-      // a later resume run on a fresh page window must not mint a fake spawn.
-      if (!spawnMarked.has(task.agentId) && earliestTaskIdByAgent.get(task.agentId) === task.taskId) {
+      taskTurns.set(task.taskId, parentTurnId ?? previousTurnId);
+      if (!spawnMarked.has(task.agentId) && isEarliestRun) {
         spawnMarked.add(task.agentId);
         rawEvents.push({
           id: `subagent-event-${task.agentId}-spawned-${task.taskId}`,
           subagentId: task.agentId,
           event: 'spawned',
           at: startedAt,
-          turnId: previousTurnId,
+          turnId: parentTurnId ?? previousTurnId,
         });
       }
       continue;
@@ -1375,9 +1419,34 @@ function subagentBlocksFromSnapshot(
           ? resumeTargetsFromToolArgs(frame.input)
           : [];
         for (const raw of resumeTargets) {
-          const targetId = resolveKnownAgentId(raw, byAgent, tasksByAgentKeySet, nameToAgentId);
+          const targetId = resolveKnownAgentId(raw, latestByAgent, tasksByAgentKeySet, nameToAgentId);
           if (targetId === undefined || resumedTargets.has(targetId)) continue;
           resumedTargets.add(targetId);
+          const instruction = spawnInstructionFromToolArgs(frame.input, targetId);
+          const existingRunKeys = runKeysByAgent.get(targetId) ?? [];
+          const matchingRunKey = existingRunKeys.findLast((key) => {
+            const block = runsByKey.get(key);
+            if (block === undefined) return false;
+            if (block.parentToolCallId === frame.toolCallId) return true;
+            return block.resumed === true && block.parentToolCallId === undefined &&
+              (block.parentTurnId === undefined || sameTurnId(block.parentTurnId, item.turnId));
+          });
+          if (matchingRunKey !== undefined) {
+            const current = runsByKey.get(matchingRunKey)!;
+            recordRun(matchingRunKey, {
+              ...current,
+              resumed: true,
+              parentToolCallId: current.parentToolCallId ?? frame.toolCallId,
+              parentTurnId: current.parentTurnId ?? item.turnId,
+              instruction: instruction ?? current.instruction,
+              description: current.description ?? instruction,
+            });
+          } else {
+            const list = pendingResumeByAgent.get(targetId);
+            const entry = { toolCallId: frame.toolCallId, turnId: item.turnId, instruction, at: frameAt };
+            if (list === undefined) pendingResumeByAgent.set(targetId, [entry]);
+            else list.push(entry);
+          }
           rawEvents.push({
             id: `subagent-event-${targetId}-resume-${frame.toolCallId}`,
             subagentId: targetId,
@@ -1393,7 +1462,7 @@ function subagentBlocksFromSnapshot(
           const targetId = receipt.targetAgentId ?? (
             target === undefined
               ? undefined
-              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId));
+              : resolveKnownAgentId(target, latestByAgent, tasksByAgentKeySet, nameToAgentId));
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
@@ -1410,24 +1479,51 @@ function subagentBlocksFromSnapshot(
         }
         if (frame.agentRefs === undefined) continue;
         for (const ref of frame.agentRefs) {
-          const existing = byAgent.get(ref.agentId);
-          const task = taskByAgent.get(ref.agentId);
+          const priorAgentBlock = latestByAgent.get(ref.agentId);
+          const agentTaskList = tasksByAgent.get(ref.agentId) ?? [];
+          const directTask = agentTaskList.find((candidate) => candidate.parentToolCallId === frame.toolCallId);
+          const isResumeCall = resumeTargets.length > 0;
+          const earliestTaskId = earliestTaskIdByAgent.get(ref.agentId);
+          const task = directTask ?? (
+            agentTaskList.length === 1 && !admittedTaskIds.has(agentTaskList[0]!.taskId)
+              ? agentTaskList[0]
+              : !isResumeCall && earliestTaskId !== undefined && !admittedTaskIds.has(earliestTaskId)
+                ? taskById.get(earliestTaskId) ?? taskByAgent.get(ref.agentId)
+                : isResumeCall
+                  ? agentTaskList.findLast((candidate) => !admittedTaskIds.has(candidate.taskId)) ?? taskByAgent.get(ref.agentId)
+                  : taskByAgent.get(ref.agentId)
+          );
           const instruction = spawnInstructionFromToolArgs(frame.input, ref.agentId);
-          byAgent.set(ref.agentId, {
+          const existingRunKey = task !== undefined && runsByKey.has(`task:${task.taskId}`)
+            ? `task:${task.taskId}`
+            : (runKeysByAgent.get(ref.agentId) ?? []).find((key) => {
+                const candidate = runsByKey.get(key);
+                return candidate !== undefined && (
+                  candidate.parentToolCallId === frame.toolCallId ||
+                  (candidate.parentToolCallId === undefined && (task === undefined || candidate.taskId === undefined || candidate.taskId === task.taskId || !admittedTaskIds.has(task.taskId)))
+                );
+              });
+          const runKey = existingRunKey ?? (task !== undefined ? `task:${task.taskId}` : `agent:${ref.agentId}`);
+          const existing = runsByKey.get(runKey);
+          const existingCount = runKeysByAgent.get(ref.agentId)?.length ?? 0;
+          const cardId = existing?.id ?? (existingCount === 0 ? `subagent-${ref.agentId}` : `subagent-${ref.agentId}-${task?.taskId ?? frame.toolCallId}`);
+          recordRun(runKey, {
             kind: 'subagent',
-            id: `subagent-${ref.agentId}`,
+            id: cardId,
             subagentId: ref.agentId,
+            taskId: task?.taskId ?? existing?.taskId,
+            resumed: isResumeCall || existing?.resumed === true ? true : undefined,
             parentAgentId,
             parentToolCallId: frame.toolCallId,
             parentTurnId: item.turnId,
-            name: task?.name ?? task?.subagentName ?? existing?.name ?? ref.agentId,
-            description: existing?.description ?? task?.description ?? instruction,
-            instruction: instruction ?? existing?.instruction,
-            model: task?.model ?? existing?.model,
-            thinkingEffort: task?.thinkingEffort ?? existing?.thinkingEffort,
-            thinkingEffortExplicit: task?.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
-            executorId: task?.executorId ?? existing?.executorId,
-            executorProtocol: task?.executorProtocol ?? existing?.executorProtocol,
+            name: task?.name ?? task?.subagentName ?? existing?.name ?? priorAgentBlock?.name ?? ref.agentId,
+            description: existing?.description ?? task?.description ?? instruction ?? priorAgentBlock?.description,
+            instruction: instruction ?? existing?.instruction ?? priorAgentBlock?.instruction,
+            model: task?.model ?? existing?.model ?? priorAgentBlock?.model,
+            thinkingEffort: task?.thinkingEffort ?? existing?.thinkingEffort ?? priorAgentBlock?.thinkingEffort,
+            thinkingEffortExplicit: task?.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit ?? priorAgentBlock?.thinkingEffortExplicit,
+            executorId: task?.executorId ?? existing?.executorId ?? priorAgentBlock?.executorId,
+            executorProtocol: task?.executorProtocol ?? existing?.executorProtocol ?? priorAgentBlock?.executorProtocol,
             status:
               task === undefined
                 ? (existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'))
@@ -1448,10 +1544,6 @@ function subagentBlocksFromSnapshot(
       }
     }
   }
-  // Terminal entries are per run (task), not per agent: a child resumed for a
-  // second run keeps both completions in the timeline instead of collapsing
-  // them into one. Only runs admitted into this page window (taskref items)
-  // qualify — the global task roster must not leak off-page history in.
   const terminalMarked = new Set<string>();
   for (const [agentId, agentTasks] of tasksByAgent) {
     for (const task of agentTasks) {
@@ -1469,9 +1561,7 @@ function subagentBlocksFromSnapshot(
       });
     }
   }
-  // Fallback for agents known only through tool frames (no task on the roster):
-  // still surface their terminal state once.
-  for (const block of byAgent.values()) {
+  for (const block of runsByKey.values()) {
     if (terminalMarked.has(block.subagentId)) continue;
     const terminal = terminalEventForStatus(block.status);
     if (terminal === undefined) continue;
@@ -1499,7 +1589,7 @@ function subagentBlocksFromSnapshot(
     if (previous === undefined || deliveredAt < previous) targetReceipts.set(messageId, deliveredAt);
   }
   const events: SubagentEventBlock[] = rawEvents.map((raw) => {
-    const owner = byAgent.get(raw.subagentId);
+    const owner = latestByAgent.get(raw.subagentId);
     const deliveredAt = raw.messageId === undefined
       ? undefined : receipts.get(raw.subagentId)?.get(raw.messageId);
     return {
@@ -1520,7 +1610,7 @@ function subagentBlocksFromSnapshot(
       anchorToolCallId: raw.anchorToolCallId,
     };
   });
-  return { blocks: [...byAgent.values()], events };
+  return { blocks: [...runsByKey.values()], events };
 }
 
 function compareSubagentTimeline(left: SubagentBlock, right: SubagentBlock): number {
@@ -1615,15 +1705,15 @@ function insertSubagentBlocks(
     const anchored = byParentTool.get(toolCallId);
     if (anchored === undefined) continue;
     for (const subagent of anchored) {
-      if (inserted.has(subagent.subagentId)) continue;
+      if (inserted.has(subagent.id)) continue;
       const parentTurnId = nearestParentTurn(source, subagent, index);
       blocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
-      inserted.add(subagent.subagentId);
+      inserted.add(subagent.id);
     }
   }
 
   for (const subagent of sorted) {
-    if (inserted.has(subagent.subagentId)) continue;
+    if (inserted.has(subagent.id)) continue;
     const parentTurnId = nearestParentTurn(blocks, subagent);
     const placed = parentTurnId === undefined ? subagent : { ...subagent, parentTurnId };
     if (parentTurnId === undefined && insertAtPreviousPosition(blocks, placed, previous)) continue;
@@ -3062,9 +3152,11 @@ export function agentTranscriptToBlocks(
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
   const withInteractions = insertInteractionBlocks(withSubagentEvents, response.interactions ?? [], response.agent_id, previous);
-  return mergeResponseThinking(foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(
-    placePromptContextAfterUser(withInteractions, response.items),
-  ))));
+  const withQuestions = reconcileQuestionTaskNotifications(
+    mergeTaskNotifications(placePromptContextAfterUser(withInteractions, response.items)),
+    tasks,
+  );
+  return mergeResponseThinking(foldConsecutiveMarkerDividers(keepLatestExecutorReadings(withQuestions)));
 }
 
 export function mergeResponseThinking(blocks: readonly Block[]): Block[] {
@@ -3217,6 +3309,155 @@ function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTrans
  * reported, are left alone.
  */
 
+
+function isQuestionTaskNotification(
+  block: SystemBlock,
+  task: TranscriptTask | AgentTranscriptTask | undefined,
+): boolean {
+  if (block.variant !== 'task') return false;
+  if (task?.taskKind === 'question' || (block.taskId?.startsWith('question-') ?? false)) return true;
+  const meta = block.taskNotification;
+  if (meta === undefined) return false;
+  return (
+    meta.answerRaw !== undefined ||
+    meta.questionOutcome !== undefined ||
+    (meta.title !== undefined && /^Background question\b/i.test(meta.title))
+  );
+}
+
+function questionOutcomeFromTaskNotification(
+  block: SystemBlock,
+  task: TranscriptTask | AgentTranscriptTask | undefined,
+  questions: readonly QuestionItem[],
+): QuestionBlock['outcome'] {
+  const meta = block.taskNotification;
+  const at = task?.endedAt ?? block.createdAt ?? '';
+  if (task?.state === 'killed' || task?.state === 'failed' || task?.state === 'timed_out' || task?.state === 'lost') {
+    return {
+      kind: 'cancelled',
+      at,
+      reason: task.error ?? task.stateReason ?? meta?.stopReason,
+    };
+  }
+  if (meta?.questionOutcome === 'dismissed' || (meta?.title !== undefined && /\bdismissed\b/i.test(meta.title))) {
+    return { kind: 'dismissed', at };
+  }
+  if (meta?.questionOutcome === 'answered' || meta?.answers !== undefined) {
+    let rawAnswers: Record<string, string> | undefined;
+    if (meta.answerRaw !== undefined) {
+      try {
+        const parsed = JSON.parse(meta.answerRaw) as unknown;
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          const inner = (parsed as Record<string, unknown>)['answers'];
+          if (typeof inner === 'object' && inner !== null && !Array.isArray(inner)) {
+            rawAnswers = Object.fromEntries(
+              Object.entries(inner as Record<string, unknown>).flatMap(([k, v]) => (typeof v === 'string' ? [[k, v] as const] : [])),
+            );
+          }
+        }
+      } catch {
+        rawAnswers = undefined;
+      }
+    }
+    const mapped =
+      questions.length > 0 && rawAnswers !== undefined
+        ? questionAnswerTexts(questions, rawAnswers) ?? meta.answers
+        : meta.answers;
+    return { kind: 'answered', at, answers: mapped };
+  }
+  return undefined;
+}
+
+function reconcileQuestionTaskNotifications(
+  blocks: readonly Block[],
+  tasks: readonly (TranscriptTask | AgentTranscriptTask)[],
+): Block[] {
+  const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  const questionIndicesByToolCall = new Map<string, number>();
+  const questionIndicesById = new Map<string, number>();
+  const out = [...blocks];
+  for (const [index, block] of out.entries()) {
+    if (block.kind !== 'question') continue;
+    questionIndicesById.set(block.request.question_id, index);
+    if (block.request.tool_call_id !== undefined && block.request.tool_call_id !== '') {
+      questionIndicesByToolCall.set(block.request.tool_call_id, index);
+    }
+  }
+  const droppedIndices = new Set<number>();
+  for (const [index, block] of out.entries()) {
+    if (block.kind !== 'system' || block.variant !== 'task') continue;
+    const task = block.taskId === undefined ? undefined : taskById.get(block.taskId);
+    if (!isQuestionTaskNotification(block, task)) continue;
+    const toolCallId = task?.toolCallId ?? task?.parentToolCallId;
+    const questionIndex =
+      (toolCallId !== undefined ? questionIndicesByToolCall.get(toolCallId) : undefined) ??
+      (block.taskId !== undefined ? questionIndicesById.get(block.taskId) : undefined);
+    if (questionIndex !== undefined) {
+      const existing = out[questionIndex] as QuestionBlock;
+      const derived = questionOutcomeFromTaskNotification(block, task, existing.request.questions);
+      if (derived !== undefined) {
+        if (existing.outcome === undefined) {
+          out[questionIndex] = { ...existing, outcome: derived };
+        } else if (
+          existing.outcome.kind === 'answered' &&
+          derived.kind === 'answered' &&
+          existing.outcome.answers === undefined &&
+          derived.answers !== undefined
+        ) {
+          out[questionIndex] = {
+            ...existing,
+            outcome: { ...existing.outcome, answers: derived.answers },
+          };
+        }
+      }
+      droppedIndices.add(index);
+      continue;
+    }
+    const meta = block.taskNotification;
+    const promptText = task?.description ?? meta?.description;
+    const answerEntries = meta?.answers === undefined ? [] : Object.entries(meta.answers);
+    const questions: QuestionItem[] =
+      answerEntries.length > 0
+        ? answerEntries.map(([key, _value], itemIndex) => ({
+            id: `q_${itemIndex}`,
+            question: key,
+            options: [],
+          }))
+        : promptText !== undefined && promptText !== ''
+          ? [{ id: 'q_0', question: promptText, options: [] }]
+          : [];
+    const outcome = questionOutcomeFromTaskNotification(block, task, questions);
+    if (outcome === undefined || questions.length === 0) continue;
+    const normalizedAnswers =
+      outcome.kind === 'answered' && meta?.answers !== undefined
+        ? Object.fromEntries(
+            answerEntries.map(([_key, value], itemIndex) => [`q_${itemIndex}`, value] as const),
+          )
+        : undefined;
+    const turnNumber =
+      block.turnId !== undefined && /^t?\d+$/.test(block.turnId)
+        ? Number(block.turnId.replace(/^t/, ''))
+        : undefined;
+    const questionId = block.taskId ?? toolCallId ?? block.id;
+    out[index] = {
+      kind: 'question',
+      id: `question-${questionId}`,
+      request: {
+        question_id: questionId,
+        session_id: '',
+        turn_id: turnNumber,
+        tool_call_id: toolCallId,
+        questions,
+        created_at: task?.startedAt ?? block.createdAt ?? '',
+      },
+      outcome:
+        outcome.kind === 'answered' && normalizedAnswers !== undefined
+          ? { ...outcome, answers: normalizedAnswers }
+          : outcome,
+    };
+  }
+  return droppedIndices.size === 0 ? out : out.filter((_block, index) => !droppedIndices.has(index));
+}
 
 /** One terminal notification per task execution, preferring its delivered receipt over a summary echo. */
 export function mergeTaskNotifications<T extends { readonly kind: string; readonly id: string; readonly variant?: string; readonly taskId?: string }>(nodes: readonly T[]): T[] {
@@ -3441,18 +3682,36 @@ function transcriptTaskToSessionTask(task: TranscriptTask | AgentTranscriptTask)
         : task.state === 'killed'
           ? 'cancelled'
           : 'completed';
+  const preview =
+    task.resultSummary !== undefined && task.resultSummary !== ''
+      ? task.resultSummary
+      : task.outputTail;
   return {
     id: task.taskId,
     session_id: '',
     kind,
     description: task.description ?? '',
     status,
+    command: task.command,
     created_at: task.startedAt ?? '',
     started_at: task.startedAt,
     completed_at: task.endedAt,
-    output_preview: task.outputTail,
+    output_preview: preview,
+    model: task.model,
+    thinking_effort: task.thinkingEffort,
+    thinking_effort_explicit: task.thinkingEffortExplicit,
+    executor_id: task.executorId,
+    executor_protocol: task.executorProtocol,
     agent_id: task.agentId,
+    profile: task.subagentName,
+    parent_tool_call_id: task.parentToolCallId,
+    tool_call_id: task.toolCallId,
+    question_count: task.questionCount,
+    task_kind: task.taskKind,
     source_ref: task.sourceRef,
+    run_in_background: task.detached,
+    exit_code: task.exitCode,
+    stop_reason: task.error ?? task.stateReason ?? (task.state === 'timed_out' ? 'timeout' : undefined),
   };
 }
 

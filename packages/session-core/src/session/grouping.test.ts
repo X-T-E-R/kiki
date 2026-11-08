@@ -423,7 +423,7 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     const endings = nodes.filter((node) => node.kind === 'subagent-ended');
     expect(endings.map((node) => node.taskId)).toEqual(['run-1', 'run-2', 'run-3']);
     expect(endings[0]).toMatchObject({ id: 'ended-task-run-1', note: full, task: tasks[0], dispatchOnPage: true });
-    expect(foldHistory(nodes, 't9').find((node) => node.kind === 'history-fold' && node.turnId === 't2')).toMatchObject({ agentsDone: 3, thoughts: 1 });
+    expect(foldHistory(nodes, 't9').filter((node) => node.kind === 'subagent-ended')).toHaveLength(3);
     expect(readSubagentEndings(nodes, tasks).filter((node) => node.kind === 'subagent-ended')).toEqual(endings);
   });
 
@@ -441,10 +441,98 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     ], tasks);
     expect(nodes.map((node) => node.kind)).toEqual(['subagent', 'subagent', 'user', 'subagent-ended', 'system']);
     expect(nodes[3]).toMatchObject({ agentId: 'a2', outcome: 'failed', dispatchOnPage: true });
-    // A completed end folds with the turn's work; one that failed stays out.
-    const ended = foldHistory([inTurn(read('/w/a'), 't2'), { ...(nodes[3] as SubagentEnding), outcome: 'completed' }, inTurn(text('assistant'), 't2')], 't2');
-    expect(ended[0]).toMatchObject({ kind: 'history-fold', agentsDone: 1 });
+    // Both completed and failed cross-turn endings stay in view as named rows.
+    const ended = foldHistory([inTurn(read('/w/a'), 't2'), { ...(nodes[3] as SubagentEnding), outcome: 'completed' }, inTurn(read('/w/b'), 't2'), inTurn(text('assistant'), 't2')], 't2');
+    expect(ended.map((node) => node.kind)).toEqual(['tool', 'subagent-ended', 'tool', 'assistant']);
     const failed = foldHistory([inTurn(read('/w/a'), 't2'), nodes[3]!, inTurn(read('/w/b'), 't2'), inTurn(text('assistant'), 't2')], 't2');
     expect(failed.map((node) => node.kind)).toEqual(['tool', 'subagent-ended', 'tool', 'assistant']);
+  });
+
+  it('folds delivered AgentSend rows into their contiguous turn process group and keeps queued or unknown deliveries visible', () => {
+    const sent1: Block = {
+      kind: 'subagent-event', id: 'send-1', subagentId: 'web_shared_remote_spaces', parentAgentId: 'main',
+      name: 'web_shared_remote_spaces', event: 'sent', status: 'completed', turnId: 't1',
+      message: 'First instruction', messageId: 'msg-1', delivery: 'delivered', at: '2026-01-01T00:00:01.000Z',
+    };
+    const sent2: Block = {
+      kind: 'subagent-event', id: 'send-2', subagentId: 'web_shared_remote_spaces', parentAgentId: 'main',
+      name: 'web_shared_remote_spaces', event: 'sent', status: 'completed', turnId: 't1',
+      message: 'Second instruction', messageId: 'msg-2', delivery: 'delivered', at: '2026-01-01T00:00:02.000Z',
+    };
+    const queued: Block = {
+      kind: 'subagent-event', id: 'send-3', subagentId: 'web_shared_remote_spaces', parentAgentId: 'main',
+      name: 'web_shared_remote_spaces', event: 'sent', status: 'completed', turnId: 't1',
+      message: 'Queued instruction', messageId: 'msg-3', delivery: 'queued', at: '2026-01-01T00:00:03.000Z',
+    };
+    const nodes = foldHistory([inTurn(thinking(), 't1'), sent1, sent2, queued, inTurn(text('assistant'), 't1')], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'subagent-event', 'assistant']);
+    const fold = nodes[0] as HistoryFold;
+    expect(fold.sentMessages).toEqual([{ subagentId: 'web_shared_remote_spaces', name: 'web_shared_remote_spaces', count: 2 }]);
+    expect(fold.notes).toBe(0);
+    expect(fold.members).toHaveLength(3);
+    expect(nodes[1]).toBe(queued);
+  });
+
+  it('emits SubagentEnding when a same-turn notification is separated from its dispatch card by conversation or questions', () => {
+    const card = { ...agent('web_shared_remote_spaces', 'completed', 't1'), taskId: 'task-ws-1', name: 'web_shared_remote_spaces' };
+    const note: SystemBlock = {
+      kind: 'system', id: 'n-ws-1', variant: 'task', taskId: 'task-ws-1', turnId: 't1', createdAt: undefined,
+      text: 'Title: Background agent completed\nRemote space sync verified.',
+    };
+    const tasks = [{ id: 'task-ws-1', agent_id: 'web_shared_remote_spaces', status: 'completed', output_preview: 'Remote space sync verified.' }];
+    const separated = readSubagentEndings([card, inTurn(text('assistant'), 't1'), note], tasks);
+    expect(separated.map((node) => node.kind)).toEqual(['subagent', 'assistant', 'subagent-ended']);
+    expect(separated[2]).toMatchObject({
+      agentId: 'web_shared_remote_spaces',
+      taskId: 'task-ws-1',
+      dispatchOnPage: true,
+      dispatchCardId: 'subagent-web_shared_remote_spaces',
+    });
+  });
+
+  it('keeps failed background command notifications and settled questions independent from adjacent Worked folds', () => {
+    const settledQ: QuestionBlock = {
+      kind: 'question',
+      id: 'q-done',
+      request: {
+        question_id: 'q-done',
+        session_id: 'session_test',
+        turn_id: 1,
+        questions: [{ id: 'q1', question: 'Which database?', options: [] }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      outcome: { kind: 'answered', at: '2026-01-01T00:00:05.000Z', answers: { q1: 'Postgres' } },
+    };
+    const failedCmd: SystemBlock = {
+      kind: 'system',
+      id: 'sys-bash-fail',
+      variant: 'task',
+      taskId: 'bash-1',
+      turnId: 't1',
+      createdAt: '2026-01-01T00:00:06.000Z',
+      text: 'Title: Background process failed\nSeverity: warning\nBash: pnpm test failed. Exit code: 2.',
+      taskNotification: {
+        title: 'Background process failed',
+        severity: 'warning',
+        description: 'Bash: pnpm test',
+        exitCode: 2,
+      },
+    };
+    const nodes = foldHistory([
+      inTurn(thinking(), 't1'),
+      inTurn(read('/w/a'), 't1'),
+      settledQ,
+      inTurn(read('/w/b'), 't1'),
+      inTurn(shell(), 't1'),
+      failedCmd,
+      inTurn(text('assistant'), 't1'),
+    ], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual([
+      'history-fold',
+      'question',
+      'history-fold',
+      'system',
+      'assistant',
+    ]);
   });
 });

@@ -4083,6 +4083,147 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       );
       expect(projected.blocks.indexOf(events[1]!)).toBeLessThan(t2Index);
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
+      const subagentCards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(subagentCards).toHaveLength(2);
+      expect(subagentCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-agent-1-run-1',
+        summary: 'First pass done.',
+      });
+      expect(subagentCards[1]).toMatchObject({
+        id: 'subagent-agent-1-task-agent-1-run-2',
+        taskId: 'task-agent-1-run-2',
+        resumed: true,
+        parentToolCallId: 'call-resume-1',
+        summary: 'Second pass done.',
+      });
+    });
+
+    it('keeps failed and resumed runs of the same agent as distinct cards without swallowing the failure', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'dispatch explorer',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'f-spawn',
+                      toolCallId: 'call-spawn-fail',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'explore', name: 'web_shared_remote_spaces', prompt: 'audit remote spaces' },
+                      agentRefs: [{ agentId: 'agent-ws-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:01.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-ws-fail',
+              taskId: 'task-ws-run-1',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'resume it',
+              startedAt: '2026-01-01T00:00:20.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:21.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'f-resume',
+                      toolCallId: 'call-resume-ok',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume: 'web_shared_remote_spaces', prompt: 'retry with token' },
+                      startedAt: '2026-01-01T00:00:21.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-ws-ok',
+              taskId: 'task-ws-run-2',
+              at: '2026-01-01T00:00:21.000Z',
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-ws-run-1',
+              kind: 'subagent',
+              state: 'failed',
+              detached: true,
+              name: 'web_shared_remote_spaces',
+              agentId: 'agent-ws-1',
+              parentToolCallId: 'call-spawn-fail',
+              error: 'SSH handshake timed out after 10s',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+              endedAt: '2026-01-01T00:00:11.000Z',
+            },
+            {
+              taskId: 'task-ws-run-2',
+              kind: 'subagent',
+              state: 'completed',
+              detached: true,
+              name: 'web_shared_remote_spaces',
+              agentId: 'agent-ws-1',
+              parentToolCallId: 'call-resume-ok',
+              resultSummary: 'Verified 4 remote spaces and synced bindings.',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:21.000Z',
+              endedAt: '2026-01-01T00:00:35.000Z',
+            },
+          ],
+        }),
+      );
+      const cards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(cards).toHaveLength(2);
+      expect(cards[0]).toMatchObject({
+        id: 'subagent-agent-ws-1',
+        taskId: 'task-ws-run-1',
+        status: 'failed',
+        error: 'SSH handshake timed out after 10s',
+      });
+      expect(cards[1]).toMatchObject({
+        id: 'subagent-agent-ws-1-task-ws-run-2',
+        taskId: 'task-ws-run-2',
+        resumed: true,
+        status: 'completed',
+        summary: 'Verified 4 remote spaces and synced bindings.',
+      });
     });
 
     it('uses the latest task state when a foreground task-id run has no taskref', () => {

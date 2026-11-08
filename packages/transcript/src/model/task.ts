@@ -48,6 +48,11 @@ export interface TranscriptTask extends ContentWindow {
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly sourceRef?: import('../contract/agentReference').AgentRunSource;
+  readonly parentToolCallId?: string;
+  readonly toolCallId?: string;
+  readonly questionCount?: number;
+  readonly exitCode?: number | null;
+  readonly taskKind?: string;
   /** Human-readable one-liner (command line, agent description, …). */
   readonly description?: string;
   readonly command?: string;

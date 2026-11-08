@@ -122,7 +122,21 @@ export const HistoryLine = memo(function HistoryLine({
     if (outcome === undefined) return null;
     icon = 'ask';
     tone = 'plain';
-    text = node.request.questions[0]?.question ?? '';
+    const firstQuestion = node.request.questions[0];
+    const qText = firstQuestion?.question ?? '';
+    const answerValues =
+      outcome.kind === 'answered' && outcome.answers !== undefined
+        ? node.request.questions
+            .map((item) => outcome.answers?.[item.id])
+            .filter((val): val is string => val !== undefined && val.trim() !== '')
+        : [];
+    const inlineAnswer =
+      answerValues.length > 0
+        ? answerValues.join(', ')
+        : outcome.kind === 'answered' && outcome.answers !== undefined
+          ? Object.values(outcome.answers).filter((val) => val.trim() !== '').join(', ')
+          : '';
+    text = inlineAnswer !== '' ? `${qText} · ${inlineAnswer}` : qText;
     stateLabel = t(`ia.question.${outcome.kind}` as I18nKey);
     if (outcome.kind === 'cancelled' && ['no_consumer', 'turn_ended', 'agent_closed', 'aborted'].includes(outcome.reason ?? '')) {
       stateTitle = t(`ia.question.cancelled.${outcome.reason}` as I18nKey);
