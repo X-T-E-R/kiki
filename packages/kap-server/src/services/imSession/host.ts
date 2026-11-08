@@ -150,6 +150,7 @@ function telegramHttp(token: string): ImHttpTransport {
 
 class NotificationSessionPorts implements ImSessionPorts {
   private readonly pendingAnswers = new Map<string, Record<string, string | true>>();
+  private readonly settledSteerPrompts = new Set<string>();
 
   constructor(
     private readonly core: Scope,
@@ -234,20 +235,23 @@ class NotificationSessionPorts implements ImSessionPorts {
       return { busy: state.busy, pending: state.pendingInteraction, queueLength: queue.pending.length, ...(queue.active === undefined ? {} : { activePromptId: queue.active.id }), ...(loop.status().activeTurnId === undefined ? {} : { activeTurnId: loop.status().activeTurnId }) };
     }),
     submit: (input) => this.submit(input),
-    steer: (sessionId, promptId) => this.inSession(sessionId, async (session) => {
-      const agent = await ensureMainAgent(session);
-      const prompt = agent.accessor.get(IAgentPromptService);
-      const activeTurnId = agent.accessor.get(IAgentLoopService).status().activeTurnId;
-      const pending = () => prompt.list().pending.some((item) => item.id === promptId);
-      if (!pending()) return imNativeSteerState(prompt, promptId) ?? 'started';
-      try {
-        const [handle] = await prompt.acceptSteer([promptId], activeTurnId);
-        return imNativeSteerState(prompt, promptId) ?? (wasSteeredIntoTurn(prompt, handle, activeTurnId) ? 'steered' : pending() ? 'queued' : 'started');
-      } catch (error) {
-        if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
-        return imNativeSteerState(prompt, promptId) ?? (pending() ? 'queued' : 'started');
-      }
-    }),
+    steer: (sessionId, promptId) => {
+      if (this.settledSteerPrompts.delete(`${sessionId}:${promptId}`)) return Promise.resolve('queued' as const);
+      return this.inSession(sessionId, async (session) => {
+        const agent = await ensureMainAgent(session);
+        const prompt = agent.accessor.get(IAgentPromptService);
+        const activeTurnId = agent.accessor.get(IAgentLoopService).status().activeTurnId;
+        const pending = () => prompt.list().pending.some((item) => item.id === promptId);
+        if (!pending()) return imNativeSteerState(prompt, promptId) ?? 'started';
+        try {
+          const [handle] = await prompt.acceptSteer([promptId], activeTurnId);
+          return imNativeSteerState(prompt, promptId) ?? (wasSteeredIntoTurn(prompt, handle, activeTurnId) ? 'steered' : pending() ? 'queued' : 'started');
+        } catch (error) {
+          if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
+          return imNativeSteerState(prompt, promptId) ?? (pending() ? 'queued' : 'started');
+        }
+      });
+    },
     abort: (sessionId, promptId, turnId) => this.inSession(sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
       let aborted = false;
@@ -427,9 +431,13 @@ class NotificationSessionPorts implements ImSessionPorts {
         }
         const activeTurnId = agent.accessor.get(IAgentLoopService).status().activeTurnId;
         const activePromptId = queue.active?.id ?? queue.launching?.id;
+        const settleQueued = (): ImSubmitResult => {
+          this.settledSteerPrompts.add(`${input.sessionId}:${handle.id}`);
+          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'queued' };
+        };
         if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
             (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
-          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'queued' };
+          return settleQueued();
         }
         let steered: typeof handle | undefined;
         try {
@@ -437,16 +445,15 @@ class NotificationSessionPorts implements ImSessionPorts {
         } catch (error) {
           if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
           const stillPending = prompt.list().pending.some((item) => item.id === handle.id);
-          return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: stillPending ? 'queued' : 'pending' };
+          return stillPending ? settleQueued() : { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'pending' };
         }
         const steeredIntoTurn = wasSteeredIntoTurn(prompt, steered, activeTurnId);
         const stillPending = steered?.state === 'pending' || prompt.list().pending.some((item) => item.id === handle.id);
-        return {
-          duplicate: false,
-          promptId: handle.id,
-          turnId: prompt.lookup(handle.id)?.turnId,
-          deliveryState: steeredIntoTurn ? 'steered' : stillPending ? 'queued' : 'pending',
-        };
+        return steeredIntoTurn
+          ? { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'steered' }
+          : stillPending
+            ? settleQueued()
+            : { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: 'pending' };
       } catch (error) {
         if (!enqueued) await prepared.discard();
         if (isError2(error) && error.code === ErrorCodes.PROMPT_ID_CONFLICT) {

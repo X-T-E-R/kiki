@@ -1233,37 +1233,40 @@ describe('server-v2 /api prompts', () => {
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
     const address = provider.address();
     if (address === null || typeof address === 'string') throw new Error('provider did not bind');
-    const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server!) });
+    const server = fixture.server!;
+    const baseCore = server.core;
+    const home = fixture.home!;
+    const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(server) });
     const adapter = new FakeImAdapter('wechat_bridge', 'test-account');
     const identity = { chatId: 'im-chat', senderId: 'im-sender', topicId: '0', chatKind: 'private' as const };
     let notifications: NotificationService | undefined;
     let bridge: Awaited<ReturnType<typeof createImSessionHost>> | undefined;
     let controller: SessionController | undefined;
     try {
-      await fixture.server!.core.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
-      await fixture.server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
-      const id = await createSession(fixture.home!);
+      await baseCore.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await baseCore.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(home);
       await createMainAgent(id);
-      const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+      const session = getLiveSessionById(baseCore.accessor, id)!;
       const main = session.accessor.get(IAgentLifecycleService).get('main')!;
       await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
       const prompt = main.accessor.get(IAgentPromptService);
       const loop = main.accessor.get(IAgentLoopService);
 
-      const core = Object.create(fixture.server!.core, {
+      const core = Object.create(baseCore, {
         instantiation: {
-          value: Object.create(fixture.server!.core.instantiation, {
+          value: Object.create(baseCore.instantiation, {
             provide: {
               value: () => undefined,
             },
           }),
         },
-      }) as typeof fixture.server.core;
-      notifications = new NotificationService(core, fixture.home!, () => false, () => undefined);
+      }) as typeof baseCore;
+      notifications = new NotificationService(core, home, () => false, () => undefined);
       await notifications.start();
       bridge = await createImSessionHost({
         core,
-        homeDir: fixture.home!,
+        homeDir: home,
         notifications,
         logger: { info() {} },
         factories: [fakeAdapterFactory(adapter)],
@@ -1359,6 +1362,139 @@ describe('server-v2 /api prompts', () => {
           resolve();
         });
       });
+    }
+  }, 30_000);
+
+  it.each(['changed-target', 'definite-refusal', 'unknown-result'] as const)('attempts external IM immediate steer at most once, sends queued copy when queued, and preserves recovery hold, scenario=%s', async (scenario) => {
+    const server = fixture.server!;
+    const baseCore = server.core;
+    const home = fixture.home!;
+    baseCore.accessor.get(IAgentProfileRegistry).register({
+      sourceId: `im-external-steer-${scenario}`,
+      priority: 50,
+      contribution: {
+        profiles: [normalizeAgentProfile({
+          name: `im-external-${scenario}`,
+          definitionId: `fixture:im-external-${scenario}`,
+          executor: 'grok-acp',
+          modelAlias: 'grok-raw',
+          systemPrompt: () => 'IM_EXTERNAL',
+        })],
+      },
+    });
+    const registry = baseCore.accessor.get(IAgentExecutorRegistry);
+    const originalResolve = registry.resolveExecutable.bind(registry);
+    const held = holdExternalSession();
+    const run = vi.fn(held.session.run);
+    const steer = vi.fn(async () => {
+      if (scenario === 'unknown-result') throw new Error('External executor steer outcome lost.');
+      return scenario !== 'definite-refusal';
+    });
+    const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
+      descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
+      options: registry.resolve(executorId, options ?? {}).options,
+      provider: {
+        id: 'im-external-fixture',
+        protocol: 'acp-v1',
+        validateOptions: value => value as Record<string, string | number | boolean>,
+        validateBinding: binding => ({ ok: true, binding }),
+        create: () => ({ ...held.session, run, steer }) as unknown as AgentExecutorSession,
+      },
+    } : originalResolve(executorId, options));
+    const adapter = new FakeImAdapter('wechat_bridge', 'test-account');
+    const identity = { chatId: 'im-ext-chat', senderId: 'im-ext-sender', topicId: '0', chatKind: 'private' as const };
+    const gate = promiseGate<void>();
+    let resume: ReturnType<typeof vi.spyOn> | undefined;
+    let notifications: NotificationService | undefined;
+    let bridge: Awaited<ReturnType<typeof createImSessionHost>> | undefined;
+    try {
+      const id = await createSession(home);
+      const root = `/api/sessions/${id}/prompts`;
+      const active = await call('POST', root, {
+        prompt_id: 'im-ext-original',
+        profile: `im-external-${scenario}`,
+        content: [{ type: 'text', text: 'Original external turn.' }],
+      });
+      expect(active.body.code, active.body.msg).toBe(0);
+      const main = getLiveSessionById(baseCore.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const prompt = main.accessor.get(IAgentPromptService);
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe('im-ext-original'));
+
+      const core = Object.create(baseCore, {
+        instantiation: {
+          value: Object.create(baseCore.instantiation, {
+            provide: {
+              value: () => undefined,
+            },
+          }),
+        },
+      }) as typeof baseCore;
+      notifications = new NotificationService(core, home, () => false, () => undefined);
+      await notifications.start();
+      bridge = await createImSessionHost({
+        core,
+        homeDir: home,
+        notifications,
+        logger: { info() {} },
+        factories: [fakeAdapterFactory(adapter)],
+      });
+      const pasted = await bridge.paste({ text: 'wechat_token=example-test-token\nwechat_account=test-account' });
+      const instanceId = pasted.provider_instance_id;
+      await bridge.setListening(instanceId, true);
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'pair' });
+      const discoveryId = (await bridge.snapshot()).discoveries[0]!.id;
+      await bridge.confirm(discoveryId, { target: { kind: 'session', session_id: id }, busy: 'immediate', reply: 'final' });
+
+      if (scenario === 'changed-target') {
+        const manager = baseCore.accessor.get(ISessionManager);
+        const originalAcquire = manager.acquire!.bind(manager);
+        let calls = 0;
+        resume = vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+          calls += 1;
+          if (calls === 2) await gate.promise;
+          return originalAcquire(...args);
+        });
+      }
+
+      const emitPromise = adapter.emit({ eventId: 'ext-now', identity, kind: 'text', text: 'Immediate external IM note.' });
+      if (scenario === 'changed-target') {
+        await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(2));
+        held.finish();
+        await vi.waitFor(() => expect(prompt.list().active).toBeUndefined());
+        const replacement = await main.accessor.get(IAgentPromptService).enqueue({
+          id: 'im-ext-replacement',
+          message: { role: 'user', content: [{ type: 'text', text: 'Replacement external turn.' }], toolCalls: [], origin: { kind: 'user' } },
+        });
+        expect(replacement.id).toBe('im-ext-replacement');
+        await vi.waitFor(() => expect(prompt.list().active?.id).toBe('im-ext-replacement'));
+        resume?.mockRestore();
+        resume = undefined;
+        gate.resolve();
+      }
+      await emitPromise;
+
+      const imPromptId = `im:${instanceId}:ext-now`;
+      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : 1);
+      expect(prompt.list().pending.map(item => item.id)).toEqual([imPromptId]);
+      expect(adapter.sent.filter(item => item.code === 'queued')).toHaveLength(1);
+      if (scenario === 'unknown-result') {
+        expect(prompt.list().hold).toMatchObject({ reason: 'recovery', count: 1 });
+        expect(prompt.list().pending[0]?.deliveryReason).toBe('external_retry');
+      } else if (scenario === 'definite-refusal') {
+        expect(prompt.list().hold).toBeUndefined();
+        expect(prompt.list().pending[0]?.deliveryReason).toBe('executor_deferred');
+      } else {
+        expect(prompt.list().hold).toBeUndefined();
+        expect(prompt.list().pending[0]?.deliveryReason).toBeUndefined();
+      }
+      expect(prompt.abort(imPromptId)).toBe(true);
+    } finally {
+      gate.resolve();
+      resume?.mockRestore();
+      await bridge?.close();
+      await notifications?.close();
+      held.finish();
+      executor.mockRestore();
     }
   }, 30_000);
 });
