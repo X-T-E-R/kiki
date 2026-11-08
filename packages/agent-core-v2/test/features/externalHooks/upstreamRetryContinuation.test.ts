@@ -271,7 +271,87 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.responseBodies.every((body) => body.equals(missingTerminalWire))).toBe(true);
     expect(continuations(replayed.local)).toHaveLength(1);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
-    expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
+  }, 60_000);
+
+  it('continues a new missing-terminal failure streak after a completed tool-call response and stops on a consecutive repeat failure', async () => {
+    const encryptedEmptyMissingTerminal = Buffer.concat([
+      Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n'),
+      Buffer.from(sse([
+        ...Array.from({ length: 7 }, () => ['ping', { type: 'ping' }] as const),
+        ['message_start', {
+          type: 'message_start',
+          message: {
+            id: 'msg_encrypted_empty', type: 'message', role: 'assistant', model: 'example-model', content: [],
+            stop_reason: null, stop_sequence: null, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 },
+          },
+        }],
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'EosDCkYICxgCKkA=' } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+        ['message_delta', { type: 'message_delta', delta: { stop_reason: null, stop_sequence: null }, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 } }],
+        ['error', { type: 'error', error: {
+          type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+        } }],
+      ])),
+    ]);
+    const replayed = await replay((requestNumber) => {
+      if (requestNumber === 1) return encryptedEmptyMissingTerminal;
+      if (requestNumber === 2) return toolSse();
+      if (requestNumber === 3) return encryptedEmptyMissingTerminal;
+      if (requestNumber === 4) return terminalSse('Completed after recovering two separate failure streaks.');
+      return encryptedEmptyMissingTerminal;
+    }, { tool: true, modelAlias: argonModel });
+    try {
+      expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
+      expect(replayed.requests).toHaveLength(4);
+      expect(replayed.retryEvents).toHaveLength(0);
+      expect(replayed.tools).toBe(1);
+      expect(continuations(replayed.local)).toHaveLength(2);
+      expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0]);
+      expect(stops(replayed).map(([, args]) => args?.inputData?.['maxRecoveryAttempts'])).toEqual([1, 1]);
+      expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
+      expect(JSON.stringify(replayed.requests[3]?.body).split('继续')).toHaveLength(3);
+    } finally {
+      await replayed.close();
+    }
+
+    const repeatedAfterReset = await replay((requestNumber) => {
+      if (requestNumber === 1) return encryptedEmptyMissingTerminal;
+      if (requestNumber === 2) return toolSse();
+      return encryptedEmptyMissingTerminal;
+    }, { tool: true, modelAlias: argonModel });
+    open.push(repeatedAfterReset);
+    expect(await (await prompt(repeatedAfterReset)).completion).toMatchObject({ state: 'failed' });
+    expect(repeatedAfterReset.requests).toHaveLength(4);
+    expect(repeatedAfterReset.tools).toBe(1);
+    expect(continuations(repeatedAfterReset.local)).toHaveLength(2);
+    expect(stops(repeatedAfterReset).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0, 1]);
+    expect(stops(repeatedAfterReset).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true, false]);
+  }, 60_000);
+
+  it('does not reset the streak budget on HTTP 200 heartbeats, partial text, or prior tool results when the continuation fails', async () => {
+    const partialAfterHeartbeat = sse([
+      ...Array.from({ length: 4 }, () => ['ping', { type: 'ping' }] as const),
+      messageStart('msg_partial_after_ping'),
+      ...textBlock('Partial continuation before drop'),
+      ['error', { type: 'error', error: {
+        type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+      } }],
+    ]);
+    const replayed = await replay((requestNumber) => {
+      if (requestNumber === 1) return toolSse();
+      if (requestNumber === 2) return missingTerminalHttp;
+      return partialAfterHeartbeat;
+    }, { tool: true, modelAlias: argonModel });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
+    expect(replayed.tools).toBe(1);
+    expect(replayed.requests).toHaveLength(3);
+    expect(replayed.retryEvents).toHaveLength(0);
+    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
   }, 60_000);
 
   it.each([false, true])('keeps the completed tool result without executing a call from the failed stream (block closed: %s)', async (blockClosed) => {

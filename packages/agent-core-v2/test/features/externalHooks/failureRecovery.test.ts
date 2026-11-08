@@ -146,27 +146,55 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
-  it('enforces the host two-continuation budget even across a successful tool step', async () => {
-    const f = await fixture({ hooks: [alwaysContinue] });
+  it('resets the one-continuation streak budget after completed model responses and stops on a consecutive repeat failure', async () => {
+    const f = await fixture();
     try {
       let tools = 0;
       f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
       f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
       f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call', arguments: '{}' });
       f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'First partial' }], error: missingTerminal() });
-      f.local.mockNextResponse({ type: 'text', text: 'Progress' }, { type: 'function', name: 'SaveWork', id: 'save-call-2', arguments: '{}' });
+      f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call-2', arguments: '{}' });
       f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Second partial' }], error: missingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Progress' }, { type: 'function', name: 'SaveWork', id: 'save-call-3', arguments: '{}' });
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Third partial' }], error: missingTerminal() });
       const error = missingTerminal();
       f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Final partial' }], error });
       expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
-      expect(continuations(f.local)).toHaveLength(2);
-      expect(tools).toBe(2);
-      expect(f.local.llmCalls).toHaveLength(5);
-      expect(f.trigger.mock.calls.filter(([event]) => event === 'PostToolUse')).toHaveLength(2);
+      expect(continuations(f.local)).toHaveLength(3);
+      expect(tools).toBe(3);
+      expect(f.local.llmCalls).toHaveLength(7);
+      expect(f.trigger.mock.calls.filter(([event]) => event === 'PostToolUse')).toHaveLength(3);
       const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
-      expect(calls).toHaveLength(3);
-      expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1, 2]);
-      expect(calls.at(-1)?.[1]?.inputData?.['recoverable']).toBe(false);
+      expect(calls).toHaveLength(4);
+      expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0, 0, 1]);
+      expect(calls.map(([, args]) => args?.inputData?.['maxRecoveryAttempts'])).toEqual([1, 1, 1, 1]);
+      expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true, true, false]);
+    } finally { await f.dispose(); }
+  });
+
+  it('does not reset the streak budget on thinking-only, truncated, or tool-only step activity', async () => {
+    const f = await fixture({ hooks: [alwaysContinue] });
+    try {
+      let tools = 0;
+      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
+      f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
+      f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call-1', arguments: '{}' });
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'First streak failure' }], error: missingTerminal() });
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Truncated continuation' }], finishReason: 'truncated', rawFinishReason: 'max_tokens' });
+      const loop = f.local.get(IAgentLoopService);
+      loop.hooks.onDidFinishStep.register('enqueue-after-truncated', async (ctx, next) => {
+        await next();
+        if (ctx.finishReason === 'truncated') loop.enqueue(new ContinuationStepRequest());
+      });
+      const error = missingTerminal();
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Still in the same streak' }], error });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'failed', result: { error } });
+      expect(tools).toBe(1);
+      expect(continuations(f.local)).toHaveLength(1);
+      const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
+      expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
+      expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
     } finally { await f.dispose(); }
   });
 
@@ -212,7 +240,7 @@ describe('StopFailure continuation recovery', () => {
       expect(continuations(f.local)).toHaveLength(1);
       const calls = f.trigger.mock.calls.filter(([event]) => event === 'StopFailure');
       expect(calls.map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
-      expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
+      expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
       expect(calls.map(([, args]) => (args?.inputData?.['error'] as { details?: { upstream_retryable?: unknown } }).details?.upstream_retryable)).toEqual([false, false]);
     } finally { await f.dispose(); }
   });

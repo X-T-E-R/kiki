@@ -45,7 +45,7 @@ import {
   triggerBlockingResults,
 } from '../app/externalHooksRunner';
 import type { HookMatcherValue } from '../internal/types';
-import { failureHookInput, permitsFailureContinuation, MAX_FAILURE_RECOVERIES_PER_TURN } from '../internal/failureRecovery';
+import { failureHookInput, permitsFailureContinuation, MAX_FAILURE_RECOVERIES_PER_STREAK } from '../internal/failureRecovery';
 import {
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
@@ -249,6 +249,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     this._register(
       loop.hooks.onDidFinishStep.register('externalHooks', async (ctx, next) => {
         await next();
+        if (ctx.modelResponseCompleted === true) {
+          this.failureRecoveries = 0;
+        }
         if (
           ctx.finishReason === 'tool_calls' ||
           ctx.finishReason === 'filtered' ||
@@ -428,7 +431,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     this.observedFailureTurnId = ctx.turnId;
     const payload = toKimiErrorPayload(ctx.error);
     const recoverable = ctx.requestFailed === true && permitsFailureContinuation(payload) &&
-      this.failureRecoveries < MAX_FAILURE_RECOVERIES_PER_TURN;
+      this.failureRecoveries < MAX_FAILURE_RECOVERIES_PER_STREAK;
     let results;
     try {
       results = await this.runner.trigger('StopFailure', {
@@ -443,7 +446,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
           step: ctx.step,
           recoverable,
           recoveryAttempts: this.failureRecoveries,
-          maxRecoveryAttempts: MAX_FAILURE_RECOVERIES_PER_TURN,
+          maxRecoveryAttempts: MAX_FAILURE_RECOVERIES_PER_STREAK,
         }),
       }, 'block');
     } catch {

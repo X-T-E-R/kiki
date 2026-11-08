@@ -40,7 +40,7 @@ test('ships an installable dependency-free hook and exercises real stdin/stdout'
   const manifest = JSON.parse(await readFile(new URL('../kimi.plugin.json', import.meta.url), 'utf8'));
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.name, 'argon-error-recovery');
-  assert.equal(manifest.version, '0.2.0');
+  assert.equal(manifest.version, '0.2.1');
   assert.equal(pkg.version, manifest.version);
   assert.match(manifest.interface.displayName, /Unofficial/);
   assert.deepEqual(manifest.hooks, [{ event: 'StopFailure', command: 'node ./scripts/recover.mjs', timeout: 5 }]);

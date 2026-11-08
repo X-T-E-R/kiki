@@ -1451,6 +1451,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         response.usage,
         finishReason,
         stepIdentity,
+        hasCompletedModelResponse(response, finishReason),
       );
       if (!hookStopTurn && isThinkOnlyCompletion(response)) {
         if (this.llmRequester.supportsAssistantPrefill?.() === false) {
@@ -1707,6 +1708,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     usage: TokenUsage,
     finishReason: FinishReason,
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
+    modelResponseCompleted?: boolean,
   ): Promise<boolean> {
     const context: AfterStepContext = {
       ...stepIdentity,
@@ -1716,6 +1718,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       signal,
       usage,
       finishReason,
+      modelResponseCompleted,
       stopTurn: false,
     };
     try {
@@ -2008,6 +2011,12 @@ function interruptedThinkingOnly(
 function hasAnswerOrToolCall(response: AgentLLMRequestFinish): boolean {
   return response.message.toolCalls.length > 0 || response.message.content.some((part) =>
     part.type !== 'think' && !isVacuousContentPart(part));
+}
+
+function hasCompletedModelResponse(response: AgentLLMRequestFinish, finishReason: FinishReason): boolean {
+  if (response.message.partial === true || finishReason === 'filtered') return false;
+  if (response.providerFinishReason !== 'completed' && response.providerFinishReason !== 'tool_calls') return false;
+  return hasAnswerOrToolCall(response);
 }
 
 function thinkingOnlyContinuationExhausted(response: AgentLLMRequestFinish): Error2 {

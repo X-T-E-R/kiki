@@ -43,6 +43,7 @@ export interface BeforeStepContext {
 export interface AfterStepContext extends BeforeStepContext {
   readonly usage: TokenUsage;
   readonly finishReason: FinishReason;
+  readonly modelResponseCompleted?: boolean;
   stopTurn: boolean;
 }
 

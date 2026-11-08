@@ -1,7 +1,7 @@
 import type { ErrorPayload } from '#/_base/errors/serialize';
 import { readProviderErrorIdentifier, sameRequestRetryProhibition } from '#/kosong/contract/errors';
 
-export const MAX_FAILURE_RECOVERIES_PER_TURN = 2;
+export const MAX_FAILURE_RECOVERIES_PER_STREAK = 1;
 
 export function failureHookInput(error: ErrorPayload): Record<string, unknown> {
   return {

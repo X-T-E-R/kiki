@@ -35,9 +35,9 @@ The plugin handles only `StopFailure` events with `recoverable: true` and `recov
 {"hookSpecificOutput":{"recovery":{"action":"continue","userMessage":"继续"}}}
 ```
 
-每轮最多接续一次，重复失败即停止；下一轮恢复预算重新开始。新增范围需要宿主提供 `model_alias`，并把网关流终止的同请求重发禁令与新消息接续分开判断；没有模型字段时不扩大旧行为。不从 profile 名或错误文字猜模型、错误码。原生模型请求是否已送达或执行不明，不是追加新消息的阻断条件。
+每个连续失败段最多接续一次，紧接着再次失败即停止；接续请求完成一次含有效正文或模型工具调用的完整模型响应后，宿主重置恢复预算，同一轮后续新的失败段可再次接续一次。新增范围需要宿主提供 `model_alias`，并把网关流终止的同请求重发禁令与新消息接续分开判断；没有模型字段时不扩大旧行为。不从 profile 名或错误文字猜模型、错误码。原生模型请求是否已送达或执行不明，不是追加新消息的阻断条件。
 
-Continuation is limited to once per turn; a repeated failure stops, and the next turn starts with a fresh budget. The new cases require a host-supplied `model_alias` and a host that distinguishes a gateway stream's same-request retry denial from new-message continuation. Without the model field, only the original behavior applies. The plugin does not infer a model or code from profile names or error text. Uncertain delivery or execution of a native model request does not block the new message.
+Continuation is limited to once per consecutive failure streak; an immediate repeat failure stops, and once the continuation completes a full model response with usable content or model tool calls, the host resets the recovery budget so a later failure streak in the same turn can continue once again. The new cases require a host-supplied `model_alias` and a host that distinguishes a gateway stream's same-request retry denial from new-message continuation. Without the model field, only the original behavior applies. The plugin does not infer a model or code from profile names or error text. Uncertain delivery or execution of a native model request does not block the new message.
 
 `thinking_only` 继续由原生机制处理。插件不匹配未分类的 `antigravity_empty_response`、`antigravity_stream_read_error`、`antigravity_max_tokens`，也不接管外部执行器的恢复。取消、认证、计费、配额、过滤、无效配置及普通 429 仍按宿主处理，不追加消息。
 

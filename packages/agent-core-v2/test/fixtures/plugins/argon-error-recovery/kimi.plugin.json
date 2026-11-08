@@ -1,12 +1,12 @@
 {
   "name": "argon-error-recovery",
-  "version": "0.2.0",
-  "description": "Unofficial, one-time continuation after an Argon stream interruption.",
+  "version": "0.2.1",
+  "description": "Unofficial, one-time continuation per failure streak after an Argon stream interruption.",
   "license": "MIT",
   "author": "Community",
   "interface": {
     "displayName": "Argon Error Recovery (Unofficial)",
-    "shortDescription": "Continue once after an Argon stream interruption."
+    "shortDescription": "Continue once per failure streak after an Argon stream interruption."
   },
   "hooks": [
     {
