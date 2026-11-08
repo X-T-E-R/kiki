@@ -2331,6 +2331,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
         deliveryMode: task.deliveryMode ?? 'idle',
         createdAt: task.createdAt,
         lastFiredAt: task.lastFiredAt,
+        trigger: task.trigger,
+        lastTriggerCheck: task.lastTriggerCheck,
         nextFireAt: nextFireAt[index] ?? null,
       })),
     };

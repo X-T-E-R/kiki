@@ -110,7 +110,8 @@ function createToolHarness(options: {
       return updated;
     },
     syncTaskFromStore: async () => {},
-    fireTaskNow: async (id) => tasks.has(id),
+    fireTaskNow: async (id) => tasks.has(id) ? { triggered: true } : undefined,
+    getScriptExecution: () => undefined,
     isStale(task) {
       const age = now - task.createdAt;
       return task.recurring !== false && Number.isFinite(age) && age >= 7 * MS_PER_DAY;

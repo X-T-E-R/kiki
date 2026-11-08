@@ -231,6 +231,34 @@ describe('AgentPermissionGate', () => {
     expect(decision).toBeUndefined();
   });
 
+  it('uses the existing cold approval for executions that require approval in Auto', async () => {
+    policyResult = { policyName: 'auto-mode-approve', result: { kind: 'approve' } };
+    make();
+    const context = makeContext('Cron');
+    const execution = { ...context.execution, requireApprovalInAuto: true };
+    await executorEvents.fireBeforeExecute({ ...context, execution });
+    expect(requestToolApproval).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ execution }), { kind: 'ask' }, 'fallback-ask',
+    );
+  });
+
+  it.each(['yolo-mode-approve', 'session-approval-history', 'user-configured-allow'])('preserves explicit authorization through %s', async (policyName) => {
+    policyResult = { policyName, result: { kind: 'approve' } };
+    make();
+    const context = makeContext('Cron');
+    await executorEvents.fireBeforeExecute({ ...context, execution: { ...context.execution, requireApprovalInAuto: true } });
+    expect(requestToolApproval).not.toHaveBeenCalled();
+  });
+
+  it('does not start an approval when a later guard vetoes the scheduled script', async () => {
+    policyResult = { policyName: 'auto-mode-approve', result: { kind: 'approve' } };
+    make();
+    executorEvents.executor.onBeforeExecuteTool((event) => event.veto({ isError: true, output: 'blocked' }));
+    const context = makeContext('Cron');
+    expect(await executorEvents.fireBeforeExecute({ ...context, execution: { ...context.execution, requireApprovalInAuto: true } })).toEqual({ veto: { isError: true, output: 'blocked' } });
+    expect(requestToolApproval).not.toHaveBeenCalled();
+  });
+
   it('data() reflects the mode and rules services', () => {
     mode = 'yolo';
     rules = [{ decision: 'allow', scope: 'user', pattern: 'Bash(*)' }];

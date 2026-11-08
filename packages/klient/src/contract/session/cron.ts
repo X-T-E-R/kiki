@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cronScriptExecutionSchema, cronTriggerCheckSchema, cronTriggerSchema } from '@kiki/protocol';
 
 import type { ServiceContract } from '../types.js';
 
@@ -11,6 +12,11 @@ export const cronTaskSchema = z.object({
   deliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   paused: z.boolean().optional(),
   lastFiredAt: z.number().optional(),
+  trigger: cronTriggerSchema.optional(),
+  approvedScript: cronScriptExecutionSchema.optional(),
+  scheduleCursorAt: z.number().optional(),
+  oneShotClaimed: z.boolean().optional(),
+  lastTriggerCheck: cronTriggerCheckSchema.optional(),
   tags: z.record(z.string(), z.string()).optional(),
 });
 

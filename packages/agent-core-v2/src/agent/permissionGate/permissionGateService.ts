@@ -37,19 +37,27 @@ export class AgentPermissionGate extends Service implements IAgentPermissionGate
     };
   }
 
+  private async evaluate(context: ResolvedToolExecutionHookContext) {
+    const evaluation = await this.policyService.evaluate(context);
+    if (context.execution.requireApprovalInAuto === true && evaluation?.policyName === 'auto-mode-approve') {
+      return { policyName: 'fallback-ask', result: { kind: 'ask' as const } };
+    }
+    return evaluation;
+  }
+
   private async adjudicate(event: BeforeToolExecuteEvent): Promise<void> {
-    const evaluation = await this.policyService.evaluate(event);
+    const evaluation = await this.evaluate(event);
     if (evaluation === undefined) return;
+    const { result, policyName } = evaluation;
     this.telemetry.track2('permission_policy_decision', {
       turn_id: event.turnId,
       tool_call_id: event.toolCall.id,
-      policy_name: evaluation.policyName,
+      policy_name: policyName,
       tool_name: event.toolCall.name,
       permission_mode: this.modeService.mode,
-      decision: evaluation.result.kind,
-      ...evaluation.result.reason,
+      decision: result.kind,
+      ...result.reason,
     });
-    const { result, policyName } = evaluation;
     if (result.kind === 'ask') {
       event.waitUntil(() => this.toolApproval.requestToolApproval(event, result, policyName));
       return;
@@ -67,7 +75,7 @@ export class AgentPermissionGate extends Service implements IAgentPermissionGate
   async authorize(
     context: ResolvedToolExecutionHookContext,
   ): Promise<BeforeExecuteDecision | undefined> {
-    const evaluation = await this.policyService.evaluate(context);
+    const evaluation = await this.evaluate(context);
     if (evaluation === undefined) return undefined;
     this.telemetry.track2('permission_policy_decision', {
       turn_id: context.turnId,

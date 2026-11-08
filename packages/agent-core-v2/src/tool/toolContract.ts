@@ -138,6 +138,7 @@ export interface RunnableToolExecution {
   readonly description?: string;
   readonly stopBatchAfterThis?: boolean | undefined;
   readonly approvalRule: string;
+  readonly requireApprovalInAuto?: boolean;
   readonly sessionApprovalRule?: string;
   readonly shellContext?: {
     readonly runtimeId: string;

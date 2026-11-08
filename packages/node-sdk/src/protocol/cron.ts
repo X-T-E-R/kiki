@@ -9,6 +9,8 @@ export interface CronTaskSnapshot {
   readonly deliveryMode?: import('@kiki/protocol').CronDeliveryMode;
   readonly createdAt: number;
   readonly lastFiredAt: number | undefined;
+  readonly trigger?: import('@kiki/protocol').CronTrigger;
+  readonly lastTriggerCheck?: import('@kiki/protocol').CronTriggerCheck;
   /** Post-jitter next fire (epoch ms), or null when no future fire exists. */
   readonly nextFireAt: number | null;
 }

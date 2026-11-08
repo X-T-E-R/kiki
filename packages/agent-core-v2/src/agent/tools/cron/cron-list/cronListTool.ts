@@ -83,9 +83,11 @@ export class CronListTool implements ICronListTool {
       `nextFireAt: ${nextFireAtIso}`,
       `recurring: ${String(recurring)}`,
       `deliveryMode: ${task.deliveryMode ?? 'idle'}`,
+      task.trigger === undefined ? undefined : `trigger: ${JSON.stringify(task.trigger)}`,
+      task.lastTriggerCheck === undefined ? undefined : `lastTriggerCheck: ${JSON.stringify(task.lastTriggerCheck)}`,
       `ageDays: ${ageDays.toFixed(2)}`,
       `stale: ${String(stale)}`,
-    ].join('\n');
+    ].filter((line) => line !== undefined).join('\n');
   }
 }
 

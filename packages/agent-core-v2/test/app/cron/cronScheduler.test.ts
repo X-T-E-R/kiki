@@ -19,6 +19,8 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { stubClientIdentity } from '../bootstrap/stubs';
+import { ILogService } from '#/_base/log/log';
+import { stubLog } from '../../_base/log/stubs';
 import { stubMemoryStartup } from '../memory/stubs';
 
 import { createServices } from '#/_base/di/test';
@@ -33,6 +35,7 @@ import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import type { CronTask } from '#/app/cron/cronTask';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWatch';
+import { IHostProcessService } from '#/os/interface/hostProcess';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 
 describe('CronSchedulerService wakeups', () => {
@@ -152,6 +155,8 @@ describe('print bootstrap scoped Cron scheduling', () => {
     const prepareMemory = vi.spyOn(memoryStartup, 'prepare');
     const { app, memoryReady } = bootstrap({ homeDir: home, osHomeDir: home, cwd: home, env: {}, interactive: false, clientIdentity: stubClientIdentity }, [
       [IConfigService, { ready: Promise.resolve(), get: () => cfg, onDidSectionChange: Event.None } as unknown as IConfigService],
+      [ILogService, stubLog()],
+      [IHostProcessService, { _serviceBrand: undefined, spawn: async () => { throw new Error('no script expected'); } }],
       [IMemoryAuthorityService, memoryStartup],
       [ISessionManager, manager],
       [IHostFsWatchService, { _serviceBrand: undefined, watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None, dispose: () => {} }) }],

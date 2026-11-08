@@ -1,3 +1,5 @@
+import { cronScriptExecutionSchema, cronTriggerCheckSchema, cronTriggerSchema } from '@kiki/protocol';
+
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
@@ -20,13 +22,15 @@ export function isValidCronTask(obj: unknown): obj is CronTask {
   if (typeof o['createdAt'] !== 'number') return false;
   if (o['recurring'] !== undefined && typeof o['recurring'] !== 'boolean') return false;
   if (o['paused'] !== undefined && typeof o['paused'] !== 'boolean') return false;
+  if (o['oneShotClaimed'] !== undefined && typeof o['oneShotClaimed'] !== 'boolean') return false;
   if (o['deliveryMode'] !== undefined && !['queue', 'steer', 'idle'].includes(o['deliveryMode'] as string)) return false;
-  if (
-    o['lastFiredAt'] !== undefined &&
-    (typeof o['lastFiredAt'] !== 'number' || !Number.isFinite(o['lastFiredAt']))
-  ) {
-    return false;
+  for (const key of ['lastFiredAt', 'scheduleCursorAt']) {
+    const value = o[key];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) return false;
   }
+  if (o['trigger'] !== undefined && !cronTriggerSchema.safeParse(o['trigger']).success) return false;
+  if (o['approvedScript'] !== undefined && !cronScriptExecutionSchema.safeParse(o['approvedScript']).success) return false;
+  if (o['lastTriggerCheck'] !== undefined && !cronTriggerCheckSchema.safeParse(o['lastTriggerCheck']).success) return false;
   if (o['tags'] !== undefined) {
     if (typeof o['tags'] !== 'object' || o['tags'] === null) return false;
     for (const v of Object.values(o['tags'] as Record<string, unknown>)) {

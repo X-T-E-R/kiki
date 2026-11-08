@@ -14,7 +14,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { type ClockSources, resolveClockSources, SYSTEM_CLOCKS } from './clock';
 import { type CronConfig, CRON_SECTION } from './configSection';
 import { computeNextCronRun, parseCronExpression } from './cron-expr';
-import { CRON_SESSION_TAG, type CronTask } from './cronTask';
+import { CRON_SESSION_TAG, cronScheduleBase, isConsumedOneShot, type CronTask } from './cronTask';
 import { ICronTaskPersistence } from './cronTaskPersistence';
 import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from './jitter';
 import { ICronScheduler } from './cronScheduler';
@@ -193,13 +193,13 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
         return;
       }
 
-      await this.sessions.withLifecycleSerialization(sessionId, async () => {
+      const pending = await this.sessions.withLifecycleSerialization(sessionId, async () => {
         const handle = this.sessions.get(sessionId);
-        if (handle === undefined) return;
+        if (handle === undefined) return undefined;
         const cron = handle.accessor.get(ISessionCronService);
-        await cron.tick();
-        await cron.flushPersist();
+        return { work: cron.tick().then(() => cron.flushPersist()) };
       });
+      await pending?.work;
     } finally {
       await lease?.dispose();
     }
@@ -210,16 +210,10 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   }
 
   private nextFireTime(task: CronTask, now: number, noJitter: boolean): number {
+    if (isConsumedOneShot(task)) return now;
     try {
       const parsed = parseCronExpression(task.cron);
-      const cursor =
-        task.lastFiredAt !== undefined &&
-        Number.isFinite(task.lastFiredAt) &&
-        task.lastFiredAt <= now
-          ? task.lastFiredAt
-          : undefined;
-      const base = cursor !== undefined && cursor > task.createdAt ? cursor : task.createdAt;
-      const ideal = computeNextCronRun(parsed, base);
+      const ideal = computeNextCronRun(parsed, cronScheduleBase(task, now));
       if (ideal === null) return Infinity;
       return task.recurring === false
         ? oneShotJitteredNextCronRunMs(task, ideal, undefined, noJitter)

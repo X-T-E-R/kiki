@@ -959,6 +959,7 @@ describe('HTTP REST domains', () => {
   it('reads full cron details and sends create/update bodies with separate source and target sessions', async () => {
     const calls: { path: string; method: string; body: unknown; session: string | null }[] = [];
     const task = { id: 'task/example', prompt: 'full prompt' };
+    const execution = { command: 'node', args: ['check.mjs'], cwd: 'C:/work', timeout: 10, environment: 'isolated' as const };
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body), session: url.searchParams.get('session_id') });
@@ -968,12 +969,18 @@ describe('HTTP REST domains', () => {
     const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
     try {
       expect((await channel.rest.cron.get('task/example', { session_id: 'source' })).task.prompt).toBe('full prompt');
-      await channel.rest.cron.create({ session_id: 'target', cron: '0 * * * *', prompt: 'new' });
-      await channel.rest.cron.update('task/example', { session_id: 'target', prompt: 'edit' }, { session_id: 'source' });
+      await channel.rest.cron.create({
+        session_id: 'target', cron: '0 * * * *', prompt: 'new',
+        trigger: { probability: 0.5, script: 'safe-check' }, script_confirmation: execution,
+      });
+      await channel.rest.cron.update('task/example', { session_id: 'target', prompt: 'edit', trigger: null }, { session_id: 'source' });
       expect(calls).toEqual([
         { path: '/api/cron/task%2Fexample', method: 'GET', body: undefined, session: 'source' },
-        { path: '/api/cron', method: 'POST', body: { session_id: 'target', cron: '0 * * * *', prompt: 'new' }, session: null },
-        { path: '/api/cron/task%2Fexample', method: 'PATCH', body: { session_id: 'target', prompt: 'edit' }, session: 'source' },
+        { path: '/api/cron', method: 'POST', body: {
+          session_id: 'target', cron: '0 * * * *', prompt: 'new',
+          trigger: { probability: 0.5, script: 'safe-check' }, script_confirmation: execution,
+        }, session: null },
+        { path: '/api/cron/task%2Fexample', method: 'PATCH', body: { session_id: 'target', prompt: 'edit', trigger: null }, session: 'source' },
       ]);
     } finally { await channel.close(); }
   });
@@ -982,6 +989,11 @@ describe('HTTP REST domains', () => {
     const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
+      if (url.pathname === '/api/cron/scripts') {
+        expect(url.searchParams.get('session_id')).toBe('session-1');
+        expect(url.searchParams.get('script')).toBe('safe-check');
+        return envelope({ execution: { command: 'node', args: ['check.mjs'], cwd: 'C:/work', timeout: 10, environment: 'isolated' } });
+      }
       seen.push({
         pathname: url.pathname,
         method: init?.method ?? 'GET',
@@ -991,16 +1003,22 @@ describe('HTTP REST domains', () => {
       if (url.pathname.endsWith(':pause') || url.pathname.endsWith(':resume')) {
         return envelope({ task: { id: 'task-1' } });
       }
-      if (url.pathname.endsWith(':run')) return envelope({ triggered: true });
+      if (url.pathname.endsWith(':run')) return envelope({ triggered: false, check: { checkedAt: 1, outcome: 'skipped', reason: 'probability' } });
       return envelope({ deleted: true });
     });
     const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
     try {
       await expect(channel.rest.cron.list()).resolves.toEqual({ items: [] });
       await expect(channel.rest.cron.list({ session_id: 'session-1' })).resolves.toEqual({ items: [] });
+      await expect(channel.rest.cron.script('session-1', 'safe-check')).resolves.toEqual({
+        execution: { command: 'node', args: ['check.mjs'], cwd: 'C:/work', timeout: 10, environment: 'isolated' },
+      });
       await channel.rest.cron.pause('task-1', { session_id: 'session-1' });
       await channel.rest.cron.resume('task-1');
-      await channel.rest.cron.run('task-1', { session_id: 'session-1' });
+      await expect(channel.rest.cron.run('task-1', { session_id: 'session-1' })).resolves.toEqual({
+        triggered: false,
+        check: { checkedAt: 1, outcome: 'skipped', reason: 'probability' },
+      });
       await channel.rest.cron.remove('task-1', { session_id: 'session-1' });
       expect(seen).toEqual([
         { pathname: '/api/cron', method: 'GET', sessionId: null },

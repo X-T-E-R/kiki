@@ -1,8 +1,10 @@
+import type { CronRunResult, CronScriptExecution } from '@kiki/protocol';
 import type { ContentPart } from '#/kosong/contract/message';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import type { Turn } from '#/agent/loop/loop';
-import type { CronTask, CronTaskInit } from '#/app/cron/cronTask';
+
+import type { CronTask, CronTaskInit, CronTaskPatch } from '#/app/cron/cronTask';
 import type { ParsedCronExpression } from '#/app/cron/cron-expr';
 
 export interface CronLoadOptions {
@@ -17,9 +19,10 @@ export interface ISessionCronService {
   addTask(init: CronTaskInit): Promise<CronTask>;
   removeTasks(ids: readonly string[]): Promise<readonly string[]>;
   setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined>;
-  updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags' | 'deliveryMode'>>): Promise<CronTask | undefined>;
+  updateTask(id: string, patch: CronTaskPatch): Promise<CronTask | undefined>;
   syncTaskFromStore(id: string): Promise<void>;
-  fireTaskNow(id: string): Promise<boolean>;
+  fireTaskNow(id: string): Promise<CronRunResult | undefined>;
+  getScriptExecution(id: string): CronScriptExecution | undefined;
   getTask(id: string): CronTask | undefined;
   list(): readonly CronTask[];
   now(): number;
