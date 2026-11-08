@@ -1,0 +1,511 @@
+diff --git a/src/session/contract.ts b/src/session/contract.ts
+index 14719f787..2af1ed801 100644
+--- a/src/session/contract.ts
++++ b/src/session/contract.ts
+@@ -165,0 +166 @@ export interface FeishuHandlers {
++  onBotIdentity?(botOpenId: string): void;
+@@ -169 +170 @@ export interface FeishuConnection {
+-    { ok: true } | { ok: false; reason: 'auth' | 'conflict' | 'transport' }>;
++    { ok: true; bot_open_id?: string } | { ok: false; reason: 'auth' | 'conflict' | 'transport' }>;
+diff --git a/src/session/feishu-sdk.ts b/src/session/feishu-sdk.ts
+index 1557eef1e..14dbc6b13 100644
+--- a/src/session/feishu-sdk.ts
++++ b/src/session/feishu-sdk.ts
+@@ -79,0 +80,31 @@ async function readBounded(stream: Readable, signal: AbortSignal): Promise<Feish
++const BOT_INFO_TIMEOUT_MS = 2_000;
++
++async function fetchBotOpenId(client: lark.Client, signal: AbortSignal): Promise<string | undefined> {
++  if (signal.aborted) return undefined;
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let onAbort: (() => void) | undefined;
++  try {
++    const response = await Promise.race([
++      client.request({ method: 'GET', url: '/open-apis/bot/v3/info', timeout: BOT_INFO_TIMEOUT_MS } as Parameters<lark.Client['request']>[0]),
++      new Promise<undefined>((resolve) => {
++        onAbort = () => resolve(undefined);
++        signal.addEventListener('abort', onAbort, { once: true });
++        timer = setTimeout(() => resolve(undefined), BOT_INFO_TIMEOUT_MS);
++      }),
++    ]) as {
++      code?: unknown;
++      bot?: { open_id?: unknown };
++      data?: { bot?: { open_id?: unknown } };
++    } | undefined;
++    if (signal.aborted || !response || (response.code !== undefined && response.code !== 0)) return undefined;
++    const openId = typeof response.bot?.open_id === 'string' ? response.bot.open_id :
++      typeof response.data?.bot?.open_id === 'string' ? response.data.bot.open_id : '';
++    return openId.length > 0 ? openId : undefined;
++  } catch {
++    return undefined;
++  } finally {
++    if (timer !== undefined) clearTimeout(timer);
++    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
++  }
++}
++
+@@ -81,0 +113,2 @@ export function createFeishuSdkConnection(input: { appId: string; appSecret: str
++  const silent = (): void => undefined;
++  const silentLogger: lark.Logger = { error: silent, warn: silent, info: silent, debug: silent, trace: silent };
+@@ -86,0 +120,4 @@ export function createFeishuSdkConnection(input: { appId: string; appSecret: str
++  const botInfoClient = new lark.Client({
++    appId: input.appId, appSecret: input.appSecret, appType: lark.AppType.SelfBuild,
++    domain: lark.Domain.Feishu, loggerLevel: lark.LoggerLevel.error, logger: silentLogger,
++  });
+@@ -93 +130 @@ export function createFeishuSdkConnection(input: { appId: string; appSecret: str
+-        const finish = (result: { ok: true } | { ok: false; reason: 'auth' | 'conflict' | 'transport' }): void => {
++        const finish = (result: { ok: true; bot_open_id?: string } | { ok: false; reason: 'auth' | 'conflict' | 'transport' }): void => {
+@@ -106 +143,6 @@ export function createFeishuSdkConnection(input: { appId: string; appSecret: str
+-          onReady: () => finish({ ok: true }),
++          onReady: () => {
++            finish({ ok: true });
++            void fetchBotOpenId(botInfoClient, signal).then((botOpenId) => {
++              if (botOpenId && !signal.aborted) handlers.onBotIdentity?.(botOpenId);
++            });
++          },
+@@ -130,0 +173,9 @@ export function createFeishuSdkConnection(input: { appId: string; appSecret: str
++function errorResponse(error: unknown): FeishuResponse {
++  if (!error || typeof error !== 'object') return { ok: false };
++  const record = error as { code?: unknown; response?: { status?: unknown; data?: { code?: unknown } } };
++  const status = typeof record.response?.status === 'number' &&
++    record.response.status >= 100 && record.response.status <= 599 ? record.response.status : undefined;
++  const code = typeof record.response?.data?.code === 'number' ? record.response.data.code :
++    typeof record.code === 'number' ? record.code : undefined;
++  return { ok: false, ...(status !== undefined ? { http_status: status } : {}), ...(code !== undefined ? { code } : {}) };
++}
+@@ -183 +234 @@ async function dispatch(client: lark.Client, request: FeishuRequest, signal: Abo
+-    return { ok: false };
++    return errorResponse(error);
+diff --git a/src/session/feishu.ts b/src/session/feishu.ts
+index 27282e365..0120267c4 100644
+--- a/src/session/feishu.ts
++++ b/src/session/feishu.ts
+@@ -68 +68,49 @@ function fileTypeOf(filename: string): string {
+-  return ext === 'pdf' || ext === 'doc' || ext === 'xls' || ext === 'mp4' ? ext : 'stream';
++  return ext === 'pdf' || ext === 'doc' || ext === 'xls' ? ext : 'stream';
++}
++function feishuTimestamp(value: unknown): number | undefined {
++  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value < 1e11 ? value * 1000 : value;
++  if (typeof value === 'string' && /^\d{10,16}$/u.test(value)) {
++    const parsed = Number(value);
++    if (Number.isFinite(parsed) && parsed > 0) return parsed < 1e11 ? parsed * 1000 : parsed;
++  }
++  return undefined;
++}
++function feishuMentions(value: unknown, botOpenId: string | undefined): { mentioned?: true; mentionIds?: string[] } {
++  if (!Array.isArray(value) || value.length === 0) return {};
++  const ids: string[] = [];
++  let mentioned = false;
++  for (const item of value) {
++    const entry = record(item);
++    const id = record(entry?.id);
++    const openId = typeof id?.open_id === 'string' && safeId(id.open_id) ? id.open_id : undefined;
++    const userId = typeof id?.user_id === 'string' && safeId(id.user_id) ? id.user_id : undefined;
++    const rawId = typeof entry?.id === 'string' && safeId(entry.id) ? entry.id : undefined;
++    const candidate = openId ?? userId ?? rawId ?? '';
++    if (candidate && !ids.includes(candidate)) ids.push(candidate);
++    if (botOpenId && (openId === botOpenId || userId === botOpenId || rawId === botOpenId)) {
++      mentioned = true;
++    }
++  }
++  return {
++    ...(mentioned ? { mentioned: true } : {}),
++    ...(ids.length > 0 ? { mentionIds: ids } : {}),
++  };
++}
++function attachMessageMetadata(
++  inbound: SessionInbound,
++  message: Record<string, unknown>,
++  botOpenId: string | undefined,
++): SessionInbound {
++  const sourceMessageId = typeof message.message_id === 'string' && safeId(message.message_id) ? message.message_id : undefined;
++  const replyToMessageId = typeof message.parent_id === 'string' && safeId(message.parent_id) ? message.parent_id :
++    typeof message.root_id === 'string' && safeId(message.root_id) ? message.root_id : undefined;
++  const timestamp = feishuTimestamp(message.create_time);
++  const { mentioned, mentionIds } = feishuMentions(message.mentions, botOpenId);
++  return {
++    ...inbound,
++    ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
++    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
++    ...(timestamp !== undefined ? { timestamp } : {}),
++    ...(mentioned ? { mentioned: true } : {}),
++    ...(mentionIds ? { mention_ids: mentionIds } : {}),
++  };
+@@ -81,0 +130 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
++  let botOpenId: string | undefined;
+@@ -125,0 +175,3 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
++          onBotIdentity: (nextId) => {
++            if (typeof nextId === 'string' && safeId(nextId)) botOpenId = nextId;
++          },
+@@ -131,0 +184,3 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
++          if (typeof opened.bot_open_id === 'string' && safeId(opened.bot_open_id)) {
++            botOpenId = opened.bot_open_id;
++          }
+@@ -169 +224 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    } else if (messageType === 'image' || messageType === 'audio' || messageType === 'file') {
++    } else if (messageType === 'image' || messageType === 'audio' || messageType === 'file' || messageType === 'media') {
+@@ -173,0 +229,4 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
++    inbound = attachMessageMetadata(inbound, message, botOpenId);
++    if (botOpenId && identity.sender_id === botOpenId) {
++      inbound = { ...inbound, is_self: true };
++    }
+@@ -243,2 +302,5 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    const kind = messageType === 'image' ? 'image' as const : messageType === 'audio' ? 'voice' as const : 'file' as const;
+-    const resourceKey = typeof content?.image_key === 'string' ? content.image_key :
++    const kind = messageType === 'image' ? 'image' as const :
++      messageType === 'audio' ? 'voice' as const :
++      messageType === 'media' ? 'video' as const : 'file' as const;
++    const resourceKey = typeof content?.file_key === 'string' && messageType !== 'image' ? content.file_key :
++      typeof content?.image_key === 'string' ? content.image_key :
+@@ -270,2 +332,3 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-      kind === 'image' ? 'image' : 'file';
+-    const mime = kind === 'voice' ? 'audio/opus' : kind === 'image' ? 'image/jpeg' : 'application/octet-stream';
++      kind === 'image' ? 'image' : kind === 'video' ? 'video.mp4' : 'file';
++    const mime = kind === 'voice' ? 'audio/opus' : kind === 'image' ? 'image/jpeg' :
++      kind === 'video' ? 'video/mp4' : 'application/octet-stream';
+@@ -328 +391 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    if (media.kind === 'audio' || media.kind === 'video') return failed('unsupported', 'feishu_unsupported_media_kind');
++    if (media.kind === 'audio') return failed('unsupported', 'feishu_unsupported_media_kind');
+@@ -332,0 +396,15 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
++    if (media.kind === 'video') {
++      const base = mimeBase(media.mime);
++      const ext = media.filename.toLowerCase().split('.').pop() ?? '';
++      if (base !== 'video/mp4' && (base !== 'application/octet-stream' || ext !== 'mp4')) {
++        return failed('bad_format', 'feishu_video_container');
++      }
++      if (media.bytes.byteLength > FEISHU_FILE_BYTES) return failed('too_long', 'feishu_file_too_large');
++      const fileName = media.filename && media.filename.toLowerCase().endsWith('.mp4') ?
++        media.filename : `${media.filename || 'video'}.mp4`;
++      const uploaded = await connection.send({ op: 'upload_file', file_type: 'mp4', file_name: fileName,
++        mime: media.mime, bytes: media.bytes }, signal);
++      if (!uploaded.ok || !uploaded.key) return fromResponse(uploaded);
++      return fromResponse(await connection.send({ ...destination(message.target),
++        msg_type: 'media', content: JSON.stringify({ file_key: uploaded.key }) }, signal));
++    }
+diff --git a/test/session-extended-media.test.ts b/test/session-extended-media.test.ts
+index 0ea8d462f..3530a21ad 100644
+--- a/test/session-extended-media.test.ts
++++ b/test/session-extended-media.test.ts
+@@ -16 +16,2 @@ test('new audio/video kinds do not silently fall through old adapters as image/f
+-    for (const kind of ['audio', 'video'] as const) {
++    const unsupportedKinds = spec.platform === 'feishu_app' ? (['audio'] as const) : (['audio', 'video'] as const);
++    for (const kind of unsupportedKinds) {
+diff --git a/test/session-feishu.test.ts b/test/session-feishu.test.ts
+index dcef1019f..7343fe0f2 100644
+--- a/test/session-feishu.test.ts
++++ b/test/session-feishu.test.ts
+@@ -296,0 +297,315 @@ test('Feishu SDK emits reply endpoint and thread flag, while ordinary sends keep
++
++test('Feishu separates mp4 file attachments (stream + file) from native video sends (mp4 + media) and preserves rejected/unknown outcomes', async () => {
++  const http = lark.defaultHttpInstance;
++  const originalRequest = http.request;
++  const originalPost = http.post;
++  const requests: { url?: string; data?: Record<string, unknown> }[] = [];
++  let mode: 'ok' | 'rejected_upload' | 'unknown_send' = 'ok';
++  let fileIndex = 0;
++  http.post = (() => Promise.resolve({ code: 0, tenant_access_token: 'offline-token', expire: 7200 })) as typeof http.post;
++  http.request = ((request: { url?: string; data?: Record<string, unknown> }) => {
++    requests.push(request);
++    if (String(request?.url ?? '').endsWith('/im/v1/files')) {
++      if (mode === 'rejected_upload') {
++        return Promise.reject(Object.assign(new Error('Request failed with status code 400'), {
++          response: { status: 400, data: { code: 234001 } },
++        }));
++      }
++      fileIndex += 1;
++      return Promise.resolve({ data: { file_key: `file_v_${fileIndex}` } });
++    }
++    if (mode === 'unknown_send') {
++      return Promise.reject(new Error('socket hang up'));
++    }
++    return Promise.resolve({ code: 0, data: { message_id: `om_vid_${fileIndex}` } });
++  }) as typeof http.request;
++
++  const sdk = createFeishuSdkConnection({ appId: 'cli_0011223344556677', appSecret: 'offline-secret' });
++  const inbound: SessionInbound[] = [];
++  let handlers: FeishuHandlers | undefined;
++  const adapter = createFeishuSessionAdapter({
++    platform: 'feishu_app',
++    instance_id: 'fs.video-outbound',
++    app_id: 'cli_0011223344556677',
++    app_secret: 'offline-secret',
++    connection: {
++      async open(next) {
++        handlers = next;
++        return { ok: true, bot_open_id: 'ou_bot' };
++      },
++      send: (request, signal) => sdk.send(request, signal),
++    },
++    retry_ms: 0,
++  }, memory());
++
++  await adapter.start({ async admit(event) { inbound.push(event); return { decision: 'accepted' }; } });
++  try {
++    await handlers?.onMessage({
++      event_id: 'e-group-mention-self',
++      app_id: 'cli_0011223344556677',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_group_1',
++        parent_id: 'om_root_0',
++        create_time: '1762680000000',
++        chat_id: 'oc_group',
++        chat_type: 'group',
++        message_type: 'text',
++        content: JSON.stringify({ text: '@_user_1 @_user_2 check clip' }),
++        mentions: [
++          { key: '@_user_1', id: { open_id: 'ou_other' }, name: 'Other' },
++          { key: '@_user_2', id: { open_id: 'ou_bot' }, name: 'Bot' },
++        ],
++      },
++    });
++    await handlers?.onMessage({
++      event_id: 'e-group-mention-other',
++      app_id: 'cli_0011223344556677',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_group_2',
++        chat_id: 'oc_group',
++        chat_type: 'group',
++        message_type: 'text',
++        content: JSON.stringify({ text: '@_user_1 only for other member' }),
++        mentions: [
++          { key: '@_user_1', id: { open_id: 'ou_other' }, name: 'Other' },
++          { key: '@_user_2', name: 'PlaceholderWithoutId' },
++        ],
++      },
++    });
++    assert.equal(inbound[0]?.source_message_id, 'om_group_1');
++    assert.equal(inbound[0]?.reply_to_message_id, 'om_root_0');
++    assert.equal(inbound[0]?.mentioned, true);
++    assert.deepEqual(inbound[0]?.mention_ids, ['ou_other', 'ou_bot']);
++    assert.equal(inbound[0]?.timestamp, 1762680000000);
++    assert.equal(inbound[1]?.source_message_id, 'om_group_2');
++    assert.equal(inbound[1]?.mentioned, undefined);
++    assert.deepEqual(inbound[1]?.mention_ids, ['ou_other']);
++
++    const unknownBotInbound: SessionInbound[] = [];
++    let unknownBotHandlers: FeishuHandlers | undefined;
++    const unknownBotAdapter = createFeishuSessionAdapter({
++      platform: 'feishu_app',
++      instance_id: 'fs.unknown-bot-identity',
++      app_id: 'cli_0011223344556678',
++      app_secret: 'offline-secret',
++      connection: {
++        async open(next) {
++          unknownBotHandlers = next;
++          return { ok: true };
++        },
++        send: (request, signal) => sdk.send(request, signal),
++      },
++      retry_ms: 0,
++    }, memory());
++    await unknownBotAdapter.start({ async admit(event) { unknownBotInbound.push(event); return { decision: 'accepted' }; } });
++    try {
++      await unknownBotHandlers?.onMessage({
++        event_id: 'e-unknown-bot',
++        app_id: 'cli_0011223344556678',
++        sender: { sender_id: { open_id: 'ou_alice' } },
++        message: {
++          message_id: 'om_unknown_1',
++          chat_id: 'oc_group',
++          chat_type: 'group',
++          message_type: 'text',
++          content: JSON.stringify({ text: '@_user_1 hello' }),
++          mentions: [{ key: '@_user_1', id: { open_id: 'ou_someone' }, name: 'Someone' }],
++        },
++      });
++      assert.equal(unknownBotInbound[0]?.mentioned, undefined);
++      assert.deepEqual(unknownBotInbound[0]?.mention_ids, ['ou_someone']);
++    } finally {
++      await unknownBotAdapter.stop();
++    }
++
++    const fileMp4 = await adapter.send({
++      type: 'media',
++      target: { chat_id: 'oc_group' },
++      media: { kind: 'file', filename: 'archive.mp4', mime: 'video/mp4', bytes: Uint8Array.from([1, 2, 3]) },
++    });
++    assert.equal(fileMp4.status, 'accepted');
++    assert.equal(requests[0]?.data?.file_type, 'stream');
++    assert.equal(requests[0]?.data?.file_name, 'archive.mp4');
++    assert.deepEqual(requests[1]?.data, {
++      receive_id: 'oc_group',
++      msg_type: 'file',
++      content: JSON.stringify({ file_key: 'file_v_1' }),
++    });
++
++    const nativeVideo = await adapter.send({
++      type: 'media',
++      target: { chat_id: 'oc_group' },
++      media: { kind: 'video', filename: 'demo.mp4', mime: 'video/mp4', bytes: Uint8Array.from([4, 5, 6]) },
++    });
++    assert.equal(nativeVideo.status, 'accepted');
++    assert.equal(requests[2]?.data?.file_type, 'mp4');
++    assert.equal(requests[2]?.data?.file_name, 'demo.mp4');
++    assert.deepEqual(requests[3]?.data, {
++      receive_id: 'oc_group',
++      msg_type: 'media',
++      content: JSON.stringify({ file_key: 'file_v_2' }),
++    });
++
++    const badVideo = await adapter.send({
++      type: 'media',
++      target: { chat_id: 'oc_group' },
++      media: { kind: 'video', filename: 'demo.webm', mime: 'video/webm', bytes: Uint8Array.from([7]) },
++    });
++    assert.equal(badVideo.status, 'failed');
++    assert.equal(badVideo.error_kind, 'bad_format');
++    assert.equal(badVideo.diagnostic_code, 'feishu_video_container');
++    assert.equal(requests.length, 4);
++
++    mode = 'rejected_upload';
++    const rejected = await adapter.send({
++      type: 'media',
++      target: { chat_id: 'oc_group' },
++      media: { kind: 'video', filename: 'reject.mp4', mime: 'video/mp4', bytes: Uint8Array.from([8]) },
++    });
++    assert.equal(rejected.status, 'failed');
++    assert.equal(rejected.error_kind, 'bad_format');
++    assert.equal(rejected.diagnostic_code, 'feishu_bad_request');
++    assert.equal(requests.length, 5);
++
++    mode = 'unknown_send';
++    const unknown = await adapter.send({
++      type: 'media',
++      target: { chat_id: 'oc_group' },
++      media: { kind: 'video', filename: 'uncertain.mp4', mime: 'video/mp4', bytes: Uint8Array.from([9]) },
++    });
++    assert.equal(unknown.status, 'unknown');
++    assert.equal(unknown.diagnostic_code, 'feishu_rejected');
++    assert.equal(requests.length, 7);
++  } finally {
++    await adapter.stop();
++    http.request = originalRequest;
++    http.post = originalPost;
++  }
++});
++
++test('Feishu SDK publishes ready and receives messages even when /bot/v3/info hangs or rejects, then applies late bot identity', async () => {
++  const appId = 'cli_0011223344556699';
++  const secret = 'offline-secret';
++  const http = lark.defaultHttpInstance;
++  const originalRequest = http.request;
++  const originalPost = http.post;
++  const originalWsStart = lark.WSClient.prototype.start;
++  const originalWsClose = lark.WSClient.prototype.close;
++
++  let botInfoMode: 'hang' | 'reject' | 'resolve_late' = 'hang';
++  let releaseBotInfo: ((value: unknown) => void) | undefined;
++  let capturedDispatcher: lark.EventDispatcher | undefined;
++
++  http.post = (() => Promise.resolve({ code: 0, tenant_access_token: 'offline-token', expire: 7200 })) as typeof http.post;
++  http.request = ((request: { url?: string }) => {
++    const url = String(request?.url ?? '');
++    if (url.includes('/bot/v3/info')) {
++      if (botInfoMode === 'reject') {
++        return Promise.reject(Object.assign(new Error('bot info forbidden'), { response: { status: 403 } }));
++      }
++      if (botInfoMode === 'resolve_late') {
++        return new Promise((resolve) => { releaseBotInfo = resolve; });
++      }
++      return new Promise(() => undefined);
++    }
++    return Promise.resolve({ code: 0, data: { message_id: 'om_sdk_1' } });
++  }) as typeof http.request;
++
++  lark.WSClient.prototype.start = async function (this: { onReady?: () => void }, params: { eventDispatcher: lark.EventDispatcher }) {
++    capturedDispatcher = params.eventDispatcher;
++    this.onReady?.();
++  };
++  lark.WSClient.prototype.close = function () {};
++
++  try {
++    for (const [index, mode] of (['hang', 'reject'] as const).entries()) {
++      botInfoMode = mode;
++      const modeAppId = `cli_001122334455660${index}`;
++      const sdk = createFeishuSdkConnection({ appId: modeAppId, appSecret: secret });
++      const admitted: SessionInbound[] = [];
++      const adapter = createFeishuSessionAdapter({
++        platform: 'feishu_app',
++        instance_id: `fs.sdk-ready-${index}`,
++        app_id: modeAppId,
++        app_secret: secret,
++        connection: sdk,
++        retry_ms: 0,
++      }, memory());
++
++      await Promise.race([
++        adapter.start({ async admit(event) { admitted.push(event); return { decision: 'accepted' }; } }),
++        new Promise((_, reject) => setTimeout(() => reject(new Error(`start_hung_${mode}`)), 300)),
++      ]);
++      assert.equal(adapter.state, 'running');
++
++      await capturedDispatcher?.invoke({
++        schema: '2.0',
++        header: { event_id: `ev-${mode}-1`, event_type: 'im.message.receive_v1', app_id: modeAppId },
++        event: {
++          sender: { sender_id: { open_id: 'ou_member' } },
++          message: {
++            message_id: `om_${mode}_1`,
++            chat_id: 'oc_room',
++            chat_type: 'group',
++            message_type: 'text',
++            content: JSON.stringify({ text: '@_user_1 hello while bot info unavailable' }),
++            mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_real' }, name: 'Bot' }],
++          },
++        },
++      }, { needCheck: false });
++
++      assert.equal(admitted.length, 1);
++      assert.equal(admitted[0]?.mentioned, undefined);
++      assert.deepEqual(admitted[0]?.mention_ids, ['ou_bot_real']);
++      await adapter.stop();
++    }
++
++    botInfoMode = 'resolve_late';
++    const sdk = createFeishuSdkConnection({ appId, appSecret: secret });
++    const admitted: SessionInbound[] = [];
++    const adapter = createFeishuSessionAdapter({
++      platform: 'feishu_app',
++      instance_id: 'fs.sdk-ready-late',
++      app_id: appId,
++      app_secret: secret,
++      connection: sdk,
++      retry_ms: 0,
++    }, memory());
++
++    await adapter.start({ async admit(event) { admitted.push(event); return { decision: 'accepted' }; } });
++    assert.equal(adapter.state, 'running');
++    for (let i = 0; i < 20 && !releaseBotInfo; i += 1) {
++      await new Promise((resolve) => setTimeout(resolve, 5));
++    }
++    releaseBotInfo?.({ code: 0, bot: { open_id: 'ou_bot_real' } });
++    await new Promise((resolve) => setTimeout(resolve, 20));
++
++    await capturedDispatcher?.invoke({
++      schema: '2.0',
++      header: { event_id: 'ev-late-2', event_type: 'im.message.receive_v1', app_id: appId },
++      event: {
++        sender: { sender_id: { open_id: 'ou_member' } },
++        message: {
++          message_id: 'om_late_2',
++          chat_id: 'oc_room',
++          chat_type: 'group',
++          message_type: 'text',
++          content: JSON.stringify({ text: '@_user_1 now bot identity is known' }),
++          mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_real' }, name: 'Bot' }],
++        },
++      },
++    }, { needCheck: false });
++
++    assert.equal(admitted.length, 1);
++    assert.equal(admitted[0]?.mentioned, true);
++    assert.deepEqual(admitted[0]?.mention_ids, ['ou_bot_real']);
++    await adapter.stop();
++  } finally {
++    http.request = originalRequest;
++    http.post = originalPost;
++    lark.WSClient.prototype.start = originalWsStart;
++    lark.WSClient.prototype.close = originalWsClose;
++  }
++});

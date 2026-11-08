@@ -2215,7 +2215,7 @@ packages:
     resolution: {integrity: sha512-KggLoj2MnRSfIqTeKe1EmbljTX2vuV7mh79k89PCL1pyqiDULcPM1L47twxXt0hkb68F70bXiL31MxsuoZtKFw==}
 
   '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
-    resolution: {integrity: sha512-A+a7onUHL2xLN9bj8oIpvl/6a6XT2N6XpwrvlJRBlCraOgwgZNbFveCKBh6bDcoHUA6TAiYfZL1wLRgEnYuxAA==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
+    resolution: {integrity: sha512-GtS7zMShlJlij/C92ht2k4ipqWMvNMAd1Mnz201FPiDZ89UA7wgzVjOTDq/ELnuYJs/fJAuF4bC8J6rwFv6pww==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
     version: 0.1.0
 
   '@larksuiteoapi/node-sdk@1.76.0':
@@ -2581,7 +2581,7 @@ packages:
         optional: true
 
   '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
-    resolution: {integrity: sha512-8pkqJ+2bK/qgn0m4CnNOnqMGmVESpju1QaaURi/Fw/LJRSScj0h/aR2jIGZZALzNqWcMy75+0TBmmFsXn8PM+A==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
+    resolution: {integrity: sha512-06zswaoTTX2Tzctv/IdxZhB61n/DisPkWqyByvLOwWAxl04lPCMXuIeCwAu7CjfwjwXHZO10WSmyJ6+1Seh3bw==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
     version: 0.3.0
     engines: {node: '>=24.15.0'}
 

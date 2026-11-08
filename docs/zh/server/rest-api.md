@@ -952,11 +952,11 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时，须带 `rebind: true`；被拒绝或保存失败后，原绑定和待处理回复保持不变。显式打开连接不支持的方向返回 `40001` / `input_unsupported` 或 `output_unsupported`。这些错误在 HTTP 200 的 envelope 内；身份冲突使用业务码 `40949`。话题或群级绑定让成员共用会话，但保留真实发送者 ID，也不允许成员处理别人的待办交互。
 
-新建的话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。
+REST 省略 `group_policy` 时，新建的话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`；GUI 选择「只响应 @」时发送 `wake: "mention"`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention" | "mention_or_reply" | "senders" | "manual", prefixes?: string[], senders?: string[] }`：`always` 对有效发送方逐条唤醒；`mention` 在真实 @ 或命中配置的字面前缀时唤醒（不因单纯回复而唤醒）；`mention_or_reply` 额外支持在回复已知自身消息时唤醒；`senders` 仅当 `sender_id` 在 `senders` 列表中时唤醒（陌生或缺失／`"0"` 发送方不触发，也不能通过 @ 或前缀绕过）；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。
 
-@ 和回复识别依赖适配器提供真实元数据。内置 Telegram 提供真实消息 ID、时间戳、发送者和群名称、基于实体的 @ 与回复 ID；update ID 单独用于事件去重。未提供这些字段的其他传输可使用前缀或 `always`。
+@ 和回复识别依赖适配器提供真实元数据。内置 Telegram 与飞书提供真实消息 ID、时间戳、@ 提及与回复 ID；update ID 单独用于事件去重。未提供这些字段的其他传输可使用前缀、`senders` 或 `always`。
 
-在「通知与消息」中选择群绑定的作用域和唤醒方式；REST 客户端可通过确认接口或 `PATCH /api/im/sessions/bindings/{id}` 修改。传输未提供 @／回复元数据时，可设置 `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` 使用前缀，或设置 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
+在「通知与消息」中选择群绑定的作用域和唤醒方式；REST 客户端可通过确认接口或 `PATCH /api/im/sessions/bindings/{id}` 修改。传输未提供 @／回复元数据时，可设置 `{ "group_policy": { "wake": "mention", "prefixes": ["Kiki:"] } }` 使用前缀，设置 `{ "group_policy": { "wake": "senders", "senders": ["123456"] } }` 指定允许触发的成员 ID，或设置 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
 
 已启用的群入站绑定按账号、群和话题保留有界持久时间线。静默消息不启动模型轮次。触发时，提示词会附带近期尚未消费的背景和最多四层引用祖先，并标记为不可信外部数据；提交获准后只推进本次捕获的背景水位，不删除时间线，也不丢失处理期间的新到消息。主 Agent 可用 [ReadMessageHistory](../reference/tools.md#im-聊天历史) 主动搜索本地记录，或显式读取可选的平台历史。关闭输入后，该绑定停止收集，也不再允许读取。
 

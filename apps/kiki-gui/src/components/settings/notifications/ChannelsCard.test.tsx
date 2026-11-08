@@ -1005,13 +1005,13 @@ describe('ChannelsCard two-way accounts', () => {
     expect(row.querySelector('[data-im-group-options]')).not.toBeNull();
     expect(row.querySelector('[data-im-discovery-scope="sender"]')?.getAttribute('aria-pressed')).toBe('true');
     await click(row, '[data-im-discovery-scope="topic"]');
-    expect(row.querySelector('[data-im-discovery-wake="mention_or_reply"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(row.querySelector('[data-im-discovery-wake="mention"]')?.getAttribute('aria-pressed')).toBe('true');
     await click(row, '[data-im-discovery-wake="always"]');
     expect(row.querySelector('[data-im-discovery-wake="always"]')?.getAttribute('aria-pressed')).toBe('true');
 
     await click(row, '[data-im-discovery-scope="chat"]');
     expect(row.querySelector('[data-im-discovery-scope="chat"]')?.getAttribute('aria-pressed')).toBe('true');
-    await click(row, '[data-im-discovery-wake="mention_or_reply"]');
+    await click(row, '[data-im-discovery-wake="mention"]');
     row.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!.focus();
     await input(row, '[data-im-prefixes="data-im-discovery"]', 'Kiki:');
     await act(async () => { row.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!.blur(); await settle(); });
@@ -1019,7 +1019,7 @@ describe('ChannelsCard two-way accounts', () => {
     await click(row, '[data-im-confirm]');
     expect(fixture.calls.find((call) => call.operation === 'confirm' && call.id === 'tg-disc-group')?.body).toMatchObject({
       binding_scope: 'chat',
-      group_policy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] },
+      group_policy: { wake: 'mention', prefixes: ['Kiki:'] },
     });
   });
 
@@ -1040,7 +1040,7 @@ describe('ChannelsCard two-way accounts', () => {
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       binding_scope: 'chat',
-      group_policy: { wake: 'mention_or_reply' },
+      group_policy: { wake: 'mention' },
       rebind: true,
     });
     expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
@@ -1052,14 +1052,14 @@ describe('ChannelsCard two-way accounts', () => {
     expect(updateSpy).toHaveBeenCalledTimes(2);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       binding_scope: 'sender',
-      group_policy: { wake: 'mention_or_reply' },
+      group_policy: { wake: 'mention' },
     });
 
     // The expanded state is what the echo reports, so land that echo before
     // exercising the plain reduction path.
     fixture.replace({
       ...fixture.read(),
-      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } } : b),
+      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention' } } : b),
     });
     await act(settle);
 
@@ -1073,20 +1073,20 @@ describe('ChannelsCard two-way accounts', () => {
     // 3. Update wake policy and prefixes
     fixture.replace({
       ...fixture.read(),
-      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } } : b),
+      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention' } } : b),
     });
     await act(settle);
-    await click(group, '[data-im-binding-wake="manual"]');
+    await click(group, '[data-im-binding-wake="always"]');
     expect(updateSpy).toHaveBeenCalledTimes(4);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
-      group_policy: { wake: 'manual' },
+      group_policy: { wake: 'always' },
     });
-    await click(group, '[data-im-binding-wake="mention_or_reply"]');
+    await click(group, '[data-im-binding-wake="mention"]');
     group.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!.focus();
     await input(group, '[data-im-prefixes="data-im-binding"]', 'Kiki:');
     await act(async () => { group.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!.blur(); await settle(); });
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
-      group_policy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] },
+      group_policy: { wake: 'mention', prefixes: ['Kiki:'] },
     });
   });
 
@@ -1175,9 +1175,80 @@ describe('ChannelsCard two-way accounts', () => {
     expect(confirmCalls[0]?.id).toBe('tg-disc-group-2');
     expect(confirmCalls[0]?.body).toMatchObject({
       binding_scope: 'chat',
-      group_policy: { wake: 'mention_or_reply', prefixes: ['Second:', 'Review:'] },
+      group_policy: { wake: 'mention', prefixes: ['Second:', 'Review:'] },
     });
     expect(fixture.read().discoveries.map((item) => item.id)).toEqual(['tg-disc-group-1']);
+  });
+
+  it('supports specific-members (senders) mode with recognized group members, manual platform ID entry, reopen and edit', async () => {
+    const state = imChannelSnapshot('feishu_app');
+    state.bindings[1] = {
+      ...state.bindings[1]!,
+      id: 'binding-group',
+      provider_kind: 'feishu_app',
+      binding_scope: 'chat',
+      identity: { chat_id: 'oc_release_group', chat_title: 'Release Team', sender_id: 'ou_alice', sender_name: 'Alice', topic_id: '0', chat_kind: 'group' },
+      group_policy: { wake: 'mention' },
+    };
+    state.discoveries = [{
+      id: 'fs-disc-same-group',
+      provider_instance_id: 'account-a',
+      provider_kind: 'feishu_app',
+      account_id: 'studio-account',
+      identity: { chat_id: 'oc_release_group', chat_title: 'Release Team', sender_id: 'ou_bob', sender_name: 'Bob', topic_id: '0', chat_kind: 'group' },
+      preview: 'Ready to ship',
+      at: '2026-10-27T01:00:00.000Z',
+    }];
+    state.strangers = [{
+      provider_instance_id: 'account-a',
+      identity: { chat_id: 'oc_release_group', chat_title: 'Release Team', sender_id: 'ou_carol', sender_name: 'Carol', topic_id: '0', chat_kind: 'group' },
+      preview: 'Checking in',
+      count: 1,
+    }];
+    fixture = createImSettingsFixture(state);
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+    await render();
+    const container = await openFirstAccount(document.body);
+    const group = binding(container, 'binding-group');
+
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-wake="mention"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    // Switch to specific members ('senders'): pre-populates binding's sender ('ou_alice')
+    await click(group, '[data-im-binding-wake="senders"]');
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'senders', senders: ['ou_alice'] },
+    });
+    expect(group.querySelector('[data-im-sender-chip="ou_alice"]')?.textContent).toContain('Alice');
+    expect(group.querySelector('[data-im-sender-hint="feishu_app"]')?.textContent).toContain('open_id');
+
+    // Recognized members from discoveries ('ou_bob') and strangers ('ou_carol') appear as quick picks
+    expect(group.querySelector('[data-im-sender-pick="ou_bob"]')?.textContent).toContain('Bob');
+    expect(group.querySelector('[data-im-sender-pick="ou_carol"]')?.textContent).toContain('Carol');
+    await click(group, '[data-im-sender-pick="ou_bob"]');
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'senders', senders: ['ou_alice', 'ou_bob'] },
+    });
+
+    // Manual platform ID fallback entry (comma separated)
+    await input(group, '[data-im-sender-input="data-im-binding"]', 'ou_manual_1, ou_manual_2');
+    await click(group, '[data-im-sender-add="data-im-binding"]');
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'senders', senders: ['ou_alice', 'ou_bob', 'ou_manual_1', 'ou_manual_2'] },
+    });
+
+    // Collapse and reopen the binding editor to verify persisted state
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-details="binding-group"]')?.hasAttribute('hidden')).toBe(true);
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-wake="senders"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(group.querySelector('[data-im-sender-chip="ou_manual_1"]')).not.toBeNull();
+
+    // Remove a member and verify edit save
+    await click(group, '[data-im-sender-remove="ou_alice"]');
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'senders', senders: ['ou_bob', 'ou_manual_1', 'ou_manual_2'] },
+    });
   });
 
   it('renders inline error feedback when backend returns topic_scope_unavailable or group_binding_scope_required', async () => {

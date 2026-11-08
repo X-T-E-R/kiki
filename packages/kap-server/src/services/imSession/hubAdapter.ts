@@ -538,6 +538,7 @@ function hubMediaCapabilities(session: SessionAdapter, supportsFile: boolean): r
   return [
     { kind: 'file', maxBytes: fileBytes }, image,
     ...(voiceMime === null || voiceMime.length === 0 ? [] : [{ kind: 'voice', mimeTypes: voiceMime.map((mime) => mime.toLowerCase()), maxBytes: fileBytes, rendering: 'native_voice' }]),
+    ...(session.platform === 'feishu_app' ? [{ kind: 'video' as const, mimeTypes: ['video/mp4'], maxBytes: fileBytes }] : []),
   ];
 }
 

@@ -1,4 +1,4 @@
-import { createTelegramSessionAdapter } from '@nb-im/core';
+import { createFeishuSessionAdapter, createTelegramSessionAdapter, type SessionSpec } from '@nb-im/core';
 import type { UserMessageChannel } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -1650,5 +1650,209 @@ describe('IM group wake and reply routing', () => {
       expect(snap.discoveries).toEqual([]);
       expect(snap.strangers.some((item) => item.identity.sender_id === 'peer')).toBe(true);
     } finally { await bridge.close(); }
+  });
+
+  it('enforces mention-only and specific-senders policies across Telegram and Feishu and persists across restart', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const harness = historyHarness({
+      submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+    });
+    let bindingId = '';
+    try {
+      const binding = await bindHistoryGroup(harness, 'chat');
+      bindingId = binding.id;
+      await harness.bridge.updateBinding(binding.id, { groupPolicy: { wake: 'mention', prefixes: ['Kiki:'] } });
+      const sent = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'sent-1', channel: `im:${binding.id}`, text: 'bot message', attachments: [] });
+      const sentId = sent.channels?.[0]?.messageIds?.[0];
+      expect(sentId).toBeTruthy();
+
+      await harness.adapter.emit({ eventId: 'reply-only', sourceMessageId: 'reply-only', identity: { ...group, senderId: 'bob' }, kind: 'text', text: 'reply without mention', replyToMessageId: sentId });
+      expect(received).toHaveLength(0);
+
+      await harness.adapter.emit({ eventId: 'mention-wake', sourceMessageId: 'mention-wake', identity: { ...group, senderId: 'bob' }, kind: 'text', text: '@bot hello', mentioned: true });
+      expect(received).toHaveLength(1);
+
+      await harness.bridge.updateBinding(binding.id, { groupPolicy: { wake: 'senders', senders: ['alice', 'ou_bob'], prefixes: ['Kiki:'] } });
+      await harness.adapter.emit({ eventId: 'stranger-bypass', sourceMessageId: 'stranger-bypass', identity: { ...group, senderId: 'mallory' }, kind: 'text', text: 'Kiki: try bypass', mentioned: true, replyToMessageId: sentId });
+      await harness.adapter.emit({ eventId: 'missing-sender', sourceMessageId: 'missing-sender', identity: { ...group, senderId: '0' }, kind: 'text', text: 'Kiki: anonymous', mentioned: true });
+      await harness.adapter.emit({ eventId: 'stranger-cmd', sourceMessageId: 'stranger-cmd', identity: { ...group, senderId: 'mallory' }, kind: 'text', text: '/status', mentioned: true });
+      expect(received).toHaveLength(1);
+      expect(harness.adapter.sent.some((item) => item.code === 'command_denied' || item.code === 'status')).toBe(false);
+
+      await harness.adapter.emit({ eventId: 'allowed-member', sourceMessageId: 'allowed-member', identity: { ...group, senderId: 'ou_bob' }, kind: 'text', text: 'plain message from allowed member' });
+      expect(received).toHaveLength(2);
+    } finally {
+      await harness.bridge.close();
+    }
+
+    const restartedAdapter = new FakeImAdapter('telegram', '42');
+    const restarted = new ImSessionBridge({
+      ports: harness.ports,
+      factories: [fakeAdapterFactory(restartedAdapter)],
+      now: () => 1_700_000_100_000,
+      wait: async () => undefined,
+    });
+    try {
+      await restarted.setListening('inst', true);
+      const restored = (await restarted.snapshot()).bindings.find((row) => row.id === bindingId);
+      expect(restored?.group_policy).toEqual({ wake: 'senders', prefixes: ['Kiki:'], senders: ['alice', 'ou_bob'] });
+      await restartedAdapter.emit({ eventId: 'after-restart-stranger', sourceMessageId: 'after-restart-stranger', identity: { ...group, senderId: 'mallory' }, kind: 'text', text: 'still blocked', mentioned: true });
+      expect(received).toHaveLength(2);
+      await restartedAdapter.emit({ eventId: 'after-restart-allowed', sourceMessageId: 'after-restart-allowed', identity: { ...group, senderId: 'alice' }, kind: 'text', text: 'allowed after restart' });
+      expect(received).toHaveLength(3);
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  it('distinguishes Feishu self-mention from peer-mention, unknown bot identity and reply across mention vs mention_or_reply', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const base = ports({
+      submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+    });
+    const documents = new Map<string, unknown>();
+    base.ports = {
+      ...base.ports,
+      credentials: {
+        list: () => [{ id: 'fs-inst', providerId: 'feishu_app', configured: true }],
+        read: () => 'cli_0011223344556677\nsecret',
+        write: async () => undefined,
+        check: async () => ({ ok: true, accountId: 'cli_0011223344556677' }),
+        create: async () => ({ instanceId: 'fs-inst' }),
+      },
+      history: {
+        get: async <T>(key: string) => structuredClone(documents.get(key)) as T | undefined,
+        set: async (key, value) => { documents.set(key, structuredClone(value)); },
+        delete: async (key) => { documents.delete(key); },
+      },
+    };
+    let handlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    let botOpenId: string | undefined = 'ou_bot_self';
+    let sentCounter = 0;
+    const createRaw = (instanceId: string) => createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: instanceId,
+      app_id: 'cli_0011223344556677',
+      app_secret: 'secret',
+      connection: {
+        async open(next) {
+          handlers = next;
+          return botOpenId ? { ok: true, bot_open_id: botOpenId } : { ok: true };
+        },
+        async send() {
+          sentCounter += 1;
+          return { ok: true, message_id: `om_host_sent_${sentCounter}` };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+
+    let instanceSeq = 0;
+    const bridge = new ImSessionBridge({
+      ports: base.ports,
+      factories: [{ providerKind: 'feishu_app', create: () => new HubSessionAdapter(createRaw(`fs-inst-${++instanceSeq}`)) }],
+      wait: async () => undefined,
+    });
+    const emitFeishu = async (eventId: string, message: Record<string, unknown>, senderOpenId = 'ou_alice') => {
+      await handlers?.onMessage({
+        event_id: eventId,
+        app_id: 'cli_0011223344556677',
+        sender: { sender_id: { open_id: senderOpenId } },
+        message: {
+          chat_id: 'oc_feishu_room',
+          chat_type: 'group',
+          message_type: 'text',
+          ...message,
+        },
+      });
+    };
+
+    try {
+      await bridge.paste({ text: 'app_id=cli_0011223344556677\napp_secret=secret' });
+      await bridge.setListening('fs-inst', true);
+      await emitFeishu('fs-disc', { message_id: 'om_disc', content: JSON.stringify({ text: 'hello' }) });
+      const discovery = (await bridge.snapshot()).discoveries[0]!;
+      await bridge.confirm(discovery.id, {
+        target: { kind: 'session', session_id: 'sess' },
+        binding_scope: 'chat',
+        group_policy: { wake: 'mention', prefixes: ['Kiki:'] },
+      });
+      const binding = (await bridge.snapshot()).bindings[0]!;
+
+      const sent = await bridge.sendUserMessage({
+        sessionId: 'sess',
+        toolCallId: 'fs-sent-1',
+        channel: `im:${binding.id}`,
+        text: 'host announcement',
+        attachments: [],
+      });
+      const hostMsgId = sent.channels?.[0]?.messageIds?.[0];
+      expect(hostMsgId).toBe('om_host_sent_1');
+
+      await emitFeishu('fs-at-other', {
+        message_id: 'om_at_other',
+        content: JSON.stringify({ text: '@_user_1 hi peer' }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_colleague' }, name: 'Colleague' }],
+      });
+      expect(received).toHaveLength(0);
+
+      await emitFeishu('fs-reply-under-mention', {
+        message_id: 'om_reply_only',
+        parent_id: hostMsgId,
+        content: JSON.stringify({ text: 'replying without @' }),
+      });
+      expect(received).toHaveLength(0);
+
+      await emitFeishu('fs-at-self', {
+        message_id: 'om_at_self',
+        content: JSON.stringify({ text: '@_user_1 @_user_2 please review' }),
+        mentions: [
+          { key: '@_user_1', id: { open_id: 'ou_colleague' }, name: 'Colleague' },
+          { key: '@_user_2', id: { open_id: 'ou_bot_self' }, name: 'KikiBot' },
+        ],
+      });
+      expect(received).toHaveLength(1);
+      expect(received[0]?.im).toMatchObject({
+        mentioned: true,
+        mention_ids: ['ou_colleague', 'ou_bot_self'],
+      });
+      expect(received[0]?.im?.context?.messages.map((m) => [m.source_message_id, m.mention_ids])).toEqual([
+        ['om_at_other', ['ou_colleague']],
+        ['om_reply_only', undefined],
+      ]);
+
+      await bridge.updateBinding(binding.id, { groupPolicy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] } });
+      await emitFeishu('fs-reply-under-legacy', {
+        message_id: 'om_reply_legacy',
+        parent_id: hostMsgId,
+        content: JSON.stringify({ text: 'replying under mention_or_reply' }),
+      });
+      expect(received).toHaveLength(2);
+      expect(received[1]?.im?.mentioned).toBeUndefined();
+      expect(received[1]?.im?.reply_to_message_id).toBe(hostMsgId);
+
+      await bridge.setListening('fs-inst', false);
+      botOpenId = undefined;
+      await bridge.setListening('fs-inst', true);
+      await bridge.updateBinding(binding.id, { groupPolicy: { wake: 'mention', prefixes: ['Kiki:'] } });
+
+      await emitFeishu('fs-unknown-bot-at', {
+        message_id: 'om_unknown_at',
+        content: JSON.stringify({ text: '@_user_1 cannot prove self mention' }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_self' }, name: 'KikiBot' }],
+      });
+      expect(received).toHaveLength(2);
+
+      await emitFeishu('fs-unknown-bot-prefix', {
+        message_id: 'om_unknown_prefix',
+        content: JSON.stringify({ text: 'Kiki: explicit prefix still wakes' }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_colleague' }, name: 'Colleague' }],
+      });
+      expect(received).toHaveLength(3);
+      expect(received[2]?.im?.mentioned).toBeUndefined();
+      expect(received[2]?.im?.mention_ids).toEqual(['ou_colleague']);
+    } finally {
+      await bridge.close();
+    }
   });
 });

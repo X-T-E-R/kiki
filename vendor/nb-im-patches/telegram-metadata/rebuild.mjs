@@ -1,18 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { copyFile, mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, join, relative, resolve } from 'node:path';
 
 const patchDir = import.meta.dirname;
 const root = resolve(patchDir, '../../..');
+const kapRequire = createRequire(join(root, 'packages/kap-server/package.json'));
+const nbPeerNodeModules = dirname(dirname(dirname(dirname(kapRequire.resolve('@nb-im/core')))));
 await mkdir(join(root, '.tmp'), { recursive: true });
 const scratch = await mkdtemp(join(root, '.tmp', 'nb-im-metadata-rebuild-'));
 const archive = join(scratch, 'nb-im-core-0.3.0-kiki-im-metadata.tgz');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' });
 const local = (path) => relative(root, path).replaceAll('\\', '/');
 run('tar', ['-xf', 'vendor/nb-im-core-0.3.0.tgz', '-C', local(scratch)]);
-for (const patch of ['source.patch', 'wechat-send.patch', 'wechat-quote.patch', 'node24-lookup.patch']) {
+for (const patch of ['source.patch', 'wechat-send.patch', 'wechat-quote.patch', 'node24-lookup.patch', 'feishu-video.patch']) {
   run('git', ['apply', '--unidiff-zero', `--directory=${relative(root, join(scratch, 'package')).replaceAll('\\', '/')}`, join(patchDir, patch)]);
 }
+await symlink(nbPeerNodeModules, join(scratch, 'node_modules'), 'junction');
 await writeFile(join(scratch, 'tsconfig.json'), JSON.stringify({
   compilerOptions: {
     target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true,
@@ -20,13 +24,20 @@ await writeFile(join(scratch, 'tsconfig.json'), JSON.stringify({
     verbatimModuleSyntax: true, typeRoots: [join(root, 'node_modules/@types')], types: ['node'],
     skipLibCheck: true, noEmitOnError: true, outDir: './generated', rootDir: './package/src',
   },
-  files: ['./package/src/session/contract.ts', './package/src/session/telegram.ts', './package/src/session/wechat.ts', './package/src/providers.ts'],
+  files: [
+    './package/src/session/contract.ts',
+    './package/src/session/telegram.ts',
+    './package/src/session/wechat.ts',
+    './package/src/session/feishu.ts',
+    './package/src/session/feishu-sdk.ts',
+    './package/src/providers.ts',
+  ],
 }, null, 2));
 run(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', join(scratch, 'tsconfig.json')]);
-for (const module of ['session/contract', 'session/telegram', 'session/telegram-http', 'session/wechat', 'providers']) {
+for (const module of ['session/contract', 'session/telegram', 'session/telegram-http', 'session/wechat', 'session/feishu', 'session/feishu-sdk', 'providers']) {
   for (const extension of ['js', 'd.ts']) await copyFile(join(scratch, `generated/${module}.${extension}`), join(scratch, `package/dist/${module}.${extension}`));
 }
-run(process.execPath, ['--test', '--experimental-strip-types', 'test/session-telegram.test.ts', 'test/session-wechat.test.ts'], join(scratch, 'package'));
+run(process.execPath, ['--test', '--experimental-strip-types', 'test/session-telegram.test.ts', 'test/session-wechat.test.ts', 'test/session-feishu.test.ts', 'test/session-extended-media.test.ts'], join(scratch, 'package'));
 run(process.execPath, [join(patchDir, 'pinned-ipv4.test.mjs'), join(scratch, 'package')]);
 run('tar', ['-czf', local(archive), '-C', local(scratch), 'package']);
 process.stdout.write(`${archive}\n`);

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SESSION_CAPABILITIES, createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { SESSION_CAPABILITIES, createFeishuSessionAdapter, createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
@@ -297,7 +297,87 @@ describe('strict session media', () => {
     const raw = session();
     const hub = new HubSessionAdapter({ ...raw, platform, account: { platform, account_id: 'bot' } });
     expect(hub.mediaCapabilities.map((item) => item.kind)).not.toContain('audio');
-    expect(hub.mediaCapabilities.map((item) => item.kind)).not.toContain('video');
+    if (platform === 'feishu_app') {
+      expect(hub.mediaCapabilities.find((item) => item.kind === 'video')).toEqual({
+        kind: 'video',
+        mimeTypes: ['video/mp4'],
+        maxBytes: undefined,
+      });
+    } else {
+      expect(hub.mediaCapabilities.map((item) => item.kind)).not.toContain('video');
+    }
+  });
+
+  it('sends Feishu mp4 file attachments as stream+file and native video as mp4+media without resending on unknown', async () => {
+    const sent: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['send']>[0][] = [];
+    let outcome: 'ok' | 'rejected' | 'unknown' = 'ok';
+    let index = 0;
+    const raw = createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'packaged-feishu-video',
+      app_id: 'cli_0011223344556677',
+      app_secret: 'offline-secret',
+      connection: {
+        async open() { return { ok: true }; },
+        async send(request) {
+          sent.push(request);
+          if (request.op === 'upload_file') {
+            if (outcome === 'rejected') return { ok: false, http_status: 400 };
+            index += 1;
+            return { ok: true, key: `fk_${index}` };
+          }
+          if (outcome === 'unknown') return { ok: false };
+          return { ok: true, message_id: `om_${index}` };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+    const hub = new HubSessionAdapter(raw);
+    await hub.start(async () => undefined);
+    try {
+      const identity = { chatId: 'oc_group', senderId: 'ou_user', topicId: '0' };
+      expect(await hub.sendFile({ identity, name: 'clip.mp4', mediaType: 'video/mp4', bytes: Uint8Array.of(1, 2), asVoice: false, asImage: false })).toEqual({
+        messageId: 'om_1',
+        deliveredAs: 'file',
+      });
+      expect(sent.slice(0, 2)).toEqual([
+        expect.objectContaining({ op: 'upload_file', file_type: 'stream', file_name: 'clip.mp4' }),
+        expect.objectContaining({ op: 'create_message', chat_id: 'oc_group', msg_type: 'file', content: '{"file_key":"fk_1"}' }),
+      ]);
+
+      expect(await hub.sendMedia({ identity, name: 'native.mp4', mediaType: 'video/mp4', bytes: Uint8Array.of(3, 4), kind: 'video' })).toEqual({
+        status: 'delivered',
+        messageIds: ['om_2'],
+        unsupported: undefined,
+        detail: undefined,
+      });
+      expect(sent.slice(2, 4)).toEqual([
+        expect.objectContaining({ op: 'upload_file', file_type: 'mp4', file_name: 'native.mp4' }),
+        expect.objectContaining({ op: 'create_message', chat_id: 'oc_group', msg_type: 'media', content: '{"file_key":"fk_2"}' }),
+      ]);
+
+      expect(await hub.sendMedia({ identity, name: 'native.webm', mediaType: 'video/webm', bytes: Uint8Array.of(5), kind: 'video' })).toEqual({
+        status: 'unsupported',
+        unsupported: ['video'],
+      });
+      expect(sent).toHaveLength(4);
+
+      outcome = 'rejected';
+      expect(await hub.sendMedia({ identity, name: 'bad.mp4', mediaType: 'video/mp4', bytes: Uint8Array.of(6), kind: 'video' })).toMatchObject({
+        status: 'failed',
+        detail: 'feishu_bad_request',
+      });
+      expect(sent).toHaveLength(5);
+
+      outcome = 'unknown';
+      expect(await hub.sendMedia({ identity, name: 'uncertain.mp4', mediaType: 'video/mp4', bytes: Uint8Array.of(7), kind: 'video' })).toMatchObject({
+        status: 'unknown',
+        detail: 'feishu_rejected',
+      });
+      expect(sent).toHaveLength(7);
+    } finally {
+      await hub.stop();
+    }
   });
 
   it('preserves unknown, failed and unsupported transport outcomes without resending', async () => {

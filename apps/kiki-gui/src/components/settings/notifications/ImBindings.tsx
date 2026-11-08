@@ -48,6 +48,70 @@ const SCOPE_RANK: Record<ImBindingScope, number> = {
   chat: 3,
 };
 
+export interface KnownGroupMember {
+  readonly senderId: string;
+  readonly senderName?: string;
+}
+
+function validSenderId(value: string | undefined): value is string {
+  if (value === undefined) return false;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed !== '0';
+}
+
+function normalizeSenderIds(values: readonly string[] | undefined): string[] {
+  if (!values) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of values) {
+    const trimmed = item.trim();
+    if (!validSenderId(trimmed) || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+export function knownGroupMembers(
+  identity: ImIdentity,
+  providerInstanceId: string,
+  snapshot: ImSessionSnapshot | undefined,
+): readonly KnownGroupMember[] {
+  const byId = new Map<string, KnownGroupMember>();
+  const add = (candidate: ImIdentity) => {
+    if (candidate.chat_id !== identity.chat_id || !validSenderId(candidate.sender_id)) return;
+    const senderId = candidate.sender_id.trim();
+    const senderName = candidate.sender_name?.trim();
+    const existing = byId.get(senderId);
+    if (!existing || (!existing.senderName && senderName)) {
+      byId.set(senderId, senderName ? { senderId, senderName } : { senderId });
+    }
+  };
+  add(identity);
+  if (snapshot) {
+    for (const item of snapshot.discoveries) {
+      if (item.provider_instance_id === providerInstanceId) add(item.identity);
+    }
+    for (const item of snapshot.bindings) {
+      if (item.provider_instance_id === providerInstanceId) add(item.identity);
+    }
+    for (const item of snapshot.strangers ?? []) {
+      if (item.provider_instance_id === providerInstanceId) add(item.identity);
+    }
+  }
+  return [...byId.values()];
+}
+
+function senderIdHintKey(kind: ImProviderKind): Parameters<Translator>[0] {
+  if (kind === 'telegram') return 'st.im.wake.senderIdHint.telegram';
+  if (kind === 'feishu_app') return 'st.im.wake.senderIdHint.feishu_app';
+  if (kind === 'onebot_v11') return 'st.im.wake.senderIdHint.onebot_v11';
+  if (kind === 'discord') return 'st.im.wake.senderIdHint.discord';
+  if (kind === 'slack') return 'st.im.wake.senderIdHint.slack';
+  if (kind === 'matrix') return 'st.im.wake.senderIdHint.matrix';
+  return 'st.im.wake.senderIdHint.default';
+}
+
 function groupScopeChoices(t: Translator, topicDisabled = false): readonly SettingsChoice<ImBindingScope>[] {
   return [
     { value: 'sender', label: t('st.im.groupScope.sender') },
@@ -56,18 +120,27 @@ function groupScopeChoices(t: Translator, topicDisabled = false): readonly Setti
   ];
 }
 
-function groupWakeChoices(t: Translator): readonly SettingsChoice<ImWakeMode>[] {
-  return [
-    { value: 'mention_or_reply', label: t('st.im.wake.mention_or_reply') },
+function groupWakeChoices(t: Translator, currentWake: ImWakeMode): readonly SettingsChoice<ImWakeMode>[] {
+  const base: SettingsChoice<ImWakeMode>[] = [
+    { value: 'mention', label: t('st.im.wake.mention') },
     { value: 'always', label: t('st.im.wake.always') },
-    { value: 'manual', label: t('st.im.wake.manual') },
+    { value: 'senders', label: t('st.im.wake.senders') },
   ];
+  if (currentWake === 'mention_or_reply') {
+    base.unshift({ value: 'mention_or_reply', label: t('st.im.wake.mention_or_reply') });
+  } else if (currentWake === 'manual') {
+    base.push({ value: 'manual', label: t('st.im.wake.manual') });
+  }
+  return base;
 }
 
 function GroupBindingOptions({
+  providerKind,
   scope,
   wake,
   prefixes,
+  senders,
+  knownMembers = [],
   topicDisabled = false,
   showWake = false,
   disabled,
@@ -75,10 +148,14 @@ function GroupBindingOptions({
   onScope,
   onWake,
   onPrefixes,
+  onSenders,
 }: {
+  providerKind: ImProviderKind;
   scope: ImBindingScope;
   wake: ImWakeMode;
   prefixes?: readonly string[];
+  senders?: readonly string[];
+  knownMembers?: readonly KnownGroupMember[];
   topicDisabled?: boolean;
   showWake?: boolean;
   disabled: boolean;
@@ -86,11 +163,26 @@ function GroupBindingOptions({
   onScope: (scope: ImBindingScope) => void;
   onWake: (wake: ImWakeMode) => void;
   onPrefixes?: (prefixes: string[]) => void;
+  onSenders?: (senders: string[]) => void;
 }) {
   const { t } = useI18n();
   const prefixesId = useId();
+  const senderInputId = useId();
+  const [senderDraft, setSenderDraft] = useState('');
   const prefixesValue = (prefixes ?? []).join(', ');
+  const activeSenders = normalizeSenderIds(senders);
   const policyVisible = scope !== 'sender' || showWake;
+  const knownById = new Map(knownMembers.map((member) => [member.senderId, member.senderName]));
+  const unpickedMembers = knownMembers.filter((member) => !activeSenders.includes(member.senderId));
+
+  const commitDraftSenders = () => {
+    if (!onSenders) return;
+    const parts = senderDraft.split(/[\s,，]+/u).map((part) => part.trim()).filter(validSenderId);
+    if (parts.length === 0) return;
+    const next = normalizeSenderIds([...activeSenders, ...parts]);
+    setSenderDraft('');
+    if (next.join(',') !== activeSenders.join(',')) onSenders(next);
+  };
 
   return (
     <div className="space-y-3" data-im-group-options>
@@ -114,13 +206,13 @@ function GroupBindingOptions({
               value={wake}
               disabled={disabled}
               dataAttr={`${prefix}-wake`}
-              choices={groupWakeChoices(t)}
+              choices={groupWakeChoices(t, wake)}
               onChange={onWake}
             />
           </div>
         ) : null}
       </div>
-      {policyVisible && wake === 'mention_or_reply' && onPrefixes ? (
+      {policyVisible && (wake === 'mention' || wake === 'mention_or_reply') && onPrefixes ? (
         <div className="space-y-1 max-w-sm">
           <label className="text-[13px] text-ink-soft block" htmlFor={prefixesId}>
             {t('st.im.wake.prefixes')}
@@ -146,6 +238,102 @@ function GroupBindingOptions({
           />
         </div>
       ) : null}
+      {policyVisible && wake === 'senders' && onSenders ? (
+        <div className="space-y-2.5 max-w-lg rounded-lg border border-hairline bg-paper/60 p-3" data-im-group-senders={prefix}>
+          <div className="space-y-1.5">
+            <p className="text-[12.5px] font-medium text-ink-soft">{t('st.im.wake.sendersLabel')}</p>
+            {activeSenders.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5" data-im-sender-chips={prefix}>
+                {activeSenders.map((senderId) => {
+                  const name = knownById.get(senderId);
+                  return (
+                    <span
+                      key={senderId}
+                      data-im-sender-chip={senderId}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-hairline-strong bg-panel px-2 py-0.5 text-[12px] text-ink"
+                    >
+                      {name ? <span className="font-medium">{name}</span> : null}
+                      <span className="font-mono text-[11.5px] text-ink-soft">{senderId}</span>
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        data-im-sender-remove={senderId}
+                        aria-label={t('st.im.wake.senderRemove', { id: name ? `${name} (${senderId})` : senderId })}
+                        onClick={() => {
+                          onSenders(activeSenders.filter((item) => item !== senderId));
+                        }}
+                        className="ml-0.5 rounded px-1 text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[12px] text-amber-ink" data-im-senders-empty={prefix}>
+                {t('st.im.wake.sendersEmpty')}
+              </p>
+            )}
+          </div>
+          {unpickedMembers.length > 0 ? (
+            <div className="space-y-1">
+              <p className="text-[12px] text-ink-faint">{t('st.im.wake.sendersKnown')}</p>
+              <div className="flex flex-wrap gap-1.5" data-im-sender-candidates={prefix}>
+                {unpickedMembers.map((member) => (
+                  <button
+                    key={member.senderId}
+                    type="button"
+                    disabled={disabled}
+                    data-im-sender-pick={member.senderId}
+                    onClick={() => {
+                      onSenders(normalizeSenderIds([...activeSenders, member.senderId]));
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-dashed border-hairline-strong bg-panel px-2 py-0.5 text-[12px] text-ink-soft transition-colors hover:border-selected-ink/50 hover:text-ink disabled:opacity-50"
+                  >
+                    <span>+</span>
+                    {member.senderName ? <span>{member.senderName}</span> : null}
+                    <span className="font-mono text-[11px] text-ink-faint">{member.senderId}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                id={senderInputId}
+                type="text"
+                value={senderDraft}
+                placeholder={t('st.im.wake.senderInputPlaceholder')}
+                aria-label={t('st.im.wake.senderInputPlaceholder')}
+                disabled={disabled}
+                className={`${INPUT} min-w-0 flex-1 font-mono text-[12.5px]`}
+                data-im-sender-input={prefix}
+                onChange={(event) => { setSenderDraft(event.target.value); }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commitDraftSenders();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={disabled || senderDraft.trim().length === 0}
+                data-im-sender-add={prefix}
+                onClick={commitDraftSenders}
+                className={SECONDARY_BUTTON}
+              >
+                {t('st.im.wake.senderAdd')}
+              </button>
+            </div>
+            <p className="text-[11.5px] text-ink-faint" data-im-sender-hint={providerKind}>
+              {t(senderIdHintKey(providerKind))}
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -157,8 +345,9 @@ function GroupBindingOptions({
  * row with unsaved edits keeps its editor next to the next click (rule 13).
  * Chat/sender ids live once, in the 高级 fold with a copy action (rule 14).
  */
-export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = true, expanded, onToggle }: {
+export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, inbound = true, expanded, onToggle }: {
   binding: ImBinding;
+  snapshot?: ImSessionSnapshot;
   policy: ImSessionSnapshot['policy'];
   catalog: ImCatalog | undefined;
   setupPlatform?: SetupPlatformEntry;
@@ -178,7 +367,8 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
   const isGroup = binding.identity.chat_kind === 'group' && binding.provider_kind !== 'wechat_bridge';
   const topicDisabled = binding.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
   const currentScope: ImBindingScope = binding.binding_scope ?? 'sender';
-  const currentWake: ImWakeMode = binding.group_policy?.wake ?? 'mention_or_reply';
+  const currentWake: ImWakeMode = binding.group_policy?.wake ?? 'mention';
+  const knownMembers = isGroup ? knownGroupMembers(binding.identity, binding.provider_instance_id, snapshot) : [];
 
   const sessions = useQuery({
     queryKey: [...KEY, 'session-search', search.trim()],
@@ -234,7 +424,7 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
       void (async () => {
         const done = await action.run(() => client.imSessions.updateBinding(binding.id, {
           binding_scope: scope,
-          group_policy: priorPolicy ?? { wake: 'mention_or_reply' },
+          group_policy: priorPolicy ?? { wake: 'mention' },
           rebind: true,
         }));
         if (!done) return;
@@ -243,7 +433,7 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
           undoFailedText: t('toast.undoFailed'),
           undo: async () => {
             await client.imSessions.updateBinding(binding.id, priorPolicy === undefined
-              ? { binding_scope: priorScope, group_policy: { wake: 'mention_or_reply' } }
+              ? { binding_scope: priorScope, group_policy: { wake: 'mention' } }
               : { binding_scope: priorScope, group_policy: priorPolicy });
           },
         });
@@ -365,17 +555,28 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
           onChange={(value) => { update({ session_enabled: value === 'default' ? null : value === 'on' }); }} />
       </div>
       {isGroup && inbound ? <GroupBindingOptions
+        providerKind={binding.provider_kind}
         scope={currentScope}
         wake={currentWake}
         prefixes={binding.group_policy?.prefixes}
+        senders={binding.group_policy?.senders}
+        knownMembers={knownMembers}
         showWake={binding.group_policy !== undefined}
         topicDisabled={topicDisabled}
         disabled={action.saving}
         prefix="data-im-binding"
         onScope={selectScope}
-        onWake={(wake) => { update({ group_policy: { ...binding.group_policy, wake } }); }}
+        onWake={(wake) => {
+          const defaultSenders = wake === 'senders' && binding.group_policy?.senders === undefined && validSenderId(binding.identity.sender_id)
+            ? [binding.identity.sender_id.trim()]
+            : binding.group_policy?.senders;
+          update({ group_policy: { ...binding.group_policy, wake, ...(defaultSenders !== undefined ? { senders: defaultSenders } : {}) } });
+        }}
         onPrefixes={(prefixes) => {
           if (prefixes.join(',') !== (binding.group_policy?.prefixes ?? []).join(',')) update({ group_policy: { ...binding.group_policy, wake: currentWake, prefixes } });
+        }}
+        onSenders={(senders) => {
+          update({ group_policy: { ...binding.group_policy, wake: currentWake, senders } });
         }}
       /> : null}
       <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
@@ -422,8 +623,9 @@ function IdentityIds({ identity }: { identity: ImIdentity }) {
   );
 }
 
-export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget, inbound = true }: {
+export function DiscoveryRow({ discovery, snapshot, catalog, setupPlatform, initialTarget, inbound = true }: {
   discovery: ImDiscovery;
+  snapshot?: ImSessionSnapshot;
   catalog: ImCatalog | undefined;
   setupPlatform?: SetupPlatformEntry;
   initialTarget: string;
@@ -443,8 +645,12 @@ export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget,
   const isGroup = discovery.identity.chat_kind === 'group' && discovery.provider_kind !== 'wechat_bridge';
   const topicDisabled = discovery.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
   const [scope, setScope] = useState<ImBindingScope>('sender');
-  const [wake, setWake] = useState<ImWakeMode>('mention_or_reply');
+  const [wake, setWake] = useState<ImWakeMode>('mention');
   const [prefixes, setPrefixes] = useState<string[]>([]);
+  const [senders, setSenders] = useState<string[]>(() =>
+    validSenderId(discovery.identity.sender_id) ? [discovery.identity.sender_id.trim()] : [],
+  );
+  const knownMembers = isGroup ? knownGroupMembers(discovery.identity, discovery.provider_instance_id, snapshot) : [];
 
   useEffect(() => {
     if (initialTarget !== '') setTarget(initialTarget);
@@ -466,15 +672,19 @@ export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget,
       <input type="checkbox" data-im-also-home checked={alsoHome} disabled={action.saving} onChange={(event) => { setAlsoHome(event.target.checked); }} />{t('st.im.alsoHome')}
     </label> : null}
     {isGroup && inbound ? <GroupBindingOptions
+      providerKind={discovery.provider_kind}
       scope={scope}
       wake={wake}
       prefixes={prefixes}
+      senders={senders}
+      knownMembers={knownMembers}
       topicDisabled={topicDisabled}
       disabled={action.saving}
       prefix="data-im-discovery"
       onScope={setScope}
       onWake={setWake}
       onPrefixes={setPrefixes}
+      onSenders={setSenders}
     /> : null}
     {expanded ? <BindingOptions kind={discovery.provider_kind} setupPlatform={setupPlatform} busy={busy} reply={reply} actions={actions} disabled={action.saving} prefix="data-im"
       onBusy={setBusy} onReply={setReply} onActions={setActions} /> : null}
@@ -490,7 +700,11 @@ export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget,
           };
           if (isGroup && inbound && scope !== 'sender') {
             request.binding_scope = scope;
-            request.group_policy = { wake, prefixes: prefixes.length > 0 ? prefixes : undefined };
+            request.group_policy = {
+              wake,
+              prefixes: prefixes.length > 0 ? prefixes : undefined,
+              ...(wake === 'senders' ? { senders } : {}),
+            };
           }
           const next = await client.imSessions.confirm(discovery.id, request);
           void queryClient.invalidateQueries({ queryKey: [...KEY, 'catalog'] });

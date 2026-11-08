@@ -101,13 +101,13 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
         </div>
         {discoveries.length > 0 ? <div className="space-y-2.5" data-im-discoveries={account.id}>
           {discoveries.map((discovery) => (
-            <DiscoveryRow key={discovery.id} discovery={discovery} catalog={catalog} setupPlatform={setupPlatform}
+            <DiscoveryRow key={discovery.id} discovery={discovery} snapshot={data} catalog={catalog} setupPlatform={setupPlatform}
               initialTarget={preselectedTarget ?? initialTarget} inbound={account.inbound !== false} />
           ))}
         </div> : null}
         {bindings.length > 0 ? <div data-im-bindings-list className="divide-y divide-hairline rounded-lg border border-hairline bg-panel px-3">
           {bindings.map((binding) => (
-            <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform}
+            <BindingRow key={binding.id} binding={binding} snapshot={data} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform}
               inbound={account.inbound !== false}
               expanded={openBinding === binding.id}
               onToggle={() => { setOpenBinding((current) => current === binding.id ? null : binding.id); }} />
