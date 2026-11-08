@@ -334,13 +334,27 @@ export class PluginService extends Service implements IPluginService {
           { details: { id: input.id } },
         );
       }
-      return info;
+      return this.withRuntimeDiagnostics(info);
     };
     if (this.snapshotLoaded && (this.changing?.draining === true ||
       (this.changing?.affected !== undefined && !this.changing.affected.includes(input.id.toLowerCase())))) {
       return read();
     }
     return this.runManagementRead(read);
+  }
+
+  private withRuntimeDiagnostics(info: PluginInfo): PluginInfo {
+    if (info.manifest?.kiki?.requestProjection === undefined) return info;
+    const metrics = this.requestProjectionMetrics(info.id);
+    const summary =
+      `request_projection: evaluated=${metrics.evaluatedRequests}, ` +
+      `matched=${metrics.matchedRequests}, passthrough=${metrics.passthroughRequests}, ` +
+      `projected_requests=${metrics.projectedRequests}, projected_batches=${metrics.projectedBatches}, ` +
+      `projected_messages=${metrics.projectedMessages}`;
+    return {
+      ...info,
+      diagnostics: [...info.diagnostics, { severity: 'info', message: summary }],
+    };
   }
 
   listPluginCommands(workspaceId?: string, sessionId?: string): Promise<readonly PluginCommandDef[]> {
@@ -427,8 +441,9 @@ export class PluginService extends Service implements IPluginService {
     readonly workspaceId?: string;
     readonly sessionId?: string;
   }): Promise<RequestProjectionDecision> {
-    const entries = await this.enabledRequestProjections(input.workspaceId, input.sessionId);
-    if (entries.length === 0) return { strategy: 'passthrough' };
+    if (!this.snapshotLoaded) return { strategy: 'passthrough' };
+    const installed = this.manager.enabledRequestProjections();
+    if (installed.length === 0) return { strategy: 'passthrough' };
     const rawSettings = this.configService.get(PLUGIN_SETTINGS_SECTION);
     const parsedSettings = PluginSettingsSectionSchema.safeParse(rawSettings);
     const settingsByPlugin = parsedSettings.success ? parsedSettings.data : {};
@@ -437,21 +452,47 @@ export class PluginService extends Service implements IPluginService {
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
         .map((value) => value.trim()),
     );
-    for (const entry of entries) {
+    const activeEntries: Array<{
+      readonly pluginId: string;
+      readonly strategy: import('./contributions').PluginRequestProjectionStrategy;
+      readonly targetModels: readonly string[];
+    }> = [];
+    for (const entry of installed) {
       const saved = settingsByPlugin[entry.pluginId];
       const rawStrategy = saved?.[entry.config.strategySetting];
       const parsedStrategy = requestProjectionStrategySchema.safeParse(rawStrategy);
       const strategy = parsedStrategy.success ? parsedStrategy.data : entry.config.defaultStrategy;
-      if (strategy !== 'tool_result_appendix') continue;
       const rawModels = saved?.[entry.config.modelsSetting];
       const targetModels = typeof rawModels === 'string'
         ? parseTargetModelList(rawModels)
         : entry.config.defaultModels.map((item) => item.trim()).filter((item) => item.length > 0);
-      if (targetModels.some((target) => candidates.has(target))) {
+      activeEntries.push({ pluginId: entry.pluginId, strategy, targetModels });
+    }
+    for (const entry of activeEntries) {
+      if (entry.strategy !== 'tool_result_appendix') continue;
+      if (!entry.targetModels.some((target) => candidates.has(target))) continue;
+      const allowed = await this.isProjectionPluginAllowed(
+        entry.pluginId,
+        input.workspaceId,
+        input.sessionId,
+      );
+      if (allowed) {
         return { strategy: 'tool_result_appendix', pluginId: entry.pluginId };
       }
     }
-    return { strategy: 'passthrough', pluginId: entries[0]?.pluginId };
+    return { strategy: 'passthrough', pluginId: activeEntries[0]?.pluginId };
+  }
+
+  private async isProjectionPluginAllowed(
+    pluginId: string,
+    workspaceId: string | undefined,
+    sessionId: string | undefined,
+  ): Promise<boolean> {
+    if (workspaceId === '*') return true;
+    if (this.usage === undefined) {
+      return this.manager.info(pluginId)?.globalEnabled === true;
+    }
+    return this.usage.allows(workspaceId, pluginId, sessionId);
   }
 
   recordRequestProjectionOutcome(input: {

@@ -42,7 +42,7 @@
             "title": "Target Models",
             "description": "Comma, semicolon, or newline separated model aliases or IDs that opt into tool_result appendix projection.",
             "default": "axon-message/gemini-4-argon",
-            "format": "kiki-model",
+            "multiline": true,
             "localizations": {
               "zh-CN": {
                 "title": "启用模型列表",

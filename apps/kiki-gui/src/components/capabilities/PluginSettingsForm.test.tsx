@@ -352,4 +352,57 @@ describe('PluginSettingsForm', () => {
     await click(save(container));
     expect(setPluginSettings).toHaveBeenCalledWith('demo', { route: null });
   });
+
+  it('edits and saves multi-model multiline targetModels without overwriting earlier entries and preserves them on reopen', async () => {
+    const schema = {
+      schemaVersion: 1,
+      schema: {
+        type: 'object',
+        properties: {
+          strategy: {
+            type: 'string',
+            title: 'Projection Strategy',
+            default: 'tool_result_appendix',
+            enum: ['passthrough', 'tool_result_appendix'],
+          },
+          targetModels: {
+            type: 'string',
+            title: 'Target Models',
+            default: 'axon-message/gemini-4-argon',
+            multiline: true,
+          },
+        },
+      },
+    };
+    const twoModels = 'axon-message/gemini-4-argon\ncustom/argon-second-model';
+    getPluginSettings.mockResolvedValue({
+      schema,
+      values: {},
+      secretsConfigured: [],
+    });
+    setPluginSettings.mockImplementation(async (_id: string, patch: Record<string, string>) => ({
+      schema,
+      values: { ...patch },
+      secretsConfigured: [],
+    }));
+    const first = await render();
+    const textarea = first.querySelector<HTMLTextAreaElement>('[data-plugin-setting="targetModels"] textarea')!;
+    expect(textarea).not.toBeNull();
+    expect(textarea.placeholder).toBe('axon-message/gemini-4-argon');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, twoModels);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(save(first));
+    expect(setPluginSettings).toHaveBeenCalledWith('demo', { targetModels: twoModels });
+
+    getPluginSettings.mockResolvedValue({
+      schema,
+      values: { targetModels: twoModels },
+      secretsConfigured: [],
+    });
+    const reopened = await render();
+    const reopenedTextarea = reopened.querySelector<HTMLTextAreaElement>('[data-plugin-setting="targetModels"] textarea')!;
+    expect(reopenedTextarea.value).toBe(twoModels);
+  });
 });

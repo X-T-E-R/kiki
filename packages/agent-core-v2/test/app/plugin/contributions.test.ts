@@ -345,7 +345,7 @@ describe('plugin extension compatibility and consent', () => {
               targetModels: {
                 type: 'string',
                 default: 'axon-message/gemini-4-argon',
-                format: 'kiki-model',
+                multiline: true,
               },
             },
           },

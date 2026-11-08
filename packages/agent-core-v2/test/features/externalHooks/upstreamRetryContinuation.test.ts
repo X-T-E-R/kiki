@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { IEventBus } from '#/app/event/eventBus';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginManager } from '#/app/plugin/manager';
+import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { PLUGIN_SETTINGS_SECTION } from '#/app/plugin/settingsConfigSection';
 import { writeInstalled } from '#/app/plugin/store';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
@@ -853,6 +854,15 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
     expect(JSON.stringify(metrics)).not.toContain('YOUR_API_KEY');
     expect(JSON.stringify(metrics)).not.toContain(activeHarness.home);
 
+    const pluginInfo = await pluginService.getPluginInfo({ id: 'argon-tool-result-appendix' });
+    const diagMessages = pluginInfo.diagnostics.map((d) => d.message);
+    expect(diagMessages).toContain(
+      'request_projection: evaluated=3, matched=2, passthrough=1, projected_requests=2, projected_batches=2, projected_messages=4',
+    );
+    expect(JSON.stringify(pluginInfo.diagnostics)).not.toContain('file contents A');
+    expect(JSON.stringify(pluginInfo.diagnostics)).not.toContain('YOUR_API_KEY');
+    expect(JSON.stringify(pluginInfo.diagnostics)).not.toContain(activeHarness.home);
+
     await activeHarness.local.get(ISessionPluginUsageService).set('argon-tool-result-appendix', 'off');
     const sessionDisabledBody = await activeHarness.sendWithHistory(history, argonModel);
     expect(sessionDisabledBody).toEqual(baselineArgonBody);
@@ -1074,5 +1084,74 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
     expect(memory.get()).toEqual(canonicalBefore);
     const afterUndoBody = await harness.sendWithHistory(memory.get(), argonModel);
     expect(afterUndoBody).toEqual(afterCompactBody1);
+  }, 60_000);
+
+  it('saves and re-reads multi-model multiline targetModels via PluginSettingsService, projects both models, and does not block requests on unrelated in-flight plugin mutations', async () => {
+    const history: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Check both models.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([{ id: 'toolu_multi', name: 'ReadFile' }]),
+      { role: 'tool', content: [{ type: 'text', text: 'tool output M' }], toolCalls: [], toolCallId: 'toolu_multi' },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>\nAGENTS.md reminder\n</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'agents_md' },
+      },
+    ];
+
+    const harness = await createAppendixHarness({ installPlugin: true });
+    openHarnesses.push(harness);
+    const settingsService = harness.local.get(IPluginSettingsService);
+    const initialInspect = await settingsService.inspect('argon-tool-result-appendix');
+    expect(initialInspect.schema?.schema.properties['targetModels']?.multiline).toBe(true);
+    expect(initialInspect.schema?.schema.properties['targetModels']?.format).toBeUndefined();
+
+    const twoModelsValue = 'axon-message/gemini-4-argon\ncustom/argon-second-model';
+    const updatedView = await settingsService.update({
+      pluginId: 'argon-tool-result-appendix',
+      values: { targetModels: twoModelsValue },
+    });
+    expect(updatedView.values['targetModels']).toBe(twoModelsValue);
+    const reopenedView = await settingsService.inspect('argon-tool-result-appendix');
+    expect(reopenedView.values['targetModels']).toBe(twoModelsValue);
+
+    const firstModelBody = await harness.sendWithHistory(history, argonModel);
+    const secondModelBody = await harness.sendWithHistory(history, 'custom/argon-second-model');
+    const unconfiguredModelBody = await harness.sendWithHistory(history, 'axon-message/gemini-3.8-flash');
+    expect(secondModelBody['messages']).toEqual(firstModelBody['messages']);
+    const firstMessages = firstModelBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(firstMessages[2]?.content).toHaveLength(1);
+    const unconfiguredMessages = unconfiguredModelBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(unconfiguredMessages[2]?.content).toHaveLength(2);
+
+    const pluginService = harness.local.get(IPluginService);
+    const infoAfterMulti = await pluginService.getPluginInfo({ id: 'argon-tool-result-appendix' });
+    expect(infoAfterMulti.diagnostics.map((d) => d.message)).toContain(
+      'request_projection: evaluated=3, matched=2, passthrough=1, projected_requests=2, projected_batches=2, projected_messages=2',
+    );
+
+    const noPluginHarness = await createAppendixHarness({ installPlugin: false });
+    openHarnesses.push(noPluginHarness);
+    const noPluginService = noPluginHarness.local.get(IPluginService);
+    let releaseBlockedMutation!: () => void;
+    const blockedGate = new Promise<void>((resolve) => {
+      releaseBlockedMutation = resolve;
+    });
+    const disposeWillChange = noPluginService.onWillChange((event) => {
+      event.waitUntil(blockedGate);
+    });
+    const pendingReload = noPluginService.reloadPlugins();
+    try {
+      const fastRequestPromise = noPluginHarness.sendWithHistory(history, argonModel);
+      const raceOutcome = await Promise.race([
+        fastRequestPromise.then(() => 'request-completed' as const),
+        new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 500)),
+      ]);
+      expect(raceOutcome).toBe('request-completed');
+    } finally {
+      disposeWillChange.dispose();
+      releaseBlockedMutation();
+      await pendingReload;
+    }
   }, 60_000);
 });
