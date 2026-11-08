@@ -412,8 +412,8 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       { id: 'run-3', agent_id: 'a2', status: 'completed', output_preview: 'First result.' },
     ];
     const nodes = readSubagentEndings([
-      { ...agent('a1', 'completed', 't1'), name: 'Inspector' },
-      { ...agent('a2', 'completed', 't1'), name: 'Inspector' },
+      { ...agent('a1', 'completed', 't1'), name: 'Inspector', taskId: 'run-1' },
+      { ...agent('a2', 'completed', 't1'), name: 'Inspector', taskId: 'run-3' },
       inTurn(thinking(), 't2'),
       ...(summaryFirst ? [summary, full] : [full, summary]),
       note('system-receipt-2', 'run-2', 'Second result.'),
@@ -422,7 +422,9 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     ], tasks);
     const endings = nodes.filter((node) => node.kind === 'subagent-ended');
     expect(endings.map((node) => node.taskId)).toEqual(['run-1', 'run-2', 'run-3']);
-    expect(endings[0]).toMatchObject({ id: 'ended-task-run-1', note: full, task: tasks[0], dispatchOnPage: true });
+    expect(endings[0]).toMatchObject({ id: 'ended-task-run-1', note: full, task: tasks[0], dispatchOnPage: true, dispatchCardId: 'subagent-a1' });
+    expect(endings[1]).toMatchObject({ dispatchOnPage: false, dispatchCardId: undefined });
+    expect(endings[2]).toMatchObject({ dispatchOnPage: true, dispatchCardId: 'subagent-a2' });
     expect(foldHistory(nodes, 't9').filter((node) => node.kind === 'subagent-ended')).toHaveLength(3);
     expect(readSubagentEndings(nodes, tasks).filter((node) => node.kind === 'subagent-ended')).toEqual(endings);
   });
@@ -480,6 +482,16 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       dispatchOnPage: true,
       dispatchCardId: 'subagent-run-2',
     });
+
+    const ambiguousEndings = readSubagentEndings([
+      { ...runBCard, taskId: undefined },
+      note('n-run-1-untagged', 'run-1', 't3', 'First result.'),
+      note('n-run-2-untagged', 'run-2', 't3', 'Second result.'),
+    ], tasks).filter((node) => node.kind === 'subagent-ended');
+    expect(ambiguousEndings.map(({ taskId, dispatchOnPage, dispatchCardId }) => ({ taskId, dispatchOnPage, dispatchCardId }))).toEqual([
+      { taskId: 'run-1', dispatchOnPage: false, dispatchCardId: undefined },
+      { taskId: 'run-2', dispatchOnPage: false, dispatchCardId: undefined },
+    ]);
 
     const runACard: SubagentBlock = {
       ...agent('a1', 'completed', 't1'),

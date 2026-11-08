@@ -2347,12 +2347,12 @@ function EndedRow({
 }) {
   const { time } = useI18n();
   const node = forest?.byId[ending.agentId];
-  const card = (ending.dispatchCardId === undefined ? undefined : childBlocks.get(ending.dispatchCardId)) ?? childBlocks.get(ending.agentId);
+  const card = ending.dispatchCardId === undefined ? undefined : childBlocks.get(ending.dispatchCardId);
   const start = parseTimelineMs(ending.task?.started_at);
   const end = parseTimelineMs(ending.task?.completed_at);
   const elapsed = start === undefined || end === undefined ? undefined : Math.max(0, end - start);
-  const model = ending.task?.model ?? card?.model ?? node?.model;
-  const effort = ending.task?.thinking_effort ?? card?.thinkingEffort ?? node?.thinkingEffort;
+  const model = ending.task?.model ?? card?.model;
+  const effort = ending.task?.thinking_effort ?? card?.thinkingEffort;
   return (
     <SubagentEndedRow
       ending={ending}
@@ -3085,7 +3085,8 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
     );
   }
   if (a.kind === 'subagent-ended' && b.kind === 'subagent-ended') {
-    return a.id === b.id && a.note === b.note && a.task === b.task && a.outcome === b.outcome && a.dispatchOnPage === b.dispatchOnPage;
+    return a.id === b.id && a.note === b.note && a.task === b.task && a.outcome === b.outcome &&
+      a.dispatchOnPage === b.dispatchOnPage && a.dispatchCardId === b.dispatchCardId;
   }
   if (a.kind === 'history-fold' && b.kind === 'history-fold') {
     return (

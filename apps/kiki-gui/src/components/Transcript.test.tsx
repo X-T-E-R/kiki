@@ -7123,7 +7123,7 @@ describe('background task notification folding (TUI-01)', () => {
 
   it('counts one completion per execution and keeps resumed receipts independent of the latest roster summary', async () => {
     const card: Block = {
-      kind: 'subagent', id: 'subagent-inspector', subagentId: 'inspector', parentAgentId: 'main', parentToolCallId: undefined,
+      kind: 'subagent', id: 'subagent-inspector', subagentId: 'inspector', taskId: 'second', parentAgentId: 'main', parentToolCallId: undefined,
       parentTurnId: 't1', name: 'Inspector', description: undefined, model: 'example-model', thinkingEffort: 'high',
       status: 'completed', summary: 'Latest roster result must not replace past receipts.', error: undefined,
       startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:03:00.000Z', toolCallCount: 0, transcript: [],
@@ -7154,10 +7154,13 @@ describe('background task notification folding (TUI-01)', () => {
     expect(endings[0]?.textContent).toContain('1m');
     expect(endings[1]?.textContent).toContain('2m');
     expect(endings.every((row) => !row.textContent?.includes('Latest roster result'))).toBe(true);
-    expect(container.querySelectorAll('[data-subagent-ended-dispatch="inspector"]')).toHaveLength(2);
+    expect(endings[0]?.textContent).not.toContain('example-model');
+    expect(endings[1]?.textContent).toContain('example-model');
+    expect(endings[0]!.querySelector('[data-subagent-ended-dispatch]')).toBeNull();
+    expect(container.querySelectorAll('[data-subagent-ended-dispatch="inspector"]')).toHaveLength(1);
     await act(async () => { click(endings[0]!.querySelector('[data-agent-open]')!); });
     expect(openAgent).toHaveBeenCalledWith('inspector');
-    await act(async () => { click(endings[0]!.querySelector('[data-subagent-ended-dispatch]')!); });
+    await act(async () => { click(endings[1]!.querySelector('[data-subagent-ended-dispatch]')!); });
     expect(container.querySelector('[data-subagent-id="inspector"]')).not.toBeNull();
   });
 

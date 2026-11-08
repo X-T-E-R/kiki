@@ -399,7 +399,7 @@ export function readSubagentEndings(
     const agentId = task.agent_id!;
     const allCards = allCardsByAgentId.get(agentId) ?? [];
     const untaggedCards = untaggedCardsByAgentId.get(agentId) ?? [];
-    if (allCards.length !== 1 || untaggedCards.length !== 1) return undefined;
+    if (allCards.length !== 1 || untaggedCards.length !== 1 || (taskIdsByAgent.get(agentId)?.size ?? 0) > 1) return undefined;
     return untaggedCards[0];
   };
   const precomputedCardSummaries = new Map<string, string>();
@@ -410,10 +410,8 @@ export function readSubagentEndings(
     if (node.kind !== 'system' || task === undefined || task.agent_id === undefined) continue;
     const turn = normTurn(node.turnId);
     const matchedCard = resolveMatchedCard(task);
-    const knownAgentTasks = taskIdsByAgent.get(task.agent_id);
     const canAbsorbIntoCard =
       matchedCard !== undefined &&
-      (matchedCard.card.taskId === task.id || (knownAgentTasks?.size ?? 0) <= 1) &&
       normTurn(matchedCard.card.parentTurnId) === turn &&
       isContiguousSameTurn(matchedCard.index, index, turn);
     if (canAbsorbIntoCard) {
