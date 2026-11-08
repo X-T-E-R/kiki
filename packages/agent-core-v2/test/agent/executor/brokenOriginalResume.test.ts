@@ -4,7 +4,7 @@ import { AcpProcessClient, type AcpOpenSessionOptions, type HostProcessLike } fr
 import { describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
-import type { ServiceIdentifier } from '#/_base/di/instantiation';
+import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { LifecycleScope } from '#/app/scopes';
@@ -927,12 +927,13 @@ describe('recoverable ACP broken resume', () => {
       lastNegotiated: (id) => caps.get(`${id}\0`),
       resolveExecutable: async function (id) { return this.resolve(id); },
     };
+    let agyPromptText = 'agy worker prompt';
     const agyProfile = normalizeAgentProfile({
       name: 'agy-worker',
       executor: 'agy-cli',
       modelAlias: 'model-a',
       thinkingEffort: 'medium',
-      systemPrompt: () => 'agy worker prompt',
+      systemPrompt: () => agyPromptText,
     });
     const metadata = sessionMetadata();
     const loop = {
@@ -945,6 +946,7 @@ describe('recoverable ACP broken resume', () => {
     } as unknown as IAgentLoopService;
     const childCtx = createTestAgent(
       {
+        autoConfigure: false,
         initialConfig: {
           [AGENT_EXECUTOR_OVERRIDES_SECTION]: {
             'agy-cli': {
@@ -990,7 +992,7 @@ describe('recoverable ACP broken resume', () => {
       agentService(IAgentExecutionService, new SyncDescriptor(AgentExecutionService)),
     );
     const childProfile = childCtx.get(IAgentProfileService);
-    const childExecution = childCtx.get(IAgentExecutionService);
+    let childExecution = childCtx.get(IAgentExecutionService);
     await childProfile.bind({ profile: agyProfile.name, delegationPosition: 'sub' });
     expect(childProfile.data().executorId).toBe('instance-agy-a');
 
@@ -1003,6 +1005,7 @@ describe('recoverable ACP broken resume', () => {
       kind: LifecycleScope.Agent,
       accessor: {
         get<T>(id: ServiceIdentifier<T>): T {
+          if (id === IAgentExecutionService) return childExecution as T;
           if (id === IAgentLoopService) return childLoop as T;
           if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
           if (id === IAgentToolPolicyService) return { isToolActive: () => false } as T;
@@ -1077,13 +1080,63 @@ describe('recoverable ACP broken resume', () => {
             },
           });
           expect(childExecution.canResumeBrokenOriginal()).toBe(false);
+          createdSession?.updateBinding({
+            ...originalBinding,
+            renderGeneration: 2,
+            systemPrompt: 'changed prompt',
+          });
+          expect(childExecution.canResumeBrokenOriginal()).toBe(false);
+          createdSession?.updateBinding({
+            ...originalBinding,
+            renderGeneration: 3,
+          });
+          expect(childExecution.canResumeBrokenOriginal()).toBe(false);
+          const nonAgySession = new AcpAgentExecutorSession({
+            agent: { id: CHILD, accessor: { get: <T>(id: ServiceIdentifier<T>): T => childCtx.get(id) } },
+            descriptor: {
+              ...instanceADesc,
+              command: 'other-acp',
+              instance: undefined,
+            },
+            binding: { ...originalBinding, renderGeneration: 2 },
+          }, () => ({
+            status: () => ({ state: 'broken' as const }),
+            shutdown: async () => {},
+            cancel: () => {},
+          } as never));
+          expect(nonAgySession.canResumeBrokenOriginal()).toBe(false);
+          await nonAgySession.shutdown();
           createdSession?.updateBinding(originalBinding);
         }
-        expect(childExecution.canResumeBrokenOriginal()).toBe(scenario !== 'legacy-unsettled');
+        if (scenario === 'legacy-network') {
+          await childProfile.rebuildPromptContext({ preserveUnchangedRenderGeneration: true });
+          expect(childProfile.data().renderGeneration).toBe(1);
+          expect(childExecution.canResumeBrokenOriginal()).toBe(true);
+          agyPromptText = 'changed agy worker prompt';
+          await childProfile.rebuildPromptContext({ preserveUnchangedRenderGeneration: true });
+          expect(childProfile.data().renderGeneration).toBe(2);
+          createdSession?.updateBinding(childProfile.data());
+          expect(childExecution.canResumeBrokenOriginal()).toBe(false);
+          agyPromptText = 'agy worker prompt';
+          childProfile.applyBindingSnapshot({
+            ...childProfile.data(),
+            systemPrompt: 'agy worker prompt',
+            renderGeneration: 1,
+          });
+          await childExecution.shutdown(new Error('simulate cold restore'));
+          childExecution = childCtx.get(IInstantiationService).createInstance(AgentExecutionService);
+          await childProfile.rebuildPromptContext();
+          expect(childProfile.data().renderGeneration).toBe(2);
+          await childProfile.rebuildPromptContext({ preserveUnchangedRenderGeneration: true });
+          expect(childProfile.data().renderGeneration).toBe(2);
+        }
+        if (scenario !== 'legacy-network') {
+          expect(childExecution.canResumeBrokenOriginal()).toBe(scenario !== 'legacy-unsettled');
+        }
         oldBridge = false;
         const resumed = await executeTool(toolIx.get(ISubagentTool), {
           turnId: 2, toolCallId: 'toolu_legacy_resume',
-          args: { resume: CHILD, prompt: 'new input only', description: 'resume original native task', background: true },
+          args: { resume: CHILD, prompt: scenario === 'legacy-network' ? '' : 'new input only', description: 'resume original native task', background: true },
           signal,
         });
         await childExecution.settled();
@@ -1111,7 +1164,7 @@ describe('recoverable ACP broken resume', () => {
           expect(resumed.isError, JSON.stringify(resumed.output)).toBeFalsy();
           expect(childProfile.data().executorId).toBe('instance-agy-a');
           expect(remoteA.histories[1]?.promptParams).toEqual([expect.objectContaining({ sessionId: legacySessionId,
-            prompt: [{ type: 'text', text: 'new input only' }] })]);
+            prompt: [{ type: 'text', text: scenario === 'legacy-network' ? '' : 'new input only' }] })]);
           expect(remoteB.spawns()).toBe(0);
         }
         return;
@@ -1423,6 +1476,7 @@ describe('recoverable ACP broken resume', () => {
     } as unknown as IAgentLoopService;
     const childCtx = createTestAgent(
       {
+        autoConfigure: false,
         initialConfig: {
           [AGENT_EXECUTOR_OVERRIDES_SECTION]: {
             'agy-cli': {

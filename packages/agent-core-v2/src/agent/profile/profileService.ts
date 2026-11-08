@@ -1497,6 +1497,35 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       thinkingSelection,
     });
     assertCurrent?.();
+    const nextRenderGeneration = input.preserveUnchangedRenderGeneration === true &&
+      this.profileState.profileName !== undefined &&
+      this.profileState.execution === undefined &&
+      this.profileState.renderGeneration > 0 &&
+      agentExecutorBindingFingerprint(this.data()) === agentExecutorBindingFingerprint({
+        ...this.data(),
+        executorId: executor.descriptor.id,
+        executorProtocol: executor.descriptor.protocol,
+        executorOptions: { ...executor.options },
+        executorDescriptorRevision: executor.descriptor.revision,
+        personaId: persona?.definition.id,
+        personaRevision: persona?.revision,
+        roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
+        modelAlias: alias,
+        thinkingLevel: effectiveThinkingLevel,
+        thinkingEffortExplicit: requestedThinking === undefined ? false : true,
+        profileDefinitionId: selection.baseProfile.definitionId,
+        routeId: selection.route?.id,
+        systemPrompt: assembled.text,
+        executorPrompt: profile.executorPrompt,
+        allowKikiSubagents: profile.allowKikiSubagents,
+        injectKikiMcp: profile.injectKikiMcp ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.inject_kiki_mcp,
+        kikiContext: profile.kikiContext,
+        renderGeneration: this.profileState.renderGeneration,
+      }) &&
+      this.profileState.environmentDisclosure?.cwd === assembled.environment.cwd &&
+      JSON.stringify(this.profileState.environmentDisclosure?.date) === JSON.stringify(assembled.environment.date)
+      ? this.profileState.renderGeneration
+      : undefined;
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
@@ -1538,6 +1567,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       bindingAdvisories,
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
+      renderGeneration: nextRenderGeneration,
       agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
       activeToolNames: profile.tools,
       toolAllowPolicies: profile.toolAllowPolicies,
@@ -2252,7 +2282,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
-  async rebuildPromptContext(): Promise<void> {
+  async rebuildPromptContext(options?: { readonly preserveUnchangedRenderGeneration?: boolean }): Promise<void> {
     await this.systemPromptRefreshTail.catch(() => undefined);
     this.memorySnapshot.invalidate();
     const current = this.profileState;
@@ -2323,6 +2353,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       bindingSelection,
       lease: current.appliedLease,
       spawnPolicy: current.spawnPolicy,
+      preserveUnchangedRenderGeneration: options?.preserveUnchangedRenderGeneration,
       delegationPosition: this.delegationPosition,
     });
   }

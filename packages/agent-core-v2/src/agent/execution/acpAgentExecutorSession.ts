@@ -283,7 +283,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
-    const reusablePrior = this.#reusablePriorState(prior);
+    const reusablePrior = this.#reusablePriorState(prior) || sessionOptions.sessionMeta?.['kiki.agyLegacyRecovery'] !== undefined;
     const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
     const sessionEpoch = priorSessionId === opened.sessionId
       ? prior.sessionEpoch ?? 1
@@ -531,13 +531,23 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (!this.#stateMatchesDescriptorOrFamily(state)) return false;
     if (state.sessionRef?.ref['localSource'] !== undefined &&
         !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return false;
-    const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, false, this.#reusablePriorState(state));
+    const legacy = this.#legacyAgyRecovery(state);
+    const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, false, this.#reusablePriorState(state) || legacy !== undefined);
     if (resume.sessionRef === undefined) return false;
     const negotiated = this.context.agent.accessor.get(IAgentExecutorRegistry).negotiated?.(
       this.context.descriptor.id,
       this.context.descriptor.version,
     );
-    return negotiated?.resume !== false || negotiated?.load !== false || this.#legacyAgyRecovery(state) !== undefined;
+    return negotiated?.resume !== false || negotiated?.load !== false || legacy !== undefined;
+  }
+
+  #legacyAgyBindingMatches(state: ReturnType<typeof externalStateForGeneration>): boolean {
+    if (this.#reusablePriorState(state)) return true;
+    const { binding } = this.context;
+    return binding.execution === undefined &&
+      binding.renderGeneration === 2 &&
+      state.descriptorRevision === this.context.descriptor.revision &&
+      agentExecutorBindingMatches({ ...binding, renderGeneration: 1 }, state.bindingFingerprint);
   }
 
   #legacyAgyRecovery(
@@ -559,7 +569,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         launchHome(descriptor) !== '' || !sameLaunchHome(state.sessionRef, descriptor) ||
         state.sessionRef?.ref['localSource'] !== undefined || state.sessionEpoch !== 1 ||
         sessionId === undefined || !AGY_UUID.test(sessionId) || state.profileDeliveredSessionId !== sessionId ||
-        binding.modelAlias === undefined || !this.#reusablePriorState(state) ||
+        binding.modelAlias === undefined || !this.#legacyAgyBindingMatches(state) ||
         (hasAdditionalDirs && disclosedCwd === undefined) ||
         (disclosedCwd !== undefined && !sameWorkspacePath(disclosedCwd, roots.workDir)) ||
         turn?.turnId !== 0 || turn.reason !== 'failed' || turn.error?.code !== 'executor.protocol_error' ||
@@ -775,7 +785,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         this.context.descriptor,
         state,
         this.#client.status().state === 'broken',
-        this.#reusablePriorState(state),
+        this.#reusablePriorState(state) || legacy !== undefined,
       ),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&

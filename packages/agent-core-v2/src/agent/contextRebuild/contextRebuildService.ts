@@ -219,7 +219,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       completed.push('skills');
       this.throwIfCancelled(signal);
       try {
-        await this.profile.rebuildPromptContext();
+        await this.profile.rebuildPromptContext({ preserveUnchangedRenderGeneration: trigger === 'restore' });
       } catch (error) {
         if (beforeProfile !== undefined && this.profileCommitted(beforeProfile)) completed.push('profile', 'prompt_fields');
         throw error;

@@ -449,9 +449,8 @@ export class AgentExecutionService implements IAgentExecutionService {
     await this.disposeBrokenExternalSession();
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
       const status = this.session.status();
-      if (status.state === 'broken') {
-        if (this.session.canResumeBrokenOriginal?.() !== true) throw brokenOriginalResumeRefusal(this.agent.id);
-      } else if (status.state !== 'idle') {
+      if (status.state === 'broken') throw brokenOriginalResumeRefusal(this.agent.id);
+      if (status.state !== 'idle') {
         throw new Error2(
           ErrorCodes.CONFIG_INVALID,
           `Agent executor binding cannot change while the executor session is ${status.state}`,

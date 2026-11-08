@@ -302,6 +302,7 @@ export interface BindAgentInput {
   readonly strictThinking?: boolean;
   readonly inheritedUserToolNames?: readonly string[];
   readonly unavailableTools?: 'restore';
+  readonly preserveUnchangedRenderGeneration?: boolean;
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
   readonly lease?: SubagentLease;
   readonly spawnPolicy?: SpawnConstraints;
@@ -351,7 +352,7 @@ export interface IAgentProfileService {
   reconcileMemorySnapshot(): Promise<void>;
   reconcileSpaceSnapshot?(): Promise<void>;
   reconcilePluginUsage?(): Promise<void>;
-  rebuildPromptContext(): Promise<void>;
+  rebuildPromptContext(options?: { readonly preserveUnchangedRenderGeneration?: boolean }): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;
   getCognitionSnapshot(): import('#/agent/cognition/cognitionConfig').CognitionBinding | undefined;
