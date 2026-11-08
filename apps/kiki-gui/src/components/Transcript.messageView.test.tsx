@@ -440,6 +440,29 @@ describe('message view (Bot mode)', () => {
     expect(readTimelineView('session_bot', { delivery: 'message' })).toBe('process');
   });
 
+  it('reads the full steps of an opened activity summary and releases them on collapse', async () => {
+    const releases: ReturnType<typeof vi.fn>[] = [];
+    const beginContentRead = vi.fn((_agentId: string, _source: unknown, _roots: readonly string[]) => { const release = vi.fn(); releases.push(release); return { release, retry() {} }; });
+    const controller = { contentRefsFor: () => [], isContentRange: () => false, beginContentRead, turnStructurePending: () => false,
+      historyPreviewPending: () => false, retainHistoryPreview: () => () => {} };
+    const blocks: Block[] = [user('u1', '查一下', 't1'), tool('r1', 'Read', 't1'), tool('b1', 'Bash', 't1'), sendMessage('s1', 't1', '查好了')];
+    const { container } = await render(
+      <TranscriptDetailProvider controller={controller as unknown as import('@kiki/session-core/session').SessionController}
+        load={() => Promise.resolve(false)} loads={{}} sessionId="session_bot" agentId="main">
+        {timeline(blocks, 'message')}
+      </TranscriptDetailProvider>,
+    );
+    const steps = () => beginContentRead.mock.calls.filter(([, , roots]) => JSON.stringify(roots) === '["steps"]');
+    expect(steps()).toHaveLength(0);
+    const toggle = () => container.querySelector<HTMLButtonElement>('[data-activity-summary-toggle]')!;
+    await act(async () => { toggle().click(); });
+    expect(steps()).toEqual([['main', { kind: 'turn', id: 't1' }, ['steps']]]);
+    const read = releases[beginContentRead.mock.calls.findIndex(([, , roots]) => JSON.stringify(roots) === '["steps"]')]!;
+    expect(read).not.toHaveBeenCalled();
+    await act(async () => { toggle().click(); });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a handoff line on the sending side and on the receiving side (acceptance 4)', async () => {
     const outbound: Block[] = [
       user('u1', '让阿澈起草 changelog', 't1'),

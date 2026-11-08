@@ -386,6 +386,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           } : page;
           unavailablePage = page;
         } catch (error) {
+          if (error instanceof GlobalSearchError && error.reason === 'invalid_page_token' && pageToken !== undefined) throw new Error('stale_scan_cursor');
           if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable')) throw error;
         }
       }

@@ -1350,27 +1350,36 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
  * A turn whose structure did not fit the window: its step list — and one
  * step's own frames — can be cut as an array, so the turn's tail carries the
  * outlet. The row names the turn it belongs to, never an array index it would
- * have to guess.
+ * have to guess. While the turn's steps are on screen (not behind a closed
+ * fold) the structure reads itself; the button remains for retry.
  */
-function TurnStepsContinuation({ turnId, state }: { turnId: string; state: SessionViewState }) {
+function TurnStepsContinuation({ turnId, state, autoRead }: { turnId: string; state: SessionViewState; autoRead: boolean }) {
   const { t } = useI18n();
   const controller = useTranscriptController();
   const target = useTranscriptTarget();
   const source = useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]);
   const continuation = useContentContinuation(source, TURN_STEP_ROOTS);
   const [requestedTurn, setRequestedTurn] = useState<string>();
-  const retry = useAutomaticContentRead(requestedTurn === turnId ? source : undefined, TURN_STEP_ROOTS);
   const partial = controller !== undefined && target !== undefined && controller.turnStructurePending(target.agentId, turnId);
+  const automatic = partial && (autoRead || requestedTurn === turnId);
+  const retry = useAutomaticContentRead(automatic ? source : undefined, TURN_STEP_ROOTS);
   if (!partial && continuation.pending.length === 0) return null;
   const status = state.detailLoads[`structure:${turnId}`];
+  const loading = status?.status === 'loading' || (automatic && status?.status !== 'error');
   return (
     <div data-transcript-lane="agent" className={AGENT_LANE}>
-      {partial ? <button type="button" className="min-h-7 text-[12px] text-ink-soft" disabled={status?.status === 'loading'}
-        onClick={() => { if (requestedTurn === turnId) retry(); else setRequestedTurn(turnId); }}>
-        {status?.status === 'loading' ? t('transcript.content.loading') : status?.status === 'error' ? t('transcript.detail.retry') : t('transcript.content.more')}
-      </button> : <ContentContinuation source={source} roots={TURN_STEP_ROOTS} autoRead={false} label={t('transcript.content.steps')} />}
+      {partial ? <button type="button" data-turn-structure={status?.status ?? (automatic ? 'loading' : 'idle')} className="min-h-7 text-[12px] text-ink-soft" disabled={loading}
+        onClick={() => { if (automatic) retry(); else setRequestedTurn(turnId); }}>
+        {status?.status === 'error' ? t('transcript.detail.retry') : loading ? t('transcript.content.loading') : t('transcript.content.more')}
+      </button> : <ContentContinuation source={source} roots={TURN_STEP_ROOTS} autoRead={autoRead} label={t('transcript.content.steps')} />}
     </div>
   );
+}
+
+/** Holds a turn's step-structure reader for as long as it is mounted, e.g. while an activity summary is open. */
+function TurnStructureReader({ turnId }: { turnId: string }) {
+  useAutomaticContentRead(useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]), TURN_STEP_ROOTS);
+  return null;
 }
 
 /**
@@ -2688,6 +2697,7 @@ const MessageViewRow = memo(function MessageViewRow({
       <ActivitySummaryRow
         summary={node}
         onOpenProcess={() => { onOpenProcess(turnId, node.members[0]?.id); }}
+        openReader={node.turnId === undefined ? undefined : <TurnStructureReader turnId={node.turnId} />}
         renderMember={(member) =>
           withGalleryOrder(member.id, agentId, blockOrder, member.kind === 'tool' ? (
             <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
@@ -4110,8 +4120,11 @@ export function Transcript({
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
   const expandedStructureReads = useRef(new Map<string, ReturnType<SessionController['beginContentRead']>>());
-  const expandedTurns = JSON.stringify([...new Set(groupedNodes.flatMap(node => node.kind === 'history-fold' && openFolds.has(node.id)
-    ? node.members.flatMap(member => { const turn = displayNodeTurnId(member); return turn === undefined ? [] : [turn]; }) : []))].toSorted());
+  const foldTurns = (open: boolean) => [...new Set(groupedNodes.flatMap(node => node.kind === 'history-fold' && openFolds.has(node.id) === open
+    ? node.members.flatMap(member => { const turn = displayNodeTurnId(member); return turn === undefined ? [] : [turn]; }) : []))].toSorted();
+  const expandedTurns = JSON.stringify(foldTurns(true));
+  const closedFoldKey = JSON.stringify(foldTurns(false));
+  const closedFoldTurns = useMemo(() => new Set(JSON.parse(closedFoldKey) as string[]), [closedFoldKey]);
   useEffect(() => {
     const reads = expandedStructureReads.current;
     return () => { for (const lease of reads.values()) lease.release(); reads.clear(); };
@@ -5445,7 +5458,7 @@ export function Transcript({
                       />
                     </div>
                   )}
-                  {isTurnTail && turnTailId !== undefined ? <TurnStepsContinuation turnId={turnTailId} state={state} /> : null}
+                  {isTurnTail && turnTailId !== undefined ? <TurnStepsContinuation turnId={turnTailId} state={state} autoRead={visible && !closedFoldTurns.has(turnTailId)} /> : null}
                   {last && view === 'message' && presence !== undefined ? (
                     <div className={AGENT_LANE}>
                       <PresenceLine
