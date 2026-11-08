@@ -118,13 +118,16 @@ describe('kiki command helpers', () => {
     const diagnostics = vi.spyOn(serverDiagnostics, 'installServerDiagnostics').mockReturnValue({ record });
     const assets = vi.spyOn(webAssets, 'findServerWebAssetsDir').mockReturnValue(undefined);
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const program = new Command(); registerServeCommand(program);
     try {
       await program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--port', '0', '--idle-exit', '25ms', '--json']);
       expect(diagnostics).toHaveBeenCalledExactlyOnceWith(root);
       expect(record).toHaveBeenCalledWith('ready', { serverId: expect.any(String) });
-      expect(record).toHaveBeenCalledWith('closed', expect.objectContaining({ callerOutcome: 'resolved' }));
+      expect(record).toHaveBeenCalledWith('closed', expect.objectContaining({ callerOutcome: 'resolved', activeResources: expect.any(Array) }));
+      expect(exit).toHaveBeenCalledWith(0);
     } finally {
+      exit.mockRestore();
       diagnostics.mockRestore();
       assets.mockRestore();
       output.mockRestore();

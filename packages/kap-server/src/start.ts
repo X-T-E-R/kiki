@@ -224,6 +224,7 @@ export interface ServerStartOptions {
    * and frozen at boot; omit to let the UI fall back to `<workspace dir> | Kiki`.
    */
   readonly webTitle?: string;
+  readonly explicitExitPath?: string;
   /**
    * Optional *additional* credential accepted on the RPC surface (debug REST +
    * WebSocket) alongside the persistent bearer token. Never required and never
@@ -1054,6 +1055,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     onShutdown: () => {
       void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed'));
     },
+    explicitExitPath: opts.explicitExitPath ?? join(homeDir, 'server', 'explicit-exit.json'),
+    pid: process.pid,
     shutdownSignal: shutdownController.signal,
     connectionRegistry,
     broadcaster,

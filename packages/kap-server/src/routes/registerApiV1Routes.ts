@@ -110,6 +110,8 @@ export interface RegisterApiV1RoutesOptions {
   /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
   readonly themesDir: string;
   readonly onShutdown: () => void;
+  readonly explicitExitPath: string;
+  readonly pid: number;
   readonly shutdownSignal?: AbortSignal;
   readonly connectionRegistry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
@@ -148,7 +150,7 @@ export async function registerApiV1Routes(
 ): Promise<void> {
   if (opts.enableShutdown !== false) {
     registerDesktopLifecycleRoutes(app as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core,
-      { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api' });
+      { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api', explicitExitPath: opts.explicitExitPath, pid: opts.pid });
   }
   await app.register(
     async (apiV1) => {

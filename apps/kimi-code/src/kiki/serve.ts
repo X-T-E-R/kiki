@@ -289,17 +289,22 @@ async function runServeForeground(
   const terminate = () => shutdown('SIGTERM');
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', terminate);
+  let exitCode = 0;
   try {
     await running.closed;
     const receipt = await running.exitReceipt;
-    diagnostics.record('closed', { ...receipt });
-    if (receipt.callerOutcome === 'rejected') {
-      throw new Error(`Kiki server cleanup failed: ${receipt.errorMessage ?? 'unknown cleanup error'}`);
-    }
+    diagnostics.record('closed', { ...receipt, activeResources: process.getActiveResourcesInfo() });
+    if (receipt.callerOutcome !== 'resolved' || receipt.cleanupOutcome !== 'closed') exitCode = 1;
+  } catch (error) {
+    exitCode = 1;
+    diagnostics.record('close_failed', { error: error instanceof Error ? error.message : String(error) });
   } finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', terminate);
   }
+  // A clean receipt is not process exit. Residual handles must not keep the SEA alive,
+  // and a failed receipt must still be observable as a non-zero exit.
+  process.exit(exitCode);
 }
 
 async function stopServer(homeDir: string): Promise<void> {

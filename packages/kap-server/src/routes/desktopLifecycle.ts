@@ -4,6 +4,7 @@ import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, type Deskto
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
+import { writePrivateFile } from '../services/auth/privateFiles';
 
 export function desktopPendingWork(core: Scope): string[] {
   const sessions = core.accessor.get(ISessionManager);
@@ -37,7 +38,7 @@ export function registerDesktopLifecycleRoutes(app: {
   get: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   post: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   addHook: (name: 'onRequest' | 'preHandler', handler: (...args: never[]) => unknown) => unknown;
-}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string }): void {
+}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string; explicitExitPath: string; pid: number }): void {
   const bootstrap = core.accessor.get(IBootstrapService);
   let draining = false;
   let prepared = false;
@@ -76,9 +77,19 @@ export function registerDesktopLifecycleRoutes(app: {
       reply.send(okEnvelope({ ok: true }, req.id));
       return;
     }
-    draining = true;
-    reply.send(okEnvelope({ ok: true }, req.id));
-    setImmediate(opts.onShutdown);
+    void (async () => {
+      try {
+        await writePrivateFile(opts.explicitExitPath, JSON.stringify({
+          schemaVersion: 1, serverId: opts.serverId, pid: opts.pid, action: req.body.action,
+        }));
+      } catch {
+        reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'The explicit exit record could not be saved, so the service was not stopped', req.id));
+        return;
+      }
+      draining = true;
+      reply.send(okEnvelope({ ok: true }, req.id));
+      setImmediate(opts.onShutdown);
+    })();
   });
   app.post(mutate.path, mutate.options, mutate.handler as never);
 }

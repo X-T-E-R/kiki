@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { ProcessTask } from '@kiki/agent-core-v2/agent/tools/os/bash/process-task';
 import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import { IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2/os/interface/hostProcess';
@@ -138,6 +138,8 @@ describe('desktop-managed shared lifecycle', () => {
       expect((await call(a, '/api/desktop-lifecycle', { ...request, interrupt_work: false })).code).not.toBe(0);
       expect(pids.every(alive)).toBe(true);
       expect((await call(a, '/api/desktop-lifecycle', request)).code).toBe(0);
+      const exitRecord = JSON.parse(await readFile(join(root, 'a', 'server', 'explicit-exit.json'), 'utf8')) as { schemaVersion: number; serverId: string; pid: number; action: string };
+      expect(exitRecord).toMatchObject({ schemaVersion: 1, serverId: state.server_id, pid: expect.any(Number), action: 'quit' });
       await a.closed;
       await expect(a.exitReceipt).resolves.toMatchObject({ callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0 });
       expect(pids.filter(alive)).toEqual([]);
@@ -186,6 +188,8 @@ describe('desktop-managed shared lifecycle', () => {
       expect((await call(a, '/api/desktop-lifecycle', { ...request, interrupt_work: false })).code).not.toBe(0);
       expect(cancelled).toBe(false);
       expect((await call(a, '/api/desktop-lifecycle', request)).code).toBe(0);
+      const exitRecord = JSON.parse(await readFile(join(root, 'a', 'server', 'explicit-exit.json'), 'utf8')) as { schemaVersion: number; serverId: string; pid: number; action: string };
+      expect(exitRecord).toMatchObject({ schemaVersion: 1, serverId: state.server_id, pid: expect.any(Number), action });
       await Promise.race([task.cancelled, new Promise((_, reject) => setTimeout(() => { reject(new Error('graceful cancellation did not drain')); }, 20_000))]);
       await a.closed;
       expect(cancelled).toBe(true); expect((await call(b, '/api/meta')).code).toBe(0);
@@ -256,6 +260,7 @@ describe('desktop-managed shared lifecycle', () => {
       await control.pause({ operationId: 'prepare-pause' });
       await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
       expect((await call(server, '/api/desktop-lifecycle', prepare)).code).toBe(0);
+      await expect(readFile(join(root, 'server', 'explicit-exit.json'), 'utf8')).rejects.toThrow();
       expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: true, work_pending: [] });
       const procedure = { scope: 'session', sessionId, service: 'sessionExecutionControl' };
       expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method: 'read' }, params: [] })).data).toMatchObject({ phase: 'paused' });
@@ -269,6 +274,25 @@ describe('desktop-managed shared lifecycle', () => {
       expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: false });
       expect((await call(server, '/api/klient/call', { procedure: { ...procedure, method: 'resume' },
         params: [{ operationId: 'resume-after-cancel', pauseOperationId: 'prepare-pause' }] })).data).toMatchObject({ phase: 'running' });
+    } finally {
+      await server?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('does not stop the service when the explicit exit record cannot be saved', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-exit-record-'));
+    let server: RunningServer | undefined;
+    try {
+      const blocked = join(root, 'blocked');
+      await writeFile(blocked, 'not-a-directory');
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root,
+        explicitExitPath: join(blocked, 'explicit-exit.json'), env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' });
+      const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      const refused = await call(server, '/api/desktop-lifecycle', { action: 'update', server_id: state.server_id, consent: true, interrupt_work: false });
+      expect(refused.code).not.toBe(0);
+      expect(desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data)).toMatchObject({ draining: false, server_id: state.server_id });
+      expect((await call(server, '/api/meta')).code).toBe(0);
     } finally {
       await server?.close();
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });

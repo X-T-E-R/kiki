@@ -202,15 +202,19 @@ internal static class Program
         string directory = Path.GetDirectoryName(executable);
         string server = Path.Combine(directory, "kiki-server.exe");
         string preferences = Path.Combine(Environment.GetEnvironmentVariable("KIKI_HOME"), "desktop.json");
+        bool launcherClosing = false;
         using (Form window = new Form { Text = "Kiki hot switch fixture", Width = 300, Height = 120 })
         {
             window.FormClosing += delegate(object sender, FormClosingEventArgs args)
             {
-                args.Cancel = !File.Exists(preferences) || !Regex.IsMatch(File.ReadAllText(preferences), "\"closeToTray\"\\s*:\\s*false");
+                bool allowed = File.Exists(preferences) && Regex.IsMatch(File.ReadAllText(preferences), "\"closeToTray\"\\s*:\\s*false");
+                args.Cancel = !allowed;
+                launcherClosing = allowed;
             };
-            window.Shown += delegate
+            Action startServer = null;
+            startServer = delegate
             {
-                Process.Start(new ProcessStartInfo
+                Process process = Process.Start(new ProcessStartInfo
                 {
                     FileName = server,
                     Arguments = "serve",
@@ -218,7 +222,15 @@ internal static class Program
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
+                process.EnableRaisingEvents = true;
+                process.Exited += delegate
+                {
+                    if (launcherClosing || window.IsDisposed) return;
+                    try { window.BeginInvoke(startServer); }
+                    catch { }
+                };
             };
+            window.Shown += delegate { startServer(); };
             Application.Run(window);
         }
     }
@@ -1012,10 +1024,14 @@ try {
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome
+    # Close launchers before their servers. An open fixture window restarts a server that exits.
+    Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and $_.Path.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object { try { $_.Kill() } catch {}; try { $null = $_.WaitForExit(5000) } catch {} }
     Stop-OwnFixtureServer
     Get-Process -Name 'kiki-desktop','kiki-server' -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and $_.Path.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)
-    } | ForEach-Object { $_.Kill(); $null = $_.WaitForExit(5000) }
+    } | ForEach-Object { try { $_.Kill() } catch {}; try { $null = $_.WaitForExit(5000) } catch {} }
     if ($completed) {
         if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
     }

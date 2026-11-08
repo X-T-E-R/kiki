@@ -584,6 +584,8 @@ struct BackendState {
     discovery: Option<Arc<DiscoveryFlight>>,
     stopping: bool,
     recovery: RuntimeRecoveryState,
+    observed_server_id: Option<String>,
+    replacing: bool,
 }
 
 impl BackendState {
@@ -706,10 +708,11 @@ impl BackendManager {
             .clone();
         if let Some(connection) = cached {
             let port = connection_port(&connection)?;
-            if authenticated_backend_identity(port, &connection.token)
-                .is_ok_and(|identity| verify_discovered_backend(&home, port, &connection.token, &identity).is_ok())
-            {
-                return Ok(connection);
+            if let Ok(identity) = authenticated_backend_identity(port, &connection.token) {
+                if verify_discovered_backend(&home, port, &connection.token, &identity).is_ok() {
+                    self.remember_observed_server(&identity.server_id);
+                    return Ok(connection);
+                }
             }
             self.clear_attached(&connection);
         }
@@ -717,6 +720,7 @@ impl BackendManager {
         if let Some(connection) =
             discover_running_backend(&runtime.kiki_home, current_workspace.as_deref())?
         {
+            self.remember_server_on_port(&runtime.kiki_home, connection_port(&connection).ok());
             if let Some(connection) = self.publish_attached(connection, flight) {
                 return Ok(connection);
             }
@@ -730,13 +734,21 @@ impl BackendManager {
             loop {
                 flight.ensure_current()?;
                 if let Some(connection) = discover_running_backend(&runtime.kiki_home, current_workspace.as_deref())? {
+                    self.remember_server_on_port(&runtime.kiki_home, connection_port(&connection).ok());
                     return self.publish_attached(connection, flight).ok_or_else(|| DesktopStartupFailure::plain("Shared service connection was cancelled".to_string()));
                 }
                 if let Some(lease) = SharedUpdateLock::try_acquire(&runtime.kiki_home)? {
                     // A lease alone cannot authorize a second process while a
                     // registered daemon is booting, draining or unreachable.
                     if !read_instance_records(&runtime.kiki_home)?.iter().any(|record| pid_alive(record.pid)) {
-                        break Some(lease);
+                        match self.explicit_exit_admission(&runtime.kiki_home) {
+                            ExplicitExitAdmission::Admit => break Some(lease),
+                            ExplicitExitAdmission::Wait => {}
+                            ExplicitExitAdmission::Refuse => {
+                                drop(lease);
+                                return Err(DesktopStartupFailure::plain("This window will not start another service after an explicit update. No second service was started.".to_string()));
+                            }
+                        }
                     }
                 }
                 if Instant::now() >= deadline {
@@ -852,6 +864,7 @@ impl BackendManager {
                                 return Err(pending.monitor.startup_failure(pending.pid, "reported a different build identity; the packaged sidecar must match this desktop bundle".to_string()));
                             }
                             if let Some(connection) = self.publish_owned_connection(&pending, &connection, flight) {
+                                self.remember_observed_server(&identity.server_id);
                                 return Ok(connection);
                             }
                         }
@@ -927,6 +940,10 @@ impl BackendManager {
         launched_at_ms: u64,
         exit: &TerminatedPayload,
     ) {
+        if self.explicit_exit_suppresses_recovery(pid) {
+            let _ = self.take_backend_if(|candidate| candidate.pid == pid && candidate.launched_at_ms == launched_at_ms);
+            return;
+        }
         if self.idle_exit && exit.code == Some(0) {
             let retired = self.take_backend_if(|candidate| {
                 candidate.pid == pid && candidate.launched_at_ms == launched_at_ms
@@ -1126,7 +1143,14 @@ impl BackendManager {
             .buttons(MessageDialogButtons::OkCancelCustom("Restart space".into(), "Keep running".into())).blocking_show() {
             return Err("Restart cancelled; running work continues".to_string());
         }
-        self.stop_shared_target(&connection, &identity, action)
+        if action == "restart" {
+            self.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.replacing = true;
+        }
+        let result = self.stop_shared_target(&connection, &identity, action);
+        if result.is_err() && action == "restart" {
+            if let Ok(mut state) = self.inner.lock() { state.replacing = false; }
+        }
+        result
     }
 
     fn stop_shared_target(&self, connection: &DesktopConnection, identity: &BackendIdentity, action: &str) -> Result<(), String> {
@@ -1518,16 +1542,30 @@ impl SpaceBackendManager {
     }
 
     fn stop_shared_targets(&self, targets: Vec<(BackendManager, DesktopConnection, BackendIdentity)>, action: &str) -> Result<(), String> {
-        let mut locks = Vec::new();
-        for (backend, _, _) in &targets {
-            let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
-            locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+        if action == "restart" {
+            for (backend, _, _) in &targets {
+                backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.replacing = true;
+            }
         }
-        for (backend, connection, identity) in targets {
-            backend.stop_shared_target(&connection, &identity, action)?;
+        let watched = targets.iter().map(|(backend, _, _)| backend.clone()).collect::<Vec<_>>();
+        let result = (|| {
+            let mut locks = Vec::new();
+            for (backend, _, _) in &targets {
+                let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
+                locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+            }
+            for (backend, connection, identity) in &targets {
+                backend.stop_shared_target(connection, identity, action)?;
+            }
+            for (backend, lock) in locks { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.update_lock = Some(lock); }
+            Ok(())
+        })();
+        if result.is_err() && action == "restart" {
+            for backend in watched {
+                if let Ok(mut state) = backend.inner.lock() { state.replacing = false; }
+            }
         }
-        for (backend, lock) in locks { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.update_lock = Some(lock); }
-        Ok(())
+        result
     }
 
     fn release_update_locks(&self) {
@@ -2527,6 +2565,42 @@ enum HostPathOp {
 }
 
 impl BackendManager {
+    fn remember_observed_server(&self, server_id: &str) {
+        if server_id.is_empty() { return; }
+        if let Ok(mut state) = self.inner.lock() {
+            // Re-reading the server being replaced keeps the latch so a failed
+            // start can retry. A different server id means the replacement landed.
+            if state.replacing && state.observed_server_id.as_deref().is_some_and(|current| current != server_id) {
+                state.replacing = false;
+            }
+            state.observed_server_id = Some(server_id.to_string());
+        }
+    }
+
+    fn remember_server_on_port(&self, home: &Path, port: Option<u16>) {
+        let Some(port) = port else { return; };
+        let Ok(records) = read_instance_records(home) else { return; };
+        let Some(server_id) = records.into_iter().find(|record| record.port == Some(port)).and_then(|record| record.server_id) else { return; };
+        self.remember_observed_server(&server_id);
+    }
+
+    fn explicit_exit_admission(&self, home: &Path) -> ExplicitExitAdmission {
+        let record = read_explicit_lifecycle_exit(home);
+        let Ok(state) = self.inner.lock() else {
+            return if record.is_some() { ExplicitExitAdmission::Wait } else { ExplicitExitAdmission::Admit };
+        };
+        let alive = record.as_ref().is_some_and(|record| pid_alive(record.pid));
+        explicit_exit_decision(record.as_ref(), state.observed_server_id.as_deref(), state.replacing, alive)
+    }
+
+    fn explicit_exit_suppresses_recovery(&self, pid: u32) -> bool {
+        let Some(home) = self.home.as_ref() else { return false; };
+        let Some(record) = read_explicit_lifecycle_exit(home) else { return false; };
+        if record.pid != pid { return false; }
+        let Ok(state) = self.inner.lock() else { return true; };
+        explicit_exit_decision(Some(&record), state.observed_server_id.as_deref(), state.replacing, pid_alive(record.pid)) != ExplicitExitAdmission::Admit
+    }
+
     fn open_host_path(&self, path: &Path) -> Result<(), String> {
         check_host_path(path, HostPathOp::Open)?;
         open_with_default_app(path)
@@ -2990,6 +3064,45 @@ fn unix_epoch_millis() -> Result<u64, String> {
         .map_err(|error| format!("System clock is before the Unix epoch: {error}"))?
         .as_millis();
     u64::try_from(millis).map_err(|_| "Current time does not fit in milliseconds".to_string())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExplicitExitAdmission {
+    Admit,
+    Wait,
+    Refuse,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExplicitLifecycleExit {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    #[serde(rename = "serverId")]
+    server_id: String,
+    pid: u32,
+    action: String,
+}
+
+fn read_explicit_lifecycle_exit(home: &Path) -> Option<ExplicitLifecycleExit> {
+    let raw = fs::read_to_string(home.join("server").join("explicit-exit.json")).ok()?;
+    let record: ExplicitLifecycleExit = serde_json::from_str(&raw).ok()?;
+    if record.schema_version != 1 || record.server_id.is_empty() || record.pid == 0 {
+        return None;
+    }
+    if !matches!(record.action.as_str(), "update" | "restart" | "quit") {
+        return None;
+    }
+    Some(record)
+}
+
+fn explicit_exit_decision(record: Option<&ExplicitLifecycleExit>, observed_server_id: Option<&str>, replacing: bool, alive: bool) -> ExplicitExitAdmission {
+    let Some(record) = record else { return ExplicitExitAdmission::Admit; };
+    if alive { return ExplicitExitAdmission::Wait; }
+    if replacing || observed_server_id != Some(record.server_id.as_str()) {
+        ExplicitExitAdmission::Admit
+    } else {
+        ExplicitExitAdmission::Refuse
+    }
 }
 
 fn read_instance_records(home: &Path) -> Result<Vec<InstanceRecord>, String> {
@@ -4828,6 +4941,27 @@ mod tests {
         backend.inner.lock().unwrap().attached = Some(DesktopConnection { url: format!("http://127.0.0.1:{port}"), token: "fixture-token".into() });
         assert!(backend.shared_identity_for("quit").unwrap().is_none());
         assert!(backend.hot_connection().is_some());
+    }
+
+    #[test]
+    fn explicit_update_does_not_admit_a_replacement_from_the_attached_shell() {
+        let record = ExplicitLifecycleExit { schema_version: 1, server_id: "old-server".into(), pid: 42, action: "update".into() };
+        assert_eq!(explicit_exit_decision(None, Some("old-server"), false, false), ExplicitExitAdmission::Admit);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), false, true), ExplicitExitAdmission::Wait);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), true, true), ExplicitExitAdmission::Wait);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), false, false), ExplicitExitAdmission::Refuse);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("old-server"), true, false), ExplicitExitAdmission::Admit);
+        assert_eq!(explicit_exit_decision(Some(&record), None, false, false), ExplicitExitAdmission::Admit);
+        assert_eq!(explicit_exit_decision(Some(&record), Some("other-server"), false, false), ExplicitExitAdmission::Admit);
+        let home = env::temp_dir().join(format!("kiki-explicit-exit-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        fs::create_dir_all(home.join("server")).unwrap();
+        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":1,"serverId":"old-server","pid":42,"action":"update"}"#).unwrap();
+        let loaded = read_explicit_lifecycle_exit(&home).unwrap();
+        assert_eq!(loaded.server_id, "old-server");
+        assert_eq!(loaded.pid, 42);
+        fs::write(home.join("server").join("explicit-exit.json"), r#"{"schemaVersion":2,"serverId":"old-server","pid":42,"action":"update"}"#).unwrap();
+        assert!(read_explicit_lifecycle_exit(&home).is_none());
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
