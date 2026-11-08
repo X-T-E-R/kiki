@@ -1,5 +1,6 @@
 package ai.easyagent.kiki;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -9,30 +10,49 @@ import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
 
 /**
- * The shell's only native surface.
+ * The shell's native surface.
  *
- * The launcher (bundled, at the app origin) asks to open one Kiki server; that
- * server's own web GUI then runs at its own origin, so its cookie sign-in,
- * WebSocket and file uploads behave exactly as in a phone browser. This plugin
- * keeps that one origin inside the app, sends every other site to the system
- * browser (Capacitor's default policy), maps the system back gesture onto the
- * page's history, and persists cookies when the app leaves the foreground.
+ * The bundled launcher (at the app origin) pairs or opens a Kiki server; that
+ * server's web GUI then runs at its own origin so cookies, WebSocket, and file
+ * uploads work as in a phone browser. This plugin requests camera permission
+ * only on demand for QR scanning, performs pairing claims and reachability
+ * probes natively without cross-origin restrictions, stores per-computer bearer
+ * tokens in private app preferences, and keeps the active server origin inside
+ * the app WebView.
  */
-@CapacitorPlugin(name = "KikiShell")
+@CapacitorPlugin(
+    name = "KikiShell",
+    permissions = { @Permission(strings = { Manifest.permission.CAMERA }, alias = "camera") }
+)
 public class KikiShellPlugin extends Plugin {
 
     private static final String PREFS = "kiki.shell";
     private static final String TRUSTED_ORIGIN = "trustedOrigin";
+    private static final String TOKEN_PREFIX = "peerToken.";
     static final String ACTION_CHANGE_SERVER = "ai.easyagent.kiki.CHANGE_SERVER";
+
+    private volatile String pendingPairUri;
 
     @Override
     public void load() {
+        capturePairIntent(getActivity().getIntent());
         getActivity()
             .getOnBackPressedDispatcher()
             .addCallback(
@@ -41,12 +61,9 @@ public class KikiShellPlugin extends Plugin {
                     @Override
                     public void handleOnBackPressed() {
                         WebView webView = getBridge().getWebView();
-                        // The page owns one history entry per open layer (drawer,
-                        // inspector, sheet), so back closes the top layer first.
                         if (webView.canGoBack() && !backLeavesServer(webView)) {
                             webView.goBack();
                         } else {
-                            // Keep the conversation warm instead of tearing it down.
                             getActivity().moveTaskToBack(true);
                         }
                     }
@@ -66,9 +83,188 @@ public class KikiShellPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void scanQr(PluginCall call) {
+        if (getPermissionState("camera") != PermissionState.GRANTED) {
+            requestPermissionForAlias("camera", call, "onCameraPermissionResult");
+            return;
+        }
+        JSObject result = new JSObject();
+        result.put("status", "granted");
+        call.resolve(result);
+    }
+
+    @PermissionCallback
+    private void onCameraPermissionResult(PluginCall call) {
+        JSObject result = new JSObject();
+        if (getPermissionState("camera") == PermissionState.GRANTED) {
+            result.put("status", "granted");
+        } else {
+            result.put("status", "denied");
+        }
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void consumePendingPair(PluginCall call) {
+        String uri = pendingPairUri;
+        pendingPairUri = null;
+        JSObject result = new JSObject();
+        if (uri != null) {
+            result.put("uri", uri);
+        }
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void probe(PluginCall call) {
+        String origin = call.getString("origin");
+        Uri originUri = origin == null ? null : Uri.parse(origin);
+        if (!isWebOrigin(originUri)) {
+            JSObject invalid = new JSObject();
+            invalid.put("ok", false);
+            call.resolve(invalid);
+            return;
+        }
+        String normalizedOrigin = originOf(originUri);
+        new Thread(() -> {
+            JSObject result = new JSObject();
+            HttpURLConnection conn = null;
+            try {
+                URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
+                conn = (HttpURLConnection) handshakeUrl.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(3500);
+                conn.setReadTimeout(3500);
+                conn.setRequestProperty("Accept", "application/json");
+                int code = conn.getResponseCode();
+                if (code >= 200 && code < 300) {
+                    JSONObject body = readJson(conn.getInputStream());
+                    JSONObject data = body == null ? null : body.optJSONObject("data");
+                    JSONObject target = data == null ? null : data.optJSONObject("identity");
+                    if (target == null && data != null) target = data.optJSONObject("target");
+                    result.put("ok", true);
+                    if (data != null && data.has("targetLabel")) {
+                        result.put("targetLabel", data.optString("targetLabel", ""));
+                    }
+                    if (target != null && target.has("homeId")) {
+                        result.put("targetHomeId", target.optString("homeId", ""));
+                    }
+                    call.resolve(result);
+                    return;
+                }
+            } catch (Exception ignored) {
+                /* fall through to /api/meta */
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+
+            HttpURLConnection metaConn = null;
+            try {
+                URL metaUrl = new URL(normalizedOrigin + "/api/meta");
+                metaConn = (HttpURLConnection) metaUrl.openConnection();
+                metaConn.setRequestMethod("GET");
+                metaConn.setConnectTimeout(3500);
+                metaConn.setReadTimeout(3500);
+                int status = metaConn.getResponseCode();
+                result.put("ok", status > 0);
+            } catch (Exception e) {
+                result.put("ok", false);
+            } finally {
+                if (metaConn != null) metaConn.disconnect();
+            }
+            call.resolve(result);
+        }).start();
+    }
+
+    @PluginMethod
+    public void claimPair(PluginCall call) {
+        String endpoint = call.getString("endpoint");
+        String code = call.getString("code");
+        String homeId = call.getString("homeId");
+        String hostId = call.getString("hostId");
+        String sourceLabel = call.getString("sourceLabel", "Kiki Android");
+        Uri endpointUri = endpoint == null ? null : Uri.parse(endpoint);
+        if (!isWebOrigin(endpointUri) || code == null || code.isEmpty() || homeId == null || hostId == null) {
+            JSObject invalid = new JSObject();
+            invalid.put("ok", false);
+            invalid.put("reason", "rejected");
+            call.resolve(invalid);
+            return;
+        }
+        String base = originOf(endpointUri);
+        new Thread(() -> {
+            JSObject result = new JSObject();
+            HttpURLConnection conn = null;
+            try {
+                JSONObject source = new JSONObject();
+                source.put("homeId", homeId);
+                source.put("hostId", hostId);
+                source.put("protocol", 1);
+
+                JSONObject payload = new JSONObject();
+                payload.put("code", code);
+                payload.put("source", source);
+                payload.put("sourceLabel", sourceLabel);
+                payload.put("requestBridge", false);
+
+                byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
+                URL url = new URL(base + "/api/remote-connections/pair/claim");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("Accept", "application/json");
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(bytes);
+                }
+
+                int status = conn.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    result.put("ok", false);
+                    result.put("reason", (status >= 400 && status < 500) ? "rejected" : "unreachable");
+                    call.resolve(result);
+                    return;
+                }
+
+                JSONObject body = readJson(conn.getInputStream());
+                JSONObject data = body == null ? null : body.optJSONObject("data");
+                JSONObject target = data == null ? null : data.optJSONObject("target");
+                String peerToken = data == null ? null : data.optString("peerToken", "");
+                String targetHomeId = target == null ? null : target.optString("homeId", "");
+                if (peerToken == null || peerToken.isEmpty() || targetHomeId == null || targetHomeId.isEmpty()) {
+                    result.put("ok", false);
+                    result.put("reason", "rejected");
+                    call.resolve(result);
+                    return;
+                }
+
+                prefs().edit().putString(TOKEN_PREFIX + targetHomeId, peerToken).apply();
+
+                result.put("ok", true);
+                result.put("serverId", targetHomeId);
+                result.put("targetHomeId", targetHomeId);
+                result.put("targetHostId", target.optString("hostId", ""));
+                result.put("targetLabel", data.optString("targetLabel", ""));
+                result.put("grantId", data.optString("grantId", ""));
+                result.put("revision", data.optInt("revision", 0));
+                call.resolve(result);
+            } catch (Exception e) {
+                result.put("ok", false);
+                result.put("reason", "unreachable");
+                call.resolve(result);
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }).start();
+    }
+
+    @PluginMethod
     public void open(PluginCall call) {
         String origin = call.getString("origin");
         String entry = call.getString("entry");
+        String serverId = call.getString("serverId");
         Uri originUri = origin == null ? null : Uri.parse(origin);
         Uri entryUri = entry == null ? null : Uri.parse(entry);
         if (!isWebOrigin(originUri) || entryUri == null || !origin.equals(originOf(entryUri))) {
@@ -76,14 +272,30 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
-        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(entry));
+        String targetUrl = attachStoredTokenIfNeeded(origin, entry, serverId);
+        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(targetUrl));
         JSObject result = new JSObject();
         result.put("origin", origin);
         call.resolve(result);
     }
 
+    private String attachStoredTokenIfNeeded(String origin, String entry, String serverId) {
+        if (serverId == null || serverId.isEmpty()) return entry;
+        if (entry.contains("#access=") || entry.contains("&access=") || entry.contains("token=")) {
+            return entry;
+        }
+        String token = prefs().getString(TOKEN_PREFIX + serverId, null);
+        if (token == null || token.isEmpty()) return entry;
+        return origin + "/#token=" + Uri.encode(token);
+    }
+
     @Override
     public Boolean shouldOverrideLoad(Uri url) {
+        if (url == null) return null;
+        String local = getBridge().getLocalUrl();
+        if (local != null && url.toString().startsWith(local)) {
+            return false;
+        }
         String trusted = prefs().getString(TRUSTED_ORIGIN, null);
         if (trusted != null && trusted.equals(originOf(url))) {
             return false;
@@ -91,16 +303,30 @@ public class KikiShellPlugin extends Plugin {
         return null;
     }
 
-    /** The launcher shortcut: back to the launcher, keeping the saved server for one tap. */
     @Override
     protected void handleOnNewIntent(Intent intent) {
         super.handleOnNewIntent(intent);
-        if (intent != null && ACTION_CHANGE_SERVER.equals(intent.getAction())) {
+        if (intent == null) return;
+        if (capturePairIntent(intent)) {
+            WebView webView = getBridge().getWebView();
+            webView.post(() -> webView.loadUrl(getBridge().getLocalUrl() + "/index.html#pair"));
+            return;
+        }
+        if (ACTION_CHANGE_SERVER.equals(intent.getAction())) {
             WebView webView = getBridge().getWebView();
             webView.post(() -> {
                 webView.loadUrl(getBridge().getLocalUrl() + "/index.html#change");
             });
         }
+    }
+
+    private boolean capturePairIntent(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return false;
+        Uri data = intent.getData();
+        if (data == null || !"kiki".equalsIgnoreCase(data.getScheme())) return false;
+        pendingPairUri = data.toString();
+        intent.setData(null);
+        return true;
     }
 
     @Override
@@ -111,6 +337,18 @@ public class KikiShellPlugin extends Plugin {
 
     private SharedPreferences prefs() {
         return getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static JSONObject readJson(InputStream stream) throws Exception {
+        if (stream == null) return null;
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+        }
+        return new JSONObject(sb.toString());
     }
 
     private static boolean isWebOrigin(Uri uri) {

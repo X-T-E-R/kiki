@@ -289,6 +289,7 @@ function BrowserConnectForm({
 }) {
   const host = useHost();
   const { t } = useI18n();
+  const shellConnect = appShellConnectUrl();
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
   const [showToken, setShowToken] = useState(false);
@@ -337,14 +338,24 @@ function BrowserConnectForm({
       </p>
 
       <form onSubmit={submit} className="mt-6">
-        <button
-          type="button"
-          onClick={() => { void detect(); }}
-          disabled={detecting || connecting}
-          className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
-        >
-          {detecting ? t('connect.detecting') : t('connect.detect')}
-        </button>
+        {shellConnect !== null ? (
+          <a
+            href={shellConnect}
+            data-app-shell-connect
+            className="block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+          >
+            {t('connect.otherMachine')}
+          </a>
+        ) : (
+          <button
+            type="button"
+            onClick={() => { void detect(); }}
+            disabled={detecting || connecting}
+            className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
+          >
+            {detecting ? t('connect.detecting') : t('connect.detect')}
+          </button>
+        )}
         {detectNote !== null ? (
           <p role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">{detectNote}</p>
         ) : null}

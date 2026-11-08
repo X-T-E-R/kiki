@@ -12,6 +12,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { appShellConnectUrl } from '../../lib/appShell';
 import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
 import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
@@ -51,6 +52,7 @@ function CurrentConnectionContent() {
   const queryClient = useQueryClient();
   const isDesktop = host.kind === 'tauri';
   const isSsh = scopeId.startsWith('ssh:');
+  const shellConnect = appShellConnectUrl();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -205,6 +207,15 @@ function CurrentConnectionContent() {
                 >
                   {t('st.secret.edit')}
                 </button>
+              ) : null}
+              {shellConnect !== null ? (
+                <a
+                  href={shellConnect}
+                  data-conn-app-shell
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('connect.otherMachine')}
+                </a>
               ) : null}
             </SettingField>
           ) : null}

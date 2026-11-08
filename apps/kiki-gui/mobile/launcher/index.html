@@ -9,25 +9,80 @@
   </head>
   <body>
     <main class="sheet" aria-labelledby="brand">
-      <h1 id="brand" class="wordmark">kiki<span class="dot" aria-hidden="true">.</span></h1>
-      <p class="lede" data-i18n="lede">Connect to Kiki on your computer.</p>
+      <header class="hero">
+        <h1 id="brand" class="wordmark">kiki<span class="dot" aria-hidden="true">.</span></h1>
+        <p class="lede" data-i18n="lede">Connect to Kiki on your computer.</p>
+      </header>
+
+      <section class="scan-card" aria-labelledby="scan-qr">
+        <button id="scan-qr" type="button" class="primary scan-button">
+          <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+            <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+            <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+            <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
+          </svg>
+          <span data-i18n="scanQr">Scan QR code</span>
+        </button>
+        <p id="scan-feedback" class="scan-feedback" role="status" hidden></p>
+
+        <div id="scanner-panel" class="scanner-panel" hidden>
+          <div class="scanner-frame">
+            <video id="scanner-video" class="scanner-video" playsinline muted></video>
+            <div class="scanner-reticle" aria-hidden="true"></div>
+          </div>
+          <div class="scanner-actions">
+            <span class="scanner-caption" data-i18n="scannerPrompt">Point at the QR code on your computer</span>
+            <button id="scan-cancel" type="button" class="ghost-button" data-i18n="scanCancel">Enter manually</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="divider" role="separator">
+        <span data-i18n="manualDivider">Or enter address</span>
+      </div>
 
       <form id="connect" novalidate>
-        <label for="server" class="label" data-i18n="label">Server address or entry link</label>
+        <div class="label-row">
+          <label for="server" class="label" data-i18n="label">Server address or entry link</label>
+          <span id="layer-badge" class="layer-badge" hidden></span>
+        </div>
         <input id="server" name="server" type="url" inputmode="url" autocomplete="url" autocapitalize="off"
           autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="192.168.1.5:5494"
-          aria-describedby="hint problem" />
-        <p id="hint" class="hint" data-i18n="hint">Settings → Web access on that computer shows the address and a one-time link.</p>
+          aria-describedby="hint problem probe-status" />
+
+        <div class="code-field">
+          <div class="label-row">
+            <label for="pair-code" class="label" data-i18n="codeLabel">Pairing code</label>
+            <span class="label-optional" data-i18n="codeOptional">8 chars · for new pairing</span>
+          </div>
+          <input id="pair-code" name="pairCode" type="text" inputmode="text" autocomplete="off" autocapitalize="characters"
+            autocorrect="off" spellcheck="false" enterkeyhint="go" maxlength="9" placeholder="XXXX-XXXX" />
+        </div>
+
+        <p id="hint" class="hint" data-i18n="hint">Settings → Remote or Web access on that computer shows the address and pairing code.</p>
         <p id="problem" class="problem" role="alert" hidden></p>
-        <button id="open" type="submit" class="primary" data-i18n="open">Open Kiki</button>
+        <p id="probe-status" class="probe-status" role="status" hidden></p>
+
+        <div class="form-actions">
+          <button id="open" type="submit" class="secondary-primary" data-i18n="open">Open Kiki</button>
+          <button id="test-server" type="button" class="secondary" data-i18n="testAddress">Test address</button>
+        </div>
       </form>
 
       <section id="recent" class="recent" hidden aria-labelledby="recent-title">
-        <h2 id="recent-title" class="recent-title" data-i18n="recent">Last server</h2>
-        <button id="recent-open" type="button" class="recent-row">
-          <span id="recent-host" class="recent-host"></span>
-          <span class="recent-go" aria-hidden="true">→</span>
-        </button>
+        <div class="recent-header">
+          <h2 id="recent-title" class="recent-title" data-i18n="recent">Saved computers</h2>
+        </div>
+        <div id="recent-list" class="recent-list">
+          <div class="saved-card">
+            <button id="recent-open" type="button" class="recent-row">
+              <span id="recent-host" class="recent-host"></span>
+              <span class="recent-go" aria-hidden="true">→</span>
+            </button>
+          </div>
+        </div>
       </section>
     </main>
     <script type="module" src="./launcher.js"></script>
