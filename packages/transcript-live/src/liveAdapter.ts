@@ -1022,7 +1022,7 @@ export class AgentTranscriptLiveAdapter {
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     this.flushOpenFrames(ops);
-    const prev = this.toolFrames.get(event.toolCallId);
+    const prev = this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId);
     if (prev !== undefined) {
       const frame: ToolCallFrame = {
         ...prev.frame,
@@ -1062,7 +1062,7 @@ export class AgentTranscriptLiveAdapter {
     toolCallId: string;
     update: ToolFrameProgress;
   }): TranscriptOperation[] {
-    const hit = this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId);
+    const hit = this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId);
     if (hit === undefined) return [];
     const frame: ToolCallFrame = {
       ...hit.frame,
@@ -1091,7 +1091,7 @@ export class AgentTranscriptLiveAdapter {
     const step = this.ensureStep(turnId, ops);
     const frameId = `${step.stepId}.${event.toolCallId}`;
     const input = parseToolArgs(event.args);
-    const previous = (this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId))?.frame;
+    const previous = (this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId))?.frame;
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId,
@@ -1122,7 +1122,7 @@ export class AgentTranscriptLiveAdapter {
     output: unknown;
     isError?: boolean;
   }): TranscriptOperation[] {
-    const hit = this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId);
+    const hit = this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId);
     if (hit === undefined) return [];
     const isError = event.isError === true;
     const media = contentPartMediaList(event.output);

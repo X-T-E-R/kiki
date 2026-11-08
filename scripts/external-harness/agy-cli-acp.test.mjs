@@ -2032,11 +2032,63 @@ void test('vendor-native permissions need no Kiki tool projection or PreToolUse 
       toolPermission: 'always-proceed', agentMode: 'accept-edits', allowNonWorkspaceAccess: true, enableTerminalSandbox: false,
     });
     assert.equal(args.includes('--dangerously-skip-permissions'), true);
-    assert.equal((await turn(b, s.id, 'native-tools', [])).stopReason, 'end_turn');
+    const updates = [];
+    assert.equal((await turn(b, s.id, 'native-tools', updates)).stopReason, 'end_turn');
+    const toolCalls = updates.map(item => item.update).filter(update => update?.sessionUpdate === 'tool_call');
+    const toolUpdates = updates.map(item => item.update).filter(update => update?.sessionUpdate === 'tool_call_update');
+    assert.equal(toolCalls.some(call => call.name === 'read_file' && call.rawInput?.Path === join(root, 'native-text.txt')), true);
+    assert.equal(toolCalls.some(call => call.name === 'edit_file' && call.rawInput?.Replace === 'before' && call.rawInput?.With === 'after'), true);
+    assert.equal(toolUpdates.some(update => update.name === 'run_command' && update.rawInput?.CommandLine?.includes('native-command')), true);
     assert.equal(permissionCalls, 0);
     assert.equal(await readFile(join(root, 'native-write.txt'), 'utf8'), 'native write\n');
     assert.equal(await readFile(join(root, 'native-command.txt'), 'utf8'), 'command output\n');
     await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
     assert.deepEqual(await requestPermission(s, { toolCall: { name: 'vendor_new_tool', args: {} } }), { decision: 'ask' });
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('forwards late AGY tool parameters on in-progress and terminal step updates without re-reading files', async () => {
+  const b = bridge();
+  const id = await session(b);
+  const s = b.session(id);
+  const updates = [];
+  s.init = { conversation_id: 'conv-late' };
+  s.active = { text: '', steering: [], client: { notify: async (_method, payload) => updates.push(payload.update) }, resolve: () => {}, reject: () => {} };
+  try {
+    await b.event(s, { event: 'step_update', conversation_id: 'conv-late', step_update: { step_type: 'tool', step_index: 3, state: 'PENDING', tool_name: 'replace_file_content' } });
+    await b.event(s, { event: 'step_update', conversation_id: 'conv-late', step_update: { step_type: 'tool', step_index: 3, state: 'ACTIVE', tool_name: 'replace_file_content', tool_info: { parameters: { TargetFile: '/workspace/example/a.ts', TargetContent: 'old', ReplacementContent: 'new' } } } });
+    await b.event(s, { event: 'step_update', conversation_id: 'conv-late', step_update: { step_type: 'tool', step_index: 3, state: 'DONE', tool_name: 'replace_file_content', tool_info: { result: 'applied' } } });
+    assert.deepEqual(updates, [
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'agy-conv-late-3',
+        title: 'replace_file_content',
+        name: 'replace_file_content',
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: undefined,
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'agy-conv-late-3',
+        title: 'replace_file_content',
+        name: 'replace_file_content',
+        status: 'in_progress',
+        rawInput: { TargetFile: '/workspace/example/a.ts', TargetContent: 'old', ReplacementContent: 'new' },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'agy-conv-late-3',
+        title: 'replace_file_content',
+        name: 'replace_file_content',
+        status: 'completed',
+        rawInput: { TargetFile: '/workspace/example/a.ts', TargetContent: 'old', ReplacementContent: 'new' },
+        rawOutput: 'applied',
+        content: [{ type: 'content', content: { type: 'text', text: 'applied' } }],
+      },
+    ]);
+  } finally {
+    s.active = undefined;
+    await b.close();
+  }
 });

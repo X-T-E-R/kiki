@@ -25,13 +25,57 @@ function toolFrame(transcript: AgentTranscript, toolCallId: string) {
 }
 
 describe('projectExternalToolDisplay', () => {
-  it('projects the two AGY shapes that were stored as generic', () => {
+  it('projects the AGY tool shapes that were stored as generic', () => {
     expect(projectExternalToolDisplay({
       name: 'view_file', title: 'view_file', kind: 'other', rawInput: viewInput, summary: 'view_file',
     })).toEqual({ kind: 'file_io', operation: 'read', path: '/workspace/example/file.ts' });
     expect(projectExternalToolDisplay({
+      name: 'read_file', title: 'read_file', kind: 'other', rawInput: { Path: '/workspace/example/file.ts' }, summary: 'read_file',
+    })).toEqual({ kind: 'file_io', operation: 'read', path: '/workspace/example/file.ts' });
+    expect(projectExternalToolDisplay({
       name: 'run_command', title: 'run_command', kind: 'other', rawInput: commandInput, summary: 'run_command',
     })).toEqual({ kind: 'command', command: 'rg -n tool src', cwd: '/workspace/example' });
+    expect(projectExternalToolDisplay({
+      name: 'grep_search', title: 'grep_search', kind: 'other', rawInput: { Query: 'tool', SearchPath: '/workspace/example' }, summary: 'grep_search',
+    })).toEqual({ kind: 'search', query: 'tool', scope: '/workspace/example' });
+    expect(projectExternalToolDisplay({
+      name: 'find_by_name', title: 'find_by_name', kind: 'other', rawInput: { Pattern: '*.ts', SearchDirectory: '/workspace/example' }, summary: 'find_by_name',
+    })).toEqual({ kind: 'search', query: '*.ts', scope: '/workspace/example' });
+    expect(projectExternalToolDisplay({
+      name: 'replace_file_content', title: 'replace_file_content', kind: 'other',
+      rawInput: { TargetFile: '/workspace/example/file.ts', TargetContent: 'old line', ReplacementContent: 'new line' },
+      summary: 'replace_file_content',
+    })).toEqual({ kind: 'file_io', operation: 'edit', path: '/workspace/example/file.ts', before: 'old line', after: 'new line' });
+    expect(projectExternalToolDisplay({
+      name: 'multi_replace_file_content', title: 'multi_replace_file_content', kind: 'other',
+      rawInput: {
+        TargetFile: '/workspace/example/file.ts',
+        ReplacementChunks: [
+          { TargetContent: 'alpha', ReplacementContent: 'beta' },
+          { TargetContent: 'one', ReplacementContent: 'two' },
+        ],
+      },
+      summary: 'multi_replace_file_content',
+    })).toEqual({
+      kind: 'generic',
+      summary: '/workspace/example/file.ts',
+      detail: {
+        diffs: [
+          { path: '/workspace/example/file.ts', before: 'alpha', after: 'beta' },
+          { path: '/workspace/example/file.ts', before: 'one', after: 'two' },
+        ],
+      },
+    });
+    expect(projectExternalToolDisplay({
+      name: 'write_file', title: 'write_file', kind: 'other',
+      rawInput: { Path: '/workspace/example/out.ts', Content: 'export {}\n' },
+      summary: 'write_file',
+    })).toEqual({ kind: 'file_io', operation: 'write', path: '/workspace/example/out.ts', content: 'export {}\n' });
+    expect(projectExternalToolDisplay({
+      name: 'edit_file', title: 'edit_file', kind: 'other',
+      rawInput: { Path: '/workspace/example/file.ts', Target: 'remove me\n', Replacement: '' },
+      summary: 'edit_file',
+    })).toEqual({ kind: 'file_io', operation: 'edit', path: '/workspace/example/file.ts', before: 'remove me\n', after: '' });
   });
 
   it('keeps a conflicting kind and an unknown tool generic', () => {
@@ -139,6 +183,16 @@ describe('cold generic external wire', () => {
         ],
       },
     },
+    {
+      type: 'executor.tool.display', time: 11, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:replace-input',
+      name: 'replace_file_content', state: 'done',
+      input: { TargetFile: '/workspace/example/c.ts', TargetContent: 'before', ReplacementContent: 'after' },
+      display: { kind: 'generic', summary: 'replace_file_content' },
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'replace_file_content',
+        text: 'updated', status: 'completed',
+      },
+    },
   ];
 
   it('recovers native rows from a generic wire without rewriting the record', () => {
@@ -177,6 +231,15 @@ describe('cold generic external wire', () => {
             { path: '/workspace/example/b.ts', before: 'c', after: 'd' },
           ],
         },
+      },
+    });
+    expect(toolFrame(transcript, 'external:agy:replace-input')).toMatchObject({
+      display: {
+        kind: 'file_io',
+        operation: 'edit',
+        path: '/workspace/example/c.ts',
+        before: 'before',
+        after: 'after',
       },
     });
     expect(replay(records).snapshot()).toEqual(transcript.snapshot());

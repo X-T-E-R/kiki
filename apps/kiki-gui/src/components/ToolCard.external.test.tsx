@@ -196,5 +196,29 @@ describe('external tool rows use the native display', () => {
     expect(bare.container.textContent).not.toContain('Read');
     await act(async () => bare.root.unmount());
     bare.container.remove();
+
+    const agyReplace = projectExternalToolDisplay({
+      name: 'replace_file_content', title: 'replace_file_content', kind: 'other', summary: 'replace_file_content',
+      rawInput: { TargetFile: '/workspace/example/a.ts', TargetContent: 'const a = 1;\n', ReplacementContent: 'const a = 2;\n' },
+    });
+    const claudeEdit = projectExternalToolDisplay({
+      name: 'Edit', title: 'Edit', kind: 'other', summary: 'Edit',
+      rawInput: { file_path: '/workspace/example/a.ts', old_string: 'const a = 1;\n', new_string: 'const a = 2;\n' },
+    });
+    const codexSingleChange = projectExternalToolDisplay({
+      title: 'File change', kind: 'file', summary: 'File change',
+      rawInput: [{ path: '/workspace/example/a.ts', before: 'const a = 1;\n', after: 'const a = 2;\n' }],
+    });
+    expect(claudeEdit).toEqual(agyReplace);
+    expect(codexSingleChange).toEqual(agyReplace);
+    const replaceBlock = tool({ toolCallId: 'external:agy:replace', name: 'replace_file_content', display: agyReplace });
+    expect(toolIcon(replaceBlock)).toBe('edit');
+    const replaceCard = await renderCard(replaceBlock);
+    const replaceRow = replaceCard.container.querySelector('[data-tool-name="replace_file_content"]');
+    expect(replaceRow?.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('edit');
+    expect(replaceRow?.textContent).toContain('Edit');
+    expect(replaceRow?.textContent).toContain('/workspace/example/a.ts');
+    await act(async () => replaceCard.root.unmount());
+    replaceCard.container.remove();
   });
 });

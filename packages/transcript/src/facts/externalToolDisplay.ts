@@ -36,19 +36,25 @@ const NATIVE_KINDS = new Set([
 
 const EXPECTED_KIND: Readonly<Record<string, readonly string[]>> = {
   read: ['read'], view_file: ['read'], read_file: ['read'],
-  grep: ['read', 'search'], grep_search: ['read', 'search'],
+  grep: ['read', 'search'], grep_search: ['read', 'search'], search: ['read', 'search'], search_file_content: ['read', 'search'],
   glob: ['read', 'search'], find_by_name: ['read', 'search'], list_dir: ['read', 'search'], list_directory: ['read', 'search'],
-  edit: ['edit'], write: ['edit'], write_to_file: ['edit'], replace_file_content: ['edit'], multi_replace_file_content: ['edit'],
-  bash: ['execute', 'command'], shell: ['execute', 'command'], run_command: ['execute', 'command'], runcommand: ['execute', 'command'],
-  websearch: ['fetch', 'search'], xsearch: ['search'], fetchurl: ['fetch'], webfetch: ['fetch'],
+  edit: ['edit'], edit_file: ['edit'], multiedit: ['edit'], multi_edit: ['edit'],
+  write: ['edit'], write_file: ['edit'], write_to_file: ['edit'],
+  replace: ['edit'], replace_file_content: ['edit'], multi_replace_file_content: ['edit'], str_replace_editor: ['edit'],
+  bash: ['execute', 'command'], shell: ['execute', 'command'], run_command: ['execute', 'command'], runcommand: ['execute', 'command'], run_shell_command: ['execute', 'command'], execute_command: ['execute', 'command'],
+  websearch: ['fetch', 'search'], search_web: ['fetch', 'search'], web_search: ['fetch', 'search'], google_web_search: ['fetch', 'search'], xsearch: ['search'],
+  fetchurl: ['fetch'], webfetch: ['fetch'], web_fetch: ['fetch'], read_url_content: ['fetch', 'read'],
 };
 
-const PATH_KEYS = ['AbsolutePath', 'TargetFile', 'filePath', 'filepath', 'file_path', 'path', 'target_file', 'DirectoryPath', 'SearchDirectory'];
+const PATH_KEYS = ['AbsolutePath', 'TargetFile', 'filePath', 'filepath', 'file_path', 'path', 'Path', 'target_file', 'DirectoryPath', 'SearchDirectory', 'dir_path'];
 const COMMAND_KEYS = ['command', 'cmd', 'CommandLine'];
-const CWD_KEYS = ['workdir', 'cwd', 'Cwd'];
+const CWD_KEYS = ['workdir', 'cwd', 'Cwd', 'dir_path', 'directory'];
 const QUERY_KEYS = ['pattern', 'glob_pattern', 'query', 'Query', 'Pattern'];
-const SCOPE_KEYS = ['SearchPath', 'path', 'target_directory', 'SearchDirectory', 'DirectoryPath'];
-const CONTENT_KEYS = ['content', 'CodeContent', 'contents'];
+const SCOPE_KEYS = ['SearchPath', 'path', 'Path', 'target_directory', 'SearchDirectory', 'DirectoryPath', 'dir_path', 'directory'];
+const CONTENT_KEYS = ['content', 'Content', 'CodeContent', 'contents', 'file_text'];
+const BEFORE_KEYS = ['oldString', 'old_string', 'OldString', 'old_str', 'TargetContent', 'Target', 'Replace', 'oldText', 'before'];
+const AFTER_KEYS = ['newString', 'new_string', 'NewString', 'new_str', 'ReplacementContent', 'Replacement', 'With', 'newText', 'after'];
+const CHUNK_KEYS = ['ReplacementChunks', 'replacement_chunks', 'edits'];
 
 export function projectExternalToolDisplay(facts: ExternalToolDisplayFacts): ProjectedToolDisplay {
   const summary = facts.summary ?? facts.title ?? facts.name ?? 'Tool';
@@ -70,7 +76,7 @@ export function projectExternalToolDisplay(facts: ExternalToolDisplayFacts): Pro
     const diff = diffs[0]!;
     return { kind: 'diff', path: diff.path, before: diff.before, after: diff.after };
   }
-  const fromKind = projectKind(facts.kind, facts.rawInput, input, singlePath, summary);
+  const fromKind = projectKind(facts.kind, token, facts.rawInput, input, singlePath, summary);
   if (fromKind !== undefined) return fromKind;
   const fromName = token === undefined ? undefined : projectName(token, input, singlePath);
   if (fromName !== undefined) return fromName;
@@ -111,14 +117,18 @@ export function externalToolKindConflicts(facts: ExternalToolDisplayFacts): bool
   return conflictingKind(toolToken(facts), facts.kind);
 }
 
-function projectKind(kind: string | undefined, raw: unknown, input: Readonly<Record<string, unknown>> | undefined, path: string | undefined, summary: string): ProjectedToolDisplay | undefined {
-  const pattern = firstString(input, ['pattern', 'glob_pattern']);
+function projectKind(kind: string | undefined, token: string | undefined, raw: unknown, input: Readonly<Record<string, unknown>> | undefined, path: string | undefined, summary: string): ProjectedToolDisplay | undefined {
+  const pattern = firstString(input, QUERY_KEYS);
   if ((kind === 'read' || kind === 'search') && pattern !== undefined) {
-    const scope = firstString(input, ['path', 'target_directory']);
-    return scope === undefined ? { kind: 'search', query: pattern } : { kind: 'search', query: pattern, scope };
+    const scope = firstString(input, SCOPE_KEYS);
+    return scope === undefined || scope === pattern ? { kind: 'search', query: pattern } : { kind: 'search', query: pattern, scope };
   }
-  if (kind === 'read' && path !== undefined) return { kind: 'file_io', operation: 'read', path };
-  if (kind === 'edit' && path !== undefined) return editOrWrite(input, path);
+  if (kind === 'read' && path !== undefined && token !== 'glob' && token !== 'find_by_name' && token !== 'list_dir' && token !== 'list_directory' && token !== 'read_url_content') {
+    return { kind: 'file_io', operation: 'read', path };
+  }
+  if (kind === 'edit' && path !== undefined) {
+    return editOrWrite(input, path, token === 'write' || token === 'write_file' || token === 'write_to_file');
+  }
   if (kind === 'execute' || kind === 'command') {
     const command = firstString(input, COMMAND_KEYS);
     if (command === undefined) return undefined;
@@ -127,14 +137,14 @@ function projectKind(kind: string | undefined, raw: unknown, input: Readonly<Rec
   }
   if (kind === 'fetch') {
     const source = objectOf(input?.['source']);
-    const url = stringOf(input?.['url']) ?? (source?.['kind'] === 'url' ? stringOf(source['url']) : undefined);
+    const url = firstString(input, ['url', 'Url']) ?? (source?.['kind'] === 'url' ? stringOf(source['url']) : undefined);
     if (url !== undefined) return { kind: 'url_fetch', url };
-    const query = stringOf(input?.['query']);
+    const query = firstString(input, QUERY_KEYS);
     if (query !== undefined) return { kind: 'search', query };
     return undefined;
   }
   if (kind === 'search' || kind === 'webSearch') {
-    const query = stringOf(input?.['query']) ?? pattern;
+    const query = firstString(input, QUERY_KEYS) ?? pattern;
     if (query !== undefined) return { kind: 'search', query };
     return undefined;
   }
@@ -146,6 +156,15 @@ function projectKind(kind: string | undefined, raw: unknown, input: Readonly<Rec
     };
   }
   if (kind === 'file' || kind === 'delete' || kind === 'move') {
+    const diffs = changeDiffs(raw);
+    if (diffs.length > 1) {
+      const paths = unique(diffs.map((entry) => entry.path));
+      return { kind: 'generic', summary: paths.join(', '), detail: { diffs } };
+    }
+    if (diffs.length === 1) {
+      const diff = diffs[0]!;
+      return { kind: 'file_io', operation: 'edit', path: diff.path, before: diff.before, after: diff.after };
+    }
     const paths = changePaths(raw);
     if (paths.length > 1) return { kind: 'generic', summary: paths.join(', '), detail: { paths, operation: 'edit' } };
     const changePath = paths[0];
@@ -155,13 +174,13 @@ function projectKind(kind: string | undefined, raw: unknown, input: Readonly<Rec
 }
 
 function projectName(token: string, input: Readonly<Record<string, unknown>> | undefined, path: string | undefined): ProjectedToolDisplay | undefined {
-  if (token === 'bash' || token === 'shell' || token === 'run_command' || token === 'runcommand') {
+  if (token === 'bash' || token === 'shell' || token === 'run_command' || token === 'runcommand' || token === 'run_shell_command' || token === 'execute_command') {
     const command = firstString(input, COMMAND_KEYS);
     if (command === undefined) return undefined;
     const cwd = firstString(input, CWD_KEYS);
     return cwd === undefined ? { kind: 'command', command } : { kind: 'command', command, cwd };
   }
-  if (token === 'grep' || token === 'grep_search' || token === 'websearch' || token === 'xsearch') {
+  if (token === 'grep' || token === 'grep_search' || token === 'search' || token === 'search_file_content' || token === 'websearch' || token === 'search_web' || token === 'web_search' || token === 'google_web_search' || token === 'xsearch') {
     const query = firstString(input, QUERY_KEYS);
     if (query === undefined) return undefined;
     const scope = firstString(input, SCOPE_KEYS);
@@ -169,16 +188,16 @@ function projectName(token: string, input: Readonly<Record<string, unknown>> | u
   }
   if (token === 'glob' || token === 'find_by_name' || token === 'list_dir' || token === 'list_directory') {
     const pattern = firstString(input, QUERY_KEYS);
-    const scope = firstString(input, ['SearchDirectory', 'DirectoryPath', 'path', 'target_directory']);
-    if (pattern !== undefined) return scope === undefined ? { kind: 'search', query: pattern } : { kind: 'search', query: pattern, scope };
+    const scope = firstString(input, SCOPE_KEYS);
+    if (pattern !== undefined) return scope === undefined || scope === pattern ? { kind: 'search', query: pattern } : { kind: 'search', query: pattern, scope };
     if (scope !== undefined) return { kind: 'file_io', operation: 'glob', path: scope };
     return undefined;
   }
-  if (token === 'fetchurl' || token === 'webfetch') {
+  if (token === 'fetchurl' || token === 'webfetch' || token === 'web_fetch' || token === 'read_url_content') {
     const source = objectOf(input?.['source']);
-    const url = stringOf(input?.['url']) ?? (source?.['kind'] === 'url' ? stringOf(source['url']) : undefined);
+    const url = firstString(input, ['url', 'Url']) ?? (source?.['kind'] === 'url' ? stringOf(source['url']) : undefined);
     if (url !== undefined) return { kind: 'url_fetch', url };
-    const query = stringOf(input?.['query']);
+    const query = firstString(input, QUERY_KEYS);
     if (query !== undefined) return { kind: 'search', query };
     return undefined;
   }
@@ -194,20 +213,45 @@ function projectName(token: string, input: Readonly<Record<string, unknown>> | u
     if (path === undefined) return undefined;
     return { kind: 'file_io', operation: 'read', path };
   }
-  if ((token === 'write' || token === 'write_to_file' || token === 'edit' || token === 'replace_file_content' || token === 'multi_replace_file_content') && path !== undefined) {
-    return editOrWrite(input, path, token === 'write' || token === 'write_to_file');
+  if ((token === 'write' || token === 'write_file' || token === 'write_to_file' || token === 'edit' || token === 'edit_file' || token === 'multiedit' || token === 'multi_edit' || token === 'replace' || token === 'replace_file_content' || token === 'multi_replace_file_content' || token === 'str_replace_editor') && path !== undefined) {
+    return editOrWrite(input, path, token === 'write' || token === 'write_file' || token === 'write_to_file');
   }
   return undefined;
 }
 
 function editOrWrite(input: Readonly<Record<string, unknown>> | undefined, path: string, preferWrite = false): ProjectedToolDisplay {
-  const before = firstString(input, ['oldString', 'old_string', 'OldString']);
-  const after = firstString(input, ['newString', 'new_string', 'NewString']);
+  const chunks = chunkEntries(input, path);
+  if (chunks.length > 1) return { kind: 'generic', summary: path, detail: { diffs: chunks } };
+  if (chunks.length === 1) {
+    const chunk = chunks[0]!;
+    return { kind: 'file_io', operation: 'edit', path, before: chunk.before, after: chunk.after };
+  }
+  const before = firstText(input, BEFORE_KEYS);
+  const after = firstText(input, AFTER_KEYS);
   const content = firstString(input, CONTENT_KEYS);
   if (content !== undefined && before === undefined) return { kind: 'file_io', operation: 'write', path, content };
   if (preferWrite && before === undefined && after === undefined) return { kind: 'file_io', operation: 'write', path };
-  if (before !== undefined && after !== undefined) return { kind: 'file_io', operation: 'edit', path, before, after };
+  if (before !== undefined && after !== undefined && (before !== '' || after !== '')) {
+    return { kind: 'file_io', operation: 'edit', path, before, after };
+  }
   return { kind: 'file_io', operation: preferWrite ? 'write' : 'edit', path };
+}
+
+function chunkEntries(input: Readonly<Record<string, unknown>> | undefined, path: string): { path: string; before: string; after: string }[] {
+  for (const key of CHUNK_KEYS) {
+    const raw = input?.[key];
+    if (!Array.isArray(raw)) continue;
+    const chunks = raw.flatMap((item) => {
+      const record = objectOf(item);
+      const before = firstText(record, BEFORE_KEYS);
+      const after = firstText(record, AFTER_KEYS);
+      if (before === undefined || after === undefined || (before === '' && after === '')) return [];
+      const itemPath = firstString(record, PATH_KEYS) ?? path;
+      return [{ path: itemPath, before, after }];
+    });
+    if (chunks.length > 0) return chunks;
+  }
+  return [];
 }
 
 function recoveredDetail(detail: unknown): boolean {
@@ -262,10 +306,22 @@ function diffEntries(content: readonly unknown[] | undefined): { path: string; b
   });
 }
 
+function changeDiffs(raw: unknown): { path: string; before: string; after: string }[] {
+  const list = Array.isArray(raw) ? raw : Array.isArray(objectOf(raw)?.['changes']) ? (objectOf(raw)!['changes'] as unknown[]) : [];
+  return list.flatMap((item) => {
+    const record = objectOf(item);
+    const path = firstString(record, PATH_KEYS);
+    const before = firstText(record, BEFORE_KEYS);
+    const after = firstText(record, AFTER_KEYS);
+    if (path === undefined || before === undefined || after === undefined || (before === '' && after === '')) return [];
+    return [{ path, before, after }];
+  });
+}
+
 function changePaths(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return unique(raw.flatMap((item) => {
-    const path = stringOf(objectOf(item)?.['path']);
+  const list = Array.isArray(raw) ? raw : Array.isArray(objectOf(raw)?.['changes']) ? (objectOf(raw)!['changes'] as unknown[]) : [];
+  return unique(list.flatMap((item) => {
+    const path = stringOf(item) ?? firstString(objectOf(item), PATH_KEYS);
     return path === undefined ? [] : [path];
   }));
 }
@@ -274,6 +330,14 @@ function firstString(input: Readonly<Record<string, unknown>> | undefined, keys:
   for (const key of keys) {
     const value = input?.[key];
     if (typeof value === 'string' && value !== '') return value;
+  }
+  return undefined;
+}
+
+function firstText(input: Readonly<Record<string, unknown>> | undefined, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = input?.[key];
+    if (typeof value === 'string') return value;
   }
   return undefined;
 }

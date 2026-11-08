@@ -48,6 +48,20 @@ export default {
           },
           {
             toolUse: {
+              id: 'external:agy:find', name: 'find_by_name',
+              input: { Pattern: '*.ts', SearchDirectory: '/workspace/example' },
+              display: { kind: 'search', query: '*.ts', scope: '/workspace/example' },
+            },
+          },
+          {
+            toolUse: {
+              id: 'external:agy:edit', name: 'replace_file_content',
+              input: { TargetFile: '/workspace/example/c.ts', TargetContent: 'const ready = false;\n', ReplacementContent: 'const ready = true;\n' },
+              display: { kind: 'file_io', operation: 'edit', path: '/workspace/example/c.ts', before: 'const ready = false;\n', after: 'const ready = true;\n' },
+            },
+          },
+          {
+            toolUse: {
               id: 'external:agy:fail', name: 'run_command',
               input: { CommandLine: 'rg -n missing src', Cwd: '/workspace/example' },
               display: { kind: 'command', command: 'rg -n missing src', cwd: '/workspace/example' },

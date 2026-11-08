@@ -38,6 +38,7 @@ import { IAgentContextMemoryService, IAgentStateService, IAgentUsageService, IEv
 import { ToolsUpdateStore, todoKey } from '@kiki/agent-core-v2/session/todo/todoOps';
 import type { AgentExecutorAgentContext } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { mapAcpSessionNotification } from '../../acp-client/src/events';
+import { mapCodexNotification } from '../../codex-client/src/events';
 import { DisposableStore } from '@kiki/agent-core-v2/_base/di/lifecycle';
 import { createServices } from '@kiki/agent-core-v2/_base/di/test';
 import { IAgentBlobService } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
@@ -447,6 +448,114 @@ describe('bindSessionTranscript', () => {
       payload: { update: { facts: { count: 1 }, token: '[REDACTED]' } } } });
     expect(JSON.stringify(blocks)).not.toContain('YOUR_API_KEY');
     expect(live.getTurn('t0')?.execution?.losses).not.toContain('tool_input_partial');
+  });
+
+  it('projects AGY and cross-engine external tool frames to the same unified cards across live updates and cold replay without duplicates', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    onTestFinished(() => clock.mockRestore());
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const sub = agents.add('sub');
+    const store = new TranscriptStore('external-unified-session');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    onTestFinished(() => binding.dispose());
+    const mainRecords: TranscriptWireRecord[] = [];
+    const subRecords: TranscriptWireRecord[] = [];
+    const makeServices = (bus: typeof main.bus, targetRecords: TranscriptWireRecord[]) => new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async (event: Event2) => {
+        if ((event.constructor as { durable?: boolean }).durable) targetRecords.push(event.serialize());
+        bus.emit(event);
+      } }],
+      [IWireService, { flush: async () => undefined }],
+      [IAgentUsageService, { record: () => undefined }],
+      [ISessionMetadata, { setGeneratedTitleIfUncustomized: async () => undefined }],
+      [IAgentContextMemoryService, { appendLoopEvent: (event: unknown) => {
+        const record = { type: 'context.append_loop_event', time: Date.now(), event };
+        targetRecords.push(record);
+        bus.emit(record as unknown as Event2);
+      } }],
+    ]);
+    const mainServices = makeServices(main.bus, mainRecords);
+    const subServices = makeServices(sub.bus, subRecords);
+    const agyRecorder = new ExternalTurnRecorder({ id: 'main', accessor: { get: (token: unknown) => mainServices.get(token) } } as AgentExecutorAgentContext,
+      0, 'agy-conv-1', { executorId: 'agy-cli', protocol: 'acp-v1', model: 'harness-default', resumeMode: 'new', profileDelivery: 'native' });
+    await agyRecorder.begin('Update project files with AGY', { kind: 'user' });
+    const sendAcp = async (recorder: ExternalTurnRecorder, sessionId: string, update: unknown) => {
+      await recorder.record(mapAcpSessionNotification({ sessionId, update }, 'session/update').event);
+    };
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call', toolCallId: 'agy-1', title: 'read_file', name: 'read_file', kind: 'other', status: 'in_progress' });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-1', title: 'read_file', name: 'read_file', status: 'in_progress', rawInput: { Path: '/workspace/example/file.ts' } });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-1', title: 'read_file', name: 'read_file', status: 'completed', rawInput: { Path: '/workspace/example/file.ts' }, rawOutput: 'export const x = 1;\n', content: [{ type: 'content', content: { type: 'text', text: 'export const x = 1;\n' } }] });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call', toolCallId: 'agy-2', title: 'find_by_name', name: 'find_by_name', kind: 'other', status: 'in_progress', rawInput: { Pattern: '*.ts', SearchDirectory: '/workspace/example' } });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-2', title: 'find_by_name', name: 'find_by_name', status: 'completed', rawInput: { Pattern: '*.ts', SearchDirectory: '/workspace/example' }, rawOutput: '/workspace/example/file.ts\n', content: [{ type: 'content', content: { type: 'text', text: '/workspace/example/file.ts\n' } }] });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call', toolCallId: 'agy-3', title: 'replace_file_content', name: 'replace_file_content', kind: 'other', status: 'in_progress', rawInput: { TargetFile: '/workspace/example/file.ts', TargetContent: 'export const x = 1;', ReplacementContent: 'export const x = 2;' } });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-3', title: 'replace_file_content', name: 'replace_file_content', status: 'completed', rawOutput: 'modified', content: [{ type: 'content', content: { type: 'text', text: 'modified' } }] });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call', toolCallId: 'agy-4', title: 'run_command', name: 'run_command', kind: 'other', status: 'in_progress', rawInput: { CommandLine: 'pnpm test', Cwd: '/workspace/example' } });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-4', title: 'run_command', name: 'run_command', status: 'failed', rawOutput: 'exit 1', content: [{ type: 'content', content: { type: 'text', text: 'exit 1' } }] });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call', toolCallId: 'agy-5', title: 'vendor_widget', name: 'vendor_widget', kind: 'other', status: 'in_progress', rawInput: { widgetId: 42 } });
+    await sendAcp(agyRecorder, 'agy-conv-1', { sessionUpdate: 'tool_call_update', toolCallId: 'agy-5', title: 'vendor_widget', name: 'vendor_widget', status: 'completed', rawInput: { widgetId: 42 }, rawOutput: { ok: true } });
+    await agyRecorder.complete('end_turn');
+
+    const codexRecorder = new ExternalTurnRecorder({ id: 'sub', accessor: { get: (token: unknown) => subServices.get(token) } } as AgentExecutorAgentContext,
+      0, 'codex-thread-1', { executorId: 'codex-app-server', protocol: 'codex-app-server', model: 'harness-default', resumeMode: 'new', profileDelivery: 'native' });
+    await codexRecorder.begin('Update project files with Codex and Claude ACP', { kind: 'user' });
+    const sendCodex = async (method: string, payload: unknown) => {
+      for (const event of mapCodexNotification(method, payload).events) {
+        await codexRecorder.record(event);
+      }
+    };
+    await sendAcp(codexRecorder, 'codex-thread-1', { sessionUpdate: 'tool_call', toolCallId: 'claude-read-1', title: 'Read', name: 'Read', kind: 'other', status: 'in_progress', rawInput: { file_path: '/workspace/example/file.ts' } });
+    await sendAcp(codexRecorder, 'codex-thread-1', { sessionUpdate: 'tool_call_update', toolCallId: 'claude-read-1', title: 'Read', name: 'Read', status: 'completed', rawInput: { file_path: '/workspace/example/file.ts' }, rawOutput: 'export const x = 1;\n' });
+    await sendCodex('item/started', { item: { id: 'codex-search-1', type: 'webSearch', status: 'in_progress', query: '*.ts' } });
+    await sendCodex('item/completed', { item: { id: 'codex-search-1', type: 'webSearch', status: 'completed', query: '*.ts', result: '/workspace/example/file.ts' } });
+    await sendCodex('item/started', { item: { id: 'codex-edit-1', type: 'fileChange', status: 'in_progress', changes: [{ path: '/workspace/example/file.ts', before: 'export const x = 1;', after: 'export const x = 2;' }] } });
+    await sendCodex('item/completed', { item: { id: 'codex-edit-1', type: 'fileChange', status: 'completed', changes: [{ path: '/workspace/example/file.ts', before: 'export const x = 1;', after: 'export const x = 2;' }] } });
+    await sendCodex('item/started', { item: { id: 'codex-cmd-1', type: 'commandExecution', status: 'in_progress', command: 'pnpm test', cwd: '/workspace/example' } });
+    await sendCodex('item/completed', { item: { id: 'codex-cmd-1', type: 'commandExecution', status: 'failed', command: 'pnpm test', cwd: '/workspace/example', aggregatedOutput: 'exit 1' } });
+    await codexRecorder.complete('end_turn');
+
+    const replayCold = (agentId: string, wire: readonly TranscriptWireRecord[]) => {
+      const cold = new AgentTranscript(agentId);
+      const reducer = new TranscriptFactReducer(cold);
+      const adapter = new TranscriptWireAdapter(agentId);
+      for (const record of wire) reducer.apply(adapter.add(record));
+      reducer.apply(adapter.finish());
+      return cold;
+    };
+    const coldMain = replayCold('main', mainRecords);
+    const coldSub = replayCold('sub', subRecords);
+    const liveMain = store.getAgent('main')!;
+    const liveSub = store.getAgent('sub')!;
+    expect(normalizedBlocks(liveMain.snapshot())).toEqual(normalizedBlocks(coldMain.snapshot()));
+    expect(normalizedBlocks(liveSub.snapshot())).toEqual(normalizedBlocks(coldSub.snapshot()));
+    const agyTools = liveMain.getTurn('t0')?.steps.flatMap((step) => step.frames).filter((frame) => frame.kind === 'tool') ?? [];
+    expect(agyTools.map((frame) => frame.toolCallId)).toEqual([
+      'external:agy-conv-1:agy-1',
+      'external:agy-conv-1:agy-2',
+      'external:agy-conv-1:agy-3',
+      'external:agy-conv-1:agy-4',
+      'external:agy-conv-1:agy-5',
+    ]);
+    const otherTools = liveSub.getTurn('t0')?.steps.flatMap((step) => step.frames).filter((frame) => frame.kind === 'tool') ?? [];
+    expect(otherTools.map((frame) => frame.toolCallId)).toEqual([
+      'external:codex-thread-1:claude-read-1',
+      'external:codex-thread-1:codex-search-1',
+      'external:codex-thread-1:codex-edit-1',
+      'external:codex-thread-1:codex-cmd-1',
+    ]);
+    expect(agyTools[0]?.display).toEqual({ kind: 'file_io', operation: 'read', path: '/workspace/example/file.ts' });
+    expect(otherTools[0]?.display).toEqual(agyTools[0]?.display);
+    expect(agyTools[1]?.display).toEqual({ kind: 'search', query: '*.ts', scope: '/workspace/example' });
+    expect(otherTools[1]?.display).toEqual({ kind: 'search', query: '*.ts' });
+    expect(agyTools[2]?.display).toEqual({ kind: 'file_io', operation: 'edit', path: '/workspace/example/file.ts', before: 'export const x = 1;', after: 'export const x = 2;' });
+    expect(otherTools[2]?.display).toEqual(agyTools[2]?.display);
+    expect(agyTools[3]?.display).toEqual({ kind: 'command', command: 'pnpm test', cwd: '/workspace/example' });
+    expect(otherTools[3]?.display).toEqual(agyTools[3]?.display);
+    expect(agyTools[4]).toMatchObject({
+      state: 'done',
+      display: { kind: 'generic', summary: 'vendor_widget' },
+      input: { widgetId: 42 },
+    });
   });
 
   it('publishes birth for a newborn queued live child and preserves it when the same handle identity returns', async () => {

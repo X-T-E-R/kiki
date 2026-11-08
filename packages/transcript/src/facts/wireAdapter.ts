@@ -2099,16 +2099,17 @@ export class TranscriptWireAdapter {
     const output = objectOf(record['output']);
     const text = stringOf(output?.['text']);
     const name = stringOf(record['name']) ?? stringOf(output?.['title']) ?? stringOf(output?.['name']) ?? previous?.name;
+    const rawInput = record['input'] ?? output?.['rawInput'] ?? previous?.input;
     const frame: ToolCallFrame = {
       ...previous,
       kind: 'tool', frameId: previous?.frameId ?? `${stepId}.${toolCallId}`,
       toolCallId, name: name ?? 'External tool',
-      state, input: record['input'] ?? output?.['rawInput'], display: normalizeStoredExternalToolDisplay(record['display'], {
-        name, title: stringOf(output?.['title']) ?? name, kind: stringOf(output?.['toolKind']),
-        rawInput: record['input'] ?? output?.['rawInput'],
+      state, input: rawInput, display: normalizeStoredExternalToolDisplay(record['display'], {
+        name: stringOf(output?.['name']) ?? name, title: stringOf(output?.['title']) ?? name, kind: stringOf(output?.['toolKind']),
+        rawInput,
         content: Array.isArray(output?.['content']) ? output['content'] : undefined,
         locations: Array.isArray(output?.['locations']) ? output['locations'] : undefined,
-      }), output: record['output'],
+      }), output: record['output'] ?? previous?.output,
       error: state === 'error' ? text : undefined,
       startedAt: previous?.startedAt ?? isoOf(record.time),
       endedAt: state === 'running' ? undefined : previous?.endedAt ?? isoOf(record.time),

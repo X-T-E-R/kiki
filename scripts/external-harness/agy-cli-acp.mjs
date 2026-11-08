@@ -231,7 +231,7 @@ export class AgyBridge {
       modelChoices: this.modelChoices, accountBound: this.account !== undefined,
       mcpServers: structuredClone(mcpServers), mcpPlugin: undefined, mcpBound: new Set(), mcpReady: new Set(),
       permissionIdentity: permissionChannelIdentity(), permissionChannel: undefined,
-      child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map() };
+      child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map(), toolInputs: new Map() };
     this.sessions.set(session.id, session);
     try {
       await this.recoverDeadOwnedResources(session);
@@ -711,12 +711,20 @@ export class AgyBridge {
       }
       if (step.step_type === 'tool') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
-        const detail = { name: step.tool_name ?? step.tool_info?.name ?? session.toolDetails.get(id)?.name, state: step.state };
+        const previousName = session.toolDetails.get(id)?.name;
+        const detail = { name: step.tool_name ?? step.tool_info?.name ?? previousName, state: step.state };
+        const rawInput = step.tool_info?.parameters ?? step.parameters;
+        const previousInput = session.toolInputs.get(id);
+        if (rawInput !== undefined) session.toolInputs.set(id, rawInput);
         session.toolDetails.set(id, detail);
         if (!session.toolIds.has(id)) {
           session.toolIds.set(id, 'pending');
           await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call',
-            toolCallId: id, title: detail.name ?? 'AGY tool', kind: 'other', status: 'in_progress', rawInput: step.tool_info?.parameters } });
+            toolCallId: id, title: detail.name ?? 'AGY tool', name: detail.name, kind: 'other', status: 'in_progress', rawInput } });
+        } else if (session.active === active && step.state !== 'DONE' && step.state !== 'ERROR' && session.toolIds.get(id) === 'pending' &&
+          (detail.name !== previousName || rawInput !== undefined && JSON.stringify(rawInput) !== JSON.stringify(previousInput))) {
+          await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call_update',
+            toolCallId: id, title: detail.name, name: detail.name, status: 'in_progress', rawInput: rawInput ?? previousInput } });
         }
         await this.audit(session, 'tool_state', { toolCallId: id, ...detail });
         if (session.active === active && (step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
@@ -724,13 +732,15 @@ export class AgyBridge {
           const error = step.tool_info?.error ?? step.error;
           session.toolIds.set(id, 'settled');
           const errorText = typeof error === 'string' ? error : error?.message;
-          const output = step.tool_info?.output ?? errorText ?? (failed ? 'AGY tool reported an error' : undefined);
+          const output = step.tool_info?.output ?? step.tool_info?.result ?? errorText ?? (failed ? 'AGY tool reported an error' : undefined);
           if (failed && /^tool call denied by pre-tool hook:/i.test(String(errorText ?? output ?? '').trimStart())) {
             (active.preToolDenied ??= new Set()).add(id);
             await this.audit(session, 'pre_tool_hook_denied', { toolCallId: id, error: errorText ?? output });
           }
+          const finalInput = rawInput ?? previousInput;
           await active.client.notify('session/update', { sessionId: session.id,
-            update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: failed ? 'failed' : 'completed',
+            update: { sessionUpdate: 'tool_call_update', toolCallId: id, title: detail.name, name: detail.name,
+              status: failed ? 'failed' : 'completed', rawInput: finalInput,
               rawOutput: output, content: typeof output === 'string'
                 ? [{ type: 'content', content: { type: 'text', text: output } }] : undefined } });
         }
