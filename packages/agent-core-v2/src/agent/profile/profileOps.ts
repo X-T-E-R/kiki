@@ -149,6 +149,11 @@ export interface ProfileBind extends z.infer<typeof profileBindSchema> {}
 
 const configUpdateSchema = z.object({
   execution: executionBindingSchema.optional(),
+  executorId: z.string().optional(),
+  executorProtocol: z.string().optional(),
+  executorOptions: ExecutorOptionsSchema.readonly().nullable().optional(),
+  executorDescriptorRevision: z.string().optional(),
+  executorLaunch: executorLaunchSchema.nullable().optional(),
   toolOverride: toolOverrideSchema.optional(),
   personaOverrides: personaOverridesSchema.optional(),
   promptBase: z.custom<import('./boundProfile').BoundPromptBase>().optional(),
@@ -303,6 +308,11 @@ export const profileKey = defineState(
 
 function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: ConfigUpdatePayload): void {
     if (e.execution !== undefined) s.execution = castDraft(e.execution);
+    if (e.executorId !== undefined) s.executorId = e.executorId;
+    if (e.executorProtocol !== undefined) s.executorProtocol = e.executorProtocol;
+    if (e.executorOptions !== undefined) s.executorOptions = e.executorOptions === null ? undefined : castDraft(e.executorOptions);
+    if (e.executorDescriptorRevision !== undefined) s.executorDescriptorRevision = e.executorDescriptorRevision;
+    if (e.executorLaunch !== undefined) s.executorLaunch = e.executorLaunch === null ? undefined : castDraft(e.executorLaunch);
     if (e.toolOverride !== undefined) s.toolOverride = castDraft(e.toolOverride);
     if (e.personaOverrides !== undefined) s.personaOverrides = e.personaOverrides;
     if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: castDraft(e.promptBase), promptContextPending: undefined };

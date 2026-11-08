@@ -15,7 +15,8 @@ import { mergeExecutorOptions, resolveExecutorSchedule, type ScheduleInstanceVie
 import { IHarnessQuotaService } from '#/app/plugin/harnessQuota';
 import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
-import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
+import { brokenOriginalResumeRefusal } from '#/agent/execution/execution';
+import { ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 import { frozenRecipeDiagnostics, promptConfigurationChannels } from './promptDiagnostics';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
@@ -624,7 +625,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (input.route !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Native engine targets do not have profile routes');
       assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, selection.profile.executor);
       const native = resolveNativeTargetBinding(selection.profile, {
-        modelAlias: input.model ?? undefined, thinkingEffort: input.thinking ?? undefined,
+        modelAlias: input.model ?? undefined,
+        thinkingEffort: input.thinking ?? undefined,
+        executorInstance: input.executorInstance ?? undefined,
+        executorLaunch: input.executorLaunch ?? undefined,
       }, this.config, this.executors);
       await this.bindExecution(native.execution.selection, { ...input, resolvedProfile: selection.profile }, assertCurrent);
       return;
@@ -655,7 +659,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const toolOverride = mergeToolBindingOverride(this.profileState.toolOverride, input.toolOverride);
     assertNativeToolOverride(selection.profile.executor, toolOverride);
     assertResearchExecutor(executionRestriction, selection.profile.executor);
-    const scheduled = await this.resolveScheduledExecutable(selection.profile.executor ?? 'native', selection.profile.executorOptions, selection.profile, input.executorInstance, input.executorLaunch, input.model ?? undefined, input.lockedExecutorId);
+    const scheduled = await this.resolveScheduledExecutable(
+      selection.profile.executor ?? 'native',
+      selection.profile.executorOptions,
+      selection.profile,
+      input.executorInstance,
+      input.executorLaunch,
+      input.model ?? persona?.definition.modelAlias ?? selection.route?.lockedModelAlias ?? input.lease?.modelAlias ?? selection.profile.modelAlias,
+      input.lockedExecutorId,
+    );
     const executor = scheduled.executor;
     assertResearchExecutor(executionRestriction, executor.descriptor.id);
     this.assertInstanceRevision(executor.descriptor);
@@ -905,9 +917,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     targetModel: string | undefined,
     lockedExecutorId: string | undefined,
   ): Promise<{ readonly executor: ResolvedAgentExecutor; readonly schedule: ExecutionSchedule | undefined; readonly launch: ExecutorLaunch | undefined }> {
-    const direct = this.executors.get(requestedExecutor);
+    const direct = this.executors.get?.(requestedExecutor);
     const familyId = direct?.instance?.source_executor ?? requestedExecutor;
-    const family = this.executors.get(familyId);
+    const family = this.executors.get?.(familyId);
     if (requestedExecutor === 'native' || family?.protocol === 'native' || direct?.protocol === 'native') {
       return { executor: await this.executors.resolveExecutable(requestedExecutor, profileOptions), schedule: undefined, launch: undefined };
     }
@@ -1525,6 +1537,57 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking) !== thinking;
     const identity = (alias: string | undefined): string | undefined => alias === undefined || this.isExternalExecutor ? alias : this.models.resolveId(alias) ?? alias;
     const changedModel = model !== identity(previous.modelAlias);
+    let scheduledExecutor: Awaited<ReturnType<AgentProfileService['resolveScheduledExecutable']>> | undefined;
+    if (input.executorInstance !== undefined) {
+      if (!this.isExternalExecutor) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'executor_instance on resume requires an external executor agent.');
+      }
+      const currentDescriptor = this.executors.get?.(previous.executorId!);
+      const currentFamilyId = currentDescriptor?.instance?.source_executor ?? previous.execution?.selection.executor ?? previous.boundProfile?.executor ?? previous.executorId!;
+      scheduledExecutor = await this.resolveScheduledExecutable(
+        currentFamilyId,
+        previous.boundProfile?.executorOptions ?? previous.executorOptions,
+        previous.boundProfile ?? this.resolveActiveProfile(),
+        input.executorInstance,
+        undefined,
+        model,
+        undefined,
+      );
+      assertResearchExecutor(previous.executionRestriction, scheduledExecutor.executor.descriptor.id);
+      const nextFamilyId = scheduledExecutor.executor.descriptor.instance?.source_executor ?? scheduledExecutor.executor.descriptor.id;
+      if (nextFamilyId !== currentFamilyId || scheduledExecutor.executor.descriptor.protocol !== previous.executorProtocol) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'Resume executor_instance must belong to the same executor family and protocol.');
+      }
+      this.requireValidBinding(this.executors.validateBinding(
+        scheduledExecutor.executor.descriptor.id,
+        scheduledExecutor.executor.options,
+        {
+          modelAlias: model,
+          thinkingEffort: input.thinkingEffort ?? (this.profileState.thinkingEffortExplicit === true ? this.profileState.thinkingLevel : undefined),
+        },
+      ));
+      const changedInstance = scheduledExecutor.executor.descriptor.id !== previous.executorId ||
+        scheduledExecutor.executor.descriptor.revision !== previous.executorDescriptorRevision;
+      if (changedInstance) {
+        if (changedModel || (input.thinkingEffort !== undefined && thinking !== previous.thinkingLevel)) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Switching executor_instance on resume requires keeping the bound model and thinking effort unchanged.');
+        }
+        const prior = externalStateForGeneration(this.states.get(externalExecutorKey), previous.execution?.generation);
+        if (prior.sessionRef === undefined || prior.sessionRef.ref['localSource'] !== undefined) {
+          throw brokenOriginalResumeRefusal(this.agentScope.agentId);
+        }
+        const savedHome = typeof prior.sessionRef.ref['kikiLaunchHome'] === 'string' ? prior.sessionRef.ref['kikiLaunchHome'] : '';
+        if (savedHome !== (scheduledExecutor.executor.descriptor.homeDir ?? '')) {
+          throw brokenOriginalResumeRefusal(this.agentScope.agentId);
+        }
+        const priorNeg = this.executors.lastNegotiated?.(previous.executorId!);
+        const nextNeg = this.executors.lastNegotiated?.(scheduledExecutor.executor.descriptor.id);
+        if ((priorNeg !== undefined && priorNeg.resume === false && priorNeg.load === false) ||
+            (nextNeg !== undefined && nextNeg.resume === false && nextNeg.load === false)) {
+          throw brokenOriginalResumeRefusal(this.agentScope.agentId);
+        }
+      }
+    }
     const allowParentNotify = input.allowParentNotify ?? previous.allowParentNotify;
     if (changedModel && input.modelAlias === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID,
@@ -1613,11 +1676,29 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved prompt base is unavailable; resume without changing the model.');
       }
     }
+    const nextExecution = scheduledExecutor === undefined || previous.execution === undefined ? undefined : {
+      ...previous.execution,
+      selection: {
+        ...previous.execution.selection,
+        overrides: {
+          ...previous.execution.selection.overrides,
+          executor_instance: input.executorInstance,
+        },
+      },
+      schedule: scheduledExecutor.schedule,
+    };
     const config = this.resolveConfigPayload({
       modelAlias: model, thinkingLevel: thinking,
       thinkingEffortExplicit: input.thinkingEffort === undefined ? previous.thinkingEffortExplicit : true,
       thinkingEffortAdjusted, bindingAdvisories,
       allowParentNotify, systemPrompt, environmentDisclosure, promptBase: nextPromptBase,
+      execution: nextExecution,
+      executorId: scheduledExecutor?.executor.descriptor.id,
+      executorProtocol: scheduledExecutor?.executor.descriptor.protocol,
+      executorOptions: scheduledExecutor === undefined ? undefined
+        : scheduledExecutor.executor.options === undefined ? null : { ...scheduledExecutor.executor.options },
+      executorDescriptorRevision: scheduledExecutor?.executor.descriptor.revision,
+      executorLaunch: scheduledExecutor === undefined ? undefined : scheduledExecutor.launch ?? null,
     }, effectiveModel);
     if (toolOverride !== undefined) config.toolOverride = toolOverride;
     if (systemPrompt !== undefined) config.renderGeneration = previousState.renderGeneration + 1;
@@ -1741,6 +1822,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private assertPreparedBindingCommitted(config: ConfigUpdatePayload, previous: ProfileModelState): void {
     const current = this.profileState;
     if (current.modelAlias !== config.modelAlias || current.thinkingLevel !== (config.thinkingEffort ?? config.thinkingLevel ?? previous.thinkingLevel)
+      || current.executorId !== (config.executorId ?? previous.executorId)
+      || current.executorDescriptorRevision !== (config.executorDescriptorRevision ?? previous.executorDescriptorRevision)
       || current.profileDefinitionId !== previous.profileDefinitionId || current.routeId !== previous.routeId
       || current.persona !== previous.persona || current.personaOverrides !== (config.personaOverrides ?? previous.personaOverrides)
       || current.allowParentNotify !== (config.allowParentNotify ?? previous.allowParentNotify)
@@ -3267,6 +3350,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (changed.disabledToolGroups !== undefined) {
       payload.disabledToolGroups = [...changed.disabledToolGroups];
     }
+    if (changed.executorId !== undefined) payload.executorId = changed.executorId;
+    if (changed.executorProtocol !== undefined) payload.executorProtocol = changed.executorProtocol;
+    if (changed.executorOptions !== undefined) payload.executorOptions = changed.executorOptions;
+    if (changed.executorDescriptorRevision !== undefined) payload.executorDescriptorRevision = changed.executorDescriptorRevision;
+    if (changed.executorLaunch !== undefined) payload.executorLaunch = changed.executorLaunch;
     return payload;
   }
 

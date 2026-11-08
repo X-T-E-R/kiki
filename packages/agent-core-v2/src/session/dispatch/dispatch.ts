@@ -80,6 +80,7 @@ export interface DispatchRunOptions {
     readonly allowModelChange?: boolean;
     readonly newWindow?: boolean;
     readonly contextMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
+    readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice;
   };
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }

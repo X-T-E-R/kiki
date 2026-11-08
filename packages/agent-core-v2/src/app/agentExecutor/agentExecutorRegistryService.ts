@@ -120,7 +120,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const parsed = raw === undefined ? undefined : AgentExecutorOverrideSchema.safeParse(raw);
     const override = parsed?.success === true ? parsed.data : undefined;
     const programEnv = programOnly && id === 'agy-cli' && override?.env !== undefined
-      ? Object.entries(override.env).filter(([name]) => name === 'AGY_ACP_SDK_PATH' || name === 'AGY_CLI_PATH')
+      ? Object.entries(override.env).filter(([name]) => name === 'AGY_ACP_SDK_PATH' || name === 'AGY_CLI_PATH' || name === 'AGY_BRIDGE_AUDIT_DIR')
       : [];
     return applyExecutorOverride(
       descriptorFromConfig(id, entry),

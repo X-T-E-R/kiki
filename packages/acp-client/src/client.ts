@@ -256,9 +256,11 @@ function isFallbackSessionError(error: unknown): boolean {
 function sessionIdFromEnvelope(
   envelope: ExecutorSessionRefEnvelope,
   executorId: string,
+  sourceId?: string,
 ): string {
   const parsed = parseExecutorSessionRefEnvelope(envelope);
-  if (parsed.executorId !== executorId || parsed.version !== SESSION_REF_VERSION) {
+  const sameExecutor = parsed.executorId === executorId || (sourceId !== undefined && parsed.executorId === sourceId);
+  if (!sameExecutor || parsed.version !== SESSION_REF_VERSION) {
     throw new AcpClientError(
       AcpClientErrorCode.InvalidSessionRef,
       'Executor session ref does not match this ACP executor',
@@ -534,7 +536,7 @@ export class AcpProcessClient {
     });
     const connection = this.#connection;
     if (request.session.requireResume && request.session.sessionRef !== undefined &&
-        session.sessionId !== sessionIdFromEnvelope(request.session.sessionRef, this.#descriptor.id)) {
+        session.sessionId !== sessionIdFromEnvelope(request.session.sessionRef, this.#descriptor.id, this.#descriptor.sourceId)) {
       throw new AcpClientError(AcpClientErrorCode.InvalidSessionRef, 'ACP opened a different session before prompt');
     }
     await request.prepareSession?.(session);
@@ -1007,7 +1009,7 @@ export class AcpProcessClient {
     let priorSessionId =
       options.sessionRef === undefined
         ? undefined
-        : sessionIdFromEnvelope(options.sessionRef, this.#descriptor.id);
+        : sessionIdFromEnvelope(options.sessionRef, this.#descriptor.id, this.#descriptor.sourceId);
     const pendingFork = objectValue(options.sessionRef?.ref['kikiFork']);
     if (pendingFork !== undefined && priorSessionId !== undefined) {
       if (pendingFork['handoff'] === true || this.#capabilities.sessionCapabilities?.fork === undefined || this.#capabilities.sessionCapabilities?.fork === null) {

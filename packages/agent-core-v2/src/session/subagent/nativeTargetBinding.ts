@@ -10,7 +10,12 @@ import { roleBindingAdvisories, roleConstraintsFromProfile } from './modelConstr
 
 export function resolveNativeTargetBinding(
   profile: AgentProfile,
-  input: { readonly modelAlias?: string; readonly thinkingEffort?: string },
+  input: {
+    readonly modelAlias?: string;
+    readonly thinkingEffort?: string;
+    readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice;
+    readonly executorLaunch?: import('@kiki/protocol').ExecutorLaunchPatch;
+  },
   config: IConfigService,
   executors: IAgentExecutorRegistry,
   retainedExecution?: ExecutionBinding,
@@ -20,6 +25,8 @@ export function resolveNativeTargetBinding(
   const execution = retainedExecution ?? resolveExecutionBinding({ executor, overrides: {
     model: input.modelAlias ?? profile.modelAlias,
     thinking: input.thinkingEffort ?? profile.thinkingEffort,
+    executor_instance: input.executorInstance,
+    executor_launch: input.executorLaunch,
   } }, defaults, undefined, undefined);
   if (execution.effective.model === 'inherit') throw new Error2(ErrorCodes.CONFIG_INVALID,
     'A native engine target cannot inherit a Kiki model. Select the engine default or an explicit vendor model.');

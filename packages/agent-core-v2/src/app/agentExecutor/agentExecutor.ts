@@ -260,13 +260,35 @@ export interface AgentExecutorContext {
 }
 
 export function executionContextIdentity(binding: Pick<ExecutionBinding, 'selection' | 'effective'>) {
-  const { permission_mode: _override, ...overrides } = binding.selection.overrides ?? {};
+  const { permission_mode: _override, executor_instance: _instance, ...overrides } = binding.selection.overrides ?? {};
   const { permission_mode: _effective, ...effective } = binding.effective;
   return { selection: { ...binding.selection, overrides: Object.keys(overrides).length === 0 ? undefined : overrides }, effective };
 }
 
 export function agentExecutorBindingMatches(binding: ProfileBindingSnapshot, fingerprint: string | undefined): boolean {
   return fingerprint === agentExecutorBindingFingerprint(binding) || fingerprint === agentExecutorBindingFingerprint(binding, true);
+}
+
+export function agentExecutorSameFamilyBindingMatches(
+  binding: ProfileBindingSnapshot,
+  fingerprint: string | undefined,
+  prior: {
+    readonly executorId?: string;
+    readonly descriptorRevision?: string;
+    readonly execution?: ExecutionBinding;
+    readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  },
+): boolean {
+  if (agentExecutorBindingMatches(binding, fingerprint)) return true;
+  if (fingerprint === undefined || prior.executorId === undefined) return false;
+  const candidate: ProfileBindingSnapshot = {
+    ...binding,
+    executorId: prior.executorId,
+    executorDescriptorRevision: prior.descriptorRevision ?? binding.executorDescriptorRevision,
+    executorOptions: prior.executorOptions ?? binding.executorOptions,
+    execution: prior.execution ?? binding.execution,
+  };
+  return agentExecutorBindingMatches(candidate, fingerprint);
 }
 
 export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot, legacy = false): string {

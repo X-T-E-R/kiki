@@ -2332,7 +2332,7 @@ describe('ACP external executor', () => {
     try {
       await expect(harness.session.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal })).rejects.toThrow('Cannot resume');
       expect(harness.executorContext.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated)
-        .toHaveBeenCalledWith('example-acp', undefined, { resume: false, load: false });
+        .toHaveBeenCalledWith('example-acp', undefined, { resume: false, load: false }, undefined);
       expect(harness.starts).toHaveLength(0);
     } finally { await harness.session.shutdown(); }
   });

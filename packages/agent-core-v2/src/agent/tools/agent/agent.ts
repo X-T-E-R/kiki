@@ -87,7 +87,7 @@ export const SubagentToolInputSchema = z.preprocess(
       z.enum(['main', 'auto']),
       z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/),
       z.object({ account_id: z.string().min(1) }).strict(),
-    ]).optional().describe('Executor instance for a new agent. Omit to inherit the profile or executor default. main uses the executor\'s own launch. auto selects by comparable quota. A named instance or account_id does not read quota. Resume keeps the saved instance.'),
+    ]).optional().describe('Executor instance for a new agent, or a same-family named instance / account_id / auto / main when resuming an external child in its original session. Omit to inherit the profile or executor default on launch, or to keep the saved instance on resume unless an auto-scheduled turn ended in quota exhaustion. main uses the executor\'s own launch. auto selects by comparable quota. A named instance or account_id does not read quota.'),
     executor_launch: z.object({
       bin_path: z.string().min(1).nullable().optional(),
       home_dir: z.string().min(1).nullable().optional(),
@@ -97,6 +97,9 @@ export const SubagentToolInputSchema = z.preprocess(
   }).superRefine((args, ctx) => {
     if (args.model_alias === 'inherit') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: INHERIT_MODEL_ALIAS_UNAVAILABLE, path: ['model_alias'] });
+    }
+    if (args.resume?.trim() && args.executor_launch !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set executor_launch when continuing an existing agent; its launch patch is fixed at creation', path: ['executor_launch'] });
     }
     if (args.profile_file !== undefined && (args.profile !== undefined || args.route !== undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profile_file is mutually exclusive with profile and route' });

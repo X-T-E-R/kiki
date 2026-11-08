@@ -521,6 +521,7 @@ export class AgyBridge {
     const settle = (outcome, type) => {
       if (settled) return;
       settled = true;
+      if (outcome !== 'injected') active.steerDeliveryUnknown = true;
       this.auditQuietly(session, type, { steerIds: batch.map(item => item.id) });
       for (const item of batch) item.resolve({ outcome });
     };
@@ -703,11 +704,38 @@ export class AgyBridge {
     if (event.event === 'step_update') {
       const step = event.step_update;
       if (!step || typeof step.step_type !== 'string') throw new Error('Malformed AGY step');
-      if (step.step_type === 'user_input' && step.state === 'DONE') await this.audit(session, 'prompt_consumed', { stepIndex: step.step_index });
-      if (step.step_type === 'agent_response' && typeof step.text_delta === 'string' && step.text_delta) {
-        active.text += step.text_delta;
-        await active.client.notify('session/update', { sessionId: session.id,
-          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } } });
+      if (step.step_type === 'user_input' && step.state === 'DONE') {
+        active.promptConsumed = true;
+        active.lastStepType = 'user_input';
+        active.lastStepState = step.state;
+        active.lastStepIndex = step.step_index;
+        active.finalResponseDone = false;
+        active.finalResponseStepIndex = undefined;
+        active.finalResponseText = '';
+        await this.audit(session, 'prompt_consumed', { stepIndex: step.step_index });
+      } else {
+        active.lastStepType = step.step_type;
+        active.lastStepState = step.state;
+        active.lastStepIndex = step.step_index;
+        if (step.step_type !== 'agent_response') {
+          active.finalResponseDone = false;
+          active.finalResponseStepIndex = undefined;
+          active.finalResponseText = '';
+        }
+      }
+      if (step.step_type === 'agent_response') {
+        if (active.finalResponseStepIndex !== step.step_index) {
+          active.finalResponseStepIndex = step.step_index;
+          active.finalResponseText = '';
+          active.finalResponseDone = false;
+        }
+        if (typeof step.text_delta === 'string' && step.text_delta) {
+          active.text += step.text_delta;
+          active.finalResponseText += step.text_delta;
+          await active.client.notify('session/update', { sessionId: session.id,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } } });
+        }
+        active.finalResponseDone = step.state === 'DONE' && active.finalResponseText.length > 0;
       }
       if (step.step_type === 'tool') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
@@ -766,6 +794,19 @@ export class AgyBridge {
     }
     let error;
     let stopReason = 'end_turn';
+    let stopAfterResult = false;
+    let postResponseTerminalError;
+    const confirmedFinalResponse = Boolean(
+      active.promptConsumed
+      && !unresolved.length
+      && active.steering.length === 0
+      && !active.steerDeliveryUnknown
+      && active.lastStepType === 'agent_response'
+      && active.lastStepState === 'DONE'
+      && active.finalResponseDone
+      && active.text.length > 0
+      && (typeof result.response !== 'string' || result.response.length === 0 || result.response === active.text),
+    );
     if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
@@ -778,12 +819,24 @@ export class AgyBridge {
       error.code = 'AGY_PERMISSION_DENIED';
       error.details = { deniedToolCallIds: [...(active.preToolDenied ?? [])], unresolvedTools: unresolved };
     } else if (result.status === 'CANCELED' || result.status === 'INTERRUPTED' || (result.status === 'ERROR' && result.error === 'interrupted')) {
-      await this.settlePendingTools(session, active, unresolvedMessage ?? `AGY turn ${result.status.toLowerCase()}`);
+      const message = unresolvedMessage ?? `AGY turn ${result.status.toLowerCase()}; do not replay interrupted prompts or commands`;
+      session.broken = true;
+      session.failure = message;
+      await this.settlePendingTools(session, active, message);
       stopReason = 'cancelled';
+      stopAfterResult = true;
+    } else if (result.status !== 'SUCCESS' && confirmedFinalResponse) {
+      postResponseTerminalError = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}`;
+      session.broken = true;
+      session.failure = postResponseTerminalError;
+      stopAfterResult = true;
     } else if (result.status !== 'SUCCESS') {
       const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}`;
       await this.settlePendingTools(session, active, unresolvedMessage ?? message);
       error = new Error(unresolvedMessage ? `${message}; ${unresolvedMessage}` : message);
+      session.broken = true;
+      session.failure = error.message;
+      stopAfterResult = true;
     } else if (unresolvedMessage) {
       await this.settlePendingTools(session, active, unresolvedMessage);
       error = new Error(unresolvedMessage);
@@ -794,9 +847,33 @@ export class AgyBridge {
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } } });
     }
     if (session.active !== active || session.cancelling) return;
-    if (!unresolved.length) await this.audit(session, 'native_turn_reconciled', { status: result.status });
+    if (postResponseTerminalError !== undefined) {
+      await this.audit(session, 'post_response_terminal_error', {
+        conversationId: result.conversation_id,
+        status: result.status,
+        error: result.error,
+        stepIndex: active.finalResponseStepIndex,
+        responseSha256: createHash('sha256').update(active.text).digest('hex'),
+      });
+    }
+    if (stopReason === 'cancelled') {
+      await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: false, resumeSupported: false, unresolvedTools: unresolved });
+    } else if (!unresolved.length) {
+      await this.audit(session, 'native_turn_reconciled', {
+        status: result.status,
+        preservedCompletedResponse: postResponseTerminalError !== undefined ? true : undefined,
+      });
+    }
     if (session.active !== active || session.cancelling) return;
     session.active = undefined;
+    if (stopAfterResult) {
+      await session.permissionChannel?.close();
+      await this.stopProcess(session.child).catch(() => {});
+      await session.exited;
+      await this.closeSteeringHook(session).catch(() => {});
+      await session.mcpPlugin?.close();
+      if (!session.restarting) await session.releaseResume?.();
+    }
     if (error) active.reject(error);
     else active.resolve({ stopReason });
   }

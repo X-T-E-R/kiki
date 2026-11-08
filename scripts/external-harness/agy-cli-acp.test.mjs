@@ -1507,6 +1507,75 @@ void test('real ACP session/load restores exact native argv after adapter EOF wi
 });
 
 
+void test('terminal quota or auth vendor failure stops the owned CLI process and releases its lease so another account can load the exact conversation', { timeout: 15000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-account-load-'));
+  const auditDir = join(root, 'audit');
+  const first = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))],
+    model: 'fixture-alpha-high', auditDir, account: { apiKey: 'acct-a-key', baseUrl: 'https://a.example.test', modelIds: ['fixture-alpha-high'] } });
+  const second = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))],
+    model: 'fixture-alpha-high', auditDir, account: { apiKey: 'acct-b-key', baseUrl: 'https://b.example.test', modelIds: ['fixture-alpha-high'] } });
+  try {
+    await first.loadVendorModels();
+    await second.loadVendorModels();
+    const id = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await first.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+    await assert.rejects(turn(first, id, 'quota-terminal', []), /AGY terminal status ERROR: 429 Too Many Requests/);
+    assert.notEqual(first.session(id).child.exitCode, null);
+    await first.session(id).cleanup;
+    await assert.rejects(readFile(join(auditDir, `${id}.resume-lock`)), { code: 'ENOENT' });
+    const loaded = await second.loadSession({ sessionId: id, cwd: root, mcpServers: [] });
+    assert.equal(loaded.configOptions[0].currentValue, 'high');
+    assert.equal(second.session(id).conversationId, 'fixture-conversation');
+    const messages = [];
+    assert.deepEqual(await turn(second, id, 'continue on account B', messages), { stopReason: 'end_turn' });
+    assert.equal(second.session(id).init.conversation_id, 'fixture-conversation');
+    assert.equal(messages.map(m => m.update.content?.text ?? '').join(''), 'turn-1');
+    const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.filter(r => r.type === 'agy_init').map(r => r.conversationId), ['fixture-conversation', 'fixture-conversation']);
+    assert.equal(records.filter(r => r.type === 'prompt_sent').length, 2);
+
+    const unfinishedId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await assert.rejects(turn(first, unfinishedId, 'quota-terminal-unfinished-tool', []), /execution state is unknown/);
+    assert.notEqual(first.session(unfinishedId).child.exitCode, null);
+    await first.session(unfinishedId).cleanup;
+    await assert.rejects(second.loadSession({ sessionId: unfinishedId, cwd: root, mcpServers: [] }), { code: 'AGY_SESSION_RETIRED' });
+
+    const interruptedId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    assert.deepEqual(await turn(first, interruptedId, 'native-interrupted', []), { stopReason: 'cancelled' });
+    assert.notEqual(first.session(interruptedId).child.exitCode, null);
+    await first.session(interruptedId).cleanup;
+    await assert.rejects(second.loadSession({ sessionId: interruptedId, cwd: root, mcpServers: [] }), { code: 'AGY_SESSION_RETIRED' });
+
+    const completedLateErrId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const completedUpdates = [];
+    assert.deepEqual(await turn(first, completedLateErrId, 'complete-response-late-wsarecv', completedUpdates), { stopReason: 'end_turn' });
+    assert.equal(completedUpdates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join(''), 'final-delivery-1');
+    assert.notEqual(first.session(completedLateErrId).child.exitCode, null);
+    await first.session(completedLateErrId).cleanup;
+    await assert.rejects(readFile(join(auditDir, `${completedLateErrId}.resume-lock`)), { code: 'ENOENT' });
+    const completedAudit = (await readFile(join(auditDir, `${completedLateErrId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(completedAudit.some(r => r.type === 'post_response_terminal_error' && r.status === 'ERROR'), true);
+    assert.equal(completedAudit.some(r => r.type === 'native_turn_reconciled' && r.preservedCompletedResponse === true), true);
+    await second.loadSession({ sessionId: completedLateErrId, cwd: root, mcpServers: [] });
+    assert.equal(second.session(completedLateErrId).conversationId, 'fixture-conversation');
+    const resumedAfterLateErr = [];
+    assert.deepEqual(await turn(second, completedLateErrId, 'follow up after late wsarecv', resumedAfterLateErr), { stopReason: 'end_turn' });
+    assert.equal(resumedAfterLateErr.map(u => u.update.content?.text ?? '').join(''), 'turn-1');
+
+    for (const promptName of ['partial-response-late-wsarecv', 'post-tool-error-late-wsarecv']) {
+      const partialId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+      const partialUpdates = [];
+      await assert.rejects(turn(first, partialId, promptName, partialUpdates), /AGY terminal status ERROR:.*wsarecv/);
+      assert.equal(partialUpdates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join(''), 'partial-or-pretool');
+      assert.notEqual(first.session(partialId).child.exitCode, null);
+      await first.session(partialId).cleanup;
+      const partialAudit = (await readFile(join(auditDir, `${partialId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+      assert.equal(partialAudit.some(r => r.type === 'post_response_terminal_error'), false);
+    }
+  } finally { await first.close(); await second.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 void test('real ACP startup and recovery errors retain actionable reasons without starting or replaying a conversation', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, readdir, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-startup-'));

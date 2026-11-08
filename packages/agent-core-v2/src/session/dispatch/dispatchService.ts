@@ -579,7 +579,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     }
     const contextMode = resolveResumeContextMode(options.bindingOverride);
     if (childData.execution !== undefined && childData.modelAlias === undefined && options.bindingOverride?.modelAlias === undefined) {
-      if (contextMode !== 'direct' || options.bindingOverride?.thinkingEffort !== undefined) {
+      if (contextMode !== 'direct' || options.bindingOverride?.thinkingEffort !== undefined || options.bindingOverride?.executorInstance !== undefined) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an explicit vendor model before changing the native context or effort; ordinary resume keeps the original native session and defaults.');
       }
       const frozen = childData.boundProfile;
@@ -648,7 +648,8 @@ export class SessionDispatchService implements ISessionDispatchService {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed after this resume was committed. Inspect the original operation before starting another run.');
       }
       const admission = await childProfile.prepareResumeBinding({ modelAlias: record.switchInput.model,
-        thinkingEffort: record.switchInput.thinking, allowModelChange: true, allowParentNotify: options.allowParentNotify,
+        thinkingEffort: record.switchInput.thinking, executorInstance: options.bindingOverride?.executorInstance,
+        allowModelChange: true, allowParentNotify: options.allowParentNotify,
         callerConstraints: readCallerConstraints() });
       admission.assertCurrent();
       checkResume();

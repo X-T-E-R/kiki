@@ -98,7 +98,7 @@ function scriptedChild(): { child: HostProcessLike; toAgent: PassThrough; fromAg
   return { child, toAgent, fromAgent };
 }
 
-function recordingClient(script: () => InProcessAgentScript, failSpawn: () => boolean) {
+function recordingClient(script: () => InProcessAgentScript, failSpawn: () => boolean, id = 'example-acp', sourceId?: string) {
   const opens: AcpOpenSessionOptions[] = [];
   const histories: Array<ReturnType<typeof createInProcessScriptedAgent>['history']> = [];
   let spawns = 0;
@@ -114,7 +114,7 @@ function recordingClient(script: () => InProcessAgentScript, failSpawn: () => bo
       connectInProcessScriptedAgent(fixture.app, Writable.toWeb(fromAgent), Readable.toWeb(toAgent));
       return child;
     },
-  }, { id: 'example-acp', command: 'example-acp', startupTimeoutMs: 5_000 }, { platform: 'linux' });
+  }, { id, sourceId, command: id, startupTimeoutMs: 5_000 }, { platform: 'linux' });
   const openSession = client.openSession.bind(client);
   client.openSession = (async (options: AcpOpenSessionOptions) => {
     opens.push(options);
@@ -785,6 +785,287 @@ describe('recoverable ACP broken resume', () => {
       await harness.execution.shutdown();
       await remote.client.shutdown();
       await harness.ix.dispose();
+    }
+  });
+
+  it('switches a broken external child to another same-family executor_instance via session/load while preserving agent and ACP session IDs', async () => {
+    const familyDesc = {
+      id: 'agy-cli',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      revision: 'r-family',
+    };
+    const instanceADesc = {
+      id: 'instance-agy-a',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-a',
+      instance: {
+        id: 'instance-agy-a',
+        source_executor: 'agy-cli',
+        label: 'Account A',
+        configuration: { kind: 'plugin_account' as const, source_id: 'plugin:magpie/agy', account_id: 'acct-a' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const instanceBDesc = {
+      id: 'instance-agy-b',
+      protocol: 'acp-v1' as const,
+      command: 'agy-cli',
+      args: [],
+      modelBinding: 'argv' as const,
+      modelArgs: ['--model', '{model}'],
+      permission: argvPermission,
+      revision: 'r-b',
+      instance: {
+        id: 'instance-agy-b',
+        source_executor: 'agy-cli',
+        label: 'Account B',
+        configuration: { kind: 'plugin_account' as const, source_id: 'plugin:magpie/agy', account_id: 'acct-b' },
+        proxy: { kind: 'inherit' as const },
+      },
+    };
+    const remoteA = recordingClient(() => ({
+      sessionId: 'remote-shared-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-agy-a', 'agy-cli');
+    const remoteB = recordingClient(() => ({
+      sessionId: 'remote-shared-1',
+      capabilities: { loadSession: true },
+    }), () => false, 'instance-agy-b', 'agy-cli');
+    const harness = createExecutionHarness({
+      agentId: CHILD,
+      executorId: 'instance-agy-a',
+      client: remoteA.client,
+      modelBinding: 'argv',
+      thinkingEffort: 'medium',
+      permission: argvPermission,
+      prior: {
+        executorId: 'instance-agy-a',
+        descriptorRevision: 'r-a',
+        sessionEpoch: 1,
+        sessionRef: { executorId: 'instance-agy-a', version: 1, ref: { sessionId: 'remote-shared-1' } },
+        profileDeliveredSessionId: 'remote-shared-1',
+        profileDelivery: 'first_prompt_preamble',
+      },
+    });
+    admitBrokenResume(harness.ix);
+    const descriptors = new Map([
+      [familyDesc.id, familyDesc],
+      [instanceADesc.id, instanceADesc],
+      [instanceBDesc.id, instanceBDesc],
+    ]);
+    const registry = harness.ix.get(IAgentExecutorRegistry);
+    registry.get = (id: string) => descriptors.get(id);
+    registry.validateBinding = (_id, _opts, binding) => ({ ok: true, binding });
+    const { AcpAgentExecutorSession } = await import('#/agent/execution/acpAgentExecutorSession');
+    registry.resolveExecutable = async (id: string) => {
+      const desc = descriptors.get(id)!;
+      const clientForDesc = id === 'instance-agy-b' ? remoteB.client : remoteA.client;
+      return {
+        descriptor: desc,
+        options: {},
+        provider: {
+          id: desc.id,
+          protocol: desc.protocol,
+          validateOptions: () => ({}),
+          validateBinding: (binding) => ({ ok: true, binding }),
+          create: (ctx) => new AcpAgentExecutorSession(ctx, () => clientForDesc),
+        },
+      };
+    };
+    let currentBinding = {
+      ...harness.ix.get(IAgentProfileService).data(),
+      executorId: 'instance-agy-a',
+      executorProtocol: 'acp-v1',
+      executorDescriptorRevision: 'r-a',
+      modelAlias: 'model-a',
+      thinkingLevel: 'medium' as const,
+      thinkingEffortExplicit: true,
+    };
+    const state = harness.ix.get(IAgentStateService);
+    const { agentExecutorBindingFingerprint } = await import('#/app/agentExecutor/agentExecutor');
+    (state as unknown as { set(k: unknown, v: unknown): void }).set(externalExecutorKey, {
+      ...(state.get(externalExecutorKey) as object),
+      executorId: 'instance-agy-a',
+      descriptorRevision: 'r-a',
+      bindingFingerprint: agentExecutorBindingFingerprint(currentBinding),
+    });
+    const metadata = sessionMetadata();
+    const switched = modelSwitchFor(harness.ix, metadata);
+    const profileSvc = harness.ix.get(IAgentProfileService);
+    profileSvc.data = () => currentBinding;
+    profileSvc.prepareResumeBinding = async (input) => {
+      const nextId = input.executorInstance === 'instance-agy-b' || (typeof input.executorInstance === 'object' && input.executorInstance.account_id === 'acct-b')
+        ? 'instance-agy-b'
+        : typeof input.executorInstance === 'string' && input.executorInstance !== 'main' && input.executorInstance !== 'auto'
+          ? input.executorInstance
+          : currentBinding.executorId!;
+      const nextDesc = descriptors.get(nextId);
+      if (nextDesc === undefined) throw new Error(`Unknown instance ${nextId}`);
+      const nextConfig = {
+        modelAlias: currentBinding.modelAlias!,
+        thinkingEffort: currentBinding.thinkingLevel,
+        executorId: nextDesc.id,
+        executorProtocol: nextDesc.protocol,
+        executorDescriptorRevision: nextDesc.revision,
+      };
+      return {
+        model: currentBinding.modelAlias!,
+        thinking: currentBinding.thinkingLevel,
+        config: nextConfig,
+        maxContextTokens: undefined,
+        reservedTokens: undefined,
+        assertCurrent: () => {},
+        syncMetadata: async () => {
+          currentBinding = {
+            ...currentBinding,
+            executorId: nextDesc.id,
+            executorProtocol: nextDesc.protocol,
+            executorDescriptorRevision: nextDesc.revision,
+          };
+        },
+      };
+    };
+    const senderCtx = createTestAgent();
+    const loop = {
+      _serviceBrand: undefined,
+      enqueue: () => { throw new Error('unexpected enqueue'); },
+      status: () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false }),
+      settled: () => Promise.resolve(),
+      tryAcquireQuiescence: () => ({ dispose() {} }),
+      hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
+    } as unknown as IAgentLoopService;
+    const handle: IAgentScopeHandle = {
+      id: CHILD,
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get<T>(id: ServiceIdentifier<T>): T {
+          if (id === IAgentExecutionService) return harness.execution as T;
+          if (id === IAgentModelSwitchService) return switched.service as T;
+          if (id === IAgentLoopService) return loop as T;
+          if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
+          if (id === IAgentToolPolicyService) return { isToolActive: () => false } as T;
+          if (id === ISessionMetadata) return metadata as T;
+          return harness.ix.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => senderCtx.get(id) },
+      dispose: () => {},
+    };
+    const lifecycle = {
+      _serviceBrand: undefined,
+      onDidCreate: () => ({ dispose() {} }),
+      onDidDispose: () => ({ dispose() {} }),
+      get: (id: string) => id === CHILD ? handle : id === 'main' ? main : undefined,
+      list: () => [main, handle],
+      create: async () => { throw new Error('unexpected create'); },
+    } as unknown as IAgentLifecycleService;
+    const toolIx = new TestInstantiationService();
+    toolIx.stub(IAgentLifecycleService, lifecycle);
+    toolIx.stub(ISessionMetadata, metadata);
+    toolIx.stub(ISessionSubagentService, {
+      hooks: createHooks(['onWillStartAgentTask']),
+      retain: () => ({ dispose: () => {} }),
+      notifyAgentTaskStopped: () => {},
+      run: async (_agentId: string, request: import('#/session/subagent/subagent').AgentRunRequest, options: { signal: AbortSignal }) =>
+        harness.execution.run(request, options),
+    });
+    toolIx.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), list: () => [], listRoutes: () => [], get: () => undefined });
+    toolIx.stub(IAgentCollaborationRegistry, { commit: () => {}, release: () => {} });
+    toolIx.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
+    toolIx.stub(IModelCatalog, {});
+    toolIx.stub(IModelService, {});
+    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
+    toolIx.stub(IAgentScopeContext, { _serviceBrand: undefined, agentId: 'main', scope: (key?: string) => `agent/main/${key ?? ''}` });
+    toolIx.stub(IAgentTaskService, senderCtx.get(IAgentTaskService));
+    toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
+    toolIx.stub(IAgentToolPolicyService, {
+      isToolActive: () => true,
+      isToolActiveForDisclosure: () => true,
+      isToolActiveForProfile: () => true,
+      setSessionDisabledTools: async () => {},
+    });
+    toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
+    toolIx.stub(IAgentExecutorRegistry, registry);
+    toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
+    try {
+      const startTurnA = remoteA.client.startTurn.bind(remoteA.client);
+      vi.spyOn(remoteA.client, 'startTurn').mockImplementationOnce(async (request) => {
+        const handle = await startTurnA(request);
+        return {
+          ...handle,
+          completion: handle.completion.then(async () => {
+            await remoteA.exit();
+            throw new Error('AGY terminal status ERROR: RESOURCE_EXHAUSTED (code 429): Individual quota reached.');
+          }),
+        };
+      });
+      const firstRun = await harness.execution.run({ kind: 'prompt', prompt: 'first turn on A' }, { signal });
+      await expect(firstRun.completion).rejects.toThrow(/RESOURCE_EXHAUSTED/);
+      await harness.execution.settled();
+      expect(harness.execution.status()).toEqual({ state: 'idle' });
+
+      const resumed = await executeTool(toolIx.get(ISubagentTool), {
+        turnId: 2,
+        toolCallId: 'toolu_switch_account',
+        args: {
+          resume: CHILD,
+          executor_instance: { account_id: 'acct-b' },
+          prompt: 'second turn on B only',
+          description: 'switch to account B',
+          background: true,
+        },
+        signal,
+      });
+      await harness.execution.settled();
+      expect(resumed.isError, JSON.stringify(resumed.output)).toBeFalsy();
+      expect(currentBinding.executorId).toBe('instance-agy-b');
+      expect(remoteB.spawns()).toBe(1);
+      expect(remoteB.opens).toHaveLength(2);
+      expect(remoteB.opens[0]).toMatchObject({
+        requireResume: true,
+        sessionRef: { executorId: 'instance-agy-b', ref: { sessionId: 'remote-shared-1' } },
+      });
+      expect(remoteB.opens[1]).toMatchObject({
+        requireResume: true,
+        sessionRef: { executorId: 'instance-agy-b', ref: { sessionId: 'remote-shared-1' } },
+      });
+      expect(remoteB.histories[0]?.methods).toContain('session/load');
+      expect(remoteB.histories[0]?.methods).not.toContain('session/new');
+      expect(remoteB.histories[0]?.sessionLoadParams).toEqual([
+        expect.objectContaining({ sessionId: 'remote-shared-1' }),
+      ]);
+      const promptedB = JSON.stringify(remoteB.histories[0]?.promptParams);
+      expect(promptedB).toContain('second turn on B only');
+      expect(promptedB).not.toContain('first turn on A');
+      expect(promptedB).not.toContain('BEGIN KIKI PRIOR TRANSCRIPT HANDOFF');
+      expect(promptedB.split('second turn on B only').length - 1).toBe(1);
+      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey)).toMatchObject({
+        executorId: 'instance-agy-b',
+        descriptorRevision: 'r-b',
+        sessionRef: { executorId: 'instance-agy-b', ref: { sessionId: 'remote-shared-1' } },
+      });
+    } finally {
+      await toolIx.dispose();
+      await switched.dispose();
+      await harness.execution.shutdown();
+      await remoteA.client.shutdown();
+      await remoteB.client.shutdown();
+      await harness.ix.dispose();
+      await senderCtx.dispose();
     }
   });
 });

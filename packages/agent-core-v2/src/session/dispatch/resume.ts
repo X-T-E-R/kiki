@@ -32,6 +32,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
       allowModelChange: options.bindingOverride?.allowModelChange,
       newWindow: options.bindingOverride?.newWindow,
       contextMode: options.bindingOverride?.contextMode,
+      executorInstance: options.bindingOverride?.executorInstance,
     },
     allowParentNotify: options.allowParentNotify,
     tools: options.toolOverride?.tools,

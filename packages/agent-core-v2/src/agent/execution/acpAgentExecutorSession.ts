@@ -42,6 +42,7 @@ import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 import {
   agentExecutorBindingFingerprint,
   agentExecutorBindingMatches,
+  agentExecutorSameFamilyBindingMatches,
   type AgentExecutionStatus,
   type AgentExecutorContext,
   type AgentExecutorPermissionModeMapping,
@@ -200,7 +201,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
-    const contextProcess = harnessContextProcess(executorSourceId(context.descriptor) === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
+    const contextProcess = harnessContextProcess(['antigravity-acp', 'agy-cli'].includes(executorSourceId(context.descriptor)) ? antigravityProcessService(processes, context.descriptor,
       context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp);
     this.#client = clientFactory(
       harnessAccountProcess(contextProcess, context, this.#runtimeLease.runtime.identity.runtimeId).processes,
@@ -282,7 +283,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
-    const reusablePrior = agentExecutorBindingMatches(this.context.binding, prior.bindingFingerprint);
+    const reusablePrior = this.#reusablePriorState(prior);
     const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
     const sessionEpoch = priorSessionId === opened.sessionId
       ? prior.sessionEpoch ?? 1
@@ -527,13 +528,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (this.#shutdown || this.#active !== undefined) return false;
     if (this.#client.status().state !== 'broken') return false;
     const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
-    if (
-      state.executorId !== undefined &&
-      (state.executorId !== this.context.descriptor.id || state.descriptorRevision !== this.context.descriptor.revision)
-    ) return false;
+    if (!this.#stateMatchesDescriptorOrFamily(state)) return false;
     if (state.sessionRef?.ref['localSource'] !== undefined &&
         !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return false;
-    const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state);
+    const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, false, this.#reusablePriorState(state));
     if (resume.sessionRef === undefined) return false;
     const negotiated = this.context.agent.accessor.get(IAgentExecutorRegistry).negotiated?.(
       this.context.descriptor.id,
@@ -709,11 +707,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       additionalDirs: this.#workspace.additionalDirs,
     });
     const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
-    if (
-      state.executorId !== undefined &&
-      (state.executorId !== this.context.descriptor.id ||
-        state.descriptorRevision !== this.context.descriptor.revision)
-    ) {
+    if (!this.#stateMatchesDescriptorOrFamily(state)) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
         `Executor session state does not match descriptor "${this.context.descriptor.id}"`,
@@ -740,7 +734,13 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         ...sessionMeta,
         claudeCode: { options: { settings, settingSources: [...CLAUDE_EXPLICIT_SETTINGS_SOURCES] } },
       },
-      ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, this.#client.status().state === 'broken'),
+      ...originalRemoteResumeFields(
+        this.context.binding,
+        this.context.descriptor,
+        state,
+        this.#client.status().state === 'broken',
+        this.#reusablePriorState(state),
+      ),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
@@ -888,12 +888,36 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     await this.#dispatcher.flush();
   }
 
+  #stateMatchesDescriptorOrFamily(state: ReturnType<typeof externalStateForGeneration>): boolean {
+    if (state.executorId === undefined) return true;
+    if (state.executorId === this.context.descriptor.id && state.descriptorRevision === this.context.descriptor.revision) return true;
+    const registry = this.context.agent.accessor.get(IAgentExecutorRegistry);
+    const priorDescriptor = registry.get?.(state.executorId);
+    if (priorDescriptor === undefined || priorDescriptor.protocol !== this.context.descriptor.protocol) return false;
+    return executorSourceId(priorDescriptor) === executorSourceId(this.context.descriptor);
+  }
+
+  #reusablePriorState(state: ReturnType<typeof externalStateForGeneration>): boolean {
+    if (agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return true;
+    if (!this.#stateMatchesDescriptorOrFamily(state) || state.executorId === undefined) return false;
+    const registry = this.context.agent.accessor.get(IAgentExecutorRegistry);
+    const priorDescriptor = registry.get?.(state.executorId);
+    return agentExecutorSameFamilyBindingMatches(this.context.binding, state.bindingFingerprint, {
+      executorId: state.executorId,
+      descriptorRevision: state.descriptorRevision,
+      executorOptions: priorDescriptor?.options,
+    });
+  }
+
   #permissionSessionRef(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {
     const snapshot = sessionRefWithLocalSource(sessionRef, localSource);
-    const ref: Record<string, unknown> = { ...snapshot.ref, kikiLaunchHome: launchHome(this.context.descriptor) };
+    const home = launchHome(this.context.descriptor);
+    const ref: Record<string, unknown> = { ...snapshot.ref };
+    if (home.length > 0) ref['kikiLaunchHome'] = home;
+    else delete ref['kikiLaunchHome'];
     if (this.#permissionRestore === undefined) delete ref['kikiPermissionRestore'];
     else ref['kikiPermissionRestore'] = this.#permissionRestore;
-    return { ...snapshot, ref };
+    return { ...snapshot, executorId: this.context.descriptor.id, ref };
   }
 
   #reserveTurnId(): number {
@@ -1394,7 +1418,8 @@ function launchHome(descriptor: AgentExecutorContext['descriptor']): string {
 
 function sameLaunchHome(ref: ExecutorSessionRefEnvelope | undefined, descriptor: AgentExecutorContext['descriptor']): boolean {
   const saved = ref?.ref['kikiLaunchHome'];
-  return typeof saved !== 'string' || saved === launchHome(descriptor);
+  if (typeof saved === 'string') return saved === launchHome(descriptor);
+  return launchHome(descriptor).length === 0;
 }
 
 function originalRemoteResumeFields(
@@ -1402,15 +1427,17 @@ function originalRemoteResumeFields(
   descriptor: AgentExecutorContext['descriptor'],
   state: ReturnType<typeof externalStateForGeneration>,
   broken = false,
+  reusable = agentExecutorBindingMatches(binding, state.bindingFingerprint),
 ): { readonly sessionRef: ExecutorSessionRefEnvelope | undefined; readonly requireResume: boolean } {
   const homeMatches = sameLaunchHome(state.sessionRef, descriptor);
+  const changedInstance = state.executorId !== undefined && (state.executorId !== descriptor.id || state.descriptorRevision !== descriptor.revision);
   return {
     sessionRef:
-      homeMatches && agentExecutorBindingMatches(binding, state.bindingFingerprint) && state.sessionRef !== undefined
-        ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
+      homeMatches && reusable && state.sessionRef !== undefined
+        ? { ...sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource']), executorId: descriptor.id }
         : undefined,
     requireResume: homeMatches && (state.sessionRef?.ref['localSource'] !== undefined ||
-      ((broken || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined)),
+      ((broken || changedInstance || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined)),
   };
 }
 

@@ -139,6 +139,11 @@ export interface ProfileData extends AgentConfigData {
 
 export type ProfileUpdateData = Partial<{
   execution: import('@kiki/protocol').ExecutionBinding;
+  executorId: string;
+  executorProtocol: string;
+  executorOptions: Readonly<Record<string, string | number | boolean>> | null;
+  executorDescriptorRevision: string;
+  executorLaunch: import('@kiki/protocol').ExecutorLaunch | null;
   personaOverrides: NonNullable<ProfileData['personaOverrides']>;
   promptBase: import('./boundProfile').BoundPromptBase;
   modelAlias: string;
@@ -329,6 +334,7 @@ export interface IAgentProfileService {
     readonly allowModelChange?: boolean;
     readonly newWindow?: boolean;
     readonly contextMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
+    readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice;
     readonly allowParentNotify?: boolean;
     readonly callerConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
   }): Promise<PreparedModelSwitchBinding>;

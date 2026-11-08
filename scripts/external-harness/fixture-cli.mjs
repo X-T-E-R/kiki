@@ -75,6 +75,52 @@ for await (const line of createInterface({ input: process.stdin })) {
     process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', error: 'interrupted' } }) + '\n');
     continue;
   }
+  if (input.message.content === 'quota-terminal' || input.message.content === 'auth-terminal') {
+    const error = input.message.content === 'quota-terminal'
+      ? '429 Too Many Requests: quota exhausted for selected account'
+      : '401 Unauthorized: authentication failed for selected account';
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', error } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'quota-terminal-unfinished-tool') {
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', error: '429 Too Many Requests: quota exhausted' } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'complete-response-late-wsarecv') {
+    const response = `final-delivery-${turns}`;
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'user_input', step_index: turns * 10, state: 'DONE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns * 10 + 1, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { CommandLine: 'git commit' } } } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns * 10 + 1, tool_name: 'run_command', state: 'DONE', tool_info: { parameters: { CommandLine: 'git commit' }, output: 'committed' } } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'agent_response', step_index: turns * 10 + 2, state: 'ACTIVE', text_delta: response.slice(0, 6) } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'agent_response', step_index: turns * 10 + 2, state: 'DONE', text_delta: response.slice(6) } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response,
+      error: 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed' } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'partial-response-late-wsarecv' || input.message.content === 'post-tool-error-late-wsarecv') {
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'user_input', step_index: turns * 10, state: 'DONE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'agent_response', step_index: turns * 10 + 1, state: input.message.content === 'partial-response-late-wsarecv' ? 'ACTIVE' : 'DONE', text_delta: 'partial-or-pretool' } }) + '\n');
+    if (input.message.content === 'post-tool-error-late-wsarecv') {
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+        step_update: { step_type: 'tool', step_index: turns * 10 + 2, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { CommandLine: 'npm test' } } } }) + '\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+        step_update: { step_type: 'tool', step_index: turns * 10 + 2, tool_name: 'run_command', state: 'DONE', tool_info: { parameters: { CommandLine: 'npm test' }, output: 'ok' } } }) + '\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+        step_update: { step_type: 'error_message', step_index: turns * 10 + 3, state: 'DONE' } }) + '\n');
+    }
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response: 'partial-or-pretool',
+      error: 'API error (attempt 1): request failed: read tcp: wsarecv: A connection attempt failed' } }) + '\n');
+    continue;
+  }
   if (input.message.content === 'tool-hang') {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');

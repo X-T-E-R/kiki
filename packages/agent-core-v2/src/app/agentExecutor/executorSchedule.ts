@@ -43,6 +43,7 @@ export interface ScheduleChoiceInput {
     readonly profileIdentity?: string;
     readonly executorId?: string;
   };
+  readonly excludedInstances?: readonly ('main' | string)[];
   readonly lockedExecutorId?: string;
   readonly targetModel?: string;
 }
@@ -118,13 +119,14 @@ export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoi
   const next = winningScheduleChoice(input);
   const previous = input.previous?.schedule;
   const sameProfile = input.previous?.profileIdentity === input.profileIdentity;
-  if (previous !== undefined && sameProfile && previous.source === next.source && sameChoice(previous.choice, next.choice)) {
+  const forceAutoReselect = next.choice === 'auto' && (input.sessionChoice === 'auto' || (input.excludedInstances?.length ?? 0) > 0);
+  if (!forceAutoReselect && previous !== undefined && sameProfile && previous.source === next.source && sameChoice(previous.choice, next.choice)) {
     const instance = previous.instance;
     const launchId = instance === 'main' ? input.familyId : instance;
     return decision(input, next.choice, next.source, launchId, instance, { reused: true, quotaConsulted: previous.quota_consulted });
   }
   const sessionUntouched = (input.sessionChoice === undefined || input.sessionChoice === null) && (input.sessionLaunch === undefined || input.sessionLaunch === null);
-  if (previous === undefined && input.previous?.executorId !== undefined && sessionUntouched && sameProfile && !isInstanceId(input.requestedExecutor)) {
+  if (!forceAutoReselect && previous === undefined && input.previous?.executorId !== undefined && sessionUntouched && sameProfile && !isInstanceId(input.requestedExecutor)) {
     const saved = input.previous.executorId;
     if (saved === input.familyId || !isInstanceId(saved)) return decision(input, 'main', 'harness-default', input.familyId, 'main', { reused: true });
     if (familyInstance(input, saved) !== undefined) return decision(input, saved, 'harness-default', saved, saved, { reused: true });
@@ -156,8 +158,22 @@ export function chooseAutoInstance(
   readings: readonly HarnessQuotaReading[],
   familyId: string,
   targetModel: string | undefined,
+  excludedInstances: readonly ('main' | string)[] = [],
 ): 'main' | string {
-  const candidates = instances.filter((instance) => instance.sourceExecutor === familyId && instanceAccountId(instance) !== undefined);
+  const excludedIds = new Set(excludedInstances);
+  const excludedAccounts = new Set(
+    instances
+      .filter((instance) => instance.sourceExecutor === familyId && excludedIds.has(instance.id))
+      .map((instance) => instanceAccountId(instance))
+      .filter((account): account is string => account !== undefined),
+  );
+  const candidates = instances.filter(
+    (instance) =>
+      instance.sourceExecutor === familyId &&
+      !excludedIds.has(instance.id) &&
+      instanceAccountId(instance) !== undefined &&
+      !excludedAccounts.has(instanceAccountId(instance)!),
+  );
   const usable = readings.filter((reading) => readingCanRoute(reading, targetModel));
   const counts = new Map<HarnessQuotaReading['unit'], number>();
   for (const reading of usable) {
@@ -370,7 +386,7 @@ export async function resolveExecutorSchedule(
   }
   try {
     const readings = await readQuota(decided.quotaSourceId);
-    const picked = chooseAutoInstance(input.instances, readings, input.familyId, input.targetModel);
+    const picked = chooseAutoInstance(input.instances, readings, input.familyId, input.targetModel, input.excludedInstances);
     const choice = { ...decided, needsQuota: false, quotaConsulted: true, launchId: picked === 'main' ? input.familyId : picked, instance: picked };
     const pickedInstance = picked === 'main' ? undefined : input.instances.find((instance) => instance.id === picked);
     const pickedLaunch = mergeLaunchLayers(pickedInstance?.launch, input.profileLaunch, input.sessionLaunch);

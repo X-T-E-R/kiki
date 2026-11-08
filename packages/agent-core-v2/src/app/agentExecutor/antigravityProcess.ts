@@ -7,7 +7,21 @@ import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { executorProcessEnv } from './executorOverrides';
 
 export function antigravityProcessService(processes: HostProcessServiceLike, descriptor: AgentExecutorDescriptor, bootstrap: IBootstrapService): HostProcessServiceLike {
-  if (executorSourceId(descriptor) !== 'antigravity-acp') return processes;
+  const sourceId = executorSourceId(descriptor);
+  if (sourceId === 'agy-cli') {
+    const auditDir = join(bootstrap.homeDir, 'tools', 'agy-cli', 'audit');
+    return {
+      ...processes,
+      spawn: async (command, args, options, startupSignal) => {
+        const env = { ...executorProcessEnv(descriptor), ...options?.env };
+        if (env['AGY_BRIDGE_AUDIT_DIR'] === undefined || env['AGY_BRIDGE_AUDIT_DIR'].trim() === '') {
+          env['AGY_BRIDGE_AUDIT_DIR'] = auditDir;
+        }
+        return processes.spawn(command, args, { ...options, env }, startupSignal);
+      },
+    };
+  }
+  if (sourceId !== 'antigravity-acp') return processes;
   return {
     spawn: async (command, args, options) => {
       const env = { ...executorProcessEnv(descriptor), ...options?.env };
