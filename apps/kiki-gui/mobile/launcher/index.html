@@ -8,83 +8,130 @@
     <link rel="stylesheet" href="./launcher.css" />
   </head>
   <body>
-    <main class="sheet" aria-labelledby="brand">
-      <header class="hero">
-        <h1 id="brand" class="wordmark">kiki<span class="dot" aria-hidden="true">.</span></h1>
-        <p class="lede" data-i18n="lede">Connect to Kiki on your computer.</p>
+    <div class="shell">
+      <header class="topbar">
+        <span class="wordmark" aria-label="Kiki">kiki<span class="dot" aria-hidden="true">.</span></span>
       </header>
 
-      <section class="scan-card" aria-labelledby="scan-qr">
-        <button id="scan-qr" type="button" class="primary scan-button">
-          <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-            <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-            <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-            <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-            <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
-          </svg>
-          <span data-i18n="scanQr">Scan QR code</span>
-        </button>
-        <p id="scan-feedback" class="scan-feedback" role="status" hidden></p>
+      <main class="views">
+        <section id="view-connect" class="view" aria-labelledby="connect-title">
+          <h1 id="connect-title" class="view-title" data-i18n="connectTitle">Connect a computer</h1>
+          <p class="view-lede" data-i18n="lede">Scan the QR code or enter the address shown on your computer.</p>
 
-        <div id="scanner-panel" class="scanner-panel" hidden>
-          <div class="scanner-frame">
-            <video id="scanner-video" class="scanner-video" playsinline muted></video>
-            <div class="scanner-reticle" aria-hidden="true"></div>
+          <button id="scan-qr" type="button" class="primary scan-button">
+            <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+              <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+              <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+              <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
+            </svg>
+            <span data-i18n="scanQr">Scan QR code</span>
+          </button>
+          <p id="scan-feedback" class="scan-feedback" role="status" hidden></p>
+
+          <div id="scanner-panel" class="scanner-panel" hidden>
+            <div class="scanner-frame">
+              <video id="scanner-video" class="scanner-video" playsinline muted></video>
+              <div class="scanner-reticle" aria-hidden="true"></div>
+            </div>
+            <div class="scanner-actions">
+              <span class="scanner-caption" data-i18n="scannerPrompt">Point at the QR code on your computer</span>
+              <button id="scan-cancel" type="button" class="ghost-button" data-i18n="scanCancel">Enter manually</button>
+            </div>
           </div>
-          <div class="scanner-actions">
-            <span class="scanner-caption" data-i18n="scannerPrompt">Point at the QR code on your computer</span>
-            <button id="scan-cancel" type="button" class="ghost-button" data-i18n="scanCancel">Enter manually</button>
+
+          <div class="divider" role="separator">
+            <span data-i18n="manualDivider">Or enter address</span>
           </div>
-        </div>
-      </section>
 
-      <div class="divider" role="separator">
-        <span data-i18n="manualDivider">Or enter address</span>
-      </div>
+          <form id="connect" novalidate>
+            <div class="label-row">
+              <label for="server" class="label" data-i18n="label">Server address or entry link</label>
+              <span id="layer-badge" class="layer-badge" hidden></span>
+            </div>
+            <input id="server" name="server" type="url" inputmode="url" autocomplete="url" autocapitalize="off"
+              autocorrect="off" spellcheck="false" enterkeyhint="next" placeholder="192.168.1.5:5494"
+              aria-describedby="hint problem" />
 
-      <form id="connect" novalidate>
-        <div class="label-row">
-          <label for="server" class="label" data-i18n="label">Server address or entry link</label>
-          <span id="layer-badge" class="layer-badge" hidden></span>
-        </div>
-        <input id="server" name="server" type="url" inputmode="url" autocomplete="url" autocapitalize="off"
-          autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="192.168.1.5:5494"
-          aria-describedby="hint problem probe-status" />
+            <div class="code-field">
+              <div class="label-row">
+                <label for="pair-code" class="label" data-i18n="codeLabel">Pairing code</label>
+                <span class="label-optional" data-i18n="codeOptional">8 chars · for new pairing</span>
+              </div>
+              <input id="pair-code" name="pairCode" type="text" inputmode="text" autocomplete="off" autocapitalize="characters"
+                autocorrect="off" spellcheck="false" enterkeyhint="go" maxlength="9" placeholder="XXXX-XXXX" />
+            </div>
 
-        <div class="code-field">
-          <div class="label-row">
-            <label for="pair-code" class="label" data-i18n="codeLabel">Pairing code</label>
-            <span class="label-optional" data-i18n="codeOptional">8 chars · for new pairing</span>
+            <p id="hint" class="hint" data-i18n="hint">Find the address and pairing code in Settings → Remote Connection on your computer.</p>
+            <p id="problem" class="problem" role="alert" hidden></p>
+
+            <button id="open" type="submit" class="solid" data-i18n="open">Open Kiki</button>
+          </form>
+        </section>
+
+        <section id="view-computers" class="view" aria-labelledby="computers-title" hidden>
+          <h1 id="computers-title" class="view-title" data-i18n="computersTitle">Computers</h1>
+          <div id="recent" class="list-block" hidden>
+            <div id="recent-list" class="list"></div>
           </div>
-          <input id="pair-code" name="pairCode" type="text" inputmode="text" autocomplete="off" autocapitalize="characters"
-            autocorrect="off" spellcheck="false" enterkeyhint="go" maxlength="9" placeholder="XXXX-XXXX" />
-        </div>
-
-        <p id="hint" class="hint" data-i18n="hint">Settings → Remote or Web access on that computer shows the address and pairing code.</p>
-        <p id="problem" class="problem" role="alert" hidden></p>
-        <p id="probe-status" class="probe-status" role="status" hidden></p>
-
-        <div class="form-actions">
-          <button id="open" type="submit" class="secondary-primary" data-i18n="open">Open Kiki</button>
-          <button id="test-server" type="button" class="secondary" data-i18n="testAddress">Test address</button>
-        </div>
-      </form>
-
-      <section id="recent" class="recent" hidden aria-labelledby="recent-title">
-        <div class="recent-header">
-          <h2 id="recent-title" class="recent-title" data-i18n="recent">Saved computers</h2>
-        </div>
-        <div id="recent-list" class="recent-list">
-          <div class="saved-card">
-            <button id="recent-open" type="button" class="recent-row">
-              <span id="recent-host" class="recent-host"></span>
-              <span class="recent-go" aria-hidden="true">→</span>
-            </button>
+          <div id="computers-empty" class="empty" hidden>
+            <p class="empty-text" data-i18n="computersEmpty">Paired computers appear here.</p>
+            <button id="empty-connect" type="button" class="secondary" data-i18n="computersEmptyAction">Connect a computer</button>
           </div>
+        </section>
+
+        <section id="view-network" class="view" aria-labelledby="network-title" hidden>
+          <h1 id="network-title" class="view-title" data-i18n="networkTitle">Network</h1>
+
+          <div class="group">
+            <div class="label-row group-head">
+              <label for="probe-address" class="group-title" data-i18n="probeTitle">Check an address</label>
+              <span id="probe-layer" class="layer-badge" hidden></span>
+            </div>
+            <div class="inline-field">
+              <input id="probe-address" type="url" inputmode="url" autocomplete="url" autocapitalize="off"
+                autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="100.90.1.8:5494"
+                aria-describedby="probe-result network-hint" />
+              <button id="test-server" type="button" class="secondary" data-i18n="testAddress">Test</button>
+            </div>
+            <p id="probe-result" class="status-line" role="status" hidden></p>
+            <p id="network-hint" class="hint" data-i18n="networkHint">LAN needs the same Wi‑Fi. Tailscale or VPN works across networks.</p>
+          </div>
+
+          <div id="addresses" class="group" hidden>
+            <h2 class="group-title" data-i18n="addressesTitle">Computer addresses</h2>
+            <div id="address-list" class="address-list"></div>
+          </div>
+        </section>
+      </main>
+
+      <nav class="tabbar" aria-label="Kiki">
+        <div class="tabbar-inner">
+          <button type="button" class="tab" data-tab="connect">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 8V5.5C4 4.67 4.67 4 5.5 4H8M16 4h2.5c.83 0 1.5.67 1.5 1.5V8M20 16v2.5c0 .83-.67 1.5-1.5 1.5H16M8 20H5.5C4.67 20 4 19.33 4 18.5V16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M8.5 12h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="tabConnect">Connect</span>
+          </button>
+          <button type="button" class="tab" data-tab="computers">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="4.5" y="5" width="15" height="10.5" rx="1.6" stroke="currentColor" stroke-width="1.6" />
+              <path d="M2.8 19h18.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="tabComputers">Computers</span>
+          </button>
+          <button type="button" class="tab" data-tab="network">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M3.5 9.2a12 12 0 0 1 17 0M6.4 12.4a7.8 7.8 0 0 1 11.2 0M9.3 15.6a3.6 3.6 0 0 1 5.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <circle cx="12" cy="18.6" r="1.2" fill="currentColor" />
+            </svg>
+            <span data-i18n="tabNetwork">Network</span>
+          </button>
         </div>
-      </section>
-    </main>
+      </nav>
+    </div>
     <script type="module" src="./launcher.js"></script>
   </body>
 </html>

@@ -21,10 +21,12 @@ import {
 } from './target.js';
 
 /*
- * The shell's unconnected onboarding and server management screen.
- * Leads with QR scanning (requesting camera permission only on tap), immediately
- * adjacent to manual address + pairing code entry, network reachability testing,
- * and saved computers whose device trust is kept separate from their current IP.
+ * The shell's own home, shown before any Kiki is connected and whenever the
+ * user returns from a server. A persistent bottom bar switches between three
+ * local views: Connect (QR scan, requesting camera permission only on tap, plus
+ * manual address + pairing code), Computers (saved computers, whose device trust
+ * is kept separate from their current IP), and Network (reachability checks and
+ * per-computer address switching).
  */
 
 const STARTED_KEY = 'kiki.shell.started';
@@ -213,7 +215,11 @@ async function deleteWebPeerToken(serverId, origins = []) {
 
 const COPY = {
   en: {
-    lede: 'Connect to Kiki on your computer.',
+    connectTitle: 'Connect a computer',
+    lede: 'Scan the QR code on your computer, or enter its address.',
+    tabConnect: 'Connect',
+    tabComputers: 'Computers',
+    tabNetwork: 'Network',
     scanQr: 'Scan QR code',
     scanning: 'Scanning…',
     scannerPrompt: 'Point at the QR code',
@@ -227,14 +233,24 @@ const COPY = {
     pairAndOpen: 'Pair & open',
     opening: 'Opening…',
     pairing: 'Pairing…',
-    testAddress: 'Test address',
+    computersTitle: 'Computers',
+    computersEmpty: 'No paired computers yet.',
+    computersEmptyAction: 'Connect a computer',
+    networkTitle: 'Network',
+    probeTitle: 'Check an address',
+    networkHint: 'LAN needs the same Wi‑Fi. Tailscale or VPN works across networks.',
+    addressesTitle: 'Computer addresses',
+    testAddress: 'Test',
     testing: 'Testing…',
-    recent: 'Saved computers',
     pairedBadge: 'Paired',
-    editAddress: 'Address',
-    closeAddress: 'Done',
-    saveAddress: 'Save address',
+    manage: 'Manage',
+    manageDone: 'Done',
+    manageAddresses: 'Network addresses',
     forgetServer: 'Forget',
+    currentAddress: 'Current',
+    useAddress: 'Use',
+    newAddress: 'New address',
+    saveAddress: 'Save',
     layerLan: 'LAN · HTTP',
     layerVpn: 'Tailscale / VPN',
     layerHttps: 'HTTPS',
@@ -262,7 +278,11 @@ const COPY = {
       '{host} belongs to another Kiki computer. Enter a pairing code to pair; kept {label}.',
   },
   zh: {
-    lede: '连接你电脑上的 Kiki。',
+    connectTitle: '连接电脑',
+    lede: '扫描电脑上的二维码，或输入它的地址。',
+    tabConnect: '连接',
+    tabComputers: '电脑',
+    tabNetwork: '网络',
     scanQr: '扫码连接',
     scanning: '正在扫码…',
     scannerPrompt: '对准电脑上的二维码',
@@ -276,14 +296,24 @@ const COPY = {
     pairAndOpen: '配对并连接',
     opening: '正在打开…',
     pairing: '正在配对…',
-    testAddress: '测试连接',
-    testing: '正在测试…',
-    recent: '已保存的电脑',
+    computersTitle: '电脑',
+    computersEmpty: '还没有配对的电脑。',
+    computersEmptyAction: '连接电脑',
+    networkTitle: '网络',
+    probeTitle: '检测地址',
+    networkHint: '局域网需在同一 Wi‑Fi；Tailscale / VPN 可跨网络连接。',
+    addressesTitle: '电脑地址',
+    testAddress: '检测',
+    testing: '检测中…',
     pairedBadge: '已配对',
-    editAddress: '网络地址',
-    closeAddress: '收起',
-    saveAddress: '保存地址',
+    manage: '管理',
+    manageDone: '完成',
+    manageAddresses: '网络地址',
     forgetServer: '移除',
+    currentAddress: '当前',
+    useAddress: '使用',
+    newAddress: '新地址',
+    saveAddress: '保存',
     layerLan: '局域网 · HTTP',
     layerVpn: 'Tailscale / VPN',
     layerHttps: '外部 HTTPS',
@@ -325,9 +355,7 @@ const input = document.querySelector('#server');
 const codeInput = document.querySelector('#pair-code');
 const layerBadge = document.querySelector('#layer-badge');
 const button = document.querySelector('#open');
-const testButton = document.querySelector('#test-server');
 const problem = document.querySelector('#problem');
-const probeStatus = document.querySelector('#probe-status');
 const scanButton = document.querySelector('#scan-qr');
 const scanFeedback = document.querySelector('#scan-feedback');
 const scannerPanel = document.querySelector('#scanner-panel');
@@ -335,13 +363,53 @@ const scannerVideo = document.querySelector('#scanner-video');
 const scanCancel = document.querySelector('#scan-cancel');
 const recent = document.querySelector('#recent');
 const recentList = document.querySelector('#recent-list');
+const computersEmpty = document.querySelector('#computers-empty');
+const emptyConnect = document.querySelector('#empty-connect');
+const probeInput = document.querySelector('#probe-address');
+const probeLayer = document.querySelector('#probe-layer');
+const testButton = document.querySelector('#test-server');
+const probeResult = document.querySelector('#probe-result');
+const addresses = document.querySelector('#addresses');
+const addressList = document.querySelector('#address-list');
+const tabs = [...document.querySelectorAll('.tab[data-tab]')];
+const views = {
+  connect: document.querySelector('#view-connect'),
+  computers: document.querySelector('#view-computers'),
+  network: document.querySelector('#view-network'),
+};
 
 let activeStream = null;
 let scanLoopActive = false;
-let editingServerId = null;
+let scannerHistoryEntry = false;
+let managingServerId = null;
+const addressStatus = new Map();
 
 function isNativeShell() {
   return window.Capacitor?.isNativePlatform?.() === true;
+}
+
+function hostOf(origin) {
+  return displayOrigin(origin).replace(' · http', '');
+}
+
+function setTab(name, options = {}) {
+  if (!views[name]) return;
+  if (name !== 'connect' && activeStream) stopCameraScanner();
+  for (const [key, view] of Object.entries(views)) {
+    view.hidden = key !== name;
+  }
+  for (const tab of tabs) {
+    if (tab.dataset.tab === name) {
+      tab.setAttribute('aria-current', 'page');
+    } else {
+      tab.removeAttribute('aria-current');
+    }
+  }
+  if (name === 'network' && probeInput.value.trim() === '' && input.value.trim() !== '') {
+    probeInput.value = input.value.trim();
+    updateProbeLayer();
+  }
+  if (options.scroll !== false) window.scrollTo(0, 0);
 }
 
 function shortLayerLabelFor(originOrRaw) {
@@ -362,44 +430,39 @@ function layerLabelFor(originOrRaw) {
 
 function unreachableMessageFor(originOrRaw) {
   const info = classifyOrigin(originOrRaw);
-  const host = info.host || displayOrigin(originOrRaw).replace(' · http', '');
+  const host = info.host || hostOf(originOrRaw);
   if (info.layer === 'vpn') return copy.unreachableVpn.replace('{host}', host);
   if (info.layer === 'https' || info.layer === 'http') return copy.unreachableHttps.replace('{host}', host);
   return copy.unreachableLan.replace('{host}', host);
 }
 
 function identityMismatchMessageFor(originOrRaw, label) {
-  const host = displayOrigin(originOrRaw).replace(' · http', '');
   return copy.identityMismatch
-    .replace('{host}', host)
+    .replace('{host}', hostOf(originOrRaw))
     .replace('{label}', label || (lang === 'zh' ? '已保存电脑' : 'saved computer'));
 }
 
 function pairingRequiredMessageFor(originOrRaw, label) {
-  const host = displayOrigin(originOrRaw).replace(' · http', '');
   return copy.pairingRequired
-    .replace('{host}', host)
+    .replace('{host}', hostOf(originOrRaw))
     .replace('{label}', label || (lang === 'zh' ? '已保存电脑' : 'saved computer'));
+}
+
+function probeOkMessageFor(origin) {
+  return copy.probeOk.replace('{host}', hostOf(origin)).replace('{layer}', layerLabelFor(origin));
 }
 
 function showProblem(text) {
   problem.textContent = text;
   problem.hidden = text === '';
   input.ariaInvalid = text === '' ? 'false' : 'true';
-  if (text !== '') {
-    probeStatus.hidden = true;
-    probeStatus.textContent = '';
-  }
+  if (text !== '') setTab('connect', { scroll: false });
 }
 
-function showProbeStatus(text) {
-  probeStatus.textContent = text;
-  probeStatus.hidden = text === '';
-  if (text !== '') {
-    problem.hidden = true;
-    problem.textContent = '';
-    input.ariaInvalid = 'false';
-  }
+function showProbeResult(text, tone) {
+  probeResult.textContent = text;
+  probeResult.dataset.tone = tone ?? '';
+  probeResult.hidden = text === '';
 }
 
 function showScanFeedback(text) {
@@ -407,23 +470,24 @@ function showScanFeedback(text) {
   scanFeedback.hidden = text === '';
 }
 
+function readAnyTarget(raw) {
+  return /^kiki:\/\//i.test(raw) ? readScanPayload(raw) : readTarget(raw);
+}
+
 function updateInputAffordances() {
   const raw = input.value.trim();
   const hasCode = codeInput.value.trim() !== '' || /^kiki:\/\/pair/i.test(raw);
   button.textContent = hasCode ? copy.pairAndOpen : copy.open;
-  if (raw === '') {
-    layerBadge.hidden = true;
-    layerBadge.textContent = '';
-    return;
-  }
-  const target = /^kiki:\/\//i.test(raw) ? readScanPayload(raw) : readTarget(raw);
-  if (!target.ok) {
-    layerBadge.hidden = true;
-    layerBadge.textContent = '';
-    return;
-  }
-  layerBadge.textContent = layerLabelFor(target.origin);
-  layerBadge.hidden = false;
+  const target = raw === '' ? null : readAnyTarget(raw);
+  layerBadge.textContent = target?.ok ? layerLabelFor(target.origin) : '';
+  layerBadge.hidden = !target?.ok;
+}
+
+function updateProbeLayer() {
+  const raw = probeInput.value.trim();
+  const target = raw === '' ? null : readTarget(raw);
+  probeLayer.textContent = target?.ok ? layerLabelFor(target.origin) : '';
+  probeLayer.hidden = !target?.ok;
 }
 
 async function probeServer(origin) {
@@ -478,6 +542,21 @@ async function claimPairing(endpoint, code) {
   });
 }
 
+function promptForPairing(origin, message) {
+  input.value = hostOf(origin);
+  updateInputAffordances();
+  showProblem(message);
+  codeInput.focus();
+}
+
+function reportUnreachable(origin) {
+  if (input.value.trim() === '') {
+    input.value = hostOf(origin);
+  }
+  updateInputAffordances();
+  showProblem(unreachableMessageFor(origin));
+}
+
 async function openServer(origin, entry, options = {}) {
   const isPairedTarget = Boolean(options.paired || options.targetHomeId);
   const targetServerId = options.serverId ?? options.targetHomeId;
@@ -497,18 +576,12 @@ async function openServer(origin, entry, options = {}) {
     button.disabled = false;
     renderSavedServers();
     if (resolved.reason === 'identity_mismatch') {
-      input.value = displayOrigin(origin).replace(' · http', '');
-      updateInputAffordances();
-      showProblem(identityMismatchMessageFor(origin, resolved.server?.label ?? options.label));
-      codeInput.focus();
+      promptForPairing(origin, identityMismatchMessageFor(origin, resolved.server?.label ?? options.label));
     } else if (resolved.reason === 'pairing_required') {
-      input.value = displayOrigin(origin).replace(' · http', '');
-      updateInputAffordances();
-      showProblem(pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
-      codeInput.focus();
+      promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
     } else {
-      updateInputAffordances();
-      showProblem(unreachableMessageFor(origin));
+      input.value = hostOf(origin);
+      reportUnreachable(origin);
     }
     return;
   }
@@ -537,32 +610,18 @@ async function openServer(origin, entry, options = {}) {
             targetHomeId: res.targetHomeId,
           });
           renderSavedServers();
-          input.value = displayOrigin(origin).replace(' · http', '');
-          updateInputAffordances();
-          showProblem(identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
-          codeInput.focus();
+          promptForPairing(origin, identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
         } else if (res?.reason === 'pairing_required') {
-          input.value = displayOrigin(origin).replace(' · http', '');
-          updateInputAffordances();
-          showProblem(pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
-          codeInput.focus();
+          promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
         } else {
-          if (input.value.trim() === '') {
-            input.value = displayOrigin(origin).replace(' · http', '');
-          }
-          updateInputAffordances();
-          showProblem(unreachableMessageFor(origin));
+          reportUnreachable(origin);
         }
       }
       return;
     } catch {
       button.disabled = false;
       renderSavedServers();
-      if (input.value.trim() === '') {
-        input.value = displayOrigin(origin).replace(' · http', '');
-      }
-      updateInputAffordances();
-      showProblem(unreachableMessageFor(origin));
+      reportUnreachable(origin);
       return;
     }
   }
@@ -570,20 +629,26 @@ async function openServer(origin, entry, options = {}) {
   if (isPairedTarget || resolved.sessionToken) {
     button.disabled = false;
     renderSavedServers();
-    if (input.value.trim() === '') {
-      input.value = displayOrigin(origin).replace(' · http', '');
-    }
-    updateInputAffordances();
-    showProblem(unreachableMessageFor(origin));
+    reportUnreachable(origin);
     return;
   }
 
   window.location.assign(stripTokenFromEntry(origin, resolved.finalEntry));
 }
 
+function openSavedServer(server) {
+  return openServer(server.origin, `${server.origin}/`, {
+    serverId: server.id,
+    label: server.label,
+    paired: server.paired,
+    targetHomeId: server.targetHomeId,
+    targetHostId: server.targetHostId,
+    grantId: server.grantId,
+  });
+}
+
 async function submitConnect(parsed) {
   showProblem('');
-  showProbeStatus('');
 
   if (parsed.kind === 'pair') {
     button.disabled = true;
@@ -592,11 +657,7 @@ async function submitConnect(parsed) {
     if (!claim.ok) {
       button.disabled = false;
       updateInputAffordances();
-      showProblem(
-        claim.reason === 'rejected'
-          ? copy.pairRejected
-          : unreachableMessageFor(parsed.origin),
-      );
+      showProblem(claim.reason === 'rejected' ? copy.pairRejected : unreachableMessageFor(parsed.origin));
       return;
     }
     codeInput.value = '';
@@ -626,7 +687,7 @@ async function submitConnect(parsed) {
   });
 }
 
-function stopCameraScanner() {
+function stopCameraScanner(options = {}) {
   scanLoopActive = false;
   if (activeStream) {
     for (const track of activeStream.getTracks()) track.stop();
@@ -639,10 +700,15 @@ function stopCameraScanner() {
   scanButton.disabled = false;
   const labelNode = scanButton.querySelector('[data-i18n="scanQr"]');
   if (labelNode) labelNode.textContent = copy.scanQr;
+  if (scannerHistoryEntry) {
+    scannerHistoryEntry = false;
+    if (!options.fromHistory) history.back();
+  }
 }
 
 async function handleScannedPayload(rawValue) {
   stopCameraScanner();
+  setTab('connect', { scroll: false });
   const parsed = readScanPayload(rawValue);
   if (!parsed.ok) {
     showScanFeedback(copy.invalid_qr);
@@ -650,7 +716,7 @@ async function handleScannedPayload(rawValue) {
     return;
   }
   showScanFeedback('');
-  input.value = displayOrigin(parsed.origin).replace(' · http', '');
+  input.value = hostOf(parsed.origin);
   if (parsed.kind === 'pair') {
     codeInput.value = parsed.code;
   }
@@ -680,6 +746,12 @@ async function startWebCameraLoop() {
   activeStream = stream;
   scannerVideo.srcObject = stream;
   scannerPanel.hidden = false;
+  scanButton.disabled = true;
+  const labelNode = scanButton.querySelector('[data-i18n="scanQr"]');
+  if (labelNode) labelNode.textContent = copy.scanning;
+  history.pushState({ kikiScanner: true }, '');
+  scannerHistoryEntry = true;
+  scannerPanel.scrollIntoView({ block: 'nearest' });
   try {
     await scannerVideo.play();
   } catch {
@@ -727,7 +799,6 @@ async function startWebCameraLoop() {
 
 async function startQrScan() {
   showProblem('');
-  showProbeStatus('');
   showScanFeedback('');
 
   if (typeof window.__kikiTestScanQr === 'function') {
@@ -768,261 +839,273 @@ async function startQrScan() {
   await startWebCameraLoop();
 }
 
-function renderSavedServers() {
-  const servers = readSavedServers(window.localStorage);
-  if (servers.length === 0) {
-    recent.hidden = true;
-    recentList.replaceChildren();
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function forgetServer(server) {
+  const allOrigins = [...new Set([server.origin, ...(server.origins ?? []), ...(server.verifiedOrigins ?? [])])];
+  removeSavedServer(window.localStorage, server.id);
+  if (managingServerId === server.id) managingServerId = null;
+  addressStatus.delete(server.id);
+  renderSavedServers();
+  if (isNativeShell()) {
+    try {
+      void window.Capacitor.nativePromise('KikiShell', 'forgetServer', {
+        serverId: server.id,
+        origin: server.origin,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+  void deleteWebPeerToken(server.id, allOrigins);
+  if (server.targetHomeId) void deleteWebPeerToken(server.targetHomeId, allOrigins);
+}
+
+function renderComputerRow(server, index) {
+  const card = el('div', 'saved-card');
+  card.dataset.serverId = server.id;
+
+  const mainRow = el('div', 'saved-main');
+  const openBtn = el('button', 'recent-row');
+  openBtn.type = 'button';
+  if (index === 0) openBtn.id = 'recent-open';
+
+  const summary = el('div', 'saved-summary');
+  const titleRow = el('div', 'saved-title-row');
+  titleRow.append(el('span', 'saved-label', server.label));
+  if (server.paired) titleRow.append(el('span', 'saved-badge', copy.pairedBadge));
+
+  const metaRow = el('div', 'saved-meta');
+  const hostSpan = el('span', 'recent-host', displayOrigin(server.origin));
+  if (index === 0) hostSpan.id = 'recent-host';
+  metaRow.append(hostSpan, el('span', 'saved-layer', `· ${shortLayerLabelFor(server.origin)}`));
+  summary.append(titleRow, metaRow);
+
+  const arrow = el('span', 'recent-go', '→');
+  arrow.setAttribute('aria-hidden', 'true');
+  openBtn.append(summary, arrow);
+  openBtn.addEventListener('click', async () => {
+    openBtn.disabled = true;
+    openBtn.setAttribute('aria-busy', 'true');
+    try {
+      await openSavedServer(server);
+    } finally {
+      openBtn.disabled = false;
+      openBtn.removeAttribute('aria-busy');
+    }
+  });
+
+  const isManaging = managingServerId === server.id;
+  const manageToggle = el('button', 'saved-edit-toggle', isManaging ? copy.manageDone : copy.manage);
+  manageToggle.type = 'button';
+  manageToggle.setAttribute('aria-expanded', isManaging ? 'true' : 'false');
+  manageToggle.addEventListener('click', () => {
+    managingServerId = managingServerId === server.id ? null : server.id;
+    renderSavedServers();
+  });
+
+  mainRow.append(openBtn, manageToggle);
+  card.append(mainRow);
+
+  if (isManaging) {
+    const manageRow = el('div', 'saved-manage');
+    const addressesBtn = el('button', 'text-button', copy.manageAddresses);
+    addressesBtn.type = 'button';
+    addressesBtn.addEventListener('click', () => {
+      setTab('network');
+      addressList.querySelector(`[data-server-id="${CSS.escape(server.id)}"]`)?.scrollIntoView({ block: 'start' });
+    });
+    const forgetBtn = el('button', 'text-button danger', copy.forgetServer);
+    forgetBtn.type = 'button';
+    forgetBtn.classList.add('mini-danger');
+    forgetBtn.addEventListener('click', () => forgetServer(server));
+    manageRow.append(addressesBtn, forgetBtn);
+    card.append(manageRow);
+  }
+  return card;
+}
+
+function setAddressStatus(serverId, text, tone) {
+  if (text === '') {
+    addressStatus.delete(serverId);
+  } else {
+    addressStatus.set(serverId, { text, tone });
+  }
+  const line = addressList.querySelector(`[data-server-id="${CSS.escape(serverId)}"] .addr-status`);
+  if (!line) return;
+  line.textContent = text;
+  line.dataset.tone = tone ?? '';
+  line.hidden = text === '';
+}
+
+async function testServerAddress(server, rawAddress, trigger) {
+  const parsed = readTarget(rawAddress);
+  if (!parsed.ok) {
+    setAddressStatus(server.id, copy[parsed.reason] || copy.invalid, 'danger');
     return;
   }
-  recent.hidden = false;
-  recentList.replaceChildren();
+  trigger.disabled = true;
+  const original = trigger.textContent;
+  trigger.textContent = copy.testing;
+  setAddressStatus(server.id, '');
+  const probe = await probeServer(parsed.origin);
+  trigger.disabled = false;
+  trigger.textContent = original;
+  if (!probe.ok) {
+    setAddressStatus(server.id, unreachableMessageFor(parsed.origin), 'danger');
+    return;
+  }
+  if (server.paired && server.targetHomeId && probe.targetHomeId && probe.targetHomeId !== server.targetHomeId) {
+    setAddressStatus(server.id, identityMismatchMessageFor(parsed.origin, server.label), 'danger');
+    return;
+  }
+  setAddressStatus(server.id, probeOkMessageFor(parsed.origin), 'ok');
+}
 
-  servers.forEach((server, index) => {
-    const card = document.createElement('div');
-    card.className = 'saved-card';
-    card.dataset.serverId = server.id;
-
-    const mainRow = document.createElement('div');
-    mainRow.className = 'saved-main';
-
-    const openBtn = document.createElement('button');
-    openBtn.type = 'button';
-    openBtn.className = 'recent-row';
-    if (index === 0) {
-      openBtn.id = 'recent-open';
-    }
-
-    const summary = document.createElement('div');
-    summary.className = 'saved-summary';
-
-    const titleRow = document.createElement('div');
-    titleRow.className = 'saved-title-row';
-
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'saved-label';
-    labelSpan.textContent = server.label;
-    titleRow.append(labelSpan);
-
-    if (server.paired) {
-      const pairedBadge = document.createElement('span');
-      pairedBadge.className = 'saved-badge';
-      pairedBadge.textContent = copy.pairedBadge;
-      titleRow.append(pairedBadge);
-    }
-
-    const metaRow = document.createElement('div');
-    metaRow.className = 'saved-meta';
-
-    const hostSpan = document.createElement('span');
-    hostSpan.className = 'recent-host';
-    if (index === 0) {
-      hostSpan.id = 'recent-host';
-    }
-    hostSpan.textContent = displayOrigin(server.origin);
-
-    const layerSpan = document.createElement('span');
-    layerSpan.className = 'saved-layer';
-    layerSpan.textContent = `· ${shortLayerLabelFor(server.origin)}`;
-
-    metaRow.append(hostSpan, layerSpan);
-    summary.append(titleRow, metaRow);
-
-    const arrow = document.createElement('span');
-    arrow.className = 'recent-go';
-    arrow.setAttribute('aria-hidden', 'true');
-    arrow.textContent = '→';
-
-    openBtn.append(summary, arrow);
-    openBtn.addEventListener('click', () => {
-      void openServer(server.origin, `${server.origin}/`, {
-        serverId: server.id,
-        label: server.label,
-        paired: server.paired,
-        targetHomeId: server.targetHomeId,
-        targetHostId: server.targetHostId,
-        grantId: server.grantId,
-      });
-    });
-
-    const isEditing = editingServerId === server.id;
-    const editToggle = document.createElement('button');
-    editToggle.type = 'button';
-    editToggle.className = 'saved-edit-toggle';
-    editToggle.setAttribute('aria-expanded', isEditing ? 'true' : 'false');
-    editToggle.textContent = isEditing ? copy.closeAddress : copy.editAddress;
-    editToggle.addEventListener('click', () => {
-      editingServerId = editingServerId === server.id ? null : server.id;
+async function saveServerAddress(server, rawAddress, trigger) {
+  const res = updateSavedServerOrigin(window.localStorage, server.id, rawAddress);
+  if (!res.ok) {
+    if (res.reason === 'pairing_required' && res.origin) {
+      trigger.disabled = true;
+      setAddressStatus(server.id, '');
+      const probe = await probeServer(res.origin);
+      trigger.disabled = false;
+      const isDifferentHome = Boolean(
+        probe.ok && server.targetHomeId && probe.targetHomeId && probe.targetHomeId !== server.targetHomeId,
+      );
       renderSavedServers();
-    });
-
-    mainRow.append(openBtn, editToggle);
-    card.append(mainRow);
-
-    if (isEditing) {
-      const editor = document.createElement('div');
-      editor.className = 'saved-editor';
-
-      if (server.origins.length > 1) {
-        const endpointsWrap = document.createElement('div');
-        endpointsWrap.className = 'saved-endpoints';
-        for (const ep of server.origins) {
-          const chip = document.createElement('button');
-          chip.type = 'button';
-          chip.className = 'endpoint-chip';
-          chip.setAttribute('aria-current', ep === server.origin ? 'true' : 'false');
-          chip.textContent = `${displayOrigin(ep).replace(' · http', '')} · ${layerLabelFor(ep)}`;
-          chip.addEventListener('click', () => {
-            updateSavedServerOrigin(window.localStorage, server.id, ep);
-            renderSavedServers();
-          });
-          endpointsWrap.append(chip);
-        }
-        editor.append(endpointsWrap);
-      }
-
-      const editorRow = document.createElement('div');
-      editorRow.className = 'saved-editor-row';
-
-      const addrInput = document.createElement('input');
-      addrInput.type = 'url';
-      addrInput.className = 'saved-editor-input';
-      addrInput.value = displayOrigin(server.origin).replace(' · http', '');
-      addrInput.placeholder = '100.90.1.8:5494';
-      addrInput.setAttribute('aria-label', copy.label);
-      editorRow.append(addrInput);
-
-      const statusLine = document.createElement('p');
-      statusLine.className = 'saved-editor-status';
-      statusLine.hidden = true;
-
-      const actionsRow = document.createElement('div');
-      actionsRow.className = 'saved-editor-actions';
-
-      const forgetBtn = document.createElement('button');
-      forgetBtn.type = 'button';
-      forgetBtn.className = 'mini-button mini-danger';
-      forgetBtn.textContent = copy.forgetServer;
-      forgetBtn.addEventListener('click', () => {
-        const allOrigins = [...new Set([server.origin, ...(server.origins ?? []), ...(server.verifiedOrigins ?? [])])];
-        removeSavedServer(window.localStorage, server.id);
-        if (editingServerId === server.id) editingServerId = null;
-        renderSavedServers();
-        if (isNativeShell()) {
-          try {
-            void window.Capacitor.nativePromise('KikiShell', 'forgetServer', {
-              serverId: server.id,
-              origin: server.origin,
-            });
-          } catch {
-            /* ignore */
-          }
-        }
-        void deleteWebPeerToken(server.id, allOrigins);
-        if (server.targetHomeId) void deleteWebPeerToken(server.targetHomeId, allOrigins);
-      });
-
-      const rightBtns = document.createElement('div');
-      rightBtns.className = 'saved-editor-right';
-
-      const testEditBtn = document.createElement('button');
-      testEditBtn.type = 'button';
-      testEditBtn.className = 'mini-button';
-      testEditBtn.textContent = copy.testAddress;
-      testEditBtn.addEventListener('click', async () => {
-        const parsed = readTarget(addrInput.value);
-        if (!parsed.ok) {
-          statusLine.dataset.tone = 'danger';
-          statusLine.textContent = copy[parsed.reason] || copy.invalid;
-          statusLine.hidden = false;
-          return;
-        }
-        testEditBtn.disabled = true;
-        testEditBtn.textContent = copy.testing;
-        statusLine.hidden = true;
-        const probe = await probeServer(parsed.origin);
-        testEditBtn.disabled = false;
-        testEditBtn.textContent = copy.testAddress;
-        if (probe.ok) {
-          if (
-            server.paired &&
-            server.targetHomeId &&
-            probe.targetHomeId &&
-            probe.targetHomeId !== server.targetHomeId
-          ) {
-            const mismatchText = identityMismatchMessageFor(parsed.origin, server.label);
-            statusLine.dataset.tone = 'danger';
-            statusLine.textContent = mismatchText;
-            statusLine.hidden = false;
-            return;
-          }
-          const host = displayOrigin(parsed.origin).replace(' · http', '');
-          statusLine.dataset.tone = 'ok';
-          statusLine.textContent = copy.probeOk
-            .replace('{host}', host)
-            .replace('{layer}', layerLabelFor(parsed.origin));
-          statusLine.hidden = false;
-        } else {
-          statusLine.dataset.tone = 'danger';
-          statusLine.textContent = unreachableMessageFor(parsed.origin);
-          statusLine.hidden = false;
-        }
-      });
-
-      const saveEditBtn = document.createElement('button');
-      saveEditBtn.type = 'button';
-      saveEditBtn.className = 'mini-button mini-primary';
-      saveEditBtn.textContent = copy.saveAddress;
-      saveEditBtn.addEventListener('click', async () => {
-        const res = updateSavedServerOrigin(window.localStorage, server.id, addrInput.value);
-        if (!res.ok) {
-          if (res.reason === 'pairing_required' && res.origin) {
-            saveEditBtn.disabled = true;
-            statusLine.hidden = true;
-            showProblem('');
-            const probe = await probeServer(res.origin);
-            saveEditBtn.disabled = false;
-            const isDifferentHome = Boolean(
-              probe.ok &&
-                server.targetHomeId &&
-                probe.targetHomeId &&
-                probe.targetHomeId !== server.targetHomeId,
-            );
-            const promptText = isDifferentHome
-              ? identityMismatchMessageFor(res.origin, server.label)
-              : pairingRequiredMessageFor(res.origin, server.label);
-            editingServerId = null;
-            renderSavedServers();
-            input.value = displayOrigin(res.origin).replace(' · http', '');
-            updateInputAffordances();
-            showProblem(promptText);
-            codeInput.focus();
-            return;
-          }
-          statusLine.dataset.tone = 'danger';
-          statusLine.textContent = copy[res.reason] || copy.invalid;
-          statusLine.hidden = false;
-          return;
-        }
-        renderSavedServers();
-        const candidateOrigin = res.server.origin;
-        const host = displayOrigin(candidateOrigin).replace(' · http', '');
-        showProbeStatus(
-          copy.addressSaved
-            .replace('{host}', host)
-            .replace('{layer}', layerLabelFor(candidateOrigin)),
-        );
-      });
-
-      rightBtns.append(testEditBtn, saveEditBtn);
-      actionsRow.append(forgetBtn, rightBtns);
-      editor.append(editorRow, actionsRow, statusLine);
-      card.append(editor);
+      promptForPairing(
+        res.origin,
+        isDifferentHome
+          ? identityMismatchMessageFor(res.origin, server.label)
+          : pairingRequiredMessageFor(res.origin, server.label),
+      );
+      return;
     }
+    setAddressStatus(server.id, copy[res.reason] || copy.invalid, 'danger');
+    return;
+  }
+  const candidateOrigin = res.server.origin;
+  addressStatus.set(server.id, {
+    text: copy.addressSaved.replace('{host}', hostOf(candidateOrigin)).replace('{layer}', layerLabelFor(candidateOrigin)),
+    tone: 'ok',
+  });
+  renderSavedServers();
+}
 
-    recentList.append(card);
+function renderAddressGroup(server) {
+  const group = el('div', 'addr-group');
+  group.dataset.serverId = server.id;
+  group.append(el('h3', 'addr-owner', server.label));
+
+  const list = el('ul', 'addr-list');
+  for (const ep of server.origins) {
+    const isCurrent = ep === server.origin;
+    const row = el('li', 'addr-row');
+    const main = el('div', 'addr-main');
+    main.append(el('span', 'addr-host', hostOf(ep)), el('span', 'addr-layer', layerLabelFor(ep)));
+    row.append(main);
+
+    const actions = el('div', 'addr-actions');
+    if (isCurrent) {
+      actions.append(el('span', 'addr-current', copy.currentAddress));
+    } else {
+      const useBtn = el('button', 'mini-button endpoint-chip', copy.useAddress);
+      useBtn.type = 'button';
+      useBtn.setAttribute('aria-label', `${copy.useAddress} ${hostOf(ep)}`);
+      useBtn.addEventListener('click', () => {
+        const res = updateSavedServerOrigin(window.localStorage, server.id, ep);
+        if (!res.ok && res.reason === 'pairing_required') {
+          promptForPairing(ep, pairingRequiredMessageFor(ep, server.label));
+          return;
+        }
+        addressStatus.delete(server.id);
+        renderSavedServers();
+      });
+      actions.append(useBtn);
+    }
+    const testBtn = el('button', 'mini-button addr-test', copy.testAddress);
+    testBtn.type = 'button';
+    testBtn.setAttribute('aria-label', `${copy.testAddress} ${hostOf(ep)}`);
+    testBtn.addEventListener('click', () => {
+      void testServerAddress(server, ep, testBtn);
+    });
+    actions.append(testBtn);
+    row.append(actions);
+    list.append(row);
+  }
+  group.append(list);
+
+  const addRow = el('div', 'inline-field addr-add');
+  const addrInput = el('input', 'saved-editor-input');
+  addrInput.type = 'url';
+  addrInput.inputMode = 'url';
+  addrInput.autocapitalize = 'off';
+  addrInput.spellcheck = false;
+  addrInput.setAttribute('autocorrect', 'off');
+  addrInput.setAttribute('enterkeyhint', 'done');
+  addrInput.placeholder = copy.newAddress;
+  addrInput.setAttribute('aria-label', `${copy.newAddress} · ${server.label}`);
+  const testNewBtn = el('button', 'secondary addr-test-new', copy.testAddress);
+  testNewBtn.type = 'button';
+  testNewBtn.addEventListener('click', () => {
+    if (addrInput.value.trim() === '') {
+      addrInput.focus();
+      return;
+    }
+    void testServerAddress(server, addrInput.value, testNewBtn);
+  });
+  const saveBtn = el('button', 'secondary mini-primary', copy.saveAddress);
+  saveBtn.type = 'button';
+  saveBtn.addEventListener('click', () => {
+    if (addrInput.value.trim() === '') {
+      addrInput.focus();
+      return;
+    }
+    void saveServerAddress(server, addrInput.value, saveBtn);
+  });
+  addrInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveBtn.click();
+    }
+  });
+  addRow.append(addrInput, testNewBtn, saveBtn);
+  group.append(addRow);
+
+  const status = el('p', 'status-line addr-status');
+  status.setAttribute('role', 'status');
+  const saved = addressStatus.get(server.id);
+  status.textContent = saved?.text ?? '';
+  status.dataset.tone = saved?.tone ?? '';
+  status.hidden = !saved;
+  group.append(status);
+  return group;
+}
+
+function renderSavedServers() {
+  const servers = readSavedServers(window.localStorage);
+  recentList.replaceChildren(...servers.map(renderComputerRow));
+  recent.hidden = servers.length === 0;
+  computersEmpty.hidden = servers.length > 0;
+  addressList.replaceChildren(...servers.map(renderAddressGroup));
+  addresses.hidden = servers.length === 0;
+}
+
+for (const tab of tabs) {
+  tab.addEventListener('click', () => {
+    setTab(tab.dataset.tab);
   });
 }
+
+emptyConnect.addEventListener('click', () => {
+  setTab('connect');
+});
 
 scanButton.addEventListener('click', () => {
   void startQrScan();
@@ -1033,16 +1116,33 @@ scanCancel.addEventListener('click', () => {
   input.focus();
 });
 
+window.addEventListener('popstate', () => {
+  if (scannerHistoryEntry) stopCameraScanner({ fromHistory: true });
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && activeStream) {
+    stopCameraScanner();
+    input.focus();
+  }
+});
+
 input.addEventListener('input', () => {
   if (!problem.hidden) showProblem('');
-  if (!probeStatus.hidden) showProbeStatus('');
   if (!scanFeedback.hidden) showScanFeedback('');
   const maybePair = readScanPayload(input.value);
   if (maybePair.ok && maybePair.kind === 'pair' && /^kiki:\/\/pair/i.test(input.value.trim())) {
-    input.value = displayOrigin(maybePair.origin).replace(' · http', '');
+    input.value = hostOf(maybePair.origin);
     codeInput.value = maybePair.code;
   }
   updateInputAffordances();
+});
+
+input.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && codeInput.value.trim() === '') {
+    event.preventDefault();
+    codeInput.focus();
+  }
 });
 
 codeInput.addEventListener('input', () => {
@@ -1055,29 +1155,35 @@ codeInput.addEventListener('input', () => {
   updateInputAffordances();
 });
 
+probeInput.addEventListener('input', () => {
+  if (!probeResult.hidden) showProbeResult('');
+  updateProbeLayer();
+});
+
+probeInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    testButton.click();
+  }
+});
+
 testButton.addEventListener('click', async () => {
-  const target = readTarget(input.value);
+  const target = readTarget(probeInput.value);
   if (!target.ok) {
-    showProblem(copy[target.reason]);
-    input.focus();
+    showProbeResult(copy[target.reason] || copy.invalid, 'danger');
+    probeInput.focus();
     return;
   }
-  showProblem('');
-  showProbeStatus('');
+  showProbeResult('');
   testButton.disabled = true;
   testButton.textContent = copy.testing;
   const probe = await probeServer(target.origin);
   testButton.disabled = false;
   testButton.textContent = copy.testAddress;
   if (probe.ok) {
-    const host = displayOrigin(target.origin).replace(' · http', '');
-    showProbeStatus(
-      copy.probeOk
-        .replace('{host}', host)
-        .replace('{layer}', layerLabelFor(target.origin)),
-    );
+    showProbeResult(probeOkMessageFor(target.origin), 'ok');
   } else {
-    showProblem(unreachableMessageFor(target.origin));
+    showProbeResult(unreachableMessageFor(target.origin), 'danger');
   }
 });
 
@@ -1096,6 +1202,28 @@ form.addEventListener('submit', (event) => {
   void submitConnect(parsed);
 });
 
+let restingHeight = window.visualViewport?.height ?? window.innerHeight;
+
+function isTextEntry(node) {
+  return node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement;
+}
+
+function updateKeyboardState() {
+  const height = window.visualViewport?.height ?? window.innerHeight;
+  const editing = isTextEntry(document.activeElement);
+  if (!editing) restingHeight = height;
+  document.body.classList.toggle('keyboard-open', editing && height < restingHeight - 120);
+}
+
+window.visualViewport?.addEventListener('resize', updateKeyboardState);
+window.addEventListener('resize', updateKeyboardState);
+document.addEventListener('focusin', () => {
+  requestAnimationFrame(updateKeyboardState);
+});
+document.addEventListener('focusout', () => {
+  requestAnimationFrame(updateKeyboardState);
+});
+
 function savedOrigin() {
   try {
     return window.localStorage.getItem(STORE_ORIGIN_KEY);
@@ -1108,13 +1236,11 @@ function showUnreachable() {
   const attempted = savedOrigin();
   button.disabled = false;
   updateInputAffordances();
-  if (attempted === null) return;
-  const host = displayOrigin(attempted).replace(' · http', '');
-  if (input.value.trim() === '') {
-    input.value = host;
+  if (attempted === null) {
+    setTab('connect');
+    return;
   }
-  updateInputAffordances();
-  showProblem(unreachableMessageFor(attempted));
+  reportUnreachable(attempted);
 }
 
 async function consumePendingPairIfAny() {
@@ -1132,16 +1258,23 @@ async function consumePendingPairIfAny() {
   return false;
 }
 
+function landingTab() {
+  return readSavedServers(window.localStorage).length > 0 ? 'computers' : 'connect';
+}
+
 window.addEventListener('hashchange', () => {
   if (window.location.hash === '#unreachable') {
     showUnreachable();
   } else if (window.location.hash === '#pair') {
     void consumePendingPairIfAny();
+  } else if (window.location.hash === '#change') {
+    setTab(landingTab());
   }
 });
 
 renderSavedServers();
 updateInputAffordances();
+setTab(landingTab());
 
 let firstVisit = false;
 try {
@@ -1152,21 +1285,13 @@ try {
 }
 
 const reason = window.location.hash.replace(/^#/, '');
-const servers = readSavedServers(window.localStorage);
-const primaryServer = servers[0] ?? null;
+const primaryServer = readSavedServers(window.localStorage)[0] ?? null;
 
 const handledPair = await consumePendingPairIfAny();
 if (!handledPair) {
   if (reason === 'unreachable') {
     showUnreachable();
   } else if (primaryServer !== null && firstVisit && reason === '') {
-    await openServer(primaryServer.origin, `${primaryServer.origin}/`, {
-      serverId: primaryServer.id,
-      label: primaryServer.label,
-      paired: primaryServer.paired,
-      targetHomeId: primaryServer.targetHomeId,
-      targetHostId: primaryServer.targetHostId,
-      grantId: primaryServer.grantId,
-    });
+    await openSavedServer(primaryServer);
   }
 }
