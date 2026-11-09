@@ -117,7 +117,11 @@ export interface TurnEnded extends TurnEndedPayload {}
 export const turnKey = defineState(
   'turn',
   (): TurnModelState => ({ nextTurnId: 0, cancelledTurnIds: [], anchorTurnIds: [] }),
-).replayable({ schema: z.custom<TurnModelState>() })
+).replayable({
+  schema: z.custom<TurnModelState>().refine(
+    (state) => state.lastEnded?.reason !== 'failed' || Object.hasOwn(state.lastEnded, 'error'),
+  ),
+})
   .on(ContextAppendLoopEvent, (s, e) => {
     const { event } = e;
     if (event.type === 'tool.result' || event.turnId === undefined) return;

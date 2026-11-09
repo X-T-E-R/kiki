@@ -1109,6 +1109,137 @@ describe('recoverable ACP broken resume', () => {
           createdSession?.updateBinding(originalBinding);
         }
         if (scenario === 'legacy-network') {
+          const { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph } = await import('#/state/replayCheckpointCodec');
+          const { EventDispatcherService, REPLAY_ABI_VERSION } = await import('#/state/eventDispatcherService');
+          const { IEventBus } = await import('#/app/event/eventBus');
+          const { EventBusService } = await import('#/app/event/eventBusService');
+          const { AgentStateService } = await import('#/agent/state/agentStateService');
+          const { IWireService } = await import('#/wire/wire');
+          const { IAtomicDocumentStore } = await import('#/persistence/interface/atomicDocumentStore');
+          const { IAgentBlobService } = await import('#/agent/blob/agentBlobService');
+          const { turnKey } = await import('#/agent/loop/turnOps');
+          let journalReads = 0;
+          let records: import('#/wire/record').WireRecord[] = [
+            { type: 'turn.ended', turnId: 0, reason: 'failed', error: { code: 'executor.protocol_error', message: networkError } as never, time: 1 },
+          ];
+          const identity = { size: 123, mtimeMs: 456, headHash: 'head-legacy', storeGeneration: 'gen-1' };
+          const checkpointDocs = new Map<string, unknown>();
+          const makeCheckpointHost = () => {
+            const host = new TestInstantiationService();
+            host.set(IEventBus, new SyncDescriptor(EventBusService));
+            host.set(IAgentBlobService, { _serviceBrand: undefined } as never);
+            host.set(IWireService, {
+              _serviceBrand: undefined,
+              appendRecord: () => {},
+              flush: async () => {},
+              readJournal: async function* () {
+                journalReads += 1;
+                for (const record of records) yield record;
+              },
+              journalIdentity: async () => identity,
+              journalSha256: async () => 'a'.repeat(64),
+            } as unknown as import('#/wire/wire').IWireService);
+            host.set(IAtomicDocumentStore, {
+              _serviceBrand: undefined,
+              get: async <T>(s: string, k: string) => checkpointDocs.get(`${s}/${k}`) as T | undefined,
+              set: async <T>(s: string, k: string, v: T) => { checkpointDocs.set(`${s}/${k}`, structuredClone(v)); },
+              update: async () => undefined,
+              delete: async () => {},
+              list: async () => [],
+              watch: () => () => ({ dispose: () => {} }),
+              acquire: () => ({ dispose: () => {} }),
+            } as unknown as import('#/persistence/interface/atomicDocumentStore').IAtomicDocumentStore);
+            host.set(IAgentScopeContext, {
+              _serviceBrand: undefined,
+              agentId: CHILD,
+              agentScope: `sessions/ws/s1/agents/${CHILD}`,
+              parentAgentId: 'main',
+              scope: (sub?: string) => sub === undefined ? `sessions/ws/s1/agents/${CHILD}` : `sessions/ws/s1/agents/${CHILD}/${sub}`,
+            } as unknown as IAgentScopeContext);
+            host.set(IAgentStateService, new AgentStateService());
+            host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+            const stateSvc = host.get(IAgentStateService);
+            stateSvc.contributeState(turnKey);
+            return { host, dispatcher: host.get(IEventDispatcher), state: stateSvc };
+          };
+          const firstHost = makeCheckpointHost();
+          try {
+            await firstHost.dispatcher.restore();
+            expect(journalReads).toBe(1);
+            await expect(firstHost.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+            const ckKey = `sessions/ws/s1/agents/${CHILD}/replay-checkpoints/engine-v1`;
+            const staleEnvelope = structuredClone(checkpointDocs.get(ckKey)) as { replayAbi: number; graph: import('#/state/replayCheckpointCodec').ReplayCheckpointGraph };
+            expect(staleEnvelope.replayAbi).toBe(REPLAY_ABI_VERSION);
+            const payload = decodeReplayCheckpointGraph(staleEnvelope.graph) as { states: { name: string; value: unknown }[] };
+            const savedTurn = payload.states.find((entry) => entry.name === turnKey.name)!;
+            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'completed' } };
+            staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
+            checkpointDocs.set(ckKey, staleEnvelope);
+            const completedFastHost = makeCheckpointHost();
+            try {
+              await completedFastHost.dispatcher.restore();
+              expect(journalReads).toBe(1);
+              expect(completedFastHost.state.get(turnKey).lastEnded).toEqual({ turnId: 0, reason: 'completed' });
+            } finally {
+              await completedFastHost.host.dispose();
+            }
+            records = [{ type: 'turn.ended', turnId: 0, reason: 'failed', time: 1 }];
+            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'failed' } };
+            staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
+            checkpointDocs.set(ckKey, staleEnvelope);
+            const errorlessFailedHost = makeCheckpointHost();
+            try {
+              await errorlessFailedHost.dispatcher.restore();
+              expect(journalReads).toBe(2);
+              expect(errorlessFailedHost.state.get(turnKey).lastEnded).toEqual({ turnId: 0, reason: 'failed', error: undefined, durationMs: undefined });
+              expect(Object.hasOwn(errorlessFailedHost.state.get(turnKey).lastEnded!, 'error')).toBe(true);
+              expect(errorlessFailedHost.state.get(turnKey).lastEnded?.error).toBeUndefined();
+              await expect(errorlessFailedHost.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+            } finally {
+              await errorlessFailedHost.host.dispose();
+            }
+            const errorlessFastHost = makeCheckpointHost();
+            try {
+              await errorlessFastHost.dispatcher.restore();
+              expect(journalReads).toBe(2);
+              expect(Object.hasOwn(errorlessFastHost.state.get(turnKey).lastEnded!, 'error')).toBe(true);
+              expect(errorlessFastHost.state.get(turnKey).lastEnded?.error).toBeUndefined();
+            } finally {
+              await errorlessFastHost.host.dispose();
+            }
+            records = [{ type: 'turn.ended', turnId: 0, reason: 'failed', error: { code: 'executor.protocol_error', message: networkError } as never, time: 1 }];
+            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'failed' } };
+            staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
+            checkpointDocs.set(ckKey, staleEnvelope);
+            const secondHost = makeCheckpointHost();
+            try {
+              await secondHost.dispatcher.restore();
+              expect(journalReads).toBe(3);
+              expect(secondHost.state.get(turnKey).lastEnded).toMatchObject({
+                turnId: 0,
+                reason: 'failed',
+                error: { code: 'executor.protocol_error', message: networkError },
+              });
+              await expect(secondHost.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+              childCtx.get(IAgentStateService).set(turnKey, secondHost.state.get(turnKey));
+            } finally {
+              await secondHost.host.dispose();
+            }
+            const thirdHost = makeCheckpointHost();
+            try {
+              await thirdHost.dispatcher.restore();
+              expect(journalReads).toBe(3);
+              expect(thirdHost.state.get(turnKey).lastEnded).toMatchObject({
+                turnId: 0,
+                reason: 'failed',
+                error: { code: 'executor.protocol_error', message: networkError },
+              });
+            } finally {
+              await thirdHost.host.dispose();
+            }
+          } finally {
+            await firstHost.host.dispose();
+          }
           await childProfile.rebuildPromptContext({ preserveUnchangedRenderGeneration: true });
           expect(childProfile.data().renderGeneration).toBe(1);
           expect(childExecution.canResumeBrokenOriginal()).toBe(true);
