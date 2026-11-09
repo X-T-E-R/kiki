@@ -1850,8 +1850,8 @@ ${origin}
             throw new AssertionError("Expected delivery to Previous-A-document, got: " + p5.view.deliveries);
         }
 
-        // Case 6: Revoked grant or spoofed Home A identity (home-a / host-a) without mutual proof;
-        // deliverCommittedToken must reject it, clear activeAuthServerId, navigate to #pairing_revoked, and deliver zero token
+        // Case 6: Unverified mutual proof on Home A identity (home-a / host-a) without mutual proof;
+        // deliverCommittedToken must reject it, clear activeAuthServerId, navigate to #unverified_handshake_proof (never claiming pairing_revoked), and deliver zero token
         NativeDeliveryCheck p6 = new NativeDeliveryCheck();
         p6.pendingAuthEpoch = 12;
         p6.activeAuthOrigin = ORIGIN;
@@ -1868,8 +1868,8 @@ ${origin}
         if (!p6.view.deliveries.isEmpty()) {
             throw new AssertionError("Unverified mutual proof delivered token: " + p6.view.deliveries);
         }
-        if (!"https://localhost/index.html#pairing_revoked".equals(p6.view.url) || p6.activeAuthServerId != null) {
-            throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to #pairing_revoked: " + p6.view.url);
+        if (!"https://localhost/index.html#unverified_handshake_proof".equals(p6.view.url) || p6.activeAuthServerId != null) {
+            throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to #unverified_handshake_proof: " + p6.view.url);
         }
 
         // Case 6b: Explicit HTTP 401/403 vs real network outage (status 0 / 503) in classifyPairedHandshakeFailure and deliverCommittedToken
@@ -2273,7 +2273,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(spoofedReplayPreOpen.ok, false);
-    assert.equal(spoofedReplayPreOpen.reason, 'pairing_revoked');
+    assert.equal(spoofedReplayPreOpen.reason, 'unverified_handshake_proof');
     assert.equal(spoofedReplayPreOpen.tokenDelivered, false);
     assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when B replays stale proof with A identity');
 
@@ -2283,7 +2283,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       requireMutualProof: true,
     });
     assert.equal(midFlightSpoofCommit.ok, false);
-    assert.equal(midFlightSpoofCommit.reason, 'pairing_revoked');
+    assert.equal(midFlightSpoofCommit.reason, 'unverified_handshake_proof');
     assert.equal(midFlightSpoofCommit.tokenDelivered, false);
     assert.equal(await page.evaluate(() => window.document.__kikiShellStagedCredential ?? null), null);
     for (const req of requestsToB) {
@@ -2334,7 +2334,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(afterDirectRevoke.ok, false);
-    assert.equal(afterDirectRevoke.reason, 'pairing_revoked');
+    assert.equal(afterDirectRevoke.reason, 'unverified_handshake_proof');
     assert.equal(afterDirectRevoke.tokenDelivered, false);
 
     activeServer = 'A-outage';
@@ -2673,10 +2673,22 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
           nativePromise: async (_plugin, method, payload) => {
             if (method === 'consumePendingPair') return {};
             if (method === 'probe') {
-              if (window.__revokedState) {
+              if (window.__unverifiedProofState) {
                 return {
                   ok: true,
                   status: 200,
+                  targetHomeId: 'home-studio-1',
+                  targetHostId: 'host-studio-1',
+                  targetLabel: 'Studio Workstation',
+                  mutualProofVerified: false,
+                };
+              }
+              if (window.__revokedState) {
+                return {
+                  ok: false,
+                  status: 401,
+                  reason: 'pairing_revoked',
+                  authRejected: true,
                   targetHomeId: 'home-studio-1',
                   targetHostId: 'host-studio-1',
                   targetLabel: 'Studio Workstation',
@@ -2754,17 +2766,47 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       assert.match(await recoveryPage.textContent('#problem'), /revoked|expired/i);
       await recoveryPage.click('#scan-qr');
       await recoveryPage.waitForFunction(() => window.__openedEntries.length === 2);
+      // HTTP 200 without mutual proof surfaces unverifiedHandshakeProof (retryable, keeps pairing) rather than claiming pairing_revoked:
+      await recoveryPage.evaluate(() => {
+        window.__unverifiedProofState = true;
+        window.location.hash = '#unverified_handshake_proof';
+      });
+      await recoveryPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      const unverifiedUi = await recoveryPage.evaluate(() => ({
+        problemText: document.querySelector('#problem').textContent,
+        openText: document.querySelector('#open').textContent,
+        switchHidden: document.querySelector('#switch-computer').hidden,
+        pairedSaved: JSON.parse(localStorage.getItem('kiki.shell.servers') || '[]')[0]?.paired,
+      }));
+      assert.match(unverifiedUi.problemText, /Could not verify Studio Workstation/i);
+      assert.doesNotMatch(unverifiedUi.problemText, /revoked|expired/i);
+      assert.equal(unverifiedUi.openText, 'Reconnect');
+      assert.equal(unverifiedUi.switchHidden, false);
+      assert.equal(unverifiedUi.pairedSaved, true);
       await recoveryPage.close();
 
-      // Cold-start paired unreachable surfaces Reconnect + Switch computer actions and reconnects without re-pairing:
+      // Cold-start paired unreachable surfaces Reconnect + Switch computer actions and auto-recovers via single-flight backoff
+      // even when navigator.onLine stays true and neither button click nor `online` event occurs; also binds exact origin/server/grant:
       const unreachablePairedPage = await darkCtx.newPage();
       await unreachablePairedPage.addInitScript(() => {
         const saved = [
           {
+            id: 'home-studio-other',
+            origin: 'http://192.168.1.99:5494',
+            origins: ['http://192.168.1.99:5494'],
+            verifiedOrigins: ['http://192.168.1.99:5494'],
+            label: 'Other Computer First In List',
+            paired: true,
+            targetHomeId: 'home-studio-other',
+            targetHostId: 'host-studio-other',
+            grantId: 'grant-other-computer',
+            updatedAt: Date.now() + 1000,
+          },
+          {
             id: 'home-studio-2',
-            origin: 'http://192.168.1.59:5494',
-            origins: ['http://192.168.1.59:5494'],
-            verifiedOrigins: ['http://192.168.1.59:5494'],
+            origin: 'http://192.168.1.58:5494',
+            origins: ['http://192.168.1.58:5494', 'http://192.168.1.59:5494'],
+            verifiedOrigins: ['http://192.168.1.58:5494', 'http://192.168.1.59:5494'],
             label: 'Mobile Lab Host',
             paired: true,
             targetHomeId: 'home-studio-2',
@@ -2776,12 +2818,14 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
         localStorage.setItem('kiki.shell.servers', JSON.stringify(saved));
         localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
         window.__openedPairedEntries = [];
+        window.__probeCalls = [];
         window.__networkDown = true;
         window.Capacitor = {
           isNativePlatform: () => true,
           nativePromise: async (_plugin, method, payload) => {
             if (method === 'consumePendingPair') return {};
             if (method === 'probe') {
+              window.__probeCalls.push(payload);
               if (window.__networkDown) {
                 return { ok: false };
               }
@@ -2808,25 +2852,66 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       await unreachablePairedPage.goto(`${launcherBaseUrl}/index.html`, { waitUntil: 'networkidle' });
       await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
       const unreachablePairedUi = await unreachablePairedPage.evaluate(() => ({
+        onLine: navigator.onLine,
         openText: document.querySelector('#open').textContent,
         switchHidden: document.querySelector('#switch-computer').hidden,
         switchText: document.querySelector('#switch-computer').textContent,
         codeValue: document.querySelector('#pair-code').value,
       }));
+      assert.equal(unreachablePairedUi.onLine, true, 'navigator.onLine stays true throughout server outage');
       assert.equal(unreachablePairedUi.openText, 'Reconnect');
       assert.equal(unreachablePairedUi.switchHidden, false);
       assert.equal(unreachablePairedUi.switchText, 'Switch computer');
       assert.equal(unreachablePairedUi.codeValue, '');
 
-      // Network recovers (`online` event) -> auto-reconnects without requiring QR scan or pairing code
+      // Counterexample: navigator.onLine remains true, service recovers, NO button is clicked and NO `online` event is dispatched ->
+      // single-flight backoff timer automatically reconnects to the exact verified origin (.59, not .58 and never servers[0] .99) with original grantId:
+      await unreachablePairedPage.evaluate(() => {
+        window.__networkDown = false;
+      });
+      await unreachablePairedPage.waitForFunction(() => window.__openedPairedEntries.length === 1, null, { timeout: 5000 });
+      const autoReconnected = await unreachablePairedPage.evaluate(() => window.__openedPairedEntries[0]);
+      assert.equal(autoReconnected.origin, 'http://192.168.1.59:5494');
+      assert.equal(autoReconnected.serverId, 'home-studio-2');
+      assert.equal(autoReconnected.grantId, 'grant-active-2');
+
+      // Boundary 1: Unmatched origin in kiki.shell.origin + #unreachable MUST NOT fall back to servers[0] or auto-connect another computer:
+      await unreachablePairedPage.evaluate(() => {
+        window.__openedPairedEntries.length = 0;
+        window.__probeCalls.length = 0;
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.250:5494');
+        window.location.hash = '#unreachable';
+      });
+      await unreachablePairedPage.waitForTimeout(1300);
+      assert.equal(
+        await unreachablePairedPage.evaluate(() => window.__openedPairedEntries.length),
+        0,
+        'unmatched origin must never fall back to servers[0] for background auto-recovery',
+      );
+
+      // Boundary 2: Switching computer or editing address cancels any pending auto-reconnect for the old unreachable target:
+      await unreachablePairedPage.evaluate(() => {
+        window.__networkDown = true;
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
+        window.location.hash = '';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      await unreachablePairedPage.evaluate(() => {
+        window.location.hash = '#unreachable';
+      });
+      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false && !document.querySelector('#switch-computer').hidden);
+      await unreachablePairedPage.click('#switch-computer');
       await unreachablePairedPage.evaluate(() => {
         window.__networkDown = false;
         window.dispatchEvent(new Event('online'));
+        window.dispatchEvent(new Event('focus'));
       });
-      await unreachablePairedPage.waitForFunction(() => window.__openedPairedEntries.length === 1);
-      const autoReconnected = await unreachablePairedPage.evaluate(() => window.__openedPairedEntries[0]);
-      assert.equal(autoReconnected.origin, 'http://192.168.1.59:5494');
-      assert.equal(autoReconnected.grantId, 'grant-active-2');
+      await unreachablePairedPage.waitForTimeout(1300);
+      assert.equal(
+        await unreachablePairedPage.evaluate(() => window.__openedPairedEntries.length),
+        0,
+        'switching to Computers tab must stop background auto-reconnect for the previous target',
+      );
       await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();

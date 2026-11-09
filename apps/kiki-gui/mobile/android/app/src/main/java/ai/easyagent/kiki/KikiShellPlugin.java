@@ -765,7 +765,7 @@ public class KikiShellPlugin extends Plugin {
             if (expectedServerId == null || !expectedServerId.equals(hs.targetHomeId) || !hostMatches) {
                 return "identity_mismatch";
             }
-            if (!hs.mutualProofVerified) return "pairing_revoked";
+            if (!hs.mutualProofVerified) return "unverified_handshake_proof";
             return null;
         }
         if (hs.statusCode == 401 || hs.statusCode == 403) return "pairing_revoked";

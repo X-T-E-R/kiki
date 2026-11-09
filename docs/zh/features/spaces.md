@@ -34,7 +34,7 @@ Kiki 跑在哪儿由你决定，它能触达的东西也由你决定。这一页
 
 需要脚本化或分步控制时，仍可使用显式邀请与 SSH 规划命令：`inbound invite` 为已知来源身份签发一次性邀请，`ssh plan` 只查询远端状态而不做改动，`ssh execute PLAN_ID` 执行挂接（仅在显式传入 `--ensure` 时启动远端守护进程）。Kiki 不会替你往远端装东西。
 
-如果目标暂时关闭入站访问，等所有者重新打开后，普通读取会自动恢复；某一个操作被拒绝不会把整条连接判成未登录，Kiki 也不会自动重发被拒绝或结果未知的写入。令牌失效或授权被撤销仍会拒绝访问；请重新配对或更新授权后再试。
+如果目标暂时不可达或关闭入站访问，已配对连接会在网络或服务恢复后自动重连，也可以就地重试或切换电脑，普通读取会自动恢复；某一个操作被拒绝不会把整条连接判成未登录，Kiki 也不会自动重发被拒绝或结果未知的写入。令牌失效或授权被撤销仍会拒绝访问；请重新配对或更新授权后再试。
 
 见 [`kiki pair`](/zh/reference/command#kiki-pair)、[`kiki connections`](/zh/reference/command#kiki-connections) 和 [`kiki bridges`](/zh/reference/command#kiki-bridges)。
 

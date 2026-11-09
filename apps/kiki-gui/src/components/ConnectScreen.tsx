@@ -377,11 +377,7 @@ function BrowserConnectForm({
             <a
               href={shellConnect}
               data-app-shell-connect
-              className={
-                onRetryPaired !== undefined && !pairedAuthRevoked
-                  ? 'block w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-center text-[13px] font-medium text-ink no-underline transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'
-                  : 'block w-full rounded-md bg-ink px-3 py-2 text-center text-[14px] font-medium text-paper no-underline transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none'
-              }
+              className="block w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-center text-[13px] font-medium text-ink no-underline transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
             >
               {t('connect.switchComputer')}
             </a>

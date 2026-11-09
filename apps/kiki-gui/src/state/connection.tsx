@@ -48,7 +48,7 @@ import {
   installAppShellCredentialListener,
   readAdoptedShellCredential,
 } from '../lib/appShell';
-import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import {
@@ -149,6 +149,7 @@ export interface ConnectionValue {
   readonly socket: TerminalFacade;
   readonly meta: MetaResponse;
   readonly wsStatus: WsStatus;
+  readonly wsBannerSuppressed?: boolean;
   readonly recovery?: DesktopRecovery;
   readonly nudge?: () => void;
   readonly disconnect: () => void;
@@ -589,8 +590,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [desktopAttempt, setDesktopAttempt] = useState(0);
   /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
   const desktopCancelledRef = useRef(false);
-  const [wsStatus, setWsStatus] = useState<WsStatus>('open');
-  const socketStatusRef = useRef<WsStatus>('open');
+  const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
+  const [wsBannerSuppressed, setWsBannerSuppressed] = useState(true);
+  const socketStatusRef = useRef<WsStatus>('closed');
   const socketSettledRef = useRef(false);
   const [metaAttempt, setMetaAttempt] = useState(0);
   const [pairedAuthRevoked, setPairedAuthRevoked] = useState(false);
@@ -1077,10 +1079,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             : error instanceof Error
               ? error.message
               : String(error);
+        const errorCode =
+          error instanceof ApiError
+            ? error.code
+            : typeof (error as { readonly code?: unknown })?.code === 'number'
+              ? (error as { readonly code: number }).code
+              : typeof (error as { readonly status?: unknown })?.status === 'number'
+                ? (error as { readonly status: number }).status
+                : undefined;
         const authRejected =
-          (error instanceof ApiError &&
-            (error.code === 401 || error.code === 403 || error.code === 40100 || error.code === 40101 || error.code === 40300)) ||
-          /\b(401|403|unauthorized|forbidden)\b/i.test(errorText);
+          errorCode === 401 ||
+          errorCode === 403 ||
+          errorCode === 40100 ||
+          errorCode === API_CODES.UNAUTHORIZED ||
+          errorCode === 40300 ||
+          errorCode === 40301;
         if (selection?.source === 'app-shell') {
           setPairedAuthRevoked(authRejected);
           if (!authRejected) {
@@ -1171,13 +1184,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     if (socket === null || klient === null) return;
     let active = true;
     socketSettledRef.current = false;
+    setWsBannerSuppressed(true);
     let initialGraceTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
       initialGraceTimer = undefined;
       if (!active || socketSettledRef.current) return;
       socketSettledRef.current = true;
-      if (socketStatusRef.current === 'connecting') {
-        setWsStatus('connecting');
-      }
+      setWsBannerSuppressed(false);
     }, 2_500);
     const subscribeSearchIndex = () => {
       const subscription = klient.events.on('search.indexStateChanged', (state) => {
@@ -1208,6 +1220,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       socketStatusRef.current = status;
       if (status === 'open' || status === 'closed') {
         socketSettledRef.current = true;
+        setWsBannerSuppressed(false);
         if (initialGraceTimer !== undefined) {
           clearTimeout(initialGraceTimer);
           initialGraceTimer = undefined;
@@ -1225,9 +1238,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           ? 'closed'
           : recovery !== null && status === 'open'
             ? 'connecting'
-            : status === 'connecting' && !socketSettledRef.current && recovery === null
-              ? 'open'
-              : status;
+            : status;
       setWsStatus(effectiveStatus);
       if (status === 'open' && recovery?.phase === 'failed') rediscoverRef.current?.();
       if (status === 'open') {
@@ -1637,13 +1648,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return {
       connectionId, connectionSource: selection?.source ?? null, spaceKey, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
       activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload,
-      config, client, localClient, klient, socket, meta, wsStatus,
+      config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed,
       recovery: selection?.source === 'desktop' && desktopRecoveryRef.current?.client === client
         ? { status: desktopRecoveryRef.current.phase === 'blocked' ? 'blocked' : 'retrying', failure: desktopFailure } : undefined,
       nudge: nudgeConnection,
       disconnect, applyConnection,
     };
-  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, desktopFailure, nudgeConnection, disconnect, applyConnection]);
+  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed, desktopFailure, nudgeConnection, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null

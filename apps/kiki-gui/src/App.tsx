@@ -202,7 +202,7 @@ export function App() {
 
 function NormalApp() {
   const host = useHost();
-  const { client, socket, wsStatus, recovery, nudge } = useConnection();
+  const { client, socket, wsStatus, wsBannerSuppressed, recovery, nudge } = useConnection();
   const { t, locale } = useI18n();
   const rawNavigate = useNavigate();
   const location = useLocation();
@@ -839,7 +839,7 @@ function NormalApp() {
           raised sheet (the conversation route splits into its own sheets). */}
       <div className="app-stage">
         {wsStatus !== 'open' && !isSettingsRoute ? (
-          <AppConnectionBanner wsStatus={wsStatus} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
+          <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
         ) : null}
         <RestartBanner />
         <div className="app-sheet">

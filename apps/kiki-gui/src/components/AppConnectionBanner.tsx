@@ -8,16 +8,17 @@ import { SECONDARY_BUTTON } from './ui';
 
 /** One stable strip across discovery, backoff and socket reconnection. */
 export function AppConnectionBanner({
-  wsStatus, onReconnect, recovery, onOpenConnectionSettings,
+  wsStatus, suppressInitialConnecting, onReconnect, recovery, onOpenConnectionSettings,
 }: {
   readonly wsStatus: TerminalConnectionStatus;
+  readonly suppressInitialConnecting?: boolean;
   readonly onReconnect: () => void;
   readonly recovery?: DesktopRecovery;
   readonly onOpenConnectionSettings?: () => void;
 }) {
   const { t } = useI18n();
   const [details, setDetails] = useState(false);
-  if (wsStatus === 'open' && recovery === undefined) return null;
+  if ((wsStatus === 'open' || (wsStatus === 'connecting' && suppressInitialConnecting === true)) && recovery === undefined) return null;
   const blocked = recovery?.status === 'blocked';
   const retrying = recovery?.status === 'retrying' || (!blocked && wsStatus === 'connecting');
   const canReconnect = !blocked && recovery === undefined;

@@ -708,14 +708,17 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
 
   const isAuthRejected =
     handshake?.reason === 'pairing_revoked' ||
-    handshake?.reason === 'unverified_handshake_proof' ||
     handshake?.authRejected === true ||
     handshake?.status === 401 ||
     handshake?.status === 403;
+  const isUnverifiedHandshakeProof = handshake?.reason === 'unverified_handshake_proof';
 
   if (!handshake?.ok) {
     if (isAuthRejected && isServerOriginVerified(existing, candidateOrigin)) {
       return { ok: false, reason: 'pairing_revoked', server: existing };
+    }
+    if (isUnverifiedHandshakeProof && isServerOriginVerified(existing, candidateOrigin)) {
+      return { ok: false, reason: 'unverified_handshake_proof', server: existing };
     }
     if (existing.origin === candidateOrigin && !isServerOriginVerified(existing, candidateOrigin)) {
       return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'unreachable', true);
@@ -735,7 +738,7 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
   }
 
   if (handshake.requireMutualProof && !handshake.mutualProofVerified) {
-    return { ok: false, reason: 'pairing_revoked', server: existing };
+    return { ok: false, reason: 'unverified_handshake_proof', server: existing };
   }
 
   const verifiedOrigins = [
@@ -972,7 +975,7 @@ export async function probeOriginHandshake(origin, options = {}) {
         return {
           ok: false,
           status: handshakeRes.status,
-          reason: 'pairing_revoked',
+          reason: 'unverified_handshake_proof',
           targetHomeId,
           targetHostId,
           mutualProofVerified: false,
@@ -1395,15 +1398,24 @@ export async function deliverCommittedServerCredential(target, resolved, options
     }
     const probeAuthRejected =
       probe?.reason === 'pairing_revoked' ||
-      probe?.reason === 'unverified_handshake_proof' ||
       probe?.authRejected === true ||
       probe?.status === 401 ||
-      probe?.status === 403 ||
-      (mustVerifyMutualProof && probe?.ok && probe.mutualProofVerified === false);
+      probe?.status === 403;
     if (probeAuthRejected) {
       return {
         ok: false,
         reason: 'pairing_revoked',
+        committedOrigin: expectedOrigin,
+        tokenDelivered: false,
+      };
+    }
+    const probeProofUnverified =
+      probe?.reason === 'unverified_handshake_proof' ||
+      (mustVerifyMutualProof && probe?.ok && probe.mutualProofVerified === false);
+    if (probeProofUnverified) {
+      return {
+        ok: false,
+        reason: 'unverified_handshake_proof',
         committedOrigin: expectedOrigin,
         tokenDelivered: false,
       };

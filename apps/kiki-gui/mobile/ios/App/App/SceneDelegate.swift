@@ -643,7 +643,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         if ok {
             guard let targetHomeId, !targetHomeId.isEmpty else { return "unreachable" }
             if targetHomeId != expectedServerId || !hostMatches { return "identity_mismatch" }
-            if !mutualProofVerified { return "pairing_revoked" }
+            if !mutualProofVerified { return "unverified_handshake_proof" }
             return nil
         }
         if statusCode == 401 || statusCode == 403 { return "pairing_revoked" }

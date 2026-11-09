@@ -72,7 +72,20 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('../lib/busySessionsHook', () => ({ useBusySessionCount: () => 0 }));
 
 vi.mock('../lib/client', () => ({
-  ApiError: class ApiError extends Error {},
+  API_CODES: { UNAUTHORIZED: 40101 },
+  ApiError: class ApiError extends Error {
+    readonly code: number;
+    constructor(envelope: { code: number; msg: string } | string = 'ApiError') {
+      if (typeof envelope === 'string') {
+        super(envelope);
+        this.code = -1;
+      } else {
+        super(`${envelope.msg} (code ${envelope.code})`);
+        this.code = envelope.code;
+      }
+      this.name = 'ApiError';
+    }
+  },
   KikiClient: class KikiClient {
     baseUrl: string;
     readonly klient;
@@ -1629,6 +1642,7 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
         <span data-shell-token>{connection.config.token}</span>
         <span data-shell-url>{connection.config.url}</span>
         <span data-shell-ws-status>{connection.wsStatus}</span>
+        <span data-shell-ws-banner-suppressed>{String(Boolean(connection.wsBannerSuppressed))}</span>
         <button
           type="button"
           data-manual-owner
@@ -2006,9 +2020,9 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     await retryMounted.unmount();
   });
 
-  it('auto-retries transient app-shell /meta failures on online recovery while distinguishing 401 auth revocation and suppressing initial wsStatus connecting flash', async () => {
+  it('auto-retries transient app-shell /meta failures (including 503 messages mentioning 403) while distinguishing structured 401/403 auth revocation and keeping real wsStatus with banner-only initial suppression', async () => {
     mocks.meta
-      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
+      .mockRejectedValueOnce(Object.assign(new Error('HTTP 503 Service Unavailable (upstream 403 forbidden gateway)'), { code: 503 }))
       .mockResolvedValueOnce({
         server_id: 'srv-online-recover',
         server_home_id: 'home-online-recover',
@@ -2028,9 +2042,10 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     await flush();
     expect(recoverMounted.container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
     expect(recoverMounted.container.querySelector('[data-shell-token]')?.textContent).toBe('paired-online-recover-token');
-    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('closed');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-banner-suppressed]')?.textContent).toBe('true');
 
-    // Initial socket 'connecting' before first open/close does not flip wsStatus to 'connecting'
+    // Initial socket 'connecting' keeps real wsStatus='connecting' for callers while wsBannerSuppressed remains true
     const openClients = mocks.klients.filter((entry) => !entry.closed);
     const activeClient = openClients[openClients.length - 1]!;
     const emitSocketStatus = (status: string) =>
@@ -2038,23 +2053,26 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
         activeClient.terminal.onStatus.mock.calls.at(-1)![0](status);
       });
     await emitSocketStatus('connecting');
-    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('connecting');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-banner-suppressed]')?.textContent).toBe('true');
 
-    // Once socket closes and enters reconnect backoff ('connecting'), wsStatus reflects the disconnect
+    // Once socket closes and enters reconnect backoff ('connecting'), wsBannerSuppressed is false and wsStatus reflects the disconnect
     await emitSocketStatus('closed');
     expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('closed');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-banner-suppressed]')?.textContent).toBe('false');
     await emitSocketStatus('connecting');
     expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('connecting');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-banner-suppressed]')?.textContent).toBe('false');
     await emitSocketStatus('open');
     expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
     await recoverMounted.unmount();
 
-    // When /meta fails with 401 Unauthorized, online event does NOT auto-retry a revoked grant
+    // When /meta fails with structured 401/40101 Unauthorized, online event does NOT auto-retry a revoked grant
     mocks.meta.mockReset();
-    mocks.meta.mockRejectedValue(new Error('401 Unauthorized'));
+    mocks.meta.mockRejectedValue(Object.assign(new Error('Unauthorized (code 40101)'), { code: 40101 }));
     expect(applyCommittedShellCredential(window, window.location.origin, 'revoked-peer-token')).toBe(true);
     const revokedMounted = await mountBrowserShell();
-    expect(revokedMounted.container.querySelector('[role="alert"]')?.textContent).toContain('401 Unauthorized');
+    expect(revokedMounted.container.querySelector('[role="alert"]')?.textContent).toContain('Unauthorized');
     const callsAfterInitialReject = mocks.meta.mock.calls.length;
     await act(async () => {
       window.dispatchEvent(new Event('online'));

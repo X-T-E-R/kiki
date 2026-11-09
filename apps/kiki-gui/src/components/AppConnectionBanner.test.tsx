@@ -21,7 +21,7 @@ afterEach(async () => {
   for (const host of hosts.splice(0)) host.remove();
 });
 
-async function mount(wsStatus: 'connecting' | 'open' | 'closed', recovery?: DesktopRecovery, locale = 'en') {
+async function mount(wsStatus: 'connecting' | 'open' | 'closed', recovery?: DesktopRecovery, locale = 'en', suppressInitialConnecting?: boolean) {
   localStorage.setItem('kiki.locale', locale);
   const container = document.createElement('div');
   document.body.append(container);
@@ -30,9 +30,9 @@ async function mount(wsStatus: 'connecting' | 'open' | 'closed', recovery?: Desk
   roots.push(root);
   const onReconnect = vi.fn();
   const onOpenConnectionSettings = vi.fn();
-  const render = async (status = wsStatus, state = recovery) => {
+  const render = async (status = wsStatus, state = recovery, suppress = suppressInitialConnecting) => {
     await act(async () => {
-      root.render(<I18nProvider><AppConnectionBanner wsStatus={status} recovery={state} onReconnect={onReconnect} onOpenConnectionSettings={onOpenConnectionSettings} /></I18nProvider>);
+      root.render(<I18nProvider><AppConnectionBanner wsStatus={status} suppressInitialConnecting={suppress} recovery={state} onReconnect={onReconnect} onOpenConnectionSettings={onOpenConnectionSettings} /></I18nProvider>);
     });
   };
   await render();
@@ -63,9 +63,13 @@ describe('AppConnectionBanner', () => {
     expect(onReconnect).toHaveBeenCalledOnce();
   });
 
-  it('renders nothing while connected', async () => {
-    const { container } = await mount('open');
+  it('renders nothing while connected or during the initial connecting grace window', async () => {
+    const { container, render } = await mount('open');
     expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('connecting', undefined, true);
+    expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('connecting', undefined, false);
+    expect(container.querySelector('[data-app-banner]')).not.toBeNull();
   });
 
   it.each(['en', 'zh'])('keeps a short stable %s strip through repeated backoff and preserves the raw diagnostic in details', async (locale) => {
