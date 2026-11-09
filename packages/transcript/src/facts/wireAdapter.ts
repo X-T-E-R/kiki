@@ -1,5 +1,6 @@
 import type { TranscriptFact } from './reducer';
 import { normalizeStoredExternalToolDisplay } from './externalToolDisplay';
+import { projectTurnError } from './errorProjection';
 import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
@@ -2300,6 +2301,7 @@ export class TranscriptWireAdapter {
     const durationMs = numberOf(record['durationMs']);
     const cancellation = reason === 'cancelled' ? turnEndCancellation(record, this.#cancelRequests.get(turnId)) : undefined;
     this.#cancelRequests.delete(turnId);
+    const projectedError = projectTurnError(record['error']);
     const turn: TurnHeader = {
       kind: 'turn',
       turnId,
@@ -2318,7 +2320,8 @@ export class TranscriptWireAdapter {
       execution: this.#executions.get(turnId) ?? previous?.execution,
       durationMs,
       cancellation,
-      error: stringOf(objectOf(record['error'])?.['message']),
+      error: projectedError.error,
+      errorDetails: projectedError.errorDetails,
     };
     this.#turnHeaders.set(turnId, turn);
     operations.push(
@@ -2372,6 +2375,7 @@ export class TranscriptWireAdapter {
             state: 'running',
             endedAt: undefined,
             error: undefined,
+            errorDetails: undefined,
             cancellation: undefined,
           };
     this.#turnHeaders.set(turnId, turn);

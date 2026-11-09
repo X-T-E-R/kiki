@@ -1283,7 +1283,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.profile.data().modelAlias ?? 'unknown-model',
         requestAttempts,
         data.source,
-      ), { cause: error, details: isError2(error) ? error.details : undefined });
+      ), { cause: error, details: toKimiErrorPayload(error).details });
     }
   }
 

@@ -21,6 +21,7 @@ import {
   isRetryableRequestInterruption,
   markProviderEventError,
   markProviderHttpError,
+  normalizeAPIStatusError,
   noteExplicitUpstreamRetryDenial,
   sameRequestRetryProhibition,
 } from '#/kosong/contract/errors';
@@ -84,7 +85,7 @@ describe('SDK stream error metadata', () => {
     async (protocol) => {
       const message = 'failed to stream request: empty response detected';
       const body = {
-        error: { type: 'internal_server_error', code: 'stream_failed', message },
+        error: { type: 'internal_server_error', code: 'stream_failed', message, request_id: 'body-request' },
         request_id: 'body-request',
       };
       const response = new Response(`event: error\ndata: ${JSON.stringify(body)}\n\n`, {
@@ -114,6 +115,7 @@ describe('SDK stream error metadata', () => {
       expect(converted.details).toEqual({
         errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
         requestId: 'header-request', traceId: 'header-trace', error_kind: 'unknown',
+        upstreamDetails: { request_id: 'body-request' },
       });
       expect(isRetryableGenerateError(converted)).toBe(true);
       expect(convertOpenAIError(converted)).toBe(converted);
@@ -138,14 +140,73 @@ describe('SDK stream error metadata', () => {
     expect(convertAnthropicError(source).details).toMatchObject({ requestId: 'body-request', upstreamErrorType: 'internal_server_error' });
   });
 
-  it('omits invalid, oversized and credential-shaped metadata identifiers', () => {
+  it('omits invalid, oversized and credential-shaped metadata identifiers while retaining non-secret oversized fields in upstreamDetails', () => {
     const source = new OpenAIAPIError(undefined, {
       type: 'Authorization: Bearer fixture-secret', code: 'x'.repeat(201), message: 'stream failed',
       api_key: 'fixture-secret',
-    }, undefined, new Headers({ 'x-request-id': 'sk-fixture-secret-123', 'x-trace-id': 'invalid\ttrace' }));
+    }, 'stream failed', new Headers({ 'x-request-id': 'sk-fixture-secret-123', 'x-trace-id': 'invalid\ttrace' }));
     expect(convertOpenAIError(source).details).toEqual({
       errorSource: 'provider_stream', upstreamErrorType: null, upstreamErrorCode: null,
       requestId: null, traceId: null, error_kind: 'unknown',
+      upstreamDetails: { code: 'x'.repeat(201) },
+    });
+  });
+
+  it('retains error.error.error.message in upstreamDetails when SDK SSE error.message is only a generic transport error', () => {
+    const specificNestedMessage = 'Upstream worker stream aborted: backend connection reset by peer.';
+    const anthropicSource = new AnthropicAPIError(
+      undefined,
+      {
+        type: 'error',
+        error: {
+          type: 'api_error',
+          code: 'upstream_stream_reset',
+          message: specificNestedMessage,
+        },
+      },
+      'generic transport error',
+      new Headers(),
+    );
+    Object.defineProperty(anthropicSource, 'message', {
+      value: 'generic transport error',
+      configurable: true,
+    });
+    const convertedAnthropic = convertAnthropicError(anthropicSource);
+    expect(convertedAnthropic.message).toBe('Anthropic error: generic transport error');
+    expect(toErrorPayload(convertedAnthropic).details).toMatchObject({
+      errorSource: 'provider_stream',
+      upstreamErrorType: 'api_error',
+      upstreamErrorCode: 'upstream_stream_reset',
+      upstreamDetails: {
+        message: specificNestedMessage,
+      },
+    });
+
+    const openaiSource = new OpenAIAPIError(
+      undefined,
+      {
+        error: {
+          type: 'server_error',
+          code: 'upstream_stream_reset',
+          message: specificNestedMessage,
+        },
+      },
+      'generic transport error',
+      new Headers(),
+    );
+    Object.defineProperty(openaiSource, 'message', {
+      value: 'generic transport error',
+      configurable: true,
+    });
+    const convertedOpenai = convertOpenAIError(openaiSource);
+    expect(convertedOpenai.message).toBe('Error: generic transport error');
+    expect(toErrorPayload(convertedOpenai).details).toMatchObject({
+      errorSource: 'provider_event',
+      upstreamErrorType: 'server_error',
+      upstreamErrorCode: 'upstream_stream_reset',
+      upstreamDetails: {
+        message: specificNestedMessage,
+      },
     });
   });
 });
@@ -638,7 +699,9 @@ describe('Responses forwarded WebSocket close errors', () => {
   it.each(['sdk', 'failed'] as const)('preserves a custom error conversion veto for %s', async shape => {
     const error = { type: 'websocket_close_error', code: '1012', message: 'Service restarting.' };
     const source = shape === 'sdk'
-      ? OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error })}\n\n`), new AbortController())
+      ? OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error })}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'x-request-id': 'req-hook', 'x-trace-id': 'trace-hook' },
+      }), new AbortController())
       : streamEvents([{ type: 'response.failed', response: { id: 'failed', status: 'failed', output: [], error } }]);
     const veto = attachErrorDetails(new ChatProviderError('Custom rejection.'), { retry: false });
     const seen: unknown[] = [];
@@ -646,7 +709,18 @@ describe('Responses forwarded WebSocket close errors', () => {
     expect(failure).toBe(veto);
     expect(seen).toHaveLength(1);
     expect(isRetryableRequestInterruption(failure)).toBe(false);
-    expect(toErrorPayload(failure).details).toMatchObject({ upstreamErrorType: 'websocket_close_error', upstreamErrorCode: '1012', retry: false });
+    expect(toErrorPayload(failure).details).toMatchObject({
+      upstreamErrorType: 'websocket_close_error',
+      upstreamErrorCode: '1012',
+      retry: false,
+      upstreamDetails: { message: 'Service restarting.' },
+    });
+    if (shape === 'sdk') {
+      expect(toErrorPayload(failure).details).toMatchObject({
+        requestId: 'req-hook',
+        traceId: 'trace-hook',
+      });
+    }
   });
 
   it.each(['sdk', 'failed'] as const)('classifies structured upstream close codes from %s without parsing text', async shape => {
@@ -884,5 +958,348 @@ describe('convertGoogleGenAIError RetryInfo recovery', () => {
     );
     expect(error).toBeInstanceOf(APIProviderRateLimitError);
     expect((error as APIStatusError).retryAfterMs).toBe(5000);
+  });
+
+  it('retains ErrorInfo reason and structured details across domains in upstreamDetails without altering execution or retry semantics for non-supported domains', () => {
+    const chunk = {
+      error: {
+        code: 500,
+        message: 'Upstream model worker failed',
+        status: 'INTERNAL',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+            reason: 'custom_worker_crash',
+            domain: 'custom.gateway.domain',
+            metadata: { worker_id: 'w-7', api_key: 'sk-SUPERSECRET999' },
+          },
+        ],
+      },
+    };
+    const error = convertGoogleGenAIError(
+      new GoogleApiError({
+        message: JSON.stringify(chunk),
+        status: 500,
+      }),
+    );
+    expect(error).toBeInstanceOf(APIStatusError);
+    expect(error.message).toContain('Upstream model worker failed');
+    expect(isRetryableGenerateError(error)).toBe(true);
+    const payload = toErrorPayload(error);
+    expect(payload.details).toMatchObject({
+      statusCode: 500,
+      upstreamErrorType: 'INTERNAL',
+    });
+    expect(payload.details).not.toHaveProperty('upstreamErrorCode');
+    expect(JSON.stringify(payload.details)).toContain('custom_worker_crash');
+    expect(JSON.stringify(payload.details)).toContain('w-7');
+    expect(JSON.stringify(payload.details)).not.toContain('SUPERSECRET999');
+
+    const foreignDomainLookalike = convertGoogleGenAIError(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 503,
+            message: 'Third-party gateway temporary safety check timeout',
+            status: 'UNAVAILABLE',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                reason: 'antigravity_safety',
+                domain: 'other.vendor.domain',
+              },
+            ],
+          },
+        }),
+        status: 503,
+      }),
+    );
+    expect(isRetryableGenerateError(foreignDomainLookalike)).toBe(true);
+    const foreignPayload = toErrorPayload(foreignDomainLookalike);
+    expect(foreignPayload.details).not.toHaveProperty('retry', false);
+    expect(foreignPayload.details).not.toHaveProperty('upstreamErrorCode');
+    expect(sameRequestRetryProhibition(foreignPayload.details)).toBeUndefined();
+    expect(permitsFailureContinuation(foreignPayload)).toBe(true);
+    expect(JSON.stringify(foreignPayload.details?.['upstreamDetails'])).toContain('antigravity_safety');
+    expect(JSON.stringify(foreignPayload.details?.['upstreamDetails'])).toContain('other.vendor.domain');
+
+    const supportedDomainSafety = convertGoogleGenAIError(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 503,
+            message: 'Antigravity safety stop',
+            status: 'UNAVAILABLE',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                reason: 'antigravity_safety',
+                domain: 'sub2api.antigravity',
+              },
+            ],
+          },
+        }),
+        status: 503,
+      }),
+    );
+    expect(isRetryableGenerateError(supportedDomainSafety)).toBe(false);
+    const supportedPayload = toErrorPayload(supportedDomainSafety);
+    expect(supportedPayload.details).toMatchObject({
+      statusCode: 503,
+      errorSource: 'provider_http',
+      upstreamErrorCode: 'antigravity_safety',
+      retry: false,
+    });
+    expect(sameRequestRetryProhibition(supportedPayload.details)).toBe('local');
+    expect(permitsFailureContinuation(supportedPayload)).toBe(false);
+  });
+
+  it('preserves Google HTTP 400 INVALID_ARGUMENT function-call turn ordering message and unknown error codes across normalization and display', () => {
+    const turnOrderingMessage =
+      'Please ensure that function call turn comes immediately after a user turn or after a function response turn.';
+    const google400Body = {
+      error: {
+        code: 400,
+        message: turnOrderingMessage,
+        status: 'INVALID_ARGUMENT',
+      },
+    };
+    const googleHttpError = convertGoogleGenAIError(
+      new GoogleApiError({
+        message: JSON.stringify(google400Body),
+        status: 400,
+      }),
+    );
+    expect(googleHttpError).toBeInstanceOf(APIStatusError);
+    expect((googleHttpError as APIStatusError).statusCode).toBe(400);
+    expect(googleHttpError.message).toContain(turnOrderingMessage);
+    const googlePayload = toErrorPayload(googleHttpError);
+    expect(googlePayload.details).toMatchObject({
+      statusCode: 400,
+      upstreamErrorType: 'INVALID_ARGUMENT',
+    });
+
+    const translated400 = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      '00000000-0000-4000-8000-000000000001',
+      null,
+      null,
+      {
+        error: {
+          code: 'unlisted_upstream_turn_order_error',
+          status: 'INVALID_ARGUMENT',
+          message: turnOrderingMessage,
+          client_request_id: '00000000-0000-4000-8000-000000000002',
+        },
+      },
+    );
+    expect(translated400.message).toContain(
+      `unlisted_upstream_turn_order_error: ${turnOrderingMessage}`,
+    );
+    const translatedPayload = toErrorPayload(translated400);
+    expect(translatedPayload.details).toMatchObject({
+      statusCode: 400,
+      requestId: '00000000-0000-4000-8000-000000000001',
+      upstreamErrorCode: 'unlisted_upstream_turn_order_error',
+      upstreamErrorType: 'INVALID_ARGUMENT',
+      upstreamDetails: {
+        client_request_id: '00000000-0000-4000-8000-000000000002',
+      },
+    });
+  });
+
+  it('retains non-identifier codes (slash/space, >200 chars, or numeric), long type/request_id, full long messages when truncated, and request/trace IDs in upstreamDetails without altering execution or retry semantics', () => {
+    const longCauseTail = ' [tail-marker: full upstream diagnostic preserved beyond summary cap]';
+    const longUpstreamMessage = `Upstream rejected tool turn order: ${'detail-segment-'.repeat(45)}api_key=sk-live-SUPERSECRET999${longCauseTail}`;
+    const longCode = `vendor_long_code_${'c'.repeat(210)}`;
+    const longType = `vendor_long_type_${'t'.repeat(210)}`;
+    const longBodyRequestId = `req_long_id_${'r'.repeat(210)}`;
+    const slashSpaceError = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      'req-slash-space-400',
+      null,
+      'trace-slash-space-400',
+      {
+        request_id: longBodyRequestId,
+        error: {
+          code: 'vendor/quota edge',
+          type: 'gateway/upstream rejection',
+          message: longUpstreamMessage,
+          client_request_id: 'client-req-slash-space',
+        },
+      },
+    );
+    expect(slashSpaceError.message.length).toBeLessThanOrEqual(700);
+    expect(slashSpaceError.message).toContain('vendor/quota edge:');
+    expect(slashSpaceError.message).not.toContain(longCauseTail);
+    expect(slashSpaceError.message).not.toContain('SUPERSECRET999');
+    expect(isRetryableGenerateError(slashSpaceError)).toBe(false);
+
+    const slashSpacePayload = toErrorPayload(slashSpaceError);
+    expect(slashSpacePayload.details).toMatchObject({
+      statusCode: 400,
+      requestId: 'req-slash-space-400',
+      traceId: 'trace-slash-space-400',
+      upstreamDetails: {
+        request_id: longBodyRequestId,
+        code: 'vendor/quota edge',
+        type: 'gateway/upstream rejection',
+        client_request_id: 'client-req-slash-space',
+      },
+    });
+    const retainedMessage = (
+      slashSpacePayload.details?.['upstreamDetails'] as Record<string, unknown> | undefined
+    )?.['message'];
+    expect(typeof retainedMessage).toBe('string');
+    expect(retainedMessage).toContain(longCauseTail);
+    expect(retainedMessage).toContain('[REDACTED]');
+    expect(retainedMessage).not.toContain('SUPERSECRET999');
+
+    const distinctRequestIdsError = normalizeAPIStatusError(
+      400,
+      'Bad Request',
+      'req-header',
+      null,
+      null,
+      {
+        request_id: 'req-body',
+        error: {
+          code: 'example/turn order',
+          message: 'Specific order failure',
+        },
+      },
+    );
+    expect(toErrorPayload(distinctRequestIdsError).details).toMatchObject({
+      statusCode: 400,
+      requestId: 'req-header',
+      upstreamDetails: {
+        request_id: 'req-body',
+        code: 'example/turn order',
+      },
+    });
+
+    const mixedSecretMultilineError = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      'req-multiline-400',
+      null,
+      null,
+      {
+        request_id: 'req-body\nshard-B',
+        error: {
+          code: 'vendor/quota\nphase-B',
+          type: 'type-A api_key=EXAMPLE_ONLY type-B',
+          status: 'status-A\nstatus-B',
+          message: 'Primary rejection summary.',
+          detail:
+            'line 1: upstream shard=3 rejected payload\nline 2:\tapi_key=sk-live-RAWSECRET777 on edge-node-9\nline 3: retry after fixing turn order',
+          pure_secret_note: 'sk-live-ONLYSECRET888',
+          control_only_note: '\t\n\r',
+        },
+      },
+    );
+    const mixedPayload = toErrorPayload(mixedSecretMultilineError);
+    const serializedMixedDetails = JSON.stringify(mixedPayload.details);
+    expect(serializedMixedDetails).not.toContain('RAWSECRET777');
+    expect(serializedMixedDetails).not.toContain('ONLYSECRET888');
+    expect(serializedMixedDetails).not.toContain('EXAMPLE_ONLY');
+    expect(mixedPayload.details).toMatchObject({
+      statusCode: 400,
+      requestId: 'req-multiline-400',
+      upstreamDetails: {
+        request_id: 'req-body\nshard-B',
+        code: 'vendor/quota\nphase-B',
+        type: 'type-A api_key=[REDACTED] type-B',
+        status: 'status-A\nstatus-B',
+        detail:
+          'line 1: upstream shard=3 rejected payload\nline 2:\tapi_key=[REDACTED] on edge-node-9\nline 3: retry after fixing turn order',
+      },
+    });
+    expect(
+      (mixedPayload.details?.['upstreamDetails'] as Record<string, unknown> | undefined)?.[
+        'pure_secret_note'
+      ],
+    ).toBeUndefined();
+    expect(
+      (mixedPayload.details?.['upstreamDetails'] as Record<string, unknown> | undefined)?.[
+        'control_only_note'
+      ],
+    ).toBeUndefined();
+
+    const mixedSecretCodeError = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      'req-code-secret-400',
+      null,
+      null,
+      {
+        error: {
+          code: 'phase-A api_key=EXAMPLE_ONLY phase-B',
+          message: 'Secondary rejection summary.',
+        },
+      },
+    );
+    const mixedSecretCodePayload = toErrorPayload(mixedSecretCodeError);
+    expect(JSON.stringify(mixedSecretCodePayload.details)).not.toContain('EXAMPLE_ONLY');
+    expect(mixedSecretCodePayload.details).toMatchObject({
+      statusCode: 400,
+      requestId: 'req-code-secret-400',
+      upstreamDetails: {
+        code: 'phase-A api_key=[REDACTED] phase-B',
+      },
+    });
+
+    const oversizedFieldsError = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      null,
+      null,
+      null,
+      {
+        request_id: longBodyRequestId,
+        error: {
+          code: longCode,
+          type: longType,
+          message: 'Short upstream rejection reason.',
+        },
+      },
+    );
+    expect(toErrorPayload(oversizedFieldsError).details).toMatchObject({
+      statusCode: 400,
+      upstreamDetails: {
+        request_id: longBodyRequestId,
+        code: longCode,
+        type: longType,
+      },
+    });
+
+    const numericCodeError = normalizeAPIStatusError(
+      502,
+      '502 Bad Gateway',
+      'req-numeric-502',
+      null,
+      'trace-numeric-502',
+      {
+        error: {
+          code: 400102,
+          status: 'UPSTREAM_BAD_GATEWAY',
+          message: 'Upstream worker pool saturation.',
+        },
+      },
+    );
+    expect(numericCodeError.message).toContain('400102: Upstream worker pool saturation.');
+    expect(isRetryableGenerateError(numericCodeError)).toBe(true);
+    expect(sameRequestRetryProhibition(toErrorPayload(numericCodeError).details)).toBeUndefined();
+    expect(toErrorPayload(numericCodeError).details).toMatchObject({
+      statusCode: 502,
+      requestId: 'req-numeric-502',
+      traceId: 'trace-numeric-502',
+      upstreamErrorType: 'UPSTREAM_BAD_GATEWAY',
+      upstreamDetails: {
+        code: 400102,
+      },
+    });
   });
 });

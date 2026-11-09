@@ -17,8 +17,10 @@ import { createContext, useContext, useId, useState } from 'react';
 
 import type { NoticeBlock, PromptOutcome } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
+import { plainFailure } from '../agent-panel/failureText';
 import { DisclosureChevron } from '../icons';
 import { RelativeTime } from '../RelativeTime';
+import { CopyButton } from './ContentCopyButton';
 
 const LINK = 'min-h-6 rounded-sm px-1 font-medium text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:no-underline disabled:opacity-60';
 
@@ -61,11 +63,21 @@ export function PromptOutcomeLine({
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const failed = outcome.status === 'failed';
+  const summary = failed ? plainFailure(outcome.error) : undefined;
+  const detailsText = outcome.errorDetails ?? outcome.error;
   return (
     <div data-prompt-outcome={outcome.status} className="mt-1 mr-1 flex max-w-[80%] flex-col items-end">
       <span className="flex flex-wrap items-center justify-end gap-x-1 text-[12px] text-ink-faint">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-[1px] bg-ink-faint/70" />
         <span className="text-ink-soft">{t(outcomeLabelKey(outcome))}</span>
+        {summary !== undefined ? (
+          <>
+            <span aria-hidden>·</span>
+            <span data-prompt-outcome-summary className="max-w-[36ch] truncate text-ink-soft" title={outcome.error}>
+              {summary}
+            </span>
+          </>
+        ) : null}
         {outcome.at !== undefined ? (
           <>
             <span aria-hidden>·</span>
@@ -104,13 +116,18 @@ export function PromptOutcomeLine({
         ) : null}
       </span>
       {failed && open ? (
-        <p
-          id={detailsId}
-          data-prompt-outcome-details
-          className="mt-1 max-w-full rounded-md bg-ink/[0.04] px-3 py-1 text-right font-mono text-[12px] break-words whitespace-pre-wrap text-ink-soft"
-        >
-          {outcome.error ?? t('transcript.promptOutcome.noDetails')}
-        </p>
+        <div className="mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1 text-ink-soft">
+          <p
+            id={detailsId}
+            data-prompt-outcome-details
+            className={`min-w-0 flex-1 ${detailsText?.includes('\n') ? 'text-left' : 'text-right'} font-mono text-[12px] break-words whitespace-pre-wrap`}
+          >
+            {detailsText ?? t('transcript.promptOutcome.noDetails')}
+          </p>
+          {detailsText !== undefined ? (
+            <CopyButton text={detailsText} label={t('transcript.promptOutcome.details')} />
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

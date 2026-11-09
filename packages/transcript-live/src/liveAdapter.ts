@@ -66,6 +66,7 @@ import type {
 import {
   projectInteractionEndState,
   projectGoalChange,
+  projectTurnError,
   type GoalMeta,
   mediaUrlFromPart,
   parseDaemonFileRefFileId,
@@ -579,6 +580,7 @@ export class AgentTranscriptLiveAdapter {
       this.currentTurn?.turnId === turnId ? this.currentTurn : this.lookups?.turn?.(turnId);
     const persisted = this.lookups?.turn?.(turnId);
     const state = mapTurnEndState(event.reason);
+    const projectedError = projectTurnError(event.error);
     this.currentTurn = {
       kind: 'turn',
       turnId,
@@ -593,7 +595,8 @@ export class AgentTranscriptLiveAdapter {
       startedAt: prev?.startedAt ?? persisted?.startedAt,
       endedAt,
       durationMs: event.durationMs,
-      error: event.error?.message,
+      error: projectedError.error,
+      errorDetails: projectedError.errorDetails,
       usage: this.takeTurnUsage(turnId),
       execution: prev?.execution ?? persisted?.execution,
     };

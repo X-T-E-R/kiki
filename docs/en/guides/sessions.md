@@ -130,6 +130,8 @@ Open **Settings → Sessions → Manage archived conversations** to browse saved
 
 If opening or refreshing an existing conversation fails, the GUI stays on that conversation and keeps its loaded history and draft. The error appears above the history, with a request ID when available. Choose **Retry** to read the conversation again; a temporary read failure does not create a new session.
 
+When a reply or subagent turn fails, open **Details** beside its error to read and copy the provider's recorded diagnostics, including status, error code and request or trace IDs when supplied. Saved diagnostics remain available when you reopen the conversation.
+
 Editing a queued prompt's text or delivery timing through Kiki keeps its identity on recovery; you do not need to restore the original text or send a duplicate. Messages not yet launched stay pending when Kiki's backend shuts down normally. After recovery, review and resume the saved queue. Already launched messages are not automatically resent if their result is unknown; check the saved result before resending. Explicitly cancelled requests stay cancelled, including those cancelled by archiving or deleting the session.
 
 A saved session can also retain a message for recovery before the agent accepts it. That save is not a started turn: the page says the server retained the message for recovery and it has not started yet. Resume a held or failed save with the same message instead of sending a new one. A temporary session, or one whose save state is still unknown, does not store that recovery copy and does not count as accepted.

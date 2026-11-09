@@ -4761,17 +4761,32 @@ describe('virtualized transcript scrolling', () => {
     const container = await renderTranscript([
       userBlock({
         id: 'user-failed', text: 'please retry me', userMessageId: 'um-failed', turnId: 't1',
-        promptOutcome: { status: 'failed', delivered: true, error: 'Connection error.', at: '2026-01-01T00:00:02.000Z' },
+        promptOutcome: {
+          status: 'failed',
+          delivered: true,
+          error: 'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer.',
+          errorDetails: [
+            'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer.',
+            'code=provider.api_error · upstreamErrorCode=antigravity_missing_terminal · upstreamErrorType=api_error · errorSource=provider_event · request_delivery=executed · request_output=observed · upstream_retryable=false',
+          ].join('\n'),
+          at: '2026-01-01T00:00:02.000Z',
+        },
       }),
     ]);
     const line = container.querySelector('[data-prompt-outcome="failed"]');
     expect(line?.textContent).toContain('Reply failed');
+    expect(line?.querySelector('[data-prompt-outcome-summary]')?.textContent).toContain(
+      'Upstream completed without a usable answer.',
+    );
     expect(line?.querySelector('.text-danger')).toBeNull();
     expect(container.querySelector('[data-notice-tone="danger"]')).toBeNull();
     const details = [...line!.querySelectorAll('button')].find((button) => button.textContent?.includes('Details'))!;
     expect(details.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { details.click(); });
-    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toBe('Connection error.');
+    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toContain(
+      'upstreamErrorCode=antigravity_missing_terminal',
+    );
+    expect(line?.querySelector('[data-copy-state]')).not.toBeNull();
   });
 
   it('merges earlier settled prompts into one expandable neutral row', async () => {
@@ -6097,6 +6112,92 @@ describe('subagent timeline dual form (G-4)', () => {
       await renderSettled(root, <Transcript key="other-session" state={transcriptState([])} {...props} />);
       expect(container.querySelector('[data-agent-turn-outcome]')).toBeNull();
     }
+  });
+
+  it('expands and copies subagent turn errorDetails in-place at narrow viewport without triggering outer card open', async () => {
+    const opened: string[] = [];
+    const { root, container } = makeRoot();
+    container.style.width = '360px';
+    const turnOrderingMessage =
+      'Please ensure that function call turn comes immediately after a user turn or after a function response turn.';
+    const richFailureRecords = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        input: [{ type: 'text', text: 'check worker' }],
+        origin: { kind: 'user' },
+        time: 1000,
+      },
+      {
+        type: 'turn.ended',
+        turnId: 0,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: `400 Bad Request — INVALID_ARGUMENT: ${turnOrderingMessage}`,
+          name: 'APIStatusError',
+          details: {
+            statusCode: 400,
+            errorSource: 'provider_http',
+            upstreamErrorType: 'INVALID_ARGUMENT',
+            upstreamErrorCode: 'unlisted_upstream_turn_order_error',
+            requestId: '00000000-0000-4000-8000-000000000001',
+          },
+          retryable: false,
+        },
+        durationMs: 1319,
+        time: 2319,
+      },
+    ];
+    const child = replayAgentWire(CHILD_AGENT_ID, richFailureRecords, true);
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, child]]));
+    const block = lifecycleSubagentBlock(CHILD_AGENT_ID, { status: 'running', name: 'Researcher' });
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState([block])}
+        forest={forest}
+        onOpenAgent={(agentId) => { opened.push(agentId); }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    const outcomeLine = container.querySelector('[data-agent-turn-outcome="failed"]');
+    expect(outcomeLine?.textContent).toContain('Last turn failed');
+    expect(outcomeLine?.textContent).toContain(turnOrderingMessage);
+    expect(outcomeLine?.closest('button')).toBeNull();
+    const toggle = outcomeLine?.querySelector<HTMLButtonElement>('[data-agent-turn-outcome-toggle]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.tagName).toBe('BUTTON');
+    expect(toggle?.parentElement?.closest('button')).toBeNull();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => {
+      flushSync(() => {
+        toggle!.focus();
+        toggle!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        click(toggle!);
+      });
+    });
+    expect(opened).toEqual([]);
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    const details = outcomeLine?.querySelector('[data-agent-turn-outcome-details]');
+    expect(details?.textContent).toContain('statusCode=400');
+    expect(details?.textContent).toContain('upstreamErrorType=INVALID_ARGUMENT');
+    expect(details?.textContent).toContain('upstreamErrorCode=unlisted_upstream_turn_order_error');
+    expect(details?.textContent).toContain('requestId=00000000-0000-4000-8000-000000000001');
+    const copyBtn = outcomeLine?.querySelector<HTMLButtonElement>('[data-copy-state]');
+    expect(copyBtn).not.toBeNull();
+    expect(copyBtn?.parentElement?.closest('button')).toBeNull();
+    await act(async () => {
+      flushSync(() => {
+        copyBtn!.focus();
+        copyBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+        click(copyBtn!);
+      });
+    });
+    expect(opened).toEqual([]);
   });
 
   it('renders both the earlier failure and later cancellation from a fresh child transcript', async () => {

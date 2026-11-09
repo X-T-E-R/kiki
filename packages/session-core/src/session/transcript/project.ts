@@ -2164,14 +2164,14 @@ interface PromptOutcomeContext {
   /** Start of the oldest loaded turn; anything settled before it is history. */
   readonly windowStartMs: number | undefined;
   /** promptId / message id → the turn it opened. */
-  readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly error?: string }>;
+  readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly error?: string; readonly errorDetails?: string }>;
 }
 
 function promptOutcomeContext(
   blocks: readonly Block[],
   items: AgentTranscriptProjectionSource['items'],
 ): PromptOutcomeContext {
-  const turns = new Map<string, { turnId: string; error?: string }>();
+  const turns = new Map<string, { turnId: string; error?: string; errorDetails?: string }>();
   let windowStartMs: number | undefined;
   for (const item of items as readonly { readonly kind: string }[]) {
     if (item.kind !== 'turn') continue;
@@ -2179,13 +2179,14 @@ function promptOutcomeContext(
       readonly turnId: string;
       readonly promptId?: string;
       readonly error?: string;
+      readonly errorDetails?: string;
       readonly startedAt?: string;
       readonly origin?: PromptOriginLike;
     };
     const started = timestampMs(turn.startedAt);
     if (started !== undefined && (windowStartMs === undefined || started < windowStartMs)) windowStartMs = started;
     const identity = identityFromTurnOrigin(turn.origin);
-    const entry = { turnId: turn.turnId, error: turn.error };
+    const entry = { turnId: turn.turnId, error: turn.error, errorDetails: turn.errorDetails };
     for (const key of [turn.promptId, identity.promptId, identity.userMessageId, turnMessageId(turn)]) {
       if (key !== undefined) turns.set(key, entry);
     }
@@ -2220,6 +2221,7 @@ function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, 
     status: prompt.status,
     at: prompt.finishedAt,
     error: turn?.error,
+    errorDetails: turn?.errorDetails,
     delivered: turn !== undefined || user?.turnId !== undefined,
   };
 }
@@ -2566,11 +2568,19 @@ export function turnOutcomeFromItem(item: {
   readonly state?: string;
   readonly endedAt?: string;
   readonly error?: string;
+  readonly errorDetails?: string;
   readonly steps: readonly { readonly stepId: string; readonly retry?: AgentTurnOutcome['lastRetry'] }[];
 }): AgentTurnOutcome | undefined {
   if (item.state !== 'failed' && item.state !== 'cancelled') return undefined;
   const lastRetry = item.steps.findLast((step) => step.retry !== undefined)?.retry;
-  return { turnId: item.turnId, state: item.state, endedAt: item.endedAt, error: item.error, lastRetry };
+  return {
+    turnId: item.turnId,
+    state: item.state,
+    endedAt: item.endedAt,
+    error: item.error,
+    errorDetails: item.errorDetails,
+    lastRetry,
+  };
 }
 
 export function latestTurnOutcome(source: AgentTranscriptProjectionSource | AgentTranscriptResponse): AgentTurnOutcome | undefined {

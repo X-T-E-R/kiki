@@ -9,7 +9,9 @@ import {
   markProviderHttpError,
   normalizeAPIStatusError,
   noteExplicitUpstreamRetryDenial,
+  readProviderErrorIdentifier,
 } from '#/kosong/contract/errors';
+import { attachErrorDetails } from '#/_base/errors/errors';
 import type { Message, StreamedMessagePart, ThinkPart, ToolCall } from '#/kosong/contract/message';
 import { isToolDeclarationOnlyMessage } from '#/kosong/contract/message';
 import type {
@@ -814,15 +816,26 @@ function googleErrorEnvelope(message: string): unknown {
   }
 }
 
+function googleEnvelopeStatusType(envelope: unknown): string | undefined {
+  if (typeof envelope !== 'object' || envelope === null) return undefined;
+  const error = (envelope as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const status = readProviderErrorIdentifier((error as { status?: unknown }).status);
+  return status ?? undefined;
+}
+
 function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'): ChatProviderError {
   const details = googleRpcDetails(error.message);
-  const converted = normalizeAPIStatusError(error.status, error.message, undefined, parseRetryInfoDelayMs(details));
+  const envelope = googleErrorEnvelope(error.message);
+  const converted = normalizeAPIStatusError(error.status, error.message, undefined, parseRetryInfoDelayMs(details), undefined, envelope);
+  const upstreamErrorType = googleEnvelopeStatusType(envelope);
+  if (upstreamErrorType !== undefined) attachErrorDetails(converted, { upstreamErrorType });
   const marked = source === 'event'
     ? markProviderEventError(converted, details.some(isGatewayTerminalErrorInfo)
       ? 'gateway_stream_terminal_error'
       : antigravityErrorInfoReason(details))
     : markProviderHttpError(converted, antigravityErrorInfoReason(details));
-  return noteExplicitUpstreamRetryDenial(marked, googleErrorEnvelope(error.message));
+  return noteExplicitUpstreamRetryDenial(marked, envelope);
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {

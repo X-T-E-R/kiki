@@ -33,6 +33,12 @@ unified `ErrorCodes` const.
 - **Keep the original error for recovery decisions.** Generation recovery calls `isRetryableGenerateError(error)` before unwrapping so wrapper and cause-chain facts remain available. Use `unwrapErrorCause(error)` for raw-shape matching (errno, provider status), retry-policy selectors, and diagnostics, not as a replacement input to the recovery classifier.
 - **Branch on `code`, never `instanceof`, across the wire.** Class identity does not survive serialization. In-process, `instanceof Error2` / `isCodedError` are fine.
 
+## Provider diagnostics
+
+`kosong/contract/errors.ts` retains received provider error messages and structured diagnostics without a provider or message allowlist. Normalized identifiers remain separate from sanitized `upstreamDetails`: a field that is not represented by a normalized value stays in the diagnostic data. Distinct header and body request IDs are both retained. Existing credential redaction applies before diagnostic details are serialized.
+
+`toErrorPayload` preserves the original error and cause chain. The shared `@kiki/transcript` error projection supplies readable `error` and expandable `errorDetails` for live events and saved history. Presentation can show the specific upstream reason while retaining an outer transport failure in the details; it must not rewrite the original error used by retry, cancellation or execution classification. Replaying older records can expose only diagnostics that were saved in those records.
+
 ## Generation retry and thinking-only recovery
 
 `kosong/contract/errors.ts` owns `isRetryableGenerateError(error)`. Step retry passes the original error through this classifier before applying a matching policy. An uncertain delivery mark alone does not forbid a bounded retry; observed output or tool execution, cancellation, an explicit `retry: false`, an explicit upstream boolean `retryable: false`, and non-retryable provider classifications do. A temporary provider error event with no output remains eligible unless a trusted boundary confirms execution or the provider marks the error as non-retryable. `true`, a missing `retryable` field, and any non-boolean value do not create that prohibition and do not clear a local `retry: false`.

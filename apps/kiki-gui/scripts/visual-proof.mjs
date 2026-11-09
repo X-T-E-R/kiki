@@ -1718,8 +1718,45 @@ async function scenarioErrorAbort() {
   // The stop control is a drawn icon; address it by its accessible name.
   await page.locator('[data-composer-toolbar] button[aria-label="Stop this turn"], [data-composer-toolbar] button[aria-label="停止此轮"]').first().click();
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
+  const detailsBtn = page.locator('[data-prompt-outcome="failed"] button[aria-expanded]').first();
+  if ((await detailsBtn.count()) > 0) {
+    await detailsBtn.click();
+    await page.waitForSelector('[data-prompt-outcome-details]', { timeout: 5_000 });
+  }
+  const subagentCard = page.locator('[data-subagent-id="agent-sub-0"] [data-agent-open="agent-sub-0"]').first();
+  if ((await subagentCard.count()) > 0) {
+    await subagentCard.click();
+    await page.waitForSelector('[data-agent-turn-outcome-toggle]', { timeout: 5_000 });
+  }
+  const closePreviewTab = page.locator('[data-preview-tab="panel:agent-sub-0"] button').first();
+  if ((await closePreviewTab.count()) > 0) {
+    await closePreviewTab.click();
+    await page.waitForTimeout(200);
+  }
+  for (const toggle of await page.locator('[data-agent-turn-outcome-toggle]').all()) {
+    await toggle.click();
+  }
+  await page.waitForSelector('[data-agent-turn-outcome-details]', { timeout: 5_000 });
+  const copyBtn = page.locator('[data-agent-turn-outcome] [data-copy-state]').first();
+  if ((await copyBtn.count()) > 0) {
+    await copyBtn.click();
+  }
+  const nestedButtons = await page.evaluate(() => document.querySelectorAll('button button').length);
+  if (nestedButtons > 0) {
+    throw new Error(`Found ${nestedButtons} nested <button> element(s) in DOM`);
+  }
+  if ((await page.locator('[data-preview-tab="panel:agent-sub-0"]').count()) > 0) {
+    throw new Error('AgentTurnOutcomeLine Details/Copy reopened the subagent preview tab');
+  }
   await page.waitForTimeout(400);
   await shot('error-abort');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(400);
+  await page.locator('[data-agent-turn-outcome-details]').first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('error-abort-narrow');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(300);
 }
 
 async function scenarioApprovalsGallery() {

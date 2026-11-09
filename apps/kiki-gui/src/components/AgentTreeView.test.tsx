@@ -1,3 +1,7 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { flushSync } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -122,5 +126,56 @@ describe('AgentTreeView tool-count display', () => {
     const html = renderRow({ agentId: 'child', name: 'Child', status: 'unknown' });
     expect(html).toContain('Child');
     expect(html).toContain('Status unknown');
+  });
+
+  it('keeps AgentTurnOutcomeLine outside the row open button and expands/copies without nested buttons or triggering onOpen', async () => {
+    const opened: string[] = [];
+    const snapshot = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords, true);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        flushSync(() => {
+          root.render(
+            <I18nProvider>
+              <AgentTreeView
+                forest={sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, snapshot]]))}
+                onOpen={(id) => { opened.push(id); }}
+              />
+            </I18nProvider>,
+          );
+        });
+      });
+      const outcomeLine = container.querySelector('[data-agent-turn-outcome="failed"]');
+      expect(outcomeLine).not.toBeNull();
+      expect(outcomeLine?.closest('button')).toBeNull();
+      const toggle = outcomeLine?.querySelector<HTMLButtonElement>('[data-agent-turn-outcome-toggle]');
+      expect(toggle?.tagName).toBe('BUTTON');
+      expect(toggle?.parentElement?.closest('button')).toBeNull();
+      await act(async () => {
+        flushSync(() => {
+          toggle!.focus();
+          toggle!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          toggle!.click();
+        });
+      });
+      expect(opened).toEqual([]);
+      expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+      const copyBtn = outcomeLine?.querySelector<HTMLButtonElement>('[data-copy-state]');
+      expect(copyBtn?.tagName).toBe('BUTTON');
+      expect(copyBtn?.parentElement?.closest('button')).toBeNull();
+      await act(async () => {
+        flushSync(() => {
+          copyBtn!.focus();
+          copyBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+          copyBtn!.click();
+        });
+      });
+      expect(opened).toEqual([]);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
   });
 });

@@ -277,6 +277,7 @@ export const transcriptTurnSchema = z.object({
   durationMs: z.number().optional(),
   cancellation: z.enum(['user', 'aborted', 'recovery', 'unknown']).optional(),
   error: z.string().optional(),
+  errorDetails: z.string().optional(),
 });
 
 export const transcriptMarkerSchema = z.object({

@@ -555,7 +555,7 @@ export function convertAnthropicError(
       error.message,
       reqId,
       parseRetryAfterMs(error.headers),
-      undefined,
+      parseTraceId(error.headers),
       error.error,
     ), anthropicStreamErrorCode(error.error)), error.error);
   }
@@ -573,8 +573,9 @@ export function convertAnthropicError(
     }
   }
   if (error instanceof AnthropicAPIError && error.error !== undefined) {
-    return new ChatProviderError(`Anthropic error: ${error.message}`, undefined, {
-      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
+    const displayMessage = `Anthropic error: ${error.message}`;
+    return new ChatProviderError(displayMessage, undefined, {
+      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers), displayMessage),
     });
   }
   if (error instanceof AnthropicError) {

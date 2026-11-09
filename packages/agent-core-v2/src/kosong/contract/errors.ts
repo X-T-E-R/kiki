@@ -335,11 +335,26 @@ export function isAmbiguousRequestDelivery(error: unknown): boolean {
 }
 
 export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
+  if (
+    error instanceof ChatProviderError &&
+    error.message === 'The provider request ended without an observed outcome.' &&
+    error.cause !== undefined
+  ) {
+    noteRequestDelivery(error, 'ambiguous');
+    return error;
+  }
+  const causeDetails: Record<string, unknown> = {};
+  if (typeof error === 'object' && error !== null) {
+    for (const [key, value] of Object.entries(providerErrorMetadata(error))) {
+      if (key === 'error_kind' || key === 'request_delivery') continue;
+      causeDetails[key] = value;
+    }
+  }
   noteRequestDelivery(error, 'ambiguous');
   const wrapped = new ChatProviderError('The provider request ended without an observed outcome.',
     error instanceof ChatProviderError ? error.code as ProviderErrorCode : undefined, {
       cause: error,
-      details: { request_delivery: 'ambiguous' },
+      details: { ...causeDetails, request_delivery: 'ambiguous' },
     });
   noteRequestDelivery(wrapped, 'ambiguous');
   return wrapped;
@@ -652,28 +667,178 @@ export function noteExplicitUpstreamRetryDenial<T>(error: T, body: unknown): T {
   return attachErrorDetails(error, { upstream_retryable: false });
 }
 
-/** Whitelisted metadata retained from an SDK stream error without its body or headers. */
+function readObjectScalarCode(value: object, key: string): string | undefined {
+  const raw = (value as Record<string, unknown>)[key];
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  return undefined;
+}
+
+const ALWAYS_CONSUMED_UPSTREAM_BODY_KEYS: ReadonlySet<string> = new Set([
+  'retryable',
+  'error',
+]);
+
+interface UpstreamMappingContext {
+  readonly mappedType?: string | null;
+  readonly mappedCode?: string | null;
+  readonly mappedStatus?: number;
+  readonly mappedRequestId?: string | null;
+  readonly displayMessage?: string;
+}
+
+const PURE_REDACTED_RESIDUE = new RegExp(
+  String.raw`^(?:${STATUS_ERROR_SENSITIVE_KEY_NAME}|authorization|bearer|basic)\s*[:=]?\s*$`,
+  'i',
+);
+
+function isEmptyOrPurelyRedactedText(value: string): boolean {
+  const redacted = redactSensitiveText(value);
+  const withoutMarkers = redacted
+    .replaceAll(STATUS_ERROR_REDACTED, '')
+    .replaceAll(/[\0-\u001F\u007F\s]+/g, ' ')
+    .trim();
+  return withoutMarkers.length === 0 || PURE_REDACTED_RESIDUE.test(withoutMarkers);
+}
+
+function isUpstreamBodyFieldConsumed(
+  key: string,
+  value: unknown,
+  context?: UpstreamMappingContext,
+): boolean {
+  if (ALWAYS_CONSUMED_UPSTREAM_BODY_KEYS.has(key)) return true;
+  if (key === 'type') {
+    if (typeof value !== 'string') return false;
+    if (value === 'error' || isEmptyOrPurelyRedactedText(value)) return true;
+    return (
+      context?.mappedType !== undefined &&
+      context.mappedType !== null &&
+      redactSensitiveText(value) === context.mappedType
+    );
+  }
+  if (key === 'status') {
+    if (typeof value === 'number') {
+      return context?.mappedStatus !== undefined && value === context.mappedStatus;
+    }
+    if (typeof value === 'string') {
+      if (isEmptyOrPurelyRedactedText(value)) return true;
+      return (
+        context?.mappedType !== undefined &&
+        context.mappedType !== null &&
+        redactSensitiveText(value) === context.mappedType
+      );
+    }
+    return false;
+  }
+  if (key === 'code') {
+    if (typeof value === 'string') {
+      if (isEmptyOrPurelyRedactedText(value)) return true;
+      return (
+        context?.mappedCode !== undefined &&
+        context.mappedCode !== null &&
+        redactSensitiveText(value) === context.mappedCode
+      );
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      if (context?.mappedStatus !== undefined && value === context.mappedStatus) return true;
+      return (
+        context?.mappedCode !== undefined &&
+        context.mappedCode !== null &&
+        String(value) === context.mappedCode
+      );
+    }
+    return false;
+  }
+  if (key === 'request_id') {
+    if (typeof value !== 'string') return false;
+    if (isEmptyOrPurelyRedactedText(value)) return true;
+    return (
+      context?.mappedRequestId !== undefined &&
+      context.mappedRequestId !== null &&
+      redactSensitiveText(value) === context.mappedRequestId
+    );
+  }
+  if (key === 'message') {
+    if (typeof value !== 'string') return false;
+    if (isEmptyOrPurelyRedactedText(value)) return true;
+    const redacted = redactSensitiveText(value).trim();
+    if (context?.displayMessage === undefined) return false;
+    return redactSensitiveText(context.displayMessage).includes(redacted);
+  }
+  if (typeof value === 'string' && isEmptyOrPurelyRedactedText(value)) {
+    return true;
+  }
+  return false;
+}
+
+function extractUpstreamStructuredDetails(
+  body: unknown,
+  context?: UpstreamMappingContext,
+): Readonly<Record<string, unknown>> | undefined {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined;
+  const envelope = body as Record<string, unknown>;
+  const nested = readNestedErrorObject(envelope);
+  const error = (nested ?? envelope) as Record<string, unknown>;
+  const extra: Record<string, unknown> = {};
+  for (const source of nested === undefined ? [envelope] : [envelope, error]) {
+    for (const [key, value] of Object.entries(source)) {
+      if (isSensitiveStatusErrorKey(key)) continue;
+      if (value === undefined || value === null) continue;
+      if (isUpstreamBodyFieldConsumed(key, value, context)) continue;
+      extra[key] = redactSensitiveValue(value);
+    }
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+/** Structured diagnostic metadata and sanitized upstream details retained from an SDK stream error without raw headers. */
 export function providerStreamErrorDetails(
   body: unknown,
   requestId?: string | null,
   traceId?: string | null,
+  displayMessage?: string,
 ): Readonly<Record<string, unknown>> {
   const envelope = typeof body === 'object' && body !== null ? body : undefined;
   const error = envelope === undefined ? undefined : (readNestedErrorObject(envelope) ?? envelope);
+  const upstreamErrorType = readProviderErrorIdentifier(
+    error === undefined
+      ? undefined
+      : (readObjectStringProp(error, 'type') ?? readObjectStringProp(error, 'status')),
+  );
+  const upstreamErrorCode = readProviderErrorIdentifier(
+    error === undefined ? undefined : readObjectStringProp(error, 'code'),
+  );
+  const mappedRequestId =
+    readProviderErrorIdentifier(requestId) ??
+    readProviderErrorIdentifier(
+      envelope === undefined
+        ? undefined
+        : (readObjectStringProp(envelope, 'request_id') ??
+          (error === undefined ? undefined : readObjectStringProp(error, 'request_id'))),
+    );
   const details: Record<string, unknown> = {
     errorSource: 'provider_stream',
-    upstreamErrorType: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'type')),
-    upstreamErrorCode: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'code')),
-    requestId: readProviderErrorIdentifier(requestId) ?? readProviderErrorIdentifier(envelope === undefined ? undefined : readObjectStringProp(envelope, 'request_id')),
+    upstreamErrorType,
+    upstreamErrorCode,
+    requestId: mappedRequestId,
     traceId: readProviderErrorIdentifier(traceId),
   };
-  const status = (error as Record<string, unknown> | undefined)?.['status'];
-  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) details['upstreamStatus'] = status;
+  const status = (error as Record<string, unknown> | undefined)?.['status'] ?? (envelope as Record<string, unknown> | undefined)?.['status'];
+  const mappedStatus = typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+  if (mappedStatus !== undefined) details['upstreamStatus'] = mappedStatus;
   if (explicitUpstreamRetryDenied(body)) details['upstream_retryable'] = false;
+  const upstreamDetails = extractUpstreamStructuredDetails(body, {
+    mappedType: upstreamErrorType,
+    mappedCode: upstreamErrorCode,
+    mappedStatus,
+    mappedRequestId,
+    displayMessage,
+  });
+  if (upstreamDetails !== undefined) details['upstreamDetails'] = upstreamDetails;
   return details;
 }
 
-function extractStatusErrorBodyDetail(body: unknown): string | null {
+function extractStatusErrorBodyDetail(body: unknown, statusCode?: number): string | null {
   if (body === null || body === undefined) return null;
   const sanitized = redactSensitiveValue(body);
   if (typeof sanitized === 'string') {
@@ -688,7 +853,13 @@ function extractStatusErrorBodyDetail(body: unknown): string | null {
     if (nestedMessage !== undefined) {
       const trimmed = nestedMessage.trim();
       if (trimmed.length > 0) {
-        const upstreamCode = readObjectStringProp(current, 'code') ?? readObjectStringProp(current, 'type');
+        const rawCode = readObjectScalarCode(current, 'code');
+        const codeCandidate =
+          rawCode !== undefined && rawCode !== String(statusCode) ? rawCode : undefined;
+        const upstreamCode =
+          codeCandidate ??
+          readObjectStringProp(current, 'type') ??
+          readObjectStringProp(current, 'status');
         return upstreamCode === undefined ? trimmed : `${upstreamCode}: ${trimmed}`;
       }
     }
@@ -731,9 +902,9 @@ function messageContainsStatusErrorDetail(message: string, detail: string): bool
   }
 }
 
-function compose400StatusErrorMessage(message: string, body: unknown): string {
+function composeStatusErrorMessage(message: string, body: unknown, statusCode?: number): string {
   const redactedMessage = redactSensitiveText(message);
-  const detail = extractStatusErrorBodyDetail(body);
+  const detail = extractStatusErrorBodyDetail(body, statusCode);
   let assembled = redactedMessage;
   if (detail !== null && !messageContainsStatusErrorDetail(redactedMessage, detail)) {
     const snippet = truncateStatusErrorSnippet(detail);
@@ -745,8 +916,38 @@ function compose400StatusErrorMessage(message: string, body: unknown): string {
 }
 
 function appendStatusErrorBodySnippet(statusCode: number, message: string, body: unknown): string {
-  if (statusCode < 400 || statusCode >= 500) return message;
-  return compose400StatusErrorMessage(message, body);
+  if (statusCode < 400) return message;
+  return composeStatusErrorMessage(message, body, statusCode);
+}
+
+function attachUpstreamStatusBodyDetails<T extends APIStatusError>(error: T, body: unknown): T {
+  if (typeof body !== 'object' || body === null) return error;
+  const envelope = body as Record<string, unknown>;
+  const nested = readNestedErrorObject(envelope) ?? envelope;
+  const extra: Record<string, unknown> = {};
+  const upstreamErrorType = readProviderErrorIdentifier(
+    readObjectStringProp(nested, 'type') ??
+      readObjectStringProp(nested, 'status') ??
+      readObjectStringProp(envelope, 'type') ??
+      readObjectStringProp(envelope, 'status'),
+  );
+  if (upstreamErrorType !== null) extra['upstreamErrorType'] = upstreamErrorType;
+  const upstreamErrorCode = readProviderErrorIdentifier(
+    readObjectStringProp(nested, 'code') ?? readObjectStringProp(envelope, 'code'),
+  );
+  if (upstreamErrorCode !== null) extra['upstreamErrorCode'] = upstreamErrorCode;
+  const bodyRequestId = readProviderErrorIdentifier(readObjectStringProp(envelope, 'request_id') ?? readObjectStringProp(nested, 'request_id'));
+  if (error.requestId === null && bodyRequestId !== null) extra['requestId'] = bodyRequestId;
+  const upstreamDetails = extractUpstreamStructuredDetails(body, {
+    mappedType: upstreamErrorType,
+    mappedCode: upstreamErrorCode,
+    mappedStatus: error.statusCode,
+    mappedRequestId: error.requestId ?? bodyRequestId,
+    displayMessage: error.message,
+  });
+  if (upstreamDetails !== undefined) extra['upstreamDetails'] = upstreamDetails;
+  if (Object.keys(extra).length > 0) attachErrorDetails(error, extra);
+  return error;
 }
 
 export function isContextOverflowErrorCode(code: string | null | undefined): boolean {
@@ -763,24 +964,39 @@ export function normalizeAPIStatusError(
 ): APIStatusError {
   const displayMessage = appendStatusErrorBodySnippet(statusCode, message, body);
   if (statusCode === 429) {
-    return new APIProviderRateLimitError(displayMessage, requestId, retryAfterMs, traceId);
+    return attachUpstreamStatusBodyDetails(
+      new APIProviderRateLimitError(displayMessage, requestId, retryAfterMs, traceId),
+      body,
+    );
   }
   if (isContextOverflowStatusError(statusCode, message)) {
-    return new APIContextOverflowError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
+    return attachUpstreamStatusBodyDetails(
+      new APIContextOverflowError(statusCode, displayMessage, requestId, retryAfterMs, traceId),
+      body,
+    );
   }
   if (isRequestTooLargeStatusError(statusCode, message)) {
-    return new APIRequestTooLargeError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
+    return attachUpstreamStatusBodyDetails(
+      new APIRequestTooLargeError(statusCode, displayMessage, requestId, retryAfterMs, traceId),
+      body,
+    );
   }
   if (isProviderOverloadStatusError(statusCode, message)) {
-    return new APIProviderOverloadedError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
+    return attachUpstreamStatusBodyDetails(
+      new APIProviderOverloadedError(statusCode, displayMessage, requestId, retryAfterMs, traceId),
+      body,
+    );
   }
   const hinted = appendThinkingEffortConfigHint(statusCode, displayMessage);
-  return new APIStatusError(
-    statusCode,
-    statusCode === 400 ? truncateStatusErrorMessage(hinted) : hinted,
-    requestId,
-    retryAfterMs,
-    traceId,
+  return attachUpstreamStatusBodyDetails(
+    new APIStatusError(
+      statusCode,
+      statusCode >= 400 ? truncateStatusErrorMessage(hinted) : hinted,
+      requestId,
+      retryAfterMs,
+      traceId,
+    ),
+    body,
   );
 }
 

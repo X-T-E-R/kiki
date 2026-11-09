@@ -11,6 +11,10 @@
  *   tool   tool-{toolCallId}
  */
 
+import { tsImport } from 'tsx/esm/api';
+
+const { projectTurnError } = await tsImport('../../../packages/transcript/src/index.ts', import.meta.url);
+
 export const EMPTY_SNAPSHOT = Object.freeze({
   items: [],
   tasks: [],
@@ -718,6 +722,7 @@ export class TranscriptProjector {
             });
           }
         }
+        const projectedError = projectTurnError(payload.error);
         ops.push(
           {
             op: 'turn.upsert',
@@ -735,7 +740,8 @@ export class TranscriptProjector {
               durationMs: payload.durationMs,
               usage: payload.usage,
               cancellation,
-              error: payload.error?.message ?? payload.error,
+              error: projectedError.error,
+              errorDetails: projectedError.errorDetails,
             },
           },
           {

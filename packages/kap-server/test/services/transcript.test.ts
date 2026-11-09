@@ -4067,7 +4067,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(17);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(19);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4077,7 +4077,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4131,7 +4131,10 @@ describe('TranscriptService live integration', () => {
         { type: 'executor.tool.display', turnId: 5, stepId: 'step-5b', toolCallId: 'external:acp:no-input', name: 'edit_file', state: 'done',
           display: { kind: 'generic', summary: 'edit_file' },
           output: { kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'edit_file', text: 'Completed without recorded input', status: 'completed' }, time: 26_760 },
-        { type: 'turn.ended', turnId: 5, reason: 'completed', time: 26_800 },
+        { type: 'turn.ended', turnId: 5, reason: 'failed', time: 26_800,
+          error: { code: 'provider.api_error', message: 'Error: generic transport error',
+            details: { upstreamErrorCode: 'example_stream_reset', requestId: 'example-request',
+              upstreamDetails: { message: 'Example worker connection was reset.' } } } },
         { type: 'prompt.enqueued', promptId: 'accepted-not-delivered', userMessageId: 'logical-accepted',
           message: { origin: { kind: 'user' }, content: [{ type: 'text', text: 'Wait for a step' }] }, time: 26_900 },
         { type: 'prompt.steer_accepted', promptIds: ['accepted-not-delivered'], time: 26_950 },
@@ -4174,8 +4177,13 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(17);
+        expect(checkpoint?.format).toBe(19);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
+        expect(boundary).toMatchObject({ state: 'failed',
+          error: 'example_stream_reset: Example worker connection was reset.',
+          errorDetails: expect.stringContaining('requestId=example-request') });
+        expect(boundary?.kind === 'turn' ? boundary.errorDetails : undefined)
+          .toContain('cause: Error: generic transport error');
         expect(boundary?.kind === 'turn' ? boundary.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)]) : []).toEqual([
           ['step-5a', ['before-boundary']],
           ['step-5b', ['steer-boundary', 'steer-cue', 'boundary-thought', 'step-5b.external:acp:edit-1', 'step-5b.external:acp:no-input']],
@@ -4219,6 +4227,8 @@ describe('TranscriptService live integration', () => {
             ...checkpoint!.snapshot.items.map(item => item.kind === 'turn' && item.turnId === 't5'
               ? {
                   ...item,
+                  error: 'Error: generic transport error',
+                  errorDetails: undefined,
                   steps: item.steps.map(step => ({
                     ...step,
                     frames: step.frames.map(frame => frame.kind === 'tool' && frame.toolCallId === 'external:acp:edit-1'

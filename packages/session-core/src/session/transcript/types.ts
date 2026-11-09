@@ -78,6 +78,8 @@ export interface PromptOutcome {
   readonly at?: string;
   /** Terminal error of the turn it opened, when one is known. */
   readonly error?: string;
+  /** Full diagnostic details of the terminal error when structured metadata or causes are present. */
+  readonly errorDetails?: string;
   /** True when the message reached a turn; false when it never started. */
   readonly delivered: boolean;
 }

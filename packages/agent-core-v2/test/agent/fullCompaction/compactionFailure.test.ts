@@ -62,9 +62,39 @@ describe('compaction-only retry classification', () => {
     expect(requestDeliveryProvenance(new APIStatusError(401, 'unauthorized'))).toBeUndefined();
   });
 
-  it('attaches sanitized status detail for all 4xx, including 429', () => {
+  it('attaches sanitized status detail for all 4xx and 5xx, and formats stream error compaction failures accurately', () => {
     expect(normalizeAPIStatusError(403, 'Forbidden', null, null, null, { error: { code: 'FORBIDDEN', message: 'bad scope' } }).message).toContain('FORBIDDEN: bad scope');
     expect(normalizeAPIStatusError(429, 'Rate limit', null, null, null, { error: { code: 'RATE_LIMITED', message: 'slow down' } }).message).toContain('RATE_LIMITED: slow down');
+    expect(normalizeAPIStatusError(502, '502 Bad Gateway', 'req-502', null, 'trace-502', { error: { code: 'gateway_stream_terminal_error', type: 'upstream_error', message: 'Upstream stream ended before a terminal event', extra_field: 'preserved' } })).toMatchObject({
+      statusCode: 502,
+      requestId: 'req-502',
+      traceId: 'trace-502',
+    });
+    const status502 = normalizeAPIStatusError(502, '502 Bad Gateway', 'req-502', null, 'trace-502', { error: { code: 'gateway_stream_terminal_error', type: 'upstream_error', message: 'Upstream stream ended before a terminal event', extra_field: 'preserved' } });
+    expect(status502.message).toContain('gateway_stream_terminal_error: Upstream stream ended before a terminal event');
     expect(normalizeAPIStatusError(409, 'Conflict', null, null, null, { error: { api_key: 'sk-SUPERSECRET123', code: 'CONTENT_FILTERED', message: 'filtered' } }).message).not.toContain('SUPERSECRET');
+
+    const streamCompactionCause = attachErrorDetails(
+      new Error2(
+        'provider.api_error',
+        'Anthropic error: {"error":{"code":"gateway_stream_terminal_error","message":"Upstream stream ended before a terminal event","status":502,"type":"upstream_error"},"type":"error"}',
+      ),
+      {
+        errorSource: 'provider_stream',
+        upstreamErrorType: 'upstream_error',
+        upstreamErrorCode: 'gateway_stream_terminal_error',
+        upstreamStatus: 502,
+        requestId: 'req-stream-502',
+      },
+    );
+    const described = describeCompactionFailure(
+      ambiguousRequestDelivery(streamCompactionCause),
+      'anthropic',
+      'axon-message/gemini-4-argon',
+      1,
+    );
+    expect(described).toContain('HTTP 502 gateway_stream_terminal_error; anthropic/axon-message/gemini-4-argon; request req-stream-502; 1 attempt');
+    expect(described).toContain('Upstream stream ended before a terminal event');
+    expect(described).not.toContain('HTTP n/a error');
   });
 });

@@ -133,19 +133,8 @@ const AgentTreeRow = memo(function AgentTreeRow({
             ) : (
               <span className="w-5 shrink-0" />
             )}
-            <button
-              type="button"
-              data-agent-id={node.agentId}
-              data-agent-depth={depth}
-              data-agent-name-source={node.nameSource}
-              data-agent-status-source={node.statusSource}
-              aria-current={selected ? 'page' : undefined}
-              aria-label={t('subagent.openAgent', { name: label })}
-              title={node.error}
-              onClick={() => {
-                onOpen(node.agentId);
-              }}
-              className={`agent-tree-row flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+            <div
+              className={`agent-tree-row flex min-w-0 flex-1 flex-col rounded-lg px-2 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
                 // The rail's own surface is panel, the lightest step, so the
                 // selected sheet stays panel and lifts by its ring + shadow
                 // (paper here would read as a grey fill).
@@ -154,48 +143,67 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   : 'hover:bg-ink/[0.04]'
               }`}
             >
-              <span
-                className={`h-2 w-2 shrink-0 rounded-full ${refreshing ? 'bg-amber-rule' : statusDot(node.status)} ${
-                  refreshing || (isActiveStatus(node.status) && node.busy) ? 'status-dot-busy' : ''
-                }`}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5 truncate text-[12px] font-medium text-ink">
-                  <span className="truncate">{label}</span>
-                  {node.executorId !== undefined && node.executorId !== '' && node.executorId !== 'native' ? (
-                    <span
-                      data-tree-engine-badge={node.executorId}
-                      title={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
-                      aria-label={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
-                      className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] font-normal leading-tight bg-ink/[0.05] text-ink-faint hover:text-ink-soft focus-visible:outline-1 focus-visible:outline-selected-ink"
-                    >
-                      <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
-                      <span className="truncate max-w-16">{engineName}</span>
-                    </span>
+              <button
+                type="button"
+                data-agent-id={node.agentId}
+                data-agent-depth={depth}
+                data-agent-name-source={node.nameSource}
+                data-agent-status-source={node.statusSource}
+                aria-current={selected ? 'page' : undefined}
+                aria-label={t('subagent.openAgent', { name: label })}
+                title={node.error}
+                onClick={() => {
+                  onOpen(node.agentId);
+                }}
+                className="flex w-full min-w-0 items-center gap-2 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${refreshing ? 'bg-amber-rule' : statusDot(node.status)} ${
+                    refreshing || (isActiveStatus(node.status) && node.busy) ? 'status-dot-busy' : ''
+                  }`}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 truncate text-[12px] font-medium text-ink">
+                    <span className="truncate">{label}</span>
+                    {node.executorId !== undefined && node.executorId !== '' && node.executorId !== 'native' ? (
+                      <span
+                        data-tree-engine-badge={node.executorId}
+                        title={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
+                        aria-label={node.executorProtocol ? `${engineName} (${node.executorProtocol})` : engineName}
+                        className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] font-normal leading-tight bg-ink/[0.05] text-ink-faint hover:text-ink-soft focus-visible:outline-1 focus-visible:outline-selected-ink"
+                      >
+                        <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
+                        <span className="truncate max-w-16">{engineName}</span>
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="block truncate text-[12px] text-ink-faint">
+                    {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
+                    {node.model !== undefined ? ` · ${node.model}` : ''}
+                    {node.thinkingEffort !== undefined && (node.thinkingEffort.toLowerCase() !== 'off' || node.thinkingEffortExplicit === true)
+                      ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
+                      : ''}
+                    {node.toolCallCountKnown === true
+                      ? ` · ${t('subagent.tools', { count: node.toolCallCount })}`
+                      : ''}
+                    {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
+                  </span>
+                  {node.turnOutcome === undefined && node.error !== undefined && (node.status === 'failed' || node.status === 'cancelled') ? (
+                    <span className="mt-0.5 block truncate text-[12px] text-amber-ink" title={node.error}>{node.error}</span>
                   ) : null}
                 </span>
-                <span className="block truncate text-[12px] text-ink-faint">
-                  {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
-                  {node.model !== undefined ? ` · ${node.model}` : ''}
-                  {node.thinkingEffort !== undefined && (node.thinkingEffort.toLowerCase() !== 'off' || node.thinkingEffortExplicit === true)
-                    ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
-                    : ''}
-                  {node.toolCallCountKnown === true
-                    ? ` · ${t('subagent.tools', { count: node.toolCallCount })}`
-                    : ''}
-                  {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
-                </span>
-                <AgentTurnOutcomeLine outcome={node.turnOutcome} />
-                {node.turnOutcome === undefined && node.error !== undefined && (node.status === 'failed' || node.status === 'cancelled') ? (
-                  <span className="mt-0.5 block truncate text-[12px] text-amber-ink" title={node.error}>{node.error}</span>
+                {node.status === 'failed' && node.error !== undefined ? (
+                  <span aria-hidden title={node.error} className="flex shrink-0 text-danger">
+                    <Icon name="warning" size={14} />
+                  </span>
                 ) : null}
-              </span>
-              {node.status === 'failed' && node.error !== undefined ? (
-                <span aria-hidden title={node.error} className="flex shrink-0 text-danger">
-                  <Icon name="warning" size={14} />
-                </span>
-              ) : null}
-            </button>
+              </button>
+              {node.turnOutcome === undefined ? null : (
+                <div className="pl-4">
+                  <AgentTurnOutcomeLine outcome={node.turnOutcome} />
+                </div>
+              )}
+            </div>
           </div>
           {onToggle === undefined && expanded && children.length > 0 ? (
             <ul className="mt-1 space-y-1">

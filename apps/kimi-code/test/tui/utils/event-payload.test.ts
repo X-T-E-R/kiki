@@ -68,4 +68,65 @@ describe('error payload formatting', () => {
 
     expect(formatErrorMessage(error)).toBe(conciseFilteredMessage);
   });
+
+  it('surfaces cause and diagnostic details without fabricating missing status or trace ids', () => {
+    const formatted = formatErrorPayload({
+      code: ErrorCodes.PROVIDER_API_ERROR,
+      message: 'The provider request ended without an observed outcome.',
+      cause: {
+        message: 'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer.',
+      },
+      details: {
+        errorSource: 'provider_event',
+        upstreamErrorType: 'api_error',
+        upstreamErrorCode: 'antigravity_missing_terminal',
+        requestId: null,
+        traceId: null,
+        request_delivery: 'ambiguous',
+      },
+    });
+    expect(formatted).toBe(
+      '[provider.api_error] Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer. (The provider request ended without an observed outcome.) (type=api_error)',
+    );
+    expect(formatted).not.toContain('400');
+  });
+
+  it('prefers specific upstreamDetails.message on generic SSE transport errors while retaining outer transport state', () => {
+    const formatted = formatErrorPayload({
+      code: ErrorCodes.PROVIDER_API_ERROR,
+      message: 'Error: generic transport error',
+      details: {
+        errorSource: 'provider_event',
+        upstreamErrorType: 'server_error',
+        upstreamErrorCode: 'upstream_stream_reset',
+        upstreamDetails: {
+          message: 'Upstream worker stream aborted: backend connection reset by peer.',
+        },
+      },
+    });
+    expect(formatted).toBe(
+      '[provider.api_error] upstream_stream_reset: Upstream worker stream aborted: backend connection reset by peer. (Error: generic transport error) (type=server_error)',
+    );
+
+    const longCode = `vendor_code_${'c'.repeat(210)}`;
+    const prefixLength = 'Anthropic error: '.length + longCode.length + ': '.length;
+    const fillerBefore296 = 'm'.repeat(296 - prefixLength);
+    const emojiFormatted = formatErrorPayload({
+      code: ErrorCodes.PROVIDER_API_ERROR,
+      message: 'Anthropic error: generic transport error',
+      details: {
+        errorSource: 'provider_stream',
+        upstreamErrorType: 'api_error',
+        upstreamDetails: {
+          code: longCode,
+          message: `${fillerBefore296}🛰🚀-tail-after-emoji-boundary`,
+        },
+      },
+    });
+    expect(emojiFormatted).toBe(
+      `[provider.api_error] Anthropic error: ${longCode}: ${fillerBefore296}... (Anthropic error: generic transport error) (type=api_error)`,
+    );
+    expect(emojiFormatted).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    expect(emojiFormatted).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
+  });
 });

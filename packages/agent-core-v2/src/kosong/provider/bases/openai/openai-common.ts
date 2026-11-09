@@ -162,8 +162,9 @@ export function convertOpenAIError(
     return classifyBaseApiError(error.message);
   }
   if (error instanceof OpenAIAPIError && error.error !== undefined) {
-    return markProviderEventError(new ChatProviderError(`Error: ${error.message}`, undefined, {
-      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
+    const displayMessage = `Error: ${error.message}`;
+    return markProviderEventError(new ChatProviderError(displayMessage, undefined, {
+      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers), displayMessage),
     }), error.code);
   }
   if (error instanceof OpenAIError) {

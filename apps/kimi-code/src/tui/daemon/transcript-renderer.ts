@@ -51,6 +51,8 @@ export class DaemonTranscriptRenderer {
     for (const mounted of this.mounted.values()) {
       if (mounted.kind === 'tool') {
         (mounted.component as ToolCallComponent).setExpanded(expanded);
+      } else if (mounted.kind === 'user') {
+        (mounted.component as DaemonUserMessageComponent).setExpanded(expanded);
       }
     }
     this.container.invalidate();
@@ -77,6 +79,7 @@ export class DaemonTranscriptRenderer {
     if (mounted !== undefined) disposeComponent(mounted.component);
     const component = createBlockComponent(block, this.ui, this.workDir);
     if (block.kind === 'tool') (component as ToolCallComponent).setExpanded(this.expanded);
+    if (block.kind === 'user') (component as DaemonUserMessageComponent).setExpanded(this.expanded);
     const next = {
       kind: block.kind,
       component,
@@ -140,6 +143,7 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
 
 class DaemonUserMessageComponent extends Container {
   private readonly message: UserMessageComponent;
+  private expanded = false;
 
   constructor(private block: UserBlock) {
     super();
@@ -153,20 +157,25 @@ class DaemonUserMessageComponent extends Container {
     this.message.updateContent(block.text);
   }
 
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+  }
+
   override render(width: number): string[] {
     const lines = super.render(width);
-    const status = formatUserPromptStatus(this.block);
+    const status = formatUserPromptStatus(this.block, this.expanded);
     return status === undefined ? lines : [...lines, ...new Text(status, 2, 0).render(width)];
   }
 }
 
-function formatUserPromptStatus(block: UserBlock): string | undefined {
+function formatUserPromptStatus(block: UserBlock, expanded = false): string | undefined {
   const outcome = block.promptOutcome;
   if (outcome !== undefined) {
     const label = outcome.status === 'aborted'
       ? outcome.delivered ? 'Prompt aborted' : 'Prompt aborted before delivery'
       : outcome.delivered ? 'Reply failed' : 'Prompt failed before delivery';
-    const detail = outcome.error === undefined ? '' : ` · ${outcome.error}`;
+    const rawDetail = expanded ? (outcome.errorDetails ?? outcome.error) : outcome.error;
+    const detail = rawDetail === undefined ? '' : ` · ${rawDetail}`;
     return currentTheme.fg(outcome.status === 'failed' ? 'error' : 'warning', `${label}${detail}`);
   }
   if (block.promptStatus === 'queued') return currentTheme.dim('Queued');

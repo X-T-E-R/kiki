@@ -112,6 +112,12 @@ export interface TranscriptTurn extends ContentWindow {
    * already rides the 'error' notice marker.
    */
   readonly error?: string;
+  /**
+   * Full formatted diagnostic details for `turn.ended.error`, including real
+   * status/code/type, request/trace IDs, delivery state, structured upstream
+   * fields, and cause chain when present.
+   */
+  readonly errorDetails?: string;
 }
 
 export interface TranscriptStep {

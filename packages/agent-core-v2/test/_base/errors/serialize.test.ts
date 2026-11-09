@@ -103,6 +103,46 @@ describe('toErrorDisplayMessage', () => {
   ])('keeps ordinary errors and incomplete budgets unchanged: %j', details => {
     expect(toErrorDisplayMessage(new Error2('provider.auth_error', 'Access denied.', { details }))).toBe('Access denied.');
   });
+
+  it('surfaces actual cause message and diagnostic identifiers through ambiguous delivery wrappers and inline JSON', () => {
+    const inner = attachErrorDetails(
+      new Error2('provider.api_error', 'Anthropic error: {"error":{"code":"antigravity_missing_terminal","message":"Upstream completed without a usable answer.","retryable":false,"type":"api_error"},"type":"error"}', {
+        details: {
+          errorSource: 'provider_event',
+          upstreamErrorType: 'api_error',
+          upstreamErrorCode: 'antigravity_missing_terminal',
+          requestId: null,
+          traceId: null,
+          upstream_retryable: false,
+          request_delivery: 'executed',
+          request_output: 'observed',
+        },
+      }),
+      {},
+    );
+    expect(toErrorDisplayMessage(inner)).toBe(
+      'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer. [type=api_error]',
+    );
+
+    const wrapped = new Error2(
+      'provider.api_error',
+      'The provider request ended without an observed outcome.',
+      {
+        cause: new Error2('provider.api_error', 'Upstream stream closed prematurely', {
+          details: {
+            statusCode: 502,
+            upstreamErrorCode: 'gateway_stream_terminal_error',
+            requestId: 'req-502',
+            traceId: 'trace-502',
+          },
+        }),
+        details: { request_delivery: 'ambiguous' },
+      },
+    );
+    expect(toErrorDisplayMessage(wrapped)).toBe(
+      'Upstream stream closed prematurely (The provider request ended without an observed outcome.) [HTTP 502, code=gateway_stream_terminal_error, requestId=req-502, traceId=trace-502]',
+    );
+  });
 });
 
 describe('fromErrorPayload', () => {

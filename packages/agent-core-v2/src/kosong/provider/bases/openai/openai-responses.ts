@@ -17,6 +17,7 @@ import {
   noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
   noteExplicitUpstreamRetryDenial,
+  parseTraceId,
   providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
 import type {
@@ -186,11 +187,12 @@ function transportClosureError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError | undefined {
   if (error instanceof OpenAIAPIError && error.status === undefined) {
-    const closure = forwardedClosureError(error.error, `Error: ${error.message}`);
+    const displayMessage = `Error: ${error.message}`;
+    const closure = forwardedClosureError(error.error, displayMessage);
     if (closure === undefined) return undefined;
     const failure = convertErrorHook?.(error) ?? closure;
     return attachErrorDetails(markProviderEventError(failure, error.code), {
-      ...providerStreamErrorDetails(error.error, error.requestID), errorSource: 'provider_event',
+      ...providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers), failure.message), errorSource: 'provider_event',
     });
   }
   if (!(error instanceof ResponsesWebSocketError) ||
@@ -356,15 +358,17 @@ function errorFromOpenAIResponsesEvent(
   const raw = asRawObject(options?.rawEvent);
   const failedResponse = raw === null ? undefined : readObjectField(raw, 'response');
   const body = failedResponse === undefined ? raw : readObjectField(failedResponse, 'error');
-  const metadata = providerStreamErrorDetails({
-    error: body ?? { type: 'error', code },
-    request_id: raw?.['request_id'],
-  });
-  const withEventDetails = (error: ChatProviderError): ChatProviderError => attachErrorDetails(markProviderEventError(error, code), {
-    ...metadata,
-    ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
-    errorSource: 'provider_event',
-  });
+  const withEventDetails = (error: ChatProviderError): ChatProviderError => {
+    const metadata = providerStreamErrorDetails({
+      error: body ?? { type: 'error', code },
+      request_id: raw?.['request_id'],
+    }, undefined, undefined, error.message);
+    return attachErrorDetails(markProviderEventError(error, code), {
+      ...metadata,
+      ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
+      errorSource: 'provider_event',
+    });
+  };
   if (code === 'websocket_connection_limit_reached') {
     return withEventDetails(new APIConnectionError(fullMessage));
   }

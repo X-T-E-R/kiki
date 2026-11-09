@@ -159,6 +159,7 @@ export interface AgentTurnOutcome {
   readonly state: 'failed' | 'cancelled';
   readonly endedAt?: string;
   readonly error?: string;
+  readonly errorDetails?: string;
   readonly lastRetry?: {
     readonly failedAttempt: number;
     readonly maxAttempts: number;
@@ -403,6 +404,7 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.turnOutcome?.turnId === b.turnOutcome?.turnId &&
     a.turnOutcome?.state === b.turnOutcome?.state &&
     a.turnOutcome?.error === b.turnOutcome?.error &&
+    a.turnOutcome?.errorDetails === b.turnOutcome?.errorDetails &&
     a.turnOutcome?.endedAt === b.turnOutcome?.endedAt &&
     a.turnOutcome?.lastRetry?.failedAttempt === b.turnOutcome?.lastRetry?.failedAttempt &&
     a.turnOutcome?.lastRetry?.maxAttempts === b.turnOutcome?.lastRetry?.maxAttempts &&

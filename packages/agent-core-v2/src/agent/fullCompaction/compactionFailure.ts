@@ -7,7 +7,7 @@ import {
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
-import { isCodedError, unwrapErrorCause } from '#/errors';
+import { isCodedError, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
 
 export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'quota' | 'timeout' | 'upstream' {
   const cause = unwrapErrorCause(error);
@@ -36,12 +36,21 @@ export function isRetryableCompactionError(error: unknown): boolean {
 export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number, source: 'manual' | 'auto' = 'auto'): string {
   const cause = unwrapErrorCause(error);
   const status = cause instanceof APIStatusError ? cause : undefined;
+  const details = typeof cause === 'object' && cause !== null ? toErrorPayload(cause).details : undefined;
   const kind = compactionFailureKind(error);
   const labels = { filtered: 'content filtered', auth: 'authentication failed', quota: 'quota exhausted', timeout: 'request timed out', upstream: 'upstream error' };
-  const detail = cause instanceof Error ? cause.message : String(cause);
+  const detail = cause instanceof Error ? toErrorDisplayMessage(cause) : String(cause);
   const sanitized = sliceUtf16(detail.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(/\b(?:api[_-]?key|authorization|secret|access[_-]?token)\s*[=:]\s*\S+/gi, '[REDACTED]'), 0, 200);
-  const code = /\b(CONTENT_FILTERED|content_filter|[A-Z][A-Z0-9_]{3,})\s*:/i.exec(detail)?.[1];
-  const request = status?.requestId ?? status?.traceId;
-  return `${source === 'manual' ? 'Manual' : 'Automatic'} compaction failed (${labels[kind]}; HTTP ${status?.statusCode ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
+  const statusNumber = status?.statusCode ??
+    (typeof details?.['statusCode'] === 'number' ? details['statusCode'] : undefined) ??
+    (typeof details?.['upstreamStatus'] === 'number' ? details['upstreamStatus'] : undefined);
+  const upstreamErrorCode = typeof details?.['upstreamErrorCode'] === 'string' && details['upstreamErrorCode'].trim().length > 0
+    ? details['upstreamErrorCode'].trim()
+    : undefined;
+  const code = upstreamErrorCode ?? /\b(CONTENT_FILTERED|content_filter|[A-Z][A-Z0-9_]{3,})\s*:/i.exec(detail)?.[1];
+  const request = status?.requestId ?? status?.traceId ??
+    (typeof details?.['requestId'] === 'string' ? details['requestId'] : undefined) ??
+    (typeof details?.['traceId'] === 'string' ? details['traceId'] : undefined);
+  return `${source === 'manual' ? 'Manual' : 'Automatic'} compaction failed (${labels[kind]}; HTTP ${statusNumber ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
 }

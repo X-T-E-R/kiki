@@ -1,4 +1,5 @@
 import { isKimiError } from '@kiki/node-sdk';
+import { summarizeUpstreamCause } from '@kiki/transcript';
 
 import {
   STREAMING_ARGS_FIELD_RE,
@@ -95,6 +96,7 @@ export function formatErrorMessage(error: unknown): string {
       code: error.code,
       message: error.message,
       details: error.details,
+      cause: error.cause,
     });
   }
   return error instanceof Error ? error.message : String(error);
@@ -104,12 +106,70 @@ interface ErrorPayloadLike {
   readonly code: string;
   readonly message: string;
   readonly details?: Record<string, unknown>;
+  readonly cause?: unknown;
 }
 
 export function formatErrorPayload(error: ErrorPayloadLike): string {
   const filteredMessage = formatProviderFilteredMessage(error.details);
   if (filteredMessage !== undefined) return `[${error.code}] ${filteredMessage}`;
-  return `[${error.code}] ${error.message}`;
+  const causeMessage = readCauseMessage(error.cause);
+  const rawBaseMessage =
+    error.message === 'The provider request ended without an observed outcome.' &&
+    causeMessage !== undefined
+      ? `${causeMessage} (${error.message})`
+      : error.message;
+  const promotedCause = summarizeUpstreamCause(rawBaseMessage, error.details);
+  const normalizedOuter = rawBaseMessage.replaceAll(/\s+/g, ' ').trim();
+  const baseMessage =
+    promotedCause === undefined
+      ? rawBaseMessage
+      : normalizedOuter.length > 0 && normalizedOuter !== promotedCause
+        ? `${promotedCause} (${normalizedOuter})`
+        : promotedCause;
+  const diagnosticSuffix = formatDiagnosticSuffix(error.details, baseMessage);
+  return `[${error.code}] ${baseMessage}${diagnosticSuffix}`;
+}
+
+function readCauseMessage(cause: unknown): string | undefined {
+  if (typeof cause === 'string' && cause.trim().length > 0) return cause.trim();
+  if (typeof cause === 'object' && cause !== null && 'message' in cause) {
+    const msg = (cause as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg.trim().length > 0) return msg.trim();
+  }
+  return undefined;
+}
+
+function formatDiagnosticSuffix(
+  details: Record<string, unknown> | undefined,
+  message: string,
+): string {
+  if (details === undefined) return '';
+  const items: string[] = [];
+  const status = details['statusCode'] ?? details['upstreamStatus'];
+  if (typeof status === 'number' && !message.includes(String(status))) {
+    items.push(`status=${String(status)}`);
+  }
+  const upstreamCode = stringDetail(details, 'upstreamErrorCode');
+  if (upstreamCode !== undefined && !message.includes(upstreamCode)) {
+    items.push(`code=${upstreamCode}`);
+  }
+  const upstreamType = stringDetail(details, 'upstreamErrorType');
+  if (
+    upstreamType !== undefined &&
+    upstreamType !== upstreamCode &&
+    !message.includes(upstreamType)
+  ) {
+    items.push(`type=${upstreamType}`);
+  }
+  const requestId = stringDetail(details, 'requestId');
+  if (requestId !== undefined && !message.includes(requestId)) {
+    items.push(`requestId=${requestId}`);
+  }
+  const traceId = stringDetail(details, 'traceId');
+  if (traceId !== undefined && !message.includes(traceId)) {
+    items.push(`traceId=${traceId}`);
+  }
+  return items.length === 0 ? '' : ` (${items.join(', ')})`;
 }
 
 function formatProviderFilteredMessage(

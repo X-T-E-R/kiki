@@ -3379,6 +3379,202 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTurn('t9')).toBeUndefined();
   });
 
+  it('projects historical provider_event turn.ended errors into readable primary cause and faithful errorDetails without fabricating HTTP status', () => {
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 9, input: [{ type: 'text', text: 'continue' }], origin: { kind: 'user' } },
+      {
+        type: 'turn.ended',
+        turnId: 9,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: 'Anthropic error: {"error":{"code":"antigravity_missing_terminal","message":"Upstream completed without a usable answer.","retryable":false,"type":"api_error"},"type":"error"}',
+          name: 'ChatProviderError',
+          details: {
+            errorSource: 'provider_event',
+            upstreamErrorType: 'api_error',
+            upstreamErrorCode: 'antigravity_missing_terminal',
+            requestId: null,
+            traceId: null,
+            upstream_retryable: false,
+            error_kind: 'unknown',
+            request_delivery: 'executed',
+            request_output: 'observed',
+          },
+          retryable: false,
+        },
+        durationMs: 185438,
+        time: 1794229590272,
+      },
+    ]);
+    const turn = transcript.getTurn('t9');
+    expect(turn?.error).toBe(
+      'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer.',
+    );
+    expect(turn?.errorDetails).toContain(
+      'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer.',
+    );
+    expect(turn?.errorDetails).toContain('code=provider.api_error');
+    expect(turn?.errorDetails).toContain('upstreamErrorCode=antigravity_missing_terminal');
+    expect(turn?.errorDetails).toContain('upstreamErrorType=api_error');
+    expect(turn?.errorDetails).toContain('errorSource=provider_event');
+    expect(turn?.errorDetails).toContain('request_delivery=executed');
+    expect(turn?.errorDetails).toContain('request_output=observed');
+    expect(turn?.errorDetails).toContain('upstream_retryable=false');
+    expect(turn?.errorDetails).not.toContain('statusCode=');
+    expect(turn?.errorDetails).not.toContain('400');
+  });
+
+  it('projects Google HTTP 400 INVALID_ARGUMENT function-call turn ordering and unknown error codes into turn.error and turn.errorDetails', () => {
+    const turnOrderingMessage =
+      'Please ensure that function call turn comes immediately after a user turn or after a function response turn.';
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' } },
+      {
+        type: 'turn.ended',
+        turnId: 0,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: `400 Bad Request — INVALID_ARGUMENT: ${turnOrderingMessage}`,
+          name: 'APIStatusError',
+          details: {
+            statusCode: 400,
+            errorSource: 'provider_http',
+            upstreamErrorType: 'INVALID_ARGUMENT',
+            upstreamErrorCode: 'unlisted_upstream_turn_order_error',
+            requestId: '00000000-0000-4000-8000-000000000001',
+            traceId: null,
+            upstreamDetails: {
+              client_request_id: '00000000-0000-4000-8000-000000000002',
+            },
+          },
+          retryable: false,
+        },
+        durationMs: 1319,
+        time: 1794230000000,
+      },
+    ]);
+    const turn = transcript.getTurn('t0');
+    expect(turn?.error).toContain(turnOrderingMessage);
+    expect(turn?.error).toContain('INVALID_ARGUMENT');
+    expect(turn?.errorDetails).toContain('statusCode=400');
+    expect(turn?.errorDetails).toContain('upstreamErrorType=INVALID_ARGUMENT');
+    expect(turn?.errorDetails).toContain('upstreamErrorCode=unlisted_upstream_turn_order_error');
+    expect(turn?.errorDetails).toContain('requestId=00000000-0000-4000-8000-000000000001');
+    expect(turn?.errorDetails).toContain('00000000-0000-4000-8000-000000000002');
+  });
+
+  it('keeps turn.error concise while exposing unmapped slash/space codes and untruncated upstream message in turn.errorDetails', () => {
+    const fullMessage = `Please ensure that function call turn comes immediately after a user turn or after a function response turn. ${'extra-context-'.repeat(45)}[full-message-tail]`;
+    const truncatedMainMessage = `400 Bad Request — vendor/quota edge: ${fullMessage.slice(0, 480)}...`;
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 1, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' } },
+      {
+        type: 'turn.ended',
+        turnId: 1,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: truncatedMainMessage,
+          name: 'APIStatusError',
+          details: {
+            statusCode: 400,
+            errorSource: 'provider_http',
+            requestId: 'req-400-full',
+            traceId: 'trace-400-full',
+            upstreamDetails: {
+              code: 'vendor/quota edge',
+              message: fullMessage,
+            },
+          },
+          retryable: false,
+        },
+        durationMs: 920,
+        time: 1794230001000,
+      },
+    ]);
+    const turn = transcript.getTurn('t1');
+    expect(turn?.error).toBe(truncatedMainMessage);
+    expect(turn?.errorDetails).toContain('statusCode=400');
+    expect(turn?.errorDetails).toContain('requestId=req-400-full');
+    expect(turn?.errorDetails).toContain('traceId=trace-400-full');
+    expect(turn?.errorDetails).toContain('vendor/quota edge');
+    expect(turn?.errorDetails).toContain('[full-message-tail]');
+
+    const sseGenericTranscript = replay([
+      { type: 'turn.prompt', turnId: 2, input: [{ type: 'text', text: 'stream' }], origin: { kind: 'user' } },
+      {
+        type: 'turn.ended',
+        turnId: 2,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: 'Error: generic transport error',
+          name: 'ChatProviderError',
+          details: {
+            errorSource: 'provider_event',
+            upstreamErrorType: 'server_error',
+            upstreamErrorCode: 'upstream_stream_reset',
+            upstreamDetails: {
+              message: 'Upstream worker stream aborted: backend connection reset by peer.',
+            },
+          },
+          retryable: true,
+        },
+        durationMs: 410,
+        time: 1794230002000,
+      },
+    ]);
+    const sseTurn = sseGenericTranscript.getTurn('t2');
+    expect(sseTurn?.error).toBe(
+      'upstream_stream_reset: Upstream worker stream aborted: backend connection reset by peer.',
+    );
+    expect(sseTurn?.errorDetails).toContain('upstreamErrorCode=upstream_stream_reset');
+    expect(sseTurn?.errorDetails).toContain(
+      'Upstream worker stream aborted: backend connection reset by peer.',
+    );
+    expect(sseTurn?.errorDetails).toContain('cause: Error: generic transport error');
+
+    const longCode = `vendor_code_${'c'.repeat(210)}`;
+    const prefixLength = 'Anthropic error: '.length + longCode.length + ': '.length;
+    const fillerBefore296 = 'm'.repeat(296 - prefixLength);
+    const emojiBoundaryMessage = `${fillerBefore296}🛰🚀-tail-after-emoji-boundary`;
+    const emojiSseTranscript = replay([
+      { type: 'turn.prompt', turnId: 3, input: [{ type: 'text', text: 'emoji-stream' }], origin: { kind: 'user' } },
+      {
+        type: 'turn.ended',
+        turnId: 3,
+        reason: 'failed',
+        error: {
+          code: 'provider.api_error',
+          message: 'Anthropic error: generic transport error',
+          name: 'ChatProviderError',
+          details: {
+            errorSource: 'provider_stream',
+            upstreamErrorType: 'api_error',
+            upstreamDetails: {
+              code: longCode,
+              message: emojiBoundaryMessage,
+            },
+          },
+          retryable: true,
+        },
+        durationMs: 310,
+        time: 1794230003000,
+      },
+    ]);
+    const emojiTurn = emojiSseTranscript.getTurn('t3');
+    expect(emojiTurn?.error).toBeDefined();
+    expect(emojiTurn?.error?.length).toBeLessThanOrEqual(300);
+    expect(emojiTurn?.error).toBe(`Anthropic error: ${longCode}: ${fillerBefore296}...`);
+    expect(emojiTurn?.error).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    expect(emojiTurn?.error).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
+    expect(emojiTurn?.errorDetails).toContain(longCode);
+    expect(emojiTurn?.errorDetails).toContain('🛰🚀-tail-after-emoji-boundary');
+    expect(emojiTurn?.errorDetails).toContain('cause: Anthropic error: generic transport error');
+  });
+
   it('restores adapter and reducer checkpoints before replaying a durable tail', () => {
     const prefix: TranscriptWireRecord[] = [
       {

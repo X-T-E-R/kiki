@@ -1931,15 +1931,17 @@ const SubagentCard = memo(function SubagentCard({
               <Icon name="collapse" size={12} className="text-current" />
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => { onOpenAgent?.(block.subagentId); }}
-            data-agent-open={block.subagentId}
-            className="min-w-0 flex-1 text-left"
-          >
-            {body}
+          <div className="min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => { onOpenAgent?.(block.subagentId); }}
+              data-agent-open={block.subagentId}
+              className="block w-full min-w-0 text-left"
+            >
+              {body}
+            </button>
             <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
-          </button>
+          </div>
           <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
             {invocation.button}
           </div>
