@@ -1553,11 +1553,13 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
     return source.slice(from, to);
   }
   const fields = section('    private volatile String pendingPairUri;', '    @Override\n    public void load()');
+  const load = section('    public void load() {', '    @PluginMethod\n    public void scanQr');
   const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
   const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
   const builder = section('    static String buildDocumentNavNonceScript', '    private HandshakeResult fetchHandshake');
   const override = section('    @Override\n    public Boolean shouldOverrideLoad(Uri url)', '    @Override\n    protected void handleOnNewIntent').replace('    @Override\n', '');
   const origin = section('    private static boolean isWebOrigin(Uri uri)', '\n}');
+  assert.ok(load.includes('new WebViewListener()'));
 
   const tempDir = mkdtempSync(join(tmpdir(), 'kiki-native-delivery-'));
   try {
@@ -1566,6 +1568,7 @@ import java.util.concurrent.*;
 import java.util.*;
 public class NativeDeliveryCheck {
 ${fields}
+${load}
 ${clear}
 ${deliver}
 ${builder}
@@ -1575,8 +1578,11 @@ ${origin}
     private static final String ORIGIN = "http://192.168.1.50:5494";
     private final WebView view = new WebView();
     private final Bridge bridge = new Bridge(view);
+    private final Activity activity = new Activity();
     private final BlockingQueue<Reply> replies = new LinkedBlockingQueue<>();
     private Bridge getBridge() { return bridge; }
+    private Activity getActivity() { return activity; }
+    private void capturePairIntent(Object ignored) {}
     private Prefs prefs() { return new Prefs(); }
     private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
     private boolean matchesStoredHostId(String id, String host) { return id.equals("home-a") && host.equals("host-a"); }
@@ -1600,9 +1606,13 @@ ${origin}
         final BlockingQueue<Runnable> posted = new LinkedBlockingQueue<>();
         final List<String> deliveries = new ArrayList<>();
         final List<String> deliveredScripts = new ArrayList<>();
+        volatile boolean backStarted;
         String getUrl() { return url; }
         void post(Runnable r) { posted.add(r); }
         void loadUrl(String next) { url = next; }
+        boolean canGoBack() { return true; }
+        WebBackForwardList copyBackForwardList() { return new WebBackForwardList(); }
+        void goBack() { backStarted = true; }
         void evaluateJavascript(String script, Object ignored) {
             if (script.contains("__kikiShellStagedCredential")) {
                 if (!script.contains("fixture-peer-a")) throw new AssertionError("wrong credential script");
@@ -1613,9 +1623,40 @@ ${origin}
     }
     private static class Bridge {
         final WebView v;
+        WebViewListener listener;
         Bridge(WebView v) { this.v = v; }
         String getLocalUrl() { return "https://localhost"; }
         WebView getWebView() { return v; }
+        void addWebViewListener(WebViewListener listener) { this.listener = listener; }
+    }
+    private static abstract class WebViewListener {
+        public void onPageStarted(WebView view) {}
+        public void onPageCommitVisible(WebView view, String url) {}
+        public void onPageLoaded(WebView view) {}
+    }
+    private static class Activity {
+        final Dispatcher dispatcher = new Dispatcher();
+        Object getIntent() { return null; }
+        Dispatcher getOnBackPressedDispatcher() { return dispatcher; }
+        void moveTaskToBack(boolean ignored) {}
+    }
+    private static class Dispatcher {
+        OnBackPressedCallback back;
+        void addCallback(Activity activity, OnBackPressedCallback callback) { back = callback; }
+    }
+    private static abstract class OnBackPressedCallback {
+        OnBackPressedCallback(boolean ignored) {}
+        public abstract void handleOnBackPressed();
+    }
+    private static class WebBackForwardList {
+        int getCurrentIndex() { return 1; }
+        WebHistoryItem getItemAtIndex(int index) { return new WebHistoryItem(ORIGIN + "/previous"); }
+        WebHistoryItem getCurrentItem() { return new WebHistoryItem(ORIGIN + "/"); }
+    }
+    private static class WebHistoryItem {
+        final String url;
+        WebHistoryItem(String url) { this.url = url; }
+        String getUrl() { return url; }
     }
     private static class Prefs { String getString(String k, String def) { return ORIGIN; } }
     private static class Uri {
@@ -1710,7 +1751,7 @@ ${origin}
             throw new AssertionError("Expected delivery to Reloaded-After-Stale-Failure, got: " + p3.view.deliveries);
         }
 
-        // Case 4: Current document handshake mismatch (without any newer navigation) still clears activeAuth and redirects to launcher
+        // Case 4:Current document handshake mismatch (without any newer navigation) still clears activeAuth and redirects to launcher
         NativeDeliveryCheck p4 = new NativeDeliveryCheck();
         p4.pendingAuthEpoch = 10;
         p4.activeAuthOrigin = ORIGIN;
@@ -1728,6 +1769,40 @@ ${origin}
         }
         if (p4.activeAuthServerId != null) {
             throw new AssertionError("Expected current mismatch to clear activeAuthServerId");
+        }
+
+        // Case 5: Real system back (handleOnBackPressed -> goBack()) and onPageStarted before B commits;
+        // stale A onPageLoaded failure must not cancel the in-progress same-origin history navigation
+        NativeDeliveryCheck p5 = new NativeDeliveryCheck();
+        p5.pendingAuthEpoch = 11;
+        p5.activeAuthOrigin = ORIGIN;
+        p5.activeAuthServerId = "home-a";
+        p5.load();
+        Reply staleBackMismatch = new Reply("home-temporary-mismatch", "host-other");
+        p5.replies.add(staleBackMismatch);
+        p5.bridge.listener.onPageLoaded(p5.view);
+        if (!staleBackMismatch.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("A onPageLoaded callback not started");
+        p5.activity.dispatcher.back.handleOnBackPressed();
+        if (!p5.view.backStarted) throw new AssertionError("Production Android back callback did not call goBack()");
+        p5.bridge.listener.onPageStarted(p5.view);
+        staleBackMismatch.release.countDown();
+        Runnable staleBackFallback = p5.view.posted.poll(200, TimeUnit.MILLISECONDS);
+        if (staleBackFallback != null) staleBackFallback.run();
+        if (!p5.view.url.equals(ORIGIN + "/") || !"home-a".equals(p5.activeAuthServerId)) {
+            throw new AssertionError("old document failure cancelled the in-progress same-origin history navigation");
+        }
+        Reply backTargetValid = new Reply("home-a", "host-a");
+        p5.replies.add(backTargetValid);
+        p5.view.url = ORIGIN + "/previous";
+        p5.view.documentId = "Previous-A-document";
+        p5.bridge.listener.onPageCommitVisible(p5.view, p5.view.url);
+        if (!backTargetValid.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Back target commit callback not started");
+        backTargetValid.release.countDown();
+        Runnable backDelivery = p5.view.posted.poll(5, TimeUnit.SECONDS);
+        if (backDelivery == null) throw new AssertionError("Back target did not schedule delivery");
+        backDelivery.run();
+        if (!p5.view.deliveries.equals(Arrays.asList("Previous-A-document"))) {
+            throw new AssertionError("Expected delivery to Previous-A-document, got: " + p5.view.deliveries);
         }
     }
 }

@@ -96,6 +96,11 @@ public class KikiShellPlugin extends Plugin {
             .addWebViewListener(
                 new WebViewListener() {
                     @Override
+                    public void onPageStarted(WebView view) {
+                        invalidateCurrentDocumentNavigation();
+                    }
+
+                    @Override
                     public void onPageCommitVisible(WebView view, String url) {
                         deliverCommittedToken(view, url, false);
                     }
@@ -115,6 +120,7 @@ public class KikiShellPlugin extends Plugin {
                     public void handleOnBackPressed() {
                         WebView webView = getBridge().getWebView();
                         if (webView.canGoBack() && !backLeavesServer(webView)) {
+                            invalidateCurrentDocumentNavigation();
                             webView.goBack();
                         } else {
                             getActivity().moveTaskToBack(true);
