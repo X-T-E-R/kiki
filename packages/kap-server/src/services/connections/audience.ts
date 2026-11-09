@@ -76,13 +76,28 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 const peerEventServices = new Set([
   'roomService',
   'configService',
-  'providerService',
-  'modelService',
-  'pluginService',
-  'sessionExecutionControl',
   'sessionMetadata',
   'sessionSkillCatalog',
 ]);
+const peerCoreServiceEvents: ReadonlyMap<string, string> = new Map([
+  ['providerService', 'onDidChangeProviders'],
+  ['modelService', 'onDidChangeModels'],
+  ['pluginService', 'onDidReload'],
+]);
+function isPeerScopedEmitterAllowed(frame: KlientFrame): boolean {
+  if (typeof frame.service !== 'string' || typeof frame.event !== 'string') return false;
+  const coreEvent = peerCoreServiceEvents.get(frame.service);
+  if (coreEvent !== undefined) {
+    return frame.event === coreEvent && frame.scope === 'core' &&
+      frame.workspaceId === undefined && frame.sessionId === undefined && frame.agentId === undefined;
+  }
+  if (frame.service === 'sessionExecutionControl') {
+    return frame.event === 'onDidChange' && frame.scope === 'session' &&
+      frame.workspaceId === undefined && typeof frame.sessionId === 'string' && frame.sessionId !== '' &&
+      frame.agentId === undefined;
+  }
+  return false;
+}
 /**
  * Whether an approved GUI peer may invoke this engine procedure.
  *
@@ -124,7 +139,7 @@ export function isPeerFrameAllowed(frame: KlientFrame): boolean {
     );
     return frame.event !== undefined && (frame.service === undefined
       ? ['session', 'agent', 'workspace', 'config', 'sessions', 'workspaces'].includes(frame.event)
-      : peerEventServices.has(frame.service));
+      : peerEventServices.has(frame.service) || isPeerScopedEmitterAllowed(frame));
   }
   return frame.type === 'stream' && typeof frame.service === 'string' && typeof frame.method === 'string' && isPeerProcedureAllowed({ service: frame.service, method: frame.method });
 }

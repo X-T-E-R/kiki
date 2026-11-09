@@ -1278,8 +1278,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       if (admitted !== 'local') {
         const detach = admission.attach(admitted.grantId, () => { ws.terminate(); });
         ws.once('close', detach);
-        try { admission.authorize(peerGrant(req.headers) ?? candidate ?? undefined); }
-        catch { ws.close(4001, 'connection revoked'); return; }
+        try {
+          const authorized = admission.authorize(peerGrant(req.headers) ?? candidate ?? undefined);
+          if (authorized.id !== admitted.grantId || authorized.revision !== admitted.revision) throw new AdmissionError(401, 'connection_not_approved');
+        } catch { ws.close(4001, 'connection revoked'); return; }
       }
       wss.emit('connection', ws, req);
     });

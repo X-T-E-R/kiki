@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
 import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
 import { IConfigService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
@@ -12,6 +13,8 @@ import { SEND_PEER_THREAD_MESSAGE, type IThreadPeerSendCapability } from '@kiki/
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { startServer, type RunningServer } from '../src/start';
 import { rotateServerToken } from '../src/services/auth/persistentToken';
+import { isPeerFrameAllowed } from '../src/services/connections/audience';
+import { WS_BEARER_PROTOCOL_PREFIX } from '../src/transport/ws/bearerProtocol';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const servers: RunningServer[] = []; const homes: string[] = [];
@@ -134,6 +137,39 @@ describe('short-code pairing on two real servers', () => {
       } finally {
         await mobileDirectClient.close();
       }
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 's-provider', scope: 'core', service: 'providerService', event: 'onDidChangeProviders' })).toBe(true);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 's-model', scope: 'core', service: 'modelService', event: 'onDidChangeModels' })).toBe(true);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 's-plugin', scope: 'core', service: 'pluginService', event: 'onDidReload' })).toBe(true);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 's-exec', scope: 'session', sessionId: 'pair-target', service: 'sessionExecutionControl', event: 'onDidChange' })).toBe(true);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-plugin-1', scope: 'core', service: 'pluginService', event: 'onWillChange' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-plugin-2', scope: 'core', service: 'pluginService', event: 'onDidMutate' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-provider-1', scope: 'core', service: 'providerService', event: 'onDidChangeDefaultProvider' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-provider-scope', scope: 'session', sessionId: 'pair-target', service: 'providerService', event: 'onDidChangeProviders' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-model-1', scope: 'core', service: 'modelService', event: 'onDidChangeDefaultModel' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-exec-scope', scope: 'core', service: 'sessionExecutionControl', event: 'onDidChange' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-exec-agent', scope: 'agent', sessionId: 'pair-target', agentId: 'main', service: 'sessionExecutionControl', event: 'onDidChange' })).toBe(false);
+      expect(isPeerFrameAllowed({ type: 'subscribe', id: 'bad-exec-event', scope: 'session', sessionId: 'pair-target', service: 'sessionExecutionControl', event: 'onWillChange' })).toBe(false);
+      const mobileWsUrl = `${mobileScanned.endpoint.replace(/^http/, 'ws')}/api/klient/events`;
+      for (const badFrame of [
+        { type: 'subscribe', id: 'raw-bad-plugin', scope: 'core', service: 'pluginService', event: 'onWillChange' },
+        { type: 'subscribe', id: 'raw-bad-provider', scope: 'core', service: 'providerService', event: 'onDidChangeDefaultProvider' },
+      ]) {
+        const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+          const ws = new WebSocket(mobileWsUrl, `${WS_BEARER_PROTOCOL_PREFIX}${mobileClaimed.peerToken}`);
+          ws.once('open', () => { ws.send(JSON.stringify(badFrame)); });
+          ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+          ws.once('error', reject);
+        });
+        expect(closed).toEqual({ code: 1008, reason: 'local_owner_required' });
+      }
+      const mismatchedGrantClosed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+        const ws = new WebSocket(mobileWsUrl, `${WS_BEARER_PROTOCOL_PREFIX}${mobileClaimed.peerToken}`, {
+          headers: { 'x-kiki-connection-grant': secret.grant },
+        });
+        ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+        ws.once('error', reject);
+      });
+      expect(mismatchedGrantClosed.code).toBe(4001);
       const sourceWorkspaces = await source.core.accessor.get(IWorkspaceService).list();
       const targetWorkspaces = await target.core.accessor.get(IWorkspaceService).list();
       const primarySourceWorkspace = sourceWorkspaces.find((ws) => ws.root === sourceWorkDir) ?? sourceWorkspaces[0]!;
