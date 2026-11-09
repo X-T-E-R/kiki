@@ -271,6 +271,18 @@ await test('workflows keep unsigned CI, protected manual signing and immutable t
   assert.match(gradle, /storeType 'PKCS12'/);
   assert.match(gradle, /keyAlias releaseSigning.KIKI_ANDROID_KEY_ALIAS/);
   assert.match(gradle, /signingConfig signingConfigs.release/);
-  assert.equal(JSON.parse(readFileSync(join(root, 'apps/kiki-gui/mobile/package.json'))).version, undefined);
+  const mobilePkg = JSON.parse(readFileSync(join(root, 'apps/kiki-gui/mobile/package.json'), 'utf8'));
+  const mobileLock = JSON.parse(readFileSync(join(root, 'apps/kiki-gui/mobile/package-lock.json'), 'utf8'));
+  assert.equal(mobilePkg.version, undefined);
+  assert.equal(typeof mobilePkg.devDependencies?.playwright, 'string');
+  assert.equal(mobileLock.packages?.['']?.devDependencies?.playwright, mobilePkg.devDependencies.playwright);
+  assert.equal(mobileLock.packages?.['node_modules/playwright']?.version, mobilePkg.devDependencies.playwright);
+  const targetTest = readFileSync(join(root, 'apps/kiki-gui/mobile/test/target.test.mjs'), 'utf8');
+  assert.doesNotMatch(targetTest, /\.\.\/\.\.\/node_modules\//);
+  assert.match(targetTest, /from 'playwright'/);
+  for (const [name, workflow] of [['kiki-android-ci.yml', ci], ['kiki-android-signing-check.yml', check], ['kiki-desktop-release.yml', release]]) {
+    assert.match(workflow, /npm ci --ignore-scripts --no-audit --no-fund/, `${name}: clean mobile npm ci`);
+    assert.match(workflow, /\.\/node_modules\/\.bin\/playwright install chromium/, `${name}: install Chromium for mobile tests`);
+  }
   assert.ok(RECEIPT_NAME.endsWith('.json'));
 });

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { chromium } from '../../node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 
 // Node ESM needs the extension to resolve the browser module.
 // oxlint-disable-next-line import/extensions
@@ -1734,12 +1734,20 @@ ${origin}
 `;
     const javaFile = join(tempDir, 'NativeDeliveryCheck.java');
     writeFileSync(javaFile, javaSource);
-    const javacBin = existsSync('C:/Program Files/Android/Android Studio/jbr/bin/javac.exe')
-      ? 'C:/Program Files/Android/Android Studio/jbr/bin/javac.exe'
-      : 'javac';
-    const javaBin = existsSync('C:/Program Files/Android/Android Studio/jbr/bin/java.exe')
-      ? 'C:/Program Files/Android/Android Studio/jbr/bin/java.exe'
-      : 'java';
+    const javaHome = process.env.JAVA_HOME ?? '';
+    const exeSuffix = process.platform === 'win32' ? '.exe' : '';
+    const javaHomeJavac = javaHome ? join(javaHome, 'bin', `javac${exeSuffix}`) : '';
+    const javaHomeJava = javaHome ? join(javaHome, 'bin', `java${exeSuffix}`) : '';
+    const javacBin = javaHomeJavac && existsSync(javaHomeJavac)
+      ? javaHomeJavac
+      : existsSync('C:/Program Files/Android/Android Studio/jbr/bin/javac.exe')
+        ? 'C:/Program Files/Android/Android Studio/jbr/bin/javac.exe'
+        : 'javac';
+    const javaBin = javaHomeJava && existsSync(javaHomeJava)
+      ? javaHomeJava
+      : existsSync('C:/Program Files/Android/Android Studio/jbr/bin/java.exe')
+        ? 'C:/Program Files/Android/Android Studio/jbr/bin/java.exe'
+        : 'java';
     const compiled = spawnSync(javacBin, ['-d', tempDir, javaFile], { encoding: 'utf8' });
     assert.equal(compiled.status, 0, `javac failed: ${compiled.stderr}`);
     const ran = spawnSync(javaBin, ['-cp', tempDir, 'NativeDeliveryCheck'], { encoding: 'utf8' });

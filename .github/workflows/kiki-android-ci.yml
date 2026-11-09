@@ -59,6 +59,9 @@ jobs:
       - name: Install locked shell dependencies
         working-directory: apps/kiki-gui/mobile
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install headless Chromium for shell browser tests
+        working-directory: apps/kiki-gui/mobile
+        run: ./node_modules/.bin/playwright install chromium
       - name: Test Android packaging and launcher contracts
         working-directory: apps/kiki-gui/mobile
         run: npm test
