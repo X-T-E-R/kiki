@@ -34,7 +34,7 @@ Receiving is off by default. On the target, generate a single-use pairing code (
 
 For scripted or step-by-step control, the explicit invitation and SSH planning commands remain available: `inbound invite` issues a one-use invitation for a known source identity, `ssh plan` queries a remote host without changing it, and `ssh execute PLAN_ID` attaches (or starts the remote daemon only when `--ensure` is passed). Kiki does not install remote software for you.
 
-If the target is temporarily unreachable or closes inbound access, paired connections reconnect automatically when the network or service recovers, or let you retry in place or switch computers; ordinary reads recover automatically, a refusal for one operation does not sign you out of the connection, and Kiki never automatically repeats a refused or unconfirmed write. An invalid token or revoked grant still rejects access; pair again or replace the connection's authorization before retrying.
+If the target is temporarily unreachable, the mobile app reconnects automatically and keeps your open conversation and draft in place. You can also retry or switch computers. If the target closes inbound access, ordinary reads recover when its owner reopens it. A refused operation does not sign you out, and Kiki does not automatically repeat refused or unconfirmed writes. If your token is invalid or the grant is revoked, pair again or update the connection's authorization before retrying.
 
 See [`kiki pair`](/en/reference/command#kiki-pair), [`kiki connections`](/en/reference/command#kiki-connections), and [`kiki bridges`](/en/reference/command#kiki-bridges) for the command reference behind these settings.
 
