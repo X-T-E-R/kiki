@@ -97,6 +97,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private var pendingAuthOrigin: String?
     private var pendingAuthServerId: String?
+    private var pendingAuthEpoch: Int64 = 0
     private var urlObservation: NSKeyValueObservation?
     private var loadingObservation: NSKeyValueObservation?
 
@@ -300,36 +301,41 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("invalid_origin")
             return
         }
-        Self.fetchHandshake(origin: origin) { [weak self] ok, redirected, homeId, hostId, _ in
-            guard !redirected, ok, let homeId, !homeId.isEmpty else {
-                DispatchQueue.main.async {
-                    self?.clearPendingAuth()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingAuthEpoch += 1
+            let callEpoch = self.pendingAuthEpoch
+            Self.fetchHandshake(origin: origin) { [weak self] ok, redirected, homeId, hostId, _ in
+                guard !redirected, ok, let homeId, !homeId.isEmpty else {
+                    DispatchQueue.main.async {
+                        self?.clearPendingAuthIfCurrent(epoch: callEpoch)
+                    }
+                    call.resolve([
+                        "ok": false,
+                        "reason": "unreachable"
+                    ])
+                    return
                 }
-                call.resolve([
-                    "ok": false,
-                    "reason": "unreachable"
-                ])
-                return
-            }
-            guard homeId == serverId, Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId) else {
-                Self.removeVerifiedOrigin(origin: origin, for: serverId)
-                DispatchQueue.main.async {
-                    self?.clearPendingAuth()
+                guard homeId == serverId, Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId) else {
+                    DispatchQueue.main.async {
+                        self?.clearPendingAuthIfCurrent(epoch: callEpoch)
+                    }
+                    call.resolve([
+                        "ok": false,
+                        "reason": "identity_mismatch",
+                        "targetHomeId": homeId
+                    ])
+                    return
                 }
-                call.resolve([
-                    "ok": false,
-                    "reason": "identity_mismatch",
-                    "targetHomeId": homeId
-                ])
-                return
-            }
-            Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId)
-            UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
-            DispatchQueue.main.async {
-                self?.pendingAuthOrigin = origin
-                self?.pendingAuthServerId = serverId
-                self?.webView?.load(URLRequest(url: cleanURL))
-                call.resolve(["ok": true, "origin": origin])
+                Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId)
+                UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
+                DispatchQueue.main.async {
+                    guard let self, self.pendingAuthEpoch == callEpoch else { return }
+                    self.pendingAuthOrigin = origin
+                    self.pendingAuthServerId = serverId
+                    self.webView?.load(URLRequest(url: cleanURL))
+                    call.resolve(["ok": true, "origin": origin])
+                }
             }
         }
     }
@@ -343,11 +349,20 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func clearPendingAuth() {
+        pendingAuthEpoch += 1
         pendingAuthOrigin = nil
         pendingAuthServerId = nil
     }
 
+    private func clearPendingAuthIfCurrent(epoch: Int64) {
+        if pendingAuthEpoch == epoch {
+            pendingAuthOrigin = nil
+            pendingAuthServerId = nil
+        }
+    }
+
     private func handleWebViewNavigationState(finalize: Bool) {
+        let expectedEpoch = pendingAuthEpoch
         guard let expectedOrigin = pendingAuthOrigin,
               let serverId = pendingAuthServerId,
               let webView = self.webView,
@@ -360,7 +375,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         guard let committedOrigin = Self.origin(of: currentURL),
               committedOrigin == expectedOrigin else {
-            clearPendingAuth()
+            clearPendingAuthIfCurrent(epoch: expectedEpoch)
             if let local = bridge?.config.appStartServerURL,
                let fallbackURL = URL(string: "\(local.absoluteString)/index.html#unreachable") {
                 webView.load(URLRequest(url: fallbackURL))
@@ -368,35 +383,34 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         guard Self.isOriginVerified(origin: expectedOrigin, for: serverId) else {
-            clearPendingAuth()
+            clearPendingAuthIfCurrent(epoch: expectedEpoch)
             return
         }
         Self.fetchHandshake(origin: expectedOrigin) { [weak self] ok, redirected, homeId, hostId, _ in
             DispatchQueue.main.async {
-                guard let self, let webView = self.webView else { return }
+                guard let self,
+                      let webView = self.webView,
+                      self.pendingAuthEpoch == expectedEpoch,
+                      self.pendingAuthOrigin == expectedOrigin,
+                      self.pendingAuthServerId == serverId else { return }
                 guard !redirected,
                       ok,
                       homeId == serverId,
                       Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId) else {
-                    self.clearPendingAuth()
-                    if ok, let homeId, !homeId.isEmpty, homeId != serverId {
-                        Self.removeVerifiedOrigin(origin: expectedOrigin, for: serverId)
-                    }
+                    self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                     if let local = self.bridge?.config.appStartServerURL,
                        let fallbackURL = URL(string: "\(local.absoluteString)/index.html#unreachable") {
                         webView.load(URLRequest(url: fallbackURL))
                     }
                     return
                 }
-                guard self.pendingAuthOrigin == expectedOrigin,
-                      self.pendingAuthServerId == serverId,
-                      let latestURL = webView.url,
+                guard let latestURL = webView.url,
                       Self.origin(of: latestURL) == expectedOrigin else {
                     return
                 }
                 let token = Self.readPeerToken(for: serverId, origin: expectedOrigin)
                 if finalize {
-                    self.clearPendingAuth()
+                    self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                 }
                 guard let token, !token.isEmpty else { return }
                 let script = Self.buildCredentialDeliveryScript(expectedOrigin: expectedOrigin, token: token)
@@ -431,7 +445,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         let tokenData = (try? JSONSerialization.data(withJSONObject: [token])) ?? Data("[\"\"]".utf8)
         let originArray = String(data: originData, encoding: .utf8) ?? "[\"\"]"
         let tokenArray = String(data: tokenData, encoding: .utf8) ?? "[\"\"]"
-        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";var staged=null;try{staged=window.sessionStorage.getItem(\"kiki.peer.token\");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\"||(typeof staged===\"string\"&&staged.trim()!==\"\"&&staged.trim()!==pTok))){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}return false;}}window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));window.localStorage.setItem(\"kiki.shell.managed\",\"1\");}catch(e){return false;}try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
+        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";var staged=null;try{staged=window.sessionStorage.getItem(\"kiki.peer.token\");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\"||(typeof staged===\"string\"&&staged.trim()!==\"\"&&staged.trim()!==pTok))){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}return false;}}}catch(e){return false;}try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){return false;}try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
     }
 
     private static func fetchHandshake(

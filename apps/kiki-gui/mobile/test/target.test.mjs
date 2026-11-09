@@ -722,7 +722,7 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(sameOriginState.search, '?tab=providers');
     assert.equal(sameOriginState.hash, '#st-card-providers-add');
     assert.deepEqual(sameOriginState.historyState, { idx: 3, usr: { from: 'boot' } });
-    assert.deepEqual(sameOriginState.storedConnection, { url: '', token: 'same-origin-token-123' });
+    assert.equal(sameOriginState.storedConnection, null);
     assert.equal(sameOriginState.peerToken, 'same-origin-token-123');
     assert.deepEqual(sameOriginState.eventDetail, {
       origin: pairedSameOriginRedirect,
@@ -911,8 +911,8 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
         shellEvents: window.__shellEvents,
       }));
       assert.equal(cspState.windowName, '');
-      assert.deepEqual(cspState.storedConnection, { url: '', token: 'csp-paired-secret-token' });
-      assert.equal(cspState.shellManaged, '1');
+      assert.equal(cspState.storedConnection, null);
+      assert.equal(cspState.shellManaged, null);
       assert.equal(cspState.peerToken, 'csp-paired-secret-token');
       assert.deepEqual(cspState.shellEvents, [
         { origin: cspPairedServer, token: 'csp-paired-secret-token' },
@@ -985,11 +985,25 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(androidPluginSource, /buildCredentialDeliveryScript\(expectedOrigin,\s*token\)/);
     assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin\)/);
     assert.match(androidPluginSource, /fetchHandshake\(expectedOrigin\)/);
+    assert.match(androidPluginSource, /clearPendingAuthIfCurrent\(callEpoch\)/);
+    assert.equal(
+      /removeVerifiedOrigin\s*\(/.test(
+        androidPluginSource.slice(0, androidPluginSource.indexOf('private void removeVerifiedOrigin')),
+      ),
+      false,
+      'Android plugin must not remove verifiedOrigins on temporary DHCP mismatch',
+    );
     assert.match(iosPluginSource, /stripTokenFromEntry\(origin:\s*origin,\s*entry:\s*entry\)/);
     assert.match(iosPluginSource, /handleWebViewNavigationState/);
     assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*expectedOrigin,\s*token:\s*token\)/);
     assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin\)/);
     assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*expectedOrigin\)/);
+    assert.match(iosPluginSource, /clearPendingAuthIfCurrent\(epoch:\s*callEpoch\)/);
+    assert.equal(
+      /Self\.removeVerifiedOrigin\s*\(/.test(iosPluginSource),
+      false,
+      'iOS plugin must not remove verifiedOrigins on temporary DHCP mismatch',
+    );
     assert.match(iosInfoPlist, /<key>CFBundleURLTypes<\/key>/);
     assert.match(iosInfoPlist, /<string>kiki<\/string>/);
     assert.match(iosPluginSource, /navigateToPendingPair\(\)/);
@@ -1082,9 +1096,14 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     });
     assert.equal(openWhenA.ok, true);
     assert.equal(openWhenA.tokenDelivered, true);
-    assert.deepEqual(
-      await dhcpPage.evaluate(() => JSON.parse(localStorage.getItem('kiki.connection') || 'null')),
-      { url: '', token: 'secret-peer-token-home-a' },
+    assert.equal(
+      await dhcpPage.evaluate(() => localStorage.getItem('kiki.connection')),
+      null,
+      'Shell peer token must stay in volatile sessionStorage and never persist to localStorage',
+    );
+    assert.equal(
+      await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')),
+      'secret-peer-token-home-a',
     );
 
     // Clear page storage before simulating a fresh reopen after LAN IP reassignment to Home B
@@ -1127,12 +1146,37 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       assert.equal(req.referer.includes('token='), false);
     }
 
-    // Saved Computer A record and its pairing metadata are preserved (not wiped or rebound to Home B)
+    // Saved Computer A record and its pairing metadata (including multiple verifiedOrigins) are preserved
     const savedDuringB = readSavedServers(dhcpStorage);
     assert.equal(savedDuringB.length, 1);
     assert.equal(savedDuringB[0].id, 'home-a-id');
     assert.equal(savedDuringB[0].targetHomeId, 'home-a-id');
     assert.equal(savedDuringB[0].label, 'Workstation A');
+    assert.equal(isServerOriginVerified(savedDuringB[0], sharedLanOrigin), true);
+
+    upsertSavedServer(dhcpStorage, {
+      id: 'home-a-id',
+      origin: 'http://100.90.1.8:5494',
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      verified: true,
+    });
+    const multiOriginMismatch = verifySavedServerOrigin(dhcpStorage, 'home-a-id', sharedLanOrigin, {
+      ok: true,
+      targetHomeId: 'home-b-id',
+      targetHostId: 'host-b',
+    });
+    assert.equal(multiOriginMismatch.ok, false);
+    assert.equal(multiOriginMismatch.reason, 'identity_mismatch');
+    assert.equal(
+      isServerOriginVerified(multiOriginMismatch.server, sharedLanOrigin),
+      true,
+      'Temporary DHCP mismatch must not strip sharedLanOrigin from verifiedOrigins',
+    );
+    assert.equal(isServerOriginVerified(multiOriginMismatch.server, 'http://100.90.1.8:5494'), true);
 
     // A server that only returns 401 on handshake and /api/meta (unauthenticated reachability without identity)
     // is never treated as an identity match for a paired computer:
@@ -1165,10 +1209,219 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     });
     assert.equal(reopenWhenAReturns.ok, true);
     assert.equal(reopenWhenAReturns.tokenDelivered, true);
-    assert.deepEqual(
-      await dhcpPage.evaluate(() => JSON.parse(localStorage.getItem('kiki.connection') || 'null')),
-      { url: '', token: 'secret-peer-token-home-a' },
+    assert.equal(
+      await dhcpPage.evaluate(() => localStorage.getItem('kiki.connection')),
+      null,
     );
+    assert.equal(
+      await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')),
+      'secret-peer-token-home-a',
+    );
+
+    // 7. Native-equivalent state machine test (Android KikiShellPlugin / iOS SceneDelegate):
+    // - Temporary DHCP mismatch rejects open() and navigation commit without removing verifiedOrigins
+    //   or deleting native token, and resumes when the original computer returns.
+    // - A stale async handshake callback from an earlier open() never clears pendingAuth of a newer open().
+    // - Only explicit forgetServer() deletes the native verifiedOrigins and stored token.
+    const createNativeShellStateMachine = (fetchHandshakeImpl) => {
+      const serverTokens = new Map();
+      const verifiedOriginsByServer = new Map();
+      let pendingAuthOrigin = null;
+      let pendingAuthServerId = null;
+      let pendingAuthHomeId = null;
+      let pendingAuthHostId = null;
+      let pendingAuthToken = null;
+      let pendingAuthDelivered = false;
+      let pendingAuthEpoch = 0;
+      const deliveredScripts = [];
+      const loadedUrls = [];
+
+      const clearPendingAuth = () => {
+        pendingAuthEpoch += 1;
+        pendingAuthOrigin = null;
+        pendingAuthServerId = null;
+        pendingAuthHomeId = null;
+        pendingAuthHostId = null;
+        pendingAuthToken = null;
+        pendingAuthDelivered = false;
+      };
+      const clearPendingAuthIfCurrent = (epoch) => {
+        if (pendingAuthEpoch !== epoch) return;
+        clearPendingAuth();
+      };
+      return {
+        saveServerToken(serverId, token, origin) {
+          serverTokens.set(serverId, token);
+          const list = verifiedOriginsByServer.get(serverId) ?? [];
+          if (origin && !list.includes(origin)) list.push(origin);
+          verifiedOriginsByServer.set(serverId, list);
+        },
+        isOriginVerified(serverId, origin) {
+          return (verifiedOriginsByServer.get(serverId) ?? []).includes(origin);
+        },
+        getServerToken(serverId) {
+          return serverTokens.get(serverId) ?? null;
+        },
+        forgetServer(serverId) {
+          if (serverId === pendingAuthServerId) clearPendingAuth();
+          serverTokens.delete(serverId);
+          verifiedOriginsByServer.delete(serverId);
+        },
+        async open({ url, serverId, targetHomeId, targetHostId }) {
+          const origin = new URL(url).origin;
+          clearPendingAuth();
+          const callEpoch = pendingAuthEpoch;
+          const storedToken = serverId && this.isOriginVerified(serverId, origin) ? this.getServerToken(serverId) : null;
+          if (!storedToken) {
+            loadedUrls.push(url);
+            return { ok: true, mode: 'unauthenticated' };
+          }
+          const handshake = await fetchHandshakeImpl(origin);
+          if (pendingAuthEpoch !== callEpoch) {
+            return { ok: false, stale: true };
+          }
+          const handshakeOk =
+            handshake &&
+            handshake.ok &&
+            (!targetHomeId || handshake.homeId === targetHomeId) &&
+            (!targetHostId || handshake.hostId === targetHostId);
+          if (!handshakeOk) {
+            clearPendingAuthIfCurrent(callEpoch);
+            return {
+              ok: false,
+              reason: handshake && handshake.ok ? 'identity_mismatch' : 'unreachable',
+            };
+          }
+          pendingAuthOrigin = origin;
+          pendingAuthServerId = serverId;
+          pendingAuthHomeId = targetHomeId;
+          pendingAuthHostId = targetHostId;
+          pendingAuthToken = storedToken;
+          pendingAuthDelivered = false;
+          loadedUrls.push(url);
+          return { ok: true, mode: 'authenticated', epoch: callEpoch };
+        },
+        async onPageCommitVisible(currentUrl) {
+          const currentOrigin = new URL(currentUrl).origin;
+          if (!pendingAuthOrigin || !pendingAuthToken || pendingAuthDelivered) return { delivered: false };
+          if (currentOrigin !== pendingAuthOrigin) {
+            clearPendingAuth();
+            return { delivered: false, reason: 'cross_origin' };
+          }
+          const expectedOrigin = pendingAuthOrigin;
+          const expectedHomeId = pendingAuthHomeId;
+          const expectedHostId = pendingAuthHostId;
+          const token = pendingAuthToken;
+          const expectedEpoch = pendingAuthEpoch;
+          const handshake = await fetchHandshakeImpl(expectedOrigin);
+          if (pendingAuthEpoch !== expectedEpoch) {
+            return { delivered: false, stale: true };
+          }
+          const handshakeOk =
+            handshake &&
+            handshake.ok &&
+            (!expectedHomeId || handshake.homeId === expectedHomeId) &&
+            (!expectedHostId || handshake.hostId === expectedHostId);
+          if (!handshakeOk) {
+            clearPendingAuthIfCurrent(expectedEpoch);
+            return { delivered: false, reason: 'identity_mismatch' };
+          }
+          if (pendingAuthDelivered || expectedOrigin !== pendingAuthOrigin || token !== pendingAuthToken) {
+            return { delivered: false };
+          }
+          pendingAuthDelivered = true;
+          deliveredScripts.push(buildCommittedCredentialScript(expectedOrigin, token));
+          return { delivered: true };
+        },
+        getPendingAuthSnapshot() {
+          return {
+            origin: pendingAuthOrigin,
+            serverId: pendingAuthServerId,
+            token: pendingAuthToken,
+            epoch: pendingAuthEpoch,
+          };
+        },
+        deliveredScripts,
+        loadedUrls,
+      };
+    };
+
+    let deferredSlowResolver = null;
+    const nativeState = createNativeShellStateMachine((origin) => {
+      if (origin === 'http://192.168.1.50:5494') {
+        return new Promise((resolve) => {
+          deferredSlowResolver = resolve;
+        });
+      }
+      if (origin === 'http://192.168.1.51:5494') {
+        return Promise.resolve({
+          ok: true,
+          homeId: activeTenant === 'A' ? 'home-a-id' : 'home-b-id',
+          hostId: activeTenant === 'A' ? 'host-a' : 'host-b',
+        });
+      }
+      return Promise.resolve({ ok: false });
+    });
+
+    nativeState.saveServerToken('home-a-id', 'native-token-a', 'http://192.168.1.50:5494');
+    nativeState.saveServerToken('home-a-id', 'native-token-a', 'http://192.168.1.51:5494');
+
+    // Start slow navigation 1 to .50, then immediately start fast navigation 2 to .51 while A is active:
+    activeTenant = 'A';
+    const slowOpenPromise = nativeState.open({
+      url: 'http://192.168.1.50:5494/',
+      serverId: 'home-a-id',
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+    });
+    const fastOpenResult = await nativeState.open({
+      url: 'http://192.168.1.51:5494/',
+      serverId: 'home-a-id',
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+    });
+    assert.equal(fastOpenResult.ok, true);
+    assert.equal(nativeState.getPendingAuthSnapshot().origin, 'http://192.168.1.51:5494');
+
+    // Now the slow handshake from navigation 1 resolves with a mismatch (or failure):
+    deferredSlowResolver({ ok: true, homeId: 'home-b-id', hostId: 'host-b' });
+    const slowOpenResult = await slowOpenPromise;
+    assert.equal(slowOpenResult.ok, false);
+    assert.equal(slowOpenResult.stale, true);
+    // Navigation 2's pendingAuth MUST remain intact and deliver on commit:
+    assert.equal(nativeState.getPendingAuthSnapshot().origin, 'http://192.168.1.51:5494');
+    assert.equal(nativeState.getPendingAuthSnapshot().token, 'native-token-a');
+    const commitFast = await nativeState.onPageCommitVisible('http://192.168.1.51:5494/');
+    assert.equal(commitFast.delivered, true);
+
+    // Temporary DHCP switch on .51 to Home B rejects open() but keeps .51 verified and token intact:
+    activeTenant = 'B';
+    const mismatchOn51 = await nativeState.open({
+      url: 'http://192.168.1.51:5494/',
+      serverId: 'home-a-id',
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+    });
+    assert.equal(mismatchOn51.ok, false);
+    assert.equal(mismatchOn51.reason, 'identity_mismatch');
+    assert.equal(nativeState.isOriginVerified('home-a-id', 'http://192.168.1.51:5494'), true);
+    assert.equal(nativeState.getServerToken('home-a-id'), 'native-token-a');
+
+    // When Home A returns to .51, open() succeeds immediately without re-pairing:
+    activeTenant = 'A';
+    const resumeOn51 = await nativeState.open({
+      url: 'http://192.168.1.51:5494/',
+      serverId: 'home-a-id',
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+    });
+    assert.equal(resumeOn51.ok, true);
+    assert.equal(resumeOn51.mode, 'authenticated');
+
+    // Only explicit forgetServer removes verifiedOrigins and token:
+    nativeState.forgetServer('home-a-id');
+    assert.equal(nativeState.isOriginVerified('home-a-id', 'http://192.168.1.51:5494'), false);
+    assert.equal(nativeState.getServerToken('home-a-id'), null);
   } finally {
     await browser.close();
     for (const server of servers) server.close();

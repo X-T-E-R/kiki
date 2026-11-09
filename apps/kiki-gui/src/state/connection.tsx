@@ -534,9 +534,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // ordinary connect screen stands — so nothing claims a session it cannot
     // prove.
     void askForWebCookie((claimed) => {
-      if (!claimed || selectionRef.current !== null) return;
+      if (!claimed) return;
+      const current = selectionRef.current;
+      if (current !== null && (current.source !== 'stored' || current.persist)) return;
       clearAppShellCredentialState(window);
       connectionEpochRef.current += 1;
+      setMeta(null);
+      setConnectError(null);
       setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
     });
     return selectInitialConnection({

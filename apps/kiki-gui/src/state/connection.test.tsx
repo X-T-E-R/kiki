@@ -1682,11 +1682,13 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
       dangerous_bypass_auth: false,
     });
     expect(applyCommittedShellCredential(window, window.location.origin, 'shell-peer-token-1')).toBe(true);
-    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBe('1');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBe('shell-peer-token-1');
 
     const first = await mountBrowserShell();
     expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('shell-peer-token-1');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
 
     // Switch to manual owner credential on the same origin
     await act(async () => {
@@ -1746,6 +1748,34 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
       await flush();
       expect(mountedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
       expect(mountedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      await mountedCookie.unmount();
+
+      // True refresh after #access= redemption: URL has no fragment (`webAccessBootstrap` resets to `none`),
+      // HttpOnly cookie is still valid (`/api/web-access/session` returns `authenticated: true`),
+      // and even if legacy/staged shell state lingered, the refreshed page adopts `web-cookie` and retires shell state.
+      resetWebAccessBootstrap();
+      localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: 'legacy-shell-token' }));
+      localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input).endsWith('/api/web-access/session')) {
+            return {
+              ok: true,
+              json: async () => ({ code: 0, data: { authenticated: true } }),
+            } as Response;
+          }
+          return { ok: false, status: 404, json: async () => ({}) } as Response;
+        }),
+      );
+      const refreshedCookie = await mountBrowserShell();
+      await flush();
+      expect(refreshedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(refreshedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      expect(localStorage.getItem('kiki.connection')).toBeNull();
+      expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
     } finally {
       resetWebAccessBootstrap();
     }

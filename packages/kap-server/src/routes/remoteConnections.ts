@@ -32,7 +32,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) { if (!(error instanceof AdmissionError)) throw error; reply.code(error.status); return reply.send(errEnvelope(40101, error.reason, requestId)); }
   };
-  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, targetLabel: machineLabel(), serverId, inboundEnabled: admission.status().enabled }, req.id)));
+  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled }, req.id)));
   app.post('/api/remote-connections/claim', { bodyLimit: 8192 }, async (req, reply) => respond(req.id, reply, async () => { const input = connectionClaimInputSchema.parse(req.body); return admission.claim(input.invitation, input.source); }));
   app.post('/api/remote-connections/provision', { bodyLimit: 8192 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');

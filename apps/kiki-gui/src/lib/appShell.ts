@@ -5,11 +5,7 @@
  * person back to the shell's own connect screen instead.
  */
 
-import {
-  CONNECTION_STORAGE_KEY,
-  readStoredConfig,
-  writeStoredConfig,
-} from '../state/connectionConfig';
+import { CONNECTION_STORAGE_KEY } from '../state/connectionConfig';
 import { webAccessBootstrap } from './webAccess';
 
 const SHELL_AGENT = /\bKikiApp\/(android|ios)\b/;
@@ -57,6 +53,9 @@ export function clearAppShellCredentialState(
   win: Pick<ShellWindowLike, 'localStorage' | 'sessionStorage'> | undefined = globalThis.window,
 ): void {
   try {
+    if (win?.localStorage?.getItem?.(SHELL_MANAGED_STORAGE_KEY) === '1') {
+      win.localStorage.removeItem?.(CONNECTION_STORAGE_KEY);
+    }
     win?.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
   } catch {
     // Ignore storage removal errors in restricted contexts.
@@ -74,18 +73,22 @@ export function clearAppShellCredentialState(
  * when a manual owner config has superseded a legacy shell-managed marker.
  */
 export function hasExistingOwnerCredential(
-  storage?: { getItem?(key: string): string | null } | null,
+  storage?: { getItem?(key: string): string | null; removeItem?(key: string): void } | null,
   sessionStorage?: { getItem?(key: string): string | null } | null,
 ): boolean {
   if (!storage || typeof storage.getItem !== 'function') return false;
   try {
-    const existing = readStoredConfig({ getItem: (key) => storage.getItem!(key) });
-    if (existing === null || existing.token.trim() === '') return false;
-    if (existing.url.trim() !== '') return true;
+    const raw = storage.getItem(CONNECTION_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as { url?: unknown; token?: unknown } | null;
+    if (!parsed || typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return false;
+    const existingToken = parsed.token.trim();
+    if (existingToken === '') return false;
+    if (parsed.url.trim() !== '') return true;
     if (storage.getItem(SHELL_MANAGED_STORAGE_KEY) !== '1') return true;
     if (sessionStorage && typeof sessionStorage.getItem === 'function') {
       const staged = sessionStorage.getItem(SHELL_PEER_TOKEN_KEY);
-      if (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== existing.token.trim()) {
+      if (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== existingToken) {
         return true;
       }
     }
@@ -114,24 +117,30 @@ export function applyCommittedShellCredential(
     return false;
   }
   if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
-    clearAppShellCredentialState(win);
+    try {
+      win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+    } catch {
+      // Ignore storage removal errors.
+    }
+    try {
+      win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+    } catch {
+      // Ignore session storage removal errors.
+    }
     return false;
   }
 
   try {
-    if (!win.localStorage) return false;
-    win.localStorage.setItem(
-      CONNECTION_STORAGE_KEY,
-      JSON.stringify({ url: '', token: trimmedToken }),
-    );
-    win.localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    if (!win.sessionStorage) return false;
+    win.sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, trimmedToken);
   } catch {
     return false;
   }
   try {
-    win.sessionStorage?.setItem(SHELL_PEER_TOKEN_KEY, trimmedToken);
+    win.localStorage?.removeItem?.(CONNECTION_STORAGE_KEY);
+    win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
   } catch {
-    // Session storage may be unavailable in restricted contexts.
+    // Ignore storage cleanup errors in restricted contexts.
   }
   try {
     win.dispatchEvent(
@@ -173,17 +182,28 @@ export function installAppShellCredentialListener(
       return;
     }
     if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
-      clearAppShellCredentialState(win);
+      try {
+        win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+      } catch {
+        // Ignore storage removal errors.
+      }
+      try {
+        win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+      } catch {
+        // Ignore session storage removal errors.
+      }
       return;
     }
     try {
-      win.localStorage?.setItem(
-        CONNECTION_STORAGE_KEY,
-        JSON.stringify({ url: '', token: trimmed }),
-      );
-      win.localStorage?.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      win.localStorage?.removeItem?.(CONNECTION_STORAGE_KEY);
+      win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
     } catch {
       // Ignore storage errors.
+    }
+    try {
+      win.sessionStorage?.setItem(SHELL_PEER_TOKEN_KEY, trimmed);
+    } catch {
+      // Ignore session storage errors.
     }
     onCredential?.({ origin: win.location.origin, token: trimmed });
   };
@@ -191,10 +211,16 @@ export function installAppShellCredentialListener(
   try {
     if (webAccessBootstrap().kind === 'signed-in') {
       clearAppShellCredentialState(win);
+    } else if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
+      win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+      win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
     } else {
       const stagedSessionToken = win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) ?? null;
       if (typeof stagedSessionToken === 'string' && stagedSessionToken.trim() !== '') {
         syncCommittedToken(stagedSessionToken);
+      } else if (win.localStorage?.getItem?.(SHELL_MANAGED_STORAGE_KEY) === '1') {
+        win.localStorage?.removeItem?.(CONNECTION_STORAGE_KEY);
+        win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
       }
     }
   } catch {
@@ -213,7 +239,16 @@ export function installAppShellCredentialListener(
       return;
     }
     if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
-      clearAppShellCredentialState(win);
+      try {
+        win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+      } catch {
+        // Ignore storage removal errors.
+      }
+      try {
+        win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+      } catch {
+        // Ignore session storage removal errors.
+      }
       return;
     }
     try {

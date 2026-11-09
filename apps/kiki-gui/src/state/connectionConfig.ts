@@ -81,11 +81,21 @@ export function readDeepLinkConfig(
 }
 
 export function readStoredConfig(
-  storage?: Pick<Storage, 'getItem'>,
+  storage?: Pick<Storage, 'getItem'> & Partial<Pick<Storage, 'removeItem'>>,
 ): ConnectionConfig | null {
   try {
-    const raw = (storage ?? localStorage).getItem(CONNECTION_STORAGE_KEY);
+    const target = storage ?? localStorage;
+    const raw = target.getItem(CONNECTION_STORAGE_KEY);
     if (raw === null) return null;
+    if (target.getItem('kiki.shell.managed') === '1') {
+      try {
+        (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.(CONNECTION_STORAGE_KEY);
+        (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.('kiki.shell.managed');
+      } catch {
+        // Ignore legacy shell-state cleanup errors in restricted contexts.
+      }
+      return null;
+    }
     const parsed = JSON.parse(raw) as Partial<ConnectionConfig>;
     if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null;
     return { url: parsed.url, token: parsed.token };

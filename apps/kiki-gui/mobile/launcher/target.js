@@ -644,7 +644,12 @@ function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reas
     return { ok: false, reason, server: preserved };
   }
   const fallbackOrigin =
-    verifiedOrigins[0] ?? existing.origins.find((o) => o !== candidateOrigin) ?? existing.origin;
+    keepVerified && existing.verifiedOrigins.includes(existing.origin)
+      ? existing.origin
+      : verifiedOrigins.find((o) => o !== candidateOrigin) ??
+        verifiedOrigins[0] ??
+        existing.origins.find((o) => o !== candidateOrigin) ??
+        existing.origin;
   const nextOrigins = existing.origins.filter((o) => o !== candidateOrigin || verifiedOrigins.includes(o));
   if (nextOrigins.length === 0) nextOrigins.push(fallbackOrigin);
   const restoredLabel =
@@ -711,7 +716,7 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
   );
 
   if (!homeMatches || !hostMatches) {
-    return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'identity_mismatch', false);
+    return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'identity_mismatch', true);
   }
 
   if (!isServerOriginVerified(existing, candidateOrigin)) {
@@ -1002,7 +1007,7 @@ export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
 export function buildCommittedCredentialScript(expectedOrigin, token) {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";var staged=null;try{staged=window.sessionStorage.getItem("kiki.peer.token");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!==""||(typeof staged==="string"&&staged.trim()!==""&&staged.trim()!==pTok))){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}return false;}}window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";var staged=null;try{staged=window.sessionStorage.getItem("kiki.peer.token");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!==""||(typeof staged==="string"&&staged.trim()!==""&&staged.trim()!==pTok))){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}return false;}}}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
@@ -1171,8 +1176,6 @@ export async function deliverCommittedServerCredential(target, resolved, options
               };
             }
           }
-          window.localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: tok }));
-          window.localStorage.setItem('kiki.shell.managed', '1');
         } catch {
           return {
             ok: false,
@@ -1182,6 +1185,16 @@ export async function deliverCommittedServerCredential(target, resolved, options
         }
         try {
           window.sessionStorage.setItem('kiki.peer.token', tok);
+        } catch {
+          return {
+            ok: false,
+            reason: 'storage_unavailable',
+            committedOrigin: window.location.origin,
+          };
+        }
+        try {
+          window.localStorage.removeItem('kiki.connection');
+          window.localStorage.removeItem('kiki.shell.managed');
         } catch {}
         try {
           window.dispatchEvent(

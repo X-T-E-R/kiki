@@ -67,6 +67,7 @@ public class KikiShellPlugin extends Plugin {
     private volatile String pendingPairUri;
     private volatile String pendingAuthOrigin;
     private volatile String pendingAuthServerId;
+    private volatile long pendingAuthEpoch = 0;
 
     private static final class HandshakeResult {
         final boolean ok;
@@ -339,10 +340,11 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         String cleanEntry = stripTokenFromEntry(origin, entry);
+        long callEpoch = ++pendingAuthEpoch;
         new Thread(() -> {
             HandshakeResult hs = fetchHandshake(origin);
             if (hs.redirected || !hs.ok || hs.targetHomeId == null || hs.targetHomeId.isEmpty()) {
-                clearPendingAuth();
+                clearPendingAuthIfCurrent(callEpoch);
                 JSObject failed = new JSObject();
                 failed.put("ok", false);
                 failed.put("reason", "unreachable");
@@ -350,13 +352,15 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
             if (!serverId.equals(hs.targetHomeId) || !matchesStoredHostId(serverId, hs.targetHostId)) {
-                clearPendingAuth();
-                removeVerifiedOrigin(serverId, origin);
+                clearPendingAuthIfCurrent(callEpoch);
                 JSObject mismatch = new JSObject();
                 mismatch.put("ok", false);
                 mismatch.put("reason", "identity_mismatch");
                 mismatch.put("targetHomeId", hs.targetHomeId);
                 call.resolve(mismatch);
+                return;
+            }
+            if (callEpoch != pendingAuthEpoch) {
                 return;
             }
             recordVerifiedOrigin(serverId, origin, hs.targetHostId);
@@ -382,11 +386,20 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private void clearPendingAuth() {
+        pendingAuthEpoch++;
         pendingAuthOrigin = null;
         pendingAuthServerId = null;
     }
 
+    private void clearPendingAuthIfCurrent(long epoch) {
+        if (pendingAuthEpoch == epoch) {
+            pendingAuthOrigin = null;
+            pendingAuthServerId = null;
+        }
+    }
+
     private void deliverCommittedToken(WebView view, String candidateUrl, boolean finalize) {
+        long expectedEpoch = pendingAuthEpoch;
         String expectedOrigin = pendingAuthOrigin;
         String serverId = pendingAuthServerId;
         if (expectedOrigin == null || serverId == null || view == null) return;
@@ -399,7 +412,7 @@ public class KikiShellPlugin extends Plugin {
             !expectedOrigin.equals(committedOrigin) ||
             !expectedOrigin.equals(candidateOrigin)
         ) {
-            clearPendingAuth();
+            clearPendingAuthIfCurrent(expectedEpoch);
             String local = getBridge().getLocalUrl();
             if (local != null && (viewUrl == null || !viewUrl.startsWith(local))) {
                 view.post(() -> view.loadUrl(local + "/index.html#unreachable"));
@@ -407,7 +420,7 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         if (!isOriginVerified(serverId, expectedOrigin)) {
-            clearPendingAuth();
+            clearPendingAuthIfCurrent(expectedEpoch);
             return;
         }
         new Thread(() -> {
@@ -418,29 +431,37 @@ public class KikiShellPlugin extends Plugin {
                 !serverId.equals(hs.targetHomeId) ||
                 !matchesStoredHostId(serverId, hs.targetHostId)
             ) {
-                clearPendingAuth();
-                if (hs.ok && hs.targetHomeId != null && !hs.targetHomeId.isEmpty() && !serverId.equals(hs.targetHomeId)) {
-                    removeVerifiedOrigin(serverId, expectedOrigin);
+                if (
+                    expectedEpoch != pendingAuthEpoch ||
+                    !expectedOrigin.equals(pendingAuthOrigin) ||
+                    !serverId.equals(pendingAuthServerId)
+                ) {
+                    return;
                 }
+                clearPendingAuthIfCurrent(expectedEpoch);
                 String local = getBridge().getLocalUrl();
                 if (local != null) {
                     view.post(() -> view.loadUrl(local + "/index.html#unreachable"));
                 }
                 return;
             }
-            if (! expectedOrigin.equals(pendingAuthOrigin) || !serverId.equals(pendingAuthServerId)) {
+            if (
+                expectedEpoch != pendingAuthEpoch ||
+                !expectedOrigin.equals(pendingAuthOrigin) ||
+                !serverId.equals(pendingAuthServerId)
+            ) {
                 return;
             }
             String token = readPeerToken(serverId, expectedOrigin);
             if (finalize) {
-                clearPendingAuth();
+                clearPendingAuthIfCurrent(expectedEpoch);
             }
             if (token == null || token.isEmpty()) return;
             view.post(() -> {
                 String currentViewUrl = view.getUrl();
                 String currentCommitted = currentViewUrl == null ? null : originOf(Uri.parse(currentViewUrl));
                 if (!expectedOrigin.equals(currentCommitted)) {
-                    clearPendingAuth();
+                    clearPendingAuthIfCurrent(expectedEpoch);
                     return;
                 }
                 view.evaluateJavascript(buildCredentialDeliveryScript(expectedOrigin, token), null);
@@ -484,8 +505,9 @@ public class KikiShellPlugin extends Plugin {
             originJson +
             ")return false;var t=" +
             tokenJson +
-            ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";var staged=null;try{staged=window.sessionStorage.getItem(\"kiki.peer.token\");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\"||(typeof staged===\"string\"&&staged.trim()!==\"\"&&staged.trim()!==pTok))){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}return false;}}window.localStorage.setItem(\"kiki.connection\",JSON.stringify({url:\"\",token:t}));window.localStorage.setItem(\"kiki.shell.managed\",\"1\");}catch(e){return false;}" +
-            "try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){}" +
+            ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";var staged=null;try{staged=window.sessionStorage.getItem(\"kiki.peer.token\");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\"||(typeof staged===\"string\"&&staged.trim()!==\"\"&&staged.trim()!==pTok))){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}return false;}}}catch(e){return false;}" +
+            "try{window.sessionStorage.setItem(\"kiki.peer.token\",t);}catch(e){return false;}" +
+            "try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}" +
             "try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:" +
             originJson +
             ",token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
