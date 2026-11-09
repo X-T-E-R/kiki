@@ -5,7 +5,12 @@
  * person back to the shell's own connect screen instead.
  */
 
-import { readStoredConfig, writeStoredConfig } from '../state/connectionConfig';
+import {
+  CONNECTION_STORAGE_KEY,
+  readStoredConfig,
+  writeStoredConfig,
+} from '../state/connectionConfig';
+import { webAccessBootstrap } from './webAccess';
 
 const SHELL_AGENT = /\bKikiApp\/(android|ios)\b/;
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
@@ -44,17 +49,47 @@ export interface ShellWindowLike {
 }
 
 /**
+ * Retires mobile-shell managed markers and staged peer tokens so a manual
+ * owner connection, explicit disconnect, or HttpOnly web-cookie session is not
+ * overwritten on reload or re-entry.
+ */
+export function clearAppShellCredentialState(
+  win: Pick<ShellWindowLike, 'localStorage' | 'sessionStorage'> | undefined = globalThis.window,
+): void {
+  try {
+    win?.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+  } catch {
+    // Ignore storage removal errors in restricted contexts.
+  }
+  try {
+    win?.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+  } catch {
+    // Ignore session storage removal errors in restricted contexts.
+  }
+}
+
+/**
  * Returns true when `storage` already holds a non-empty connection token that
- * was not provisioned by the mobile shell (`kiki.shell.managed !== '1'`).
+ * was not provisioned by the mobile shell (`kiki.shell.managed !== '1'`), or
+ * when a manual owner config has superseded a legacy shell-managed marker.
  */
 export function hasExistingOwnerCredential(
   storage?: { getItem?(key: string): string | null } | null,
+  sessionStorage?: { getItem?(key: string): string | null } | null,
 ): boolean {
   if (!storage || typeof storage.getItem !== 'function') return false;
   try {
-    if (storage.getItem(SHELL_MANAGED_STORAGE_KEY) === '1') return false;
     const existing = readStoredConfig({ getItem: (key) => storage.getItem!(key) });
-    return existing !== null && existing.token.trim() !== '';
+    if (existing === null || existing.token.trim() === '') return false;
+    if (existing.url.trim() !== '') return true;
+    if (storage.getItem(SHELL_MANAGED_STORAGE_KEY) !== '1') return true;
+    if (sessionStorage && typeof sessionStorage.getItem === 'function') {
+      const staged = sessionStorage.getItem(SHELL_PEER_TOKEN_KEY);
+      if (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== existing.token.trim()) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
@@ -63,7 +98,7 @@ export function hasExistingOwnerCredential(
 /**
  * Applies a peer credential injected by the native shell after verifying that
  * navigation committed at `expectedOrigin`. Refuses mismatched origins and
- * never overwrites an existing non-shell owner connection.
+ * never overwrites an existing non-shell owner connection or web-cookie session.
  */
 export function applyCommittedShellCredential(
   win: ShellWindowLike | undefined,
@@ -74,13 +109,22 @@ export function applyCommittedShellCredential(
   if (win.location.origin !== expectedOrigin) return false;
   const trimmedToken = typeof token === 'string' ? token.trim() : '';
   if (!trimmedToken) return false;
-  if (hasExistingOwnerCredential(win.localStorage)) return false;
-
-  if (!writeStoredConfig({ url: '', token: trimmedToken }, win.localStorage ?? undefined)) {
+  if (webAccessBootstrap().kind === 'signed-in') {
+    clearAppShellCredentialState(win);
     return false;
   }
+  if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
+    clearAppShellCredentialState(win);
+    return false;
+  }
+
   try {
-    win.localStorage?.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    if (!win.localStorage) return false;
+    win.localStorage.setItem(
+      CONNECTION_STORAGE_KEY,
+      JSON.stringify({ url: '', token: trimmedToken }),
+    );
+    win.localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
   } catch {
     return false;
   }
@@ -105,7 +149,7 @@ export function applyCommittedShellCredential(
  * Synchronizes credentials delivered by the native host's post-commit
  * same-origin evaluation (`kiki:shell-token` + `sessionStorage['kiki.peer.token']`).
  * Never reads credentials from `window.name` or `postMessage`, and never
- * overwrites an existing non-shell owner connection.
+ * overwrites an existing non-shell owner connection or web-cookie session.
  */
 export function installAppShellCredentialListener(
   win: ShellWindowLike | undefined = globalThis.window,
@@ -124,16 +168,19 @@ export function installAppShellCredentialListener(
   const syncCommittedToken = (candidateToken: string): void => {
     const trimmed = candidateToken.trim();
     if (!trimmed) return;
-    if (hasExistingOwnerCredential(win.localStorage)) {
-      try {
-        win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
-      } catch {
-        // Ignore session storage errors.
-      }
+    if (webAccessBootstrap().kind === 'signed-in') {
+      clearAppShellCredentialState(win);
       return;
     }
-    writeStoredConfig({ url: '', token: trimmed }, win.localStorage ?? undefined);
+    if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
+      clearAppShellCredentialState(win);
+      return;
+    }
     try {
+      win.localStorage?.setItem(
+        CONNECTION_STORAGE_KEY,
+        JSON.stringify({ url: '', token: trimmed }),
+      );
       win.localStorage?.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
     } catch {
       // Ignore storage errors.
@@ -142,9 +189,13 @@ export function installAppShellCredentialListener(
   };
 
   try {
-    const stagedSessionToken = win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) ?? null;
-    if (typeof stagedSessionToken === 'string' && stagedSessionToken.trim() !== '') {
-      syncCommittedToken(stagedSessionToken);
+    if (webAccessBootstrap().kind === 'signed-in') {
+      clearAppShellCredentialState(win);
+    } else {
+      const stagedSessionToken = win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) ?? null;
+      if (typeof stagedSessionToken === 'string' && stagedSessionToken.trim() !== '') {
+        syncCommittedToken(stagedSessionToken);
+      }
     }
   } catch {
     // Session storage may be unavailable.
@@ -157,7 +208,14 @@ export function installAppShellCredentialListener(
     }
     const token = typeof detail.token === 'string' ? detail.token.trim() : '';
     if (!token) return;
-    if (hasExistingOwnerCredential(win.localStorage)) return;
+    if (webAccessBootstrap().kind === 'signed-in') {
+      clearAppShellCredentialState(win);
+      return;
+    }
+    if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
+      clearAppShellCredentialState(win);
+      return;
+    }
     try {
       if (win.sessionStorage?.getItem?.(SHELL_PEER_TOKEN_KEY) !== token) return;
     } catch {

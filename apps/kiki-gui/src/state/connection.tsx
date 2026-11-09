@@ -43,7 +43,10 @@ import {
 } from '@kiki/session-core/settings';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
-import { installAppShellCredentialListener } from '../lib/appShell';
+import {
+  clearAppShellCredentialState,
+  installAppShellCredentialListener,
+} from '../lib/appShell';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
@@ -521,6 +524,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [selection, setSelection] = useState<ConnectionSelection | null>(() => {
     if (desktopRuntime || vscodeRuntime) return null;
     if (webEntry.kind === 'signed-in') {
+      clearAppShellCredentialState(window);
       return { config: { url: '', token: '' }, persist: false, source: 'web-cookie' };
     }
     // No code in this page load. A browser that redeemed a link earlier still
@@ -531,6 +535,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // prove.
     void askForWebCookie((claimed) => {
       if (!claimed || selectionRef.current !== null) return;
+      clearAppShellCredentialState(window);
       connectionEpochRef.current += 1;
       setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
     });
@@ -1014,7 +1019,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           setConnectError({ kind: 'raw', text: 'identity-mismatch' });
           return;
         }
-        if (selection?.source !== 'remote' && selection?.persist === true && config !== null) writeStoredConfig(config);
+        if (selection?.source !== 'remote' && selection?.source !== 'stored' && selection?.persist === true && config !== null) writeStoredConfig(config);
         if (selection?.source === 'desktop' && selection === selectionRef.current) {
           verifiedDesktopRef.current = { selection, client, meta: value, homeId: spaceKey, scopeId };
           desktopRecoveryRef.current = null;
@@ -1354,6 +1359,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
     connectionEpochRef.current += 1;
+    clearAppShellCredentialState(window);
     clearStoredConfig();
     setMeta(null);
     setSelection(null);
@@ -1375,6 +1381,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
+    if (persist) {
+      clearAppShellCredentialState(window);
+    }
     const generation = ++connectionEpochRef.current;
     const prior = selectionRef.current;
     const equivalent = prior !== null &&
@@ -1390,6 +1399,32 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const adoptShellCredential = useCallback((token: string) => {
+    const trimmed = token.trim();
+    if (!trimmed) return;
+    const current = selectionRef.current;
+    if (current?.source === 'web-cookie') {
+      clearAppShellCredentialState(window);
+      return;
+    }
+    if (
+      current !== null &&
+      current.config.url === '' &&
+      current.config.token.trim() === trimmed
+    ) {
+      return;
+    }
+    const generation = ++connectionEpochRef.current;
+    setConnectError(null);
+    setMeta(null);
+    setSelection({
+      config: { url: '', token: trimmed },
+      persist: false,
+      source: 'stored',
+      scopeId: `direct::${generation}`,
+    });
+  }, []);
+
   // Settings edits always persist: a connection typed into the settings page
   // is an explicit choice, the same as one typed into the connect screen.
   const applyConnection = useCallback(
@@ -1402,18 +1437,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (desktopRuntime || vscodeRuntime) return;
+    if (selectionRef.current?.source === 'web-cookie') {
+      clearAppShellCredentialState(window);
+      return;
+    }
     return installAppShellCredentialListener(window, ({ token }) => {
-      const current = selectionRef.current;
-      if (
-        current !== null &&
-        current.config.url === '' &&
-        current.config.token.trim() === token
-      ) {
-        return;
-      }
-      connect({ url: '', token }, true);
+      adoptShellCredential(token);
     });
-  }, [desktopRuntime, vscodeRuntime, connect]);
+  }, [desktopRuntime, vscodeRuntime, adoptShellCredential]);
 
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || klient === null || socket === null || meta === null) return null;

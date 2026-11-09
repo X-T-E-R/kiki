@@ -16,6 +16,12 @@ import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { ConnectionSection } from '../components/settings/ConnectionSection';
+import {
+  applyCommittedShellCredential,
+  SHELL_MANAGED_STORAGE_KEY,
+  SHELL_PEER_TOKEN_KEY,
+} from '../lib/appShell';
+import { resetWebAccessBootstrap, setWebAccessBootstrap } from '../lib/webAccess';
 import { ConnectionProvider, handleGlobalConnectionFrame, LiveControllerRegistry, nextGuiLeaseClientId, useConnection, useControllerRegistry } from './connection';
 
 const mocks = vi.hoisted(() => ({
@@ -1609,5 +1615,139 @@ describe('a closed desktop socket', () => {
     await flush();
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
+  });
+});
+
+describe('mobile shell credential lifecycle in ConnectionProvider', () => {
+  function ShellStatusHarness() {
+    const connection = useConnection();
+    return (
+      <>
+        <span data-shell-source>{connection.connectionSource ?? 'none'}</span>
+        <span data-shell-token>{connection.config.token}</span>
+        <span data-shell-url>{connection.config.url}</span>
+        <button
+          type="button"
+          data-manual-owner
+          onClick={() => connection.applyConnection({ url: '', token: 'manual-owner-token' })}
+        />
+        <button type="button" data-disconnect-shell onClick={connection.disconnect} />
+      </>
+    );
+  }
+
+  async function mountBrowserShell(): Promise<{ container: HTMLDivElement; unmount: () => Promise<void> }> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const entry = { container, root };
+    mounted.push(entry);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <HostProvider host={browserHost}>
+            <ConnectionProvider>
+              <ShellStatusHarness />
+            </ConnectionProvider>
+          </HostProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+    await act(async () => {
+      root.render(tree);
+    });
+    await flush();
+    return {
+      container,
+      unmount: async () => {
+        const idx = mounted.indexOf(entry);
+        if (idx >= 0) mounted.splice(idx, 1);
+        await act(async () => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    };
+  }
+
+  it('retires staged shell credentials on manual owner switch and disconnect so reload does not restore the old shell token', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-1',
+      server_home_id: 'home-1',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'shell-peer-token-1')).toBe(true);
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBe('1');
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBe('shell-peer-token-1');
+
+    const first = await mountBrowserShell();
+    expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('shell-peer-token-1');
+
+    // Switch to manual owner credential on the same origin
+    await act(async () => {
+      first.container.querySelector<HTMLButtonElement>('[data-manual-owner]')!.click();
+    });
+    await flush();
+    expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('manual-owner-token');
+    expect(first.container.querySelector('[data-shell-source]')?.textContent).toBe('manual');
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    // Simulate reload / re-entry even if a stale staged token remained in sessionStorage
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'shell-peer-token-1');
+    await first.unmount();
+
+    const reloaded = await mountBrowserShell();
+    expect(reloaded.container.querySelector('[data-shell-token]')?.textContent).toBe('manual-owner-token');
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    // Disconnect retires stored and shell credentials; reload stays on ConnectScreen
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'shell-peer-token-1');
+    localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    await act(async () => {
+      reloaded.container.querySelector<HTMLButtonElement>('[data-disconnect-shell]')!.click();
+    });
+    await flush();
+    expect(reloaded.container.querySelector('[data-shell-token]')).toBeNull();
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+    await reloaded.unmount();
+
+    const afterDisconnectReload = await mountBrowserShell();
+    expect(afterDisconnectReload.container.querySelector('[data-shell-token]')).toBeNull();
+  });
+
+  it('preserves web-cookie (#access=) sessions and never converts them to bearer when shell tokens are staged or dispatched', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-cookie',
+      server_home_id: 'home-cookie',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+    setWebAccessBootstrap({ kind: 'signed-in' });
+    try {
+      const mountedCookie = await mountBrowserShell();
+      expect(mountedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(mountedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      await act(async () => {
+        expect(applyCommittedShellCredential(window, window.location.origin, 'injected-shell-token')).toBe(false);
+      });
+      await flush();
+      expect(mountedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(mountedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+    } finally {
+      resetWebAccessBootstrap();
+    }
   });
 });

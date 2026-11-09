@@ -170,6 +170,16 @@ describe('short-code pairing on two real servers', () => {
 
   it('limits public claims, burns a code, and refuses pairing when authentication is bypassed', async () => {
     const target = await boot(); const stranger = { homeId: '11111111-1111-4111-8111-111111111111', hostId: 'stranger', protocol: 1 as const };
+    const anonymousHandshake = await fetch(endpoint(target) + '/api/remote-connections/handshake', { headers: { accept: 'application/json' } });
+    expect(anonymousHandshake.status).toBe(200);
+    expect(anonymousHandshake.headers.get('cache-control')).toBe('no-store');
+    const handshakeBody = await anonymousHandshake.json() as { code: number; data: { identity: { homeId: string; hostId: string; protocol: number }; targetLabel?: string; serverId: string; inboundEnabled: boolean } };
+    expect(handshakeBody.code).toBe(0);
+    expect(handshakeBody.data.identity).toEqual(target.admission.identity);
+    expect(typeof handshakeBody.data.targetLabel).toBe('string');
+    expect(handshakeBody.data.targetLabel!.length).toBeGreaterThan(0);
+    const badBearerHandshake = await fetch(endpoint(target) + '/api/remote-connections/handshake', { headers: { accept: 'application/json', authorization: 'Bearer wrong-token' } });
+    expect(badBearerHandshake.status).toBe(401);
     const created = await target.admission.createPairCode();
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = await claim(target, { code: 'BBBB-BBBB', source: stranger, sourceLabel: 'Stranger' });

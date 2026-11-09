@@ -142,5 +142,5 @@ export const remoteConnectionSchema = z.object({
 export type RemoteConnection = z.infer<typeof remoteConnectionSchema>;
 export const connectionBrokerInputSchema = z.object({ operation: z.string().min(1).max(128), params: z.record(z.string(), z.string()).optional(), query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(), headers: z.object({ ifNoneMatch: z.string().max(1024).regex(/^[^\r\n]*$/).optional(), range: z.string().max(128).regex(/^bytes=\d*-\d*$/).optional() }).strict().optional(), body: z.unknown().optional() }).strict();
 export type ConnectionBrokerInput = z.infer<typeof connectionBrokerInputSchema>;
-export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, serverId: z.string(), inboundEnabled: z.boolean() });
+export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean() });
 export type ConnectionHandshake = z.infer<typeof connectionHandshakeSchema>;

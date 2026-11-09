@@ -96,10 +96,19 @@ export function readStoredConfig(
 
 export function writeStoredConfig(
   config: ConnectionConfig,
-  storage?: Pick<Storage, 'setItem'>,
+  storage?: Pick<Storage, 'setItem'> & Partial<Pick<Storage, 'removeItem'>>,
 ): boolean {
   try {
-    (storage ?? localStorage).setItem(CONNECTION_STORAGE_KEY, JSON.stringify(config));
+    const target = storage ?? localStorage;
+    target.setItem(CONNECTION_STORAGE_KEY, JSON.stringify(config));
+    try {
+      (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.('kiki.shell.managed');
+      if (storage === undefined && typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem?.('kiki.peer.token');
+      }
+    } catch {
+      // Ignore shell-state cleanup errors in restricted contexts.
+    }
     return true;
   } catch {
     return false;
@@ -110,7 +119,16 @@ export function clearStoredConfig(
   storage?: Pick<Storage, 'removeItem'>,
 ): boolean {
   try {
-    (storage ?? localStorage).removeItem(CONNECTION_STORAGE_KEY);
+    const target = storage ?? localStorage;
+    target.removeItem(CONNECTION_STORAGE_KEY);
+    try {
+      target.removeItem('kiki.shell.managed');
+      if (storage === undefined && typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem?.('kiki.peer.token');
+      }
+    } catch {
+      // Ignore shell-state cleanup errors in restricted contexts.
+    }
     return true;
   } catch {
     return false;

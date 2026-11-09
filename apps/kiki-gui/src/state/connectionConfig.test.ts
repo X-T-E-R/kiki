@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyCommittedShellCredential,
+  clearAppShellCredentialState,
   hasExistingOwnerCredential,
   installAppShellCredentialListener,
   SHELL_MANAGED_STORAGE_KEY,
   SHELL_PEER_TOKEN_KEY,
   SHELL_TOKEN_EVENT,
 } from '../lib/appShell';
+import {
+  resetWebAccessBootstrap,
+  setWebAccessBootstrap,
+} from '../lib/webAccess';
 import {
   clearStoredConfig,
   CONNECTION_STORAGE_KEY,
@@ -275,6 +280,95 @@ describe('connection config readers', () => {
       expect(receivedEvents).toEqual([]);
     } finally {
       uninstall();
+    }
+  });
+
+  it('retires shell managed/session state after manual owner overwrite or disconnect and protects web-cookie sessions across reload', () => {
+    const localMap = new Map<string, string>();
+    const sessionMap = new Map<string, string>();
+    const localStore = {
+      getItem: (key: string) => localMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
+    };
+    const sessionStore = {
+      getItem: (key: string) => sessionMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
+    };
+    const target = new EventTarget();
+    const win = {
+      location: { origin: 'http://127.0.0.1:5494' },
+      localStorage: localStore,
+      sessionStorage: sessionStore,
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        target.addEventListener(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        target.removeEventListener(type, listener as EventListener);
+      },
+      dispatchEvent: (event: Event) => target.dispatchEvent(event),
+    };
+
+    try {
+      // 1. Start with shell-provisioned credential
+      expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'initial-shell-token')).toBe(true);
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBe('1');
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBe('initial-shell-token');
+
+      // 2. Manual owner write (even if legacy managed marker or staged session token lingered)
+      writeStoredConfig({ url: '', token: 'manual-owner-token' }, localStore);
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      // Even if a caller left a legacy managed marker alongside a different staged session token,
+      // hasExistingOwnerCredential recognizes the manual override and reload retires the stale shell token.
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'initial-shell-token');
+      expect(hasExistingOwnerCredential(localStore, sessionStore)).toBe(true);
+
+      const reloadEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallReload = installAppShellCredentialListener(win, (detail) => {
+        reloadEvents.push(detail);
+      });
+      uninstallReload();
+      expect(reloadEvents).toEqual([]);
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'manual-owner-token' });
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      // 3. Explicit disconnect clears both stored config and any staged shell token
+      clearStoredConfig(localStore);
+      expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'second-shell-token')).toBe(true);
+      clearAppShellCredentialState(win);
+      clearStoredConfig(localStore);
+      const afterDisconnectEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallAfterDisconnect = installAppShellCredentialListener(win, (detail) => {
+        afterDisconnectEvents.push(detail);
+      });
+      uninstallAfterDisconnect();
+      expect(afterDisconnectEvents).toEqual([]);
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      // 4. Web-cookie (#access=) signed-in session is never converted to bearer by staged or live shell tokens
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+      setWebAccessBootstrap({ kind: 'signed-in' });
+      const cookieEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallCookie = installAppShellCredentialListener(win, (detail) => {
+        cookieEvents.push(detail);
+      });
+      try {
+        expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'live-shell-token')).toBe(false);
+        expect(cookieEvents).toEqual([]);
+        expect(readStoredConfig(localStore)).toBeNull();
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      } finally {
+        uninstallCookie();
+      }
+    } finally {
+      resetWebAccessBootstrap();
     }
   });
 });

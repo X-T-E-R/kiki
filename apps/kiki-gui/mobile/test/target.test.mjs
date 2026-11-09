@@ -544,7 +544,22 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     });
 
     // 1. Direct 302 from already-paired origin to receiver (exact reproduction from check-paired-navigation-redirect.mjs)
-    const pairedRedirecting = await serve((_req, res) => {
+    let directRedirectArmed = false;
+    const pairedRedirecting = await serve((req, res) => {
+      if (req.url === '/api/remote-connections/handshake' && !directRedirectArmed) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: { homeId: 'fixture-home', hostId: 'fixture-host', protocol: 1 },
+              serverId: 'srv-fixture',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
       res.writeHead(302, { Location: receiver }).end();
     });
 
@@ -566,6 +581,7 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(resolved.finalEntry, `${pairedRedirecting}/`);
     assert.equal(resolved.finalEntry.includes('token='), false);
 
+    directRedirectArmed = true;
     const page = await browser.newPage();
     await page.goto(resolved.finalEntry);
     assert.equal(new URL(page.url()).origin, receiver);
@@ -590,10 +606,24 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(await page.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
 
     // 2. TOCTOU paired origin: returns 200 OK on first visit (e.g. preflight/iframe commit) and 302s to receiver on second visit
-    let toctouCount = 0;
-    const pairedToctou = await serve((_req, res) => {
-      toctouCount += 1;
-      if (toctouCount === 1) {
+    let toctouNavCount = 0;
+    const pairedToctou = await serve((req, res) => {
+      if (req.url === '/api/remote-connections/handshake') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: { homeId: 'fixture-home-toctou', hostId: 'toctou-host', protocol: 1 },
+              serverId: 'srv-toctou',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      toctouNavCount += 1;
+      if (toctouNavCount === 1) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<!doctype html><html><body>first visit ok</body></html>');
         return;
@@ -638,6 +668,20 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     // 3. Positive: Paired origin with same-origin 302 redirect (`/settings?tab=providers#st-card-providers-add`)
     // commits at paired origin, receives credential, and preserves path, query, hash, and history.state.idx
     const pairedSameOriginRedirect = await serve((req, res) => {
+      if (req.url === '/api/remote-connections/handshake') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: { homeId: 'fixture-home-same-origin', hostId: 'same-origin-host', protocol: 1 },
+              serverId: 'srv-same-origin',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
       if (req.url === '/') {
         res.writeHead(302, { Location: '/settings?tab=providers#st-card-providers-add' }).end();
         return;
@@ -698,7 +742,9 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     );
     const realAppShellJs = stripTypeScriptTypes(
       readFileSync(join(guiSrcDir, 'lib/appShell.ts'), 'utf8'),
-    ).replace("from '../state/connectionConfig'", "from '/src/state/connectionConfig.ts'");
+    )
+      .replace("from '../state/connectionConfig'", "from '/src/state/connectionConfig.ts'")
+      .replace("from './webAccess'", "from '/src/lib/webAccess.ts'");
 
     const productionCsp =
       "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
@@ -724,6 +770,11 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       if (req.url === '/src/state/connectionConfig.ts') {
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
         res.end(realConnectionConfigJs);
+        return;
+      }
+      if (req.url === '/src/lib/webAccess.ts') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end('export function webAccessBootstrap() { return { kind: "none" }; }\n');
         return;
       }
       if (req.url === '/src/lib/appShell.ts') {
@@ -922,15 +973,202 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       join(mobileRoot, 'ios/App/App/SceneDelegate.swift'),
       'utf8',
     );
+    const iosInfoPlist = readFileSync(
+      join(mobileRoot, 'ios/App/App/Info.plist'),
+      'utf8',
+    );
     assert.equal(androidPluginSource.includes('/#token='), false);
     assert.equal(iosPluginSource.includes('/#token='), false);
     assert.match(androidPluginSource, /stripTokenFromEntry\(origin,\s*entry\)/);
     assert.match(androidPluginSource, /onPageCommitVisible/);
     assert.match(androidPluginSource, /deliverCommittedToken/);
     assert.match(androidPluginSource, /buildCredentialDeliveryScript\(expectedOrigin,\s*token\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(expectedOrigin\)/);
     assert.match(iosPluginSource, /stripTokenFromEntry\(origin:\s*origin,\s*entry:\s*entry\)/);
     assert.match(iosPluginSource, /handleWebViewNavigationState/);
     assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*expectedOrigin,\s*token:\s*token\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*expectedOrigin\)/);
+    assert.match(iosInfoPlist, /<key>CFBundleURLTypes<\/key>/);
+    assert.match(iosInfoPlist, /<string>kiki<\/string>/);
+    assert.match(iosPluginSource, /navigateToPendingPair\(\)/);
+    assert.match(iosPluginSource, /\/index\.html#pair/);
+
+    // 6. R1 regression: already-verified same origin reassigned to Home B (LAN DHCP / port reuse)
+    // leaks zero old peer token to Home B across both pre-open and post-navigation commit checks,
+    // preserves saved Computer A and its credential, and resumes seamlessly when Home A returns.
+    let activeTenant = 'A';
+    const homeBRequests = [];
+    const sharedLanOrigin = await serve((req, res) => {
+      if (activeTenant === 'B') {
+        homeBRequests.push({
+          method: req.method ?? 'GET',
+          url: req.url ?? '/',
+          authorization: req.headers.authorization ?? '',
+          cookie: req.headers.cookie ?? '',
+          referer: req.headers.referer ?? '',
+        });
+      }
+      if (req.url === '/api/remote-connections/handshake') {
+        if (activeTenant === 'meta-401-only') {
+          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ code: 40100, msg: 'Unauthorized' }));
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data:
+              activeTenant === 'A'
+                ? {
+                    identity: { homeId: 'home-a-id', hostId: 'host-a', protocol: 1 },
+                    targetLabel: 'Workstation A',
+                    serverId: 'srv-a',
+                    inboundEnabled: true,
+                  }
+                : {
+                    identity: { homeId: 'home-b-id', hostId: 'host-b', protocol: 1 },
+                    targetLabel: 'Stranger Home B',
+                    serverId: 'srv-b',
+                    inboundEnabled: true,
+                  },
+          }),
+        );
+        return;
+      }
+      if (req.url === '/api/meta' && activeTenant === 'meta-401-only') {
+        res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ code: 40100, msg: 'Unauthorized' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(
+        `<!doctype html><html><body>tenant-${activeTenant}</body></html>`,
+      );
+    });
+
+    const dhcpStorage = createMemoryStorage();
+    const tokenReads = [];
+    const readSavedTokenForA = async (serverId, origin) => {
+      tokenReads.push({ serverId, origin, tenantAtRead: activeTenant });
+      return 'secret-peer-token-home-a';
+    };
+    upsertSavedServer(dhcpStorage, {
+      id: 'home-a-id',
+      origin: sharedLanOrigin,
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      verified: true,
+    });
+
+    const dhcpPage = await browser.newPage();
+    const openWhenA = await openVerifiedServerNavigation(dhcpPage, dhcpStorage, {
+      serverId: 'home-a-id',
+      origin: sharedLanOrigin,
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      getToken: readSavedTokenForA,
+    });
+    assert.equal(openWhenA.ok, true);
+    assert.equal(openWhenA.tokenDelivered, true);
+    assert.deepEqual(
+      await dhcpPage.evaluate(() => JSON.parse(localStorage.getItem('kiki.connection') || 'null')),
+      { url: '', token: 'secret-peer-token-home-a' },
+    );
+
+    // Clear page storage before simulating a fresh reopen after LAN IP reassignment to Home B
+    await dhcpPage.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    activeTenant = 'B';
+    const tokenReadsBeforeB = tokenReads.length;
+    const openWhenB = await openVerifiedServerNavigation(dhcpPage, dhcpStorage, {
+      serverId: 'home-a-id',
+      origin: sharedLanOrigin,
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      getToken: readSavedTokenForA,
+    });
+    assert.equal(openWhenB.ok, false);
+    assert.equal(openWhenB.reason, 'identity_mismatch');
+    assert.equal(openWhenB.tokenDelivered, false);
+    assert.equal(tokenReads.length, tokenReadsBeforeB, 'saved peer token must not even be read when handshake reports Home B');
+
+    // Even if Home A answered during pre-open and switched to Home B right as the WebView committed:
+    const midFlightCommitToB = await deliverCommittedServerCredential(dhcpPage, openWhenA);
+    assert.equal(midFlightCommitToB.ok, false);
+    assert.equal(midFlightCommitToB.reason, 'identity_mismatch');
+    assert.equal(midFlightCommitToB.targetHomeId, 'home-b-id');
+    assert.equal(midFlightCommitToB.tokenDelivered, false);
+    assert.equal(await dhcpPage.evaluate(() => localStorage.getItem('kiki.connection')), null);
+    assert.equal(await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+
+    // Home B received zero old token on any network request
+    assert.equal(homeBRequests.length > 0, true);
+    for (const req of homeBRequests) {
+      assert.equal(req.authorization, '');
+      assert.equal(req.url.includes('token='), false);
+      assert.equal(req.url.includes('secret-peer-token-home-a'), false);
+      assert.equal(req.referer.includes('token='), false);
+    }
+
+    // Saved Computer A record and its pairing metadata are preserved (not wiped or rebound to Home B)
+    const savedDuringB = readSavedServers(dhcpStorage);
+    assert.equal(savedDuringB.length, 1);
+    assert.equal(savedDuringB[0].id, 'home-a-id');
+    assert.equal(savedDuringB[0].targetHomeId, 'home-a-id');
+    assert.equal(savedDuringB[0].label, 'Workstation A');
+
+    // A server that only returns 401 on handshake and /api/meta (unauthenticated reachability without identity)
+    // is never treated as an identity match for a paired computer:
+    activeTenant = 'meta-401-only';
+    const openWhen401Only = await resolveVerifiedServerOpen(dhcpStorage, {
+      serverId: 'home-a-id',
+      origin: sharedLanOrigin,
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      getToken: readSavedTokenForA,
+    });
+    assert.equal(openWhen401Only.ok, false);
+    assert.equal(openWhen401Only.reason, 'unreachable');
+    assert.equal(tokenReads.length, tokenReadsBeforeB);
+
+    // When Home A returns to the same LAN origin, it resumes seamlessly without re-pairing:
+    activeTenant = 'A';
+    const reopenWhenAReturns = await openVerifiedServerNavigation(dhcpPage, dhcpStorage, {
+      serverId: 'home-a-id',
+      origin: sharedLanOrigin,
+      label: 'Workstation A',
+      paired: true,
+      targetHomeId: 'home-a-id',
+      targetHostId: 'host-a',
+      grantId: 'grant-a',
+      getToken: readSavedTokenForA,
+    });
+    assert.equal(reopenWhenAReturns.ok, true);
+    assert.equal(reopenWhenAReturns.tokenDelivered, true);
+    assert.deepEqual(
+      await dhcpPage.evaluate(() => JSON.parse(localStorage.getItem('kiki.connection') || 'null')),
+      { url: '', token: 'secret-peer-token-home-a' },
+    );
   } finally {
     await browser.close();
     for (const server of servers) server.close();

@@ -630,6 +630,19 @@ function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reas
   const verifiedOrigins = keepVerified
     ? existing.verifiedOrigins
     : existing.verifiedOrigins.filter((o) => o !== candidateOrigin);
+  if (verifiedOrigins.length === 0 && (existing.paired || existing.targetHomeId)) {
+    const preserved = sanitizeServerRecord({
+      ...existing,
+      origins: existing.origins.includes(existing.origin)
+        ? existing.origins
+        : [existing.origin, ...existing.origins].slice(0, 6),
+      verifiedOrigins: existing.verifiedOrigins.length > 0 ? existing.verifiedOrigins : [existing.origin],
+      updatedAt: existing.updatedAt || Date.now(),
+    });
+    const next = current.map((item, idx) => (idx === index ? preserved : item));
+    writeServers(storage, next);
+    return { ok: false, reason, server: preserved };
+  }
   const fallbackOrigin =
     verifiedOrigins[0] ?? existing.origins.find((o) => o !== candidateOrigin) ?? existing.origin;
   const nextOrigins = existing.origins.filter((o) => o !== candidateOrigin || verifiedOrigins.includes(o));
@@ -685,9 +698,16 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
       ? handshake.targetHostId.trim()
       : undefined;
 
+  if (!probeHomeId) {
+    if (existing.origin === candidateOrigin && !isServerOriginVerified(existing, candidateOrigin)) {
+      return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'unreachable', true);
+    }
+    return { ok: false, reason: 'unreachable', server: existing };
+  }
+
   const homeMatches = Boolean(existing.targetHomeId && probeHomeId === existing.targetHomeId);
   const hostMatches = Boolean(
-    probeHomeId && (!existing.targetHostId || (probeHostId && probeHostId === existing.targetHostId)),
+    probeHomeId && (!existing.targetHostId || !probeHostId || probeHostId === existing.targetHostId),
   );
 
   if (!homeMatches || !hostMatches) {
@@ -982,7 +1002,7 @@ export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
 export function buildCommittedCredentialScript(expectedOrigin, token) {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw&&!managed){var parsed=JSON.parse(raw);if(parsed&&typeof parsed.token==="string"&&parsed.token.trim()!=="")return false;}window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";var staged=null;try{staged=window.sessionStorage.getItem("kiki.peer.token");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!==""||(typeof staged==="string"&&staged.trim()!==""&&staged.trim()!==pTok))){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}return false;}}window.localStorage.setItem("kiki.connection",JSON.stringify({url:"",token:t}));window.localStorage.setItem("kiki.shell.managed","1");}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
@@ -991,7 +1011,7 @@ export function buildCommittedCredentialScript(expectedOrigin, token) {
  * WebView/page evaluation handle. Never stages tokens in `window.name` or URL,
  * and never overwrites an existing non-shell owner connection.
  */
-export async function deliverCommittedServerCredential(target, resolved) {
+export async function deliverCommittedServerCredential(target, resolved, options = {}) {
   if (!resolved || !resolved.ok) {
     return {
       ok: false,
@@ -1063,6 +1083,45 @@ export async function deliverCommittedServerCredential(target, resolved) {
       tokenDelivered: false,
     };
   }
+  const expectedHomeId =
+    typeof resolved.server?.targetHomeId === 'string' && resolved.server.targetHomeId.trim() !== ''
+      ? resolved.server.targetHomeId.trim()
+      : typeof resolved.targetHomeId === 'string' && resolved.targetHomeId.trim() !== ''
+        ? resolved.targetHomeId.trim()
+        : undefined;
+  const expectedHostId =
+    typeof resolved.server?.targetHostId === 'string' && resolved.server.targetHostId.trim() !== ''
+      ? resolved.server.targetHostId.trim()
+      : typeof resolved.targetHostId === 'string' && resolved.targetHostId.trim() !== ''
+        ? resolved.targetHostId.trim()
+        : undefined;
+  if (expectedHomeId) {
+    const probeFn =
+      options.probe ??
+      resolved.probe ??
+      ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: options.fetchImpl }));
+    const probe = await probeFn(expectedOrigin);
+    if (!probe?.ok || !probe.targetHomeId) {
+      return {
+        ok: false,
+        reason: 'unreachable',
+        committedOrigin: expectedOrigin,
+        tokenDelivered: false,
+      };
+    }
+    if (
+      probe.targetHomeId !== expectedHomeId ||
+      (expectedHostId && probe.targetHostId && probe.targetHostId !== expectedHostId)
+    ) {
+      return {
+        ok: false,
+        reason: 'identity_mismatch',
+        committedOrigin: expectedOrigin,
+        targetHomeId: probe.targetHomeId,
+        tokenDelivered: false,
+      };
+    }
+  }
   let delivered;
   try {
     delivered = await target.evaluate(
@@ -1085,9 +1144,26 @@ export async function deliverCommittedServerCredential(target, resolved) {
         try {
           const raw = window.localStorage.getItem('kiki.connection');
           const managed = window.localStorage.getItem('kiki.shell.managed') === '1';
-          if (raw && !managed) {
+          let staged = null;
+          try {
+            staged = window.sessionStorage.getItem('kiki.peer.token');
+          } catch {}
+          if (raw) {
             const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.token === 'string' && parsed.token.trim() !== '') {
+            const parsedToken = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
+            const parsedUrl = parsed && typeof parsed.url === 'string' ? parsed.url.trim() : '';
+            if (
+              parsedToken !== '' &&
+              (!managed ||
+                parsedUrl !== '' ||
+                (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== parsedToken))
+            ) {
+              try {
+                window.localStorage.removeItem('kiki.shell.managed');
+              } catch {}
+              try {
+                window.sessionStorage.removeItem('kiki.peer.token');
+              } catch {}
               return {
                 ok: false,
                 reason: 'existing_owner_credential',
@@ -1238,22 +1314,32 @@ export async function resolveVerifiedServerOpen(storage, input) {
   const targetServerId = existing?.id ?? requestedServerId;
 
   if (isPairedTarget) {
-    if (!existing || !isServerOriginVerified(existing, origin)) {
+    if (!claimedToken) {
       const probeFn =
         input.probe ??
         ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: input.fetchImpl }));
       const probe = await probeFn(origin);
       if (existing && targetServerId) {
         const verified = verifySavedServerOrigin(storage, targetServerId, origin, probe);
+        if (!verified.ok) {
+          return {
+            ok: false,
+            reason: verified.reason,
+            server: verified.server,
+          };
+        }
+        existing = verified.server;
+      } else {
         return {
           ok: false,
-          reason: verified.reason,
-          server: verified.server,
+          reason: probe.ok ? 'pairing_required' : 'unreachable',
+          server: existing ?? undefined,
         };
       }
+    } else if (!existing || !isServerOriginVerified(existing, origin)) {
       return {
         ok: false,
-        reason: probe.ok ? 'pairing_required' : 'unreachable',
+        reason: 'pairing_required',
         server: existing ?? undefined,
       };
     }

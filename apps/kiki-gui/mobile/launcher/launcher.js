@@ -543,6 +543,7 @@ async function claimPairing(endpoint, code) {
 }
 
 function promptForPairing(origin, message) {
+  setTab('connect');
   input.value = hostOf(origin);
   updateInputAffordances();
   showProblem(message);
@@ -550,6 +551,7 @@ function promptForPairing(origin, message) {
 }
 
 function reportUnreachable(origin) {
+  setTab('connect');
   if (input.value.trim() === '') {
     input.value = hostOf(origin);
   }
@@ -724,10 +726,18 @@ async function handleScannedPayload(rawValue) {
   await submitConnect(parsed);
 }
 
-async function startWebCameraLoop() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    showScanFeedback(copy.cameraUnavailable);
+function focusManualConnectInput() {
+  if (input.value.trim() !== '') {
+    codeInput.focus();
+  } else {
     input.focus();
+  }
+}
+
+async function startWebCameraLoop() {
+  if (!navigator.mediaDevices?.getUserMedia || typeof window.BarcodeDetector !== 'function') {
+    showScanFeedback(copy.cameraUnavailable);
+    focusManualConnectInput();
     return;
   }
   let stream;
@@ -739,7 +749,7 @@ async function startWebCameraLoop() {
   } catch (error) {
     const denied = error && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError');
     showScanFeedback(denied ? copy.cameraDenied : copy.cameraUnavailable);
-    input.focus();
+    focusManualConnectInput();
     return;
   }
 
@@ -758,18 +768,18 @@ async function startWebCameraLoop() {
     /* play may resolve after metadata */
   }
 
-  if (typeof window.BarcodeDetector !== 'function') {
-    stopCameraScanner();
-    showScanFeedback(copy.cameraUnavailable);
-    input.focus();
-    return;
-  }
-
   let detector;
   try {
     detector = new window.BarcodeDetector({ formats: ['qr_code'] });
   } catch {
-    detector = new window.BarcodeDetector();
+    try {
+      detector = new window.BarcodeDetector();
+    } catch {
+      stopCameraScanner();
+      showScanFeedback(copy.cameraUnavailable);
+      focusManualConnectInput();
+      return;
+    }
   }
 
   scanLoopActive = true;
