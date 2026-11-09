@@ -237,6 +237,12 @@ export class HistoryCanonicalReader {
         ?.frames.find((frame) => frame.frameId === source.id);
       if (entity !== undefined) return { status: 'found', entity };
     }
+    const coldWindowTurn = await this.transcript.readColdWindowTurn(session, agent, turnId, signal);
+    if (coldWindowTurn !== undefined && coldWindowTurn.stepsPartial !== true) {
+      const entity = source.kind === 'turn' ? coldWindowTurn : coldWindowTurn.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) return { status: 'found', entity };
+    }
     const prepared = await this.prepare(session, agent, signal);
     if (prepared === undefined) {
       if (signal === undefined) return { status: 'preparing' };

@@ -1883,18 +1883,18 @@ export class SessionController {
         const readIsPartial = emptyContinuation && pageReadiness === 'partial';
         const recoveredTurns: TranscriptTurn[] = [];
         let recoveredOpening = false;
+        const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
+        const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
         for (const item of page.items) {
           if (item.kind !== 'turn' || item.startedAt === undefined) continue;
           const live = store.getTurn(item.turnId);
           const current = live ?? currentSnapshot.items.find((existing): existing is TranscriptTurn => existing.kind === 'turn' && existing.turnId === item.turnId);
           const wasOrphan = current?.origin.kind === 'other' && current.message === undefined && current.promptId === undefined && current.startedAt === undefined;
-          if (!wasOrphan && (page.next_cursor === undefined || page.next_cursor === beforeItem)) continue;
+          if (!wasOrphan && (addedItems || (page.next_cursor === undefined ? page.has_more : page.next_cursor === beforeItem))) continue;
           recoveredOpening = true;
           if (!wasOrphan || live === undefined) continue;
           recoveredTurns.push(recoverTranscriptTurn(current, item));
         }
-        const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
-        const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
         if (page.has_more && !readIsPreparing && !readIsPartial && !addedItems && !recoveredOpening &&
             (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
           throw new Error('History page did not advance its cursor');
@@ -1926,7 +1926,7 @@ export class SessionController {
         };
         for (const recovered of recoveredTurns) replaceAgentContentEntity(store, { kind: 'turn', id: recovered.turnId }, recovered);
         const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
-        this.olderPages.set(agentId, merged);
+        this.olderPages.set(agentId, { ...merged, hasMoreOlder: page.has_more });
         for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))
           this.historyPreviewPages.set(`${agentId}/${item.turnId}`, { agentId, beforeItem, beforeTurn, unloaded: false });
         this.trimHistoryPreviews(agentId);
@@ -1935,6 +1935,19 @@ export class SessionController {
         if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
         else this.olderPageTurns.delete(agentId);
         this.forestDirtyAgents.add(agentId);
+        if (recoveredOpening && !addedItems && page.has_more && page.next_cursor !== undefined && page.next_cursor !== beforeItem) {
+          beforeItem = page.next_cursor;
+          beforeTurn = undefined;
+          this.publishProjectedAgent(agentId, store, {
+            loadingOlder: true,
+            fetchedOlder: true,
+            olderError: undefined,
+            historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown' : undefined,
+          });
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          if (obsolete()) return { kind: 'cancelled', changed: false };
+          continue;
+        }
         this.publishProjectedAgent(agentId, store, {
           loadingOlder: false,
           fetchedOlder: true,

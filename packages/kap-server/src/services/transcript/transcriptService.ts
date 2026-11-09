@@ -421,13 +421,23 @@ function coldPrefixAddsItem(current: AgentTranscriptSnapshot['items'], merged: A
 function coldTurnVisibleDiffers(before: TranscriptTurn, after: TranscriptTurn): boolean {
   if (before.prompt !== after.prompt || before.promptId !== after.promptId || before.origin.kind !== after.origin.kind || before.startedAt !== after.startedAt) return true;
   if (before.message?.messageId !== after.message?.messageId) return true;
-  if ((before.contentRefs?.length ?? 0) !== (after.contentRefs?.length ?? 0) || before.steps.length !== after.steps.length) return true;
-  for (let step = 0; step < before.steps.length; step += 1) {
-    const left = before.steps[step]!;
-    const right = after.steps[step]!;
-    if (left.stepId !== right.stepId || left.frames.length !== right.frames.length) return true;
-    for (let frame = 0; frame < left.frames.length; frame += 1) {
-      if (left.frames[frame]!.frameId !== right.frames[frame]!.frameId) return true;
+  return false;
+}
+
+function coldPrefixAddsStepOrFrame(current: AgentTranscriptSnapshot['items'], merged: AgentTranscriptSnapshot['items']): boolean {
+  if (current.length !== merged.length) return true;
+  for (let index = 0; index < current.length; index += 1) {
+    const before = current[index]!;
+    const after = merged[index]!;
+    if (before.kind !== 'turn' || after.kind !== 'turn') continue;
+    if ((before.contentRefs?.length ?? 0) !== (after.contentRefs?.length ?? 0) || before.steps.length !== after.steps.length) return true;
+    for (let step = 0; step < before.steps.length; step += 1) {
+      const left = before.steps[step]!;
+      const right = after.steps[step]!;
+      if (left.stepId !== right.stepId || left.frames.length !== right.frames.length) return true;
+      for (let frame = 0; frame < left.frames.length; frame += 1) {
+        if (left.frames[frame]!.frameId !== right.frames[frame]!.frameId) return true;
+      }
     }
   }
   return false;
@@ -2123,11 +2133,13 @@ export class TranscriptService {
     let extended: ColdWireWindow;
     if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && read.records.length > 0) {
       if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
+        const addedStepOrFrame = coldPrefixAddsStepOrFrame(window.snapshot.items, snapshot.items);
         const skipped: ColdWireWindow = {
           ...window,
           start: next,
-          entire: next === 0 && window.droppedTail !== true,
+          entire: next === 0 && window.droppedTail !== true && !addedStepOrFrame,
           snapshot: { ...window.snapshot, hasMoreOlder: next > 0 },
+          droppedTail: window.droppedTail === true || addedStepOrFrame,
           payloadEvicted: false,
         };
         this.rememberColdWindow(wirePath, skipped);

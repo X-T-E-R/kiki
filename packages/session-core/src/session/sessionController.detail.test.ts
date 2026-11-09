@@ -433,12 +433,40 @@ describe('SessionController transcript detail', () => {
       });
       expect(controller.getAgentState('child').detailLoads['structure:t0']).toBeUndefined();
       const firstOlder = await controller.loadOlderHistory('child');
-      expect(firstOlder.kind).toBe('advanced');
-      expect(controller.getAgentState('child').olderError).toBeUndefined();
-      const secondOlder = await controller.loadOlderHistory('child');
-      expect(secondOlder).toEqual({ kind: 'exhausted', changed: true });
+      expect(firstOlder).toEqual({ kind: 'exhausted', changed: true });
       expect(controller.getAgentState('child')).toMatchObject({ hasMoreHistory: false, loadingOlder: false, olderError: undefined });
     } finally { lease.release(); controller.close(); }
+  });
+
+  it('continues past a refreshed orphan turn in one older load to deliver the preceding turn', async () => {
+    const turn6: TranscriptTurn = {
+      kind: 'turn', turnId: 't6', ordinal: 6, state: 'completed', origin: { kind: 'user' },
+      prompt: 'Earlier turn 6', startedAt: FIXED_AT,
+      steps: [{ kind: 'step', stepId: 's6', turnId: 't6', ordinal: 0, state: 'completed',
+        frames: [{ kind: 'text', frameId: 'f6', role: 'assistant', text: 'turn 6 reply' }] }],
+    };
+    const turn7: TranscriptTurn = {
+      kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'user' },
+      prompt: 'Recovered turn 7', startedAt: FIXED_AT,
+      steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 0, state: 'completed',
+        frames: [{ kind: 'text', frameId: 'f7', role: 'assistant', text: 'turn 7 reply' }] }],
+    };
+    const { controller, deliver, view } = harness(undefined);
+    const base = { session_id: 'session_test', agent_id: 'child', tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce({ ...base, items: [], has_more: true, next_cursor: 'cursor-preparing-t7', coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'derived', readiness: 'preparing' } })
+      .mockResolvedValueOnce({ ...base, items: [turn7], has_more: true, next_cursor: 'cursor-refreshed-t7', coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'derived', readiness: 'partial' } })
+      .mockResolvedValueOnce({ ...base, items: [turn6], has_more: true, next_cursor: 'cursor-before-t6', coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'derived', readiness: 'partial' } });
+    await controller.open();
+    controller.retainAgentView('child-view', 'child', 'delta');
+    deliver(resetEvent('child', emptySnapshot({ items: [{ ...turn7, origin: { kind: 'other' }, prompt: undefined, startedAt: undefined }], hasMoreOlder: true, olderCursor: 'cursor-orphan-t7' }), 2, true));
+    try {
+      const older = await controller.loadOlderHistory('child');
+      expect(older).toEqual({ kind: 'advanced', changed: true });
+      const state = controller.getAgentState('child');
+      expect(state.blocks.filter(block => block.kind === 'user').map(block => block.text)).toEqual(['Earlier turn 6', 'Recovered turn 7']);
+      expect(state.olderError).toBeUndefined();
+    } finally { controller.close(); }
   });
 
   it('stages every canonical frame before replacing local partial indices and retains hydrated bodies', async () => {

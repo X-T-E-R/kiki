@@ -136,6 +136,8 @@ describe('source-backed canonical detail', () => {
       const boundary = await f.service.coldWindowBoundary('s', 'main');
       const reads = f.service.memoryReport().coldReads.bytes;
       expect(await f.service.readProjectedColdTurn('s', 'main', 't104', signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(200_000) }] }] });
+      expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't104' }, signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(200_000) }] }] });
+      expect(f.nav.canonicalReadReport().projectionBytes).toBe(0);
       expect(await f.service.coldWindowBoundary('s', 'main')).toEqual(boundary);
       expect(f.service.memoryReport().coldReads.bytes).toBe(reads);
       const page = await readSessionViewTranscriptPage(f.service, 's', { agentId: 'main', beforeTurn: 't105', pageSize: 2, signal });

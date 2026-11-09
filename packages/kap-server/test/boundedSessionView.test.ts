@@ -112,7 +112,7 @@ describe('bounded session-view canonical reads', () => {
       coldWindowReachedStart: async () => extensions > 0,
       readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal: unknown, extend: boolean) => {
         if (extend) extensions += 1;
-        return project({ ...empty(), items: [extensions > 0 ? turn0 : { ...turn0, origin: { kind: 'other' }, prompt: undefined, startedAt: undefined }], hasMoreOlder: extensions === 0 });
+        return project({ ...empty(), items: [extensions > 0 ? turn0 : { ...turn0, origin: { kind: 'other' }, prompt: undefined, startedAt: undefined }], hasMoreOlder: true });
       },
       readFullAgentSnapshot: async (_sessionId: string, _agentId: string, _transcript: AgentTranscript, _signal: unknown, _project: unknown, _beforeTurn: unknown, pageSource?: AgentTranscriptSnapshot) => pageSource,
       reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
@@ -122,10 +122,8 @@ describe('bounded session-view canonical reads', () => {
     expect(forSessionLive).toHaveBeenCalledWith('fixture-session', { tailFirst: true });
     expect(ensureAgentHistory).toHaveBeenCalledWith('fixture-session', 'agent-1366', expect.objectContaining({ tailFirst: true }));
     expect(first?.items).toEqual([turn0]);
-    const second = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'agent-1366', beforeItem: first!.next_cursor, pageSize: 40 });
-    expect(second?.items).toEqual([]);
-    expect(second?.has_more).toBe(false);
-    expect(second?.next_cursor).toBeUndefined();
+    expect(first?.has_more).toBe(false);
+    expect(first?.next_cursor).toBeUndefined();
   });
 
   it('seeks a requested newer one-turn preview after an older local window has reached source start', async () => {

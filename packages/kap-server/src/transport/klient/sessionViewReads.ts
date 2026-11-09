@@ -356,7 +356,12 @@ async function readSessionViewTranscriptPageRaw(
     if (transcript === undefined) return undefined;
     const liveVerified = transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId);
     if (!liveVerified) void transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId).catch(() => {});
-    if (transcript.hasMoreOlder && (anchored || !transcript.getItems().some(item => item.kind === 'turn'))) {
+    const liveItems = transcript.getItems();
+    const firstResidentTurn = liveItems.find(item => item.kind === 'turn');
+    const singleBeforeInResident = singleBeforeTurn && input.beforeItem === undefined &&
+      firstResidentTurn?.kind === 'turn' && compareTurnIds(input.beforeTurn!, firstResidentTurn.turnId) > 0 &&
+      liveItems.some(item => item.kind === 'turn' && item.turnId === input.beforeTurn);
+    if (transcript.hasMoreOlder && ((anchored && !singleBeforeInResident) || firstResidentTurn === undefined)) {
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;
@@ -379,7 +384,7 @@ async function readSessionViewTranscriptPageRaw(
       }
       if (query.refreshTurn !== undefined) {
         const refreshed = cold.items.find(item => item.kind === 'turn' && item.turnId === query.refreshTurn);
-        if (refreshed !== undefined) page = { items: [refreshed], hasMore: page.items.length > 0 || page.hasMore };
+        if (refreshed !== undefined) page = { items: [refreshed], hasMore: page.hasMore };
       }
       const hasMore = page.hasMore || cold.hasMoreOlder === true || anchorState === 'continues' || anchorState === 'pending';
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
@@ -401,8 +406,9 @@ async function readSessionViewTranscriptPageRaw(
           : anchorCursor,
       } as unknown as TranscriptResponse;
     }
+    const pageSource: TranscriptRead['source'] = transcript.hasMoreOlder && singleBeforeInResident ? 'derived' : 'live';
     const snapshot = transcript.snapshot();
-    const page = paginateTurns(transcript.getItems(), pageQueryFor(pageQueryInput, 'live'));
+    const page = paginateTurns(liveItems, pageQueryFor(pageQueryInput, pageSource));
     const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
       snapshot.toolCallCountKnown === true;
     const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);
@@ -418,8 +424,8 @@ async function readSessionViewTranscriptPageRaw(
       prompts: [...transcript.getPrompts().values()],
       meta: transcript.getMeta(), agents: store.agents(),
       pending_interactions: transcript.listPendingInteractions(), cursor, coverage,
-      read: readFor('live', coverage, cursor),
-      next_cursor: hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'live', cursor?.epoch) : undefined,
+      read: readFor(pageSource, coverage, cursor),
+      next_cursor: hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, pageSource, cursor?.epoch) : undefined,
     } as unknown as TranscriptResponse;
   }
   const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection);
@@ -769,6 +775,10 @@ async function readColdTranscriptPage(
   if (query.orphanTurn !== undefined && query.refreshedTurn !== query.orphanTurn) {
     const updated = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === query.orphanTurn && hasTurnOpening(item));
     if (updated !== undefined) {
+      if (snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowReachedStart === 'function' &&
+          await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
+        snapshot = { ...snapshot, hasMoreOlder: false };
+      }
       query.refreshTurn = updated.turnId;
       return { snapshot, page: { items: [updated], hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, query };
     }
@@ -813,6 +823,10 @@ async function readColdTranscriptPage(
   } else if (query.orphanTurn !== undefined && query.refreshedTurn !== query.orphanTurn) {
     const updated = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === query.orphanTurn && hasTurnOpening(item));
     if (updated !== undefined) {
+      if (snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowReachedStart === 'function' &&
+          await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
+        snapshot = { ...snapshot, hasMoreOlder: false };
+      }
       located = { page: { items: [updated], hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, missing: false };
       query.refreshTurn = updated.turnId;
     }
