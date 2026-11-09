@@ -716,6 +716,8 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       historyState: window.history.state,
       storedConnection: JSON.parse(window.localStorage.getItem('kiki.connection') || 'null'),
       peerToken: window.sessionStorage.getItem('kiki.peer.token'),
+      stagedSlot: window.document.__kikiShellStagedCredential,
+      secondStagedRead: window.document.__kikiShellStagedCredential ?? null,
       eventDetail: window.__receivedShellToken,
     }));
     assert.equal(sameOriginState.pathname, '/settings');
@@ -723,7 +725,12 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(sameOriginState.hash, '#st-card-providers-add');
     assert.deepEqual(sameOriginState.historyState, { idx: 3, usr: { from: 'boot' } });
     assert.equal(sameOriginState.storedConnection, null);
-    assert.equal(sameOriginState.peerToken, 'same-origin-token-123');
+    assert.equal(sameOriginState.peerToken, null);
+    assert.deepEqual(sameOriginState.stagedSlot, {
+      origin: pairedSameOriginRedirect,
+      token: 'same-origin-token-123',
+    });
+    assert.equal(sameOriginState.secondStagedRead, null, 'document-staged credential slot must be one-shot');
     assert.deepEqual(sameOriginState.eventDetail, {
       origin: pairedSameOriginRedirect,
       token: 'same-origin-token-123',
@@ -785,13 +792,14 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       if (req.url === '/app.js') {
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
         res.end(`
-          import { installAppShellCredentialListener } from '/src/lib/appShell.ts';
+          import { installAppShellCredentialListener, readAdoptedShellCredential } from '/src/lib/appShell.ts';
           import { readStoredConfig } from '/src/state/connectionConfig.ts';
           window.__shellEvents = [];
           installAppShellCredentialListener(window, (detail) => {
             window.__shellEvents.push(detail);
           });
           window.__readStoredConfig = () => readStoredConfig(window.localStorage);
+          window.__readAdoptedShellCredential = () => readAdoptedShellCredential(window);
           document.body.dataset.ready = 'true';
         `);
         return;
@@ -908,12 +916,14 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
         storedConnection: window.__readStoredConfig(),
         shellManaged: localStorage.getItem('kiki.shell.managed'),
         peerToken: sessionStorage.getItem('kiki.peer.token'),
+        adoptedToken: window.__readAdoptedShellCredential(),
         shellEvents: window.__shellEvents,
       }));
       assert.equal(cspState.windowName, '');
       assert.equal(cspState.storedConnection, null);
       assert.equal(cspState.shellManaged, null);
-      assert.equal(cspState.peerToken, 'csp-paired-secret-token');
+      assert.equal(cspState.peerToken, null);
+      assert.equal(cspState.adoptedToken, 'csp-paired-secret-token');
       assert.deepEqual(cspState.shellEvents, [
         { origin: cspPairedServer, token: 'csp-paired-secret-token' },
       ]);
@@ -982,9 +992,9 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(androidPluginSource, /stripTokenFromEntry\(origin,\s*entry\)/);
     assert.match(androidPluginSource, /onPageCommitVisible/);
     assert.match(androidPluginSource, /deliverCommittedToken/);
-    assert.match(androidPluginSource, /buildCredentialDeliveryScript\(expectedOrigin,\s*token\)/);
+    assert.match(androidPluginSource, /buildCredentialDeliveryScript\(targetOrigin,\s*token\)/);
     assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin\)/);
-    assert.match(androidPluginSource, /fetchHandshake\(expectedOrigin\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(targetOrigin\)/);
     assert.match(androidPluginSource, /clearPendingAuthIfCurrent\(callEpoch\)/);
     assert.equal(
       /removeVerifiedOrigin\s*\(/.test(
@@ -995,9 +1005,9 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     );
     assert.match(iosPluginSource, /stripTokenFromEntry\(origin:\s*origin,\s*entry:\s*entry\)/);
     assert.match(iosPluginSource, /handleWebViewNavigationState/);
-    assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*expectedOrigin,\s*token:\s*token\)/);
+    assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*targetOrigin,\s*token:\s*token\)/);
     assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin\)/);
-    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*expectedOrigin\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*targetOrigin\)/);
     assert.match(iosPluginSource, /clearPendingAuthIfCurrent\(epoch:\s*callEpoch\)/);
     assert.equal(
       /Self\.removeVerifiedOrigin\s*\(/.test(iosPluginSource),
@@ -1099,19 +1109,49 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(
       await dhcpPage.evaluate(() => localStorage.getItem('kiki.connection')),
       null,
-      'Shell peer token must stay in volatile sessionStorage and never persist to localStorage',
+      'Shell peer token must stay in document memory only and never persist to localStorage',
     );
     assert.equal(
       await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')),
-      'secret-peer-token-home-a',
+      null,
+      'Shell peer token must never be written to sessionStorage',
+    );
+    assert.deepEqual(
+      await dhcpPage.evaluate(() => window.document.__kikiShellStagedCredential),
+      { origin: sharedLanOrigin, token: 'secret-peer-token-home-a' },
     );
 
-    // Clear page storage before simulating a fresh reopen after LAN IP reassignment to Home B
-    await dhcpPage.evaluate(() => {
-      localStorage.clear();
-      sessionStorage.clear();
+    // Counterexample (cross-origin launcher round-trip + same-origin replacement document):
+    // Without calling localStorage.clear() or sessionStorage.clear(), navigate the same WebView
+    // to another port (launcher), then switch sharedLanOrigin to Home B whose first inline script
+    // tries to read localStorage, sessionStorage, window.name, and document.__kikiShellStagedCredential
+    // BEFORE any new handshake or credential injection.
+    const crossOriginLauncher = await serve((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><html><body>cross-origin-launcher</body></html>');
     });
+    await dhcpPage.goto(crossOriginLauncher);
     activeTenant = 'B';
+    await dhcpPage.goto(sharedLanOrigin);
+    const replacementFirstScriptCheck = await dhcpPage.evaluate(() => ({
+      localConn: window.localStorage.getItem('kiki.connection'),
+      sessionPeer: window.sessionStorage.getItem('kiki.peer.token'),
+      winName: window.name,
+      docStaged: window.document.__kikiShellStagedCredential ?? null,
+    }));
+    const freshReplacementDocumentReadsOldPeerBeforeHandshake = Boolean(
+      replacementFirstScriptCheck.localConn ||
+        replacementFirstScriptCheck.sessionPeer ||
+        replacementFirstScriptCheck.winName ||
+        replacementFirstScriptCheck.docStaged,
+    );
+    assert.equal(
+      freshReplacementDocumentReadsOldPeerBeforeHandshake,
+      false,
+      'Replacement document after cross-origin launcher round-trip must read zero old peer credential before handshake',
+    );
+
+    homeBRequests.length = 0;
     const tokenReadsBeforeB = tokenReads.length;
     const openWhenB = await openVerifiedServerNavigation(dhcpPage, dhcpStorage, {
       serverId: 'home-a-id',
@@ -1136,6 +1176,7 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.equal(midFlightCommitToB.tokenDelivered, false);
     assert.equal(await dhcpPage.evaluate(() => localStorage.getItem('kiki.connection')), null);
     assert.equal(await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')), null);
+    assert.equal(await dhcpPage.evaluate(() => window.document.__kikiShellStagedCredential ?? null), null);
 
     // Home B received zero old token on any network request
     assert.equal(homeBRequests.length > 0, true);
@@ -1215,12 +1256,19 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     );
     assert.equal(
       await dhcpPage.evaluate(() => sessionStorage.getItem('kiki.peer.token')),
-      'secret-peer-token-home-a',
+      null,
+    );
+    assert.deepEqual(
+      await dhcpPage.evaluate(() => window.document.__kikiShellStagedCredential),
+      { origin: sharedLanOrigin, token: 'secret-peer-token-home-a' },
     );
 
     // 7. Native-equivalent state machine test (Android KikiShellPlugin / iOS SceneDelegate):
     // - Temporary DHCP mismatch rejects open() and navigation commit without removing verifiedOrigins
     //   or deleting native token, and resumes when the original computer returns.
+    // - Same-origin reload (after finalize cleared pendingAuth) re-verifies handshake via activeAuth
+    //   and re-delivers the document-scoped credential without permanent web storage.
+    // - Navigating to the launcher clears both pendingAuth and activeAuth.
     // - A stale async handshake callback from an earlier open() never clears pendingAuth of a newer open().
     // - Only explicit forgetServer() deletes the native verifiedOrigins and stored token.
     const createNativeShellStateMachine = (fetchHandshakeImpl) => {
@@ -1231,7 +1279,10 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       let pendingAuthHomeId = null;
       let pendingAuthHostId = null;
       let pendingAuthToken = null;
-      let pendingAuthDelivered = false;
+      let activeAuthOrigin = null;
+      let activeAuthServerId = null;
+      let activeAuthHomeId = null;
+      let activeAuthHostId = null;
       let pendingAuthEpoch = 0;
       const deliveredScripts = [];
       const loadedUrls = [];
@@ -1243,11 +1294,20 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
         pendingAuthHomeId = null;
         pendingAuthHostId = null;
         pendingAuthToken = null;
-        pendingAuthDelivered = false;
+      };
+      const clearActiveAuth = () => {
+        activeAuthOrigin = null;
+        activeAuthServerId = null;
+        activeAuthHomeId = null;
+        activeAuthHostId = null;
       };
       const clearPendingAuthIfCurrent = (epoch) => {
         if (pendingAuthEpoch !== epoch) return;
-        clearPendingAuth();
+        pendingAuthOrigin = null;
+        pendingAuthServerId = null;
+        pendingAuthHomeId = null;
+        pendingAuthHostId = null;
+        pendingAuthToken = null;
       };
       return {
         saveServerToken(serverId, token, origin) {
@@ -1263,19 +1323,22 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
           return serverTokens.get(serverId) ?? null;
         },
         forgetServer(serverId) {
-          if (serverId === pendingAuthServerId) clearPendingAuth();
+          clearPendingAuth();
+          clearActiveAuth();
           serverTokens.delete(serverId);
           verifiedOriginsByServer.delete(serverId);
         },
         async open({ url, serverId, targetHomeId, targetHostId }) {
           const origin = new URL(url).origin;
-          clearPendingAuth();
-          const callEpoch = pendingAuthEpoch;
           const storedToken = serverId && this.isOriginVerified(serverId, origin) ? this.getServerToken(serverId) : null;
           if (!storedToken) {
+            clearPendingAuth();
+            clearActiveAuth();
             loadedUrls.push(url);
             return { ok: true, mode: 'unauthenticated' };
           }
+          pendingAuthEpoch += 1;
+          const callEpoch = pendingAuthEpoch;
           const handshake = await fetchHandshakeImpl(origin);
           if (pendingAuthEpoch !== callEpoch) {
             return { ok: false, stale: true };
@@ -1297,22 +1360,40 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
           pendingAuthHomeId = targetHomeId;
           pendingAuthHostId = targetHostId;
           pendingAuthToken = storedToken;
-          pendingAuthDelivered = false;
+          activeAuthOrigin = origin;
+          activeAuthServerId = serverId;
+          activeAuthHomeId = targetHomeId;
+          activeAuthHostId = targetHostId;
           loadedUrls.push(url);
           return { ok: true, mode: 'authenticated', epoch: callEpoch };
         },
-        async onPageCommitVisible(currentUrl) {
-          const currentOrigin = new URL(currentUrl).origin;
-          if (!pendingAuthOrigin || !pendingAuthToken || pendingAuthDelivered) return { delivered: false };
-          if (currentOrigin !== pendingAuthOrigin) {
+        async onPageCommitVisible(currentUrl, finalize = false) {
+          if (currentUrl.startsWith('https://localhost/')) {
             clearPendingAuth();
+            clearActiveAuth();
+            return { delivered: false, reason: 'launcher' };
+          }
+          const currentOrigin = new URL(currentUrl).origin;
+          const expectedEpoch = pendingAuthEpoch;
+          let expectedOrigin = pendingAuthOrigin;
+          let expectedServerId = pendingAuthServerId;
+          let expectedHomeId = pendingAuthHomeId;
+          let expectedHostId = pendingAuthHostId;
+          if (!expectedOrigin || !expectedServerId) {
+            if (activeAuthOrigin && activeAuthServerId && activeAuthOrigin === currentOrigin) {
+              expectedOrigin = activeAuthOrigin;
+              expectedServerId = activeAuthServerId;
+              expectedHomeId = activeAuthHomeId;
+              expectedHostId = activeAuthHostId;
+            } else {
+              return { delivered: false };
+            }
+          }
+          if (currentOrigin !== expectedOrigin) {
+            clearPendingAuthIfCurrent(expectedEpoch);
+            clearActiveAuth();
             return { delivered: false, reason: 'cross_origin' };
           }
-          const expectedOrigin = pendingAuthOrigin;
-          const expectedHomeId = pendingAuthHomeId;
-          const expectedHostId = pendingAuthHostId;
-          const token = pendingAuthToken;
-          const expectedEpoch = pendingAuthEpoch;
           const handshake = await fetchHandshakeImpl(expectedOrigin);
           if (pendingAuthEpoch !== expectedEpoch) {
             return { delivered: false, stale: true };
@@ -1324,12 +1405,14 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
             (!expectedHostId || handshake.hostId === expectedHostId);
           if (!handshakeOk) {
             clearPendingAuthIfCurrent(expectedEpoch);
+            clearActiveAuth();
             return { delivered: false, reason: 'identity_mismatch' };
           }
-          if (pendingAuthDelivered || expectedOrigin !== pendingAuthOrigin || token !== pendingAuthToken) {
-            return { delivered: false };
+          const token = this.getServerToken(expectedServerId);
+          if (finalize) {
+            clearPendingAuthIfCurrent(expectedEpoch);
           }
-          pendingAuthDelivered = true;
+          if (!token) return { delivered: false };
           deliveredScripts.push(buildCommittedCredentialScript(expectedOrigin, token));
           return { delivered: true };
         },
@@ -1338,6 +1421,8 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
             origin: pendingAuthOrigin,
             serverId: pendingAuthServerId,
             token: pendingAuthToken,
+            activeOrigin: activeAuthOrigin,
+            activeServerId: activeAuthServerId,
             epoch: pendingAuthEpoch,
           };
         },
@@ -1388,14 +1473,26 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     const slowOpenResult = await slowOpenPromise;
     assert.equal(slowOpenResult.ok, false);
     assert.equal(slowOpenResult.stale, true);
-    // Navigation 2's pendingAuth MUST remain intact and deliver on commit:
+    // Navigation 2's pendingAuth MUST remain intact and deliver on commit & finalize:
     assert.equal(nativeState.getPendingAuthSnapshot().origin, 'http://192.168.1.51:5494');
     assert.equal(nativeState.getPendingAuthSnapshot().token, 'native-token-a');
-    const commitFast = await nativeState.onPageCommitVisible('http://192.168.1.51:5494/');
+    const commitFast = await nativeState.onPageCommitVisible('http://192.168.1.51:5494/', true);
     assert.equal(commitFast.delivered, true);
+    assert.equal(nativeState.getPendingAuthSnapshot().origin, null, 'finalize clears pendingAuthOrigin');
+    assert.equal(nativeState.getPendingAuthSnapshot().activeOrigin, 'http://192.168.1.51:5494', 'activeAuthOrigin remains bound for same-origin reload');
+
+    // Normal same-origin reload re-verifies handshake via activeAuth and re-delivers credential to the new document:
+    const reloadOn51 = await nativeState.onPageCommitVisible('http://192.168.1.51:5494/settings', true);
+    assert.equal(reloadOn51.delivered, true);
+
+    // If the server is replaced by Home B during a reload, activeAuth rejects and clears activeAuth:
+    activeTenant = 'B';
+    const reloadMismatchOn51 = await nativeState.onPageCommitVisible('http://192.168.1.51:5494/settings', true);
+    assert.equal(reloadMismatchOn51.delivered, false);
+    assert.equal(reloadMismatchOn51.reason, 'identity_mismatch');
+    assert.equal(nativeState.getPendingAuthSnapshot().activeOrigin, null);
 
     // Temporary DHCP switch on .51 to Home B rejects open() but keeps .51 verified and token intact:
-    activeTenant = 'B';
     const mismatchOn51 = await nativeState.open({
       url: 'http://192.168.1.51:5494/',
       serverId: 'home-a-id',
@@ -1417,6 +1514,12 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     });
     assert.equal(resumeOn51.ok, true);
     assert.equal(resumeOn51.mode, 'authenticated');
+
+    // Navigating back to launcher clears both pendingAuth and activeAuth:
+    const navLauncher = await nativeState.onPageCommitVisible('https://localhost/index.html#change', true);
+    assert.equal(navLauncher.delivered, false);
+    assert.equal(nativeState.getPendingAuthSnapshot().origin, null);
+    assert.equal(nativeState.getPendingAuthSnapshot().activeOrigin, null);
 
     // Only explicit forgetServer removes verifiedOrigins and token:
     nativeState.forgetServer('home-a-id');

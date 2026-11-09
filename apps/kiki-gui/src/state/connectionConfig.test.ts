@@ -5,6 +5,7 @@ import {
   clearAppShellCredentialState,
   hasExistingOwnerCredential,
   installAppShellCredentialListener,
+  readAdoptedShellCredential,
   SHELL_MANAGED_STORAGE_KEY,
   SHELL_PEER_TOKEN_KEY,
   SHELL_TOKEN_EVENT,
@@ -187,14 +188,15 @@ describe('connection config readers', () => {
       expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
       expect(receivedEvents).toEqual([]);
 
-      // 3. Matching committed origin applies credential into volatile sessionStorage only, never persisting to localStorage['kiki.connection'], and leaves pathname, search, hash, and history.state untouched
+      // 3. Matching committed origin applies credential into current document memory only, never persisting to localStorage['kiki.connection'] or sessionStorage['kiki.peer.token'], and leaves pathname, search, hash, and history.state untouched
       expect(
         applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'committed-peer-token'),
       ).toBe(true);
       expect(readStoredConfig(localStore)).toBeNull();
       expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
       expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
-      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBe('committed-peer-token');
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(readAdoptedShellCredential(win)).toBe('committed-peer-token');
       expect(receivedEvents).toEqual([
         { origin: 'http://127.0.0.1:5494', token: 'committed-peer-token' },
       ]);
@@ -312,9 +314,10 @@ describe('connection config readers', () => {
     };
 
     try {
-      // 1. Start with shell-provisioned credential (volatile in sessionStorage, retired from localStorage)
+      // 1. Start with shell-provisioned credential (in-memory only, retired from localStorage and sessionStorage)
       localStore.setItem(CONNECTION_STORAGE_KEY, JSON.stringify({ url: '', token: 'legacy-shell-token' }));
       localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'legacy-session-token');
       expect(readStoredConfig(localStore)).toBeNull();
       expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
       expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
@@ -322,16 +325,14 @@ describe('connection config readers', () => {
       expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'initial-shell-token')).toBe(true);
       expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
       expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
-      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBe('initial-shell-token');
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(readAdoptedShellCredential(win)).toBe('initial-shell-token');
 
-      // 2. Manual owner write (even if legacy managed marker or staged session token lingered)
+      // 2. Manual owner write (even if legacy session token lingered)
       writeStoredConfig({ url: '', token: 'manual-owner-token' }, localStore);
       expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
-      // Even if a caller left a legacy managed marker alongside a different staged session token,
-      // hasExistingOwnerCredential recognizes the manual override and reload retires the stale shell token.
-      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
       sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'initial-shell-token');
-      expect(hasExistingOwnerCredential(localStore, sessionStore)).toBe(true);
+      expect(hasExistingOwnerCredential(localStore)).toBe(true);
 
       const reloadEvents: Array<{ origin: string; token: string }> = [];
       const uninstallReload = installAppShellCredentialListener(win, (detail) => {

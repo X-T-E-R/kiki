@@ -999,15 +999,18 @@ export function stripTokenFromEntry(origin, entry) {
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
 
 /**
- * Builds an origin-checked credential delivery script that writes the peer token
- * only when `window.location.origin === expectedOrigin` after navigation commits,
- * refuses to overwrite an existing non-shell owner connection, and preserves the
- * page's route path, query, non-credential hash, and history state (`idx`).
+ * Builds an origin-checked credential delivery script that stages the peer token
+ * only in the current document's memory (`document.__kikiShellStagedCredential` +
+ * `kiki:shell-token` event) when `window.location.origin === expectedOrigin`
+ * after navigation commits. Never writes credentials to `localStorage`,
+ * `sessionStorage`, or `window.name`, refuses to overwrite an existing non-shell
+ * owner connection, and preserves the page's route path, query, non-credential
+ * hash, and history state (`idx`).
  */
 export function buildCommittedCredentialScript(expectedOrigin, token) {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";var staged=null;try{staged=window.sessionStorage.getItem("kiki.peer.token");}catch(e){}if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!==""||(typeof staged==="string"&&staged.trim()!==""&&staged.trim()!==pTok))){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}return false;}}}catch(e){return false;}try{window.sessionStorage.setItem("kiki.peer.token",t);}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!=="")){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{if(window.document)delete window.document.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{var doc=window.document||window;var used=false;Object.defineProperty(doc,"__kikiShellStagedCredential",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:${originJson},token:t};}});}catch(e){try{(window.document||window).__kikiShellStagedCredential={origin:${originJson},token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
@@ -1149,25 +1152,19 @@ export async function deliverCommittedServerCredential(target, resolved, options
         try {
           const raw = window.localStorage.getItem('kiki.connection');
           const managed = window.localStorage.getItem('kiki.shell.managed') === '1';
-          let staged = null;
-          try {
-            staged = window.sessionStorage.getItem('kiki.peer.token');
-          } catch {}
           if (raw) {
             const parsed = JSON.parse(raw);
             const parsedToken = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
             const parsedUrl = parsed && typeof parsed.url === 'string' ? parsed.url.trim() : '';
-            if (
-              parsedToken !== '' &&
-              (!managed ||
-                parsedUrl !== '' ||
-                (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== parsedToken))
-            ) {
+            if (parsedToken !== '' && (!managed || parsedUrl !== '')) {
               try {
                 window.localStorage.removeItem('kiki.shell.managed');
               } catch {}
               try {
                 window.sessionStorage.removeItem('kiki.peer.token');
+              } catch {}
+              try {
+                if (window.document) delete window.document.__kikiShellStagedCredential;
               } catch {}
               return {
                 ok: false,
@@ -1184,18 +1181,38 @@ export async function deliverCommittedServerCredential(target, resolved, options
           };
         }
         try {
-          window.sessionStorage.setItem('kiki.peer.token', tok);
-        } catch {
-          return {
-            ok: false,
-            reason: 'storage_unavailable',
-            committedOrigin: window.location.origin,
-          };
-        }
-        try {
           window.localStorage.removeItem('kiki.connection');
           window.localStorage.removeItem('kiki.shell.managed');
         } catch {}
+        try {
+          window.sessionStorage.removeItem('kiki.peer.token');
+        } catch {}
+        try {
+          const doc = window.document || window;
+          let used = false;
+          Object.defineProperty(doc, '__kikiShellStagedCredential', {
+            configurable: true,
+            enumerable: false,
+            get() {
+              if (used) return null;
+              used = true;
+              try {
+                delete doc.__kikiShellStagedCredential;
+              } catch {}
+              return { origin: exp, token: tok };
+            },
+          });
+        } catch {
+          try {
+            (window.document || window).__kikiShellStagedCredential = { origin: exp, token: tok };
+          } catch {
+            return {
+              ok: false,
+              reason: 'storage_unavailable',
+              committedOrigin: window.location.origin,
+            };
+          }
+        }
         try {
           window.dispatchEvent(
             new CustomEvent('kiki:shell-token', { detail: { origin: exp, token: tok } }),

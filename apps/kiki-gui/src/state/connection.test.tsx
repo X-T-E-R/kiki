@@ -1684,11 +1684,12 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     expect(applyCommittedShellCredential(window, window.location.origin, 'shell-peer-token-1')).toBe(true);
     expect(localStorage.getItem('kiki.connection')).toBeNull();
     expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
-    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBe('shell-peer-token-1');
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
 
     const first = await mountBrowserShell();
     expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('shell-peer-token-1');
     expect(localStorage.getItem('kiki.connection')).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
 
     // Switch to manual owner credential on the same origin
     await act(async () => {

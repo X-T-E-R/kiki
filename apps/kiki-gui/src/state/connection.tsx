@@ -46,6 +46,7 @@ import { useI18n } from '../i18n';
 import {
   clearAppShellCredentialState,
   installAppShellCredentialListener,
+  readAdoptedShellCredential,
 } from '../lib/appShell';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
@@ -543,10 +544,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       setConnectError(null);
       setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
     });
-    return selectInitialConnection({
+    const initialSelection = selectInitialConnection({
       deepLink: readDeepLinkConfig(),
       stored: readStoredConfig(),
     });
+    if (initialSelection !== null) return initialSelection;
+    const adoptedShellToken = readAdoptedShellCredential(window);
+    if (adoptedShellToken !== null) {
+      return {
+        config: { url: '', token: adoptedShellToken },
+        persist: false,
+        source: 'stored',
+        scopeId: 'direct:',
+      };
+    }
+    return null;
   });
   const config = selection?.config ?? null;
   const scopeId = selection?.scopeId ?? (desktopRuntime ? 'local' : `direct:${config?.url.trim().replace(/\/+$/, '') ?? ''}`);
