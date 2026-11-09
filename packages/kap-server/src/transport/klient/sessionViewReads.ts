@@ -111,7 +111,8 @@ function residentTimelineEntity(service: TranscriptService, sessionId: string, a
   if (source.kind !== 'turn' && source.kind !== 'frame') return undefined;
   if (typeof service.forSessionLive !== 'function') return undefined;
   const turn = service.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
-  if (turn === undefined || source.kind === 'turn') return turn;
+  if (turn === undefined) return undefined;
+  if (source.kind === 'turn') return turn.stepsPartial === true || isOrphanTurn(turn) ? undefined : turn;
   return turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
 }
 
@@ -348,7 +349,7 @@ async function readSessionViewTranscriptPageRaw(
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
   const singleBeforeTurn = input.beforeTurn !== undefined && input.pageSize === 1;
   const sourceDirection: 'head' | 'tail' = input.afterTurn !== undefined || input.afterItem !== undefined || (anchored && !singleBeforeTurn) ? 'head' : 'tail';
-  const tailFirst = !anchored;
+  const tailFirst = true;
   const store = transcriptService.forSessionLive(sessionId, { tailFirst });
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst, signal: input.signal });
@@ -359,7 +360,7 @@ async function readSessionViewTranscriptPageRaw(
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;
-      const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
+      const cold = loaded.preparing ? loaded.snapshot : await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
         (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), query.beforeTurn, loaded.snapshot);
       if (cold === undefined) return undefined;
       const anchor = query.beforeItem;
@@ -761,7 +762,7 @@ async function readColdTranscriptPage(
       located = locate(next.prefixMaterialized);
       orphan = findOrphan();
       extendingBoundary = next.progressed;
-      if (!next.progressed || (orphan !== undefined && performance.now() - startedAt >= 250) ||
+      if (!next.progressed || performance.now() - startedAt >= 250 ||
           (query.orphanTurn !== undefined && orphan === undefined && snapshot.items.some(item => item.kind === 'turn' && item.turnId === query.orphanTurn && hasTurnOpening(item)))) break;
     }
   }
@@ -803,7 +804,7 @@ async function readColdTranscriptPage(
       if (next === undefined) break;
       snapshot = next.snapshot;
       located = locate(next.prefixMaterialized);
-      if (!next.progressed || !located.missing) break;
+      if (!next.progressed || !located.missing || performance.now() - startedAt >= 250) break;
     }
   }
   if (anchorPending !== undefined) {
@@ -816,10 +817,10 @@ async function readColdTranscriptPage(
       query.refreshTurn = updated.turnId;
     }
   }
-  if (anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true &&
+  if (anchored && !located.missing && !located.page.hasMore && snapshot.hasMoreOlder === true &&
       typeof transcriptService.coldWindowReachedStart === 'function') {
     if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };
-    else if (source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined &&
+    else if (located.page.items.length > 0 && source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined &&
         boundedTranscriptSnapshot({ ...snapshot, items: located.page.items }, input.agentId, 'tail', 64 * 1024).items.length === located.page.items.length) {
       const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot);
       if (next?.progressed) {

@@ -3928,6 +3928,17 @@ function transcriptItemId(item: TranscriptItem): string {
 
 export function completeTranscriptTurnStructure(current: TranscriptTurn, canonical: TranscriptTurn): TranscriptTurn {
   const retainLive = current.state === 'running' || canonical.state === 'running';
+  const orphan = current.origin.kind === 'other' && current.message === undefined && current.promptId === undefined && current.startedAt === undefined;
+  const opening = orphan ? {
+    origin: canonical.origin,
+    prompt: canonical.prompt,
+    promptId: canonical.promptId,
+    message: canonical.message,
+    delivery: canonical.delivery,
+    presentation: canonical.presentation,
+    attachmentIds: canonical.attachmentIds,
+    startedAt: canonical.startedAt,
+  } : {};
   const previousSteps = new Map(current.steps.map(step => [step.stepId, step]));
   const steps = canonical.steps.map(step => {
     const previous = previousSteps.get(step.stepId);
@@ -3948,9 +3959,12 @@ export function completeTranscriptTurnStructure(current: TranscriptTurn, canonic
     return { ...header, frames: [...frames, ...previous.frames.filter(frame => !ids.has(frame.frameId))] };
   });
   const ids = new Set(steps.map(step => step.stepId));
-  return carryContentHydration(current, { ...current, stepsPartial: undefined,
+  return carryContentHydration(current, { ...current, ...opening, stepsPartial: undefined,
     steps: [...steps, ...current.steps.filter(step => !ids.has(step.stepId))],
-    contentRefs: (current.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps') });
+    contentRefs: [
+      ...(current.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps' && (!orphan || (ref.path[0] !== 'prompt' && ref.path[0] !== 'attachmentIds'))),
+      ...(orphan ? (canonical.contentRefs ?? []).filter(ref => ref.path[0] === 'prompt' || ref.path[0] === 'attachmentIds') : []),
+    ] });
 }
 
 export function recoverTranscriptTurn(current: TranscriptTurn, opening: TranscriptTurn): TranscriptTurn {

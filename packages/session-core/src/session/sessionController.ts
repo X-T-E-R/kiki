@@ -1887,9 +1887,10 @@ export class SessionController {
           if (item.kind !== 'turn' || item.startedAt === undefined) continue;
           const live = store.getTurn(item.turnId);
           const current = live ?? currentSnapshot.items.find((existing): existing is TranscriptTurn => existing.kind === 'turn' && existing.turnId === item.turnId);
-          if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
+          const wasOrphan = current?.origin.kind === 'other' && current.message === undefined && current.promptId === undefined && current.startedAt === undefined;
+          if (!wasOrphan && (page.next_cursor === undefined || page.next_cursor === beforeItem)) continue;
           recoveredOpening = true;
-          if (live === undefined) continue;
+          if (!wasOrphan || live === undefined) continue;
           recoveredTurns.push(recoverTranscriptTurn(current, item));
         }
         const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));

@@ -2404,6 +2404,7 @@ export class TranscriptService {
     const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, false);
     const found = turnOf(window);
     if (found !== undefined || window === undefined || window.start === 0) return found;
+    if (window.end - window.start > FIRST_SCREEN_WINDOW_BYTES) return undefined;
     return turnOf(await this.extendColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, FIRST_SCREEN_WINDOW_BYTES, false));
   }
 
@@ -2502,8 +2503,11 @@ export class TranscriptService {
     if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
       signal?.throwIfAborted();
       const turn = transcript.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
-      const entity = source.kind === 'turn' ? turn : turn?.steps.find((step) => step.stepId === source.stepId)
-        ?.frames.find((frame) => frame.frameId === source.id);
+      const completeTurn = turn !== undefined && turn.stepsPartial !== true &&
+        !(turn.origin.kind === 'other' && turn.message === undefined && turn.promptId === undefined && turn.startedAt === undefined);
+      const entity = source.kind === 'turn'
+        ? (completeTurn ? turn : undefined)
+        : turn?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
       if (entity !== undefined) return entity;
     }
     const result = await this.detailLocator().readCanonicalEntity(sessionId, agentId, source, signal);

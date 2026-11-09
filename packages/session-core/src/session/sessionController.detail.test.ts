@@ -395,6 +395,52 @@ describe('SessionController transcript detail', () => {
     } finally { lease.release(); controller.close(); }
   });
 
+  it('recovers an orphan partial turn opening during structure expansion and finishes older paging at source start without cursor error', async () => {
+    const { RPCError } = await import('@kiki/klient/session-view');
+    const source = { kind: 'turn' as const, id: 't0' };
+    const step0 = { kind: 'step' as const, stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f0', role: 'assistant' as const, text: 'earlier step' }] };
+    const step1 = { kind: 'step' as const, stepId: 's1', turnId: 't0', ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'tail step' }] };
+    const stepRef: ContentRef = { source, revision: 'steps-rev', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const canonicalPreview: TranscriptTurn = {
+      kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      prompt: 'Recovered child opening', startedAt: FIXED_AT, steps: [step1], contentRefs: [stepRef],
+    };
+    const orphanPartial: TranscriptTurn = {
+      kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'other' },
+      stepsPartial: true, steps: [{ ...step1, ordinal: 0 }],
+    };
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => ({
+      ref, start: 0, value: [step0], contentRefs: [],
+    }));
+    const { controller, deliver, view } = harness(undefined, content);
+    const base = { session_id: 'session_test', agent_id: 'child', tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    vi.mocked(view.transcript.page)
+      .mockRejectedValueOnce(new RPCError(40923, 'history_canonical_preparing'))
+      .mockResolvedValueOnce({ ...base, items: [canonicalPreview], has_more: true, next_cursor: 'cursor-orphan-t0', coverage: { kind: 'unknown', hasMoreOlder: true } })
+      .mockResolvedValueOnce({ ...base, items: [{ ...canonicalPreview, steps: [step0, step1], contentRefs: undefined }], has_more: true, next_cursor: 'cursor-refreshed-t0', coverage: { kind: 'unknown', hasMoreOlder: true } })
+      .mockResolvedValueOnce({ ...base, items: [], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    await controller.open();
+    controller.retainAgentView('child-view', 'child', 'delta');
+    deliver(resetEvent('child', emptySnapshot({ items: [orphanPartial], hasMoreOlder: true, olderCursor: 'cursor-orphan-t0' }), 2, true));
+    const lease = controller.beginContentRead('child', source, ['steps']);
+    try {
+      await vi.waitFor(() => {
+        const state = controller.getAgentState('child');
+        expect(state.blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['earlier step', 'tail step']);
+        expect(state.blocks.some(block => block.kind === 'user' && block.text === 'Recovered child opening')).toBe(true);
+      });
+      expect(controller.getAgentState('child').detailLoads['structure:t0']).toBeUndefined();
+      const firstOlder = await controller.loadOlderHistory('child');
+      expect(firstOlder.kind).toBe('advanced');
+      expect(controller.getAgentState('child').olderError).toBeUndefined();
+      const secondOlder = await controller.loadOlderHistory('child');
+      expect(secondOlder).toEqual({ kind: 'exhausted', changed: true });
+      expect(controller.getAgentState('child')).toMatchObject({ hasMoreHistory: false, loadingOlder: false, olderError: undefined });
+    } finally { lease.release(); controller.close(); }
+  });
+
   it('stages every canonical frame before replacing local partial indices and retains hydrated bodies', async () => {
     const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
       steps: Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't0', ordinal, state: 'completed',
