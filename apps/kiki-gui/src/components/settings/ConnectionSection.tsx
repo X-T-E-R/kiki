@@ -227,7 +227,7 @@ function CurrentConnectionContent() {
                   data-conn-app-shell
                   className={SECONDARY_BUTTON}
                 >
-                  {t('connect.otherMachine')}
+                  {t('connect.switchComputer')}
                 </a>
               ) : null}
             </SettingField>

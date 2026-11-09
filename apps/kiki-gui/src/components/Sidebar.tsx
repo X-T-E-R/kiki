@@ -1333,16 +1333,16 @@ export function Sidebar({
             placeholder={t('sidebar.searchPlaceholder')}
             title={t('sidebar.searchHint')}
             aria-label={t('sidebar.searchAria')}
-            className="h-8 w-full rounded-lg border border-transparent bg-transparent pr-7 pl-7 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.04] focus:border-hairline-strong focus:bg-paper focus-visible:outline-none"
+            className="h-8 w-full rounded-lg border border-transparent bg-transparent pr-7 pl-7 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.04] focus:border-hairline-strong focus:bg-paper focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:text-[16px]"
           />
           {searchInput === '' ? (
-            <kbd aria-hidden className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-hairline px-1 font-sans text-[11px] leading-4 text-ink-faint">/</kbd>
+            <kbd aria-hidden className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-hairline px-1 font-sans text-[11px] leading-4 text-ink-faint pointer-coarse:hidden">/</kbd>
           ) : (
             <button
               type="button"
               aria-label={t('sidebar.clearSearch')}
               onClick={() => { setSearchInput(''); searchRef.current?.focus(); }}
-              className="absolute top-1/2 right-1 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+              className="absolute top-1/2 right-1 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:bg-hairline hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9"
             >
               <Icon name="close" size={12} />
             </button>
@@ -1770,7 +1770,7 @@ export function Sidebar({
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => { void navigate('/settings'); }}
-          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-20 pl-2 text-left text-[13px] ${
+          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-20 pl-2 text-left text-[13px] pointer-coarse:h-11 ${
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
@@ -1798,7 +1798,7 @@ export function Sidebar({
             version: meta.server_version,
             status: t(`sidebar.ws.${wsStatus}`),
           })}
-          className="absolute top-1/2 right-3 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06]"
+          className="absolute top-1/2 right-3 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] pointer-coarse:right-2 pointer-coarse:h-10 pointer-coarse:w-10"
         >
           <span
             className={`h-2 w-2 rounded-full ${
@@ -2244,7 +2244,7 @@ function SessionRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -2438,7 +2438,7 @@ function RoomConversationRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               item.pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >

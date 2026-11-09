@@ -237,7 +237,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   }
 
   return (
-    <div className="px-6 pb-2">
+    <div className="px-3 pb-2 sm:px-6">
       <section
         ref={rootRef}
         data-needs-you-tray

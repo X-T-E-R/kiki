@@ -334,7 +334,7 @@ function BrowserConnectForm({
     <div className="px-7 pt-6 pb-7">
       <Wordmark size="lg" />
       <p className="mt-3 font-display text-[18px] leading-snug text-ink-soft">
-        {t('connect.tagline')}
+        {t(shellConnect !== null ? 'connect.shellTagline' : 'connect.tagline')}
       </p>
 
       <form onSubmit={submit} className="mt-6">
@@ -344,7 +344,7 @@ function BrowserConnectForm({
             data-app-shell-connect
             className="block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
-            {t('connect.otherMachine')}
+            {t('connect.switchComputer')}
           </a>
         ) : (
           <button
@@ -368,7 +368,7 @@ function BrowserConnectForm({
           className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           <DisclosureChevron open={manualOpen} className="text-current" />
-          {t('connect.otherMachine')}
+          {t(shellConnect !== null ? 'connect.useAccessToken' : 'connect.otherMachine')}
         </button>
         <div id="connect-manual" hidden={!manualOpen} className="mt-3">
 

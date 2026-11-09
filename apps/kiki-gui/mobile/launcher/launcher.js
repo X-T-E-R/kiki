@@ -216,7 +216,7 @@ async function deleteWebPeerToken(serverId, origins = []) {
 const COPY = {
   en: {
     connectTitle: 'Connect a computer',
-    lede: 'Scan the QR code on your computer, or enter its address.',
+    lede: 'Open the QR code in Settings → Remote Connection on your computer.',
     tabConnect: 'Connect',
     tabComputers: 'Computers',
     tabNetwork: 'Network',
@@ -276,12 +276,14 @@ const COPY = {
     addressSaved: 'Updated address to {host} ({layer}). Device trust preserved.',
     pairingRequired:
       'Enter a pairing code or scan QR to trust {host}. Kept {label}.',
+    pairingRevoked:
+      'Pairing with {label} expired. Scan QR or enter a new code.',
     identityMismatch:
       '{host} belongs to another Kiki computer. Enter a pairing code to pair; kept {label}.',
   },
   zh: {
     connectTitle: '连接电脑',
-    lede: '扫描电脑上的二维码，或输入它的地址。',
+    lede: '在电脑的 设置 → 远程连接 打开二维码。',
     tabConnect: '连接',
     tabComputers: '电脑',
     tabNetwork: '网络',
@@ -341,6 +343,8 @@ const COPY = {
     addressSaved: '已更新为 {host}（{layer}），已保留配对信任。',
     pairingRequired:
       '请输入新配对码或扫码以信任 {host}；已保留 {label}。',
+    pairingRevoked:
+      '与 {label} 的配对已失效，请重新扫码或输入新配对码。',
     identityMismatch:
       '{host} 属于另一台 Kiki 电脑，请用新配对码重新配对；已保留 {label}。',
   },
@@ -359,6 +363,7 @@ const input = document.querySelector('#server');
 const codeInput = document.querySelector('#pair-code');
 const layerBadge = document.querySelector('#layer-badge');
 const button = document.querySelector('#open');
+const hint = document.querySelector('#hint');
 const problem = document.querySelector('#problem');
 const scanButton = document.querySelector('#scan-qr');
 const manualToggle = document.querySelector('#manual-toggle');
@@ -401,6 +406,8 @@ function setTab(name, options = {}) {
   if (!views[name]) return;
   if (name !== 'connect' && activeStream) stopCameraScanner();
   for (const [key, view] of Object.entries(views)) {
+    if (options.animate) view.dataset.animate = 'true';
+    else delete view.dataset.animate;
     view.hidden = key !== name;
   }
   for (const tab of tabs) {
@@ -453,8 +460,20 @@ function pairingRequiredMessageFor(originOrRaw, label) {
     .replace('{label}', label || (lang === 'zh' ? '已保存电脑' : 'saved computer'));
 }
 
+function pairingRevokedMessageFor(originOrRaw, label) {
+  const host = hostOf(originOrRaw);
+  return copy.pairingRevoked
+    .replace('{host}', host)
+    .replace('{label}', label || host);
+}
+
 function probeOkMessageFor(origin) {
   return copy.probeOk.replace('{host}', hostOf(origin)).replace('{layer}', layerLabelFor(origin));
+}
+
+function syncHintVisibility() {
+  if (!hint) return;
+  hint.hidden = !problem.hidden || !scanFeedback.hidden;
 }
 
 function setManualExpanded(expanded) {
@@ -469,12 +488,14 @@ function setManualExpanded(expanded) {
   } else {
     delete views.connect.dataset.manualOpen;
   }
+  syncHintVisibility();
 }
 
 function showProblem(text) {
   problem.textContent = text;
   problem.hidden = text === '';
   input.ariaInvalid = text === '' ? 'false' : 'true';
+  syncHintVisibility();
   if (text !== '') {
     setManualExpanded(true);
     setTab('connect', { scroll: false });
@@ -490,6 +511,7 @@ function showProbeResult(text, tone) {
 function showScanFeedback(text) {
   scanFeedback.textContent = text;
   scanFeedback.hidden = text === '';
+  syncHintVisibility();
   setManualExpanded(!form.hidden);
 }
 
@@ -523,6 +545,9 @@ async function probeServer(origin, probeOptions = {}) {
       });
       return {
         ok: Boolean(res?.ok),
+        status: typeof res?.status === 'number' ? res.status : undefined,
+        reason: typeof res?.reason === 'string' && res.reason !== '' ? res.reason : undefined,
+        authRejected: res?.authRejected === true,
         targetLabel: typeof res?.targetLabel === 'string' && res.targetLabel !== '' ? res.targetLabel : undefined,
         targetHomeId: typeof res?.targetHomeId === 'string' && res.targetHomeId !== '' ? res.targetHomeId : undefined,
         targetHostId: typeof res?.targetHostId === 'string' && res.targetHostId !== '' ? res.targetHostId : undefined,
@@ -608,6 +633,8 @@ async function openServer(origin, entry, options = {}) {
     renderSavedServers();
     if (resolved.reason === 'identity_mismatch') {
       promptForPairing(origin, identityMismatchMessageFor(origin, resolved.server?.label ?? options.label));
+    } else if (resolved.reason === 'pairing_revoked') {
+      promptForPairing(origin, pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label));
     } else if (resolved.reason === 'pairing_required') {
       promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
     } else {
@@ -643,6 +670,8 @@ async function openServer(origin, entry, options = {}) {
           });
           renderSavedServers();
           promptForPairing(origin, identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
+        } else if (res?.reason === 'pairing_revoked') {
+          promptForPairing(origin, pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label));
         } else if (res?.reason === 'pairing_required') {
           promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
         } else {
@@ -890,6 +919,39 @@ function el(tag, className, text) {
   return node;
 }
 
+function svgIcon(pathData) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', pathData);
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.6');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
+  return svg;
+}
+
+function moreDotsIcon() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const cx of ['5', '10', '15']) {
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', cx);
+    circle.setAttribute('cy', '10');
+    circle.setAttribute('r', '1.5');
+    circle.setAttribute('fill', 'currentColor');
+    svg.append(circle);
+  }
+  return svg;
+}
+
 function forgetServer(server) {
   const allOrigins = [...new Set([server.origin, ...(server.origins ?? []), ...(server.verifiedOrigins ?? [])])];
   removeSavedServer(window.localStorage, server.id);
@@ -925,13 +987,14 @@ function renderComputerRow(server, index) {
   if (server.paired) titleRow.append(el('span', 'saved-badge', copy.pairedBadge));
 
   const metaRow = el('div', 'saved-meta');
-  const hostSpan = el('span', 'recent-host', displayOrigin(server.origin));
+  const hostSpan = el('span', 'recent-host', hostOf(server.origin));
   if (index === 0) hostSpan.id = 'recent-host';
   metaRow.append(hostSpan, el('span', 'saved-layer', `· ${shortLayerLabelFor(server.origin)}`));
   summary.append(titleRow, metaRow);
 
-  const arrow = el('span', 'recent-go', '→');
+  const arrow = el('span', 'recent-go');
   arrow.setAttribute('aria-hidden', 'true');
+  arrow.append(svgIcon('M7.5 4.5 13 10l-5.5 5.5'));
   openBtn.append(summary, arrow);
   openBtn.addEventListener('click', async () => {
     openBtn.disabled = true;
@@ -945,9 +1008,11 @@ function renderComputerRow(server, index) {
   });
 
   const isManaging = managingServerId === server.id;
-  const manageToggle = el('button', 'saved-edit-toggle', isManaging ? copy.manageDone : copy.manage);
+  const manageToggle = el('button', 'saved-edit-toggle');
   manageToggle.type = 'button';
+  manageToggle.setAttribute('aria-label', `${isManaging ? copy.manageDone : copy.manage} · ${server.label}`);
   manageToggle.setAttribute('aria-expanded', isManaging ? 'true' : 'false');
+  manageToggle.append(moreDotsIcon());
   manageToggle.addEventListener('click', () => {
     managingServerId = managingServerId === server.id ? null : server.id;
     renderSavedServers();
@@ -1005,12 +1070,22 @@ async function testServerAddress(server, rawAddress, trigger) {
   );
   trigger.disabled = false;
   trigger.textContent = original;
-  if (!probe.ok) {
-    setAddressStatus(server.id, unreachableMessageFor(parsed.origin), 'danger');
-    return;
-  }
   if (server.paired && server.targetHomeId && probe.targetHomeId && probe.targetHomeId !== server.targetHomeId) {
     setAddressStatus(server.id, identityMismatchMessageFor(parsed.origin, server.label), 'danger');
+    return;
+  }
+  if (
+    probe.reason === 'pairing_revoked' ||
+    probe.authRejected === true ||
+    probe.status === 401 ||
+    probe.status === 403 ||
+    (isNativeShell() && isServerOriginVerified(server, parsed.origin) && probe.ok && !probe.mutualProofVerified)
+  ) {
+    setAddressStatus(server.id, pairingRevokedMessageFor(parsed.origin, server.label), 'danger');
+    return;
+  }
+  if (!probe.ok) {
+    setAddressStatus(server.id, unreachableMessageFor(parsed.origin), 'danger');
     return;
   }
   setAddressStatus(server.id, probeOkMessageFor(parsed.origin), 'ok');
@@ -1148,12 +1223,12 @@ function renderSavedServers() {
 
 for (const tab of tabs) {
   tab.addEventListener('click', () => {
-    setTab(tab.dataset.tab);
+    setTab(tab.dataset.tab, { animate: true });
   });
 }
 
 emptyConnect.addEventListener('click', () => {
-  setTab('connect');
+  setTab('connect', { animate: true });
 });
 
 scanButton.addEventListener('click', () => {
@@ -1224,7 +1299,7 @@ probeInput.addEventListener('keydown', (event) => {
   }
 });
 
-testButton.addEventListener('click', async () => {
+async function runAddressTest() {
   const target = readTarget(probeInput.value);
   if (!target.ok) {
     showProbeResult(copy[target.reason] || copy.invalid, 'danger');
@@ -1234,14 +1309,30 @@ testButton.addEventListener('click', async () => {
   showProbeResult('');
   testButton.disabled = true;
   testButton.textContent = copy.testing;
-  const probe = await probeServer(target.origin);
+  const exactSaved = readSavedServers(window.localStorage).find(
+    (s) => s.origin === target.origin || s.origins?.includes(target.origin),
+  ) ?? null;
+  const probe = await probeServer(target.origin, {
+    serverId: exactSaved?.id,
+    grantId: exactSaved?.grantId,
+  });
   testButton.disabled = false;
   testButton.textContent = copy.testAddress;
   if (probe.ok) {
-    showProbeResult(probeOkMessageFor(target.origin), 'ok');
+    if (exactSaved?.paired && isNativeShell() && probe.mutualProofVerified === false) {
+      showProbeResult(pairingRevokedMessageFor(target.origin, exactSaved.label), 'danger');
+    } else {
+      showProbeResult(probeOkMessageFor(target.origin), 'ok');
+    }
+  } else if (probe.reason === 'pairing_revoked' || probe.authRejected === true) {
+    showProbeResult(pairingRevokedMessageFor(target.origin, exactSaved?.label), 'danger');
   } else {
     showProbeResult(unreachableMessageFor(target.origin), 'danger');
   }
+}
+
+testButton.addEventListener('click', () => {
+  void runAddressTest();
 });
 
 form.addEventListener('submit', (event) => {
@@ -1289,6 +1380,16 @@ function savedOrigin() {
   }
 }
 
+function findSavedServerByOrigin(origin) {
+  if (!origin) return null;
+  const servers = readSavedServers(window.localStorage);
+  return (
+    servers.find((s) => s.origin === origin || s.origins?.includes(origin)) ??
+    servers[0] ??
+    null
+  );
+}
+
 function showUnreachable() {
   const attempted = savedOrigin();
   button.disabled = false;
@@ -1300,6 +1401,24 @@ function showUnreachable() {
     return;
   }
   reportUnreachable(attempted);
+}
+
+function showPairingRecovery(kind) {
+  const attempted = savedOrigin();
+  button.disabled = false;
+  updateInputAffordances();
+  if (attempted === null) {
+    setManualExpanded(true);
+    setTab('connect');
+    input.focus();
+    return;
+  }
+  const saved = findSavedServerByOrigin(attempted);
+  const message =
+    kind === 'identity_mismatch'
+      ? identityMismatchMessageFor(attempted, saved?.label)
+      : pairingRevokedMessageFor(attempted, saved?.label);
+  promptForPairing(attempted, message);
 }
 
 async function consumePendingPairIfAny() {
@@ -1324,6 +1443,10 @@ function landingTab() {
 window.addEventListener('hashchange', () => {
   if (window.location.hash === '#unreachable') {
     showUnreachable();
+  } else if (window.location.hash === '#pairing_revoked') {
+    showPairingRecovery('pairing_revoked');
+  } else if (window.location.hash === '#identity_mismatch') {
+    showPairingRecovery('identity_mismatch');
   } else if (window.location.hash === '#pair') {
     void consumePendingPairIfAny();
   } else if (window.location.hash === '#change') {
@@ -1350,6 +1473,8 @@ const handledPair = await consumePendingPairIfAny();
 if (!handledPair) {
   if (reason === 'unreachable') {
     showUnreachable();
+  } else if (reason === 'pairing_revoked' || reason === 'identity_mismatch') {
+    showPairingRecovery(reason);
   } else if (primaryServer !== null && firstVisit && reason === '') {
     await openSavedServer(primaryServer);
   }

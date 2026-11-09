@@ -72,9 +72,9 @@ const STRIP_CLASS =
 const DETAIL_WELL =
   'mt-2 max-h-40 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
 const PRIMARY_BUTTON =
-  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
-  'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 
 /* ── External permission display (ACP harness, design §9) ──────────────── */
 
@@ -508,7 +508,7 @@ export function ApprovalCard({
                   ? t('ia.approving')
                   : t('ia.approve')}{' '}
                 {showShortcutHints ? (
-                  <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium">y</kbd>
+                  <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium pointer-coarse:hidden">y</kbd>
                 ) : null}
               </button>
               {approvalRule !== undefined ? (
@@ -533,16 +533,16 @@ export function ApprovalCard({
               >
                 {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
                 {showShortcutHints ? (
-                  <kbd className="ml-1 rounded-[4px] bg-ink/[0.07] px-1 font-mono text-[11px] text-ink-soft">n</kbd>
+                  <kbd className="ml-1 rounded-[4px] bg-ink/[0.07] px-1 font-mono text-[11px] text-ink-soft pointer-coarse:hidden">n</kbd>
                 ) : null}
               </button>
-              <label className="ml-1 flex min-h-8 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft">
+              <label className="ml-1 flex min-h-8 pointer-coarse:min-h-10 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft">
                 <input
                   type="checkbox"
                   checked={forSession}
                   disabled={submitting !== null}
                   onChange={(event) => { setForSession(event.target.checked); }}
-                  className="h-3.5 w-3.5 accent-[var(--color-selected-ink)]"
+                  className="h-3.5 w-3.5 pointer-coarse:h-4 pointer-coarse:w-4 accent-[var(--color-selected-ink)]"
                 />
                 {t('ia.remember', { tool: block.request.tool_name })}
               </label>

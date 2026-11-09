@@ -1621,15 +1621,22 @@ ${origin}
             Reply r = replies.take();
             r.started.countDown();
             if (!r.release.await(5, TimeUnit.SECONDS)) throw new AssertionError("handshake release timeout");
-            return new HandshakeResult(true, false, r.home, r.host, "fixture", r.mutualVerified);
+            return new HandshakeResult(r.ok, r.redirected, r.statusCode, r.home, r.host, "fixture", r.mutualVerified);
         } catch (InterruptedException e) { throw new RuntimeException(e); }
     }
     private static class Reply {
         final CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+        final boolean ok, redirected, mutualVerified;
+        final int statusCode;
         final String home, host;
-        final boolean mutualVerified;
-        Reply(String home, String host) { this(home, host, true); }
+        Reply(String home, String host) { this(true, false, 200, home, host, true); }
         Reply(String home, String host, boolean mutualVerified) {
+            this(true, false, 200, home, host, mutualVerified);
+        }
+        Reply(boolean ok, boolean redirected, int statusCode, String home, String host, boolean mutualVerified) {
+            this.ok = ok;
+            this.redirected = redirected;
+            this.statusCode = statusCode;
             this.home = home;
             this.host = host;
             this.mutualVerified = mutualVerified;
@@ -1789,7 +1796,7 @@ ${origin}
             throw new AssertionError("Expected delivery to Reloaded-After-Stale-Failure, got: " + p3.view.deliveries);
         }
 
-        // Case 4:Current document handshake mismatch (without any newer navigation) still clears activeAuth and redirects to launcher
+        // Case 4:Current document handshake mismatch (without any newer navigation) still clears activeAuth and redirects to launcher with #identity_mismatch
         NativeDeliveryCheck p4 = new NativeDeliveryCheck();
         p4.pendingAuthEpoch = 10;
         p4.activeAuthOrigin = ORIGIN;
@@ -1802,8 +1809,8 @@ ${origin}
         Runnable activeFallback = p4.view.posted.poll(5, TimeUnit.SECONDS);
         if (activeFallback == null) throw new AssertionError("Current mismatch did not schedule fallback");
         activeFallback.run();
-        if (!"https://localhost/index.html#unreachable".equals(p4.view.url)) {
-            throw new AssertionError("Expected current mismatch to navigate to launcher, got: " + p4.view.url);
+        if (!"https://localhost/index.html#identity_mismatch".equals(p4.view.url)) {
+            throw new AssertionError("Expected current mismatch to navigate to launcher #identity_mismatch, got: " + p4.view.url);
         }
         if (p4.activeAuthServerId != null) {
             throw new AssertionError("Expected current mismatch to clear activeAuthServerId");
@@ -1843,8 +1850,8 @@ ${origin}
             throw new AssertionError("Expected delivery to Previous-A-document, got: " + p5.view.deliveries);
         }
 
-        // Case 6: Replacement server B echoes matching Home A identity (home-a / host-a) but fails mutual proof;
-        // deliverCommittedToken must reject it, clear activeAuthServerId, navigate to launcher, and deliver zero token
+        // Case 6: Revoked grant or spoofed Home A identity (home-a / host-a) without mutual proof;
+        // deliverCommittedToken must reject it, clear activeAuthServerId, navigate to #pairing_revoked, and deliver zero token
         NativeDeliveryCheck p6 = new NativeDeliveryCheck();
         p6.pendingAuthEpoch = 12;
         p6.activeAuthOrigin = ORIGIN;
@@ -1861,8 +1868,37 @@ ${origin}
         if (!p6.view.deliveries.isEmpty()) {
             throw new AssertionError("Unverified mutual proof delivered token: " + p6.view.deliveries);
         }
-        if (!"https://localhost/index.html#unreachable".equals(p6.view.url) || p6.activeAuthServerId != null) {
-            throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to launcher");
+        if (!"https://localhost/index.html#pairing_revoked".equals(p6.view.url) || p6.activeAuthServerId != null) {
+            throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to #pairing_revoked: " + p6.view.url);
+        }
+
+        // Case 6b: Explicit HTTP 401/403 vs real network outage (status 0 / 503) in classifyPairedHandshakeFailure and deliverCommittedToken
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false), "home-a", true))) {
+            throw new AssertionError("Expected 401 handshake to classify as pairing_revoked");
+        }
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 403, "", "", "", false), "home-a", true))) {
+            throw new AssertionError("Expected 403 handshake to classify as pairing_revoked");
+        }
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 503, "", "", "", false), "home-a", true))) {
+            throw new AssertionError("Expected 503 handshake to classify as unreachable");
+        }
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 0, "", "", "", false), "home-a", true))) {
+            throw new AssertionError("Expected network failure (status 0) to classify as unreachable");
+        }
+        NativeDeliveryCheck p6Outage = new NativeDeliveryCheck();
+        p6Outage.pendingAuthEpoch = 14;
+        p6Outage.activeAuthOrigin = ORIGIN;
+        p6Outage.activeAuthServerId = "home-a";
+        Reply outageReply = new Reply(false, false, 0, "", "", false);
+        p6Outage.replies.add(outageReply);
+        p6Outage.deliverCommittedToken(p6Outage.view, p6Outage.view.url, false);
+        if (!outageReply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Outage callback not started");
+        outageReply.release.countDown();
+        Runnable outageFallback = p6Outage.view.posted.poll(5, TimeUnit.SECONDS);
+        if (outageFallback == null) throw new AssertionError("Outage did not schedule fallback");
+        outageFallback.run();
+        if (!"https://localhost/index.html#unreachable".equals(p6Outage.view.url) || p6Outage.activeAuthServerId != null) {
+            throw new AssertionError("Expected network outage to navigate to #unreachable, got: " + p6Outage.view.url);
         }
 
         // Case 7: Actual Java crypto helpers (sha256Hex, hmacSha256Hex, generateHandshakeNonce, constantTimeEquals)
@@ -1981,8 +2017,9 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       });
       req.on('end', () => {
         const body = JSON.parse(raw || '{}');
-        if (activeServer === 'A' && body.code === '2345-6789') {
+        if (activeServer === 'A' && (body.code === '2345-6789' || body.code === '6789-2345')) {
           grantRevoked = false;
+          const isRepair = body.code === '6789-2345';
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(
             JSON.stringify({
@@ -1990,8 +2027,8 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
               data: {
                 target: identityA,
                 targetLabel: 'Studio Public Web',
-                grantId: 'grant-web-a',
-                revision: 1,
+                grantId: isRepair ? 'grant-web-a-v2' : 'grant-web-a',
+                revision: isRepair ? 2 : 1,
                 peerToken: peerTokenA,
               },
             }),
@@ -2009,7 +2046,10 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
           const expectedReqProof = createHmac('sha256', expectedDigestA)
             .update(`kiki-handshake-req-v1:${nonceHeader}`)
             .digest('hex');
-          if (proofHeader === expectedReqProof && (!grantHeader || grantHeader === 'grant-web-a')) {
+          if (
+            proofHeader === expectedReqProof &&
+            (!grantHeader || grantHeader === 'grant-web-a' || grantHeader === 'grant-web-a-v2')
+          ) {
             const resProof = createHmac('sha256', expectedDigestA)
               .update(`kiki-handshake-res-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
               .digest('hex');
@@ -2034,6 +2074,28 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
         }
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+        return;
+      }
+      if (activeServer === 'A-direct-revoked') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityA,
+              serverId: 'srv-web-a',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      if (activeServer === 'A-outage') {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ code: 50300, msg: 'service_unavailable' }));
         return;
       }
       if (activeServer === 'B-echo-digest') {
@@ -2179,7 +2241,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(blockedOnB.ok, false);
-    assert.equal(blockedOnB.reason, 'unreachable');
+    assert.equal(blockedOnB.reason, 'pairing_revoked');
     assert.equal(blockedOnB.tokenDelivered, false);
     assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when pre-open handshake fails');
     for (const req of requestsToB) {
@@ -2211,7 +2273,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(spoofedReplayPreOpen.ok, false);
-    assert.equal(spoofedReplayPreOpen.reason, 'unreachable');
+    assert.equal(spoofedReplayPreOpen.reason, 'pairing_revoked');
     assert.equal(spoofedReplayPreOpen.tokenDelivered, false);
     assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when B replays stale proof with A identity');
 
@@ -2221,7 +2283,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       requireMutualProof: true,
     });
     assert.equal(midFlightSpoofCommit.ok, false);
-    assert.equal(midFlightSpoofCommit.reason, 'unreachable');
+    assert.equal(midFlightSpoofCommit.reason, 'pairing_revoked');
     assert.equal(midFlightSpoofCommit.tokenDelivered, false);
     assert.equal(await page.evaluate(() => window.document.__kikiShellStagedCredential ?? null), null);
     for (const req of requestsToB) {
@@ -2230,7 +2292,8 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       assert.notEqual(req.proof, peerTokenA);
     }
 
-    // 6. Revoking the grant on A immediately causes reopen to fail mutual proof without leaking token
+    // 6. Revoking the grant on A (401 on public web listener, or 200 without mutual proof on direct port)
+    // immediately surfaces pairing_revoked without leaking token, while real 503 outage remains unreachable:
     activeServer = 'A';
     grantRevoked = true;
     const afterRevoke = await openVerifiedServerNavigation(
@@ -2250,8 +2313,69 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(afterRevoke.ok, false);
-    assert.equal(afterRevoke.reason, 'unreachable');
+    assert.equal(afterRevoke.reason, 'pairing_revoked');
     assert.equal(afterRevoke.tokenDelivered, false);
+
+    activeServer = 'A-direct-revoked';
+    const afterDirectRevoke = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterDirectRevoke.ok, false);
+    assert.equal(afterDirectRevoke.reason, 'pairing_revoked');
+    assert.equal(afterDirectRevoke.tokenDelivered, false);
+
+    activeServer = 'A-outage';
+    const duringOutage = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(duringOutage.ok, false);
+    assert.equal(duringOutage.reason, 'unreachable');
+    assert.equal(duringOutage.tokenDelivered, false);
+
+    // 7. Re-pairing with a fresh short code 6789-2345 restores mutual proof and re-opens cleanly:
+    activeServer = 'A';
+    const repairedAndOpened = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        origin: publicOrigin,
+        code: '6789-2345',
+        platform: 'android',
+        requireMutualProof: true,
+        saveToken,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(repairedAndOpened.ok, true);
+    assert.equal(repairedAndOpened.tokenDelivered, true);
+    assert.equal(repairedAndOpened.server.grantId, 'grant-web-a-v2');
   } finally {
     await browser.close();
     webListener.close();
@@ -2520,6 +2644,117 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       assert.equal(afterUnreachable.formHidden, false);
       assert.equal(afterUnreachable.ariaExpanded, 'true');
       assert.match(afterUnreachable.problemText, /192\.168\.1\.55:5494/);
+      assert.equal(await page.evaluate(() => document.querySelector('#hint').hidden), true);
+
+      // Revoked pairing (cold reopen or #pairing_revoked fallback) surfaces dedicated re-pairing recovery
+      // rather than LAN unreachable copy, keeps Scan QR + short-code entry operable, and re-pairs cleanly:
+      const recoveryPage = await darkCtx.newPage();
+      await recoveryPage.addInitScript(() => {
+        const saved = [
+          {
+            id: 'home-studio-1',
+            origin: 'http://192.168.1.58:5494',
+            origins: ['http://192.168.1.58:5494'],
+            verifiedOrigins: ['http://192.168.1.58:5494'],
+            label: 'Studio Workstation',
+            paired: true,
+            targetHomeId: 'home-studio-1',
+            targetHostId: 'host-studio-1',
+            grantId: 'grant-old',
+            updatedAt: Date.now(),
+          },
+        ];
+        localStorage.setItem('kiki.shell.servers', JSON.stringify(saved));
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.58:5494');
+        window.__openedEntries = [];
+        window.__revokedState = true;
+        window.Capacitor = {
+          isNativePlatform: () => true,
+          nativePromise: async (_plugin, method, payload) => {
+            if (method === 'consumePendingPair') return {};
+            if (method === 'probe') {
+              if (window.__revokedState) {
+                return {
+                  ok: true,
+                  status: 200,
+                  targetHomeId: 'home-studio-1',
+                  targetHostId: 'host-studio-1',
+                  targetLabel: 'Studio Workstation',
+                  mutualProofVerified: false,
+                };
+              }
+              return {
+                ok: true,
+                status: 200,
+                targetHomeId: 'home-studio-1',
+                targetHostId: 'host-studio-1',
+                targetLabel: 'Studio Workstation',
+                mutualProofVerified: true,
+              };
+            }
+            if (method === 'claimPair') {
+              window.__revokedState = false;
+              return {
+                ok: true,
+                serverId: 'home-studio-1',
+                targetHomeId: 'home-studio-1',
+                targetHostId: 'host-studio-1',
+                targetLabel: 'Studio Workstation',
+                grantId: 'grant-repaired',
+                revision: 2,
+              };
+            }
+            if (method === 'open') {
+              if (window.__revokedState) {
+                return { ok: false, reason: 'pairing_revoked' };
+              }
+              window.__openedEntries.push(payload);
+              return { ok: true, origin: payload.origin };
+            }
+            return { ok: false };
+          },
+        };
+      });
+      await recoveryPage.goto(`${launcherBaseUrl}/index.html`, { waitUntil: 'networkidle' });
+      await recoveryPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      const revokedUi = await recoveryPage.evaluate(() => ({
+        problemText: document.querySelector('#problem').textContent,
+        hintHidden: document.querySelector('#hint').hidden,
+        serverValue: document.querySelector('#server').value,
+        activeId: document.activeElement?.id ?? '',
+        scanVisible: document.querySelector('#scan-qr').offsetParent !== null,
+      }));
+      assert.match(revokedUi.problemText, /Studio Workstation/);
+      assert.match(revokedUi.problemText, /revoked|expired/i);
+      assert.doesNotMatch(revokedUi.problemText, /Could not reach/i);
+      assert.equal(revokedUi.hintHidden, true);
+      assert.equal(revokedUi.serverValue, '192.168.1.58:5494');
+      assert.equal(revokedUi.activeId, 'pair-code');
+      assert.equal(revokedUi.scanVisible, true);
+
+      // Re-pairing via short code succeeds and opens the server with updated grantId:
+      await recoveryPage.fill('#pair-code', '67892345');
+      assert.equal(await recoveryPage.evaluate(() => document.querySelector('#open').textContent), 'Pair & open');
+      await recoveryPage.click('#open');
+      await recoveryPage.waitForFunction(() => window.__openedEntries.length === 1);
+      const openedAfterRepair = await recoveryPage.evaluate(() => window.__openedEntries[0]);
+      assert.equal(openedAfterRepair.origin, 'http://192.168.1.58:5494');
+      assert.equal(openedAfterRepair.grantId, 'grant-repaired');
+
+      // Re-pairing via QR scan after #pairing_revoked WebView fallback also succeeds:
+      await recoveryPage.evaluate(() => {
+        window.__revokedState = true;
+        window.__kikiTestScanQr = async () => ({
+          status: 'scanned',
+          value: 'kiki://pair?endpoint=http%3A%2F%2F192.168.1.58%3A5494&code=4567-8923',
+        });
+        window.location.hash = '#pairing_revoked';
+      });
+      await recoveryPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      assert.match(await recoveryPage.textContent('#problem'), /revoked|expired/i);
+      await recoveryPage.click('#scan-qr');
+      await recoveryPage.waitForFunction(() => window.__openedEntries.length === 2);
+      await recoveryPage.close();
     } finally {
       await darkCtx.close();
     }

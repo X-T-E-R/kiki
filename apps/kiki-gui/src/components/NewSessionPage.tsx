@@ -434,14 +434,14 @@ function NewSessionPageContent({
     <>
       {slots.header !== null
         ? createPortal(
-            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+            <header className="flex h-12 shrink-0 items-center gap-2 bg-paper px-4 md:gap-3 md:border-b md:border-hairline md:bg-panel">
               <button
                 type="button"
                 onClick={onToggleSidebar}
                 aria-label={t('sv.openMenuAria')}
                 aria-expanded={sidebarOpen}
                 aria-controls="app-sidebar"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden pointer-coarse:h-11 pointer-coarse:w-11"
+                className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
               >
                 <Icon name="menu" size={16} />
               </button>
@@ -460,7 +460,7 @@ function NewSessionPageContent({
           true centre (styles/new-session.css). The dot arrives once and nods
           back while you type. The brand block carries its own transition name
           so it can fade out on its own when the first send hands off. */}
-      <div data-hero-chrome className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-6 pb-5 text-left">
+      <div data-hero-chrome className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-4 pb-5 text-left sm:px-6">
         <div className="flex min-w-0 flex-col">
           <div data-hero-brand className="flex min-w-0 flex-col">
             {dailyIdentity ? (
@@ -570,7 +570,7 @@ function NewSessionPageContent({
 
       {state.error !== null && slots.dock !== null
         ? createPortal(
-            <div className="px-6 pb-1.5">
+            <div className="px-4 pb-1.5 sm:px-6">
               <div role="alert" className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2 text-left text-[13px] text-danger">
                 {state.error}
               </div>
@@ -581,7 +581,7 @@ function NewSessionPageContent({
 
       {slots.heroFooter !== null
         ? createPortal(
-            <div className="px-6">
+            <div className="px-4 sm:px-6">
               {/* Starters belong to the composer: they only fill its draft, so
                   they hang 8px under the card with no heading of their own and
                   never send. Quiet at rest (text only), a neutral wash on hover. */}

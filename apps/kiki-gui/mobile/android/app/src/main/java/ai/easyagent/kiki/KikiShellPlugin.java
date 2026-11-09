@@ -85,10 +85,29 @@ public class KikiShellPlugin extends Plugin {
     private static final class HandshakeResult {
         final boolean ok;
         final boolean redirected;
+        final int statusCode;
         final String targetHomeId;
         final String targetHostId;
         final String targetLabel;
         final boolean mutualProofVerified;
+
+        HandshakeResult(
+            boolean ok,
+            boolean redirected,
+            int statusCode,
+            String targetHomeId,
+            String targetHostId,
+            String targetLabel,
+            boolean mutualProofVerified
+        ) {
+            this.ok = ok;
+            this.redirected = redirected;
+            this.statusCode = statusCode;
+            this.targetHomeId = targetHomeId;
+            this.targetHostId = targetHostId;
+            this.targetLabel = targetLabel;
+            this.mutualProofVerified = mutualProofVerified;
+        }
 
         HandshakeResult(
             boolean ok,
@@ -98,16 +117,11 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this.ok = ok;
-            this.redirected = redirected;
-            this.targetHomeId = targetHomeId;
-            this.targetHostId = targetHostId;
-            this.targetLabel = targetLabel;
-            this.mutualProofVerified = mutualProofVerified;
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified);
         }
 
         HandshakeResult(boolean ok, boolean redirected, String targetHomeId, String targetHostId, String targetLabel) {
-            this(ok, redirected, targetHomeId, targetHostId, targetLabel, false);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false);
         }
     }
 
@@ -216,6 +230,11 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         String normalizedOrigin = originOf(originUri);
+        boolean pairedProbe =
+            serverId != null &&
+            !serverId.isEmpty() &&
+            isOriginVerified(serverId, normalizedOrigin) &&
+            hasStoredToken(serverId, normalizedOrigin);
         new Thread(() -> {
             JSObject result = new JSObject();
             HandshakeResult hs = fetchHandshake(normalizedOrigin, serverId, grantId);
@@ -226,6 +245,7 @@ public class KikiShellPlugin extends Plugin {
             }
             if (hs.ok) {
                 result.put("ok", true);
+                result.put("status", hs.statusCode);
                 result.put("mutualProofVerified", hs.mutualProofVerified);
                 if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
                     result.put("targetLabel", hs.targetLabel);
@@ -236,6 +256,15 @@ public class KikiShellPlugin extends Plugin {
                 if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
                     result.put("targetHostId", hs.targetHostId);
                 }
+                call.resolve(result);
+                return;
+            }
+            if (pairedProbe && (hs.statusCode == 401 || hs.statusCode == 403)) {
+                result.put("ok", false);
+                result.put("status", hs.statusCode);
+                result.put("reason", "pairing_revoked");
+                result.put("authRejected", true);
+                result.put("mutualProofVerified", false);
                 call.resolve(result);
                 return;
             }
@@ -389,21 +418,20 @@ public class KikiShellPlugin extends Plugin {
         long callEpoch = ++pendingAuthEpoch;
         new Thread(() -> {
             HandshakeResult hs = fetchHandshake(origin, serverId, grantId);
-            if (hs.redirected || !hs.ok || !hs.mutualProofVerified || hs.targetHomeId == null || hs.targetHomeId.isEmpty()) {
+            String failureReason = classifyPairedHandshakeFailure(
+                hs,
+                serverId,
+                matchesStoredHostId(serverId, hs.targetHostId)
+            );
+            if (failureReason != null) {
                 clearPendingAuthIfCurrent(callEpoch);
                 JSObject failed = new JSObject();
                 failed.put("ok", false);
-                failed.put("reason", "unreachable");
+                failed.put("reason", failureReason);
+                if ("identity_mismatch".equals(failureReason) && hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
+                    failed.put("targetHomeId", hs.targetHomeId);
+                }
                 call.resolve(failed);
-                return;
-            }
-            if (!serverId.equals(hs.targetHomeId) || !matchesStoredHostId(serverId, hs.targetHostId)) {
-                clearPendingAuthIfCurrent(callEpoch);
-                JSObject mismatch = new JSObject();
-                mismatch.put("ok", false);
-                mismatch.put("reason", "identity_mismatch");
-                mismatch.put("targetHomeId", hs.targetHomeId);
-                call.resolve(mismatch);
                 return;
             }
             if (callEpoch != pendingAuthEpoch) {
@@ -532,13 +560,12 @@ public class KikiShellPlugin extends Plugin {
             ) {
                 return;
             }
-            if (
-                hs.redirected ||
-                !hs.ok ||
-                !hs.mutualProofVerified ||
-                !targetServerId.equals(hs.targetHomeId) ||
-                !matchesStoredHostId(targetServerId, hs.targetHostId)
-            ) {
+            String failureReason = classifyPairedHandshakeFailure(
+                hs,
+                targetServerId,
+                matchesStoredHostId(targetServerId, hs.targetHostId)
+            );
+            if (failureReason != null) {
                 view.post(() -> {
                     if (
                         expectedEpoch != pendingAuthEpoch ||
@@ -550,7 +577,7 @@ public class KikiShellPlugin extends Plugin {
                     clearPendingAuthIfCurrent(expectedEpoch);
                     clearActiveAuth();
                     if (local != null) {
-                        view.loadUrl(local + "/index.html#unreachable");
+                        view.loadUrl(local + "/index.html#" + failureReason);
                     }
                 });
                 return;
@@ -722,6 +749,20 @@ public class KikiShellPlugin extends Plugin {
         return sb.toString();
     }
 
+    static String classifyPairedHandshakeFailure(HandshakeResult hs, String expectedServerId, boolean hostMatches) {
+        if (hs == null || hs.redirected) return "unreachable";
+        if (hs.ok) {
+            if (hs.targetHomeId == null || hs.targetHomeId.isEmpty()) return "unreachable";
+            if (expectedServerId == null || !expectedServerId.equals(hs.targetHomeId) || !hostMatches) {
+                return "identity_mismatch";
+            }
+            if (!hs.mutualProofVerified) return "pairing_revoked";
+            return null;
+        }
+        if (hs.statusCode == 401 || hs.statusCode == 403) return "pairing_revoked";
+        return "unreachable";
+    }
+
     private String resolveHandshakeKey(String serverId, String normalizedOrigin) {
         if (serverId == null || serverId.isEmpty() || !isOriginVerified(serverId, normalizedOrigin)) {
             return null;
@@ -767,7 +808,7 @@ public class KikiShellPlugin extends Plugin {
             }
             int code = conn.getResponseCode();
             if (code >= 300 && code < 400) {
-                return new HandshakeResult(false, true, "", "", "", false);
+                return new HandshakeResult(false, true, code, "", "", "", false);
             }
             if (code >= 200 && code < 300) {
                 JSONObject body = readJson(conn.getInputStream());
@@ -786,14 +827,15 @@ public class KikiShellPlugin extends Plugin {
                     );
                     mutualVerified = constantTimeEquals(resProof, expectedRes);
                 }
-                return new HandshakeResult(true, false, homeId, hostId, label, mutualVerified);
+                return new HandshakeResult(true, false, code, homeId, hostId, label, mutualVerified);
             }
+            return new HandshakeResult(false, false, code, "", "", "", false);
         } catch (Exception ignored) {
             /* unreachable or non-JSON */
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return new HandshakeResult(false, false, "", "", "", false);
+        return new HandshakeResult(false, false, 0, "", "", "", false);
     }
 
     private static String scopedTokenId(String serverId, String origin) {

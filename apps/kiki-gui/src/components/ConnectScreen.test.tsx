@@ -90,6 +90,11 @@ describe('ConnectScreen browser form', () => {
       const html = renderScreen({ desktopBoot: null, desktopFailure: null });
       expect(html).toContain('data-app-shell-connect');
       expect(html).toContain('href="https://localhost/index.html#change"');
+      expect(html).toContain('Disconnected from this computer.');
+      expect(html).toContain('Switch computer');
+      expect(html).toContain('Connect with access token');
+      expect(html).not.toContain('Connect to Kiki on this computer.');
+      expect(html).not.toContain('Connect to another machine…');
     } finally {
       vi.stubGlobal('navigator', { language: 'en-US' });
     }

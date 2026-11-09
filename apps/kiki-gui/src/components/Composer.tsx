@@ -2787,7 +2787,7 @@ export function Composer({
 
   return (
     <ComposerCardContext.Provider value={cardRef}>
-    <div className="group/composer px-6 pb-5" data-composer-variant={variant}>
+    <div className="group/composer px-3 pb-3 sm:px-6 sm:pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       {ssh.dialog}
       <ConfirmDialog
@@ -3396,7 +3396,7 @@ export function Composer({
                         ? 'mr-1 shrink-0'
                         : segment.key === 'agent'
                           ? 'min-w-[2.75rem] @max-[24rem]/toolbar:min-w-0 @max-[24rem]/toolbar:shrink-0'
-                          : 'min-w-[3.5rem]'
+                          : 'min-w-[3.5rem] @max-[24rem]/toolbar:min-w-[2.5rem]'
                   }`}
                 >
                   {segment.node}
