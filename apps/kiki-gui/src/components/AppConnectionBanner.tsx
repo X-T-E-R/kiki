@@ -20,6 +20,7 @@ export function AppConnectionBanner({
   if (wsStatus === 'open' && recovery === undefined) return null;
   const blocked = recovery?.status === 'blocked';
   const retrying = recovery?.status === 'retrying' || (!blocked && wsStatus === 'connecting');
+  const canReconnect = !blocked && recovery === undefined;
   const failure = recovery?.failure;
   const label = blocked
     ? t(failure?.kind === 'authentication' ? 'app.connectionAuthBlocked'
@@ -31,7 +32,7 @@ export function AppConnectionBanner({
       className="flex h-16 shrink-0 flex-wrap content-center items-center justify-center gap-x-3 gap-y-1 border-b border-amber-rule/40 bg-amber-card px-3 text-center text-[12px] font-medium text-amber-ink sm:h-10">
       <span>{label}</span>
       {blocked && onOpenConnectionSettings ? <button type="button" className={buttonClass} onClick={onOpenConnectionSettings}>{t('app.connectionSettings')}</button> : null}
-      {!blocked && !retrying ? <button type="button" onClick={onReconnect} className={buttonClass}>{t('app.reconnectNow')}</button> : null}
+      {canReconnect ? <button type="button" data-banner-reconnect onClick={onReconnect} className={buttonClass}>{t('app.reconnectNow')}</button> : null}
       {recovery ? <button type="button" className={buttonClass} disabled={!failure} onClick={() => { setDetails(true); }}>{t('app.connectionDetails')}</button> : null}
     </div>
     {details && failure ? <Dialog onClose={() => { setDetails(false); }} ariaLabel={t('app.connectionDetails')} overlayId="connection-failure-details" stacked>

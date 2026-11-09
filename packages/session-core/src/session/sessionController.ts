@@ -606,6 +606,14 @@ export class SessionController {
 
   nudge(): void {
     this.viewHandle?.nudge();
+    if (this.closed || this.isSuspended) return;
+    if (this.state.loadError !== undefined) {
+      void this.retryOpen();
+      return;
+    }
+    if (this.state.resyncFailed && this.state.resyncError?.retryable !== false) {
+      void this.resync();
+    }
   }
 
   /** True while the controller holds no live view subscription but keeps its store. */

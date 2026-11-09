@@ -1628,6 +1628,7 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
         <span data-shell-source>{connection.connectionSource ?? 'none'}</span>
         <span data-shell-token>{connection.config.token}</span>
         <span data-shell-url>{connection.config.url}</span>
+        <span data-shell-ws-status>{connection.wsStatus}</span>
         <button
           type="button"
           data-manual-owner
@@ -2003,5 +2004,63 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     expect(retryMounted.container.querySelector('[data-shell-token]')?.textContent).toBe('paired-retry-secret-token');
     expect(localStorage.getItem('kiki.connection')).toBeNull();
     await retryMounted.unmount();
+  });
+
+  it('auto-retries transient app-shell /meta failures on online recovery while distinguishing 401 auth revocation and suppressing initial wsStatus connecting flash', async () => {
+    mocks.meta
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
+      .mockResolvedValueOnce({
+        server_id: 'srv-online-recover',
+        server_home_id: 'home-online-recover',
+        server_version: '0.1.0',
+        current_space_id: 'main',
+        dangerous_bypass_auth: false,
+      });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'paired-online-recover-token')).toBe(true);
+    const recoverMounted = await mountBrowserShell();
+    expect(recoverMounted.container.querySelector('[role="alert"]')?.textContent).toContain('503 Service Unavailable');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+
+    // Trigger online event -> automatic /meta retry enters session without re-pairing or persisting token
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await flush();
+    expect(recoverMounted.container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(recoverMounted.container.querySelector('[data-shell-token]')?.textContent).toBe('paired-online-recover-token');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
+
+    // Initial socket 'connecting' before first open/close does not flip wsStatus to 'connecting'
+    const openClients = mocks.klients.filter((entry) => !entry.closed);
+    const activeClient = openClients[openClients.length - 1]!;
+    const emitSocketStatus = (status: string) =>
+      act(async () => {
+        activeClient.terminal.onStatus.mock.calls.at(-1)![0](status);
+      });
+    await emitSocketStatus('connecting');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
+
+    // Once socket closes and enters reconnect backoff ('connecting'), wsStatus reflects the disconnect
+    await emitSocketStatus('closed');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('closed');
+    await emitSocketStatus('connecting');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('connecting');
+    await emitSocketStatus('open');
+    expect(recoverMounted.container.querySelector('[data-shell-ws-status]')?.textContent).toBe('open');
+    await recoverMounted.unmount();
+
+    // When /meta fails with 401 Unauthorized, online event does NOT auto-retry a revoked grant
+    mocks.meta.mockReset();
+    mocks.meta.mockRejectedValue(new Error('401 Unauthorized'));
+    expect(applyCommittedShellCredential(window, window.location.origin, 'revoked-peer-token')).toBe(true);
+    const revokedMounted = await mountBrowserShell();
+    expect(revokedMounted.container.querySelector('[role="alert"]')?.textContent).toContain('401 Unauthorized');
+    const callsAfterInitialReject = mocks.meta.mock.calls.length;
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await flush();
+    expect(mocks.meta.mock.calls.length).toBe(callsAfterInitialReject);
+    await revokedMounted.unmount();
   });
 });

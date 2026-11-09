@@ -54,10 +54,13 @@ describe('AppConnectionBanner', () => {
     expect(onReconnect).toHaveBeenCalledOnce();
   });
 
-  it('keeps the same status role while reconnecting, without a manual action', async () => {
-    const { container } = await mount('connecting');
+  it('offers an in-place reconnect action while reconnecting outside desktop recovery', async () => {
+    const { container, onReconnect } = await mount('connecting');
     expect(container.querySelector('[role="status"]')?.textContent).toContain('Connection lost — reconnecting…');
-    expect(container.querySelector('button')).toBeNull();
+    const button = container.querySelector('[data-banner-reconnect]');
+    expect(button?.textContent).toBe('Reconnect now');
+    await click(button);
+    expect(onReconnect).toHaveBeenCalledOnce();
   });
 
   it('renders nothing while connected', async () => {

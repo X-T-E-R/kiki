@@ -86,6 +86,8 @@ export function ConnectScreen({
   sshProfile,
   webLink,
   onRetryWebLink,
+  onRetryPaired,
+  pairedAuthRevoked,
 }: {
   initial: ConnectionConfig;
   connecting: boolean;
@@ -102,6 +104,8 @@ export function ConnectScreen({
   /** Set when this browser arrived with a web entry link it could not use. */
   webLink?: WebLinkProblem;
   onRetryWebLink?: () => void;
+  onRetryPaired?: () => void;
+  pairedAuthRevoked?: boolean;
 }) {
   if (onSwitchLocal !== undefined) {
     return (
@@ -145,6 +149,8 @@ export function ConnectScreen({
         error={error}
         onConnect={onConnect}
         onBack={onBack}
+        onRetryPaired={onRetryPaired}
+        pairedAuthRevoked={pairedAuthRevoked}
       />
     </Card>
   );
@@ -280,12 +286,16 @@ function BrowserConnectForm({
   error,
   onConnect,
   onBack,
+  onRetryPaired,
+  pairedAuthRevoked,
 }: {
   initial: ConnectionConfig;
   connecting: boolean;
   error: string | null;
   onConnect: (config: ConnectionConfig, persist?: boolean) => void;
   onBack: (() => void) | undefined;
+  onRetryPaired?: () => void;
+  pairedAuthRevoked?: boolean;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -296,9 +306,11 @@ function BrowserConnectForm({
   // Manual URL + token are for connecting elsewhere; a saved manual
   // connection (or a failed attempt) keeps the fields open.
   const [manualOpen, setManualOpen] = useState(
-    initial.url !== '' || initial.token !== '' || error !== null,
+    initial.url !== '' || initial.token !== '' || (error !== null && shellConnect === null),
   );
-  useEffect(() => { if (error !== null) setManualOpen(true); }, [error]);
+  useEffect(() => {
+    if (error !== null && shellConnect === null) setManualOpen(true);
+  }, [error, shellConnect]);
   const [detecting, setDetecting] = useState(false);
   const [detectNote, setDetectNote] = useState<string | null>(null);
 
@@ -330,22 +342,50 @@ function BrowserConnectForm({
     }
   };
 
+  const shellHeadline =
+    shellConnect !== null
+      ? pairedAuthRevoked
+        ? 'connect.shellAuthRevoked'
+        : connecting
+          ? 'connect.shellConnecting'
+          : onRetryPaired !== undefined && error !== null
+            ? 'connect.shellUnreachable'
+            : 'connect.shellTagline'
+      : 'connect.tagline';
+
   return (
     <div className="px-7 pt-6 pb-7">
       <Wordmark size="lg" />
       <p className="mt-3 font-display text-[18px] leading-snug text-ink-soft">
-        {t(shellConnect !== null ? 'connect.shellTagline' : 'connect.tagline')}
+        {t(shellHeadline)}
       </p>
 
       <form onSubmit={submit} className="mt-6">
         {shellConnect !== null ? (
-          <a
-            href={shellConnect}
-            data-app-shell-connect
-            className="block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
-          >
-            {t('connect.switchComputer')}
-          </a>
+          <div className="flex flex-col gap-2">
+            {onRetryPaired !== undefined && !pairedAuthRevoked ? (
+              <button
+                type="button"
+                data-app-shell-retry
+                onClick={onRetryPaired}
+                disabled={connecting}
+                className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
+              >
+                {connecting ? t('connect.connecting') : t('app.reconnectNow')}
+              </button>
+            ) : null}
+            <a
+              href={shellConnect}
+              data-app-shell-connect
+              className={
+                onRetryPaired !== undefined && !pairedAuthRevoked
+                  ? 'block w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-center text-[13px] font-medium text-ink no-underline transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'
+                  : 'block w-full rounded-md bg-ink px-3 py-2 text-center text-[14px] font-medium text-paper no-underline transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none'
+              }
+            >
+              {t('connect.switchComputer')}
+            </a>
+          </div>
         ) : (
           <button
             type="button"
@@ -425,7 +465,7 @@ function BrowserConnectForm({
           {connecting ? t('connect.connecting') : t('connect.connect')}
         </button>
         </div>
-        {onBack !== undefined ? (
+        {onBack !== undefined && shellConnect === null ? (
           <button
             type="button"
             onClick={onBack}

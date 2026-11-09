@@ -150,6 +150,7 @@ export interface ConnectionValue {
   readonly meta: MetaResponse;
   readonly wsStatus: WsStatus;
   readonly recovery?: DesktopRecovery;
+  readonly nudge?: () => void;
   readonly disconnect: () => void;
   /**
    * Point the app at another (server, token) pair from inside a connected
@@ -588,8 +589,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [desktopAttempt, setDesktopAttempt] = useState(0);
   /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
   const desktopCancelledRef = useRef(false);
-  const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
-  const socketStatusRef = useRef<WsStatus>('closed');
+  const [wsStatus, setWsStatus] = useState<WsStatus>('open');
+  const socketStatusRef = useRef<WsStatus>('open');
+  const socketSettledRef = useRef(false);
+  const [metaAttempt, setMetaAttempt] = useState(0);
+  const [pairedAuthRevoked, setPairedAuthRevoked] = useState(false);
   const verifiedDesktopRef = useRef<{
     selection: ConnectionSelection; client: KikiClient; meta: MetaResponse; homeId: string; scopeId: string;
   } | null>(null);
@@ -1018,6 +1022,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (client === null || (remoteBootRef.current !== null && selection?.source !== 'remote')) return;
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const connectionEpoch = connectionEpochRef.current;
     setConnectError(null);
     const restored = staged?.client === client ? staged : restoredMetaRef.current?.client === client ? restoredMetaRef.current : null;
@@ -1025,6 +1030,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     (restored !== null ? Promise.resolve(restored.meta) : client.meta()).then(
       (value) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
+        setPairedAuthRevoked(false);
         scrubUrl();
         if (selection?.source === 'ssh') {
           const claimedHomeId = selection.serverHomeId;
@@ -1065,14 +1071,31 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (error: unknown) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         setMeta(null);
+        const errorText =
+          error instanceof ApiError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        const authRejected =
+          (error instanceof ApiError &&
+            (error.code === 401 || error.code === 403 || error.code === 40100 || error.code === 40101 || error.code === 40300)) ||
+          /\b(401|403|unauthorized|forbidden)\b/i.test(errorText);
+        if (selection?.source === 'app-shell') {
+          setPairedAuthRevoked(authRejected);
+          if (!authRejected) {
+            retryTimer = setTimeout(() => {
+              if (!cancelled && connectionEpoch === connectionEpochRef.current) {
+                setMetaAttempt((attempt) => attempt + 1);
+              }
+            }, 1_500);
+          }
+        } else {
+          setPairedAuthRevoked(false);
+        }
         setConnectError({
           kind: 'raw',
-          text:
-            error instanceof ApiError
-              ? error.message
-              : error instanceof Error
-                ? error.message
-                : String(error),
+          text: errorText,
         });
         // A failed deep link still carried a token; it must not sit in the
         // address bar (retry happens from the form, not the URL).
@@ -1082,8 +1105,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     );
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [client, config, selection?.persist]);
+  }, [client, config, selection?.persist, selection?.source, metaAttempt]);
 
   // One socket per connection; frames route to registered session controllers.
   const connected = config !== null && meta !== null && client !== null;
@@ -1146,6 +1170,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (socket === null || klient === null) return;
     let active = true;
+    socketSettledRef.current = false;
+    let initialGraceTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      initialGraceTimer = undefined;
+      if (!active || socketSettledRef.current) return;
+      socketSettledRef.current = true;
+      if (socketStatusRef.current === 'connecting') {
+        setWsStatus('connecting');
+      }
+    }, 2_500);
     const subscribeSearchIndex = () => {
       const subscription = klient.events.on('search.indexStateChanged', (state) => {
         void queryClient.cancelQueries({ queryKey: ['search-index-state'] }).then(() => {
@@ -1173,6 +1206,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
       socketStatusRef.current = status;
+      if (status === 'open' || status === 'closed') {
+        socketSettledRef.current = true;
+        if (initialGraceTimer !== undefined) {
+          clearTimeout(initialGraceTimer);
+          initialGraceTimer = undefined;
+        }
+      }
       // Socket loss is not proof of a backend replacement. Keep the view while
       // discovery and /meta establish whether this is still the same instance.
       if (status === 'closed' && !desktopRebindingRef.current && host.kind === 'tauri' && isDesktopSelection(selectionRef.current) && desktopRecoveryRef.current?.phase !== 'blocked') {
@@ -1180,7 +1220,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         rediscoverRef.current?.();
       }
       const recovery = desktopRecoveryRef.current?.client === client ? desktopRecoveryRef.current : null;
-      setWsStatus(recovery?.phase === 'blocked' || recovery?.phase === 'failed' ? 'closed' : recovery !== null && status === 'open' ? 'connecting' : status);
+      const effectiveStatus: WsStatus =
+        recovery?.phase === 'blocked' || recovery?.phase === 'failed'
+          ? 'closed'
+          : recovery !== null && status === 'open'
+            ? 'connecting'
+            : status === 'connecting' && !socketSettledRef.current && recovery === null
+              ? 'open'
+              : status;
+      setWsStatus(effectiveStatus);
       if (status === 'open' && recovery?.phase === 'failed') rediscoverRef.current?.();
       if (status === 'open') {
         searchIndex.dispose();
@@ -1196,6 +1244,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     });
     return () => {
       active = false;
+      if (initialGraceTimer !== undefined) clearTimeout(initialGraceTimer);
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
@@ -1212,27 +1261,50 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return watchPageLifecycle();
   }, [socket]);
 
+  const nudgeConnection = useCallback(() => {
+    socket?.nudge();
+    for (const controller of controllersRef.current) controller.nudge();
+    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }, [socket, queryClient]);
+
   // Browser recovery events nudge a parked socket without adding periodic work.
   useEffect(() => {
     if (socket === null) return;
-    const nudge = () => {
-      socket.nudge();
-      for (const controller of controllersRef.current) controller.nudge();
-    };
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') nudge();
+      if (document.visibilityState === 'visible') nudgeConnection();
     };
-    window.addEventListener('online', nudge);
-    window.addEventListener('focus', nudge);
-    window.addEventListener('pageshow', nudge);
+    window.addEventListener('online', nudgeConnection);
+    window.addEventListener('focus', nudgeConnection);
+    window.addEventListener('pageshow', nudgeConnection);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      window.removeEventListener('online', nudge);
-      window.removeEventListener('focus', nudge);
-      window.removeEventListener('pageshow', nudge);
+      window.removeEventListener('online', nudgeConnection);
+      window.removeEventListener('focus', nudgeConnection);
+      window.removeEventListener('pageshow', nudgeConnection);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [socket]);
+  }, [socket, nudgeConnection]);
+
+  useEffect(() => {
+    if (connected || selection?.source !== 'app-shell' || pairedAuthRevoked) return;
+    const retryMeta = () => {
+      setConnectError(null);
+      setMetaAttempt((attempt) => attempt + 1);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') retryMeta();
+    };
+    window.addEventListener('online', retryMeta);
+    window.addEventListener('focus', retryMeta);
+    window.addEventListener('pageshow', retryMeta);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('online', retryMeta);
+      window.removeEventListener('focus', retryMeta);
+      window.removeEventListener('pageshow', retryMeta);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [connected, selection?.source, pairedAuthRevoked]);
 
   const [needsScopeReload, setNeedsScopeReload] = useState(false);
   const adapterActiveRef = useRef({ scope: { homeId: spaceKey, scopeId }, selection, client });
@@ -1487,6 +1559,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
     pairedShellTokenRef.current = trimmed;
+    setPairedAuthRevoked(false);
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
     const currentUrl = current?.config.url.trim().replace(/\/+$/, '') ?? '';
     if (
@@ -1495,6 +1568,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (currentUrl === '' || currentUrl === currentOrigin) &&
       current.config.token.trim() === trimmed
     ) {
+      setConnectError(null);
+      setMetaAttempt((attempt) => attempt + 1);
       return;
     }
     const generation = ++connectionEpochRef.current;
@@ -1502,6 +1577,30 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setMeta(null);
     setSelection({
       config: { url: '', token: trimmed },
+      persist: false,
+      source: 'app-shell',
+      scopeId: `direct::${generation}`,
+    });
+  }, []);
+
+  const retryPairedConnection = useCallback(() => {
+    const current = selectionRef.current;
+    const pairedToken =
+      (current?.source === 'app-shell' ? current.config.token.trim() : null) ??
+      pairedShellTokenRef.current ??
+      readAdoptedShellCredential(window)?.trim() ??
+      null;
+    if (!pairedToken) return;
+    setPairedAuthRevoked(false);
+    setConnectError(null);
+    if (current?.source === 'app-shell') {
+      setMetaAttempt((attempt) => attempt + 1);
+      return;
+    }
+    const generation = ++connectionEpochRef.current;
+    setMeta(null);
+    setSelection({
+      config: { url: '', token: pairedToken },
       persist: false,
       source: 'app-shell',
       scopeId: `direct::${generation}`,
@@ -1541,9 +1640,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       config, client, localClient, klient, socket, meta, wsStatus,
       recovery: selection?.source === 'desktop' && desktopRecoveryRef.current?.client === client
         ? { status: desktopRecoveryRef.current.phase === 'blocked' ? 'blocked' : 'retrying', failure: desktopFailure } : undefined,
+      nudge: nudgeConnection,
       disconnect, applyConnection,
     };
-  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, desktopFailure, disconnect, applyConnection]);
+  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, desktopFailure, nudgeConnection, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null
@@ -1560,6 +1660,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (desktopRuntime && connectErrorText !== null
         ? { message: connectErrorText, stderrTail: [], logPath: null }
         : null);
+
+  const canRetryPaired =
+    selection?.source === 'app-shell' ||
+    pairedShellTokenRef.current !== null ||
+    readAdoptedShellCredential(typeof window !== 'undefined' ? window : undefined) !== null;
 
   return (
     <ConnectionContext.Provider value={value}>
@@ -1589,6 +1694,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           sshProfile={selection?.source === 'ssh' ? selection.profile : undefined}
           webLink={webLinkProblem}
           onRetryWebLink={retryWebLink}
+          onRetryPaired={canRetryPaired ? retryPairedConnection : undefined}
+          pairedAuthRevoked={pairedAuthRevoked}
         />
       )}
     </ConnectionContext.Provider>

@@ -104,6 +104,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private var pendingAuthEpoch: Int64 = 0
     private var documentNavEpoch: Int64 = 0
     private var currentDocumentNavNonce: String?
+    private var deliveredDocumentNavNonce: String?
     private var urlObservation: NSKeyValueObservation?
     private var loadingObservation: NSKeyValueObservation?
 
@@ -394,6 +395,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         pendingAuthEpoch += 1
         documentNavEpoch += 1
         currentDocumentNavNonce = nil
+        deliveredDocumentNavNonce = nil
         pendingAuthOrigin = nil
         pendingAuthServerId = nil
     }
@@ -401,6 +403,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private func clearActiveAuth() {
         documentNavEpoch += 1
         currentDocumentNavNonce = nil
+        deliveredDocumentNavNonce = nil
         activeAuthOrigin = nil
         activeAuthServerId = nil
     }
@@ -408,6 +411,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private func invalidateCurrentDocumentNavigation() {
         documentNavEpoch += 1
         currentDocumentNavNonce = nil
+        deliveredDocumentNavNonce = nil
     }
 
     private func clearPendingAuthIfCurrent(epoch: Int64) {
@@ -492,6 +496,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     hostMatches: hostMatches,
                     mutualProofVerified: mutualVerified
                 ) {
+                    if failureReason == "unreachable", finalize, self.deliveredDocumentNavNonce == expectedNavNonce {
+                        self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
+                        return
+                    }
                     self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                     self.clearActiveAuth()
                     if let local = self.bridge?.config.appStartServerURL,
@@ -511,6 +519,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                 }
                 guard let token, !token.isEmpty else { return }
+                self.deliveredDocumentNavNonce = expectedNavNonce
                 let script = Self.buildCredentialDeliveryScript(
                     expectedOrigin: targetOrigin,
                     token: token,

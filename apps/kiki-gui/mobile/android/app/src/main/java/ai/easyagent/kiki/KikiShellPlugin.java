@@ -80,6 +80,7 @@ public class KikiShellPlugin extends Plugin {
     private volatile long pendingAuthEpoch = 0;
     private volatile long documentNavEpoch = 0;
     private volatile String currentDocumentNavNonce;
+    private volatile String deliveredDocumentNavNonce;
     private WebViewListener shellWebViewListener;
 
     private static final class HandshakeResult {
@@ -468,6 +469,7 @@ public class KikiShellPlugin extends Plugin {
         pendingAuthEpoch++;
         documentNavEpoch++;
         currentDocumentNavNonce = null;
+        deliveredDocumentNavNonce = null;
         pendingAuthOrigin = null;
         pendingAuthServerId = null;
     }
@@ -475,6 +477,7 @@ public class KikiShellPlugin extends Plugin {
     private void clearActiveAuth() {
         documentNavEpoch++;
         currentDocumentNavNonce = null;
+        deliveredDocumentNavNonce = null;
         activeAuthOrigin = null;
         activeAuthServerId = null;
     }
@@ -482,6 +485,7 @@ public class KikiShellPlugin extends Plugin {
     private void invalidateCurrentDocumentNavigation() {
         documentNavEpoch++;
         currentDocumentNavNonce = null;
+        deliveredDocumentNavNonce = null;
     }
 
     private void clearPendingAuthIfCurrent(long epoch) {
@@ -574,6 +578,10 @@ public class KikiShellPlugin extends Plugin {
                     ) {
                         return;
                     }
+                    if ("unreachable".equals(failureReason) && finalize && expectedNavNonce.equals(deliveredDocumentNavNonce)) {
+                        clearPendingAuthIfCurrent(expectedEpoch);
+                        return;
+                    }
                     clearPendingAuthIfCurrent(expectedEpoch);
                     clearActiveAuth();
                     if (local != null) {
@@ -616,6 +624,7 @@ public class KikiShellPlugin extends Plugin {
                     clearActiveAuth();
                     return;
                 }
+                deliveredDocumentNavNonce = expectedNavNonce;
                 view.evaluateJavascript(buildCredentialDeliveryScript(targetOrigin, token, expectedNavNonce), null);
             });
         }).start();

@@ -432,6 +432,22 @@ input[aria-invalid='true'] { border-color: var(--danger); }
 .status-line[data-tone='danger'] { color: var(--danger); }
 .status-line[data-tone='ok'] { color: var(--ok); }
 
+.connect-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.connect-actions .solid {
+  margin-top: 0;
+  width: 100%;
+}
+
+.switch-computer-btn {
+  width: 100%;
+}
+
 .solid {
   height: 48px;
   margin-top: 16px;

@@ -2755,6 +2755,79 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       await recoveryPage.click('#scan-qr');
       await recoveryPage.waitForFunction(() => window.__openedEntries.length === 2);
       await recoveryPage.close();
+
+      // Cold-start paired unreachable surfaces Reconnect + Switch computer actions and reconnects without re-pairing:
+      const unreachablePairedPage = await darkCtx.newPage();
+      await unreachablePairedPage.addInitScript(() => {
+        const saved = [
+          {
+            id: 'home-studio-2',
+            origin: 'http://192.168.1.59:5494',
+            origins: ['http://192.168.1.59:5494'],
+            verifiedOrigins: ['http://192.168.1.59:5494'],
+            label: 'Mobile Lab Host',
+            paired: true,
+            targetHomeId: 'home-studio-2',
+            targetHostId: 'host-studio-2',
+            grantId: 'grant-active-2',
+            updatedAt: Date.now(),
+          },
+        ];
+        localStorage.setItem('kiki.shell.servers', JSON.stringify(saved));
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
+        window.__openedPairedEntries = [];
+        window.__networkDown = true;
+        window.Capacitor = {
+          isNativePlatform: () => true,
+          nativePromise: async (_plugin, method, payload) => {
+            if (method === 'consumePendingPair') return {};
+            if (method === 'probe') {
+              if (window.__networkDown) {
+                return { ok: false };
+              }
+              return {
+                ok: true,
+                status: 200,
+                targetHomeId: 'home-studio-2',
+                targetHostId: 'host-studio-2',
+                targetLabel: 'Mobile Lab Host',
+                mutualProofVerified: true,
+              };
+            }
+            if (method === 'open') {
+              if (window.__networkDown) {
+                return { ok: false, reason: 'unreachable' };
+              }
+              window.__openedPairedEntries.push(payload);
+              return { ok: true, origin: payload.origin };
+            }
+            return { ok: false };
+          },
+        };
+      });
+      await unreachablePairedPage.goto(`${launcherBaseUrl}/index.html`, { waitUntil: 'networkidle' });
+      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      const unreachablePairedUi = await unreachablePairedPage.evaluate(() => ({
+        openText: document.querySelector('#open').textContent,
+        switchHidden: document.querySelector('#switch-computer').hidden,
+        switchText: document.querySelector('#switch-computer').textContent,
+        codeValue: document.querySelector('#pair-code').value,
+      }));
+      assert.equal(unreachablePairedUi.openText, 'Reconnect');
+      assert.equal(unreachablePairedUi.switchHidden, false);
+      assert.equal(unreachablePairedUi.switchText, 'Switch computer');
+      assert.equal(unreachablePairedUi.codeValue, '');
+
+      // Network recovers (`online` event) -> auto-reconnects without requiring QR scan or pairing code
+      await unreachablePairedPage.evaluate(() => {
+        window.__networkDown = false;
+        window.dispatchEvent(new Event('online'));
+      });
+      await unreachablePairedPage.waitForFunction(() => window.__openedPairedEntries.length === 1);
+      const autoReconnected = await unreachablePairedPage.evaluate(() => window.__openedPairedEntries[0]);
+      assert.equal(autoReconnected.origin, 'http://192.168.1.59:5494');
+      assert.equal(autoReconnected.grantId, 'grant-active-2');
+      await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();
     }

@@ -545,6 +545,7 @@ class HttpEventSocket {
   private establishmentTimer: ReturnType<typeof setTimeout> | undefined;
   private lastInboundAt = 0;
   private openedAt = 0;
+  private connectStartedAt = 0;
   private heartbeatMs: number | undefined;
   private seq = 0;
   private readonly onDiagnostic: ((event: HttpSocketDiagnostic) => void) | undefined;
@@ -602,12 +603,24 @@ class HttpEventSocket {
       if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(45_000, this.heartbeatMs * 3)) this.restart('stale_heartbeat');
       return;
     }
-    if (this.ws !== undefined) return;
+    if (this.ws !== undefined) {
+      if (this.connectStartedAt > 0 && Date.now() - this.connectStartedAt >= 1_500) {
+        const ws = this.ws;
+        this.ws = undefined;
+        clearTimeout(this.establishmentTimer);
+        this.reportClose('establish_timeout');
+        ws.close(4000, 'WebSocket establishment nudged');
+      } else {
+        return;
+      }
+    }
     this.fatalRetriesLeft = undefined;
     this.reconnectAttempt = 0;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.state = 'idle';
+    this.sessionViews.connecting();
+    this.terminals.connecting();
     this.ensureConnected();
   }
 
@@ -832,6 +845,7 @@ class HttpEventSocket {
       return;
     }
     this.ws = ws;
+    this.connectStartedAt = Date.now();
     this.heartbeatMs = undefined;
     this.lastInboundAt = 0;
     this.openedAt = 0;
@@ -846,6 +860,7 @@ class HttpEventSocket {
     ws.addEventListener('open', () => {
       if (this.ws !== ws || this.closed) return;
       clearTimeout(this.establishmentTimer);
+      this.connectStartedAt = 0;
       this.diagnose({ kind: 'open', attempt: this.reconnectAttempt });
       this.openedAt = Date.now();
       this.reconnectAttempt = 0;

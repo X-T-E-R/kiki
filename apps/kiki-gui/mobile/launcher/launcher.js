@@ -232,6 +232,8 @@ const COPY = {
     codeOptional: '8 chars · for new pairing',
     hint: 'Find the address and pairing code in Settings → Remote Connection on your computer.',
     open: 'Open Kiki',
+    reconnect: 'Reconnect',
+    switchComputer: 'Switch computer',
     pairAndOpen: 'Pair & open',
     opening: 'Opening…',
     pairing: 'Pairing…',
@@ -299,6 +301,8 @@ const COPY = {
     codeOptional: '8 位 · 新设备配对',
     hint: '在电脑端 设置 → 远程连接 查看地址与配对码。',
     open: '打开 Kiki',
+    reconnect: '重新连接',
+    switchComputer: '切换电脑',
     pairAndOpen: '配对并连接',
     opening: '正在打开…',
     pairing: '正在配对…',
@@ -361,8 +365,10 @@ for (const node of document.querySelectorAll('[data-i18n]')) {
 const form = document.querySelector('#connect');
 const input = document.querySelector('#server');
 const codeInput = document.querySelector('#pair-code');
+const codeField = document.querySelector('.code-field');
 const layerBadge = document.querySelector('#layer-badge');
 const button = document.querySelector('#open');
+const switchComputerBtn = document.querySelector('#switch-computer');
 const hint = document.querySelector('#hint');
 const problem = document.querySelector('#problem');
 const scanButton = document.querySelector('#scan-qr');
@@ -392,6 +398,7 @@ let activeStream = null;
 let scanLoopActive = false;
 let scannerHistoryEntry = false;
 let managingServerId = null;
+let unreachablePairedServer = null;
 const addressStatus = new Map();
 
 function isNativeShell() {
@@ -522,7 +529,18 @@ function readAnyTarget(raw) {
 function updateInputAffordances() {
   const raw = input.value.trim();
   const hasCode = codeInput.value.trim() !== '' || /^kiki:\/\/pair/i.test(raw);
-  button.textContent = hasCode ? copy.pairAndOpen : copy.open;
+  const isUnreachablePaired = unreachablePairedServer !== null && !hasCode;
+  button.textContent = hasCode
+    ? copy.pairAndOpen
+    : isUnreachablePaired
+      ? copy.reconnect
+      : copy.open;
+  if (codeField) {
+    codeField.hidden = isUnreachablePaired;
+  }
+  if (switchComputerBtn) {
+    switchComputerBtn.hidden = !isUnreachablePaired;
+  }
   const target = raw === '' ? null : readAnyTarget(raw);
   layerBadge.textContent = target?.ok ? layerLabelFor(target.origin) : '';
   layerBadge.hidden = !target?.ok;
@@ -596,6 +614,7 @@ async function claimPairing(endpoint, code) {
 }
 
 function promptForPairing(origin, message) {
+  unreachablePairedServer = null;
   setTab('connect');
   input.value = hostOf(origin);
   updateInputAffordances();
@@ -604,6 +623,8 @@ function promptForPairing(origin, message) {
 }
 
 function reportUnreachable(origin) {
+  const saved = findSavedServerByOrigin(origin);
+  unreachablePairedServer = saved && (saved.paired || saved.targetHomeId) ? saved : null;
   setTab('connect');
   if (input.value.trim() === '') {
     input.value = hostOf(origin);
@@ -1248,6 +1269,19 @@ scanCancel.addEventListener('click', () => {
   focusManualConnectInput();
 });
 
+switchComputerBtn?.addEventListener('click', () => {
+  unreachablePairedServer = null;
+  showProblem('');
+  updateInputAffordances();
+  setTab('computers', { animate: true });
+});
+
+window.addEventListener('online', () => {
+  if (unreachablePairedServer && !views.connect.hidden && !problem.hidden && !button.disabled) {
+    void openSavedServer(unreachablePairedServer);
+  }
+});
+
 window.addEventListener('popstate', () => {
   if (scannerHistoryEntry) stopCameraScanner({ fromHistory: true });
 });
@@ -1260,6 +1294,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 input.addEventListener('input', () => {
+  unreachablePairedServer = null;
   if (!problem.hidden) showProblem('');
   if (!scanFeedback.hidden) showScanFeedback('');
   const maybePair = readScanPayload(input.value);
