@@ -407,15 +407,30 @@ let autoReconnectTimer = null;
 let autoReconnectFlight = false;
 let autoReconnectEpoch = 0;
 let autoReconnectAttempt = 0;
+let openFlightEpoch = 0;
+let openFlightAbortController = null;
 const addressStatus = new Map();
 
 function isNativeShell() {
   return window.Capacitor?.isNativePlatform?.() === true;
 }
 
+function cancelInFlightOpen() {
+  openFlightEpoch += 1;
+  if (openFlightAbortController !== null) {
+    openFlightAbortController.abort();
+    openFlightAbortController = null;
+  }
+  if (button.disabled) {
+    button.disabled = false;
+    updateInputAffordances();
+  }
+}
+
 function stopAutoReconnect(clearBinding = false) {
   autoReconnectEpoch += 1;
   autoReconnectFlight = false;
+  cancelInFlightOpen();
   if (autoReconnectTimer !== null) {
     clearTimeout(autoReconnectTimer);
     autoReconnectTimer = null;
@@ -463,7 +478,7 @@ async function runAutoReconnectAttempt(bound, expectedEpoch) {
     return;
   }
   const activeGrantId = latest.grantId ?? bound.grantId;
-  unreachablePairedRecovery = {
+  const currentRecovery = {
     ...bound,
     serverId: latest.id,
     label: latest.label,
@@ -472,6 +487,7 @@ async function runAutoReconnectAttempt(bound, expectedEpoch) {
     grantId: activeGrantId,
     server: latest,
   };
+  unreachablePairedRecovery = currentRecovery;
   autoReconnectFlight = true;
   autoReconnectAttempt += 1;
   try {
@@ -483,6 +499,8 @@ async function runAutoReconnectAttempt(bound, expectedEpoch) {
       targetHostId: latest.targetHostId ?? bound.targetHostId,
       grantId: activeGrantId,
       fromAutoRecovery: true,
+      expectedAutoEpoch: expectedEpoch,
+      expectedRecovery: currentRecovery,
     });
   } finally {
     if (expectedEpoch === autoReconnectEpoch) {
@@ -660,6 +678,10 @@ function updateProbeLayer() {
 }
 
 async function probeServer(origin, probeOptions = {}) {
+  const signal = probeOptions?.signal;
+  if (signal?.aborted === true) {
+    return { ok: false, aborted: true, reason: 'aborted' };
+  }
   if (isNativeShell()) {
     try {
       const res = await window.Capacitor.nativePromise('KikiShell', 'probe', {
@@ -667,6 +689,9 @@ async function probeServer(origin, probeOptions = {}) {
         serverId: probeOptions?.serverId ?? undefined,
         grantId: probeOptions?.grantId ?? undefined,
       });
+      if (signal?.aborted === true) {
+        return { ok: false, aborted: true, reason: 'aborted' };
+      }
       return {
         ok: Boolean(res?.ok),
         status: typeof res?.status === 'number' ? res.status : undefined,
@@ -678,6 +703,9 @@ async function probeServer(origin, probeOptions = {}) {
         mutualProofVerified: Boolean(res?.mutualProofVerified),
       };
     } catch {
+      if (signal?.aborted === true) {
+        return { ok: false, aborted: true, reason: 'aborted' };
+      }
       return { ok: false };
     }
   }
@@ -780,7 +808,32 @@ async function openServer(origin, entry, options = {}) {
       unreachablePairedRecovery.origin === origin &&
       (!targetServerId || unreachablePairedRecovery.serverId === targetServerId);
     stopAutoReconnect(!matchesCurrentRecovery);
+  } else {
+    cancelInFlightOpen();
   }
+
+  openFlightEpoch += 1;
+  const callOpenEpoch = openFlightEpoch;
+  const abortController = new AbortController();
+  openFlightAbortController = abortController;
+  const isStaleOpen = () => {
+    if (callOpenEpoch !== openFlightEpoch || abortController.signal.aborted) {
+      return true;
+    }
+    if (options.fromAutoRecovery) {
+      if (
+        (typeof options.expectedAutoEpoch === 'number' && options.expectedAutoEpoch !== autoReconnectEpoch) ||
+        !unreachablePairedRecovery ||
+        unreachablePairedRecovery.origin !== origin ||
+        (targetServerId && unreachablePairedRecovery.serverId !== targetServerId) ||
+        (options.expectedRecovery && unreachablePairedRecovery !== options.expectedRecovery) ||
+        views.connect.hidden
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   button.disabled = true;
   button.textContent = copy.opening;
@@ -790,11 +843,20 @@ async function openServer(origin, entry, options = {}) {
     origin,
     entry,
     probe: probeServer,
+    signal: abortController.signal,
+    isStale: isStaleOpen,
     requireMutualProof: isPairedTarget && isNativeShell(),
     getToken: isNativeShell() ? undefined : readWebPeerToken,
   });
 
+  if (isStaleOpen()) {
+    return;
+  }
+
   if (!resolved.ok) {
+    if (resolved.stale || resolved.reason === 'aborted') {
+      return;
+    }
     button.disabled = false;
     renderSavedServers();
     if (resolved.reason === 'identity_mismatch') {
@@ -819,6 +881,10 @@ async function openServer(origin, entry, options = {}) {
 
   const serverId = resolved.serverId;
 
+  if (isStaleOpen()) {
+    return;
+  }
+
   try {
     window.name = '';
   } catch {}
@@ -833,6 +899,9 @@ async function openServer(origin, entry, options = {}) {
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
       });
+      if (isStaleOpen()) {
+        return;
+      }
       if (!res || res.ok === false) {
         button.disabled = false;
         renderSavedServers();
@@ -862,6 +931,9 @@ async function openServer(origin, entry, options = {}) {
       stopAutoReconnect(true);
       return;
     } catch {
+      if (isStaleOpen()) {
+        return;
+      }
       button.disabled = false;
       renderSavedServers();
       reportUnreachable(origin, {
@@ -888,6 +960,9 @@ async function openServer(origin, entry, options = {}) {
     return;
   }
 
+  if (isStaleOpen()) {
+    return;
+  }
   stopAutoReconnect(true);
   window.location.assign(stripTokenFromEntry(origin, resolved.finalEntry));
 }

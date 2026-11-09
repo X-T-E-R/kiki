@@ -918,7 +918,13 @@ export async function createMutualHandshakeChallenge(input = {}) {
 export async function probeOriginHandshake(origin, options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 4500;
+  const externalSignal = options.signal;
+  if (externalSignal?.aborted === true) {
+    return { ok: false, aborted: true, reason: 'aborted' };
+  }
   const controller = new AbortController();
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const challenge = await createMutualHandshakeChallenge({
@@ -1018,9 +1024,13 @@ export async function probeOriginHandshake(origin, options = {}) {
       ok: (status >= 200 && status < 300) || status === 401 || status === 403,
     };
   } catch {
+    if (externalSignal?.aborted === true) {
+      return { ok: false, aborted: true, reason: 'aborted' };
+    }
     return { ok: false };
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -1600,6 +1610,14 @@ export async function openVerifiedServerNavigation(page, storage, input, options
  * `#token=` to `finalEntry` before navigation commits.
  */
 export async function resolveVerifiedServerOpen(storage, input) {
+  const signal = input?.signal;
+  const isStale =
+    typeof input?.isStale === 'function'
+      ? () => Boolean(input.isStale() || signal?.aborted === true)
+      : () => signal?.aborted === true;
+  if (isStale()) {
+    return { ok: false, stale: true, reason: 'aborted' };
+  }
   const parsedTarget = readTarget(input?.origin ?? '');
   if (!parsedTarget.ok) {
     return { ok: false, reason: parsedTarget.reason };
@@ -1630,6 +1648,9 @@ export async function resolveVerifiedServerOpen(storage, input) {
       saveToken: input.saveToken,
       nativeClaim: input.nativeClaim,
     });
+    if (isStale()) {
+      return { ok: false, stale: true, reason: 'aborted' };
+    }
     if (!claim.ok) {
       return {
         ok: false,
@@ -1677,6 +1698,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
             handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof ?? handshakeKey,
             grantId: probeOptions?.grantId ?? grantId,
             requireMutualProof: Boolean(probeOptions?.requireMutualProof ?? requireMutualProof),
+            signal: probeOptions?.signal ?? signal,
           }));
       const probe = await probeFn(
         origin,
@@ -1687,9 +1709,13 @@ export async function resolveVerifiedServerOpen(storage, input) {
               handshakeKey,
               handshakeProof: handshakeKey,
               requireMutualProof,
+              signal,
             }
-          : undefined,
+          : { signal },
       );
+      if (isStale() || probe?.aborted === true || probe?.reason === 'aborted') {
+        return { ok: false, stale: true, reason: 'aborted' };
+      }
       if (existing && targetServerId) {
         const verified = verifySavedServerOrigin(
           storage,
@@ -1721,6 +1747,10 @@ export async function resolveVerifiedServerOpen(storage, input) {
     }
   }
 
+  if (isStale()) {
+    return { ok: false, stale: true, reason: 'aborted' };
+  }
+
   const saved = upsertSavedServer(storage, {
     id: existing?.id ?? input.serverId,
     origin,
@@ -1739,6 +1769,10 @@ export async function resolveVerifiedServerOpen(storage, input) {
     (isPairedTarget && serverId && isServerOriginVerified(saved, origin) && typeof input.getToken === 'function'
       ? await input.getToken(serverId, origin)
       : undefined);
+
+  if (isStale()) {
+    return { ok: false, stale: true, reason: 'aborted' };
+  }
 
   return {
     ok: true,

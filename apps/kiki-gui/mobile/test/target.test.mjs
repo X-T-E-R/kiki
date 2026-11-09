@@ -2820,12 +2820,19 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
         window.__openedPairedEntries = [];
         window.__probeCalls = [];
         window.__networkDown = true;
+        window.__holdProbe = false;
+        window.__pendingProbeResolvers = [];
         window.Capacitor = {
           isNativePlatform: () => true,
           nativePromise: async (_plugin, method, payload) => {
             if (method === 'consumePendingPair') return {};
             if (method === 'probe') {
               window.__probeCalls.push(payload);
+              if (window.__holdProbe) {
+                return await new Promise((resolve) => {
+                  window.__pendingProbeResolvers.push(resolve);
+                });
+              }
               if (window.__networkDown) {
                 return { ok: false };
               }
@@ -2889,9 +2896,14 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
         'unmatched origin must never fall back to servers[0] for background auto-recovery',
       );
 
-      // Boundary 2: Switching computer or editing address cancels any pending auto-reconnect for the old unreachable target:
+      // Boundary 2: In-flight probe race — hold old auto-reconnect handshake in flight -> user clicks Switch computer ->
+      // release old successful handshake result -> native open for the old target MUST be 0:
       await unreachablePairedPage.evaluate(() => {
-        window.__networkDown = true;
+        window.__openedPairedEntries.length = 0;
+        window.__probeCalls.length = 0;
+        window.__pendingProbeResolvers.length = 0;
+        window.__networkDown = false;
+        window.__holdProbe = true;
         localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
         window.location.hash = '';
         window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -2899,19 +2911,77 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       await unreachablePairedPage.evaluate(() => {
         window.location.hash = '#unreachable';
       });
-      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false && !document.querySelector('#switch-computer').hidden);
+      await unreachablePairedPage.waitForFunction(
+        () => document.querySelector('#problem').hidden === false && !document.querySelector('#switch-computer').hidden,
+      );
+      await unreachablePairedPage.evaluate(() => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await unreachablePairedPage.waitForFunction(() => window.__pendingProbeResolvers.length === 1);
       await unreachablePairedPage.click('#switch-computer');
       await unreachablePairedPage.evaluate(() => {
-        window.__networkDown = false;
-        window.dispatchEvent(new Event('online'));
-        window.dispatchEvent(new Event('focus'));
+        const resolveOldProbe = window.__pendingProbeResolvers.shift();
+        resolveOldProbe?.({
+          ok: true,
+          status: 200,
+          targetHomeId: 'home-studio-2',
+          targetHostId: 'host-studio-2',
+          targetLabel: 'Mobile Lab Host',
+          mutualProofVerified: true,
+        });
       });
-      await unreachablePairedPage.waitForTimeout(1300);
+      await unreachablePairedPage.waitForTimeout(300);
       assert.equal(
         await unreachablePairedPage.evaluate(() => window.__openedPairedEntries.length),
         0,
-        'switching to Computers tab must stop background auto-reconnect for the previous target',
+        'late probe completion after switching to Computers tab must not call KikiShell.open for the old target',
       );
+
+      // Boundary 3: In-flight probe race on address edit — hold old auto-reconnect handshake in flight -> user edits address input ->
+      // release old successful handshake result -> native open for the old target MUST be 0 and edited input stays intact:
+      await unreachablePairedPage.evaluate(() => {
+        window.__openedPairedEntries.length = 0;
+        window.__probeCalls.length = 0;
+        window.__pendingProbeResolvers.length = 0;
+        window.__holdProbe = true;
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
+        window.location.hash = '';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      await unreachablePairedPage.evaluate(() => {
+        window.location.hash = '#unreachable';
+      });
+      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      await unreachablePairedPage.evaluate(() => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await unreachablePairedPage.waitForFunction(() => window.__pendingProbeResolvers.length === 1);
+      await unreachablePairedPage.fill('#server', '192.168.1.77:5494');
+      await unreachablePairedPage.evaluate(() => {
+        window.__holdProbe = false;
+        const resolveOldProbe = window.__pendingProbeResolvers.shift();
+        resolveOldProbe?.({
+          ok: true,
+          status: 200,
+          targetHomeId: 'home-studio-2',
+          targetHostId: 'host-studio-2',
+          targetLabel: 'Mobile Lab Host',
+          mutualProofVerified: true,
+        });
+      });
+      await unreachablePairedPage.waitForTimeout(300);
+      const afterEditRace = await unreachablePairedPage.evaluate(() => ({
+        openedCount: window.__openedPairedEntries.length,
+        serverValue: document.querySelector('#server').value,
+        buttonDisabled: document.querySelector('#open').disabled,
+      }));
+      assert.equal(
+        afterEditRace.openedCount,
+        0,
+        'late probe completion after editing server address must not call KikiShell.open for the old target',
+      );
+      assert.equal(afterEditRace.serverValue, '192.168.1.77:5494');
+      assert.equal(afterEditRace.buttonDisabled, false);
       await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();
