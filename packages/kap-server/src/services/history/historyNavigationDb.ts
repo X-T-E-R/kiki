@@ -14,6 +14,7 @@ type NavigationStore = Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn
 const APPLICATION_ID = 0x4b484e31;
 const SCHEMA_VERSION = 2;
 const MANIFEST_MAX_BYTES = 16 << 10;
+const CONVERSATION_SEARCH_PARTS = "('prompt','text','output')";
 
 export interface HistoryNavManifest {
   readonly v: 2;
@@ -85,10 +86,10 @@ export class HistoryNavigationDb implements NavigationStore {
         CREATE INDEX IF NOT EXISTS nav_position ON rows(workspace, session, agent, turn, active, position);
         CREATE INDEX IF NOT EXISTS nav_time ON rows(workspace, session, agent, kind, active, time);
         CREATE INDEX IF NOT EXISTS nav_search_order ON rows(workspace, session, agent, coalesce(time,0), key)
-          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
+          WHERE active=1 AND json_extract(value,'$.part') IN ${CONVERSATION_SEARCH_PARTS};
         CREATE INDEX IF NOT EXISTS nav_search_role_order ON rows(workspace, session, agent,
           coalesce(json_extract(value,'$.role'),'user'), coalesce(time,0), key)
-          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
+          WHERE active=1 AND json_extract(value,'$.part') IN ${CONVERSATION_SEARCH_PARTS};
         CREATE INDEX IF NOT EXISTS nav_source ON rows(
           workspace, session, agent, active, json_extract(value, '$.anchor.start')
         );
@@ -332,28 +333,27 @@ export class HistoryNavigationDb implements NavigationStore {
     role?: 'user' | 'assistant' | 'tool' | 'record';
     startTime?: number; endTime?: number; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 64) throw new Error('invalid history navigation page');
+    const time = 'coalesce(r.time,0)';
     const where = ["r.workspace=? AND r.session=? AND r.agent=? AND r.active=1",
-      "json_extract(r.value,'$.part') IN ('prompt','text','output','record')",
-      "EXISTS (SELECT 1 FROM rows p WHERE p.workspace=r.workspace AND p.session=r.session AND p.agent=r.agent AND p.kind='turn' AND p.turn=r.turn AND p.active=1)"];
-    const values: Array<string | number> = [`${this.projectionPrefix}${input.workspace}`, input.session, input.agent];
-    if (input.role !== undefined) {
-      where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
-      values.push(input.role);
-    } else if (input.includeToolOutput === true) {
-      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='record'");
-    } else {
-      where.push("coalesce(json_extract(r.value,'$.role'),'user') NOT IN ('tool','record')");
-    }
-    if (input.startTime !== undefined) { where.push('r.time>=?'); values.push(input.startTime); }
-    if (input.endTime !== undefined) { where.push('r.time<?'); values.push(input.endTime); }
+      input.role === 'record' ? "json_extract(r.value,'$.part')='record'" : `json_extract(r.value,'$.part') IN ${CONVERSATION_SEARCH_PARTS}`,
+      "EXISTS (SELECT 1 FROM rows p WHERE p.workspace=r.workspace AND p.session=r.session AND p.agent=r.agent AND p.kind='turn' AND p.turn=r.turn AND p.active=1)",
+      "coalesce(json_extract(r.value,'$.role'),'user')=?"];
+    const bounds: Array<string | number> = [];
+    if (input.startTime !== undefined || input.endTime !== undefined) where.push('r.time IS NOT NULL');
+    if (input.startTime !== undefined) { where.push(`${time}>=?`); bounds.push(input.startTime); }
+    if (input.endTime !== undefined) { where.push(`${time}<?`); bounds.push(input.endTime); }
     const direction = input.direction === 'asc' ? 'ASC' : 'DESC';
     const comparator = input.direction === 'asc' ? '>' : '<';
     if (input.after !== undefined) {
-      where.push(`(coalesce(r.time,0),r.key) ${comparator} (?,?)`);
-      values.push(input.after.time, input.after.key);
+      where.push(`${time} ${comparator}= ? AND (${time},r.key) ${comparator} (?,?)`);
+      bounds.push(input.after.time, input.after.time, input.after.key);
     }
-    const rows = navigationStatement(this.db, `SELECT CAST(r.key AS BLOB) AS key,coalesce(r.time,0) AS time,r.value FROM rows r
-      WHERE ${where.join(' AND ')} ORDER BY coalesce(r.time,0) ${direction},r.key ${direction} LIMIT ?`)
+    const roles = input.role !== undefined ? [input.role] :
+      input.includeToolOutput === true ? ['user', 'assistant', 'tool'] : ['user', 'assistant'];
+    const select = `SELECT CAST(r.key AS BLOB) AS key,r.key AS sort_key,${time} AS time,r.value FROM rows r WHERE ${where.join(' AND ')}`;
+    const sql = `${roles.map(() => select).join(' UNION ALL ')} ORDER BY time ${direction},sort_key ${direction} LIMIT ?`;
+    const values = roles.flatMap((role) => [`${this.projectionPrefix}${input.workspace}`, input.session, input.agent, role, ...bounds]);
+    const rows = navigationStatement(this.db, sql)
       .all(...values, input.limit) as Array<{ key: Uint8Array; time: number; value: string }>;
     return rows.map(({ key, time, value }) => ({ key: Buffer.from(key).toString('utf8'), time, row: JSON.parse(value) as HistoryNavRow }));
   }

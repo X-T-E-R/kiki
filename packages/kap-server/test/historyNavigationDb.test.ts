@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
+import { HISTORY_NAV_COLLECTION, type HistoryNavRow } from '../src/services/history/historyLocatorStore';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { SqliteNavigationMap, SqliteNavigationSet } from '../src/services/history/historyNavigationState';
 
@@ -125,6 +125,48 @@ describe('history navigation SQLite repository', () => {
         expect(await reopened.get(HISTORY_NAV_COLLECTION, 'not-committed')).toBeUndefined();
       } finally { reopened.close(); }
     } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('merges indexed conversation roles in cursor order without sorting the session', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-search-order-'));
+    const db = await HistoryNavigationDb.open(join(home, 'navigation.sqlite'));
+    const scope = { workspace: 'ws', session: 'session', agent: 'main' };
+    const frame = { ...scope, kind: 'frame', turn: 1, active: true, time: 10 } as const;
+    const rows: Array<[string, Omit<HistoryNavRow, 'anchor'>]> = [
+      ['parent', { ...frame, kind: 'turn' }],
+      ['a\0user', { ...frame, role: 'user', part: 'text' }],
+      ['a\0assistant', { ...frame, role: 'assistant', part: 'text' }],
+      ['tool-output', { ...frame, role: 'tool', part: 'output', time: 12 }],
+      ['tool-input', { ...frame, role: 'tool', part: 'input', time: 13 }],
+      ['record', { ...frame, role: 'record', part: 'record', time: 14 }],
+      ['undated', { ...frame, part: 'text', time: undefined }],
+      ['hidden', { ...frame, role: 'assistant', part: 'text', time: 15, active: false }],
+      ['orphan', { ...frame, role: 'assistant', part: 'text', time: 16, turn: 2 }],
+    ];
+    try {
+      await db.batch(rows.map(([key, value]) => ({ kind: 'put', collection: HISTORY_NAV_COLLECTION, key, value })));
+      const prepare = vi.spyOn(db.db, 'prepare');
+      try {
+        const first = db.searchRows({ ...scope, direction: 'desc', limit: 1 });
+        expect(first.map(({ key }) => key)).toEqual(['a\0user']);
+        const second = db.searchRows({ ...scope, direction: 'desc', limit: 2, after: first[0] });
+        expect(second.map(({ key }) => key)).toEqual(['a\0assistant', 'undated']);
+        const plans = prepare.mock.calls.slice(0, 2).map(([sql]) => {
+          const args = Array.from(sql.matchAll(/\?/g), () => null);
+          return db.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map(({ detail }) => detail);
+        });
+        for (const plan of plans) {
+          expect(plan.filter((detail) => String(detail).includes('nav_search_role_order'))).toHaveLength(2);
+          expect(plan.join('\n')).not.toContain('TEMP B-TREE');
+        }
+        expect(db.searchRows({ ...scope, direction: 'asc', limit: 10, endTime: 11 }).map(({ key }) => key))
+          .toEqual(['a\0assistant', 'a\0user']);
+        expect(db.searchRows({ ...scope, direction: 'desc', limit: 10, includeToolOutput: true }).map(({ key }) => key))
+          .toEqual(['tool-output', 'a\0user', 'a\0assistant', 'undated']);
+        expect(db.searchRows({ ...scope, direction: 'desc', limit: 10, role: 'record' }).map(({ key }) => key))
+          .toEqual(['record']);
+      } finally { prepare.mockRestore(); }
+    } finally { db.close(); await rm(home, { recursive: true, force: true }); }
   });
 
   it('keeps scalar adapter maps and sets on disk, including deletion during keyset iteration', async () => {
