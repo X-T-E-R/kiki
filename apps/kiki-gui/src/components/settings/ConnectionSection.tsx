@@ -47,11 +47,12 @@ export function ConnectionSection() {
 
 function CurrentConnectionContent() {
   const host = useHost();
-  const { config, meta, wsStatus, socket, scopeId, sshLabel, activateLocal, disconnect, applyConnection } = useConnection();
+  const { config, meta, wsStatus, socket, scopeId, sshLabel, connectionSource, activateLocal, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const isDesktop = host.kind === 'tauri';
   const isSsh = scopeId.startsWith('ssh:');
+  const isShellPaired = connectionSource === 'app-shell';
   const shellConnect = appShellConnectUrl();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -67,6 +68,9 @@ function CurrentConnectionContent() {
   const [readingTimeoutSaved, pingReadingTimeoutSaved] = useSavedTick();
   // Inline editing: the page owns the (url, token) pair, so the value is
   // edited where it is shown instead of behind disconnect → connect screen.
+  // A paired `app-shell` peer credential belongs to the native-verified current
+  // origin, so KEEP must never inherit it into manual browser storage or send
+  // it to an edited address.
   const [urlDraft, setUrlDraft] = useState(config.url);
   const [tokenDraft, setTokenDraft] = useState<SecretDraft>(KEEP_SECRET);
   useEffect(() => {
@@ -74,14 +78,23 @@ function CurrentConnectionContent() {
     setTokenDraft(KEEP_SECRET);
     setEditingEndpoint(false);
   }, [config.url, config.token]);
+  const inheritedToken = isShellPaired ? '' : config.token.trim();
   const nextToken = tokenDraft.mode === 'set' ? tokenDraft.value.trim()
-    : tokenDraft.mode === 'clear' ? '' : config.token.trim();
-  const draftsDirty = urlDraft.trim() !== config.url.trim() || nextToken !== config.token.trim();
+    : tokenDraft.mode === 'clear' ? '' : inheritedToken;
+  const tokenDirty = isShellPaired
+    ? (tokenDraft.mode === 'set' && nextToken !== '') || tokenDraft.mode === 'clear'
+    : nextToken !== config.token.trim();
+  const draftsDirty = urlDraft.trim() !== config.url.trim() || tokenDirty;
   useDirtyReporter('connection-endpoint', draftsDirty && !isSsh);
   const applyDrafts = () => {
     if (!draftsDirty) return;
+    const trimmedUrl = urlDraft.trim();
     setEditingEndpoint(false);
-    applyConnection({ url: urlDraft.trim(), token: nextToken });
+    if (isShellPaired && tokenDraft.mode !== 'set') {
+      applyConnection({ url: trimmedUrl, token: '' });
+      return;
+    }
+    applyConnection({ url: trimmedUrl, token: nextToken });
   };
   const discardDrafts = () => {
     setUrlDraft(config.url);
@@ -237,12 +250,12 @@ function CurrentConnectionContent() {
             <SecretField
               id="st-conn-token"
               label={t('connect.token')}
-              source={config.token === '' ? 'none' : 'kiki'}
+              source={config.token === '' || isShellPaired ? 'none' : 'kiki'}
               sourceText={t('st.conn.tokenHint')}
               clearable={false}
               draft={tokenDraft}
               onChange={setTokenDraft}
-              reveal={config.token === '' ? undefined : revealToken}
+              reveal={config.token === '' || isShellPaired ? undefined : revealToken}
             />
             <SettingsDraftFooter
               id="connection-endpoint"

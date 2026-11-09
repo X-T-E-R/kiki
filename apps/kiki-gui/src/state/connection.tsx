@@ -537,7 +537,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     void askForWebCookie((claimed) => {
       if (!claimed) return;
       const current = selectionRef.current;
-      if (current !== null && (current.source !== 'stored' || current.persist)) return;
+      if (
+        current !== null &&
+        current.source !== 'app-shell' &&
+        (current.source !== 'stored' || current.persist)
+      ) {
+        return;
+      }
       clearAppShellCredentialState(window);
       connectionEpochRef.current += 1;
       setMeta(null);
@@ -554,7 +560,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return {
         config: { url: '', token: adoptedShellToken },
         persist: false,
-        source: 'stored',
+        source: 'app-shell',
         scopeId: 'direct:',
       };
     }
@@ -1035,7 +1041,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           setConnectError({ kind: 'raw', text: 'identity-mismatch' });
           return;
         }
-        if (selection?.source !== 'remote' && selection?.source !== 'stored' && selection?.persist === true && config !== null) writeStoredConfig(config);
+        if (
+          selection?.source !== 'remote' &&
+          selection?.source !== 'stored' &&
+          selection?.source !== 'app-shell' &&
+          selection?.persist === true &&
+          config !== null
+        ) {
+          writeStoredConfig(config);
+        }
         if (selection?.source === 'desktop' && selection === selectionRef.current) {
           verifiedDesktopRef.current = { selection, client, meta: value, homeId: spaceKey, scopeId };
           desktopRecoveryRef.current = null;
@@ -1423,9 +1437,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       clearAppShellCredentialState(window);
       return;
     }
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
+    const currentUrl = current?.config.url.trim().replace(/\/+$/, '') ?? '';
     if (
       current !== null &&
-      current.config.url === '' &&
+      current.source === 'app-shell' &&
+      (currentUrl === '' || currentUrl === currentOrigin) &&
       current.config.token.trim() === trimmed
     ) {
       return;
@@ -1436,16 +1453,43 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setSelection({
       config: { url: '', token: trimmed },
       persist: false,
-      source: 'stored',
+      source: 'app-shell',
       scopeId: `direct::${generation}`,
     });
   }, []);
 
   // Settings edits always persist: a connection typed into the settings page
   // is an explicit choice, the same as one typed into the connect screen.
+  // However, a paired `app-shell` peer credential belongs exclusively to the
+  // native-verified current origin and must never be persisted to browser
+  // storage or forwarded to an edited URL unless an explicit independent owner
+  // credential was provided.
   const applyConnection = useCallback(
     (next: ConnectionConfig) => {
-      if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
+      const current = selectionRef.current;
+      if (current?.source === 'ssh' || current?.source === 'remote') return;
+      if (current?.source === 'app-shell') {
+        const trimmedUrl = next.url.trim();
+        const nextUrl = trimmedUrl.replace(/\/+$/, '');
+        const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
+        const isSameOrigin = nextUrl === '' || nextUrl === currentOrigin;
+        const inheritsPairedPeer =
+          next.token.trim() === '' || next.token.trim() === current.config.token.trim();
+        if (inheritsPairedPeer) {
+          if (isSameOrigin) {
+            if (current.config.url === trimmedUrl) return;
+            setSelection({
+              ...current,
+              config: { url: trimmedUrl, token: current.config.token },
+              persist: false,
+              source: 'app-shell',
+            });
+            return;
+          }
+          connect({ url: trimmedUrl, token: '' }, false);
+          return;
+        }
+      }
       connect(next, true);
     },
     [connect],

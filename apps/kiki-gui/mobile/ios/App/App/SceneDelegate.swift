@@ -100,6 +100,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private var activeAuthOrigin: String?
     private var activeAuthServerId: String?
     private var pendingAuthEpoch: Int64 = 0
+    private var documentNavEpoch: Int64 = 0
+    private var currentDocumentNavNonce: String?
     private var urlObservation: NSKeyValueObservation?
     private var loadingObservation: NSKeyValueObservation?
 
@@ -109,7 +111,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.handleWebViewNavigationState(finalize: false)
         }
         loadingObservation = webView?.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
-            if !webView.isLoading {
+            if webView.isLoading {
+                self?.handleWebViewNavigationState(finalize: false)
+            } else {
                 self?.handleWebViewNavigationState(finalize: true)
             }
         }
@@ -358,6 +362,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func clearPendingAuth() {
         pendingAuthEpoch += 1
+        documentNavEpoch += 1
+        currentDocumentNavNonce = nil
         pendingAuthOrigin = nil
         pendingAuthServerId = nil
     }
@@ -417,11 +423,28 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             clearActiveAuth()
             return
         }
+        let expectedDocEpoch: Int64
+        let expectedNavNonce: String
+        if !finalize || currentDocumentNavNonce == nil {
+            documentNavEpoch += 1
+            expectedDocEpoch = documentNavEpoch
+            expectedNavNonce = "nav-\(expectedEpoch)-\(expectedDocEpoch)"
+            currentDocumentNavNonce = expectedNavNonce
+        } else {
+            expectedDocEpoch = documentNavEpoch
+            expectedNavNonce = currentDocumentNavNonce ?? "nav-\(expectedEpoch)-\(documentNavEpoch)"
+        }
+        webView.evaluateJavaScript(
+            Self.buildDocumentNavNonceScript(expectedOrigin: targetOrigin, navNonce: expectedNavNonce),
+            completionHandler: nil
+        )
         Self.fetchHandshake(origin: targetOrigin) { [weak self] ok, redirected, homeId, hostId, _ in
             DispatchQueue.main.async {
                 guard let self,
                       let webView = self.webView,
-                      self.pendingAuthEpoch == expectedEpoch else { return }
+                      self.pendingAuthEpoch == expectedEpoch,
+                      self.documentNavEpoch == expectedDocEpoch,
+                      self.currentDocumentNavNonce == expectedNavNonce else { return }
                 guard !redirected,
                       ok,
                       homeId == targetServerId,
@@ -445,7 +468,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                 }
                 guard let token, !token.isEmpty else { return }
-                let script = Self.buildCredentialDeliveryScript(expectedOrigin: targetOrigin, token: token)
+                let script = Self.buildCredentialDeliveryScript(
+                    expectedOrigin: targetOrigin,
+                    token: token,
+                    expectedNavNonce: expectedNavNonce
+                )
                 webView.evaluateJavaScript(script, completionHandler: nil)
             }
         }
@@ -472,12 +499,22 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         return components.url?.absoluteString ?? "\(origin)/"
     }
 
-    static func buildCredentialDeliveryScript(expectedOrigin: String, token: String) -> String {
+    static func buildDocumentNavNonceScript(expectedOrigin: String, navNonce: String) -> String {
+        let originData = (try? JSONSerialization.data(withJSONObject: [expectedOrigin])) ?? Data("[\"\"]".utf8)
+        let nonceData = (try? JSONSerialization.data(withJSONObject: [navNonce])) ?? Data("[\"\"]".utf8)
+        let originArray = String(data: originData, encoding: .utf8) ?? "[\"\"]"
+        let nonceArray = String(data: nonceData, encoding: .utf8) ?? "[\"\"]"
+        return "(function(){try{var exp=\(originArray)[0];var n=\(nonceArray)[0];if(window.location.origin!==exp||!n)return false;var doc=window.document||window;try{Object.defineProperty(doc,\"__kikiShellNavNonce\",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellNavNonce=n;}return true;}catch(e){return false;}})();"
+    }
+
+    static func buildCredentialDeliveryScript(expectedOrigin: String, token: String, expectedNavNonce: String = "") -> String {
         let originData = (try? JSONSerialization.data(withJSONObject: [expectedOrigin])) ?? Data("[\"\"]".utf8)
         let tokenData = (try? JSONSerialization.data(withJSONObject: [token])) ?? Data("[\"\"]".utf8)
+        let nonceData = (try? JSONSerialization.data(withJSONObject: [expectedNavNonce])) ?? Data("[\"\"]".utf8)
         let originArray = String(data: originData, encoding: .utf8) ?? "[\"\"]"
         let tokenArray = String(data: tokenData, encoding: .utf8) ?? "[\"\"]"
-        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];if(window.location.origin!==exp||!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{if(window.document)delete window.document.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{var doc=window.document||window;var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:exp,token:t};}});}catch(e){try{(window.document||window).__kikiShellStagedCredential={origin:exp,token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
+        let nonceArray = String(data: nonceData, encoding: .utf8) ?? "[\"\"]"
+        return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];var n=\(nonceArray)[0];if(window.location.origin!==exp||!t)return false;var doc=window.document||window;if(n&&doc.__kikiShellNavNonce!==n)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:exp,token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:exp,token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
     }
 
     private static func fetchHandshake(

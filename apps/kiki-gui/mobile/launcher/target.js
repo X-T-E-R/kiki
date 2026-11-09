@@ -997,20 +997,38 @@ export function stripTokenFromEntry(origin, entry) {
 }
 
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
+export const SHELL_DOCUMENT_NAV_NONCE_PROP = '__kikiShellNavNonce';
+
+let navNonceSequence = 0;
 
 /**
- * Builds an origin-checked credential delivery script that stages the peer token
- * only in the current document's memory (`document.__kikiShellStagedCredential` +
- * `kiki:shell-token` event) when `window.location.origin === expectedOrigin`
- * after navigation commits. Never writes credentials to `localStorage`,
- * `sessionStorage`, or `window.name`, refuses to overwrite an existing non-shell
- * owner connection, and preserves the page's route path, query, non-credential
- * hash, and history state (`idx`).
+ * Builds a script that stamps a non-secret, one-shot navigation generation marker
+ * (`document.__kikiShellNavNonce`) on the current document before an async
+ * handshake starts, so a delayed handshake callback can verify that the exact
+ * same document is still active before delivering credentials.
  */
-export function buildCommittedCredentialScript(expectedOrigin, token) {
+export function buildDocumentNavNonceScript(expectedOrigin, navNonce) {
+  const originJson = JSON.stringify(String(expectedOrigin ?? ''));
+  const nonceJson = JSON.stringify(String(navNonce ?? ''));
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var doc=window.document||window;var n=${nonceJson};if(!n)return false;try{Object.defineProperty(doc,"__kikiShellNavNonce",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellNavNonce=n;}return true;}catch(e){return false;}})();`;
+}
+
+/**
+ * Builds an origin- and document-nonce-checked credential delivery script that
+ * stages the peer token only in the current document's memory
+ * (`document.__kikiShellStagedCredential` + `kiki:shell-token` event) when
+ * `window.location.origin === expectedOrigin` and (when `expectedNavNonce` is
+ * provided) `document.__kikiShellNavNonce === expectedNavNonce` after navigation
+ * commits. Never writes credentials to `localStorage`, `sessionStorage`, or
+ * `window.name`, refuses to overwrite an existing non-shell owner connection,
+ * and preserves the page's route path, query, non-credential hash, and history
+ * state (`idx`).
+ */
+export function buildCommittedCredentialScript(expectedOrigin, token, expectedNavNonce = '') {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
-  return `(function(){try{if(window.location.origin!==${originJson})return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!=="")){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{if(window.document)delete window.document.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{var doc=window.document||window;var used=false;Object.defineProperty(doc,"__kikiShellStagedCredential",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:${originJson},token:t};}});}catch(e){try{(window.document||window).__kikiShellStagedCredential={origin:${originJson},token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
+  const nonceJson = JSON.stringify(String(expectedNavNonce ?? ''));
+  return `(function(){try{if(window.location.origin!==${originJson})return false;var doc=window.document||window;var n=${nonceJson};if(n&&doc.__kikiShellNavNonce!==n)return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!=="")){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{var used=false;Object.defineProperty(doc,"__kikiShellStagedCredential",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:${originJson},token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:${originJson},token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
 /**
@@ -1103,6 +1121,45 @@ export async function deliverCommittedServerCredential(target, resolved, options
       : typeof resolved.targetHostId === 'string' && resolved.targetHostId.trim() !== ''
         ? resolved.targetHostId.trim()
         : undefined;
+  const navNonce =
+    typeof options.navNonce === 'string' && options.navNonce.trim() !== ''
+      ? options.navNonce.trim()
+      : `nav-${++navNonceSequence}-${Date.now()}`;
+  try {
+    const stamped = await target.evaluate(
+      ({ expectedOrigin: exp, nonce }) => {
+        if (window.location.origin !== exp || !nonce) return false;
+        const doc = window.document || window;
+        try {
+          Object.defineProperty(doc, '__kikiShellNavNonce', {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: nonce,
+          });
+        } catch {
+          doc.__kikiShellNavNonce = nonce;
+        }
+        return true;
+      },
+      { expectedOrigin, nonce: navNonce },
+    );
+    if (!stamped) {
+      return {
+        ok: false,
+        reason: 'cross_origin_redirect',
+        committedOrigin: '',
+        tokenDelivered: false,
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      reason: 'cross_origin_redirect',
+      committedOrigin: '',
+      tokenDelivered: false,
+    };
+  }
   if (expectedHomeId) {
     const probeFn =
       options.probe ??
@@ -1133,7 +1190,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
   let delivered;
   try {
     delivered = await target.evaluate(
-      async ({ expectedOrigin: exp, token: tok }) => {
+      async ({ expectedOrigin: exp, token: tok, expectedNonce }) => {
         try {
           if (typeof window.name === 'string' && window.name !== '') {
             window.name = '';
@@ -1146,6 +1203,14 @@ export async function deliverCommittedServerCredential(target, resolved, options
           return {
             ok: false,
             reason: 'cross_origin_redirect',
+            committedOrigin: window.location.origin,
+          };
+        }
+        const doc = window.document || window;
+        if (expectedNonce && doc.__kikiShellNavNonce !== expectedNonce) {
+          return {
+            ok: false,
+            reason: 'stale_document',
             committedOrigin: window.location.origin,
           };
         }
@@ -1220,7 +1285,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
         } catch {}
         return { ok: true, committedOrigin: window.location.origin };
       },
-      { expectedOrigin, token },
+      { expectedOrigin, token, expectedNonce: navNonce },
     );
   } catch {
     if (typeof target.waitForLoadState === 'function') {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { stripTypeScriptTypes } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
@@ -992,7 +994,8 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(androidPluginSource, /stripTokenFromEntry\(origin,\s*entry\)/);
     assert.match(androidPluginSource, /onPageCommitVisible/);
     assert.match(androidPluginSource, /deliverCommittedToken/);
-    assert.match(androidPluginSource, /buildCredentialDeliveryScript\(targetOrigin,\s*token\)/);
+    assert.match(androidPluginSource, /buildDocumentNavNonceScript\(targetOrigin,\s*expectedNavNonce\)/);
+    assert.match(androidPluginSource, /buildCredentialDeliveryScript\(targetOrigin,\s*token,\s*expectedNavNonce\)/);
     assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin\)/);
     assert.match(androidPluginSource, /fetchHandshake\(targetOrigin\)/);
     assert.match(androidPluginSource, /clearPendingAuthIfCurrent\(callEpoch\)/);
@@ -1005,7 +1008,14 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     );
     assert.match(iosPluginSource, /stripTokenFromEntry\(origin:\s*origin,\s*entry:\s*entry\)/);
     assert.match(iosPluginSource, /handleWebViewNavigationState/);
-    assert.match(iosPluginSource, /buildCredentialDeliveryScript\(expectedOrigin:\s*targetOrigin,\s*token:\s*token\)/);
+    assert.match(
+      iosPluginSource,
+      /buildDocumentNavNonceScript\(expectedOrigin:\s*targetOrigin,\s*navNonce:\s*expectedNavNonce\)/,
+    );
+    assert.match(
+      iosPluginSource,
+      /buildCredentialDeliveryScript\(\s*expectedOrigin:\s*targetOrigin,\s*token:\s*token,\s*expectedNavNonce:\s*expectedNavNonce\s*\)/,
+    );
     assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin\)/);
     assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*targetOrigin\)/);
     assert.match(iosPluginSource, /clearPendingAuthIfCurrent\(epoch:\s*callEpoch\)/);
@@ -1528,5 +1538,159 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
   } finally {
     await browser.close();
     for (const server of servers) server.close();
+  }
+});
+
+test('Android KikiShellPlugin actual Java methods bind async handshake to exact document generation and reject stale A delivery into same-origin replacement document B', () => {
+  const source = readFileSync(
+    new URL('../android/app/src/main/java/ai/easyagent/kiki/KikiShellPlugin.java', import.meta.url),
+    'utf8',
+  );
+  function section(start, end) {
+    const from = source.indexOf(start);
+    const to = source.indexOf(end, from);
+    assert.ok(from >= 0 && to > from, start);
+    return source.slice(from, to);
+  }
+  const fields = section('    private volatile String pendingPairUri;', '    @Override\n    public void load()');
+  const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
+  const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
+  const builder = section('    static String buildDocumentNavNonceScript', '    private HandshakeResult fetchHandshake');
+  const override = section('    @Override\n    public Boolean shouldOverrideLoad(Uri url)', '    @Override\n    protected void handleOnNewIntent').replace('    @Override\n', '');
+  const origin = section('    private static boolean isWebOrigin(Uri uri)', '\n}');
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'kiki-native-delivery-'));
+  try {
+    const javaSource = `import java.net.URI;
+import java.util.concurrent.*;
+import java.util.*;
+public class NativeDeliveryCheck {
+${fields}
+${clear}
+${deliver}
+${builder}
+${override}
+${origin}
+    private static final String TRUSTED_ORIGIN = "trustedOrigin";
+    private static final String ORIGIN = "http://192.168.1.50:5494";
+    private final WebView view = new WebView();
+    private final Bridge bridge = new Bridge(view);
+    private final BlockingQueue<Reply> replies = new LinkedBlockingQueue<>();
+    private Bridge getBridge() { return bridge; }
+    private Prefs prefs() { return new Prefs(); }
+    private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
+    private boolean matchesStoredHostId(String id, String host) { return id.equals("home-a") && host.equals("host-a"); }
+    private String readPeerToken(String id, String origin) { return "fixture-peer-a"; }
+    private HandshakeResult fetchHandshake(String origin) {
+        try {
+            Reply r = replies.take();
+            r.started.countDown();
+            if (!r.release.await(5, TimeUnit.SECONDS)) throw new AssertionError("handshake release timeout");
+            return new HandshakeResult(true, false, r.home, r.host, "fixture");
+        } catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+    private static class Reply {
+        final CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+        final String home, host;
+        Reply(String home, String host) { this.home = home; this.host = host; }
+    }
+    private static class WebView {
+        volatile String url = ORIGIN + "/";
+        volatile String documentId = "A-document";
+        final BlockingQueue<Runnable> posted = new LinkedBlockingQueue<>();
+        final List<String> deliveries = new ArrayList<>();
+        final List<String> deliveredScripts = new ArrayList<>();
+        String getUrl() { return url; }
+        void post(Runnable r) { posted.add(r); }
+        void loadUrl(String next) { url = next; }
+        void evaluateJavascript(String script, Object ignored) {
+            if (script.contains("__kikiShellStagedCredential")) {
+                if (!script.contains("fixture-peer-a")) throw new AssertionError("wrong credential script");
+                deliveries.add(documentId);
+                deliveredScripts.add(script);
+            }
+        }
+    }
+    private static class Bridge {
+        final WebView v;
+        Bridge(WebView v) { this.v = v; }
+        String getLocalUrl() { return "https://localhost"; }
+        WebView getWebView() { return v; }
+    }
+    private static class Prefs { String getString(String k, String def) { return ORIGIN; } }
+    private static class Uri {
+        final URI value;
+        Uri(URI value) { this.value = value; }
+        static Uri parse(String s) { return new Uri(URI.create(s)); }
+        String getScheme() { return value.getScheme(); }
+        String getHost() { return value.getHost(); }
+        String getUserInfo() { return value.getUserInfo(); }
+        int getPort() { return value.getPort(); }
+        public String toString() { return value.toString(); }
+    }
+    private static class JSONObject {
+        static String quote(String s) { return "\\"" + s.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"") + "\\""; }
+    }
+    public static void main(String[] args) throws Exception {
+        // Case 1: Delayed A handshake resolves AFTER same-origin replacement document B committed
+        NativeDeliveryCheck p = new NativeDeliveryCheck();
+        p.pendingAuthEpoch = 7;
+        p.activeAuthOrigin = ORIGIN;
+        p.activeAuthServerId = "home-a";
+        Reply a = new Reply("home-a", "host-a");
+        Reply b = new Reply("home-b", "host-b");
+        p.replies.add(a);
+        p.deliverCommittedToken(p.view, p.view.url, false);
+        if (!a.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("A callback not started");
+        p.shouldOverrideLoad(Uri.parse(ORIGIN + "/"));
+        p.view.url = ORIGIN + "/";
+        p.view.documentId = "B-document";
+        p.replies.add(b);
+        p.deliverCommittedToken(p.view, p.view.url, false);
+        if (!b.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("B callback not started");
+        a.release.countDown();
+        Runnable staleDelivery = p.view.posted.poll(200, TimeUnit.MILLISECONDS);
+        if (staleDelivery != null) staleDelivery.run();
+        b.release.countDown();
+        Runnable fallback = p.view.posted.poll(1, TimeUnit.SECONDS);
+        if (fallback != null) fallback.run();
+        if (p.view.deliveries.contains("B-document")) {
+            throw new AssertionError("stale A handshake delivered A token into B document: " + p.view.deliveries);
+        }
+
+        // Case 2: Normal same-origin reload to valid Home A delivers credential into the reloaded document
+        NativeDeliveryCheck p2 = new NativeDeliveryCheck();
+        p2.pendingAuthEpoch = 8;
+        p2.activeAuthOrigin = ORIGIN;
+        p2.activeAuthServerId = "home-a";
+        p2.view.documentId = "Reloaded-A-document";
+        Reply a2 = new Reply("home-a", "host-a");
+        p2.replies.add(a2);
+        p2.deliverCommittedToken(p2.view, p2.view.url, false);
+        if (!a2.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Reload A callback not started");
+        a2.release.countDown();
+        Runnable validDelivery = p2.view.posted.poll(5, TimeUnit.SECONDS);
+        if (validDelivery == null) throw new AssertionError("Valid reload did not schedule delivery");
+        validDelivery.run();
+        if (!p2.view.deliveries.equals(Arrays.asList("Reloaded-A-document"))) {
+            throw new AssertionError("Expected delivery to Reloaded-A-document, got: " + p2.view.deliveries);
+        }
+    }
+}
+`;
+    const javaFile = join(tempDir, 'NativeDeliveryCheck.java');
+    writeFileSync(javaFile, javaSource);
+    const javacBin = existsSync('C:/Program Files/Android/Android Studio/jbr/bin/javac.exe')
+      ? 'C:/Program Files/Android/Android Studio/jbr/bin/javac.exe'
+      : 'javac';
+    const javaBin = existsSync('C:/Program Files/Android/Android Studio/jbr/bin/java.exe')
+      ? 'C:/Program Files/Android/Android Studio/jbr/bin/java.exe'
+      : 'java';
+    const compiled = spawnSync(javacBin, ['-d', tempDir, javaFile], { encoding: 'utf8' });
+    assert.equal(compiled.status, 0, `javac failed: ${compiled.stderr}`);
+    const ran = spawnSync(javaBin, ['-cp', tempDir, 'NativeDeliveryCheck'], { encoding: 'utf8' });
+    assert.equal(ran.status, 0, `java failed: ${ran.stderr || ran.stdout}`);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });

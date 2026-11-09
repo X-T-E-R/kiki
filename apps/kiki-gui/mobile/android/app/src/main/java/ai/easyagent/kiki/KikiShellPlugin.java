@@ -70,6 +70,8 @@ public class KikiShellPlugin extends Plugin {
     private volatile String activeAuthOrigin;
     private volatile String activeAuthServerId;
     private volatile long pendingAuthEpoch = 0;
+    private volatile long documentNavEpoch = 0;
+    private volatile String currentDocumentNavNonce;
 
     private static final class HandshakeResult {
         final boolean ok;
@@ -393,6 +395,8 @@ public class KikiShellPlugin extends Plugin {
 
     private void clearPendingAuth() {
         pendingAuthEpoch++;
+        documentNavEpoch++;
+        currentDocumentNavNonce = null;
         pendingAuthOrigin = null;
         pendingAuthServerId = null;
     }
@@ -458,6 +462,17 @@ public class KikiShellPlugin extends Plugin {
             clearActiveAuth();
             return;
         }
+        final long expectedDocEpoch;
+        final String expectedNavNonce;
+        if (!finalize || currentDocumentNavNonce == null) {
+            expectedDocEpoch = ++documentNavEpoch;
+            expectedNavNonce = "nav-" + expectedEpoch + "-" + expectedDocEpoch;
+            currentDocumentNavNonce = expectedNavNonce;
+        } else {
+            expectedDocEpoch = documentNavEpoch;
+            expectedNavNonce = currentDocumentNavNonce;
+        }
+        view.evaluateJavascript(buildDocumentNavNonceScript(targetOrigin, expectedNavNonce), null);
         new Thread(() -> {
             HandshakeResult hs = fetchHandshake(targetOrigin);
             if (
@@ -466,7 +481,7 @@ public class KikiShellPlugin extends Plugin {
                 !targetServerId.equals(hs.targetHomeId) ||
                 !matchesStoredHostId(targetServerId, hs.targetHostId)
             ) {
-                if (expectedEpoch != pendingAuthEpoch) {
+                if (expectedEpoch != pendingAuthEpoch || expectedDocEpoch != documentNavEpoch) {
                     return;
                 }
                 clearPendingAuthIfCurrent(expectedEpoch);
@@ -476,7 +491,11 @@ public class KikiShellPlugin extends Plugin {
                 }
                 return;
             }
-            if (expectedEpoch != pendingAuthEpoch) {
+            if (
+                expectedEpoch != pendingAuthEpoch ||
+                expectedDocEpoch != documentNavEpoch ||
+                !expectedNavNonce.equals(currentDocumentNavNonce)
+            ) {
                 return;
             }
             String token = readPeerToken(targetServerId, targetOrigin);
@@ -485,7 +504,11 @@ public class KikiShellPlugin extends Plugin {
             }
             if (token == null || token.isEmpty()) return;
             view.post(() -> {
-                if (expectedEpoch != pendingAuthEpoch) {
+                if (
+                    expectedEpoch != pendingAuthEpoch ||
+                    expectedDocEpoch != documentNavEpoch ||
+                    !expectedNavNonce.equals(currentDocumentNavNonce)
+                ) {
                     return;
                 }
                 String currentViewUrl = view.getUrl();
@@ -495,7 +518,7 @@ public class KikiShellPlugin extends Plugin {
                     clearActiveAuth();
                     return;
                 }
-                view.evaluateJavascript(buildCredentialDeliveryScript(targetOrigin, token), null);
+                view.evaluateJavascript(buildCredentialDeliveryScript(targetOrigin, token, expectedNavNonce), null);
             });
         }).start();
     }
@@ -528,20 +551,39 @@ public class KikiShellPlugin extends Plugin {
         return builder.build().toString();
     }
 
-    static String buildCredentialDeliveryScript(String expectedOrigin, String token) {
+    static String buildDocumentNavNonceScript(String expectedOrigin, String navNonce) {
         String originJson = JSONObject.quote(expectedOrigin == null ? "" : expectedOrigin);
-        String tokenJson = JSONObject.quote(token == null ? "" : token);
+        String nonceJson = JSONObject.quote(navNonce == null ? "" : navNonce);
         return (
             "(function(){try{if(window.location.origin!==" +
             originJson +
-            ")return false;var t=" +
+            ")return false;var doc=window.document||window;var n=" +
+            nonceJson +
+            ";if(!n)return false;try{Object.defineProperty(doc,\"__kikiShellNavNonce\",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellNavNonce=n;}return true;}catch(e){return false;}})();"
+        );
+    }
+
+    static String buildCredentialDeliveryScript(String expectedOrigin, String token) {
+        return buildCredentialDeliveryScript(expectedOrigin, token, "");
+    }
+
+    static String buildCredentialDeliveryScript(String expectedOrigin, String token, String expectedNavNonce) {
+        String originJson = JSONObject.quote(expectedOrigin == null ? "" : expectedOrigin);
+        String tokenJson = JSONObject.quote(token == null ? "" : token);
+        String nonceJson = JSONObject.quote(expectedNavNonce == null ? "" : expectedNavNonce);
+        return (
+            "(function(){try{if(window.location.origin!==" +
+            originJson +
+            ")return false;var doc=window.document||window;var n=" +
+            nonceJson +
+            ";if(n&&doc.__kikiShellNavNonce!==n)return false;var t=" +
             tokenJson +
-            ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{if(window.document)delete window.document.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}" +
+            ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}" +
             "try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}" +
             "try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}" +
-            "try{var doc=window.document||window;var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:" +
+            "try{var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:" +
             originJson +
-            ",token:t};}});}catch(e){try{(window.document||window).__kikiShellStagedCredential={origin:" +
+            ",token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:" +
             originJson +
             ",token:t};}catch(e2){return false;}}" +
             "try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:" +

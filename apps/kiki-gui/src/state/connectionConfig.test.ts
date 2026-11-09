@@ -376,6 +376,76 @@ describe('connection config readers', () => {
       } finally {
         uninstallCookie();
       }
+
+      // 5. Dual subscription (production main.tsx bootstrap listener without callback + provider listener with callback):
+      // Late delivery after both listeners are installed reaches the provider callback while bare events remain rejected.
+      resetWebAccessBootstrap();
+      clearStoredConfig(localStore);
+      const uninstallBootstrap = installAppShellCredentialListener(win);
+      const providerEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallProvider = installAppShellCredentialListener(win, (detail) => {
+        providerEvents.push(detail);
+      });
+      try {
+        // Bare unbacked CustomEvent('kiki:shell-token') is ignored
+        target.dispatchEvent(
+          new CustomEvent(SHELL_TOKEN_EVENT, {
+            detail: { origin: 'http://127.0.0.1:5494', token: 'bare-forged-token' },
+          }),
+        );
+        expect(providerEvents).toEqual([]);
+        expect(readAdoptedShellCredential(win)).toBeNull();
+
+        // Late committed credential delivery reaches the provider callback despite the earlier bootstrap listener
+        expect(
+          applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'late-delivered-token'),
+        ).toBe(true);
+        expect(readAdoptedShellCredential(win)).toBe('late-delivered-token');
+        expect(providerEvents).toEqual([
+          { origin: 'http://127.0.0.1:5494', token: 'late-delivered-token' },
+        ]);
+      } finally {
+        uninstallProvider();
+        uninstallBootstrap();
+      }
+
+      // 6. Explicit manual owner connection (`url: 'https://owner.example.test'`) alongside a stale
+      // legacy `kiki.shell.managed === '1'` marker is preserved on both startup listener installation
+      // and late credential injection, while retiring only the stale marker and peer token.
+      localStore.setItem(
+        CONNECTION_STORAGE_KEY,
+        JSON.stringify({ url: 'https://owner.example.test', token: 'explicit-owner-token' }),
+      );
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-peer');
+      expect(hasExistingOwnerCredential(localStore, sessionStore)).toBe(true);
+
+      const ownerEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallOwnerCheck = installAppShellCredentialListener(win, (detail) => {
+        ownerEvents.push(detail);
+      });
+      try {
+        expect(ownerEvents).toEqual([]);
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+        expect(readStoredConfig(localStore)).toEqual({
+          url: 'https://owner.example.test',
+          token: 'explicit-owner-token',
+        });
+
+        // Re-set stale marker and attempt late shell injection: owner connection remains intact
+        localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+        expect(
+          applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'shell-override-attempt'),
+        ).toBe(false);
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(readStoredConfig(localStore)).toEqual({
+          url: 'https://owner.example.test',
+          token: 'explicit-owner-token',
+        });
+      } finally {
+        uninstallOwnerCheck();
+      }
     } finally {
       resetWebAccessBootstrap();
     }

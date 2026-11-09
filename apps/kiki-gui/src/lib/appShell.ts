@@ -12,9 +12,29 @@ const SHELL_AGENT = /\bKikiApp\/(android|ios)\b/;
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
 export const SHELL_PEER_TOKEN_KEY = 'kiki.peer.token';
 export const SHELL_DOCUMENT_STAGED_PROP = '__kikiShellStagedCredential';
+export const SHELL_DOCUMENT_NAV_NONCE_PROP = '__kikiShellNavNonce';
 export const SHELL_TOKEN_EVENT = 'kiki:shell-token';
 
-const adoptedShellTokenByWindow = new WeakMap<object, { origin: string; token: string }>();
+interface WindowShellChannel {
+  adopted: { documentRef: object | null; origin: string; token: string } | null;
+  subscribers: Set<(detail: ShellCredentialDetail) => void>;
+  installedDomListener: ((event: Event) => void) | null;
+}
+
+const channelByWindow = new WeakMap<object, WindowShellChannel>();
+
+function getWindowChannel(win: object): WindowShellChannel {
+  let channel = channelByWindow.get(win);
+  if (!channel) {
+    channel = {
+      adopted: null,
+      subscribers: new Set(),
+      installedDomListener: null,
+    };
+    channelByWindow.set(win, channel);
+  }
+  return channel;
+}
 
 /** The shell's connect screen, opened to enter a new server address or link. */
 export function appShellConnectUrl(userAgent: string = globalThis.navigator?.userAgent ?? ''): string | null {
@@ -46,6 +66,12 @@ export interface ShellWindowLike {
   addEventListener?(type: string, listener: (event: Event) => void): void;
   removeEventListener?(type: string, listener: (event: Event) => void): void;
   dispatchEvent(event: Event): boolean;
+}
+
+function currentDocumentRef(win: ShellWindowLike | undefined): object | null {
+  if (!win) return null;
+  if (win.document && typeof win.document === 'object') return win.document;
+  return win;
 }
 
 function clearDocumentStagedSlot(win: ShellWindowLike | undefined): void {
@@ -128,19 +154,26 @@ function consumeDocumentStagedSlot(win: ShellWindowLike | undefined): ShellCrede
  * Retires mobile-shell managed markers, legacy session storage keys, and
  * in-memory document-staged peer tokens so a manual owner connection, explicit
  * disconnect, or HttpOnly web-cookie session is not overwritten on reload or re-entry.
+ * Never deletes an existing manual owner `kiki.connection`.
  */
 export function clearAppShellCredentialState(
   win: Pick<ShellWindowLike, 'localStorage' | 'sessionStorage' | 'document'> | undefined = globalThis.window,
 ): void {
   if (win && typeof win === 'object') {
-    adoptedShellTokenByWindow.delete(win);
+    const channel = channelByWindow.get(win);
+    if (channel) {
+      channel.adopted = null;
+    }
     clearDocumentStagedSlot(win as ShellWindowLike);
   }
   try {
-    if (win?.localStorage?.getItem?.(SHELL_MANAGED_STORAGE_KEY) === '1') {
-      win.localStorage.removeItem?.(CONNECTION_STORAGE_KEY);
+    const storage = win?.localStorage;
+    if (storage?.getItem?.(SHELL_MANAGED_STORAGE_KEY) === '1') {
+      if (!hasExistingOwnerCredential(storage, win?.sessionStorage)) {
+        storage.removeItem?.(CONNECTION_STORAGE_KEY);
+      }
     }
-    win?.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
+    storage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
   } catch {
     // Ignore storage removal errors in restricted contexts.
   }
@@ -164,18 +197,24 @@ export function readAdoptedShellCredential(
     clearAppShellCredentialState(win);
     return null;
   }
-  if (hasExistingOwnerCredential(win.localStorage)) {
+  if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
     clearAppShellCredentialState(win);
     return null;
   }
+  const docRef = currentDocumentRef(win);
+  const channel = getWindowChannel(win);
   const staged = consumeDocumentStagedSlot(win);
   if (staged) {
-    adoptedShellTokenByWindow.set(win, staged);
+    channel.adopted = { documentRef: docRef, origin: staged.origin, token: staged.token };
     return staged.token;
   }
-  const existing = adoptedShellTokenByWindow.get(win);
-  if (existing && existing.origin === win.location.origin && existing.token.trim() !== '') {
-    return existing.token;
+  if (
+    channel.adopted &&
+    channel.adopted.documentRef === docRef &&
+    channel.adopted.origin === win.location.origin &&
+    channel.adopted.token.trim() !== ''
+  ) {
+    return channel.adopted.token;
   }
   return null;
 }
@@ -183,10 +222,12 @@ export function readAdoptedShellCredential(
 /**
  * Returns true when `storage` already holds a non-empty connection token that
  * was not provisioned by the mobile shell (`kiki.shell.managed !== '1'`), or
- * when a manual owner config has superseded a legacy shell-managed marker.
+ * when a manual owner config (`url !== ''` or differing from legacy staged token)
+ * has superseded a legacy shell-managed marker.
  */
 export function hasExistingOwnerCredential(
   storage?: { getItem?(key: string): string | null; removeItem?(key: string): void } | null,
+  sessionStorage?: { getItem?(key: string): string | null } | null,
 ): boolean {
   if (!storage || typeof storage.getItem !== 'function') return false;
   try {
@@ -198,6 +239,12 @@ export function hasExistingOwnerCredential(
     if (existingToken === '') return false;
     if (parsed.url.trim() !== '') return true;
     if (storage.getItem(SHELL_MANAGED_STORAGE_KEY) !== '1') return true;
+    if (sessionStorage && typeof sessionStorage.getItem === 'function') {
+      const staged = sessionStorage.getItem(SHELL_PEER_TOKEN_KEY);
+      if (typeof staged === 'string' && staged.trim() !== '' && staged.trim() !== existingToken) {
+        return true;
+      }
+    }
     return false;
   } catch {
     return false;
@@ -206,25 +253,32 @@ export function hasExistingOwnerCredential(
 
 /**
  * Applies a peer credential injected by the native shell after verifying that
- * navigation committed at `expectedOrigin`. Stages the credential only in the
- * current document's memory (never in `localStorage`, `sessionStorage`, or
- * `window.name`) and refuses to overwrite an existing owner connection or
- * web-cookie session.
+ * navigation committed at `expectedOrigin` (and optional `expectedNavNonce`).
+ * Stages the credential only in the current document's memory (never in
+ * `localStorage`, `sessionStorage`, or `window.name`) and refuses to overwrite
+ * an existing owner connection or web-cookie session.
  */
 export function applyCommittedShellCredential(
   win: ShellWindowLike | undefined,
   expectedOrigin: string,
   token: string,
+  expectedNavNonce?: string,
 ): boolean {
   if (!win || typeof expectedOrigin !== 'string' || expectedOrigin === '') return false;
   if (win.location.origin !== expectedOrigin) return false;
+  if (expectedNavNonce !== undefined && expectedNavNonce !== '') {
+    const docTarget = (win.document ?? win) as Record<string, unknown> | undefined;
+    if (!docTarget || docTarget[SHELL_DOCUMENT_NAV_NONCE_PROP] !== expectedNavNonce) {
+      return false;
+    }
+  }
   const trimmedToken = typeof token === 'string' ? token.trim() : '';
   if (!trimmedToken) return false;
   if (webAccessBootstrap().kind === 'signed-in') {
     clearAppShellCredentialState(win);
     return false;
   }
-  if (hasExistingOwnerCredential(win.localStorage)) {
+  if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
     clearAppShellCredentialState(win);
     return false;
   }
@@ -259,8 +313,9 @@ export function applyCommittedShellCredential(
 /**
  * Synchronizes credentials delivered by the native host's post-commit
  * same-origin evaluation (`document.__kikiShellStagedCredential` + `kiki:shell-token`).
- * Never reads or writes credentials in `localStorage`, `sessionStorage`, `window.name`,
- * or `postMessage`, and never overwrites an existing owner connection or web-cookie session.
+ * Multiple callers on the same `win` share a single one-shot consumption and
+ * broadcast channel so late delivery reaches every subscriber while unbacked
+ * `CustomEvent('kiki:shell-token')` dispatches remain rejected.
  */
 export function installAppShellCredentialListener(
   win: ShellWindowLike | undefined = globalThis.window,
@@ -276,14 +331,19 @@ export function installAppShellCredentialListener(
     }
   }
 
-  const adoptVerifiedDetail = (detail: ShellCredentialDetail): void => {
+  const channel = getWindowChannel(win);
+  if (onCredential) {
+    channel.subscribers.add(onCredential);
+  }
+
+  const adoptAndPublish = (detail: ShellCredentialDetail, notifyOnly?: (detail: ShellCredentialDetail) => void): void => {
     const trimmed = detail.token.trim();
     if (!trimmed || detail.origin !== win.location.origin) return;
     if (webAccessBootstrap().kind === 'signed-in') {
       clearAppShellCredentialState(win);
       return;
     }
-    if (hasExistingOwnerCredential(win.localStorage)) {
+    if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
       clearAppShellCredentialState(win);
       return;
     }
@@ -299,57 +359,77 @@ export function installAppShellCredentialListener(
       // Ignore session storage errors.
     }
     const normalized: ShellCredentialDetail = { origin: win.location.origin, token: trimmed };
-    adoptedShellTokenByWindow.set(win, normalized);
-    onCredential?.(normalized);
+    channel.adopted = {
+      documentRef: currentDocumentRef(win),
+      origin: normalized.origin,
+      token: normalized.token,
+    };
+    if (notifyOnly) {
+      notifyOnly(normalized);
+      return;
+    }
+    for (const sub of Array.from(channel.subscribers)) {
+      sub(normalized);
+    }
   };
-
-  try {
-    win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
-  } catch {
-    // Ignore session storage errors.
-  }
 
   try {
     if (webAccessBootstrap().kind === 'signed-in') {
       clearAppShellCredentialState(win);
-    } else if (hasExistingOwnerCredential(win.localStorage)) {
+    } else if (hasExistingOwnerCredential(win.localStorage, win.sessionStorage)) {
       clearAppShellCredentialState(win);
     } else {
+      try {
+        win.sessionStorage?.removeItem?.(SHELL_PEER_TOKEN_KEY);
+      } catch {
+        // Ignore session storage errors.
+      }
       if (win.localStorage?.getItem?.(SHELL_MANAGED_STORAGE_KEY) === '1') {
         win.localStorage?.removeItem?.(CONNECTION_STORAGE_KEY);
         win.localStorage?.removeItem?.(SHELL_MANAGED_STORAGE_KEY);
       }
       const staged = consumeDocumentStagedSlot(win);
       if (staged) {
-        adoptVerifiedDetail(staged);
-      } else {
-        const adopted = adoptedShellTokenByWindow.get(win);
-        if (adopted && adopted.origin === win.location.origin) {
-          onCredential?.(adopted);
-        }
+        adoptAndPublish(staged);
+      } else if (
+        onCredential &&
+        channel.adopted &&
+        channel.adopted.documentRef === currentDocumentRef(win) &&
+        channel.adopted.origin === win.location.origin
+      ) {
+        adoptAndPublish({ origin: channel.adopted.origin, token: channel.adopted.token }, onCredential);
       }
     }
   } catch {
     // Ignore restricted storage access.
   }
 
-  const onShellToken = (event: Event): void => {
-    const detail = (event as CustomEvent<{ origin?: unknown; token?: unknown }>).detail;
-    const staged = consumeDocumentStagedSlot(win);
-    if (!staged) return;
-    if (
-      detail &&
-      typeof detail.origin === 'string' &&
-      detail.origin === staged.origin &&
-      typeof detail.token === 'string' &&
-      detail.token.trim() === staged.token
-    ) {
-      adoptVerifiedDetail(staged);
-    }
-  };
+  if (!channel.installedDomListener) {
+    const domListener = (event: Event): void => {
+      const detail = (event as CustomEvent<{ origin?: unknown; token?: unknown }>).detail;
+      const staged = consumeDocumentStagedSlot(win);
+      if (!staged) return;
+      if (
+        detail &&
+        typeof detail.origin === 'string' &&
+        detail.origin === staged.origin &&
+        typeof detail.token === 'string' &&
+        detail.token.trim() === staged.token
+      ) {
+        adoptAndPublish(staged);
+      }
+    };
+    channel.installedDomListener = domListener;
+    win.addEventListener?.(SHELL_TOKEN_EVENT, domListener);
+  }
 
-  win.addEventListener?.(SHELL_TOKEN_EVENT, onShellToken);
   return () => {
-    win.removeEventListener?.(SHELL_TOKEN_EVENT, onShellToken);
+    if (onCredential) {
+      channel.subscribers.delete(onCredential);
+    }
+    if (channel.subscribers.size === 0 && channel.installedDomListener) {
+      win.removeEventListener?.(SHELL_TOKEN_EVENT, channel.installedDomListener);
+      channel.installedDomListener = null;
+    }
   };
 }

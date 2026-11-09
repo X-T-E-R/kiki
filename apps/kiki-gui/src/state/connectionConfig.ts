@@ -22,8 +22,12 @@ export interface ConnectionSelection {
    * `web-cookie` is a browser that redeemed a web entry link: it is
    * authenticated to its own origin by an HttpOnly cookie, so it carries no
    * token and must not be persisted or re-pointed.
+   *
+   * `app-shell` is a mobile shell document that adopted a native-verified
+   * paired peer token in memory for the current origin; it must never be
+   * persisted to browser storage or inherited into manual endpoint edits.
    */
-  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection' | 'ssh' | 'remote' | 'web-cookie';
+  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection' | 'ssh' | 'remote' | 'web-cookie' | 'app-shell';
   readonly scopeId?: string;
   readonly connectionId?: string;
   readonly profile?: SshProfile;
@@ -86,8 +90,27 @@ export function readStoredConfig(
   try {
     const target = storage ?? localStorage;
     const raw = target.getItem(CONNECTION_STORAGE_KEY);
-    if (raw === null) return null;
+    if (raw === null) {
+      if (target.getItem('kiki.shell.managed') === '1') {
+        try {
+          (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.('kiki.shell.managed');
+        } catch {
+          // Ignore legacy shell-state cleanup errors in restricted contexts.
+        }
+      }
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<ConnectionConfig>;
+    if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null;
     if (target.getItem('kiki.shell.managed') === '1') {
+      if (parsed.url.trim() !== '') {
+        try {
+          (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.('kiki.shell.managed');
+        } catch {
+          // Ignore legacy shell-state cleanup errors in restricted contexts.
+        }
+        return { url: parsed.url, token: parsed.token };
+      }
       try {
         (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.(CONNECTION_STORAGE_KEY);
         (target as Partial<Pick<Storage, 'removeItem'>>).removeItem?.('kiki.shell.managed');
@@ -96,8 +119,6 @@ export function readStoredConfig(
       }
       return null;
     }
-    const parsed = JSON.parse(raw) as Partial<ConnectionConfig>;
-    if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null;
     return { url: parsed.url, token: parsed.token };
   } catch {
     return null;
