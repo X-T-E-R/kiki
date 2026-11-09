@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { readFile, writeFile } from 'node:fs/promises';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -18,8 +19,10 @@ async function invokeHook(payload, key = 'kiki-agy-steering-bridge', event = 'Po
   return JSON.parse(output);
 }
 let turns = 0;
+let networkScenario;
 const args = process.argv.slice(2);
 const conversation = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'fixture-conversation';
+const resumeConversation = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 if (args[0] === 'models') {
   process.stdout.write('fixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n');
   process.exit(0);
@@ -37,7 +40,12 @@ for (const key of Object.keys(process.env).filter(key => key.startsWith('KIKI_AG
 }
 for await (const line of createInterface({ input: process.stdin })) {
   const input = JSON.parse(line);
-  if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conversation,
+  if (typeof input.message?.content === 'string' && input.message.content.startsWith('network-recover')) networkScenario = input.message.content;
+  const relaunchContinuation = conversation === resumeConversation &&
+    input.message?.content?.startsWith('The connection to the model provider was interrupted');
+  if (relaunchContinuation) networkScenario = 'network-recover-exit';
+  const announced = networkScenario === 'network-recover-exit' ? resumeConversation : conversation;
+  if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: announced,
     init: { model: args.includes('--model') ? model : undefined, agent, cwd: process.cwd(), permission_mode: 'request-review' } }) + '\n');
   turns++;
   if (input.message.content === 'command-guidance') {
@@ -67,6 +75,75 @@ for await (const line of createInterface({ input: process.stdin })) {
       continue;
     }
     process.stdout.write('invalid-native-frame\n');
+    continue;
+  }
+  if (networkScenario) {
+    // Mirrors the real agent-1386 shape: the prompt was consumed, tools settled, and the model
+    // request that followed failed with a recoverable network summary. A continuation arrives as
+    // a new user frame on the same native conversation, so `turns` identifies which segment runs.
+    const scenario = networkScenario;
+    const announced = scenario === 'network-recover-exit' ? resumeConversation : conversation;
+    const networkError = 'There was a network issue connecting to the server, please try again.';
+    const step = (type, index, extra = {}) => process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+      step_update: { step_type: type, step_index: index, state: 'DONE', ...extra } }) + '\n');
+    const nativeExecutions = () => {
+      try { return (readFileSync('native-executions.txt', 'utf8').match(/^recover-tool$/gm) ?? []).length; } catch { return 0; }
+    };
+    const runToolOnce = (index) => {
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+        step_update: { step_type: 'tool', step_index: index, tool_name: 'run_command', state: 'ACTIVE',
+          tool_info: { parameters: { CommandLine: 'git commit' } } } }) + '\n');
+      appendFileSync('native-executions.txt', scenario === 'network-recover-exit' ? 'recover-exit-tool\n' : 'recover-tool\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+        step_update: { step_type: 'tool', step_index: index, tool_name: 'run_command', state: 'DONE',
+          tool_info: { parameters: { CommandLine: 'git commit' }, output: `executions=${nativeExecutions()}` } } }) + '\n');
+    };
+    const failNetwork = index => {
+      step('error_message', index + 2);
+      step('error_message', index + 3);
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status: 'ERROR', error: networkError } }) + '\n');
+    };
+    const succeed = (index, text) => {
+      step('agent_response', index + 4, { text_delta: text });
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status: 'SUCCESS', response: text } }) + '\n');
+    };
+    const base = turns * 10;
+    if (scenario === 'network-recover-early-exit' && turns > 1) process.exit(9);
+    step('user_input', base);
+    if (relaunchContinuation) {
+      succeed(base, 'recovered-by-relaunch');
+      continue;
+    }
+    if (turns === 1) {
+      if (scenario === 'network-recover-partial') {
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+          step_update: { step_type: 'agent_response', step_index: base + 1, state: 'DONE', text_delta: 'partial-before-network' } }) + '\n');
+      }
+      if (scenario !== 'network-recover-no-tools') runToolOnce(base + 1);
+      failNetwork(base + 1);
+      if (scenario === 'network-recover-exit') {
+        // The terminal error is confirmed; this CLI then exits before the adapter can write.
+        await new Promise(done => process.stdout.write('', done));
+        process.exit(0);
+      }
+      continue;
+    }
+    if (scenario === 'network-recover-exit') {
+      succeed(base, 'recovered-by-relaunch');
+      continue;
+    }
+    if (scenario === 'network-recover' || scenario === 'network-recover-partial' || scenario === 'network-recover-no-tools') {
+      succeed(base, `recovered-after-continuation-${turns}`);
+      continue;
+    }
+    if (scenario === 'network-recover-twice') { failNetwork(base); continue; }
+    if (scenario === 'network-recover-live-progress-then-fail') {
+      runToolOnce(base + 1);
+      if (turns === 2) failNetwork(base + 1);
+      else succeed(base + 1, `recovered-again-${turns}`);
+      continue;
+    }
+    failNetwork(base);
     continue;
   }
   if (input.message.content === 'native-interrupted') {

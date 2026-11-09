@@ -26,6 +26,10 @@ const LEGACY_NATIVE_STEP = { user: 14, planner: 15, error: 17, ephemeral: 90, sy
 const NATIVE_DONE = 3;
 const NATIVE_ERROR = 7;
 const LEGACY_NETWORK_FAILURE = 'There was a network issue connecting to the server, please try again.';
+const NETWORK_RECOVERY_INSTRUCTION = 'The connection to the model provider was interrupted after your last completed step. '
+  + 'Continue the same task from where it stopped. Do not repeat tool calls that already finished.';
+const MAX_NETWORK_RECOVERIES_PER_STREAK = 1;
+const MAX_NETWORK_RECOVERIES_PER_TURN = 8;
 
 function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
   let bytes = Buffer.from(value);
@@ -893,18 +897,23 @@ export class AgyBridge {
       stderr = tail.subarray(Math.max(0, tail.length - 8192));
       if (!account) process.stderr.write(chunk);
     });
-    child.stdin.on('error', fail);
+    child.stdin.on('error', error => {
+      if (session.child === child && session.active?.continuationWriter !== child) void fail(error);
+    });
     child.on('error', fail);
     child.once('close', (code, signal) => {
       const lines = stderr.toString('utf8').split(/\r?\n/u);
       if (stderrTruncated) lines.shift();
       const diagnostic = lines.map(line => safeDiagnosticLine(redact(line))).findLast(line => line !== undefined);
       stderr = Buffer.alloc(0);
-      session.broken = true;
+      const owned = child;
+      const channel = session.permissionChannel;
+      if (session.child === owned) session.broken = true;
       session.cleanup = (async () => {
         try {
           await Promise.all([ingress, delivery]);
         } finally {
+          if (session.child !== owned) return;
           if (session.active && !session.cancelling) {
             const message = `AGY exited before terminal result (code: ${code ?? 'none'}, signal: ${signal ?? 'none'})${diagnostic === undefined ? '' : `: ${diagnostic}`}`;
             const error = new Error(message);
@@ -912,13 +921,13 @@ export class AgyBridge {
             error.details = { exitCode: code ?? null, signal: signal ?? null, diagnostic };
             await this.loseTurn(session, error);
           }
-          await session.permissionChannel?.close();
+          await channel?.close();
           await this.closeSteeringHook(session).catch(() => {});
           await session.mcpPlugin?.close();
           if (!session.restarting) await session.releaseResume?.();
         }
       })();
-      const ended = () => { if (account && !session.restarting) this.onAccountExit?.(); };
+      const ended = () => { if (account && session.child === owned && !session.restarting) this.onAccountExit?.(); };
       void session.cleanup.then(ended, error => {
         process.stderr.write(`AGY owned permission cleanup failed: ${redact(error.message)}\n`);
         ended();
@@ -994,6 +1003,7 @@ export class AgyBridge {
       if (!step || typeof step.step_type !== 'string') throw new Error('Malformed AGY step');
       if (step.step_type === 'user_input' && step.state === 'DONE') {
         active.promptConsumed = true;
+        active.continuationWriter = undefined;
         active.lastStepType = 'user_input';
         active.lastStepState = step.state;
         active.lastStepIndex = step.step_index;
@@ -1024,6 +1034,7 @@ export class AgyBridge {
             update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } } });
         }
         active.finalResponseDone = step.state === 'DONE' && active.finalResponseText.length > 0;
+        if (active.finalResponseDone) active.progressSinceRecovery = true;
       }
       if (step.step_type === 'tool') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
@@ -1045,6 +1056,7 @@ export class AgyBridge {
         await this.audit(session, 'tool_state', { toolCallId: id, ...detail });
         if (session.active === active && (step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
           const failed = step.state === 'ERROR' || Boolean(step.tool_info?.error);
+          if (!failed) active.progressSinceRecovery = true;
           const error = step.tool_info?.error ?? step.error;
           session.toolIds.set(id, 'settled');
           const errorText = typeof error === 'string' ? error : error?.message;
@@ -1102,11 +1114,101 @@ export class AgyBridge {
       && active.lastStepType === 'agent_response'
       && active.lastStepState === 'DONE'
       && active.finalResponseDone
-      && active.text.length > 0
+      && active.text.length > active.segmentStart
       && (lateTransportDisconnect
-        ? typeof result.response !== 'string' || result.response.length === 0 || result.response === active.text
-        : typeof result.response === 'string' && result.response.length > 0 && result.response === active.text),
+        ? typeof result.response !== 'string' || result.response.length === 0 || result.response === active.text.slice(active.segmentStart)
+        : typeof result.response === 'string' && result.response.length > 0 && result.response === active.text.slice(active.segmentStart)),
     );
+    const recoverableNetworkError = (lateTransportDisconnect || replayedSummaryError)
+      && !confirmedFinalResponse
+      && active.promptConsumed
+      && unresolved.length === 0
+      && active.steering.length === 0
+      && !active.steerDeliveryUnknown
+      && !session.denied
+      && !result.denied_actions?.length
+      && !active.preToolDenied?.size;
+    if (recoverableNetworkError && active.progressSinceRecovery) {
+      active.networkRecoveries = 0;
+      active.progressSinceRecovery = false;
+    }
+    const continuationAllowed = recoverableNetworkError
+      && active.networkRecoveries < MAX_NETWORK_RECOVERIES_PER_STREAK
+      && active.networkRecoveriesTotal < MAX_NETWORK_RECOVERIES_PER_TURN;
+    if (continuationAllowed) {
+      const attempt = active.networkRecoveries + 1;
+      const preservedTools = session.toolIds.size;
+      await this.audit(session, 'network_recovery_requested', {
+        conversationId: result.conversation_id, nativeStatus: result.status, error: result.error,
+        attempt, totalAttempts: active.networkRecoveriesTotal + 1, preservedTools, preservedTextLength: active.text.length,
+        liveChild: Boolean(session.child && session.child.exitCode === null && session.child.signalCode === null),
+      });
+      if (session.active !== active || session.cancelling) return;
+      active.networkRecoveries = attempt;
+      active.networkRecoveriesTotal += 1;
+      try {
+        const sent = await this.continueNetworkFailure(session, active, attempt, result);
+        if (sent?.outcome === 'sent') {
+          await this.audit(session, 'network_recovery_sent', {
+            conversationId: sent.conversationId, attempt, relaunched: sent.relaunched,
+            bytes: sent.bytes, frameSha256: sent.frameSha256,
+          });
+          return;
+        }
+        active.networkRecoveries -= 1;
+        active.networkRecoveriesTotal -= 1;
+        if (sent?.outcome === 'unknown') {
+          const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'};`
+            + ` delivery of automatic continuation ${attempt} is unconfirmed`
+            + '; it is not re-sent and no new conversation is opened; inspect the native outcome before continuing';
+          await this.audit(session, 'network_recovery_failed', {
+            conversationId: result.conversation_id, attempt, delivery: 'unknown',
+          });
+          error = new Error(message);
+          error.details = { nativeError: result.error, attempt, recoveries: active.networkRecoveriesTotal, preservedTools,
+            conversationId: result.conversation_id, delivery: 'unknown' };
+          session.broken = true;
+          session.failure = message;
+          stopAfterResult = true;
+        } else {
+          await this.audit(session, 'network_recovery_skipped', {
+            conversationId: result.conversation_id, attempt, reason: 'conversation_evidence_incomplete',
+          });
+        }
+      } catch (continueError) {
+        active.networkRecoveries -= 1;
+        active.networkRecoveriesTotal -= 1;
+        const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'};`
+          + ` automatic continuation ${attempt} could not be delivered: ${continueError instanceof Error ? continueError.message : String(continueError)}`
+          + '; delivery of the continuation is unknown and it is not retried; inspect the native outcome before continuing';
+        await this.audit(session, 'network_recovery_failed', {
+          conversationId: result.conversation_id, attempt, delivery: 'unknown',
+          error: continueError instanceof Error ? continueError.message : String(continueError),
+        });
+        error = new Error(message);
+        error.details = { nativeError: result.error, attempt, recoveries: active.networkRecoveriesTotal, preservedTools,
+          conversationId: result.conversation_id, delivery: 'unknown' };
+        session.broken = true;
+        session.failure = message;
+        stopAfterResult = true;
+      }
+    }
+    if (recoverableNetworkError && !continuationAllowed) {
+      const preservedTools = session.toolIds.size;
+      const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}; automatic continuation stopped after`
+        + ` ${active.networkRecoveriesTotal} continue attempt${active.networkRecoveriesTotal === 1 ? '' : 's'} without a completed model response;`
+        + ` every completed tool result (${preservedTools}) and native conversation ${result.conversation_id ?? '(unknown)'} are retained;`
+        + ' load that exact native conversation to continue it, instead of replaying the prompt or the finished tool calls';
+      await this.audit(session, 'network_recovery_exhausted', {
+        conversationId: result.conversation_id, error: result.error, recoveries: active.networkRecoveriesTotal, preservedTools,
+      });
+      error = new Error(message);
+      error.details = { nativeError: result.error, recoveries: active.networkRecoveriesTotal, preservedTools,
+        conversationId: result.conversation_id };
+      session.broken = true;
+      session.failure = message;
+      stopAfterResult = true;
+    }
     if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
@@ -1130,7 +1232,7 @@ export class AgyBridge {
       session.broken = true;
       session.failure = postResponseTerminalError;
       stopAfterResult = true;
-    } else if (result.status !== 'SUCCESS') {
+    } else if (result.status !== 'SUCCESS' && error === undefined) {
       const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}`;
       await this.settlePendingTools(session, active, unresolvedMessage ?? message);
       error = new Error(unresolvedMessage ? `${message}; ${unresolvedMessage}` : message);
@@ -1142,7 +1244,7 @@ export class AgyBridge {
       error = new Error(unresolvedMessage);
       error.code = 'AGY_TOOL_TERMINAL_MISSING';
       error.details = { conversationId: result.conversation_id, unresolvedTools: unresolved };
-    } else if (!active.text && result.response) {
+    } else if (error === undefined && active.text.length === active.segmentStart && result.response) {
       await active.client.notify('session/update', { sessionId: session.id,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result.response } } });
     }
@@ -1158,7 +1260,7 @@ export class AgyBridge {
     }
     if (stopReason === 'cancelled') {
       await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: false, resumeSupported: false, unresolvedTools: unresolved });
-    } else if (!unresolved.length) {
+    } else if (!unresolved.length && error?.details?.delivery !== 'unknown') {
       await this.audit(session, 'native_turn_reconciled', {
         status: result.status,
         preservedCompletedResponse: postResponseTerminalError !== undefined ? true : undefined,
@@ -1184,7 +1286,8 @@ export class AgyBridge {
     if (session.active) throw new Error('AGY session already has an active turn');
     const content = promptText(params.prompt);
     const promise = new Promise((resolveTurn, rejectTurn) => {
-      const active = { client, text: '', steering: [],
+      const active = { client, text: '', steering: [], networkRecoveries: 0, networkRecoveriesTotal: 0, segmentStart: 0,
+        progressSinceRecovery: false,
         resolve: value => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
         reject: error => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
       session.active = active;
@@ -1224,6 +1327,93 @@ export class AgyBridge {
     if (session.cancelling) return session.cancelling;
     session.cancelling = this.cancelOwnedSession(session);
     try { await session.cancelling; } finally { session.cancelling = undefined; }
+  }
+
+  /**
+   * Continues the same native conversation after a recoverable network terminal error, using
+   * only evidence the adapter already confirmed: the finished terminal result, the native
+   * conversation ID it named, and settled tool states. Two delivery paths follow that evidence.
+   *
+   * - The owned CLI is still running: append one new user frame. Nothing else changes, so the
+   *   completed text and tool results stay exactly where they are.
+   * - The terminal result was confirmed but the owned CLI already exited: relaunch the same
+   *   Claude-bound CLI with the recorded `--conversation` and send only the continuation. This is
+   *   the audited native-resume entry (`agy_result` then `close` then `--conversation` re-init of
+   *   the same ID), not a new conversation and not a replay.
+   *
+   * Returns `undefined` when the evidence does not authorize a continuation at all. A failed
+   * write is reported as unknown delivery and is never retried.
+   */
+  async continueNetworkFailure(session, active, attempt, result) {
+    if (session.active !== active || session.cancelling || session.denied) return undefined;
+    const conversationId = typeof result?.conversation_id === 'string' && result.conversation_id ? result.conversation_id : undefined;
+    if (!conversationId) return undefined;
+    if (session.init?.conversation_id !== undefined && session.init.conversation_id !== conversationId) return undefined;
+    if (session.conversationId !== undefined && session.conversationId !== conversationId) return undefined;
+    const frame = JSON.stringify({ event: 'user',
+      message: { content: `${NETWORK_RECOVERY_INSTRUCTION} (automatic continuation ${attempt}).` } }) + '\n';
+    const owned = session.child;
+    const alreadyGone = !owned || owned.exitCode !== null || owned.signalCode !== null;
+    if (!alreadyGone) {
+      const delivered = await this.#writeContinuation(session, active, frame);
+      if (delivered === 'unknown') return { outcome: 'unknown', conversationId };
+      if (delivered === 'written') {
+        return { outcome: 'sent', conversationId, relaunched: false, bytes: Buffer.byteLength(frame),
+          frameSha256: createHash('sha256').update(frame).digest('hex') };
+      }
+    }
+    if (!NATIVE_ID.test(conversationId)) return undefined;
+    session.restarting = true;
+    try {
+      const prepare = async () => {
+        await session.exited;
+        if (session.active !== active || session.cancelling) return;
+        await session.permissionChannel?.close();
+        await this.closeSteeringHook(session);
+        await session.mcpPlugin?.close();
+        if (session.active !== active || session.cancelling) return;
+        session.child = undefined;
+        session.init = undefined;
+        session.exited = undefined;
+        session.cleanup = undefined;
+        session.permissionChannel = undefined;
+        session.mcpPlugin = undefined;
+        session.mcpBound.clear();
+        session.mcpReady.clear();
+        session.conversationId = conversationId;
+        session.broken = false;
+        await this.syncPermissionHook(session);
+        await this.registerSteeringHook(session);
+        if (session.active !== active || session.cancelling) return;
+        await this.start(session);
+      };
+      session.preparing = prepare();
+      try { await session.preparing; } finally { session.preparing = undefined; }
+    } finally { session.restarting = false; }
+    if (session.active !== active || session.broken || session.cancelling) return undefined;
+    const relaunched = await this.#writeContinuation(session, active, frame);
+    if (relaunched === 'not-written') return undefined;
+    if (relaunched === 'unknown') return { outcome: 'unknown', conversationId };
+    return { outcome: 'sent', conversationId, relaunched: true, bytes: Buffer.byteLength(frame),
+      frameSha256: createHash('sha256').update(frame).digest('hex') };
+  }
+
+  async #writeContinuation(session, active, frame) {
+    const child = session.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return 'not-written';
+    active.continuationWriter = child;
+    active.promptConsumed = false;
+    active.segmentStart = active.text.length;
+    active.finalResponseDone = false;
+    active.finalResponseStepIndex = undefined;
+    active.finalResponseText = '';
+    active.progressSinceRecovery = false;
+    try {
+      await new Promise((done, reject) => child.stdin.write(frame, error => error ? reject(error) : done()));
+      return 'written';
+    } catch {
+      return 'unknown';
+    }
   }
 
   async cancelOwnedSession(session) {
