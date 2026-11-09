@@ -65,6 +65,7 @@ const AGENT_FILE_KEYS = new Set([
   'kiki_context',
   'inject_kiki_mcp',
   'model_alias',
+  'model_selection',
   'recipe',
   'recipe_options',
   'restrict_models_to_menu',
@@ -251,6 +252,10 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     'model_alias',
     options.path,
   );
+  const modelSelection = frontmatter['model_selection'];
+  if (modelSelection !== undefined && modelSelection !== 'static' && modelSelection !== 'auto') {
+    throw new AgentFileParseError(`Frontmatter field "model_selection" in ${options.path} must be "static" or "auto"`);
+  }
   const recipeOptions = parseRecipeOptions(frontmatter['recipe_options'], options.path);
   const thinkingEffort = optionalNonEmptyStringField(
     frontmatter['thinking_effort'],
@@ -352,6 +357,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     kikiContext: parseKikiContext(frontmatter['kiki_context'], options.path),
     injectKikiMcp: parseOptionalBoolean(frontmatter['inject_kiki_mcp'], 'inject_kiki_mcp', options.path),
     modelAlias,
+    modelSelection,
     recipe: optionalNonEmptyStringField(frontmatter['recipe'], 'recipe', options.path),
     recipeOptions,
     restrictModelsToMenu: parseOptionalBoolean(frontmatter['restrict_models_to_menu'], 'restrict_models_to_menu', options.path) ?? false,

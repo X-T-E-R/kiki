@@ -47,6 +47,10 @@ import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IConfigService } from '#/app/config/config';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import type { SubagentConfig } from '#/session/subagent/configSection';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
 import { IFlagService } from '#/app/flag/flag';
@@ -476,6 +480,7 @@ interface LaneOptions {
   readonly additionalDirs?: readonly string[];
   readonly capacity?: { readonly maxDirectChildren: number; readonly maxTotalSubagents: number };
   readonly defaultProfile?: string;
+  readonly subagentConfig?: SubagentConfig;
   readonly profile?: AgentProfile;
   readonly mainModel?: string;
   readonly resolveModelAlias?: (id: string) => string | undefined;
@@ -1107,7 +1112,7 @@ function createLane(
   ix.stub(IBootstrapService, {
     getEnv: () => options.externalPermissionCeiling ?? 'yolo',
   });
-  const subagentConfig = { ...options.capacity, defaultProfile: options.defaultProfile };
+  const subagentConfig = { ...options.capacity, defaultProfile: options.defaultProfile, ...options.subagentConfig };
   ix.stub(IConfigService, {
     get: <T>(section: string) => (
       section === 'subagent'
@@ -1313,6 +1318,86 @@ describe('AgentRun and dispatch parity golden', () => {
 
   afterEach(async () => {
     await disposables.dispose();
+  });
+
+  it.each([
+    { global: undefined, profileMode: undefined, pin: undefined, expected: 'parity-model' },
+    { global: 'static', profileMode: undefined, pin: 'auto', expected: 'next-model' },
+    { global: 'auto', profileMode: undefined, pin: undefined, expected: 'next-model' },
+    { global: 'auto', profileMode: 'static', pin: undefined, expected: 'parity-model' },
+    { global: 'static', profileMode: 'auto', pin: undefined, expected: 'next-model' },
+    { global: 'auto', profileMode: 'auto', pin: 'parity-model', expected: 'parity-model' },
+  ] as const)('resolves first-dispatch selection precedence: $global / $profileMode / $pin', async ({ global, profileMode, pin, expected }) => {
+    const profile = normalizeAgentProfile({ ...parityProfile, modelSelection: profileMode, allowedModels: ['parity-model', 'next-model'] });
+    const lane = createLane(disposables, 'internal', { profile, subagentConfig: {
+      modelSelection: global, autoModel: { weights: { 'parity-model': 0, 'next-model': 1 } },
+    } });
+    const result = await lane.runInternal({ profile: 'coder', model_alias: pin, prompt: 'work', description: 'Select a model', background: true });
+    expect(result.isError).not.toBe(true);
+    expect(fieldMap(outputText(result.output))['actual_model']).toBe(expected);
+    await complete(lane, 0);
+  });
+
+  it('sends filtered candidates and assignment to the owner script once, then reopens the same binding', async () => {
+    const workDir = process.cwd();
+    const profile = normalizeAgentProfile({ ...parityProfile, restrictModelsToMenu: true,
+      allowedModels: ['parity-model', 'main-model', 'other-model', 'next-model'], allowedEfforts: ['low', 'high'],
+      modelProfiles: [
+        { alias: 'main-model', when: 'Denied by the machine' },
+        { alias: 'other-model', allowedEfforts: ['low'] },
+        { alias: 'next-model', when: 'Independent evidence', thinkingEffort: 'low' },
+      ],
+    });
+    const code = `let raw = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', s => raw += s); process.stdin.on('end', () => {
+      const input = JSON.parse(raw);
+      if (process.env.SELECTOR_TEST_SECRET || process.argv.length !== 1 || input.description !== 'Select once' || input.prompt !== 'private dispatch brief' ||
+        JSON.stringify(input.candidates) !== JSON.stringify([{alias:'parity-model', thinking_effort:'high'}, {alias:'next-model', when:'Independent evidence', thinking_effort:'high'}])) process.exit(27);
+      process.stdout.write(JSON.stringify({model_alias:'next-model'}));
+    });`;
+    const lane = createLane(disposables, 'internal', { profile, workDir, pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+      subagentConfig: { denyModels: ['main-model'], autoModel: { script: 'owner', scripts: [
+        { id: 'owner', command: process.execPath, args: ['-e', code], workspaces: [workDir], timeout: 10 },
+      ] } },
+    });
+    const host = new HostProcessService();
+    const spawn = vi.spyOn(host, 'spawn');
+    lane.ix.stub(IHostProcessService, host);
+    vi.stubEnv('SELECTOR_TEST_SECRET', 'must-not-cross');
+    try {
+      const result = await lane.runInternal({ profile: 'coder', name: 'selected', model_alias: 'auto', effort: 'high',
+        prompt: 'private dispatch brief', description: 'Select once', background: true });
+      expect(result.isError, outputText(result.output)).not.toBe(true);
+      const receipt = fieldMap(outputText(result.output));
+      expect(receipt['actual_model']).toBe('next-model');
+      expect(receipt).toMatchObject({ model_selection: 'auto', thinking_effort: 'high' });
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(process.execPath, ['-e', code], expect.objectContaining({ shell: false, ownedProcessTree: true }));
+      await complete(lane, 0);
+      const agentId = receipt['agent_id']!;
+      lane.dropHandle(agentId);
+      const resumed = await lane.runInternal({ resume: 'selected',
+        prompt: 'resume payload', description: 'Resume same child', background: true });
+      expect(resumed.isError, outputText(resumed.output)).not.toBe(true);
+      expect(fieldMap(outputText(resumed.output))).toMatchObject({ agent_id: agentId, actual_model: 'next-model' });
+      expect(lane.handles.get(agentId)?.accessor.get(IAgentProfileService).data().thinkingLevel).toBe('high');
+      expect(lane.probe.resumeBindings.at(-1)?.modelAlias).toBeUndefined();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      await complete(lane, 1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails a configured plugin selection outside the candidates without creating a child or falling back', async () => {
+    const lane = createLane(disposables, 'internal', { subagentConfig: { autoModel: { plugin: { id: 'example', tool: 'PickModel' } } } });
+    const execute = vi.fn(async () => ({ output: '{"model_alias":"other-model"}' }));
+    const definition = { schemaVersion: 1 as const, name: 'PickModel', description: 'Select a model', accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const };
+    lane.ix.stub(IPluginHostService, { list: async () => [{ pluginId: 'example', definition }], execute });
+    const result = await lane.runInternal({ profile: 'coder', model_alias: 'auto', prompt: 'owner-only', description: 'Select a model', background: true });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining('outside the eligible candidates') });
+    expect(execute).toHaveBeenCalledExactlyOnceWith('example', 'PickModel', { description: 'Select a model', prompt: 'owner-only',
+      candidates: [{ alias: 'parity-model', when: undefined, thinking_effort: 'high' }] }, expect.any(AbortSignal), undefined,
+      undefined, definition);
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
   });
 
   it('never echoes standing directives in success/failure receipts or after epoch changes', async () => {

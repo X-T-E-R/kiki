@@ -11,21 +11,17 @@ Kiki keeps three things separate when selecting models: the model keys in your c
 ## Current vocabulary
 
 - **Configured model key**: the key of an entry under `[models]` in `config.toml`. Resolution results use it as the canonical runtime identifier.
-- **`model_alias`**: the model selector used by `AgentRun` calls, agent files, and profile routes; `AgentRun` accepts a concrete configured model name, while subagent profiles, routes, and caller leases may also use the reserved value `inherit`.
+- **`model_alias`**: the model selector used by `AgentRun` calls, agent files, and profile routes. `AgentRun` accepts a concrete configured model name or `auto`; only subagent profiles, routes, and caller leases can use `inherit`.
 - **Wire model identifier**: the `model` value actually sent to the provider endpoint. It does not have to equal the configured key — the same provider model can be registered under several purpose-specific keys.
 - **Thinking effort**: the dispatch parameter `effort`, or `thinking_effort` on a profile or route. It resolves independently from `model_alias`, except that explicit model inheritance also follows the caller's effective effort unless an applicable effort pin wins.
 
 ## Binding rules
 
-A newly spawned subagent selects its model in this order:
+For a new subagent, a concrete dispatch alias takes precedence. Otherwise, the target profile's `model_selection` overrides the global `[subagent].model_selection` default. Static selection is the default: use the effective profile, route, or caller-lease model pin, then an explicit `[subagent].default_model`. With no static binding, an ordinary role fails with `model.not_configured`; a [bare engine target](../customization/agents-and-subagents.md#named-child-agents) can use its vendor default.
 
-1. The concrete `model_alias` passed at dispatch time.
-2. The `model_alias` pin on the effective profile, route, or caller lease (constraints an external delegating host pre-sets for the caller).
-3. Explicitly configured `[subagent].default_model`.
+`model_alias: "auto"` requests [automatic selection](../configuration/config-files.md#automatic-model-selection), regardless of the default mode. Kiki selects once from eligible models and saves the concrete model and effort. `AgentRun` rejects `model_alias: "inherit"`; both supported modes enforce model and effort limits. To follow the caller instead, set `model_alias: inherit` in a profile, route, or caller lease and use static selection; an explicit or applicable effort pin can override the caller's effort.
 
-With none of these sources, the spawn fails with `model.not_configured`; neither the caller's model nor the main-agent `default_model` is a silent fallback. `model_alias: inherit` on a profile, route, or caller lease binds the caller's current model and thinking effort unless an explicit tool `effort` or an applicable effort pin overrides them. `AgentRun` itself rejects `model_alias: "inherit"` — pass a concrete configured model name, or omit the parameter to use the target default. An unknown alias or a model on a denylist fails before the child starts. Choosing a model outside `preferred_models` / `discouraged_models` is allowed as long as it is inside every hard model and effort limit.
-
-A resumed or retried subagent keeps its persisted binding unless the `AgentRun` `resume` explicitly requests a change. Omitting both `model_alias` and `effort` keeps the current binding; an explicit effort applies to the next idle run. `AgentRun` rejects `model_alias: "inherit"` on resume as well; specify a concrete model name for an explicit change, or omit it to keep the saved model. Switching to a different canonical model requires an explicit [`context_mode`](../customization/agents-and-subagents.md#named-child-agents), or the legacy `allow_model_change: true` / `new_window: true` confirmation. Do not mix `context_mode` with either legacy parameter. An alias resolving to the same canonical model is a no-op; `compact` and `fresh` can still rebuild its context without changing models.
+`AgentSend` and `resume` without `model_alias` keep the saved model. A `resume` can pass a concrete alias or explicitly run `auto` again. Only a different canonical model requires [`context_mode`](../customization/agents-and-subagents.md#named-child-agents) or legacy confirmation. An explicit effort can apply to the next idle run with or without a model change.
 
 ## Agent files and routes
 

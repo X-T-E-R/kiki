@@ -26,6 +26,7 @@ export type SubagentHandle = {
   readonly parentToolCallId?: string;
   readonly mainProfile?: boolean;
   readonly model?: string;
+  readonly modelSelection?: 'auto';
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;

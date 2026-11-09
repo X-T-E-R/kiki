@@ -55,17 +55,29 @@ import type { DelegatorRef, AgentMeta } from '#/session/sessionMetadata/sessionM
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import {
+  AUTO_MODEL_ALIAS,
   canonicalizeSubagentBinding,
   INHERIT_MODEL_ALIAS,
   resolveDispatchCapacityLimits,
   resolveInheritedModelAlias,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
+  SUBAGENT_SECTION,
+  usesAutoModel,
+  type SubagentConfig,
 } from '#/session/subagent/configSection';
 import { mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { autoModelCandidates, weightedAutoModel, requireAutoModelChoice } from '#/session/subagent/autoModel';
+import { runAutoModelScript } from '#/session/subagent/autoModelScript';
+import { runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
 import {
   ISessionDispatchService,
@@ -112,6 +124,8 @@ export class SessionDispatchService implements ISessionDispatchService {
     @IModelService private readonly models: IModelService,
     @ILogService private readonly log: ILogService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
+    @ref(IHostProcessService) private readonly hostProcess: LiveRef<IHostProcessService>,
+    @ref(IPluginHostService) private readonly pluginHost: LiveRef<IPluginHostService>,
   ) {}
 
   private readonly capacity = new DispatchCapacity();
@@ -202,7 +216,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       );
     }
     const callerBinding = requester.accessor.get(IAgentProfileService).data();
-    const binding = this.resolveBinding(input, target, callerBinding);
+    const auto = input.resolvedBinding === undefined && usesAutoModel(this.config, profile, input.modelAlias);
+    const staticBinding = auto ? undefined : this.resolveBinding(input, target, callerBinding);
     const inheritAlias = (alias: string | undefined) => resolveInheritedModelAlias(alias, callerBinding.modelAlias);
     const resolvedProfile = isNativeTarget(profile) ? profile : selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
       ? { ...selection.baseProfile, modelAlias: inheritAlias(selection.baseProfile.modelAlias) }
@@ -243,6 +258,8 @@ export class SessionDispatchService implements ISessionDispatchService {
               input.parentTurnId,
               requesterMeta,
             );
+      checkLaunchPolicy(profile.executor);
+      const binding = staticBinding ?? await this.resolveAutoBinding(input, target, callerBinding, researchReadonly);
       checkLaunchPolicy(profile.executor);
       child = await this.lifecycle.create({
         deferCreateEvent: true,
@@ -303,7 +320,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         name,
         selection.route?.id ?? profile.name,
         profile,
-      ), sourceRef };
+      ), sourceRef, modelSelection: auto ? 'auto' as const : undefined };
       const prompt = researchReadonly
         ? input.message
         : await applyProfilePromptPrefix(profile, input.message, {
@@ -603,10 +620,32 @@ export class SessionDispatchService implements ISessionDispatchService {
     const modelSwitch = child.agent.accessor.get(IAgentModelSwitchService);
     const switchState = modelSwitch.get(operationId)?.state;
     const recoveringCommit = saved !== undefined && (switchState === 'preparing' || switchState === 'completed');
+    const wantsAuto = options.bindingOverride?.modelAlias?.trim() === AUTO_MODEL_ALIAS;
+    let autoChoice: import('#/session/subagent/autoModel').AutoModelCandidate | undefined;
+    if (wantsAuto && saved === undefined) {
+      const frozen = childData.boundProfile;
+      if (frozen === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints are unavailable for automatic model selection.');
+      if (originalRequest.kind !== 'prompt') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Automatic model selection on resume requires a prompt request.');
+      const executor = childData.executorId ?? frozen.executor ?? 'native';
+      if (executor !== 'native' && contextMode !== 'direct') {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'This executor does not support rebuilding a model switch context window.');
+      }
+      const resolveId = executor === 'native' ? (alias: string) => this.models.resolveId(alias) : undefined;
+      let effectiveProfile = normalizeAgentProfile({ ...frozen, executor, executorOptions: childData.executorOptions ?? frozen.executorOptions, systemPrompt: () => '' });
+      for (const constraint of callerConstraints) effectiveProfile = applySpawnPolicy(effectiveProfile, constraint.constraints, resolveId);
+      autoChoice = await this.selectAutoModel({
+        profile: effectiveProfile, thinkingEffort: options.bindingOverride?.thinkingEffort,
+        description: options.description, prompt: originalRequest.prompt, signal: options.signal,
+        workDir: () => child.agent.accessor.get(IAgentRuntimeService).workspaceRoots?.()?.workDir ?? child.agent.accessor.get(ISessionWorkspaceContext).workDir,
+        current: { model: childData.modelAlias, thinking: childData.thinkingLevel },
+      });
+      checkResume();
+      this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
+    }
     const binding = recoveringCommit ? undefined : await childProfile.prepareResumeBinding({
       ...options.bindingOverride,
-      modelAlias: inheritedModel ?? options.bindingOverride?.modelAlias,
-      thinkingEffort: inheritedThinking,
+      modelAlias: wantsAuto ? saved?.switchInput.model ?? autoChoice?.alias : inheritedModel ?? options.bindingOverride?.modelAlias,
+      thinkingEffort: wantsAuto ? saved?.switchInput.thinking ?? autoChoice?.thinking_effort : inheritedThinking,
       allowParentNotify: options.allowParentNotify,
       toolOverride: options.toolOverride,
       callerConstraints,
@@ -669,7 +708,8 @@ export class SessionDispatchService implements ISessionDispatchService {
     }
     const started = this.startResume(child, request, record, options, reservation);
     return {
-      child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef },
+      child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef,
+        modelSelection: wantsAuto ? 'auto' : undefined },
       request,
       lineage: options.lineage,
       started,
@@ -854,6 +894,64 @@ export class SessionDispatchService implements ISessionDispatchService {
         wake.dispose();
       }
     }
+  }
+
+  private async resolveAutoBinding(
+    input: DispatchLaunchInput,
+    target: ReturnType<typeof resolveSubagentTarget>,
+    caller: ProfileData,
+    researchReadonly: boolean,
+  ): Promise<DispatchResolvedBinding> {
+    const { effectiveProfile: profile, selection, lease } = target;
+    const filled = fillLeasePins({ thinkingEffort: input.thinkingEffort }, lease, selection.route);
+    const chosen = await this.selectAutoModel({
+      profile: { ...profile, modelAlias: resolveInheritedModelAlias(profile.modelAlias, caller.modelAlias) },
+      thinkingEffort: filled.thinkingEffort ?? selection.route?.lockedThinkingEffort,
+      description: input.description, prompt: input.message, signal: input.signal,
+      workDir: () => input.workDir, researchReadonly,
+    });
+    return {
+      model: chosen.alias,
+      thinking: chosen.thinking_effort,
+      selection: {
+        model: { source: input.modelAlias === AUTO_MODEL_ALIAS ? 'dispatch-explicit' : profile.modelSelection === 'auto' ? 'profile-default' : 'config-default', requestedValue: AUTO_MODEL_ALIAS },
+        thinking: { source: input.thinkingEffort === undefined ? 'model-default' : 'dispatch-explicit', requestedValue: input.thinkingEffort },
+      },
+    };
+  }
+
+  private async selectAutoModel(input: {
+    readonly profile: import('@kiki/agent-profiles/agentProfile').AgentProfile;
+    readonly thinkingEffort?: string;
+    readonly description?: string;
+    readonly prompt: string;
+    readonly signal: AbortSignal;
+    readonly workDir: () => string;
+    readonly researchReadonly?: boolean;
+    readonly current?: { readonly model?: string; readonly thinking: string };
+  }): Promise<import('#/session/subagent/autoModel').AutoModelCandidate> {
+    const config = this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.autoModel;
+    if (input.researchReadonly && (config?.script !== undefined || config?.plugin !== undefined)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Plan-mode dispatch cannot run a model selector script or plugin. Specify a concrete model.');
+    }
+    const candidates = autoModelCandidates(input.profile, input.thinkingEffort, {
+      config: this.config, models: this.models, modelCatalog: this.modelCatalog, executors: this.executors,
+    }, input.current);
+    if (candidates.length === 0) {
+      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Automatic model selection found no model and effort that satisfy this dispatch.');
+    }
+    const request = { description: input.description ?? '', prompt: input.prompt, candidates };
+    if (config?.script !== undefined) {
+      const processes = this.hostProcess.current;
+      if (processes === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The local process service is unavailable for the model selector.');
+      return requireAutoModelChoice(await runAutoModelScript(processes, config, input.workDir(), request, input.signal), candidates);
+    }
+    if (config?.plugin !== undefined) {
+      const hosts = this.pluginHost.current;
+      if (hosts === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The local plugin host is unavailable for the model selector.');
+      return requireAutoModelChoice(await runAutoModelPlugin(hosts, config.plugin, request, input.signal), candidates);
+    }
+    return weightedAutoModel(candidates, config?.weights);
   }
 
   private resolveBinding(

@@ -26,6 +26,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
     request,
     requesterAgentId: options.requesterAgentId,
     sourceRef: options.sourceRef,
+    selectorDescription: options.bindingOverride?.modelAlias?.trim() === 'auto' ? options.description : undefined,
     bindingOverride: {
       modelAlias: options.bindingOverride?.modelAlias,
       thinkingEffort: options.bindingOverride?.thinkingEffort,

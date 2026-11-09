@@ -331,7 +331,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `background` | 省略时 main 默认后台、subagent 默认前台；显式 `false` 同步等待 |
 | `name` | 会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留 |
 | `route` | 用 profile route 代替具名 profile |
-| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
+| `model_alias` | 具体模型，或传 `"auto"` 选择一次。默认与恢复行为见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
 | `effort` | 该子 Agent 的思考强度 |
 | `resume` | 已有空闲直属子 Agent 的名称或 ID；拒绝新建目标及工作区字段 |
 | `context_mode` | 仅用于 resume：`direct` 保留上下文，`compact` 先用当前模型生成摘要，`fresh` 从保存的任务状态重建窗口而不调用旧模型；同时确认显式换模 |
@@ -342,7 +342,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `tools` 和 `disallowed_tools` 都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖。两者都要求原生 executor；不支持它们的外部 executor 会在子 Agent 启动前报错。
 
-**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents-and-subagents.md#具名-profile-route-实验功能)。
+**模型与档位。** 不显式指定具体模型或 `"auto"` 时，新建子 Agent 使用[静态选模或已配置的自动选模](./model-vocabulary.md#绑定规则)。思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents-and-subagents.md#具名-profile-route-实验功能)。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 

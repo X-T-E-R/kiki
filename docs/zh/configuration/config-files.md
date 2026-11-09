@@ -807,7 +807,9 @@ timeout = 10
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
-| `default_model` | `string` | — | 仅在派发参数与生效 profile、route、caller lease pin 都未选模型时使用的显式兜底；从不继承调用方 |
+| `default_model` | `string` | — | 仅在静态派发中，派发参数与生效 profile、route、caller lease pin 都未选模型时使用；从不继承调用方 |
+| `model_selection` | `"static"` 或 `"auto"` | `"static"` | 新建子 Agent 时省略 `model_alias` 所用的选模方式。目标 profile 的 `model_selection` 可覆盖这个默认值；具体派发 alias 始终优先 |
+| `auto_model` | 表 | 等权抽选 | 自动选择器配置：相对 `weights`、所有者登记的 `script` ID，或 `plugin = { id, tool }`。`script` 和 `plugin` 互斥 |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
 | `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的内置工具（`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
@@ -830,6 +832,32 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 `timeout_ms` 可被环境变量 `KIKI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`allowed_tools`、`deny_models` 和两个并发限额没有对应的环境变量。
 
 限额是全局配置默认值，计数则按会话隔离。空闲子 Agent 和历史记录不计数；父 Agent 结束后仍运行的后代继续计数。恢复已有子 Agent 会占用执行名额，不会重复创建 Agent。派遣在异步启动前占位，启动失败或执行真正结束后释放。触及任一层上限会立即返回 `dispatch.limit_exceeded`，附带 `layer`、`current`、`limit`、`owner`（REST 业务码为 `42904`），不会排队或停止其他 Agent。可等待正在执行的任务结束，或显式调高对应配置限额。任务完成后的自动唤醒也遵守相同限额；唤醒被拒绝时，已完成任务及其输出仍可通过 `TaskOutput` 读取，通知不会被标记为已送达。
+
+### 自动选模
+
+调用 `AgentRun` 时传入 `model_alias: "auto"`，Kiki 就为本次派发选择一次模型。要让新建子 Agent 默认自动选模，在 `[subagent]` 下设置 `model_selection = "auto"`；各 profile 可用 `model_selection: static` 或 `model_selection: auto` 覆盖。显式指定具体 `model_alias` 时，以它为准。恢复时显式传 `auto` 的用法见[具名子 Agent](../customization/agents-and-subagents.md#具名子-agent)。
+
+候选来自已配置的原生模型，或外部执行器的模型目录与已声明模型。Kiki 将候选与冻结菜单、各层模型和档位硬限制求交。每个候选须有可解析的思考强度，显式派发 `effort` 优先；没有合格候选时会报错，不会回落。
+
+不配置自定义选择器时，Kiki 在合格候选中等权抽选。要提高某个模型被选中的概率，在 `[subagent.auto_model.weights]` 下给它设更大的权重。用候选模型 ID 作键，含 `/` 的键加引号；设为 `0` 就不参加抽选。未列出的模型权重仍是 `1`。没有权重为正的合格候选时会报错。
+
+如需自定义选模，在 `[subagent.auto_model]` 中指定一个本地脚本或已启用的插件工具。这样会授权该选择器接收本次派发的 `description`、`prompt` 与过滤后的 `candidates`（`alias`、可选的 `when` 和 `thinking_effort`）。请只把正文交给你信任的代码。选择器只能返回 `{"model_alias":"candidate-id"}`，不能添加候选或修改思考强度。选择失败时不会改用另一个模型。
+
+```toml
+[subagent.auto_model]
+script = "choose-model"
+
+[[subagent.auto_model.scripts]]
+id = "choose-model"
+command = "/usr/local/bin/node"
+args = ["/Users/alice/.kiki/scripts/agentrun-model-selector.mjs"]
+workspaces = ["/Users/alice/projects/assistant"]
+timeout = 10
+```
+
+可执行文件和授权工作区根目录都必须使用绝对路径；Windows 下的可执行文件须为 `.exe`。脚本在隔离环境中运行，不经过 Shell；从 `stdin`（程序的输入通道）读取一个 JSON 对象，再向 `stdout`（程序的输出通道）写入 JSON 结果。默认超时为 10 秒，可设为 1–60 秒。仓库示例 `scripts/examples/agentrun-model-selector.mjs` 默认选择第一个合格模型；也可在 `args` 中将本地 `{"scores":{"candidate-id":2}}` JSON 文件作为第二个参数传入，按分数选择。
+
+如果改用插件，在 `[subagent.auto_model]` 下设置 `plugin = { id = "example-selector", tool = "SelectModel" }` 并移除 `script`。对应工具必须已经由本地启用的插件注册。工具接收同一个输入对象，并在工具输出中以 JSON 文本返回选择结果。使用权重抽选时，Kiki 不会把派发正文发送给脚本或插件。
 
 ## `agents`
 

@@ -821,7 +821,9 @@ Registering an entry under `[[cron.scripts]]` makes its `id` selectable for matc
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
-| `default_model` | `string` | — | Explicit fallback only when neither a dispatch parameter nor an effective profile, route, or caller-lease pin selects a model; never inherits the caller |
+| `default_model` | `string` | — | Static fallback only when neither a dispatch parameter nor an effective profile, route, or caller-lease pin selects a model; never inherits the caller |
+| `model_selection` | `"static"` or `"auto"` | `"static"` | Selection mode for new children when `AgentRun` omits `model_alias`. The target profile's `model_selection` overrides this default; a concrete dispatch alias always wins |
+| `auto_model` | `table` | equal weights | Automatic selector configuration: relative `weights`, an owner-registered `script` ID, or `plugin = { id, tool }`. `script` and `plugin` are mutually exclusive |
 | `deny_models` | `string[]` | — | Hard denylist for every subagent binding after alias resolution; pins, manual changes, resume, and advisory dispatch cannot bypass it. Profile/lease/tree/model-profile hard rules remain additional boundaries |
 | `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. It covers every built-in tool a subagent does not get by default (`AskUserQuestion`, `Cron`, `EnterPlanMode` / `ExitPlanMode`, `ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`); it does not override profile allowlists, denylists, or other policy limits |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
@@ -844,6 +846,32 @@ Tool lists in profile descriptions and settings are configuration previews, not 
 `timeout_ms` can be overridden by the `KIKI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `allowed_tools`, `deny_models`, or the two concurrency limits.
 
 The limits are global configuration defaults, but counts are isolated to each session. Idle and historical children do not count. A running descendant still counts after its parent finishes; resuming a child takes an execution slot without creating another agent. Admission reserves capacity before asynchronous startup and releases it after startup failure or execution completion. Exceeding either limit immediately returns `dispatch.limit_exceeded` with `layer`, `current`, `limit`, and `owner` (REST business code `42904`); it does not queue work or stop another agent. Wait for an active run to finish or explicitly raise the relevant configuration limit. Automatic task-completion wakeups obey the same limits. If a wakeup is rejected, the finished task and its output remain available through `TaskOutput`; the notification is not marked delivered.
+
+### Automatic model selection
+
+Use `AgentRun` with `model_alias: "auto"` to select once for that dispatch. To use it by default for new children, set `[subagent] model_selection = "auto"`; a profile can override that default with `model_selection: static` or `model_selection: auto`. A concrete `model_alias` always takes precedence. See [continuing a child](../customization/agents-and-subagents.md#named-child-agents) for how explicit `auto` works on resume.
+
+Candidates come from configured native models or the external executor's model catalog and declared model choices. Kiki intersects them with the saved menu and applicable hard model and effort limits. Each candidate needs a resolvable effort; an explicit dispatch `effort` takes precedence. No eligible candidate means an error, not a fallback.
+
+Without a custom selector, Kiki draws from eligible models with equal weight. To favor a model, assign it a larger weight under `[subagent.auto_model.weights]`. Use the candidate's model ID as the key, quote keys containing `/`, and set a weight to `0` to leave that model out of the draw. Unlisted models still have weight `1`. The draw fails if no eligible candidate has positive weight.
+
+For a custom decision, name one local script or enabled plugin tool in `[subagent.auto_model]`. This configuration authorizes that destination to receive the dispatch `description`, `prompt`, and filtered `candidates` (`alias`, optional `when`, and `thinking_effort`). Configure only code you trust with that text. The selector must return just `{"model_alias":"candidate-id"}`; it cannot add a candidate or change the effort. A selector failure does not fall back to a different model.
+
+```toml
+[subagent.auto_model]
+script = "choose-model"
+
+[[subagent.auto_model.scripts]]
+id = "choose-model"
+command = "/usr/local/bin/node"
+args = ["/Users/alice/.kiki/scripts/agentrun-model-selector.mjs"]
+workspaces = ["/Users/alice/projects/assistant"]
+timeout = 10
+```
+
+Use absolute paths for the executable and authorized workspace roots; on Windows, use an `.exe`. The script runs without a shell and with an isolated environment. It reads one JSON object from `stdin` (the program's input channel) and writes its choice as JSON to `stdout` (the program's output channel). The timeout defaults to 10 seconds and accepts 1–60 seconds. The repository example `scripts/examples/agentrun-model-selector.mjs` selects the first eligible model, or ranks candidates by a local `{"scores":{"candidate-id":2}}` JSON file if you pass that file as a second argument in `args`.
+
+To use a plugin instead, set `plugin = { id = "example-selector", tool = "SelectModel" }` in `[subagent.auto_model]` and remove `script`. The named tool must already be registered by an enabled local plugin. It receives the same object as its input and returns the choice as JSON text in its tool output. Kiki does not send dispatch text to a script or plugin when using the weighted draw.
 
 ## `agents`
 

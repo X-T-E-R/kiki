@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
@@ -25,7 +26,24 @@ export type { SubagentRoleModelConstraints } from './modelConstraints';
  *  Caller model inheritance remains explicit via `model_alias: inherit`. */
 export const SUBAGENT_SECTION = 'subagent';
 
+export const AUTO_MODEL_ALIAS = 'auto';
+
+export const autoModelScriptSchema = z.strictObject({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  command: z.string().min(1).refine(isAbsolute, 'command must be an absolute executable path'),
+  args: z.array(z.string()).default([]),
+  workspaces: z.array(z.string().refine(isAbsolute, 'workspace must be an absolute path')).min(1),
+  timeout: z.number().int().min(1).max(60).default(10),
+});
+
 export const SubagentConfigSchema = z.object({
+  modelSelection: z.enum(['static', 'auto']).optional(),
+  autoModel: z.strictObject({
+    weights: z.record(z.string(), z.number().finite().nonnegative()).optional(),
+    script: z.string().min(1).optional(),
+    plugin: z.strictObject({ id: z.string().min(1), tool: z.string().min(1) }).optional(),
+    scripts: z.array(autoModelScriptSchema).refine((scripts) => new Set(scripts.map((script) => script.id)).size === scripts.length, 'script IDs must be unique').optional(),
+  }).refine((value) => value.script === undefined || value.plugin === undefined, 'select either script or plugin').optional(),
   timeoutMs: z.number().int().min(0).optional(),
   defaultModel: z.string().trim().min(1).optional(),
   denyModels: z.array(z.string()).optional(),
@@ -72,6 +90,11 @@ export function resolveDispatchCapacityLimits(config: IConfigService): {
 }
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
+
+export function usesAutoModel(config: IConfigService, profile: { readonly modelSelection?: 'static' | 'auto' }, requested?: string): boolean {
+  if (requested !== undefined) return requested.trim() === AUTO_MODEL_ALIAS;
+  return (profile.modelSelection ?? config.get<SubagentConfig>(SUBAGENT_SECTION)?.modelSelection ?? 'static') === 'auto';
+}
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIKI_SUBAGENT_TIMEOUT_MS';
@@ -277,7 +300,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides must satisfy allowed_models, deny_models, and allowed_efforts in every scope. Deviations from preferred_models, discouraged_models, preferred_efforts, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, provide both model_alias and effort. Effort may be omitted only when the selected model has a resolvable default.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". For a new agent, specify a concrete configured model, use model_alias: "auto" to select once, or omit model_alias to follow the profile or global model_selection (static by default). AgentSend and resume without model_alias keep the saved model. Explicit "auto" on resume selects once; a different model needs the usual change confirmation. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides must satisfy allowed_models, deny_models, and allowed_efforts in every scope. Deviations from preferred_models, discouraged_models, preferred_efforts, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, provide both model_alias and effort. Effort may be omitted only when the selected model has a resolvable default.',
   );
   return lines.join('\n');
 }

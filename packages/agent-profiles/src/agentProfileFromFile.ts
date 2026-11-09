@@ -50,6 +50,7 @@ export function agentProfileFromFile(
     recipe: definition.recipe,
     recipeOptions: definition.recipeOptions,
     modelAlias: definition.modelAlias,
+    modelSelection: definition.modelSelection,
     restrictModelsToMenu: definition.restrictModelsToMenu ?? false,
     thinkingEffort: definition.thinkingEffort,
     preferredModels: definition.preferredModels,

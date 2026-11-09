@@ -11,21 +11,17 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 ## 当前词汇
 
 - **已配置模型键**：`config.toml` 的 `[models]` 中某个条目的 key。解析结果以它作为规范运行时标识。
-- **`model_alias`**：`AgentRun` 调用、Agent 文件、profile route 使用的模型选择器，`AgentRun` 接受具体的已配置模型名，subagent profile、route 和 caller lease 还可以使用保留字 `inherit`。
+- **`model_alias`**：`AgentRun` 调用、Agent 文件、profile route 使用的模型选择器。`AgentRun` 接受具体的已配置模型名或 `auto`；只有 subagent profile、route 和 caller lease 可以写 `inherit`。
 - **Wire 模型标识**：实际发送给供应商接口的 `model` 值；它不必与已配置模型键相同，比如同一个供应商模型可以在配置里登记成多个不同用途的键。
 - **Thinking effort**：思考强度。派发参数 `effort`，或 profile / route 的 `thinking_effort`，通常与 `model_alias` 独立解析；显式继承模型时也跟随调用方有效思考强度，除非有适用的 effort pin。
 
 ## 绑定规则
 
-新派生 subagent 按此顺序选择模型：
+新建子 Agent 时，显式传入的具体 alias 优先。否则先读目标 profile 的 `model_selection`，再读全局 `[subagent].model_selection`。默认静态选模：先用生效的 profile、route 或 caller lease 上的模型 pin，再用显式配置的 `[subagent].default_model`。普通职责缺少静态绑定时以 `model.not_configured` 失败；[裸引擎目标](../customization/agents-and-subagents.md#具名子-agent)可使用厂商默认模型。
 
-1. 派发时传入的具体 `model_alias`。
-2. 生效 profile、route 或调用方 lease（caller lease，外部委派方为调用方预设的约束）上的 `model_alias` pin。
-3. 显式配置的 `[subagent].default_model`。
+`model_alias: "auto"` 显式请求[自动选模](../configuration/config-files.md#自动选模)，不受默认选模方式影响。Kiki 在合格候选中选择一次，保存具体模型和思考强度。`AgentRun` 本身拒绝 `model_alias: "inherit"`；两种受支持的选模方式都受模型与档位硬限制约束。要跟随调用方，在 profile、route 或 caller lease 中写 `model_alias: inherit` 并使用静态选模；显式 `effort` 或适用的档位 pin 优先于调用方的思考强度。
 
-这些来源都不存在时，派生以 `model.not_configured` 失败；调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。在 profile、route 或 caller lease 上写 `model_alias: inherit`，才会绑定调用方当前的模型与思考强度；工具显式 `effort` 或适用的 effort pin 优先。`AgentRun` 本身拒绝 `model_alias: "inherit"`——请写具体的已配置模型名，或省略参数以使用目标默认模型。未知 alias 或命中禁止列表的模型会在子 Agent 启动前失败。选一个不在 `preferred_models` / `discouraged_models` 里的模型是可以的，只要它仍在所有硬模型与档位限制之内。
-
-恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。同时省略 `model_alias` 与 `effort` 会保留已有绑定；显式传入的 effort 应用于下一次空闲运行。`AgentRun` 恢复时同样拒绝 `model_alias: "inherit"`；显式换模请写具体模型名，或省略参数以保留已保存模型。切换到不同规范模型需要显式选择 [`context_mode`](../customization/agents-and-subagents.md#具名子-agent)，或用旧参数 `allow_model_change: true` / `new_window: true` 确认。`context_mode` 不能与任一旧参数混用。解析到同一规范模型时不产生模型变化，但仍可用 `compact` 或 `fresh` 重建上下文。
+`AgentSend` 和省略 `model_alias` 的 `resume` 沿用已保存的模型。`resume` 可显式指定具体 alias 或再次传 `auto`。只有选中不同规范模型时，才需要用 [`context_mode`](../customization/agents-and-subagents.md#具名子-agent) 或旧参数确认换模。不论是否换模，显式传入的档位都可用于下一次空闲运行。
 
 ## Agent 文件与 routes
 

@@ -15,7 +15,8 @@ import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
 import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
-import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveInheritedModelAlias, resolveSubagentBinding } from '#/session/subagent/configSection';
+import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveInheritedModelAlias, resolveSubagentBinding, usesAutoModel } from '#/session/subagent/configSection';
+import { autoModelCandidates } from '#/session/subagent/autoModel';
 import { pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { assertProfileRouteModelAvailable } from '#/session/subagent/profileRouteBinding';
 
@@ -113,6 +114,14 @@ export function projectSubagentCapabilities(
         snapshot: bindingSnapshot,
       }, services.models);
       const profile = target.effectiveProfile;
+      if (usesAutoModel(services.config, profile)) {
+        const effort = target.selection.route?.lockedThinkingEffort ?? target.lease?.thinkingEffort;
+        const candidates = autoModelCandidates({ ...profile, modelAlias: resolveInheritedModelAlias(profile.modelAlias, input.caller.modelAlias) }, effort, services);
+        return { ...identity, modelAlias: 'auto', defaultsAvailable: candidates.length > 0,
+          thinkingEffort: effort,
+          unavailableReason: candidates.length === 0 ? 'Automatic model selection has no eligible model and effort' : undefined,
+          unavailableReasonCode: candidates.length === 0 ? 'binding_constraints_unsatisfied' : undefined };
+      }
       if (isNativeTarget(profile)) {
         const result = resolveNativeTargetBinding(profile, {}, services.config, services.executors);
         return { ...identity, defaultsAvailable: true, modelAlias: result.execution.effective.model,

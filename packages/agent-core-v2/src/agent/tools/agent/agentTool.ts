@@ -185,7 +185,7 @@ export class SubagentTool implements ISubagentTool {
       description += `\n\nAvailable profiles (pass via profile; preferred first):\n${typeLines}`;
       if (ordered.length > 8) description += `\n${ordered.length - 8} more profiles omitted; use an exact profile name supplied by the user.`;
     }
-    description += '\n\nA profile model menu is non-exhaustive when restrict_models_to_menu is off. When on, only its original default and declared menu can bind, intersected with all other hard constraints. Omitted models follow existing defaults; no menu fallback is attempted. Route/lease pins and resume model-change confirmation cannot expand this frozen menu.';
+    description += '\n\nA profile model menu is non-exhaustive when restrict_models_to_menu is off. When on, only its original default and declared menu can bind, intersected with all other hard constraints. Static selection never falls back to the menu. Route/lease pins and resume model-change confirmation cannot expand this frozen menu.';
     const routeLines = compactRouteDescriptions(targets.routes);
     if (routeLines) description += `\n\nAvailable routes (pass via route):\n${routeLines}`;
     const modelLines = buildSubagentModelDescriptions(targets.aliases.slice(0, 4));
@@ -502,6 +502,7 @@ export class SubagentTool implements ISubagentTool {
             selectionOrigin: prepared.defaultTarget?.selectionOrigin,
             snapshot: prepared.fileTarget?.snapshot ?? snapshot,
             message: args.prompt,
+            description: args.description,
             name: args.name?.trim(),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
@@ -522,6 +523,7 @@ export class SubagentTool implements ISubagentTool {
             {
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: prepared.policy,
               allowParentNotify: args.allow_parent_notify,
+              description: args.description,
               sourceRef: args.source_ref,
               toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
               operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
@@ -566,6 +568,7 @@ export class SubagentTool implements ISubagentTool {
       parentToolCallId: toolCallId,
       mainProfile: this.dispatchedMainProfile(run.child, prepared.fileProfile),
       model: run.child.modelAlias,
+      modelSelection: run.child.modelSelection,
       thinkingEffort: run.child.thinkingEffort,
       thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
       executorId: childProfile.executorId,
@@ -639,6 +642,7 @@ export class SubagentTool implements ISubagentTool {
         if (saved !== undefined) {
           assertResumeFingerprint(saved.fingerprint, resumeFingerprint({ kind: 'prompt', prompt: args.prompt }, {
             signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify, sourceRef: args.source_ref,
+            description: args.description,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             bindingOverride: { modelAlias: args.model_alias, thinkingEffort: args.effort,
               allowModelChange: args.allow_model_change, newWindow: args.new_window, contextMode: args.context_mode,
@@ -858,12 +862,11 @@ export function bindingResultLines(handle: Omit<SubagentHandle, 'completion'> & 
         ? []
         : [`recommendation_fallback: ${handle.dispatchDecision.fallback}`]),
     ]),
-    ...(handle.thinkingEffortSource === undefined || handle.thinkingEffort === undefined
-      ? []
-      : [
-          `thinking_effort: ${handle.thinkingEffort}`,
-          `thinking_effort_source: ${handle.thinkingEffortSource}`,
-        ]),
+    ...(handle.modelSelection === 'auto' ? ['model_selection: auto'] : []),
+    ...(handle.thinkingEffort !== undefined && (handle.modelSelection === 'auto' || handle.thinkingEffortSource !== undefined)
+      ? [`thinking_effort: ${handle.thinkingEffort}`] : []),
+    ...(handle.thinkingEffort !== undefined && handle.thinkingEffortSource !== undefined
+      ? [`thinking_effort_source: ${handle.thinkingEffortSource}`] : []),
     ...(handle.routeDetached === true ? ['route_status: detached'] : []),
     ...(bindingAdvisories.length === 0 ? [] : [
       `binding_advisory_count: ${String(bindingAdvisories.length)}`,

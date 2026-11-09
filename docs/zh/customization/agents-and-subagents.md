@@ -43,7 +43,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `name` | 之后再次寻址该子 Agent 用的名字：匹配 `^[a-z0-9_]+$`，不能是 `root`，会话内唯一。 |
 | `source_ref` | 可见 User 消息中由服务端生成的 Agent 引用 ID。profile 和引擎匹配时，将本次运行关联到该消息；不选择目标，也不改变权限。 |
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
-| `model_alias`、`effort` | 省略则沿用已保存值或默认值。 |
+| `model_alias`、`effort` | 可传具体模型或 `"auto"`；省略 `model_alias` 则沿用目标默认的选模方式。两种方式都接受显式 `effort`。 |
 
 每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:agy-cli` 和 `engine:grok-acp`。把这个稳定名称作为 `AgentRun` 的 `profile`，即可用引擎自己的配置启动裸 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。如果已有注册 profile 使用相同的 `engine:<executor-id>` 名称，则保留该注册定义；虚拟投影不会覆盖它。
 
@@ -63,7 +63,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `compact` | 先用当前绑定的模型总结当前窗口，再带着摘要和已保存的任务状态继续。 |
 | `fresh` | 从已保存的任务状态与历史引用建立新窗口，不调用旧模型。 |
 
-三种模式都保留同一个子 Agent ID、任务笔记、Todo、完整历史与工作区根目录。省略 `model_alias` 和 `effort` 会保留已保存的绑定，因此不换模型也可以压缩或从全新上下文继续。显式 `model_alias` 选到不同规范模型时，所选 `context_mode` 同时确认这次换模；profile、调用方、route 和机器规则照常生效。`compact` 与 `fresh` 只重建原生 Kiki 上下文；外部执行器会拒绝，不会替换远端会话。`[model_switch].default_mode` 不改变普通 resume 的默认方式。
+三种模式都保留同一个子 Agent ID、任务笔记、Todo、完整历史与工作区根目录。省略 `model_alias` 和 `effort` 会保留已保存的绑定，即使新建子 Agent 默认自动选模。显式传 `model_alias: "auto"` 会依据已保存的角色和当前硬约束选一次：选中同一规范模型，无需确认换模；选中不同模型，则和显式指定具体 alias 一样，用 `context_mode` 或下文的旧参数确认。`compact` 与 `fresh` 只重建原生 Kiki 上下文；外部执行器会拒绝，不会替换远端会话。`[model_switch].default_mode` 不改变普通 resume 的默认方式。
 
 例如，`AgentRun({ resume: "saved_child", context_mode: "compact", prompt: "继续剩余检查。", description: "继续剩余检查" })` 会先压缩，再沿用原模型继续；加上获准的 `model_alias`，则在摘要之后换到该模型。
 
@@ -77,7 +77,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 恢复前先检查原轮次与已保存改动，再用新提示词唤回同一个子 Agent，要求它完成工作并报告结果。SDK 调用方须使用新的 prompt ID；重复已结束的 ID 只会重放保存的结果。Kiki 不为这两类失败自动重试，也不改写旧任务记录。
 
-普通职责 profile 的新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。引擎目标使用上文的厂商默认顺序。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要显式选择 `context_mode`，或用旧参数 `allow_model_change: true` / `new_window: true` 确认。
+新建子 Agent 默认静态选模：具体 `model_alias` → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`。三者都没有时，普通职责派发以 `model.not_configured` 失败；裸引擎按上文的厂商默认顺序处理。要从合格候选中选择一次，可传 `model_alias: "auto"`，也可[设为默认选模方式](../configuration/config-files.md#自动选模)。选中的具体模型随子 Agent 保存，并通过 `actual_model` 返回。思考强度单独解析，优先用工具调用的 `effort`；见[完整顺序](#具名-profile-route-实验功能)。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 以及 route / caller lease 的 pin 都是软建议：满足硬规则的覆盖会带着结构化 advisory 继续执行。`allowed_models`、`deny_models`、`allowed_efforts` 在任何作用域都是硬规则。机器级 `[subagent].deny_models`、不受支持的模型能力、route 身份、缺少换模确认以及 executor / thread 限制都是硬错误；外部 executor 无法修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。
 
@@ -332,7 +332,8 @@ disallowedTools:
 | `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选：它不出现在 `AgentRun` 的角色列表、推荐排序和默认选择中。这不是授权门——显式传入 `profile` 名，或用 frontmatter 声明 `main: true` 的 `profile_file`，仍会把它当作 subagent 派遣，其模型、工具与权限按普通 subagent 解析（它不会成为会话的 main agent）；回执会附带一次 `main_profile_notice`，提示长期协作或用户可见会话更适合用 `ThreadCreate`。`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
 | `permission_mode` | 否 | 该 profile 的权限模式：`manual`、`auto`、`review` 或 `yolo`。profile 启动新 Agent 时会覆盖 `default_permission_mode`；显式 CLI 参数 `--permission-mode` 优先级更高。 |
-| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或在配置中写 `inherit`，让 subagent 绑定调用方模型。无 pin 时使用具体派发参数或显式 `[subagent].default_model`；省略从不继承调用方。Pin 是软默认值，不能绕过硬列表。main agent 没有调用方，不可使用 `inherit` |
+| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或写 `inherit`，让 subagent 在静态模式下绑定调用方模型。Pin 是软默认值，不能绕过硬列表。main agent 没有调用方，不可使用 `inherit` |
+| `model_selection` | 否 | `auto` 或 `static`。新建子 Agent 时，若 `AgentRun` 省略 `model_alias`，本字段覆盖全局默认方式。不影响主 Agent 绑定或普通恢复。见[自动选模](../configuration/config-files.md#自动选模) |
 | `restrict_models_to_menu` | 否 | 布尔值，默认 `false`，仅放 profile 顶层。`true` 从作者原始默认 `model_alias` 与 `model_profiles[].alias` 派生一道**硬**模型上限，在 route / lease 改写前捕获并随绑定冻结。其他硬允许域继续求交，禁止项仍生效；显式 pin 与恢复不能绕过。见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界) |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
@@ -344,7 +345,7 @@ disallowedTools:
 | `preferred_models` | 否 | **软**模型推荐。选另一个可执行且满足硬规则的模型时继续运行，并记录结构化 `model_not_preferred` advisory（提示性诊断）。不会自动选择模型 |
 | `discouraged_models` | 否 | **软**的不建议模型。选中时继续执行并记录 `model_discouraged` advisory；需要拒绝时用 `deny_models` |
 | `preferred_efforts` | 否 | **软**档位推荐。偏离时继续执行并记录 `effort_not_preferred` advisory；需要拒绝时用 `allowed_efforts` |
-| `model_profiles` | 否 | 按模型定义跑法，只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、上述六个硬 / 软模型列表字段、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget`、`auto_compact`、`context_strategy` 与 `max_completion_tokens`。`when` 只出现在派发方工具说明里。Prompt 增量在模型 cognition 之前与角色正文组合；`wrap` 要求 `${parent_prompt}` 或 `${base_prompt}` 恰好一次。原生模型解析不到的 alias 不生效，也不出现在工具说明里。默认值取首个匹配条目；所有匹配条目的硬列表均生效，包括默认值已被 lease 替换的原条目 |
+| `model_profiles` | 否 | 按模型定义跑法，只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、上述六个硬 / 软模型列表字段、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget`、`auto_compact`、`context_strategy` 与 `max_completion_tokens`。`when` 出现在派发工具说明和自定义选择器的候选输入中。Prompt 增量在模型 cognition 之前与角色正文组合；`wrap` 要求 `${parent_prompt}` 或 `${base_prompt}` 恰好一次。原生模型解析不到的 alias 不生效，也不出现在工具说明里。默认值取首个匹配条目；所有匹配条目的硬列表均生效，包括默认值已被 lease 替换的原条目 |
 | `recipe` | 否 | 已安装 Recipe 的 id（可加 `installation:` 前缀），或本地 Recipe 文件 / 包目录。相对路径按本 profile 文件所在目录解析。只为该 profile 的原生绑定贡献提示和模型设置，位于模型 Recipe 之后、profile 显式值之前；`off` 撤回本 profile 的贡献。本地路径在绑定时直接读取，不安装。URL 包仍先预览并安装；绑定时不下载。直接引用的文件若带脚本 hooks，仍须安装确认。见 [Recipe 模型配方](./prompt-fields.md#recipe-模型配方) |
 | `prompt_overrides` | 否 | 该 profile 的提示词字段覆写，可含 `files` 与 `fields`。此层覆盖全局与模型值；匹配的 `model_profiles[].prompt_overrides` 条目再覆盖它。详见 [`prompt`](../configuration/config-files.md#prompt) |
 | `system_prompt_mode` | 否 | 提示词正文模式：`replace`（默认）、`prepend`、`append` 或 `inherit`。`inherit` 要求正文为空且 `prompt_overrides` 非空；它保留下层同名 profile 定义，并应用本文件的字段覆写 |

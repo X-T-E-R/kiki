@@ -29,6 +29,16 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('keeps AgentRun selection mode distinct from the fixed model alias', () => {
+    expect(parse(FULL_FILE).modelSelection).toBeUndefined();
+    for (const mode of ['auto', 'static']) {
+      const definition = parse(`---\nname: helper\ndescription: d\nmodel_selection: ${mode}\nmodel_alias: fixed-model\n---\nbody`);
+      expect(definition).toMatchObject({ modelSelection: mode, modelAlias: 'fixed-model' });
+      expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }))).toMatchObject({ modelSelection: mode, modelAlias: 'fixed-model' });
+    }
+    expect(() => parse(`---\nname: helper\ndescription: d\nmodel_selection: random\n---\nbody`)).toThrow(/must be "static" or "auto"/);
+  });
+
   it('defaults menu restriction off and accepts only top-level booleans', () => {
     expect(parse(FULL_FILE).restrictModelsToMenu).toBe(false);
     for (const flag of [true, false]) {

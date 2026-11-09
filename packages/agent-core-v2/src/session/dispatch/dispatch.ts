@@ -29,6 +29,7 @@ export interface DispatchLaunchInput {
   readonly recommendationFallback?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentRecommendationFallback;
   readonly snapshot?: AgentProfileCatalogSnapshot;
   readonly message: string;
+  readonly description?: string;
   readonly name?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
@@ -64,6 +65,7 @@ export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
   readonly operationId?: string;
+  readonly description?: string;
   readonly sourceRef?: string;
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
@@ -91,6 +93,7 @@ export interface DispatchChild {
   readonly name?: string;
   readonly profileName: string;
   readonly modelAlias?: string;
+  readonly modelSelection?: 'auto';
   readonly thinkingEffort: string;
   readonly thinkingEffortSource?: ProfileData['thinkingEffortSource'];
   readonly routeDetached?: boolean;

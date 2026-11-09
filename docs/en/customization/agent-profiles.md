@@ -95,7 +95,7 @@ For a session's **main agent**, your model choice takes priority over profile co
 
 For **subagent bindings** these rules apply in the GUI, the CLI, `AgentRun` and the API alike:
 
-- **An out-of-menu selection is rejected, never downgraded.** It returns `profile.constraint_violation` without falling back to the default. Leaving the model out still selects one through the usual default rules and then validates it against the menu; if that model is outside the menu the binding is rejected rather than replaced by a menu entry you did not choose.
+- **An out-of-menu selection is rejected, never downgraded.** Static selection validates the chosen model against the menu, even when it came from a default. [Automatic selection](../configuration/config-files.md#automatic-model-selection) filters out models outside the menu before selecting.
 - **Other hard rules still apply.** The menu intersects with every applicable `allowed_models` list, and a `deny_models` match always rejects. `"*"` cannot widen it. A menu equal to an `allowed_models` list is redundant, not an error; differing lists intersect, and neither layer is ignored.
 - **`when` is a hint, not a gate.** It is text for the caller and is never evaluated, so a missing or apparently unmet hint changes nothing. `preferred_*` and `discouraged_models` stay advice, and menu order is not a fallback chain.
 - **An empty set permits nothing.** An empty menu with a default restricts binding to that one model; with neither menu nor default, no candidates, or an empty intersection with another hard domain, the binding is rejected.

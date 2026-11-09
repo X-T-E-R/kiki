@@ -99,6 +99,7 @@ import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { ILogService } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IHarnessQuotaService } from '#/app/plugin/harnessQuota';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -517,6 +518,7 @@ describe('AgentLifecycleService', () => {
     } as IProtocolAdapterRegistry);
     ix.stub(IRecipeService, { onDidChange: Event.None as IRecipeService['onDidChange'] });
     ix.stub(IPluginUsageService, stubPluginUsageService());
+    ix.stub(IHarnessQuotaService, { cached: async () => ({ sources: [] }) });
     ix.stub(IAgentProfileRegistry, {
       onDidChange: Event.None as IAgentProfileRegistry['onDidChange'],
       entries: () => [],
@@ -1363,7 +1365,7 @@ describe('AgentLifecycleService', () => {
     expect(registerAgent).not.toHaveBeenCalled();
   });
 
-  function installStoredTerminalChild(status: 'completed' | 'failed') {
+  function installStoredTerminalChild(status: 'completed' | 'failed', boundProfile?: import('#/agent/profile/boundProfile').BoundProfile) {
     const prior = {
       type: 'sub' as const,
       parentAgentId: 'main',
@@ -1395,6 +1397,7 @@ describe('AgentLifecycleService', () => {
         modelAlias: 'provider/child-model',
         profileName: 'explore',
         thinkingEffort: 'high',
+        boundProfile,
         systemPrompt: '',
         disallowedTools: [],
         time: 2,
@@ -1560,6 +1563,62 @@ describe('AgentLifecycleService', () => {
     expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: expected } });
   });
 
+  it.each([
+    { chosen: 'provider/child-model', contextMode: undefined, accepted: true },
+    { chosen: 'provider/other-model', contextMode: undefined, accepted: false },
+    { chosen: 'provider/other-model', contextMode: 'direct', accepted: true },
+  ] as const)('checks the selected identity before requiring resume confirmation: $chosen / $contextMode', async ({ chosen, contextMode, accepted }) => {
+    const { metadata, prior } = installStoredTerminalChild('completed', {
+      name: 'explore', modelAlias: 'provider/child-model', thinkingEffort: 'high', restrictModelsToMenu: true,
+      modelProfiles: [{ alias: 'provider/other-model', when: 'Alternative', thinkingEffort: 'low' }],
+      modelMenuConstraint: { source: 'profile:explore.restrict_models_to_menu', aliases: ['provider/child-model', 'provider/other-model'],
+        identities: ['provider/child-model', 'provider/other-model'] },
+    });
+    ix.stub(IConfigService, 'get', <T>(section: string) => (section === 'subagent' ? { modelSelection: 'auto',
+      autoModel: { plugin: { id: 'fixture', tool: 'Pick' } } } : undefined) as T);
+    ix.stub(IModelService, 'list', () => ({ 'provider/child-model': {}, 'provider/other-model': {}, 'provider/outside': {} }));
+    ix.stub(IModelCatalog, { get: (id) => ({ id, name: id, aliases: [], protocol: 'openai', headers: {},
+      capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, maxContextSize: 1_000, supportEfforts: ['low', 'high'], defaultEffort: 'low',
+      alwaysThinking: false, providerName: 'example', imagePolicy: { acceptedTypes: new Set(['image/png']), convertUnsupported: 'off' },
+      authProvider: { getAuth: async () => undefined } }) });
+    const select = vi.fn(async () => ({ output: JSON.stringify({ model_alias: chosen }) }));
+    const definition = { schemaVersion: 1 as const, name: 'Pick', description: 'Pick', accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const };
+    ix.stub(IPluginHostService, { list: async () => [{ pluginId: 'fixture', definition }], execute: select });
+    ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
+    ix.stub(IAgentContextMemoryService, { get: () => [] });
+    const executeSwitch = vi.fn<IAgentModelSwitchService['execute']>(async (input) => ({
+      agentId: 'child', operationId: input.operationId, fromModel: 'provider/child-model', toModel: input.model, mode: input.mode, state: 'completed',
+    }));
+    const runFailure = new Error('Start fixture stops after admission');
+    ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
+    ix.stub(ISessionSubagentService, { retain: () => ({ dispose() {} }), run: async () => { throw runFailure; } });
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    await ix.get(IAgentLifecycleService).create({ agentId: 'main' });
+    const dispatch = ix.get(ISessionDispatchService);
+    const child = await dispatch.resolveOwnedChild(prior.delegator, 'child');
+    const options = { operationId: 'auto-resume', requesterAgentId: 'main', description: 'Resume selection',
+      bindingOverride: { modelAlias: 'auto', contextMode }, signal: new AbortController().signal };
+    if (!accepted) {
+      await expect(dispatch.runOnExisting(child, 'Continue', options)).rejects.toMatchObject({
+        code: ErrorCodes.REQUEST_INVALID, details: { requiredParameter: 'context_mode', requestedModel: chosen },
+      });
+      expect(executeSwitch).not.toHaveBeenCalled();
+      expect((await metadata.read()).agents?.['child']?.model).toBe('provider/child-model');
+    } else {
+      for (let retry = 0; retry < 2; retry++) {
+        const result = await dispatch.runOnExisting(child, 'Continue', options);
+        expect(result.child).toMatchObject({ agentId: child.agentId, modelSelection: 'auto' });
+        await expect(result.started).rejects.toBe(runFailure);
+      }
+      expect(executeSwitch).toHaveBeenCalledWith({ operationId: 'auto-resume', mode: 'direct', model: chosen,
+        thinking: chosen === 'provider/child-model' ? 'high' : 'low' }, expect.any(Object));
+    }
+    expect(select).toHaveBeenCalledExactlyOnceWith('fixture', 'Pick', { description: 'Resume selection', prompt: 'Continue', candidates: [
+      { alias: 'provider/child-model', when: undefined, thinking_effort: 'high' },
+      { alias: 'provider/other-model', when: 'Alternative', thinking_effort: 'low' },
+    ] }, expect.any(AbortSignal), undefined, undefined, definition);
+  });
+
   it('persists complete agent metadata when creating a child', async () => {
     ix.stub(IAppendLogStore, recordingAppendLog([
       createWireMetadataRecord(1),
@@ -1602,7 +1661,9 @@ describe('AgentLifecycleService', () => {
     });
   });
 
-  it('recreates one persisted child with its profile binding', async () => {
+  it('recreates one persisted auto-selected child with its concrete profile binding', async () => {
+    const select = vi.fn(() => { throw new Error('Restoration cannot select another model'); });
+    ix.stub(IPluginHostService, { list: async () => [], execute: select });
     ix.stub(IAppendLogStore, recordingAppendLog([
       createWireMetadataRecord(1),
       {
@@ -1610,6 +1671,7 @@ describe('AgentLifecycleService', () => {
         modelAlias: 'provider/child-model',
         profileName: 'explore',
         thinkingEffort: 'high',
+        boundProfile: { name: 'explore', modelAlias: 'provider/new-default', modelSelection: 'auto' },
         systemPrompt: '',
         disallowedTools: [],
         time: 2,
@@ -1624,6 +1686,7 @@ describe('AgentLifecycleService', () => {
     expect(restored).not.toBe(first);
     expect(restored.id).toBe('child');
     expect(svc.list().map((agent) => agent.id)).toEqual(['child']);
+    expect(select).not.toHaveBeenCalled();
     expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
       profileName: 'explore',
       modelAlias: 'provider/child-model',

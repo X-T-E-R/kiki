@@ -212,6 +212,7 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
   /** Explicit profile choice for the Kiki MCP lease. Absent inherits the executor default. */
   readonly injectKikiMcp?: boolean;
+  readonly modelSelection?: 'static' | 'auto';
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

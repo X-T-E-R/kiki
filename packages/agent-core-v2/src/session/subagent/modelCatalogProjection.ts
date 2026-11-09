@@ -10,7 +10,7 @@ import type { IConfigService } from '#/app/config/config';
 import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 
-import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
+import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias, usesAutoModel } from './configSection';
 import { roleConstraintsFromProfile, roleHasModelConstraints, roleModelAllowed } from './modelConstraints';
 
 export type ProfileModelMenuInput = Pick<AgentProfile,
@@ -159,6 +159,8 @@ export function projectSubagentModelCatalog(
       modelAlias: resolvedAlias,
     }).configuredModelAliases;
     for (const alias of allowedModels) aliases.add(alias);
-    return { profile, modelAlias, thinkingEffort, allowedModels };
+    return usesAutoModel(config, profile)
+      ? { profile, modelAlias: 'auto', thinkingEffort: pins.thinkingEffort ?? route?.lockedThinkingEffort, allowedModels }
+      : { profile, modelAlias, thinkingEffort, allowedModels };
   }
 }

@@ -75,7 +75,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Omit to use the target default model, or specify a concrete configured model name. AgentRun does not accept "inherit"; no silent caller-model fallback. A user model or provider requirement for this child is met here or by the profile choice; the receipt reports actual_model. The child does not need to be told its model unless the task concerns models.',
+        'For a new agent, use "auto" to select once, specify a concrete model to pin it, or omit to use the configured selection mode (static by default). On resume, omit to keep the saved model; explicit "auto" selects once and requires the usual model-change confirmation only if it selects a different model. AgentRun does not accept "inherit". The receipt reports actual_model.',
       ),
     effort: z
       .string()
