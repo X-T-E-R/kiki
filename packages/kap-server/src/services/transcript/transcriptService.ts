@@ -364,12 +364,14 @@ interface ColdWireWindow {
   snapshot: AgentTranscriptSnapshot;
   bytes: number;
   droppedTail?: boolean;
+  skippedTurnIds?: readonly string[];
   payloadEvicted?: boolean;
   headers?: readonly TranscriptTurn[];
   headerAttachments?: AgentTranscriptSnapshot['attachments'];
 }
 
 function completeColdWindowTurn(window: ColdWireWindow, turnId: string): TranscriptTurn | undefined {
+  if (window.skippedTurnIds?.includes(turnId) === true) return undefined;
   const index = window.snapshot.items.findIndex(item => item.kind === 'turn' && item.turnId === turnId);
   const turn = window.snapshot.items[index];
   if (turn?.kind !== 'turn' || !window.records.some(({ record }) => record.type === 'turn.prompt' && wireTurnId(record) === turnId)) return undefined;
@@ -424,23 +426,35 @@ function coldTurnVisibleDiffers(before: TranscriptTurn, after: TranscriptTurn): 
   return false;
 }
 
-function coldPrefixAddsStepOrFrame(current: AgentTranscriptSnapshot['items'], merged: AgentTranscriptSnapshot['items']): boolean {
-  if (current.length !== merged.length) return true;
-  for (let index = 0; index < current.length; index += 1) {
+function coldPrefixSkippedTurnIds(current: AgentTranscriptSnapshot['items'], merged: AgentTranscriptSnapshot['items']): string[] {
+  const skipped: string[] = [];
+  const count = Math.min(current.length, merged.length);
+  for (let index = 0; index < count; index += 1) {
     const before = current[index]!;
     const after = merged[index]!;
-    if (before.kind !== 'turn' || after.kind !== 'turn') continue;
-    if ((before.contentRefs?.length ?? 0) !== (after.contentRefs?.length ?? 0) || before.steps.length !== after.steps.length) return true;
-    for (let step = 0; step < before.steps.length; step += 1) {
+    if (before.kind !== 'turn' || after.kind !== 'turn' || before.turnId !== after.turnId) continue;
+    if ((before.contentRefs?.length ?? 0) !== (after.contentRefs?.length ?? 0) || before.steps.length !== after.steps.length) {
+      skipped.push(before.turnId);
+      continue;
+    }
+    let differs = false;
+    for (let step = 0; step < before.steps.length && !differs; step += 1) {
       const left = before.steps[step]!;
       const right = after.steps[step]!;
-      if (left.stepId !== right.stepId || left.frames.length !== right.frames.length) return true;
+      if (left.stepId !== right.stepId || left.frames.length !== right.frames.length) {
+        differs = true;
+        break;
+      }
       for (let frame = 0; frame < left.frames.length; frame += 1) {
-        if (left.frames[frame]!.frameId !== right.frames[frame]!.frameId) return true;
+        if (left.frames[frame]!.frameId !== right.frames[frame]!.frameId) {
+          differs = true;
+          break;
+        }
       }
     }
+    if (differs) skipped.push(before.turnId);
   }
-  return false;
+  return skipped;
 }
 
 function wireTurnId(record: ContextRecord): string | undefined {
@@ -2127,19 +2141,20 @@ export class TranscriptService {
     if (next >= window.start) return window;
     const read = await this.readWireRange(wirePath, next, window.start, signal);
     const merged = [...read.records, ...window.records];
-    const entire = next === 0 && read.complete && window.droppedTail !== true;
+    const entire = next === 0 && read.complete && window.droppedTail !== true && !(window.skippedTurnIds?.length);
     const snapshot = this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window);
     const bytes = this.coldWindowBytes(snapshot, merged);
     let extended: ColdWireWindow;
     if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && read.records.length > 0) {
       if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
-        const addedStepOrFrame = coldPrefixAddsStepOrFrame(window.snapshot.items, snapshot.items);
+        const newlySkipped = coldPrefixSkippedTurnIds(window.snapshot.items, snapshot.items);
+        const skippedTurnIds = [...new Set([...(window.skippedTurnIds ?? []), ...newlySkipped])];
         const skipped: ColdWireWindow = {
           ...window,
           start: next,
-          entire: next === 0 && window.droppedTail !== true && !addedStepOrFrame,
+          entire: next === 0 && window.droppedTail !== true && skippedTurnIds.length === 0,
           snapshot: { ...window.snapshot, hasMoreOlder: next > 0 },
-          droppedTail: window.droppedTail === true || addedStepOrFrame,
+          skippedTurnIds: skippedTurnIds.length > 0 ? skippedTurnIds : undefined,
           payloadEvicted: false,
         };
         this.rememberColdWindow(wirePath, skipped);
@@ -2149,10 +2164,16 @@ export class TranscriptService {
       const fitted = this.fitOlderColdWindow(agentId, read.records, window, preserveOpenTurnIds, captureReplayState);
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
+      const retainedTurnIds = new Set(fitted.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
+      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => retainedTurnIds.has(turnId));
       extended = { ...window, start: startAt, entire: false, records: fitted.records,
-        snapshot: fitted.snapshot, bytes: fitted.bytes, droppedTail: fitted.droppedTail || window.droppedTail === true };
+        snapshot: fitted.snapshot, bytes: fitted.bytes, droppedTail: fitted.droppedTail || window.droppedTail === true,
+        skippedTurnIds: skippedTurnIds.length > 0 ? skippedTurnIds : undefined };
     } else {
-      extended = { ...window, start: next, entire, records: merged, snapshot, bytes };
+      const retainedTurnIds = new Set(snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
+      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => retainedTurnIds.has(turnId));
+      extended = { ...window, start: next, entire, records: merged, snapshot, bytes,
+        skippedTurnIds: skippedTurnIds.length > 0 ? skippedTurnIds : undefined };
     }
     extended.payloadEvicted = false;
     this.rememberColdWindow(wirePath, extended);

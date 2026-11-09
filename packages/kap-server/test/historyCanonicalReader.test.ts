@@ -123,6 +123,40 @@ describe('source-backed canonical detail', () => {
     } finally { await f.close(); }
   });
 
+  it('marks only a middle-skipped cold turn as partial while keeping a newer complete sibling on the cold-window fast path', async () => {
+    const turn6 = turnRecords(6, 't6 earlier complete output');
+    const turn7 = turnRecords(7, 't7 tail output');
+    turn7.splice(3, 0, ...Array.from({ length: 48 }, (_, index) => event({ type: 'content.part', turnId: 7,
+      stepUuid: 'step-7', uuid: `t7-middle-${index}`, part: { type: 'text', text: `${index}:` + 'x'.repeat(150_000) } })));
+    const turn8 = turnRecords(8, 't8 complete output');
+    const records = [...turn6, ...turn7, ...turn8];
+    const f = await fixture(records);
+    const signal = new AbortController().signal;
+    try {
+      await readColdSessionViewBaseline(f.service, 's', 'main', 'delta', signal);
+      for (let i = 0; i < 14; i += 1) {
+        await f.service.readColdPageSnapshot('s', 'main', value => value, signal, true, 1 << 20, true, true, true);
+        if ((await f.service.coldWindowBoundary('s', 'main'))?.start === 0) break;
+      }
+      expect((await f.service.coldWindowBoundary('s', 'main'))?.start).toBe(0);
+      const coldT8 = await f.service.readColdWindowTurn('s', 'main', 't8', signal);
+      expect(coldT8?.stepsPartial).toBeUndefined();
+      const fastT8 = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't8' }, signal) as TranscriptTurn;
+      expect(fastT8).toEqual(canonicalWithPositionedTurn(records, 8));
+      const coldT6 = await f.service.readColdWindowTurn('s', 'main', 't6', signal);
+      expect(coldT6?.stepsPartial).toBeUndefined();
+      const fastT6 = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't6' }, signal) as TranscriptTurn;
+      expect(fastT6).toEqual(coldT6);
+      expect(fastT6).toMatchObject({ turnId: 't6', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 't6 earlier complete output' }] }] });
+      expect(f.nav.canonicalReadReport().projectionBytes).toBe(0);
+      const coldT7 = await f.service.readColdWindowTurn('s', 'main', 't7', signal);
+      expect(coldT7?.stepsPartial).toBe(true);
+      const exactT7 = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't7' }, signal) as TranscriptTurn;
+      expect(exactT7?.steps.map(step => step.frames.map(frame => frame.frameId)))
+        .toEqual(canonicalWithPositionedTurn(records, 7)?.steps.map(step => step.frames.map(frame => frame.frameId)));
+    } finally { await f.close(); }
+  });
+
   it('reads an earlier page body without replacing its cold window with the latest tail', async () => {
     const records = [...Array.from({ length: 100 }, (_, index) => turnRecords(index, 'x'.repeat(100_000))).flat(),
       ...turnRecords(100, 'earlier page body'), ...Array.from({ length: 10 }, (_, index) => turnRecords(index + 101, 'y'.repeat(200_000))).flat()];
