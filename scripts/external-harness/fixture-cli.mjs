@@ -89,6 +89,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (input.message.content === 'complete-response-late-wsarecv'
+    || input.message.content === 'complete-response-stale-network-issue'
+    || input.message.content === 'complete-response-stale-stream-interrupted'
+    || input.message.content === 'complete-response-stale-network-issue-empty-response'
+    || input.message.content === 'complete-response-stale-network-issue-mismatched-response'
     || input.message.content === 'complete-response-late-429'
     || input.message.content === 'complete-response-late-auth'
     || input.message.content === 'complete-response-unknown-status') {
@@ -110,8 +114,17 @@ for await (const line of createInterface({ input: process.stdin })) {
         ? '401 Unauthorized: authentication failed for selected account'
         : input.message.content === 'complete-response-unknown-status'
           ? 'unexpected terminal status after response'
-          : 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed';
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status, response, error } }) + '\n');
+          : input.message.content === 'complete-response-stale-stream-interrupted'
+            ? 'The stream was interrupted. Please continue the task you were working on.'
+            : input.message.content.startsWith('complete-response-stale-network-issue')
+              ? 'There was a network issue connecting to the server, please try again.'
+              : 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed';
+    const resultResponse = input.message.content === 'complete-response-stale-network-issue-empty-response'
+      ? ''
+      : input.message.content === 'complete-response-stale-network-issue-mismatched-response'
+        ? `${response}-mismatch`
+        : response;
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status, response: resultResponse, error } }) + '\n');
     continue;
   }
   if (input.message.content === 'partial-response-late-wsarecv' || input.message.content === 'post-tool-error-late-wsarecv') {

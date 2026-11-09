@@ -1768,25 +1768,33 @@ void test('terminal quota or auth vendor failure stops the owned CLI process and
     await first.session(interruptedId).cleanup;
     await assert.rejects(second.loadSession({ sessionId: interruptedId, cwd: root, mcpServers: [] }), { code: 'AGY_SESSION_RETIRED' });
 
-    const completedLateErrId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
-    const completedUpdates = [];
-    assert.deepEqual(await turn(first, completedLateErrId, 'complete-response-late-wsarecv', completedUpdates), { stopReason: 'end_turn' });
-    assert.equal(completedUpdates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join(''), 'final-delivery-1');
-    assert.notEqual(first.session(completedLateErrId).child.exitCode, null);
-    await first.session(completedLateErrId).cleanup;
-    await assert.rejects(readFile(join(auditDir, `${completedLateErrId}.resume-lock`)), { code: 'ENOENT' });
-    const completedAudit = (await readFile(join(auditDir, `${completedLateErrId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
-    assert.equal(completedAudit.some(r => r.type === 'post_response_terminal_error' && r.status === 'ERROR'), true);
-    assert.equal(completedAudit.some(r => r.type === 'native_turn_reconciled' && r.preservedCompletedResponse === true), true);
-    await second.loadSession({ sessionId: completedLateErrId, cwd: root, mcpServers: [] });
-    assert.equal(second.session(completedLateErrId).conversationId, 'fixture-conversation');
-    const resumedAfterLateErr = [];
-    assert.deepEqual(await turn(second, completedLateErrId, 'follow up after late wsarecv', resumedAfterLateErr), { stopReason: 'end_turn' });
-    assert.equal(resumedAfterLateErr.map(u => u.update.content?.text ?? '').join(''), 'turn-1');
+    for (const latePrompt of [
+      'complete-response-late-wsarecv',
+      'complete-response-stale-network-issue',
+      'complete-response-stale-stream-interrupted',
+    ]) {
+      const completedLateErrId = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+      const completedUpdates = [];
+      assert.deepEqual(await turn(first, completedLateErrId, latePrompt, completedUpdates), { stopReason: 'end_turn' });
+      assert.equal(completedUpdates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join(''), 'final-delivery-1');
+      assert.notEqual(first.session(completedLateErrId).child.exitCode, null);
+      await first.session(completedLateErrId).cleanup;
+      await assert.rejects(readFile(join(auditDir, `${completedLateErrId}.resume-lock`)), { code: 'ENOENT' });
+      const completedAudit = (await readFile(join(auditDir, `${completedLateErrId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+      assert.equal(completedAudit.some(r => r.type === 'post_response_terminal_error' && r.status === 'ERROR'), true);
+      assert.equal(completedAudit.some(r => r.type === 'native_turn_reconciled' && r.preservedCompletedResponse === true), true);
+      await second.loadSession({ sessionId: completedLateErrId, cwd: root, mcpServers: [] });
+      assert.equal(second.session(completedLateErrId).conversationId, 'fixture-conversation');
+      const resumedAfterLateErr = [];
+      assert.deepEqual(await turn(second, completedLateErrId, 'follow up after late wsarecv', resumedAfterLateErr), { stopReason: 'end_turn' });
+      assert.equal(resumedAfterLateErr.map(u => u.update.content?.text ?? '').join(''), 'turn-1');
+    }
 
     for (const [promptName, expectedPattern] of [
       ['partial-response-late-wsarecv', /AGY terminal status ERROR:.*wsarecv/],
       ['post-tool-error-late-wsarecv', /AGY terminal status ERROR:.*wsarecv/],
+      ['complete-response-stale-network-issue-empty-response', /AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./],
+      ['complete-response-stale-network-issue-mismatched-response', /AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./],
       ['complete-response-late-429', /AGY terminal status ERROR:.*429 Too Many Requests/],
       ['complete-response-late-auth', /AGY terminal status ERROR:.*401 Unauthorized/],
       ['complete-response-unknown-status', /AGY terminal status UNKNOWN:/],

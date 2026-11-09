@@ -1084,12 +1084,17 @@ export class AgyBridge {
     let stopReason = 'end_turn';
     let stopAfterResult = false;
     let postResponseTerminalError;
+    const nonRecoverableError = /\b(?:401|403|429|RESOURCE_EXHAUSTED|UNAUTHENTICATED|PERMISSION_DENIED)\b|quota[\s_-]*(?:reached|exceeded|exhausted)|rate[\s_-]*limit|insufficient[\s_-]*quota|unauthorized|authentication\s+failed/i;
     const lateTransportDisconnect = result.status === 'ERROR'
       && typeof result.error === 'string'
       && /\b(?:wsarecv|wsasend|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|EOF)\b|socket\s+hang\s+up|read\s+tcp|write\s+tcp|connection\s+attempt\s+failed|connection\s+was\s+forcibly\s+closed|broken\s+pipe/i.test(result.error)
-      && !/\b(?:401|403|429|RESOURCE_EXHAUSTED|UNAUTHENTICATED|PERMISSION_DENIED)\b|quota[\s_-]*(?:reached|exceeded|exhausted)|rate[\s_-]*limit|insufficient[\s_-]*quota|unauthorized|authentication\s+failed/i.test(result.error);
+      && !nonRecoverableError.test(result.error);
+    const replayedSummaryError = result.status === 'ERROR'
+      && typeof result.error === 'string'
+      && (result.error === LEGACY_NETWORK_FAILURE || /^The stream was interrupted\. Please continue the task you were working on\.$/i.test(result.error))
+      && !nonRecoverableError.test(result.error);
     const confirmedFinalResponse = Boolean(
-      lateTransportDisconnect
+      (lateTransportDisconnect || replayedSummaryError)
       && active.promptConsumed
       && !unresolved.length
       && active.steering.length === 0
@@ -1098,7 +1103,9 @@ export class AgyBridge {
       && active.lastStepState === 'DONE'
       && active.finalResponseDone
       && active.text.length > 0
-      && (typeof result.response !== 'string' || result.response.length === 0 || result.response === active.text),
+      && (lateTransportDisconnect
+        ? typeof result.response !== 'string' || result.response.length === 0 || result.response === active.text
+        : typeof result.response === 'string' && result.response.length > 0 && result.response === active.text),
     );
     if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
       session.denied = false;
