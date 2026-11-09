@@ -4429,6 +4429,7 @@ export function Transcript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
+  const olderCarryPxRef = useRef(0);
   const olderInflightRef = useRef(false);
   const readingIntentRef = useRef(0);
   const seekRequestRef = useRef<AbortController | null>(null);
@@ -4488,13 +4489,45 @@ export function Transcript({
   const requestOlderAtReadingAnchor = useCallback(async () => {
     if (olderInflightRef.current) return false;
     olderIntentRef.current = false;
+    const carryPx = olderCarryPxRef.current;
+    olderCarryPxRef.current = 0;
     olderInflightRef.current = true;
     const request = new AbortController();
     olderRequestRef.current = request;
     const intent = readingIntentRef.current;
     const before = stateRef.current.blocks;
     try {
-      const loaded = await loadOlderAtReadingAnchor(request.signal);
+      let loaded = await loadOlderAtReadingAnchor(request.signal);
+      let remainingCarry = carryPx;
+      if (loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current && remainingCarry > 0) {
+        let previousBlocks = before;
+        for (let step = 0; step < 32 && loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current; step += 1) {
+          const scroll = scrollRef.current;
+          if (scroll === null) break;
+          const current = stateRef.current;
+          const addedCount = Math.max(0, current.blocks.length - previousBlocks.length);
+          const stepUp = Math.min(scroll.scrollTop, remainingCarry);
+          if (stepUp > 0) {
+            const targetTop = scroll.scrollTop - stepUp;
+            const instance = virtualizerRef.current;
+            if (instance !== null) {
+              instance.scrollToOffset(targetTop, { align: 'start' });
+              instance.scrollOffset = scroll.scrollTop;
+            } else {
+              scroll.scrollTop = targetTop;
+            }
+            scroll.dispatchEvent(new Event('scroll'));
+            if (addedCount > 0) remainingCarry -= stepUp;
+          }
+          if (remainingCarry <= 0 || !current.hasMoreHistory || current.olderError !== undefined ||
+              scroll.scrollTop > olderPrefetchDistance(scroll.clientHeight)) break;
+          olderInflightRef.current = true;
+          previousBlocks = current.blocks;
+          loaded = await loadOlderAtReadingAnchor(request.signal);
+          if (stateRef.current.blocks === previousBlocks) break;
+        }
+        return loaded;
+      }
       const scroll = scrollRef.current;
       const current = stateRef.current;
       if (loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current &&
@@ -4516,12 +4549,13 @@ export function Transcript({
     if (element === null) return;
     let touchY: number | undefined;
     let pointerY: number | undefined;
-    const recordIntent = (upward: boolean) => {
+    const recordIntent = (upward: boolean, upwardDeltaPx = 0) => {
       seekRequestRef.current?.abort();
       if (!upward) {
         readingIntentRef.current += 1;
         olderRequestRef.current?.abort();
         olderIntentRef.current = false;
+        olderCarryPxRef.current = 0;
         return;
       }
       if (olderInflightRef.current || state.loadingOlder) {
@@ -4531,11 +4565,16 @@ export function Transcript({
       readingIntentRef.current += 1;
       olderIntentRef.current = true;
       olderIntentAtRef.current = Date.now();
+      const viewHeight = Math.max(element.clientHeight, 1);
+      olderCarryPxRef.current = upwardDeltaPx >= viewHeight * 2
+        ? Math.min(Math.max(0, upwardDeltaPx - element.scrollTop), viewHeight * 5)
+        : 0;
     };
     const loadAtTop = () => {
       if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
       if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
         olderIntentRef.current = false;
+        olderCarryPxRef.current = 0;
         return;
       }
       if (olderInflightRef.current || state.loadingOlder ||
@@ -4544,7 +4583,8 @@ export function Transcript({
       void requestOlderAtReadingAnchor();
     };
     const onWheel = (event: WheelEvent) => {
-      recordIntent(event.deltaY < 0);
+      const pixelDelta = event.deltaMode === 1 ? event.deltaY * 40 : event.deltaMode === 2 ? event.deltaY * Math.max(element.clientHeight, 600) : event.deltaY;
+      recordIntent(event.deltaY < 0, pixelDelta < 0 ? -pixelDelta : 0);
       loadAtTop();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -4611,6 +4651,7 @@ export function Transcript({
     const prior = priorHistoryShapeRef.current;
     if (prior.resetVersion !== state.transcriptResetVersion || virtualNodes.length < prior.length) {
       olderIntentRef.current = false;
+      olderCarryPxRef.current = 0;
     }
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);

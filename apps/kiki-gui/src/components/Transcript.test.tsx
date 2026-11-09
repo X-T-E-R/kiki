@@ -5188,6 +5188,85 @@ describe('virtualized transcript scrolling', () => {
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
   });
 
+  it('continues loading older pages across one large upward wheel gesture without teleporting to byte zero and cancels on downward wheel', async () => {
+    let loadedPages = 0;
+    let state = { ...transcriptState(virtualBlocks(10, 'tail-10')), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    const onLoadOlder = vi.fn(async (signal?: AbortSignal) => {
+      if (signal?.aborted) return false;
+      loadedPages += 1;
+      state = loadedPages === 1
+        ? {
+            ...state,
+            blocks: [userBlock({ id: 'tail-opening', text: 'recovered opening' }), ...state.blocks],
+            hasMoreHistory: true,
+          }
+        : {
+            ...state,
+            blocks: [...virtualBlocks(4, `older-${11 - loadedPages}`), ...state.blocks],
+            hasMoreHistory: loadedPages < 10,
+          };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 200);
+    await settleVirtualizer();
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -50_000, bubbles: true }));
+      scroll.scrollTop = 0;
+      scroll.dispatchEvent(new Event('scroll'));
+    });
+    for (let tick = 0; tick < 8; tick += 1) {
+      await settleReadingFrames();
+    }
+    expect(loadedPages).toBeGreaterThanOrEqual(5);
+    expect(loadedPages).toBeLessThan(10);
+    expect(container.querySelector('[data-block-id="older-6-0"]')).not.toBeNull();
+    expect(container.querySelector('[data-block-id="older-1-0"]')).toBeNull();
+
+    let resolveSecond!: (value: boolean) => void;
+    let secondSignal: AbortSignal | undefined;
+    const cancelableState = { ...transcriptState(virtualBlocks(10, 'cancel-tail')), hasMoreHistory: true };
+    let cancelableLoaded = 0;
+    const onLoadCancelable = vi.fn((signal?: AbortSignal) => {
+      cancelableLoaded += 1;
+      secondSignal = signal;
+      if (cancelableLoaded === 1) {
+        return renderSettled(
+          root,
+          virtualTranscript(
+            { ...cancelableState, blocks: [...virtualBlocks(5, 'cancel-older-1'), ...cancelableState.blocks] },
+            onLoadCancelable,
+          ),
+        ).then(() => true);
+      }
+      return new Promise<boolean>((resolve) => { resolveSecond = resolve; });
+    });
+    await renderSettled(root, virtualTranscript({ ...cancelableState, transcriptResetVersion: 1 }, onLoadCancelable));
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 200);
+    await settleVirtualizer();
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -50_000, bubbles: true }));
+      scroll.scrollTop = 0;
+      scroll.dispatchEvent(new Event('scroll'));
+    });
+    for (let tick = 0; tick < 8 && cancelableLoaded < 2; tick += 1) {
+      await settleReadingFrames();
+    }
+    expect(cancelableLoaded).toBe(2);
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, bubbles: true }));
+    });
+    expect(secondSignal?.aborted).toBe(true);
+    await act(async () => { resolveSecond(true); });
+    await settleReadingFrames();
+    expect(cancelableLoaded).toBe(2);
+  }, 15_000);
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');

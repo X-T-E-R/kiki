@@ -1,12 +1,13 @@
 import { IAgentLifecycleService, IAgentProfileService, IAgentTaskService, ISessionIndex, MAIN_AGENT_ID, getLiveSessionById, type Scope } from '@kiki/agent-core-v2';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { applyPersonaSettingsRequestSchema, sessionPersonaSettingsSchema } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { mapError } from '../transport/errors';
 
@@ -21,8 +22,12 @@ export function registerPersonaSettingsRoutes(app: RouteHost, core: Scope): void
     const live = getLiveSessionById(core.accessor, sessionId);
     const summary = live === undefined ? await core.accessor.get(ISessionIndex).get(sessionId) : undefined;
     if (live === undefined && summary === undefined) return undefined;
+    const coldMain = summary === undefined ? undefined : (await readColdSessionMeta(core, summary.workspaceId, sessionId))?.agents?.[MAIN_AGENT_ID];
     const profile = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID)?.accessor.get(IAgentProfileService).data()
-      ?? (summary === undefined ? undefined : await readPersistedAgentProfileSnapshot(core, summary.workspaceId, sessionId, MAIN_AGENT_ID, undefined));
+      ?? (summary === undefined ? undefined : await readPersistedAgentProfileSnapshot(
+        core, summary.workspaceId, sessionId, MAIN_AGENT_ID, coldMain, undefined,
+        { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+      ));
     const personaId = profile?.personaId ?? summary?.personaId;
     const latest = personaId === undefined ? undefined : await core.accessor.get(IPersonaStore).get(personaId);
     return {

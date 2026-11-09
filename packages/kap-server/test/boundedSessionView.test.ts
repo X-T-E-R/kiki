@@ -511,6 +511,73 @@ describe('bounded session-view canonical reads', () => {
     expect(repaired?.next_cursor).toBeDefined();
   });
 
+  it('delivers a recovered orphan opening even when standalone markers precede it in the extended window', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({
+      kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' },
+      prompt: `Opening ${ordinal}`, startedAt: `2026-01-01T00:00:0${ordinal}.000Z`, steps: [],
+    });
+    const orphan: TranscriptTurn = { ...turn(8), origin: { kind: 'other' }, prompt: undefined, startedAt: undefined };
+    const precedingMarker = { kind: 'marker' as const, markerId: 'preceding-compaction', marker: 'compaction' };
+    const tail = { ...empty(), items: [orphan], hasMoreOlder: true };
+    const extended = { ...empty(), items: [turn(7), precedingMarker, turn(8)], hasMoreOlder: false };
+    let extensions = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({ fingerprint: 'same-source', start: extensions > 0 ? 0 : 4096, end: 8192 }),
+      coldWindowReachedStart: async () => extensions > 0,
+      readColdPageSnapshot: async (_session: string, _agent: string, project: (value: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal: AbortSignal, extend: boolean) => {
+        if (extend) extensions += 1;
+        return project(extensions > 0 ? extended : tail);
+      },
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t8', beforeTurn: 't8', orphanTurn: 't8' })).toString('base64url');
+    const repaired = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor, pageSize: 40 });
+    expect(repaired?.items).toEqual([turn(8)]);
+    expect(repaired?.has_more).toBe(true);
+    expect(repaired?.next_cursor).toBeDefined();
+    const older = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: repaired!.next_cursor, pageSize: 40 });
+    expect(older?.items).toEqual([turn(7), precedingMarker]);
+    expect(older?.has_more).toBe(false);
+  });
+
+  it('continues backward cold pagination from consumedBeforeTurn when fitOlderColdWindow evicts a non-turn tail anchor without forward-scanning', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({
+      kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' },
+      prompt: `Turn ${ordinal}`, steps: [],
+    });
+    const tailMarker = { kind: 'marker' as const, markerId: 'msg-tail', marker: 'message-delivery' as const };
+    const evictedWindow = { ...empty(), items: [turn(2247), turn(2248)], hasMoreOlder: true };
+    const anchorSeeks = vi.fn(async () => ({ ...empty(), hasMoreOlder: true }));
+    let extended = false;
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({
+        fingerprint: 'same-source',
+        start: extended ? 1_000_000 : 2_000_000,
+        end: extended ? 1_800_000 : 2_800_000,
+      }),
+      coldWindowReachedStart: async () => false,
+      readColdPageSnapshot: async (_session: string, _agent: string, project: (value: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal: AbortSignal, extend: boolean) => {
+        if (extend) extended = true;
+        return project(extended ? evictedWindow : { ...empty(), items: [tailMarker, turn(2249)], hasMoreOlder: true });
+      },
+      readAnchoredColdSnapshot: anchorSeeks,
+      anchorReadState: () => 'pending' as const,
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({
+      v: 2, agentId: 'main', source: 'cold', anchor: 'marker:message-delivery:msg-tail', seekTurn: 't2249', beforeTurn: 't2249',
+    })).toString('base64url');
+    extended = true;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor, pageSize: 40 });
+    expect(anchorSeeks).not.toHaveBeenCalled();
+    expect(page?.items).toEqual([turn(2247), turn(2248)]);
+    expect(page?.has_more).toBe(true);
+  });
+
   it('keeps a pending item-anchor seek preparing even when turn headers cover its neighbourhood', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const ref = { kind: 'taskref' as const, refId: 'leading-ref', taskId: 'example-task' };
