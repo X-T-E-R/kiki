@@ -179,6 +179,48 @@ describe('projector tool-exchange normalization', () => {
     ]);
   });
 
+  it('anchors retained tool exchanges even when compaction keeps an agent message before its summary', () => {
+    const image = { type: 'image_url', imageUrl: { url: 'https://example.test/trace.png' } } as const;
+    const agentMessage: ContextMessage = {
+      ...user('Keep the proposed pagination boundary.'),
+      origin: { kind: 'agent_message', messageId: 'msg-1', senderAgentId: 'main', senderTaskName: 'main' },
+    };
+    const history = [
+      assistant('', ['image']),
+      { ...toolResult('image', ''), content: [image] },
+      agentMessage,
+      assistant('', ['recent']),
+      toolResult('recent', 'Recent result'),
+    ];
+    const compacted = buildContextCompactionShape(history, { summary: 'Resume the investigation.', compactedCount: 3, tokensBefore: 20_000 }).messages;
+    const summary = compacted.find(message => message.origin?.kind === 'compaction_summary');
+    expect(compacted.slice(0, 4).map(message => [message.role, message.origin?.kind])).toEqual([
+      ['assistant', undefined], ['tool', undefined], ['user', 'agent_message'], ['user', 'compaction_summary'],
+    ]);
+    for (const messages of [project(compacted), projectStrict(compacted)]) {
+      expect(messages.map(message => [message.role, message.toolCallId])).toEqual([
+        ['user', undefined], ['assistant', undefined], ['tool', 'image'], ['user', undefined], ['assistant', undefined], ['tool', 'recent'],
+      ]);
+      expect(messages[0]?.content).toEqual(summary?.content);
+      expect(messages[2]?.content).toContainEqual(image);
+      expect(messages[3]?.content).toEqual(agentMessage.content);
+      expect(messages[5]?.content).toEqual(history[4]?.content);
+    }
+  });
+
+  it('anchors a leading assistant run that carries both media and a retained tool exchange', () => {
+    const image = { type: 'image_url', imageUrl: { url: 'https://example.test/trace.png' } } as const;
+    const history: ContextMessage[] = [
+      { ...assistant(''), content: [image] },
+      assistant('', ['call']),
+      toolResult('call', 'Original result'),
+      { ...user('Compacted context'), origin: { kind: 'compaction_summary' } },
+    ];
+    expect(shape(history)).toEqual(['user', 'assistant', 'assistant', 'tool:call']);
+    expect(projectStrict(history).map(message => message.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(projectStrict(history)[1]?.content).toContainEqual(image);
+  });
+
   it('merges same-step user messages without changing canonical identities', () => {
     const history: ContextMessage[] = [
       {

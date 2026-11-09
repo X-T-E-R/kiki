@@ -135,13 +135,18 @@ type Block =
   | { readonly kind: 'boundary' };
 
 function anchorCompactedToolHistory(blocks: readonly Block[]): readonly Block[] {
-  const first = blocks.find((block) => block.kind !== 'boundary');
-  if (first?.kind !== 'exchange' || first.exchange.source.role !== 'assistant') return blocks;
-
-  const firstUserIndex = blocks.findIndex((block) => block.kind === 'message' && block.source.role === 'user');
-  const summary = blocks[firstUserIndex];
-  if (summary?.kind !== 'message' || summary.source.origin?.kind !== 'compaction_summary') return blocks;
-  return [summary, ...blocks.slice(0, firstUserIndex), ...blocks.slice(firstUserIndex + 1)];
+  let hasLeadingExchange = false;
+  for (const [index, block] of blocks.entries()) {
+    if (block.kind === 'exchange' && block.exchange.source.role === 'assistant') {
+      hasLeadingExchange = true;
+    } else if (block.kind === 'message' && block.source.role === 'user') {
+      if (!hasLeadingExchange) return blocks;
+      if (block.source.origin?.kind === 'compaction_summary') {
+        return [block, ...blocks.slice(0, index), ...blocks.slice(index + 1)];
+      }
+    }
+  }
+  return blocks;
 }
 
 function pairBlocks(
