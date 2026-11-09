@@ -28,6 +28,7 @@ export class ProcessTask implements AgentTask {
   private exitCode: number | null = null;
   private stopPromise: Promise<void> | undefined;
   private cleanupConfirmed = false;
+  private observedSettlement: AgentTaskSettlement | undefined;
 
   constructor(
     readonly proc: ProcessHandle,
@@ -36,6 +37,10 @@ export class ProcessTask implements AgentTask {
     private readonly onOutput?: ProcessTaskOutputCallback,
     private release?: () => void,
   ) {}
+
+  settledOutcome(): AgentTaskSettlement | undefined {
+    return this.observedSettlement;
+  }
 
   async start(sink: AgentTaskSink): Promise<void> {
     const streamDrained = Promise.all([
@@ -69,33 +74,24 @@ export class ProcessTask implements AgentTask {
         status: sink.signal.aborted ? 'killed' : 'failed',
         stopReason: sink.signal.aborted ? undefined : errorMessage(error),
       };
+    }
+    sink.signal.removeEventListener('abort', requestStop);
+    this.observedSettlement = settlement;
+    let stopError: unknown;
+    try {
+      await this.stopPromise;
+    } catch (error) {
+      stopError = error;
     } finally {
-      sink.signal.removeEventListener('abort', requestStop);
-      let stopError: unknown;
-      try {
-        await this.stopPromise;
-      } catch (error) {
-        stopError = error;
-      } finally {
-        this.stopPromise = undefined;
-      }
-      if (stopError !== undefined) {
-        if (!this.cleanupConfirmed) throw stopError;
-        try {
-          await this.disposeProcess();
-        } catch (error) {
-          this.cleanupConfirmed = false;
-          throw error;
-        }
-      } else {
-        try {
-          await this.disposeProcess();
-          this.cleanupConfirmed = true;
-        } catch (error) {
-          this.cleanupConfirmed = false;
-          throw error;
-        }
-      }
+      this.stopPromise = undefined;
+    }
+    if (stopError !== undefined && !this.cleanupConfirmed) throw stopError;
+    try {
+      await this.disposeProcess();
+      this.cleanupConfirmed = true;
+    } catch (error) {
+      this.cleanupConfirmed = false;
+      throw error;
     }
     await sink.settle(settlement);
   }

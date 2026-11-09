@@ -113,4 +113,11 @@ export interface AgentTask {
   onDetach?(): void;
   forceStop?(): Promise<void>;
   toInfo(base: AgentTaskInfoBase): AgentTaskInfo;
+  /**
+   * The real terminal outcome this task already observed but could not publish
+   * because its cleanup stayed unconfirmed. `AgentTaskService` keeps it until a
+   * later stop confirms cleanup, so the late confirmation cannot rewrite an
+   * exited run as stopped.
+   */
+  settledOutcome?(): AgentTaskSettlement | undefined;
 }

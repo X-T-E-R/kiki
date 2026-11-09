@@ -1307,10 +1307,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       return this.toInfo(entry);
     }
 
-    await this.settleTask(entry, {
-      status: options.finalStatus,
-      stopReason: options.stopReason,
-    });
+    const observed = entry.task?.settledOutcome?.();
+    await this.settleTask(entry, observed !== undefined
+      ? coerceTimeoutSettlement(entry, observed)
+      : {
+          status: options.finalStatus,
+          stopReason: options.stopReason,
+        });
     if (entry.cleanupFailure !== undefined) {
       throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
     }
@@ -1494,6 +1497,22 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return entry.foregroundRelease === undefined;
   }
 
+  private resolveRestoredCleanup(info: AgentTaskInfo): AgentTaskInfo {
+    return {
+      ...info,
+      status: TERMINAL_STATUSES.has(info.status) ? info.status : 'lost',
+      endedAt: info.endedAt ?? Date.now(),
+      cleanupPending: undefined,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+      stopReason: [
+        'Process cleanup was never confirmed before this process tracking ended, and the restart has no ownership handle for that tree. Cleanup cannot be confirmed or retried from here, and the final outcome stays uncertified.',
+        'Inspect the preserved output and check whether the recorded command still has running processes before starting replacement work.',
+        info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
+      ].filter((part) => part !== undefined).join(' '),
+    };
+  }
+
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
     await this.executionControl.ready();
     const lostTasks: AgentTaskInfo[] = [];
@@ -1508,9 +1527,19 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       });
     }
     const outcomes = outcomeRead?.ok === true ? outcomeRead.outcomes : undefined;
-    for (const [taskId, info] of this.ghosts) {
+    for (const [taskId, stored] of this.ghosts) {
       if (this.restoreDisposed) break;
-      if (TERMINAL_STATUSES.has(info.status) || this.localTaskIds.has(taskId)) continue;
+      if (this.localTaskIds.has(taskId)) continue;
+      if (stored.cleanupPending === true) {
+        const resolved = this.resolveRestoredCleanup(stored);
+        this.ghosts.set(taskId, resolved);
+        changed = true;
+        await persistence.writeTask(resolved);
+        lostTasks.push(resolved);
+        continue;
+      }
+      if (TERMINAL_STATUSES.has(stored.status)) continue;
+      const info = stored;
       if (this.hasPausedExecution(info)) continue;
       if (info.kind === 'media' && this.mediaRecovery !== undefined) {
         const recovered = await this.mediaRecovery(info);

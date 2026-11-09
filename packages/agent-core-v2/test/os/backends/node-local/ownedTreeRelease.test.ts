@@ -22,9 +22,11 @@ import { HostProcessService } from '#/os/backends/node-local/hostProcessService'
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { stubContextMemory } from '../../../agent/contextMemory/stubs';
 import { stubLoopWithHooks } from '../../../agent/loop/stubs';
+import { stubExecutionControl } from '../../../session/executionControl/stubs';
 import { registerTestAgentWireServices } from '../../../wire/stubs';
 
 const exec = promisify(execFile);
@@ -96,6 +98,7 @@ describe.skipIf(process.platform !== 'win32')('owned Windows process tree releas
         reg.define(IAgentTaskService, AgentTaskService);
         reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
         reg.defineInstance(IAgentLoopService, loop);
+        reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
         reg.definePartialInstance(IAgentLifecycleService, { get: () => undefined });
         reg.definePartialInstance(IAgentConversationUndoParticipantRegistry, { register: () => toDisposable(() => {}) });
         reg.definePartialInstance(IAgentContextInjectorService, { register: () => toDisposable(() => {}) });

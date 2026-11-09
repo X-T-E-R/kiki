@@ -67,6 +67,8 @@ class WindowsProcessTree implements IHostProcess {
   private releaseAttempted = false;
   private releaseExitCapable = false;
   private releaseConfirmed = false;
+  private killConfirmed = false;
+  private retainedEmpty = false;
   private releaseWriteError: Error | undefined;
   private pendingCommand: 'kill' | 'release' | 'retain' | undefined;
 
@@ -140,15 +142,26 @@ class WindowsProcessTree implements IHostProcess {
   }
 
   private async terminate(): Promise<void> {
+    if (this.releaseSettled()) {
+      await this.withDeadline(this.helperExited.promise, 'deadline');
+      return;
+    }
     if (this.disposed) throw this.killError('control', 'Windows process ownership has already been released.');
     const response = await this.request('kill');
-    if (response === 'active:0') return;
+    if (response === 'active:0') {
+      this.killConfirmed = true;
+      return;
+    }
     if (response.startsWith('active:')) {
       throw this.killError('verify', 'Windows process tree still has active processes.', {
         remainingProcessCount: Number(response.slice(7)),
       });
     }
     throw this.decodeError(response);
+  }
+
+  private releaseSettled(): boolean {
+    return this.disposed && (this.ownerLifetime || this.killConfirmed);
   }
 
   onRelease(listener: () => void): void { this.releaseListener = listener; }
@@ -177,10 +190,11 @@ class WindowsProcessTree implements IHostProcess {
     if (this.disposed) return this.releaseOwnership();
     await this.killPromise;
     if (this.cleanupFailure !== undefined) throw this.cleanupFailure instanceof Error ? this.cleanupFailure : new Error('Windows process cleanup failed', { cause: this.cleanupFailure });
-    if (this.ownerLifetime && this.killPromise === undefined) {
+    if (this.ownerLifetime && this.killPromise === undefined && !this.retainedEmpty) {
       const response = await this.request('retain');
       if (!/^active:\d+$/.test(response)) throw this.decodeError(response);
-      if (response !== 'active:0') {
+      this.retainedEmpty = response === 'active:0';
+      if (!this.retainedEmpty) {
         this.closeStreams();
         return;
       }

@@ -19,6 +19,7 @@ import { IAgentConversationUndoParticipantRegistry } from '#/agent/contextMemory
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
 import { ITaskService } from '#/app/task/task';
@@ -26,6 +27,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { registerTestAgentWireServices } from '../../../wire/stubs';
 import { stubContextMemory } from '../../../agent/contextMemory/stubs';
 import { stubLoopWithHooks } from '../../../agent/loop/stubs';
+import { stubExecutionControl } from '../../../session/executionControl/stubs';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import {
   HostProcessError,
@@ -393,6 +395,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
         reg.define(IAgentTaskService, AgentTaskService);
         reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
         reg.defineInstance(IAgentLoopService, loop);
+        reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
         reg.definePartialInstance(IAgentLifecycleService, { get: () => undefined });
         reg.definePartialInstance(IAgentConversationUndoParticipantRegistry, { register: () => toDisposable(() => {}) });
         reg.definePartialInstance(IAgentContextInjectorService, { register: () => toDisposable(() => {}) });
@@ -1083,9 +1086,90 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     expect(tasks.getTask(taskId)?.status).toBe('running');
     expect(pids.filter(alive).length).toBe(3);
     const result = await tasks.stop(taskId);
-    expect(result?.status).toBe('killed');
+    expect(result?.status).toBe('completed');
     expect(pids.filter(alive)).toEqual([]);
     console.log(JSON.stringify({ case: 'normal-release-failure-retry', root: proc.pid, descendants: pids, residentsPreservedUntilStop: true, retryAllGone: true }));
+  });
+
+  it('confirms cleanup on repeated TaskStop after the helper misses its initial exit deadline but later releases ownership, preserving exit code 0 without re-running', async () => {
+    const marker = join(directory, 'late-helper-exit-runs.txt');
+    const proc = await spawnOwned(
+      process.execPath,
+      ['-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'run\\n'); process.stdout.write('ok\\n');`],
+      { ownedProcessLifetime: 'owner' },
+    );
+    proc.stdin.end();
+    const raw = proc as unknown as {
+      request: (command: 'kill' | 'release' | 'retain') => Promise<string>;
+      withDeadline: <T>(promise: Promise<T>, phase: string) => Promise<T>;
+      helperExited: { promise: Promise<void> };
+      killError: (phase: string, message: string) => HostProcessError;
+      child: { pid?: number; exitCode: number | null };
+    };
+    const originalRequest = raw.request.bind(proc);
+    vi.spyOn(raw, 'request').mockImplementation(async (command) => {
+      if (command === 'retain') {
+        await vi.waitFor(() => { expect(alive(proc.pid)).toBe(false); });
+        return 'active:0';
+      }
+      return originalRequest(command);
+    });
+    const originalWithDeadline = raw.withDeadline.bind(proc);
+    let helperDeadlineAttempts = 0;
+    vi.spyOn(raw, 'withDeadline').mockImplementation((promise, phase) => {
+      if (phase === 'deadline' && promise === raw.helperExited.promise) {
+        helperDeadlineAttempts += 1;
+        if (helperDeadlineAttempts <= 2) {
+          return Promise.reject(raw.killError('deadline', 'Windows process helper did not confirm cleanup before its deadline.'));
+        }
+      }
+      return originalWithDeadline(promise, phase);
+    });
+
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'go test', 'late helper exit'), { detached: true });
+    await vi.waitFor(() => {
+      expect(tasks.getTask(taskId)).toMatchObject({
+        taskId,
+        status: 'running',
+        exitCode: 0,
+        endedAt: null,
+        cleanupPending: true,
+        receipt: undefined,
+      });
+      expect(tasks.getTask(taskId)?.stopReason).toContain('"phase":"deadline"');
+    });
+    await vi.waitFor(() => {
+      expect(raw.child.exitCode).toBe(0);
+      expect(alive(raw.child.pid!)).toBe(false);
+    });
+
+    await expect(tasks.stop(taskId, 'retry while helper exit still unconfirmed')).rejects.toMatchObject({
+      code: 'os.process.kill_failed',
+      details: { cleanupComplete: false, phase: 'deadline', pid: proc.pid },
+    });
+    expect(tasks.getTask(taskId)).toMatchObject({
+      taskId,
+      status: 'running',
+      exitCode: 0,
+      cleanupPending: true,
+      receipt: undefined,
+    });
+
+    const settled = await tasks.stop(taskId, 'confirm after helper exit');
+    expect(settled).toMatchObject({
+      taskId,
+      status: 'completed',
+      exitCode: 0,
+      cleanupPending: undefined,
+      stopReason: undefined,
+    });
+    expect(await tasks.stop(taskId, 'idempotent repeat')).toMatchObject({
+      taskId,
+      status: 'completed',
+      exitCode: 0,
+      cleanupPending: undefined,
+    });
+    expect((await readFile(marker, 'utf8')).trim().split(/\r?\n/u)).toEqual(['run']);
   });
 
   it('fails explicitly when the helper is missing or exits before its control channel opens', async () => {

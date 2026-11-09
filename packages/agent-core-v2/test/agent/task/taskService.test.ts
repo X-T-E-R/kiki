@@ -1588,7 +1588,7 @@ describe('AgentTaskService', () => {
     expect(service.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null, cleanupPending: true, receipt: undefined });
     expect(service.hasUnfinishedWork()).toBe(true);
     expect(workChanged).toHaveBeenCalled();
-    expect(await service.stop(taskId)).toMatchObject({ status: 'killed', exitCode: 0, cleanupPending: undefined });
+    expect(await service.stop(taskId)).toMatchObject({ status: 'completed', exitCode: 0, cleanupPending: undefined });
     expect(proc.dispose).toHaveBeenCalledTimes(2);
   });
 
@@ -1917,6 +1917,90 @@ describe('AgentTaskService', () => {
     await service.stop(livePendingId, 'confirm cleanup');
   });
 
+  it('clears stale cleanupPending on cold restore without replaying commands or certifying unconfirmed exit outcomes', async () => {
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    const persistence = new AgentTaskPersistence(
+      '/tmp/test-session',
+      'sessions/test-ws/test-session/agents/main',
+      docs,
+      bytes,
+    );
+    const runningCleanupTaskId = 'bash-stale001';
+    const timedOutCleanupTaskId = 'bash-stale002';
+    await persistence.writeTask({
+      taskId: runningCleanupTaskId,
+      description: 'Run go test',
+      status: 'running',
+      detached: true,
+      startedAt: 1_794_250_000_000,
+      endedAt: null,
+      stopReason: 'Task cleanup is unconfirmed; retry TaskStop for the same task (bash-stale001) before replacing its work. os.process.kill_failed: Windows process helper did not confirm cleanup before its deadline.; details={"cleanupComplete":false,"phase":"deadline","pid":214628}',
+      cleanupPending: true,
+      kind: 'process',
+      command: 'go test ./...',
+      pid: 214628,
+      exitCode: 0,
+    });
+    await persistence.writeTask({
+      taskId: timedOutCleanupTaskId,
+      description: 'Timed out typecheck with pending cleanup',
+      status: 'timed_out',
+      detached: true,
+      startedAt: 1_794_250_000_000,
+      endedAt: 1_794_250_010_000,
+      stopReason: 'Task cleanup is unconfirmed; retry TaskStop for the same task (bash-stale002) before replacing its work. os.process.kill_failed: Windows process helper did not confirm cleanup before its deadline.; details={"cleanupComplete":false,"phase":"deadline","pid":67460}',
+      cleanupPending: true,
+      receiptVerification: 'invalid',
+      kind: 'process',
+      command: 'pnpm typecheck',
+      pid: 67460,
+      exitCode: 1,
+    });
+
+    const freshIx = buildAgentIx('main', docs, bytes);
+    const freshService = freshIx.get(IAgentTaskService);
+    await (freshService as TaskServiceTestManager).loadFromDisk();
+    const reconciled = await (freshService as TaskServiceTestManager).reconcile();
+
+    expect(reconciled.map((info) => info.taskId)).toEqual(
+      expect.arrayContaining([runningCleanupTaskId, timedOutCleanupTaskId]),
+    );
+    expect(freshService.getTask(runningCleanupTaskId)).toMatchObject({
+      taskId: runningCleanupTaskId,
+      status: 'lost',
+      exitCode: 0,
+      endedAt: expect.any(Number),
+      cleanupPending: undefined,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+      stopReason: expect.stringContaining('Process cleanup was never confirmed before this process tracking ended'),
+    });
+    expect(freshService.getTask(runningCleanupTaskId)?.stopReason).toContain(
+      'Previous diagnostic: Task cleanup is unconfirmed',
+    );
+    expect(await persistence.readTask(runningCleanupTaskId)).toMatchObject({
+      taskId: runningCleanupTaskId,
+      status: 'lost',
+      exitCode: 0,
+      cleanupPending: undefined,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+    });
+
+    expect(freshService.getTask(timedOutCleanupTaskId)).toMatchObject({
+      taskId: timedOutCleanupTaskId,
+      status: 'timed_out',
+      exitCode: 1,
+      endedAt: 1_794_250_010_000,
+      cleanupPending: undefined,
+      receipt: undefined,
+      receiptVerification: 'invalid',
+      stopReason: expect.stringContaining('Process cleanup was never confirmed before this process tracking ended'),
+    });
+    expect(freshService.list(true)).toEqual([]);
+  });
+
   it('does not publish a parent terminal when a descendant cleanup fails', async () => {
     stubTaskConfig({ killGracePeriodMs: 0 });
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
@@ -2026,9 +2110,9 @@ describe('AgentTaskService', () => {
     const settledBash = await service.stop(bashTaskId, 'Confirm bash cleanup');
     expect(settledBash).toMatchObject({
       taskId: bashTaskId,
-      status: 'killed',
+      status: 'completed',
       cleanupPending: undefined,
-      stopReason: 'Confirm bash cleanup',
+      stopReason: undefined,
     });
 
     const childIx = buildAgentIx('agent-fg-child', docs, bytes);
