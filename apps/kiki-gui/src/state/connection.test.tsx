@@ -16,6 +16,14 @@ import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { ConnectionSection } from '../components/settings/ConnectionSection';
+import {
+  applyCommittedShellCredential,
+  clearAppShellCredentialState,
+  installAppShellCredentialListener,
+  SHELL_MANAGED_STORAGE_KEY,
+  SHELL_PEER_TOKEN_KEY,
+} from '../lib/appShell';
+import { resetWebAccessBootstrap, setWebAccessBootstrap } from '../lib/webAccess';
 import { ConnectionProvider, handleGlobalConnectionFrame, LiveControllerRegistry, nextGuiLeaseClientId, useConnection, useControllerRegistry } from './connection';
 
 const mocks = vi.hoisted(() => ({
@@ -1609,5 +1617,391 @@ describe('a closed desktop socket', () => {
     await flush();
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
+  });
+});
+
+describe('mobile shell credential lifecycle in ConnectionProvider', () => {
+  function ShellStatusHarness() {
+    const connection = useConnection();
+    return (
+      <>
+        <span data-shell-source>{connection.connectionSource ?? 'none'}</span>
+        <span data-shell-token>{connection.config.token}</span>
+        <span data-shell-url>{connection.config.url}</span>
+        <button
+          type="button"
+          data-manual-owner
+          onClick={() => connection.applyConnection({ url: '', token: 'manual-owner-token' })}
+        />
+        <button type="button" data-disconnect-shell onClick={connection.disconnect} />
+      </>
+    );
+  }
+
+  async function mountBrowserShell(): Promise<{ container: HTMLDivElement; unmount: () => Promise<void> }> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const entry = { container, root };
+    mounted.push(entry);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <HostProvider host={browserHost}>
+            <ConnectionProvider>
+              <ShellStatusHarness />
+            </ConnectionProvider>
+          </HostProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+    await act(async () => {
+      root.render(tree);
+    });
+    await flush();
+    return {
+      container,
+      unmount: async () => {
+        const idx = mounted.indexOf(entry);
+        if (idx >= 0) mounted.splice(idx, 1);
+        await act(async () => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    };
+  }
+
+  it('retires staged shell credentials on manual owner switch and disconnect so reload does not restore the old shell token', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-1',
+      server_home_id: 'home-1',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'shell-peer-token-1')).toBe(true);
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    const first = await mountBrowserShell();
+    expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('shell-peer-token-1');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    // Switch to manual owner credential on the same origin
+    await act(async () => {
+      first.container.querySelector<HTMLButtonElement>('[data-manual-owner]')!.click();
+    });
+    await flush();
+    expect(first.container.querySelector('[data-shell-token]')?.textContent).toBe('manual-owner-token');
+    expect(first.container.querySelector('[data-shell-source]')?.textContent).toBe('manual');
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    // Simulate reload / re-entry even if a stale staged token remained in sessionStorage
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'shell-peer-token-1');
+    await first.unmount();
+
+    const reloaded = await mountBrowserShell();
+    expect(reloaded.container.querySelector('[data-shell-token]')?.textContent).toBe('manual-owner-token');
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+    // Disconnect retires stored and shell credentials; reload stays on ConnectScreen
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'shell-peer-token-1');
+    localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    await act(async () => {
+      reloaded.container.querySelector<HTMLButtonElement>('[data-disconnect-shell]')!.click();
+    });
+    await flush();
+    expect(reloaded.container.querySelector('[data-shell-token]')).toBeNull();
+    expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+    await reloaded.unmount();
+
+    const afterDisconnectReload = await mountBrowserShell();
+    expect(afterDisconnectReload.container.querySelector('[data-shell-token]')).toBeNull();
+  });
+
+  it('preserves web-cookie (#access=) sessions and never converts them to bearer when shell tokens are staged or dispatched', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-cookie',
+      server_home_id: 'home-cookie',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+    sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+    setWebAccessBootstrap({ kind: 'signed-in' });
+    try {
+      const mountedCookie = await mountBrowserShell();
+      expect(mountedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(mountedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      await act(async () => {
+        expect(applyCommittedShellCredential(window, window.location.origin, 'injected-shell-token')).toBe(false);
+      });
+      await flush();
+      expect(mountedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(mountedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      await mountedCookie.unmount();
+
+      // True refresh after #access= redemption: URL has no fragment (`webAccessBootstrap` resets to `none`),
+      // HttpOnly cookie is still valid (`/api/web-access/session` returns `authenticated: true`),
+      // and even if legacy/staged shell state lingered, the refreshed page adopts `web-cookie` and retires shell state.
+      resetWebAccessBootstrap();
+      localStorage.setItem('kiki.connection', JSON.stringify({ url: '', token: 'legacy-shell-token' }));
+      localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStorage.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input).endsWith('/api/web-access/session')) {
+            return {
+              ok: true,
+              json: async () => ({ code: 0, data: { authenticated: true } }),
+            } as Response;
+          }
+          return { ok: false, status: 404, json: async () => ({}) } as Response;
+        }),
+      );
+      const refreshedCookie = await mountBrowserShell();
+      await flush();
+      expect(refreshedCookie.container.querySelector('[data-shell-source]')?.textContent).toBe('web-cookie');
+      expect(refreshedCookie.container.querySelector('[data-shell-token]')?.textContent).toBe('');
+      expect(localStorage.getItem('kiki.connection')).toBeNull();
+      expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+    } finally {
+      resetWebAccessBootstrap();
+    }
+  });
+
+  it('delivers late shell credentials to ConnectionProvider when main.tsx bootstrap listener is already registered and preserves owner url+token with legacy marker', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-late',
+      server_home_id: 'home-late',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    // 1. Register the long-lived no-callback bootstrap listener first (matching src/main.tsx:67),
+    // then mount ConnectionProvider (which registers its callback listener), then inject credential late.
+    const uninstallBootstrap = installAppShellCredentialListener(window);
+    try {
+      const mountedLate = await mountBrowserShell();
+      expect(mountedLate.container.querySelector('[data-shell-token]')).toBeNull();
+
+      // Bare unbacked CustomEvent must not adopt any token
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('kiki:shell-token', {
+            detail: { origin: window.location.origin, token: 'forged-bare-event-token' },
+          }),
+        );
+      });
+      await flush();
+      expect(mountedLate.container.querySelector('[data-shell-token]')).toBeNull();
+
+      // Late post-commit delivery after both listeners are active must be adopted by ConnectionProvider
+      await act(async () => {
+        expect(
+          applyCommittedShellCredential(window, window.location.origin, 'late-post-mount-peer-token'),
+        ).toBe(true);
+      });
+      await flush();
+      expect(mountedLate.container.querySelector('[data-shell-token]')?.textContent).toBe(
+        'late-post-mount-peer-token',
+      );
+      expect(mountedLate.container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+      await mountedLate.unmount();
+
+      // 2. Manual owner connection (`url: 'https://owner.example.test'`) + stale `kiki.shell.managed = '1'`
+      // is preserved across startup and late shell injection.
+      clearAppShellCredentialState(window);
+      localStorage.setItem(
+        'kiki.connection',
+        JSON.stringify({ url: 'https://owner.example.test', token: 'owner-preserved-token' }),
+      );
+      localStorage.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      const mountedOwner = await mountBrowserShell();
+      await flush();
+      expect(mountedOwner.container.querySelector('[data-shell-url]')?.textContent).toBe(
+        'https://owner.example.test',
+      );
+      expect(mountedOwner.container.querySelector('[data-shell-token]')?.textContent).toBe(
+        'owner-preserved-token',
+      );
+      expect(localStorage.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(JSON.parse(localStorage.getItem('kiki.connection') ?? 'null')).toEqual({
+        url: 'https://owner.example.test',
+        token: 'owner-preserved-token',
+      });
+      await mountedOwner.unmount();
+    } finally {
+      uninstallBootstrap();
+    }
+  });
+
+  it('gives paired credentials app-shell provenance and blocks Settings ConnectionSection KEEP URL edits from persisting or forwarding the paired peer token while allowing explicit owner credentials', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-paired',
+      server_home_id: 'home-paired',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'paired-peer-secret-token')).toBe(true);
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const entry = { container, root };
+    mounted.push(entry);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/settings/connection',
+          element: (
+            <>
+              <ShellStatusHarness />
+              <ConnectionSection />
+            </>
+          ),
+        },
+      ],
+      { initialEntries: ['/settings/connection'] },
+    );
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <ConnectionProvider>
+                <RouterProvider router={router} />
+              </ConnectionProvider>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+
+    const setInputValue = async (input: HTMLInputElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      await act(async () => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    };
+
+    // 1. Same-origin URL edit with default KEEP_SECRET keeps the verified app-shell pairing without persisting to localStorage
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
+    });
+    const sameOriginUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
+    const sameOriginTokenInput = container.querySelector<HTMLInputElement>('#st-conn-token')!;
+    expect(sameOriginTokenInput.value).toBe('');
+    expect(sameOriginTokenInput.readOnly).toBe(false);
+    await setInputValue(sameOriginUrlInput, window.location.origin);
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(container.querySelector('[data-shell-url]')?.textContent).toBe(window.location.origin);
+    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+
+    // 2. Cross-origin URL edit with default KEEP_SECRET neither persists the paired peer token nor sends it to the edited origin
+    const klientCountBeforeCrossOrigin = mocks.klients.length;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
+    });
+    const crossOriginUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
+    await setInputValue(crossOriginUrlInput, 'http://edited-other-origin.example.test:9090');
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    const newKlients = mocks.klients.slice(klientCountBeforeCrossOrigin);
+    expect(newKlients.length).toBeGreaterThan(0);
+    for (const created of newKlients) {
+      expect(created.endpoint).toBe('http://edited-other-origin.example.test:9090');
+      expect(created.token ?? '').toBe('');
+      expect(created.token).not.toBe('paired-peer-secret-token');
+    }
+
+    // 3. Re-adopt paired credential, then explicitly enter an independent owner token in Settings -> saves to localStorage as manual owner
+    await act(async () => {
+      expect(applyCommittedShellCredential(window, window.location.origin, 'paired-peer-secret-token-2')).toBe(true);
+    });
+    await flush();
+    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token-2');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
+    });
+    const explicitUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
+    const explicitTokenInput = container.querySelector<HTMLInputElement>('#st-conn-token')!;
+    await setInputValue(explicitUrlInput, 'http://explicit-owner.example.test:8080');
+    await setInputValue(explicitTokenInput, 'explicit-owner-bearer-token');
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('manual');
+    expect(container.querySelector('[data-shell-url]')?.textContent).toBe('http://explicit-owner.example.test:8080');
+    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('explicit-owner-bearer-token');
+    expect(JSON.parse(localStorage.getItem('kiki.connection') ?? 'null')).toEqual({
+      url: 'http://explicit-owner.example.test:8080',
+      token: 'explicit-owner-bearer-token',
+    });
+  });
+
+  it('never persists or forwards a paired app-shell credential when retrying an initially failed /meta request from ConnectScreen', async () => {
+    mocks.meta
+      .mockRejectedValueOnce(new Error('temporary meta failure'))
+      .mockResolvedValue({
+        server_id: 'srv-retry',
+        server_home_id: 'home-retry',
+        server_version: '0.1.0',
+        current_space_id: 'main',
+        dangerous_bypass_auth: false,
+      });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'paired-retry-secret-token')).toBe(true);
+    const retryMounted = await mountBrowserShell();
+    expect(retryMounted.container.querySelector('[role="alert"]')?.textContent).toContain('temporary meta failure');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    const tokenField = retryMounted.container.querySelector<HTMLInputElement>('#connect-token')!;
+    expect(tokenField.value).toBe('');
+
+    const submit = retryMounted.container.querySelector<HTMLButtonElement>('#connect-manual button[type="submit"]')!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => {
+      submit.click();
+    });
+    await flush();
+    expect(retryMounted.container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(retryMounted.container.querySelector('[data-shell-token]')?.textContent).toBe('paired-retry-secret-token');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    await retryMounted.unmount();
   });
 });

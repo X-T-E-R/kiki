@@ -655,7 +655,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('onRequest', async (request, reply) => {
     let path: string;
     try { path = decodeURIComponent(request.url.split('?', 1)[0]!); } catch { return authHook(request, reply); }
-    if (request.method === 'POST' && path === '/api/remote-connections/pair/claim') {
+    if ((request.method === 'POST' && path === '/api/remote-connections/pair/claim') || (request.method === 'GET' && path === '/api/remote-connections/handshake' && request.headers.authorization === undefined && !webRequests.has(request.raw))) {
       reply.header('cache-control', 'no-store');
       return;
     }

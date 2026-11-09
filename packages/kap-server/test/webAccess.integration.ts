@@ -94,7 +94,23 @@ describe('shared daemon Web access', () => {
   });
   it('preserves native bearer and approved-peer admission on the extra carrier without granting Web control', async () => {
     const browser = await enter(); const token = server.authTokenService.getToken();
+    const anonWebHandshake = await fetch(browser.origin + '/api/remote-connections/handshake');
+    expect(anonWebHandshake.status).toBe(401);
+    const cookieWebHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { cookie: browser.cookie } });
+    expect(cookieWebHandshake.status).toBe(403);
+    expect((await cookieWebHandshake.json() as { msg: string }).msg).toBe('local_owner_required');
+    const badBearerWebHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { authorization: 'Bearer invalid' } });
+    expect(badBearerWebHandshake.status).toBe(401);
     const handshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { authorization: `Bearer ${token}` } }); expect(handshake.status).toBe(200);
+    const handshakeData = (await handshake.json() as { data: { identity: { homeId: string }; targetLabel?: string } }).data;
+    expect(handshakeData.identity.homeId).toBe(server.admission.identity.homeId);
+    expect(typeof handshakeData.targetLabel).toBe('string');
+    expect(handshakeData.targetLabel!.length).toBeGreaterThan(0);
+    const directAnonHandshake = await fetch(base + '/api/remote-connections/handshake');
+    expect(directAnonHandshake.status).toBe(200);
+    const directAnonData = (await directAnonHandshake.json() as { data: { identity: { homeId: string }; targetLabel?: string } }).data;
+    expect(directAnonData.identity.homeId).toBe(server.admission.identity.homeId);
+    expect(directAnonData.targetLabel).toBeUndefined();
     await server.admission.setEnabled(true);
     const source = { homeId: randomUUID(), hostId: 'test-peer-host', protocol: 1 as const };
     const invitation = await server.admission.invite(source, 'Native peer'); const claim = await server.admission.claim(invitation.invitation, source);

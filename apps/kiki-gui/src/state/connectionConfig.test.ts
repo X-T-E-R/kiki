@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyCommittedShellCredential,
+  clearAppShellCredentialState,
+  hasExistingOwnerCredential,
+  installAppShellCredentialListener,
+  readAdoptedShellCredential,
+  SHELL_MANAGED_STORAGE_KEY,
+  SHELL_PEER_TOKEN_KEY,
+  SHELL_TOKEN_EVENT,
+} from '../lib/appShell';
+import {
+  resetWebAccessBootstrap,
+  setWebAccessBootstrap,
+} from '../lib/webAccess';
+import {
   clearStoredConfig,
   CONNECTION_STORAGE_KEY,
   readDeepLinkConfig,
@@ -113,5 +127,327 @@ describe('connection config readers', () => {
 
     expect(writeStoredConfig({ url: '', token: '' }, { setItem: () => { throw new Error('full'); } })).toBe(false);
     expect(clearStoredConfig({ removeItem: () => { throw new Error('blocked'); } })).toBe(false);
+  });
+
+  it('applies post-commit shell credentials only for matching origin and preserves route hash and history state', () => {
+    const localMap = new Map<string, string>();
+    const sessionMap = new Map<string, string>();
+    const localStore = {
+      getItem: (key: string) => localMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
+    };
+    const sessionStore = {
+      getItem: (key: string) => sessionMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
+    };
+    const target = new EventTarget();
+    const locationState = {
+      origin: 'http://127.0.0.1:5494',
+      pathname: '/settings',
+      search: '?tab=providers',
+      hash: '#st-card-providers-add',
+    };
+    const historyState = { state: { idx: 4 } };
+    const win = {
+      location: locationState,
+      history: historyState,
+      localStorage: localStore,
+      sessionStorage: sessionStore,
+      name: JSON.stringify({
+        type: 'kiki:shell-handoff',
+        origin: 'http://127.0.0.1:5494',
+        token: 'untrusted-window-name-token',
+      }),
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        target.addEventListener(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        target.removeEventListener(type, listener as EventListener);
+      },
+      dispatchEvent: (event: Event) => target.dispatchEvent(event),
+    };
+
+    const receivedEvents: Array<{ origin: string; token: string }> = [];
+    const uninstall = installAppShellCredentialListener(win, (detail) => {
+      receivedEvents.push(detail);
+    });
+    try {
+      // 1. Any window.name payload is scrubbed and never trusted as a credential source
+      expect(win.name).toBe('');
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(receivedEvents).toEqual([]);
+
+      // 2. Mismatched expectedOrigin is rejected
+      expect(
+        applyCommittedShellCredential(win, 'https://other.example.test', 'wrong-origin-token'),
+      ).toBe(false);
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(receivedEvents).toEqual([]);
+
+      // 3. Matching committed origin applies credential into current document memory only, never persisting to localStorage['kiki.connection'] or sessionStorage['kiki.peer.token'], and leaves pathname, search, hash, and history.state untouched
+      expect(
+        applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'committed-peer-token'),
+      ).toBe(true);
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(readAdoptedShellCredential(win)).toBe('committed-peer-token');
+      expect(receivedEvents).toEqual([
+        { origin: 'http://127.0.0.1:5494', token: 'committed-peer-token' },
+      ]);
+      expect(win.location.pathname).toBe('/settings');
+      expect(win.location.search).toBe('?tab=providers');
+      expect(win.location.hash).toBe('#st-card-providers-add');
+      expect(win.history.state).toEqual({ idx: 4 });
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('refuses to overwrite existing non-shell owner credentials and rejects window.name, postMessage, and unbacked events', () => {
+    const localMap = new Map<string, string>();
+    const sessionMap = new Map<string, string>();
+    const localStore = {
+      getItem: (key: string) => localMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
+    };
+    const sessionStore = {
+      getItem: (key: string) => sessionMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
+    };
+    writeStoredConfig({ url: '', token: 'existing-owner-token' }, localStore);
+    expect(hasExistingOwnerCredential(localStore)).toBe(true);
+
+    const target = new EventTarget();
+    const win = {
+      location: { origin: 'http://127.0.0.1:5494' },
+      localStorage: localStore,
+      sessionStorage: sessionStore,
+      name: JSON.stringify({
+        type: 'kiki:shell-handoff',
+        origin: 'http://127.0.0.1:5494',
+        token: 'attacker-window-name-token',
+      }),
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        target.addEventListener(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        target.removeEventListener(type, listener as EventListener);
+      },
+      dispatchEvent: (event: Event) => target.dispatchEvent(event),
+    };
+
+    const receivedEvents: Array<{ origin: string; token: string }> = [];
+    const uninstall = installAppShellCredentialListener(win, (detail) => {
+      receivedEvents.push(detail);
+    });
+    try {
+      expect(win.name).toBe('');
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
+
+      // 1. Cross-window / opener or same-origin forged postMessage is completely ignored
+      for (const senderOrigin of ['https://evil.example.test', 'http://127.0.0.1:5494']) {
+        const evt = new MessageEvent('message', {
+          origin: senderOrigin,
+          data: {
+            type: 'kiki:shell-credential',
+            origin: 'http://127.0.0.1:5494',
+            token: 'attacker-postmessage-token',
+          },
+        });
+        target.dispatchEvent(evt);
+      }
+
+      // 2. Direct commit-origin delivery attempt refuses to overwrite existing owner credential
+      expect(
+        applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'shell-attempt-token'),
+      ).toBe(false);
+
+      // 3. Even if sessionStorage and kiki:shell-token event are triggered, existing owner credential is preserved
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'staged-override-token');
+      target.dispatchEvent(
+        new CustomEvent(SHELL_TOKEN_EVENT, {
+          detail: { origin: 'http://127.0.0.1:5494', token: 'staged-override-token' },
+        }),
+      );
+
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'existing-owner-token' });
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(receivedEvents).toEqual([]);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('retires shell managed/session state after manual owner overwrite or disconnect and protects web-cookie sessions across reload', () => {
+    const localMap = new Map<string, string>();
+    const sessionMap = new Map<string, string>();
+    const localStore = {
+      getItem: (key: string) => localMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { localMap.set(key, value); },
+      removeItem: (key: string) => { localMap.delete(key); },
+    };
+    const sessionStore = {
+      getItem: (key: string) => sessionMap.get(key) ?? null,
+      setItem: (key: string, value: string) => { sessionMap.set(key, value); },
+      removeItem: (key: string) => { sessionMap.delete(key); },
+    };
+    const target = new EventTarget();
+    const win = {
+      location: { origin: 'http://127.0.0.1:5494' },
+      localStorage: localStore,
+      sessionStorage: sessionStore,
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        target.addEventListener(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        target.removeEventListener(type, listener as EventListener);
+      },
+      dispatchEvent: (event: Event) => target.dispatchEvent(event),
+    };
+
+    try {
+      // 1. Start with shell-provisioned credential (in-memory only, retired from localStorage and sessionStorage)
+      localStore.setItem(CONNECTION_STORAGE_KEY, JSON.stringify({ url: '', token: 'legacy-shell-token' }));
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'legacy-session-token');
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+
+      expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'initial-shell-token')).toBe(true);
+      expect(localStore.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      expect(readAdoptedShellCredential(win)).toBe('initial-shell-token');
+
+      // 2. Manual owner write (even if legacy session token lingered)
+      writeStoredConfig({ url: '', token: 'manual-owner-token' }, localStore);
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'initial-shell-token');
+      expect(hasExistingOwnerCredential(localStore)).toBe(true);
+
+      const reloadEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallReload = installAppShellCredentialListener(win, (detail) => {
+        reloadEvents.push(detail);
+      });
+      uninstallReload();
+      expect(reloadEvents).toEqual([]);
+      expect(readStoredConfig(localStore)).toEqual({ url: '', token: 'manual-owner-token' });
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      // 3. Explicit disconnect clears both stored config and any staged shell token
+      clearStoredConfig(localStore);
+      expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'second-shell-token')).toBe(true);
+      clearAppShellCredentialState(win);
+      clearStoredConfig(localStore);
+      const afterDisconnectEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallAfterDisconnect = installAppShellCredentialListener(win, (detail) => {
+        afterDisconnectEvents.push(detail);
+      });
+      uninstallAfterDisconnect();
+      expect(afterDisconnectEvents).toEqual([]);
+      expect(readStoredConfig(localStore)).toBeNull();
+      expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+      expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+
+      // 4. Web-cookie (#access=) signed-in session is never converted to bearer by staged or live shell tokens
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-token');
+      setWebAccessBootstrap({ kind: 'signed-in' });
+      const cookieEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallCookie = installAppShellCredentialListener(win, (detail) => {
+        cookieEvents.push(detail);
+      });
+      try {
+        expect(applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'live-shell-token')).toBe(false);
+        expect(cookieEvents).toEqual([]);
+        expect(readStoredConfig(localStore)).toBeNull();
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+      } finally {
+        uninstallCookie();
+      }
+
+      // 5. Dual subscription (production main.tsx bootstrap listener without callback + provider listener with callback):
+      // Late delivery after both listeners are installed reaches the provider callback while bare events remain rejected.
+      resetWebAccessBootstrap();
+      clearStoredConfig(localStore);
+      const uninstallBootstrap = installAppShellCredentialListener(win);
+      const providerEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallProvider = installAppShellCredentialListener(win, (detail) => {
+        providerEvents.push(detail);
+      });
+      try {
+        // Bare unbacked CustomEvent('kiki:shell-token') is ignored
+        target.dispatchEvent(
+          new CustomEvent(SHELL_TOKEN_EVENT, {
+            detail: { origin: 'http://127.0.0.1:5494', token: 'bare-forged-token' },
+          }),
+        );
+        expect(providerEvents).toEqual([]);
+        expect(readAdoptedShellCredential(win)).toBeNull();
+
+        // Late committed credential delivery reaches the provider callback despite the earlier bootstrap listener
+        expect(
+          applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'late-delivered-token'),
+        ).toBe(true);
+        expect(readAdoptedShellCredential(win)).toBe('late-delivered-token');
+        expect(providerEvents).toEqual([
+          { origin: 'http://127.0.0.1:5494', token: 'late-delivered-token' },
+        ]);
+      } finally {
+        uninstallProvider();
+        uninstallBootstrap();
+      }
+
+      // 6. Explicit manual owner connection (`url: 'https://owner.example.test'`) alongside a stale
+      // legacy `kiki.shell.managed === '1'` marker is preserved on both startup listener installation
+      // and late credential injection, while retiring only the stale marker and peer token.
+      localStore.setItem(
+        CONNECTION_STORAGE_KEY,
+        JSON.stringify({ url: 'https://owner.example.test', token: 'explicit-owner-token' }),
+      );
+      localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+      sessionStore.setItem(SHELL_PEER_TOKEN_KEY, 'stale-shell-peer');
+      expect(hasExistingOwnerCredential(localStore, sessionStore)).toBe(true);
+
+      const ownerEvents: Array<{ origin: string; token: string }> = [];
+      const uninstallOwnerCheck = installAppShellCredentialListener(win, (detail) => {
+        ownerEvents.push(detail);
+      });
+      try {
+        expect(ownerEvents).toEqual([]);
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(sessionStore.getItem(SHELL_PEER_TOKEN_KEY)).toBeNull();
+        expect(readStoredConfig(localStore)).toEqual({
+          url: 'https://owner.example.test',
+          token: 'explicit-owner-token',
+        });
+
+        // Re-set stale marker and attempt late shell injection: owner connection remains intact
+        localStore.setItem(SHELL_MANAGED_STORAGE_KEY, '1');
+        expect(
+          applyCommittedShellCredential(win, 'http://127.0.0.1:5494', 'shell-override-attempt'),
+        ).toBe(false);
+        expect(localStore.getItem(SHELL_MANAGED_STORAGE_KEY)).toBeNull();
+        expect(readStoredConfig(localStore)).toEqual({
+          url: 'https://owner.example.test',
+          token: 'explicit-owner-token',
+        });
+      } finally {
+        uninstallOwnerCheck();
+      }
+    } finally {
+      resetWebAccessBootstrap();
+    }
   });
 });

@@ -60,6 +60,14 @@ describe('short-code pairing on two real servers', () => {
       expect(parsePairingUri(pairUri)).toEqual({ endpoint: nonLoopback, code: created.code });
       const unauthOwnerRoute = await fetch(`${nonLoopback}/api/remote-connections`);
       expect(unauthOwnerRoute.status).toBe(401);
+      const nonLoopbackAnonHandshake = await fetch(`${nonLoopback}/api/remote-connections/handshake`, { headers: { accept: 'application/json' } });
+      expect(nonLoopbackAnonHandshake.status).toBe(200);
+      expect(nonLoopbackAnonHandshake.headers.get('cache-control')).toBe('no-store');
+      const nonLoopbackAnonData = (await nonLoopbackAnonHandshake.json() as { data: { identity: { homeId: string; hostId: string; protocol: number }; targetLabel?: string; serverId: string; inboundEnabled: boolean } }).data;
+      expect(nonLoopbackAnonData.identity).toEqual(target.admission.identity);
+      expect(nonLoopbackAnonData.targetLabel).toBeUndefined();
+      const nonLoopbackBadBearer = await fetch(`${nonLoopback}/api/remote-connections/handshake`, { headers: { accept: 'application/json', authorization: 'Bearer wrong-token' } });
+      expect(nonLoopbackBadBearer.status).toBe(401);
       await expect(sourceClient.rest!.connections.pair({ endpoint: nonLoopback, code: 'BBBB-BBBB', backgroundSummary: true })).rejects.toThrow('invalid_pairing_code');
       expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
       expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
@@ -170,6 +178,20 @@ describe('short-code pairing on two real servers', () => {
 
   it('limits public claims, burns a code, and refuses pairing when authentication is bypassed', async () => {
     const target = await boot(); const stranger = { homeId: '11111111-1111-4111-8111-111111111111', hostId: 'stranger', protocol: 1 as const };
+    const anonymousHandshake = await fetch(endpoint(target) + '/api/remote-connections/handshake', { headers: { accept: 'application/json' } });
+    expect(anonymousHandshake.status).toBe(200);
+    expect(anonymousHandshake.headers.get('cache-control')).toBe('no-store');
+    const handshakeBody = await anonymousHandshake.json() as { code: number; data: { identity: { homeId: string; hostId: string; protocol: number }; targetLabel?: string; serverId: string; inboundEnabled: boolean } };
+    expect(handshakeBody.code).toBe(0);
+    expect(handshakeBody.data.identity).toEqual(target.admission.identity);
+    expect(handshakeBody.data.targetLabel).toBeUndefined();
+    const authHandshake = await fetch(endpoint(target) + '/api/remote-connections/handshake', { headers: { accept: 'application/json', authorization: `Bearer ${target.localOwnerToken}` } });
+    expect(authHandshake.status).toBe(200);
+    const authHandshakeBody = await authHandshake.json() as { code: number; data: { identity: { homeId: string; hostId: string; protocol: number }; targetLabel?: string; serverId: string; inboundEnabled: boolean } };
+    expect(typeof authHandshakeBody.data.targetLabel).toBe('string');
+    expect(authHandshakeBody.data.targetLabel!.length).toBeGreaterThan(0);
+    const badBearerHandshake = await fetch(endpoint(target) + '/api/remote-connections/handshake', { headers: { accept: 'application/json', authorization: 'Bearer wrong-token' } });
+    expect(badBearerHandshake.status).toBe(401);
     const created = await target.admission.createPairCode();
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = await claim(target, { code: 'BBBB-BBBB', source: stranger, sourceLabel: 'Stranger' });

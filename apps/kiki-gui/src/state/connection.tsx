@@ -43,6 +43,11 @@ import {
 } from '@kiki/session-core/settings';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
+import {
+  clearAppShellCredentialState,
+  installAppShellCredentialListener,
+  readAdoptedShellCredential,
+} from '../lib/appShell';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
@@ -520,6 +525,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [selection, setSelection] = useState<ConnectionSelection | null>(() => {
     if (desktopRuntime || vscodeRuntime) return null;
     if (webEntry.kind === 'signed-in') {
+      clearAppShellCredentialState(window);
       return { config: { url: '', token: '' }, persist: false, source: 'web-cookie' };
     }
     // No code in this page load. A browser that redeemed a link earlier still
@@ -529,14 +535,36 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // ordinary connect screen stands — so nothing claims a session it cannot
     // prove.
     void askForWebCookie((claimed) => {
-      if (!claimed || selectionRef.current !== null) return;
+      if (!claimed) return;
+      const current = selectionRef.current;
+      if (
+        current !== null &&
+        current.source !== 'app-shell' &&
+        (current.source !== 'stored' || current.persist)
+      ) {
+        return;
+      }
+      clearAppShellCredentialState(window);
       connectionEpochRef.current += 1;
+      setMeta(null);
+      setConnectError(null);
       setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
     });
-    return selectInitialConnection({
+    const initialSelection = selectInitialConnection({
       deepLink: readDeepLinkConfig(),
       stored: readStoredConfig(),
     });
+    if (initialSelection !== null) return initialSelection;
+    const adoptedShellToken = readAdoptedShellCredential(window);
+    if (adoptedShellToken !== null) {
+      return {
+        config: { url: '', token: adoptedShellToken },
+        persist: false,
+        source: 'app-shell',
+        scopeId: 'direct:',
+      };
+    }
+    return null;
   });
   const config = selection?.config ?? null;
   const scopeId = selection?.scopeId ?? (desktopRuntime ? 'local' : `direct:${config?.url.trim().replace(/\/+$/, '') ?? ''}`);
@@ -583,6 +611,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const reloadSelectionRef = useRef<{ promise: Promise<ConnectionSelection | null> | null; consumed: boolean }>({ promise: null, consumed: false });
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+  const pairedShellTokenRef = useRef<string | null>(
+    selection?.source === 'app-shell' ? selection.config.token.trim() : null,
+  );
+  if (selection?.source === 'app-shell' && selection.config.token.trim() !== '') {
+    pairedShellTokenRef.current = selection.config.token.trim();
+  }
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
   /** Set by the desktop recovery effect; called when the local socket drops. */
   const rediscoverRef = useRef<(() => void) | undefined>(undefined);
@@ -1013,7 +1047,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           setConnectError({ kind: 'raw', text: 'identity-mismatch' });
           return;
         }
-        if (selection?.source !== 'remote' && selection?.persist === true && config !== null) writeStoredConfig(config);
+        if (
+          selection?.source !== 'remote' &&
+          selection?.source !== 'stored' &&
+          selection?.source !== 'app-shell' &&
+          selection?.persist === true &&
+          config !== null
+        ) {
+          writeStoredConfig(config);
+        }
         if (selection?.source === 'desktop' && selection === selectionRef.current) {
           verifiedDesktopRef.current = { selection, client, meta: value, homeId: spaceKey, scopeId };
           desktopRecoveryRef.current = null;
@@ -1353,6 +1395,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
     connectionEpochRef.current += 1;
+    clearAppShellCredentialState(window);
     clearStoredConfig();
     setMeta(null);
     setSelection(null);
@@ -1374,30 +1417,121 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
-    const generation = ++connectionEpochRef.current;
     const prior = selectionRef.current;
+    const pairedToken =
+      (prior?.source === 'app-shell' ? prior.config.token.trim() : null) ??
+      pairedShellTokenRef.current ??
+      readAdoptedShellCredential(window)?.trim() ??
+      null;
+    const trimmedUrl = next.url.trim();
+    const nextUrl = trimmedUrl.replace(/\/+$/, '');
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
+    const isSameOrigin = nextUrl === '' || nextUrl === currentOrigin;
+    const trimmedToken = next.token.trim();
+    const reusesPairedToken =
+      pairedToken !== null &&
+      pairedToken !== '' &&
+      (trimmedToken === pairedToken || (prior?.source === 'app-shell' && trimmedToken === ''));
+
+    if (reusesPairedToken) {
+      const generation = ++connectionEpochRef.current;
+      setConnectError(null);
+      setMeta(null);
+      if (isSameOrigin) {
+        const equivalent =
+          prior !== null &&
+          prior.source === 'app-shell' &&
+          prior.config.url.trim().replace(/\/+$/, '') === nextUrl &&
+          prior.config.token.trim() === pairedToken;
+        setSelection({
+          config: { url: trimmedUrl, token: pairedToken },
+          persist: false,
+          source: 'app-shell',
+          scopeId: equivalent ? prior.scopeId : `direct:${nextUrl}:${generation}`,
+        });
+        return;
+      }
+      setSelection({
+        config: { url: trimmedUrl, token: '' },
+        persist: false,
+        source: 'local-detection',
+        scopeId: `direct:${nextUrl}:${generation}`,
+      });
+      return;
+    }
+
+    if (persist) {
+      pairedShellTokenRef.current = null;
+      clearAppShellCredentialState(window);
+    }
+    const generation = ++connectionEpochRef.current;
     const equivalent = prior !== null &&
-      prior.config.url.trim().replace(/\/+$/, '') === next.url.trim().replace(/\/+$/, '') &&
-      prior.config.token.trim() === next.token.trim();
+      prior.config.url.trim().replace(/\/+$/, '') === nextUrl &&
+      prior.config.token.trim() === trimmedToken;
     setConnectError(null);
     setMeta(null);
     setSelection({
-      config: next,
+      config: { url: trimmedUrl, token: trimmedToken },
       persist,
       source: persist ? 'manual' : 'local-detection',
-      scopeId: equivalent ? prior.scopeId : `direct:${next.url.trim().replace(/\/+$/, '')}:${generation}`,
+      scopeId: equivalent ? prior.scopeId : `direct:${nextUrl}:${generation}`,
+    });
+  }, []);
+
+  const adoptShellCredential = useCallback((token: string) => {
+    const trimmed = token.trim();
+    if (!trimmed) return;
+    const current = selectionRef.current;
+    if (current?.source === 'web-cookie') {
+      clearAppShellCredentialState(window);
+      return;
+    }
+    pairedShellTokenRef.current = trimmed;
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
+    const currentUrl = current?.config.url.trim().replace(/\/+$/, '') ?? '';
+    if (
+      current !== null &&
+      current.source === 'app-shell' &&
+      (currentUrl === '' || currentUrl === currentOrigin) &&
+      current.config.token.trim() === trimmed
+    ) {
+      return;
+    }
+    const generation = ++connectionEpochRef.current;
+    setConnectError(null);
+    setMeta(null);
+    setSelection({
+      config: { url: '', token: trimmed },
+      persist: false,
+      source: 'app-shell',
+      scopeId: `direct::${generation}`,
     });
   }, []);
 
   // Settings edits always persist: a connection typed into the settings page
   // is an explicit choice, the same as one typed into the connect screen.
+  // Paired `app-shell` provenance is enforced inside `connect()` so neither
+  // Settings, ConnectScreen retries, nor undo can persist or forward a paired
+  // peer token unless an independent owner credential was provided.
   const applyConnection = useCallback(
     (next: ConnectionConfig) => {
-      if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
+      const current = selectionRef.current;
+      if (current?.source === 'ssh' || current?.source === 'remote') return;
       connect(next, true);
     },
     [connect],
   );
+
+  useEffect(() => {
+    if (desktopRuntime || vscodeRuntime) return;
+    if (selectionRef.current?.source === 'web-cookie') {
+      clearAppShellCredentialState(window);
+      return;
+    }
+    return installAppShellCredentialListener(window, ({ token }) => {
+      adoptShellCredential(token);
+    });
+  }, [desktopRuntime, vscodeRuntime, adoptShellCredential]);
 
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || klient === null || socket === null || meta === null) return null;
@@ -1437,7 +1571,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         </QueryClientProvider>
       ) : (
         <ConnectScreen
-          initial={config ?? { url: '', token: '' }}
+          initial={
+            selection?.source === 'app-shell'
+              ? { url: config?.url ?? '', token: '' }
+              : (config ?? { url: '', token: '' })
+          }
           connecting={desktopBoot !== null || (config !== null && connectError === null)}
           error={desktopRuntime ? null : connectErrorText}
           onConnect={connect}

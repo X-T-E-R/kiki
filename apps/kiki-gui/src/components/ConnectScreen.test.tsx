@@ -83,6 +83,17 @@ describe('ConnectScreen browser form', () => {
     expect(html).toContain('connect-token');
     expect(html).toContain('handoff failed');
   });
+
+  it('links back to the mobile launcher when rendered inside the phone app shell', () => {
+    vi.stubGlobal('navigator', { language: 'en-US', userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android' });
+    try {
+      const html = renderScreen({ desktopBoot: null, desktopFailure: null });
+      expect(html).toContain('data-app-shell-connect');
+      expect(html).toContain('href="https://localhost/index.html#change"');
+    } finally {
+      vi.stubGlobal('navigator', { language: 'en-US' });
+    }
+  });
 });
 
 describe('ConnectScreen spent web link', () => {

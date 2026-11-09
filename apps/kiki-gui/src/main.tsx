@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 
 import { HostProvider, hostAdapter } from './host';
+import { installAppShellCredentialListener } from './lib/appShell';
 import { initializeSpaceStorage, activeSpace, configureSpaceStorage } from './lib/spaceStorage';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import { adoptWindowModeFromHost } from './lib/workModeStartup';
@@ -63,6 +64,7 @@ async function start(): Promise<void> {
   // in boot can observe the code: it is cleared first, held in module memory
   // for the one exchange below, and never written anywhere.
   await redeemWebAccessLink();
+  installAppShellCredentialListener();
   // Dev-only palette comparison (`?tokens=a|b|c|p923`). Read before the
   // connection module loads, since it scrubs the deep-link query; a
   // production build drops this branch and the stylesheet with it.
