@@ -402,8 +402,15 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private void clearActiveAuth() {
+        documentNavEpoch++;
+        currentDocumentNavNonce = null;
         activeAuthOrigin = null;
         activeAuthServerId = null;
+    }
+
+    private void invalidateCurrentDocumentNavigation() {
+        documentNavEpoch++;
+        currentDocumentNavNonce = null;
     }
 
     private void clearPendingAuthIfCurrent(long epoch) {
@@ -476,33 +483,50 @@ public class KikiShellPlugin extends Plugin {
         new Thread(() -> {
             HandshakeResult hs = fetchHandshake(targetOrigin);
             if (
-                hs.redirected ||
-                !hs.ok ||
-                !targetServerId.equals(hs.targetHomeId) ||
-                !matchesStoredHostId(targetServerId, hs.targetHostId)
-            ) {
-                if (expectedEpoch != pendingAuthEpoch || expectedDocEpoch != documentNavEpoch) {
-                    return;
-                }
-                clearPendingAuthIfCurrent(expectedEpoch);
-                clearActiveAuth();
-                if (local != null) {
-                    view.post(() -> view.loadUrl(local + "/index.html#unreachable"));
-                }
-                return;
-            }
-            if (
                 expectedEpoch != pendingAuthEpoch ||
                 expectedDocEpoch != documentNavEpoch ||
                 !expectedNavNonce.equals(currentDocumentNavNonce)
             ) {
                 return;
             }
-            String token = readPeerToken(targetServerId, targetOrigin);
-            if (finalize) {
-                clearPendingAuthIfCurrent(expectedEpoch);
+            if (
+                hs.redirected ||
+                !hs.ok ||
+                !targetServerId.equals(hs.targetHomeId) ||
+                !matchesStoredHostId(targetServerId, hs.targetHostId)
+            ) {
+                view.post(() -> {
+                    if (
+                        expectedEpoch != pendingAuthEpoch ||
+                        expectedDocEpoch != documentNavEpoch ||
+                        !expectedNavNonce.equals(currentDocumentNavNonce)
+                    ) {
+                        return;
+                    }
+                    clearPendingAuthIfCurrent(expectedEpoch);
+                    clearActiveAuth();
+                    if (local != null) {
+                        view.loadUrl(local + "/index.html#unreachable");
+                    }
+                });
+                return;
             }
-            if (token == null || token.isEmpty()) return;
+            String token = readPeerToken(targetServerId, targetOrigin);
+            if (token == null || token.isEmpty()) {
+                if (finalize) {
+                    view.post(() -> {
+                        if (
+                            expectedEpoch != pendingAuthEpoch ||
+                            expectedDocEpoch != documentNavEpoch ||
+                            !expectedNavNonce.equals(currentDocumentNavNonce)
+                        ) {
+                            return;
+                        }
+                        clearPendingAuthIfCurrent(expectedEpoch);
+                    });
+                }
+                return;
+            }
             view.post(() -> {
                 if (
                     expectedEpoch != pendingAuthEpoch ||
@@ -510,6 +534,9 @@ public class KikiShellPlugin extends Plugin {
                     !expectedNavNonce.equals(currentDocumentNavNonce)
                 ) {
                     return;
+                }
+                if (finalize) {
+                    clearPendingAuthIfCurrent(expectedEpoch);
                 }
                 String currentViewUrl = view.getUrl();
                 String currentCommitted = currentViewUrl == null ? null : originOf(Uri.parse(currentViewUrl));
@@ -806,6 +833,7 @@ public class KikiShellPlugin extends Plugin {
         String expectedPending = pendingAuthOrigin;
         if (expectedPending != null) {
             if (targetOrigin != null && expectedPending.equals(targetOrigin)) {
+                invalidateCurrentDocumentNavigation();
                 return false;
             }
             clearPendingAuth();
@@ -818,8 +846,11 @@ public class KikiShellPlugin extends Plugin {
         }
         String trusted = prefs().getString(TRUSTED_ORIGIN, null);
         if (trusted != null && trusted.equals(targetOrigin)) {
+            invalidateCurrentDocumentNavigation();
             return false;
         }
+        invalidateCurrentDocumentNavigation();
+        clearActiveAuth();
         return null;
     }
 

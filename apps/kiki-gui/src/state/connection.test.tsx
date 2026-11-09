@@ -1975,4 +1975,33 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
       token: 'explicit-owner-bearer-token',
     });
   });
+
+  it('never persists or forwards a paired app-shell credential when retrying an initially failed /meta request from ConnectScreen', async () => {
+    mocks.meta
+      .mockRejectedValueOnce(new Error('temporary meta failure'))
+      .mockResolvedValue({
+        server_id: 'srv-retry',
+        server_home_id: 'home-retry',
+        server_version: '0.1.0',
+        current_space_id: 'main',
+        dangerous_bypass_auth: false,
+      });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'paired-retry-secret-token')).toBe(true);
+    const retryMounted = await mountBrowserShell();
+    expect(retryMounted.container.querySelector('[role="alert"]')?.textContent).toContain('temporary meta failure');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    const tokenField = retryMounted.container.querySelector<HTMLInputElement>('#connect-token')!;
+    expect(tokenField.value).toBe('');
+
+    const submit = retryMounted.container.querySelector<HTMLButtonElement>('#connect-manual button[type="submit"]')!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => {
+      submit.click();
+    });
+    await flush();
+    expect(retryMounted.container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+    expect(retryMounted.container.querySelector('[data-shell-token]')?.textContent).toBe('paired-retry-secret-token');
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
+    await retryMounted.unmount();
+  });
 });

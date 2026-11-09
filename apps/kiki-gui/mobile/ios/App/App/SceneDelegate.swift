@@ -107,14 +107,20 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     public override func load() {
         super.load()
-        urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] _, _ in
-            self?.handleWebViewNavigationState(finalize: false)
+        urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] webView, _ in
+            guard let self else { return }
+            if webView.isLoading {
+                self.invalidateCurrentDocumentNavigation()
+            } else {
+                self.handleWebViewNavigationState(finalize: false)
+            }
         }
         loadingObservation = webView?.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
+            guard let self else { return }
             if webView.isLoading {
-                self?.handleWebViewNavigationState(finalize: false)
+                self.invalidateCurrentDocumentNavigation()
             } else {
-                self?.handleWebViewNavigationState(finalize: true)
+                self.handleWebViewNavigationState(finalize: true)
             }
         }
     }
@@ -369,8 +375,15 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func clearActiveAuth() {
+        documentNavEpoch += 1
+        currentDocumentNavNonce = nil
         activeAuthOrigin = nil
         activeAuthServerId = nil
+    }
+
+    private func invalidateCurrentDocumentNavigation() {
+        documentNavEpoch += 1
+        currentDocumentNavNonce = nil
     }
 
     private func clearPendingAuthIfCurrent(epoch: Int64) {
@@ -720,14 +733,18 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let url = navigationAction.request.url else { return nil }
         if let local = bridge?.config.appStartServerURL,
            url.absoluteString.hasPrefix(local.absoluteString) {
+            clearPendingAuth()
+            clearActiveAuth()
             return false
         }
         let targetOrigin = Self.origin(of: url)
         if let expectedPending = pendingAuthOrigin {
             if targetOrigin == expectedPending {
+                invalidateCurrentDocumentNavigation()
                 return false
             }
             clearPendingAuth()
+            clearActiveAuth()
             if let local = bridge?.config.appStartServerURL,
                let fallbackURL = URL(string: "\(local.absoluteString)/index.html#unreachable") {
                 DispatchQueue.main.async { [weak self] in
@@ -738,8 +755,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         guard let trusted = UserDefaults.standard.string(forKey: Self.trustedOriginKey),
               targetOrigin == trusted else {
+            invalidateCurrentDocumentNavigation()
+            clearActiveAuth()
             return nil
         }
+        invalidateCurrentDocumentNavigation()
         return false
     }
 

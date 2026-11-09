@@ -1675,6 +1675,60 @@ ${origin}
         if (!p2.view.deliveries.equals(Arrays.asList("Reloaded-A-document"))) {
             throw new AssertionError("Expected delivery to Reloaded-A-document, got: " + p2.view.deliveries);
         }
+
+        // Case 3: Stale onPageLoaded failure from document A resolves after a same-URL reload commits;
+        // it must neither kick the reloaded document to launcher nor clear activeAuthServerId, and the
+        // reloaded document's own handshake must still succeed.
+        NativeDeliveryCheck p3 = new NativeDeliveryCheck();
+        p3.pendingAuthEpoch = 9;
+        p3.activeAuthOrigin = ORIGIN;
+        p3.activeAuthServerId = "home-a";
+        Reply staleFailure = new Reply("home-temporary-mismatch", "host-other");
+        p3.replies.add(staleFailure);
+        p3.deliverCommittedToken(p3.view, p3.view.url, true);
+        if (!staleFailure.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Stale A callback not started");
+        p3.shouldOverrideLoad(Uri.parse(p3.view.url));
+        staleFailure.release.countDown();
+        Runnable oldFallback = p3.view.posted.poll(200, TimeUnit.MILLISECONDS);
+        Reply reloadedValid = new Reply("home-a", "host-a");
+        p3.replies.add(reloadedValid);
+        p3.view.documentId = "Reloaded-After-Stale-Failure";
+        p3.deliverCommittedToken(p3.view, p3.view.url, false);
+        if (!reloadedValid.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Reloaded callback not started");
+        if (oldFallback != null) oldFallback.run();
+        if (!p3.view.url.equals(ORIGIN + "/")) {
+            throw new AssertionError("old document failure kicked the committed reload back to launcher: " + p3.view.url);
+        }
+        if (!"home-a".equals(p3.activeAuthServerId)) {
+            throw new AssertionError("old document failure cleared the reload's active pairing");
+        }
+        reloadedValid.release.countDown();
+        Runnable reloadDelivery = p3.view.posted.poll(5, TimeUnit.SECONDS);
+        if (reloadDelivery == null) throw new AssertionError("Reload after stale failure did not schedule delivery");
+        reloadDelivery.run();
+        if (!p3.view.deliveries.equals(Arrays.asList("Reloaded-After-Stale-Failure"))) {
+            throw new AssertionError("Expected delivery to Reloaded-After-Stale-Failure, got: " + p3.view.deliveries);
+        }
+
+        // Case 4: Current document handshake mismatch (without any newer navigation) still clears activeAuth and redirects to launcher
+        NativeDeliveryCheck p4 = new NativeDeliveryCheck();
+        p4.pendingAuthEpoch = 10;
+        p4.activeAuthOrigin = ORIGIN;
+        p4.activeAuthServerId = "home-a";
+        Reply currentMismatch = new Reply("home-b", "host-b");
+        p4.replies.add(currentMismatch);
+        p4.deliverCommittedToken(p4.view, p4.view.url, false);
+        if (!currentMismatch.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Current mismatch callback not started");
+        currentMismatch.release.countDown();
+        Runnable activeFallback = p4.view.posted.poll(5, TimeUnit.SECONDS);
+        if (activeFallback == null) throw new AssertionError("Current mismatch did not schedule fallback");
+        activeFallback.run();
+        if (!"https://localhost/index.html#unreachable".equals(p4.view.url)) {
+            throw new AssertionError("Expected current mismatch to navigate to launcher, got: " + p4.view.url);
+        }
+        if (p4.activeAuthServerId != null) {
+            throw new AssertionError("Expected current mismatch to clear activeAuthServerId");
+        }
     }
 }
 `;
