@@ -4907,7 +4907,7 @@ export function Transcript({
     let hit = resolve();
     while (hit === undefined) {
       if (cancelled()) return { status: 'no-timeline' };
-      const structure = await readSeekStructure(signal);
+      const structure = target.kind === 'turn' ? undefined : await readSeekStructure(signal);
       if (cancelled()) return { status: 'no-timeline' };
       if (structure === undefined && !liveRef.current.hasMore) {
         return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
