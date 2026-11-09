@@ -490,21 +490,26 @@ function updateProbeLayer() {
   probeLayer.hidden = !target?.ok;
 }
 
-async function probeServer(origin) {
+async function probeServer(origin, probeOptions = {}) {
   if (isNativeShell()) {
     try {
-      const res = await window.Capacitor.nativePromise('KikiShell', 'probe', { origin });
+      const res = await window.Capacitor.nativePromise('KikiShell', 'probe', {
+        origin,
+        serverId: probeOptions?.serverId ?? undefined,
+        grantId: probeOptions?.grantId ?? undefined,
+      });
       return {
         ok: Boolean(res?.ok),
         targetLabel: typeof res?.targetLabel === 'string' && res.targetLabel !== '' ? res.targetLabel : undefined,
         targetHomeId: typeof res?.targetHomeId === 'string' && res.targetHomeId !== '' ? res.targetHomeId : undefined,
         targetHostId: typeof res?.targetHostId === 'string' && res.targetHostId !== '' ? res.targetHostId : undefined,
+        mutualProofVerified: Boolean(res?.mutualProofVerified),
       };
     } catch {
       return { ok: false };
     }
   }
-  return probeOriginHandshake(origin);
+  return probeOriginHandshake(origin, probeOptions);
 }
 
 async function claimPairing(endpoint, code) {
@@ -571,6 +576,7 @@ async function openServer(origin, entry, options = {}) {
     origin,
     entry,
     probe: probeServer,
+    requireMutualProof: isPairedTarget && isNativeShell(),
     getToken: isNativeShell() ? undefined : readWebPeerToken,
   });
 
@@ -600,6 +606,7 @@ async function openServer(origin, entry, options = {}) {
         origin,
         entry: resolved.finalEntry,
         serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
+        grantId: isPairedTarget ? (resolved.server?.grantId ?? options.grantId ?? undefined) : undefined,
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
       });
@@ -963,7 +970,12 @@ async function testServerAddress(server, rawAddress, trigger) {
   const original = trigger.textContent;
   trigger.textContent = copy.testing;
   setAddressStatus(server.id, '');
-  const probe = await probeServer(parsed.origin);
+  const probe = await probeServer(
+    parsed.origin,
+    isServerOriginVerified(server, parsed.origin)
+      ? { serverId: server.id, grantId: server.grantId }
+      : undefined,
+  );
   trigger.disabled = false;
   trigger.textContent = original;
   if (!probe.ok) {

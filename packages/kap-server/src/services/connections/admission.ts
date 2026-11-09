@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { PAIRING_CODE_ALPHABET, connectionGrantSchema, normalizePairingCode, type ConnectionIdentity, type ConnectionGrant, type InboundStatus } from '@kiki/protocol';
 import { generateServerToken } from '../auth/persistentToken';
@@ -108,6 +108,34 @@ export class ConnectionAdmission {
     if (!sameIdentity(entry.target, this.identity)) throw new AdmissionError(403, 'identity_changed');
     entry.lastConnectedAt = Date.now();
     return { id: entry.id, revision: entry.revision, source: entry.source };
+  }
+  verifyHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): string | undefined {
+    const nonce = typeof input.nonce === 'string' ? input.nonce.trim().toLowerCase() : '';
+    const proof = typeof input.proof === 'string' ? input.proof.trim().toLowerCase() : '';
+    if (!/^[a-f0-9]{32,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(proof)) return undefined;
+    if (this.unavailableReason !== undefined || !this.state.enabled) return undefined;
+    const candidate = Buffer.from(proof, 'hex');
+    const matches = (entry: StoredGrant): boolean => {
+      if (entry.status !== 'approved' || !sameIdentity(entry.target, this.identity)) return false;
+      const expected = createHmac('sha256', entry.digest).update(`kiki-handshake-req-v1:${nonce}`).digest();
+      return expected.length === candidate.length && timingSafeEqual(candidate, expected);
+    };
+    const grantId = typeof input.grantId === 'string' && input.grantId.trim() !== '' ? input.grantId.trim() : undefined;
+    let matched: StoredGrant | undefined;
+    if (grantId !== undefined) {
+      const byId = this.state.grants.find((entry) => entry.id === grantId);
+      if (byId !== undefined && matches(byId)) matched = byId;
+    }
+    if (matched === undefined) {
+      for (const entry of this.state.grants) {
+        if (entry.id !== grantId && matches(entry)) {
+          matched = entry;
+          break;
+        }
+      }
+    }
+    if (matched === undefined) return undefined;
+    return createHmac('sha256', matched.digest).update(`kiki-handshake-res-v1:${nonce}:${this.identity.homeId}:${this.identity.hostId}`).digest('hex');
   }
   createPairCode(input: { label?: string; expiresInMs?: number; allowBridge?: boolean } = {}): Promise<{ code: string; expiresAt: number; allowBridge: boolean }> {
     return this.change(async () => {

@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Security
 import UIKit
 import WebKit
@@ -92,6 +93,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private static let tokenService = "ai.easyagent.kiki.peerToken"
     private static let legacyTokenPrefix = "kiki.shell.peerToken."
     private static let hostIdPrefix = "kiki.shell.peerHostId."
+    private static let grantIdPrefix = "kiki.shell.peerGrantId."
     private static let verifiedOriginsPrefix = "kiki.shell.verifiedOrigins."
     private static var pendingPairUri: String?
 
@@ -173,19 +175,21 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func probe(_ call: CAPPluginCall) {
+        let serverId = call.getString("serverId")
+        let grantId = call.getString("grantId")
         guard let origin = call.getString("origin"),
               let originURL = URL(string: origin),
               let normalized = Self.origin(of: originURL) else {
             call.resolve(["ok": false])
             return
         }
-        Self.fetchHandshake(origin: normalized) { ok, redirected, homeId, hostId, label in
+        Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId) { ok, redirected, homeId, hostId, label, mutualVerified in
             if redirected {
                 call.resolve(["ok": false])
                 return
             }
             if ok {
-                var out: [String: Any] = ["ok": true]
+                var out: [String: Any] = ["ok": true, "mutualProofVerified": mutualVerified]
                 if let label, !label.isEmpty { out["targetLabel"] = label }
                 if let homeId, !homeId.isEmpty { out["targetHomeId"] = homeId }
                 if let hostId, !hostId.isEmpty { out["targetHostId"] = hostId }
@@ -263,18 +267,19 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             let targetHostId = (target["hostId"] as? String) ?? ""
+            let grantId = (inner["grantId"] as? String) ?? ""
             guard Self.savePeerToken(peerToken, for: targetHomeId, origin: base) else {
                 call.resolve(["ok": false, "reason": "unreachable"])
                 return
             }
-            Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId)
+            Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId, grantId: grantId)
             call.resolve([
                 "ok": true,
                 "serverId": targetHomeId,
                 "targetHomeId": targetHomeId,
                 "targetHostId": targetHostId,
                 "targetLabel": (inner["targetLabel"] as? String) ?? "",
-                "grantId": (inner["grantId"] as? String) ?? "",
+                "grantId": grantId,
                 "revision": (inner["revision"] as? Int) ?? 0
             ])
         }.resume()
@@ -311,6 +316,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             ])
             return
         }
+        let grantId = call.getString("grantId")
         let cleanString = Self.stripTokenFromEntry(origin: origin, entry: entry)
         guard let cleanURL = URL(string: cleanString) else {
             call.reject("invalid_origin")
@@ -320,8 +326,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { return }
             self.pendingAuthEpoch += 1
             let callEpoch = self.pendingAuthEpoch
-            Self.fetchHandshake(origin: origin) { [weak self] ok, redirected, homeId, hostId, _ in
-                guard !redirected, ok, let homeId, !homeId.isEmpty else {
+            Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId) { [weak self] ok, redirected, homeId, hostId, _, mutualVerified in
+                guard !redirected, ok, mutualVerified, let homeId, !homeId.isEmpty else {
                     DispatchQueue.main.async {
                         self?.clearPendingAuthIfCurrent(epoch: callEpoch)
                     }
@@ -342,7 +348,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     ])
                     return
                 }
-                Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId)
+                Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId)
                 UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
                 DispatchQueue.main.async {
                     guard let self, self.pendingAuthEpoch == callEpoch else { return }
@@ -451,7 +457,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             Self.buildDocumentNavNonceScript(expectedOrigin: targetOrigin, navNonce: expectedNavNonce),
             completionHandler: nil
         )
-        Self.fetchHandshake(origin: targetOrigin) { [weak self] ok, redirected, homeId, hostId, _ in
+        Self.fetchHandshake(origin: targetOrigin, serverId: targetServerId) { [weak self] ok, redirected, homeId, hostId, _, mutualVerified in
             DispatchQueue.main.async {
                 guard let self,
                       let webView = self.webView,
@@ -460,6 +466,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                       self.currentDocumentNavNonce == expectedNavNonce else { return }
                 guard !redirected,
                       ok,
+                      mutualVerified,
                       homeId == targetServerId,
                       Self.matchesStoredHostId(serverId: targetServerId, candidateHostId: hostId) else {
                     self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
@@ -530,32 +537,109 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         return "(function(){try{var exp=\(originArray)[0];var t=\(tokenArray)[0];var n=\(nonceArray)[0];if(window.location.origin!==exp||!t)return false;var doc=window.document||window;if(n&&doc.__kikiShellNavNonce!==n)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:exp,token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:exp,token:t};}catch(e2){return false;}}try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:exp,token:t}}));}catch(e){}return true;}catch(e){return false;}})();"
     }
 
+    private static func sha256Hex(_ value: String?) -> String? {
+        guard let value, !value.isEmpty, let data = value.data(using: .utf8) else { return nil }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func hmacSha256Hex(keyAscii: String, message: String) -> String? {
+        guard !keyAscii.isEmpty,
+              let keyData = keyAscii.data(using: .utf8),
+              let msgData = message.data(using: .utf8) else { return nil }
+        let key = SymmetricKey(data: keyData)
+        let mac = HMAC<SHA256>.authenticationCode(for: msgData, using: key)
+        return Data(mac).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func constantTimeHexEqual(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return false }
+        let cleanA = Array(a.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().utf8)
+        let cleanB = Array(b.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().utf8)
+        guard !cleanA.isEmpty, cleanA.count == cleanB.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<cleanA.count {
+            diff |= cleanA[i] ^ cleanB[i]
+        }
+        return diff == 0
+    }
+
+    private static func generateHandshakeNonce() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status != errSecSuccess {
+            let fallback = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            return fallback
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func resolveHandshakeKey(serverId: String?, origin: String) -> String? {
+        guard let serverId, !serverId.isEmpty, isOriginVerified(origin: origin, for: serverId) else {
+            return nil
+        }
+        return sha256Hex(readPeerToken(for: serverId, origin: origin))
+    }
+
+    private static func resolveStoredGrantId(serverId: String?, origin: String, explicitGrantId: String? = nil) -> String? {
+        if let explicitGrantId, !explicitGrantId.isEmpty {
+            return explicitGrantId
+        }
+        guard let serverId, !serverId.isEmpty else { return nil }
+        let defaults = UserDefaults.standard
+        if !origin.isEmpty,
+           let scoped = defaults.string(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin)),
+           !scoped.isEmpty {
+            return scoped
+        }
+        if let stored = defaults.string(forKey: grantIdPrefix + serverId), !stored.isEmpty {
+            return stored
+        }
+        return nil
+    }
+
     private static func fetchHandshake(
         origin: String,
-        completion: @escaping (_ ok: Bool, _ redirected: Bool, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?) -> Void
+        serverId: String? = nil,
+        explicitGrantId: String? = nil,
+        completion: @escaping (_ ok: Bool, _ redirected: Bool, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?, _ mutualProofVerified: Bool) -> Void
     ) {
         guard let handshakeURL = URL(string: "\(origin)/api/remote-connections/handshake") else {
-            completion(false, false, nil, nil, nil)
+            completion(false, false, nil, nil, nil, false)
             return
         }
         var req = URLRequest(url: handshakeURL)
         req.timeoutInterval = 3.5
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let handshakeKey = resolveHandshakeKey(serverId: serverId, origin: origin)
+        var nonce: String?
+        if let handshakeKey, !handshakeKey.isEmpty {
+            let freshNonce = generateHandshakeNonce()
+            if let reqProof = hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-req-v1:\(freshNonce)") {
+                nonce = freshNonce
+                req.setValue(freshNonce, forHTTPHeaderField: "x-kiki-handshake-nonce")
+                req.setValue(reqProof, forHTTPHeaderField: "x-kiki-handshake-proof")
+                if let grantId = resolveStoredGrantId(serverId: serverId, origin: origin, explicitGrantId: explicitGrantId),
+                   !grantId.isEmpty {
+                    req.setValue(grantId, forHTTPHeaderField: "x-kiki-handshake-grant")
+                }
+            }
+        }
         noRedirectSession.dataTask(with: req) { data, response, _ in
             guard let http = response as? HTTPURLResponse else {
-                completion(false, false, nil, nil, nil)
+                completion(false, false, nil, nil, nil, false)
                 return
             }
             if (300..<400).contains(http.statusCode) {
-                completion(false, true, nil, nil, nil)
+                completion(false, true, nil, nil, nil, false)
                 return
             }
             if let finalURL = http.url, Self.origin(of: finalURL) != origin {
-                completion(false, true, nil, nil, nil)
+                completion(false, true, nil, nil, nil, false)
                 return
             }
             guard (200..<300).contains(http.statusCode) else {
-                completion(false, false, nil, nil, nil)
+                completion(false, false, nil, nil, nil, false)
                 return
             }
             var label: String?
@@ -569,7 +653,16 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 homeId = identityObj?["homeId"] as? String
                 hostId = identityObj?["hostId"] as? String
             }
-            completion(true, false, homeId, hostId, label)
+            var mutualVerified = false
+            if let handshakeKey, let nonce, let homeId, !homeId.isEmpty {
+                let resProof = http.value(forHTTPHeaderField: "x-kiki-handshake-proof")
+                let expectedRes = hmacSha256Hex(
+                    keyAscii: handshakeKey,
+                    message: "kiki-handshake-res-v1:\(nonce):\(homeId):\(hostId ?? "")"
+                )
+                mutualVerified = constantTimeHexEqual(resProof, expectedRes)
+            }
+            completion(true, false, homeId, hostId, label, mutualVerified)
         }.resume()
     }
 
@@ -684,7 +777,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         return list.contains(origin)
     }
 
-    private static func recordVerifiedOrigin(origin: String, for serverId: String, hostId: String?) {
+    private static func recordVerifiedOrigin(origin: String, for serverId: String, hostId: String?, grantId: String? = nil) {
         guard !serverId.isEmpty, !origin.isEmpty else { return }
         var list = UserDefaults.standard.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
         if !list.contains(origin) {
@@ -693,6 +786,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         if let hostId, !hostId.isEmpty {
             UserDefaults.standard.set(hostId, forKey: hostIdPrefix + serverId)
+        }
+        if let grantId, !grantId.isEmpty {
+            UserDefaults.standard.set(grantId, forKey: grantIdPrefix + serverId)
+            UserDefaults.standard.set(grantId, forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin))
         }
     }
 
@@ -712,9 +809,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             let verified = defaults.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
             for vOrigin in verified {
                 deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: vOrigin))
+                defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: vOrigin))
             }
             if let origin, !origin.isEmpty {
                 deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: origin))
+                defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin))
             }
             deleteKeychainToken(account: serverId)
             if let trusted, verified.contains(trusted) {
@@ -722,6 +821,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             defaults.removeObject(forKey: legacyTokenPrefix + serverId)
             defaults.removeObject(forKey: hostIdPrefix + serverId)
+            defaults.removeObject(forKey: grantIdPrefix + serverId)
             defaults.removeObject(forKey: verifiedOriginsPrefix + serverId)
         }
         if let origin, !origin.isEmpty, origin == trusted {

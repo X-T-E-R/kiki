@@ -16,6 +16,8 @@ import {
   buildCommittedCredentialScript,
   claimPairingOrigin,
   classifyOrigin,
+  computeHandshakeProof,
+  createMutualHandshakeChallenge,
   deliverCommittedServerCredential,
   displayOrigin,
   formatPairingCodeInput,
@@ -996,8 +998,15 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(androidPluginSource, /deliverCommittedToken/);
     assert.match(androidPluginSource, /buildDocumentNavNonceScript\(targetOrigin,\s*expectedNavNonce\)/);
     assert.match(androidPluginSource, /buildCredentialDeliveryScript\(targetOrigin,\s*token,\s*expectedNavNonce\)/);
-    assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin\)/);
-    assert.match(androidPluginSource, /fetchHandshake\(targetOrigin\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(normalizedOrigin,\s*serverId,\s*grantId\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(origin,\s*serverId,\s*grantId\)/);
+    assert.match(androidPluginSource, /fetchHandshake\(targetOrigin,\s*targetServerId\)/);
+    assert.match(androidPluginSource, /x-kiki-handshake-nonce/);
+    assert.match(androidPluginSource, /x-kiki-handshake-proof/);
+    assert.match(androidPluginSource, /x-kiki-handshake-grant/);
+    assert.match(androidPluginSource, /kiki-handshake-req-v1:/);
+    assert.match(androidPluginSource, /kiki-handshake-res-v1:/);
+    assert.match(androidPluginSource, /!hs\.mutualProofVerified/);
     assert.match(androidPluginSource, /clearPendingAuthIfCurrent\(callEpoch\)/);
     assert.equal(
       /removeVerifiedOrigin\s*\(/.test(
@@ -1016,8 +1025,15 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       iosPluginSource,
       /buildCredentialDeliveryScript\(\s*expectedOrigin:\s*targetOrigin,\s*token:\s*token,\s*expectedNavNonce:\s*expectedNavNonce\s*\)/,
     );
-    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin\)/);
-    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*targetOrigin\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*normalized,\s*serverId:\s*serverId,\s*explicitGrantId:\s*grantId\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*origin,\s*serverId:\s*serverId,\s*explicitGrantId:\s*grantId\)/);
+    assert.match(iosPluginSource, /Self\.fetchHandshake\(origin:\s*targetOrigin,\s*serverId:\s*targetServerId\)/);
+    assert.match(iosPluginSource, /x-kiki-handshake-nonce/);
+    assert.match(iosPluginSource, /x-kiki-handshake-proof/);
+    assert.match(iosPluginSource, /x-kiki-handshake-grant/);
+    assert.match(iosPluginSource, /kiki-handshake-req-v1:/);
+    assert.match(iosPluginSource, /kiki-handshake-res-v1:/);
+    assert.match(iosPluginSource, /mutualVerified/);
     assert.match(iosPluginSource, /clearPendingAuthIfCurrent\(epoch:\s*callEpoch\)/);
     assert.equal(
       /Self\.removeVerifiedOrigin\s*\(/.test(iosPluginSource),
@@ -1552,11 +1568,12 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
     assert.ok(from >= 0 && to > from, start);
     return source.slice(from, to);
   }
-  const fields = section('    private volatile String pendingPairUri;', '    @Override\n    public void load()');
+  const fields = section('    private static final SecureRandom NONCE_RANDOM', '    @Override\n    public void load()');
   const load = section('    public void load() {', '    @PluginMethod\n    public void scanQr');
   const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
   const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
   const builder = section('    static String buildDocumentNavNonceScript', '    private HandshakeResult fetchHandshake');
+  const cryptoHelpers = section('    static String sha256Hex', '    private String resolveHandshakeKey');
   const override = section('    @Override\n    public Boolean shouldOverrideLoad(Uri url)', '    @Override\n    protected void handleOnNewIntent').replace('    @Override\n', '');
   const origin = section('    private static boolean isWebOrigin(Uri uri)', '\n}');
   assert.ok(load.includes('new WebViewListener()'));
@@ -1564,14 +1581,20 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
   const tempDir = mkdtempSync(join(tmpdir(), 'kiki-native-delivery-'));
   try {
     const javaSource = `import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.concurrent.*;
 import java.util.*;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 public class NativeDeliveryCheck {
 ${fields}
 ${load}
 ${clear}
 ${deliver}
 ${builder}
+${cryptoHelpers}
 ${override}
 ${origin}
     private static final String TRUSTED_ORIGIN = "trustedOrigin";
@@ -1587,18 +1610,30 @@ ${origin}
     private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
     private boolean matchesStoredHostId(String id, String host) { return id.equals("home-a") && host.equals("host-a"); }
     private String readPeerToken(String id, String origin) { return "fixture-peer-a"; }
+    private HandshakeResult fetchHandshake(String origin, String serverId, String grantId) {
+        return fetchHandshake(origin);
+    }
+    private HandshakeResult fetchHandshake(String origin, String serverId) {
+        return fetchHandshake(origin);
+    }
     private HandshakeResult fetchHandshake(String origin) {
         try {
             Reply r = replies.take();
             r.started.countDown();
             if (!r.release.await(5, TimeUnit.SECONDS)) throw new AssertionError("handshake release timeout");
-            return new HandshakeResult(true, false, r.home, r.host, "fixture");
+            return new HandshakeResult(true, false, r.home, r.host, "fixture", r.mutualVerified);
         } catch (InterruptedException e) { throw new RuntimeException(e); }
     }
     private static class Reply {
         final CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
         final String home, host;
-        Reply(String home, String host) { this.home = home; this.host = host; }
+        final boolean mutualVerified;
+        Reply(String home, String host) { this(home, host, true); }
+        Reply(String home, String host, boolean mutualVerified) {
+            this.home = home;
+            this.host = host;
+            this.mutualVerified = mutualVerified;
+        }
     }
     private static class WebView {
         volatile String url = ORIGIN + "/";
@@ -1804,6 +1839,47 @@ ${origin}
         if (!p5.view.deliveries.equals(Arrays.asList("Previous-A-document"))) {
             throw new AssertionError("Expected delivery to Previous-A-document, got: " + p5.view.deliveries);
         }
+
+        // Case 6: Replacement server B echoes matching Home A identity (home-a / host-a) but fails mutual proof;
+        // deliverCommittedToken must reject it, clear activeAuthServerId, navigate to launcher, and deliver zero token
+        NativeDeliveryCheck p6 = new NativeDeliveryCheck();
+        p6.pendingAuthEpoch = 12;
+        p6.activeAuthOrigin = ORIGIN;
+        p6.activeAuthServerId = "home-a";
+        p6.view.documentId = "Spoof-A-Without-Mutual-Proof";
+        Reply spoofedIdentityNoProof = new Reply("home-a", "host-a", false);
+        p6.replies.add(spoofedIdentityNoProof);
+        p6.deliverCommittedToken(p6.view, p6.view.url, false);
+        if (!spoofedIdentityNoProof.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Spoof callback not started");
+        spoofedIdentityNoProof.release.countDown();
+        Runnable spoofFallback = p6.view.posted.poll(5, TimeUnit.SECONDS);
+        if (spoofFallback == null) throw new AssertionError("Unverified mutual proof did not schedule fallback");
+        spoofFallback.run();
+        if (!p6.view.deliveries.isEmpty()) {
+            throw new AssertionError("Unverified mutual proof delivered token: " + p6.view.deliveries);
+        }
+        if (!"https://localhost/index.html#unreachable".equals(p6.view.url) || p6.activeAuthServerId != null) {
+            throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to launcher");
+        }
+
+        // Case 7: Actual Java crypto helpers (sha256Hex, hmacSha256Hex, generateHandshakeNonce, constantTimeEquals)
+        String keyHex = sha256Hex("fixture-peer-a");
+        if (keyHex == null || keyHex.length() != 64) throw new AssertionError("Invalid sha256Hex");
+        String nonce1 = generateHandshakeNonce();
+        String nonce2 = generateHandshakeNonce();
+        if (nonce1.length() != 32 || nonce1.equals(nonce2)) throw new AssertionError("Invalid nonce generation");
+        String reqProof1 = hmacSha256Hex(keyHex, "kiki-handshake-req-v1:" + nonce1);
+        String resProof1 = hmacSha256Hex(keyHex, "kiki-handshake-res-v1:" + nonce1 + ":home-a:host-a");
+        String resProof2 = hmacSha256Hex(keyHex, "kiki-handshake-res-v1:" + nonce2 + ":home-a:host-a");
+        if (reqProof1 == null || resProof1 == null || reqProof1.equals(resProof1)) {
+            throw new AssertionError("Domain separation failed between req and res HMAC");
+        }
+        if (!constantTimeEquals(resProof1, resProof1.toUpperCase())) {
+            throw new AssertionError("Expected constantTimeEquals to match valid response proof");
+        }
+        if (constantTimeEquals(resProof1, resProof2)) {
+            throw new AssertionError("Replayed response proof from nonce1 matched nonce2");
+        }
     }
 }
 `;
@@ -1829,5 +1905,323 @@ ${origin}
     assert.equal(ran.status, 0, `java failed: ${ran.stderr || ran.stdout}`);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+await test('public Web listener (anonymous handshake 401) pairs via short code and opens/reopens with mutual nonce-bound HMAC proof while leaking zero bearer token or digest to a same-origin replacement server (including identity spoof + replay)', async () => {
+  const { createHash, createHmac } = await import('node:crypto');
+  const identityA = {
+    homeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    hostId: 'public-web-host-a',
+    protocol: 1,
+  };
+  const identityB = {
+    homeId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    hostId: 'public-web-host-b',
+    protocol: 1,
+  };
+  const peerTokenA = 'peer-secret-token-for-public-web-listener-a';
+  const expectedDigestA = createHash('sha256').update(peerTokenA).digest('hex');
+
+  let activeServer = 'A';
+  let grantRevoked = false;
+  let capturedValidResponseProof = '';
+  const requestsToB = [];
+  const webListener = createServer((req, res) => {
+    const authHeader = req.headers.authorization ?? '';
+    const nonceHeader = String(req.headers['x-kiki-handshake-nonce'] ?? '').trim().toLowerCase();
+    const proofHeader = String(req.headers['x-kiki-handshake-proof'] ?? '').trim().toLowerCase();
+    const grantHeader = String(req.headers['x-kiki-handshake-grant'] ?? '').trim();
+    if (activeServer.startsWith('B')) {
+      requestsToB.push({
+        method: req.method ?? 'GET',
+        url: req.url ?? '/',
+        authorization: authHeader,
+        nonce: nonceHeader,
+        proof: proofHeader,
+        grant: grantHeader,
+      });
+    }
+    if (req.method === 'POST' && req.url === '/api/remote-connections/pair/claim') {
+      let raw = '';
+      req.on('data', (c) => {
+        raw += c;
+      });
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}');
+        if (activeServer === 'A' && body.code === '2345-6789') {
+          grantRevoked = false;
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(
+            JSON.stringify({
+              code: 0,
+              data: {
+                target: identityA,
+                targetLabel: 'Studio Public Web',
+                grantId: 'grant-web-a',
+                revision: 1,
+                peerToken: peerTokenA,
+              },
+            }),
+          );
+          return;
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ code: 40101, msg: 'invalid_pairing_code' }));
+      });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/remote-connections/handshake') {
+      if (activeServer === 'A') {
+        if (!grantRevoked && /^[a-f0-9]{32,128}$/.test(nonceHeader) && /^[a-f0-9]{64}$/.test(proofHeader)) {
+          const expectedReqProof = createHmac('sha256', expectedDigestA)
+            .update(`kiki-handshake-req-v1:${nonceHeader}`)
+            .digest('hex');
+          if (proofHeader === expectedReqProof && (!grantHeader || grantHeader === 'grant-web-a')) {
+            const resProof = createHmac('sha256', expectedDigestA)
+              .update(`kiki-handshake-res-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
+              .digest('hex');
+            capturedValidResponseProof = resProof;
+            res.writeHead(200, {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Cache-Control': 'no-store',
+              'x-kiki-handshake-proof': resProof,
+            });
+            res.end(
+              JSON.stringify({
+                code: 0,
+                data: {
+                  identity: identityA,
+                  serverId: 'srv-web-a',
+                  inboundEnabled: true,
+                },
+              }),
+            );
+            return;
+          }
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+        return;
+      }
+      if (activeServer === 'B-echo-digest') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityB,
+              serverId: 'srv-web-b',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      if (activeServer === 'B-spoof-identity-and-replay') {
+        // Replacement server B knows A's non-secret identityA and replays a previously captured
+        // valid x-kiki-handshake-proof header from an earlier session with A:
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'x-kiki-handshake-proof': capturedValidResponseProof,
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityA,
+              serverId: 'srv-web-a',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/meta') {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<!doctype html><html><body>public web gui</body></html>');
+  });
+
+  await new Promise((r) => {
+    webListener.listen(0, '127.0.0.1', r);
+  });
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const publicOrigin = `http://127.0.0.1:${webListener.address().port}`;
+    const storage = createMemoryStorage();
+    const nativeTokenVault = new Map();
+    const tokenReadEvents = [];
+    const saveToken = (serverId, token, origin) => {
+      nativeTokenVault.set(`${serverId}@${origin}`, token);
+      nativeTokenVault.set(serverId, token);
+    };
+    const getToken = async (serverId, origin) => {
+      tokenReadEvents.push({ serverId, origin, activeServer });
+      return nativeTokenVault.get(`${serverId}@${origin}`) ?? nativeTokenVault.get(serverId) ?? null;
+    };
+
+    // 1. Anonymous handshake on the public Web listener returns 401 (no identity exposed to unauthenticated scanners)
+    const anonProbe = await probeOriginHandshake(publicOrigin);
+    assert.equal(anonProbe.ok, true);
+    assert.equal(anonProbe.targetHomeId, undefined);
+
+    // 2. Pairing with short code 2345-6789 and immediately opening succeeds using mutual HMAC handshake proof
+    const page = await browser.newPage();
+    const pairAndOpen = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        origin: publicOrigin,
+        code: '2345-6789',
+        platform: 'android',
+        requireMutualProof: true,
+        saveToken,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(pairAndOpen.ok, true);
+    assert.equal(pairAndOpen.tokenDelivered, true);
+    assert.equal(capturedValidResponseProof.length, 64);
+    assert.deepEqual(
+      await page.evaluate(() => window.document.__kikiShellStagedCredential),
+      { origin: publicOrigin, token: peerTokenA },
+    );
+
+    // 3. Re-opening the saved computer succeeds using mutual HMAC challenge without sending expectedDigestA or peerTokenA on the wire
+    const keyForA = await computeHandshakeProof(peerTokenA);
+    assert.equal(keyForA, expectedDigestA);
+    const ch1 = await createMutualHandshakeChallenge({ handshakeKey: keyForA, grantId: 'grant-web-a' });
+    const ch2 = await createMutualHandshakeChallenge({ handshakeKey: keyForA, grantId: 'grant-web-a' });
+    assert.notEqual(ch1.nonce, ch2.nonce);
+    assert.notEqual(ch1.requestProof, ch2.requestProof);
+    assert.notEqual(ch1.requestProof, expectedDigestA);
+
+    const reopenSaved = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(reopenSaved.ok, true);
+    assert.equal(reopenSaved.tokenDelivered, true);
+
+    // 4. If the same public origin is replaced by another server B (401 on unknown proof), open refuses and leaks neither bearer token nor grant.digest
+    activeServer = 'B';
+    requestsToB.length = 0;
+    const readsBeforeB = tokenReadEvents.length;
+    const blockedOnB = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(blockedOnB.ok, false);
+    assert.equal(blockedOnB.reason, 'unreachable');
+    assert.equal(blockedOnB.tokenDelivered, false);
+    assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when pre-open handshake fails');
+    for (const req of requestsToB) {
+      assert.equal(req.authorization, '');
+      assert.equal(req.url.includes(peerTokenA), false);
+      assert.notEqual(req.proof, peerTokenA);
+      assert.notEqual(req.proof, expectedDigestA, 'static grant.digest must never be sent over the network');
+    }
+
+    // 5. Counterexample: Replacement server B echoes A's exact non-secret identity (homeId/hostId) AND replays
+    // a previously captured valid response proof from A. Both pre-open and post-commit mutual verification
+    // must reject it (fresh nonce mismatch) and deliver zero token!
+    activeServer = 'B-spoof-identity-and-replay';
+    requestsToB.length = 0;
+    const spoofedReplayPreOpen = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(spoofedReplayPreOpen.ok, false);
+    assert.equal(spoofedReplayPreOpen.reason, 'unreachable');
+    assert.equal(spoofedReplayPreOpen.tokenDelivered, false);
+    assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when B replays stale proof with A identity');
+
+    // Even if A answered pre-open and B took over right as the WebView committed a fresh document (mid-navigation swap to B):
+    await page.goto(reopenSaved.finalEntry);
+    const midFlightSpoofCommit = await deliverCommittedServerCredential(page, reopenSaved, {
+      requireMutualProof: true,
+    });
+    assert.equal(midFlightSpoofCommit.ok, false);
+    assert.equal(midFlightSpoofCommit.reason, 'unreachable');
+    assert.equal(midFlightSpoofCommit.tokenDelivered, false);
+    assert.equal(await page.evaluate(() => window.document.__kikiShellStagedCredential ?? null), null);
+    for (const req of requestsToB) {
+      assert.equal(req.authorization, '');
+      assert.notEqual(req.proof, expectedDigestA);
+      assert.notEqual(req.proof, peerTokenA);
+    }
+
+    // 6. Revoking the grant on A immediately causes reopen to fail mutual proof without leaking token
+    activeServer = 'A';
+    grantRevoked = true;
+    const afterRevoke = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterRevoke.ok, false);
+    assert.equal(afterRevoke.reason, 'unreachable');
+    assert.equal(afterRevoke.tokenDelivered, false);
+  } finally {
+    await browser.close();
+    webListener.close();
   }
 });

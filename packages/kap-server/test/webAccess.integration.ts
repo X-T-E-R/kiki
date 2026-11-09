@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { createKlient, createConnectionKlient, type HttpChannelOptions } from '@kiki/klient/http';
@@ -114,11 +114,57 @@ describe('shared daemon Web access', () => {
     await server.admission.setEnabled(true);
     const source = { homeId: randomUUID(), hostId: 'test-peer-host', protocol: 1 as const };
     const invitation = await server.admission.invite(source, 'Native peer'); const claim = await server.admission.claim(invitation.invitation, source);
+    const grantDigest = createHash('sha256').update(claim.grant).digest('hex');
+    const nonce = randomBytes(16).toString('hex');
+    const reqProof = createHmac('sha256', grantDigest).update(`kiki-handshake-req-v1:${nonce}`).digest('hex');
+    const expectedResProof = createHmac('sha256', grantDigest).update(`kiki-handshake-res-v1:${nonce}:${server.admission.identity.homeId}:${server.admission.identity.hostId}`).digest('hex');
+    const staticDigestHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { 'x-kiki-handshake-proof': grantDigest } });
+    expect(staticDigestHandshake.status).toBe(401);
+    const badProofHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { 'x-kiki-handshake-nonce': nonce, 'x-kiki-handshake-proof': '0'.repeat(64) } });
+    expect(badProofHandshake.status).toBe(401);
+    const proofHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { 'x-kiki-handshake-grant': claim.grantId, 'x-kiki-handshake-nonce': nonce, 'x-kiki-handshake-proof': reqProof } });
+    expect(proofHandshake.status).toBe(200);
+    expect(proofHandshake.headers.get('x-kiki-handshake-proof')).toBe(expectedResProof);
+    const proofHandshakeData = (await proofHandshake.json() as { data: { identity: { homeId: string }; targetLabel?: string } }).data;
+    expect(proofHandshakeData.identity.homeId).toBe(server.admission.identity.homeId);
+    expect(proofHandshakeData.targetLabel).toBeUndefined();
+    const pairCode = await owner('/api/remote-connections/inbound/pair-code', 'POST', { label: 'Mobile Web Pair', allowBridge: false }) as { code: string; suggestedEndpoints: string[] };
+    expect(pairCode.suggestedEndpoints).toContain(browser.origin);
+    const webPairClaim = await fetch(browser.origin + '/api/remote-connections/pair/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: pairCode.code, source: { homeId: randomUUID(), hostId: 'mobile-web-host', protocol: 1 }, sourceLabel: 'Mobile Phone', requestBridge: false }),
+    });
+    expect(webPairClaim.status).toBe(200);
+    const webPairData = (await webPairClaim.json() as { data: { grantId: string; peerToken: string; target: { homeId: string; hostId: string } } }).data;
+    const pairGrantDigest = createHash('sha256').update(webPairData.peerToken).digest('hex');
+    const reopenNonce = randomBytes(16).toString('hex');
+    const reopenReqProof = createHmac('sha256', pairGrantDigest).update(`kiki-handshake-req-v1:${reopenNonce}`).digest('hex');
+    const reopenExpectedResProof = createHmac('sha256', pairGrantDigest).update(`kiki-handshake-res-v1:${reopenNonce}:${server.admission.identity.homeId}:${server.admission.identity.hostId}`).digest('hex');
+    const reopenHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(reopenHandshake.status).toBe(200);
+    expect(reopenHandshake.headers.get('x-kiki-handshake-proof')).toBe(reopenExpectedResProof);
+    const directMutualHandshake = await fetch(base + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(directMutualHandshake.status).toBe(200);
+    expect(directMutualHandshake.headers.get('x-kiki-handshake-proof')).toBe(reopenExpectedResProof);
+    const pairedSessionRead = await fetch(browser.origin + '/api/sessions', { headers: { authorization: `Bearer ${webPairData.peerToken}` } });
+    expect(pairedSessionRead.status).toBe(200);
+    await server.admission.revoke(webPairData.grantId);
+    const revokedPairHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(revokedPairHandshake.status).toBe(401);
     const headers = { authorization: `Bearer ${token}`, 'x-kiki-connection-grant': claim.grant };
     expect((await fetch(browser.origin + '/api/sessions', { headers })).status).toBe(200);
     expect((await fetch(browser.origin + '/api/web-access', { headers })).status).toBe(403);
     const ws = new WebSocket(browser.origin.replace('http:', 'ws:') + '/api/klient/events', { headers }); sockets.push(ws); await once(ws, 'open');
     const closed = once(ws, 'close'); await server.admission.revoke(claim.grantId); await closed;
+    const revokedProofHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', { headers: { 'x-kiki-handshake-grant': claim.grantId, 'x-kiki-handshake-nonce': nonce, 'x-kiki-handshake-proof': reqProof } });
+    expect(revokedProofHandshake.status).toBe(401);
     expect((await fetch(base + '/api/meta', { headers: { authorization: `Bearer ${server.localOwnerToken}` } })).status).toBe(200);
   });
   it('keeps local client, sessions and the shared core alive while logout, revoke and off close browser sockets and downloads', async () => {

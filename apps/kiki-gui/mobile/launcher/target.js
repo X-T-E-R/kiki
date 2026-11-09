@@ -766,10 +766,136 @@ function isSameOriginResponse(res, expectedOrigin) {
   return true;
 }
 
+function randomHex(byteLength = 16) {
+  const bytes = new Uint8Array(byteLength);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < byteLength; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacSha256Hex(keyString, message) {
+  if (typeof keyString !== 'string' || keyString === '') return undefined;
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.importKey !== 'function' || typeof subtle.sign !== 'function') {
+    return undefined;
+  }
+  try {
+    const encoder = new TextEncoder();
+    const cryptoKey = await subtle.importKey(
+      'raw',
+      encoder.encode(keyString),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const sig = await subtle.sign('HMAC', cryptoKey, encoder.encode(message));
+    return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return undefined;
+  }
+}
+
+function constantTimeHexEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const cleanA = a.trim().toLowerCase();
+  const cleanB = b.trim().toLowerCase();
+  if (cleanA.length !== cleanB.length || cleanA.length === 0) return false;
+  let diff = 0;
+  for (let i = 0; i < cleanA.length; i += 1) {
+    diff |= (cleanA.codePointAt(i) ?? 0) ^ (cleanB.codePointAt(i) ?? 0);
+  }
+  return diff === 0;
+}
+
+/**
+ * Computes the one-way SHA-256 hex digest of a peer token (`grant.digest`).
+ * This digest is used locally as the HMAC key for mutual challenge-response
+ * handshake proofs (`kiki-handshake-req-v1` / `kiki-handshake-res-v1`) and is
+ * never transmitted over the network.
+ */
+export async function computeHandshakeProof(peerToken, nonce = '') {
+  if (typeof peerToken !== 'string' || peerToken.trim() === '') return undefined;
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== 'function') return undefined;
+  try {
+    const bytes = new TextEncoder().encode(peerToken);
+    const buf = await subtle.digest('SHA-256', bytes);
+    const keyHex = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+    if (typeof nonce === 'string' && /^[a-f0-9]{32,128}$/i.test(nonce.trim())) {
+      return await hmacSha256Hex(keyHex, `kiki-handshake-req-v1:${nonce.trim().toLowerCase()}`);
+    }
+    return keyHex;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Creates a fresh-nonce, domain-separated mutual handshake challenge/verifier
+ * keyed by `sha256(peerToken)` (`grant.digest`). Neither `peerToken` nor
+ * `grant.digest` is sent on the wire:
+ * - Request headers carry `x-kiki-handshake-nonce` and
+ *   `x-kiki-handshake-proof = HMAC(grant.digest, "kiki-handshake-req-v1:<nonce>")`
+ *   (plus optional `x-kiki-handshake-grant` for direct grant lookup).
+ * - Response verification requires `x-kiki-handshake-proof` matching
+ *   `HMAC(grant.digest, "kiki-handshake-res-v1:<nonce>:<homeId>:<hostId>")`
+ *   in constant time.
+ *
+ * Security boundary: Prevents an unverified or replaced same-origin server from
+ * spoofing a known `homeId`/`hostId` or replaying a previously captured response
+ * to obtain `peerToken`. Does not protect against an attacker who already controls
+ * the real domain/TLS endpoint and live-relays traffic to the legitimate server in
+ * real time.
+ */
+export async function createMutualHandshakeChallenge(input = {}) {
+  const rawKey =
+    typeof input.handshakeKey === 'string' && /^[a-f0-9]{64}$/i.test(input.handshakeKey.trim())
+      ? input.handshakeKey.trim().toLowerCase()
+      : typeof input.peerToken === 'string' && input.peerToken.trim() !== ''
+        ? await computeHandshakeProof(input.peerToken)
+        : undefined;
+  if (!rawKey) return undefined;
+  const nonce =
+    typeof input.nonce === 'string' && /^[a-f0-9]{32,128}$/i.test(input.nonce.trim())
+      ? input.nonce.trim().toLowerCase()
+      : randomHex(16);
+  const requestProof = await hmacSha256Hex(rawKey, `kiki-handshake-req-v1:${nonce}`);
+  if (!requestProof) return undefined;
+  const grantId =
+    typeof input.grantId === 'string' && input.grantId.trim() !== ''
+      ? input.grantId.trim()
+      : undefined;
+  return {
+    nonce,
+    grantId,
+    requestProof,
+    async verifyResponse(responseProof, targetHomeId, targetHostId = '') {
+      if (typeof responseProof !== 'string' || !/^[a-f0-9]{64}$/i.test(responseProof.trim())) {
+        return false;
+      }
+      if (typeof targetHomeId !== 'string' || targetHomeId.trim() === '') {
+        return false;
+      }
+      const expected = await hmacSha256Hex(
+        rawKey,
+        `kiki-handshake-res-v1:${nonce}:${targetHomeId.trim()}:${String(targetHostId ?? '').trim()}`,
+      );
+      if (!expected) return false;
+      return constantTimeHexEqual(responseProof, expected);
+    },
+  };
+}
+
 /**
  * Probes a Kiki server's zero-token handshake (`/api/remote-connections/handshake`)
  * with fallback to `/api/meta` for unauthenticated reachability and hints.
  * Never follows redirects, never mutates saved computers, and never attaches credentials.
+ * When a paired credential or `handshakeKey` is supplied, sends a fresh nonce +
+ * domain-separated HMAC challenge and sets `mutualProofVerified: true` only if the
+ * server returns a valid response HMAC bound to `(nonce, homeId, hostId)`.
  */
 export async function probeOriginHandshake(origin, options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -777,9 +903,23 @@ export async function probeOriginHandshake(origin, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const challenge = await createMutualHandshakeChallenge({
+      handshakeKey: options.handshakeKey ?? options.handshakeProof,
+      peerToken: options.peerToken,
+      grantId: options.grantId,
+      nonce: options.nonce,
+    });
+    const headers = { Accept: 'application/json' };
+    if (challenge) {
+      headers['x-kiki-handshake-nonce'] = challenge.nonce;
+      headers['x-kiki-handshake-proof'] = challenge.requestProof;
+      if (challenge.grantId) {
+        headers['x-kiki-handshake-grant'] = challenge.grantId;
+      }
+    }
     const handshakeRes = await fetchImpl(`${origin}/api/remote-connections/handshake`, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers,
       redirect: 'manual',
       signal: controller.signal,
     });
@@ -789,25 +929,52 @@ export async function probeOriginHandshake(origin, options = {}) {
     if (handshakeRes.ok) {
       const payload = await handshakeRes.json().catch(() => null);
       const data = payload?.data;
+      const targetHomeId =
+        typeof data?.identity?.homeId === 'string' && data.identity.homeId !== ''
+          ? data.identity.homeId
+          : typeof data?.target?.homeId === 'string' && data.target.homeId !== ''
+            ? data.target.homeId
+            : undefined;
+      const targetHostId =
+        typeof data?.identity?.hostId === 'string' && data.identity.hostId !== ''
+          ? data.identity.hostId
+          : typeof data?.target?.hostId === 'string' && data.target.hostId !== ''
+            ? data.target.hostId
+            : undefined;
+      let mutualProofVerified = false;
+      if (challenge && targetHomeId) {
+        const resProof =
+          typeof handshakeRes.headers?.get === 'function'
+            ? handshakeRes.headers.get('x-kiki-handshake-proof')
+            : handshakeRes.headers?.['x-kiki-handshake-proof'];
+        mutualProofVerified = await challenge.verifyResponse(
+          resProof ?? '',
+          targetHomeId,
+          targetHostId ?? '',
+        );
+      }
+      if (options.requireMutualProof && challenge && !mutualProofVerified) {
+        return {
+          ok: false,
+          reason: 'unverified_handshake_proof',
+          targetHomeId,
+          targetHostId,
+          mutualProofVerified: false,
+        };
+      }
       return {
         ok: true,
         targetLabel:
           typeof data?.targetLabel === 'string' && data.targetLabel !== ''
             ? data.targetLabel
             : undefined,
-        targetHomeId:
-          typeof data?.identity?.homeId === 'string' && data.identity.homeId !== ''
-            ? data.identity.homeId
-            : typeof data?.target?.homeId === 'string' && data.target.homeId !== ''
-              ? data.target.homeId
-              : undefined,
-        targetHostId:
-          typeof data?.identity?.hostId === 'string' && data.identity.hostId !== ''
-            ? data.identity.hostId
-            : typeof data?.target?.hostId === 'string' && data.target.hostId !== ''
-              ? data.target.hostId
-              : undefined,
+        targetHomeId,
+        targetHostId,
+        mutualProofVerified,
       };
+    }
+    if (options.requireMutualProof && challenge) {
+      return { ok: false, reason: 'unreachable', mutualProofVerified: false };
     }
     const metaRes = await fetchImpl(`${origin}/api/meta`, {
       method: 'GET',
@@ -1161,11 +1328,31 @@ export async function deliverCommittedServerCredential(target, resolved, options
     };
   }
   if (expectedHomeId) {
+    const grantId =
+      typeof resolved.server?.grantId === 'string' && resolved.server.grantId.trim() !== ''
+        ? resolved.server.grantId.trim()
+        : typeof resolved.grantId === 'string' && resolved.grantId.trim() !== ''
+          ? resolved.grantId.trim()
+          : undefined;
+    const handshakeKey = await computeHandshakeProof(token);
     const probeFn =
       options.probe ??
       resolved.probe ??
-      ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: options.fetchImpl }));
-    const probe = await probeFn(expectedOrigin);
+      ((targetOrigin, probeOptions) =>
+        probeOriginHandshake(targetOrigin, {
+          fetchImpl: options.fetchImpl,
+          handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof,
+          peerToken: probeOptions?.peerToken ?? token,
+          grantId: probeOptions?.grantId ?? grantId,
+          requireMutualProof: Boolean(probeOptions?.requireMutualProof),
+        }));
+    const probe = await probeFn(expectedOrigin, {
+      serverId: resolved.serverId ?? expectedHomeId,
+      grantId,
+      handshakeKey,
+      handshakeProof: handshakeKey,
+      requireMutualProof: Boolean(options.requireMutualProof ?? resolved.requireMutualProof),
+    });
     if (!probe?.ok || !probe.targetHomeId) {
       return {
         ok: false,
@@ -1410,10 +1597,44 @@ export async function resolveVerifiedServerOpen(storage, input) {
 
   if (isPairedTarget) {
     if (!claimedToken) {
+      const canProveVerifiedOrigin = Boolean(
+        existing && targetServerId && isServerOriginVerified(existing, origin),
+      );
+      const rawKey = input.handshakeKey ?? input.handshakeProof;
+      const handshakeKey =
+        typeof rawKey === 'string' && /^[a-f0-9]{64}$/i.test(rawKey.trim())
+          ? rawKey.trim().toLowerCase()
+          : undefined;
+      const grantId =
+        typeof existing?.grantId === 'string' && existing.grantId.trim() !== ''
+          ? existing.grantId.trim()
+          : typeof input.grantId === 'string' && input.grantId.trim() !== ''
+            ? input.grantId.trim()
+            : undefined;
+      const requireMutualProof = Boolean(
+        canProveVerifiedOrigin && (input.requireMutualProof || handshakeKey),
+      );
       const probeFn =
         input.probe ??
-        ((targetOrigin) => probeOriginHandshake(targetOrigin, { fetchImpl: input.fetchImpl }));
-      const probe = await probeFn(origin);
+        ((targetOrigin, probeOptions) =>
+          probeOriginHandshake(targetOrigin, {
+            fetchImpl: input.fetchImpl,
+            handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof ?? handshakeKey,
+            grantId: probeOptions?.grantId ?? grantId,
+            requireMutualProof: Boolean(probeOptions?.requireMutualProof ?? requireMutualProof),
+          }));
+      const probe = await probeFn(
+        origin,
+        canProveVerifiedOrigin
+          ? {
+              serverId: targetServerId,
+              grantId,
+              handshakeKey,
+              handshakeProof: handshakeKey,
+              requireMutualProof,
+            }
+          : undefined,
+      );
       if (existing && targetServerId) {
         const verified = verifySavedServerOrigin(storage, targetServerId, origin, probe);
         if (!verified.ok) {
@@ -1468,6 +1689,9 @@ export async function resolveVerifiedServerOpen(storage, input) {
     finalEntry,
     sessionToken:
       typeof sessionToken === 'string' && sessionToken !== '' ? sessionToken : undefined,
+    requireMutualProof: Boolean(
+      isPairedTarget && (input.requireMutualProof || input.handshakeKey || input.handshakeProof),
+    ),
     tokenAttached: false,
   };
 }

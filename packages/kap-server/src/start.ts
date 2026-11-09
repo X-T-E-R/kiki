@@ -655,9 +655,25 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('onRequest', async (request, reply) => {
     let path: string;
     try { path = decodeURIComponent(request.url.split('?', 1)[0]!); } catch { return authHook(request, reply); }
-    if ((request.method === 'POST' && path === '/api/remote-connections/pair/claim') || (request.method === 'GET' && path === '/api/remote-connections/handshake' && request.headers.authorization === undefined && !webRequests.has(request.raw))) {
+    if (request.method === 'POST' && path === '/api/remote-connections/pair/claim') {
       reply.header('cache-control', 'no-store');
       return;
+    }
+    if (request.method === 'GET' && path === '/api/remote-connections/handshake' && request.headers.authorization === undefined) {
+      const handshakeProof = admission.verifyHandshakeProof({
+        grantId: typeof request.headers['x-kiki-handshake-grant'] === 'string' ? request.headers['x-kiki-handshake-grant'] : undefined,
+        nonce: typeof request.headers['x-kiki-handshake-nonce'] === 'string' ? request.headers['x-kiki-handshake-nonce'] : undefined,
+        proof: typeof request.headers['x-kiki-handshake-proof'] === 'string' ? request.headers['x-kiki-handshake-proof'] : undefined,
+      });
+      if (handshakeProof !== undefined) {
+        reply.header('x-kiki-handshake-proof', handshakeProof);
+        reply.header('cache-control', 'no-store');
+        return;
+      }
+      if (!webRequests.has(request.raw)) {
+        reply.header('cache-control', 'no-store');
+        return;
+      }
     }
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
