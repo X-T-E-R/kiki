@@ -63,6 +63,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "KikiShell"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "cancelOpen", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "scanQr", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "consumePendingPair", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "probe", returnType: CAPPluginReturnPromise),
@@ -103,6 +104,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private var activeAuthServerId: String?
     private var pendingAuthEpoch: Int64 = 0
     private var documentNavEpoch: Int64 = 0
+    private var pendingOpenOpId: String?
+    private var pendingOpenCommitted: Bool = false
     private var currentDocumentNavNonce: String?
     private var deliveredDocumentNavNonce: String?
     private var urlObservation: NSKeyValueObservation?
@@ -334,6 +337,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let grantId = call.getString("grantId")
+        let opId = call.getString("opId")
         let cleanString = Self.stripTokenFromEntry(origin: origin, entry: entry)
         guard let cleanURL = URL(string: cleanString) else {
             call.reject("invalid_origin")
@@ -343,6 +347,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { return }
             self.pendingAuthEpoch += 1
             let callEpoch = self.pendingAuthEpoch
+            self.pendingOpenOpId = (opId?.isEmpty == false) ? opId : "open-\(callEpoch)"
+            self.pendingOpenCommitted = false
             Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId) { [weak self] ok, redirected, statusCode, homeId, hostId, _, mutualVerified in
                 let hostMatches = Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId)
                 if let failureReason = Self.classifyPairedHandshakeFailure(
@@ -368,9 +374,13 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     return
                 }
                 Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId)
-                UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
                 DispatchQueue.main.async {
-                    guard let self, self.pendingAuthEpoch == callEpoch else { return }
+                    guard let self, self.pendingAuthEpoch == callEpoch else {
+                        call.resolve(["ok": false, "reason": "aborted"])
+                        return
+                    }
+                    self.pendingOpenCommitted = true
+                    UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
                     self.pendingAuthOrigin = origin
                     self.pendingAuthServerId = serverId
                     self.activeAuthOrigin = origin
@@ -380,6 +390,27 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             }
         }
+    }
+
+    @objc func cancelOpen(_ call: CAPPluginCall) {
+        let opId = call.getString("opId")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                call.resolve(["ok": true, "cancelled": false])
+                return
+            }
+            let cancelled = self.cancelPendingOpen(opId: opId)
+            call.resolve(["ok": true, "cancelled": cancelled])
+        }
+    }
+
+    private func cancelPendingOpen(opId: String?) -> Bool {
+        guard let opId, !opId.isEmpty, opId == pendingOpenOpId, !pendingOpenCommitted else {
+            return false
+        }
+        pendingAuthEpoch += 1
+        pendingOpenOpId = nil
+        return true
     }
 
     @objc func forgetServer(_ call: CAPPluginCall) {
@@ -394,6 +425,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private func clearPendingAuth() {
         pendingAuthEpoch += 1
         documentNavEpoch += 1
+        pendingOpenOpId = nil
+        pendingOpenCommitted = false
         currentDocumentNavNonce = nil
         deliveredDocumentNavNonce = nil
         pendingAuthOrigin = nil
@@ -416,6 +449,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func clearPendingAuthIfCurrent(epoch: Int64) {
         if pendingAuthEpoch == epoch {
+            pendingOpenOpId = nil
+            pendingOpenCommitted = false
             pendingAuthOrigin = nil
             pendingAuthServerId = nil
         }

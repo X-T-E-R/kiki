@@ -1570,9 +1570,10 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
   }
   const fields = section('    private static final SecureRandom NONCE_RANDOM', '    @Override\n    public void load()');
   const load = section('    public void load() {', '    @PluginMethod\n    public void scanQr');
+  const openMethods = section('    @PluginMethod\n    public void open(PluginCall call)', '    @PluginMethod\n    public void forgetServer').replaceAll('    @PluginMethod\n', '');
   const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
   const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
-  const builder = section('    static String buildDocumentNavNonceScript', '    private HandshakeResult fetchHandshake');
+  const stripAndBuilder = section('    static String stripTokenFromEntry', '    private HandshakeResult fetchHandshake');
   const cryptoHelpers = section('    static String sha256Hex', '    private String resolveHandshakeKey');
   const override = section('    @Override\n    public Boolean shouldOverrideLoad(Uri url)', '    @Override\n    protected void handleOnNewIntent').replace('    @Override\n', '');
   const origin = section('    private static boolean isWebOrigin(Uri uri)', '\n}');
@@ -1591,9 +1592,10 @@ import javax.crypto.spec.SecretKeySpec;
 public class NativeDeliveryCheck {
 ${fields}
 ${load}
+${openMethods}
 ${clear}
 ${deliver}
-${builder}
+${stripAndBuilder}
 ${cryptoHelpers}
 ${override}
 ${origin}
@@ -1608,6 +1610,8 @@ ${origin}
     private void capturePairIntent(Object ignored) {}
     private Prefs prefs() { return new Prefs(); }
     private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
+    private boolean hasStoredToken(String id, String origin) { return isOriginVerified(id, origin); }
+    private void recordVerifiedOrigin(String id, String origin, String hostId, String grantId) {}
     private boolean matchesStoredHostId(String id, String host) { return id.equals("home-a") && host.equals("host-a"); }
     private String readPeerToken(String id, String origin) { return "fixture-peer-a"; }
     private HandshakeResult fetchHandshake(String origin, String serverId, String grantId) {
@@ -1703,7 +1707,27 @@ ${origin}
         WebHistoryItem(String url) { this.url = url; }
         String getUrl() { return url; }
     }
-    private static class Prefs { String getString(String k, String def) { return ORIGIN; } }
+    private static class Prefs {
+        String getString(String k, String def) { return ORIGIN; }
+        Editor edit() { return new Editor(); }
+        static class Editor {
+            Editor putString(String k, String v) { return this; }
+            void apply() {}
+        }
+    }
+    private static class JSObject {
+        final Map<String, Object> data = new HashMap<>();
+        JSObject put(String k, Object v) { data.put(k, v); return this; }
+    }
+    private static class PluginCall {
+        final Map<String, String> params;
+        final CompletableFuture<JSObject> resolved = new CompletableFuture<>();
+        final CompletableFuture<String> rejected = new CompletableFuture<>();
+        PluginCall(Map<String, String> params) { this.params = params; }
+        String getString(String k) { return params.get(k); }
+        void resolve(JSObject obj) { resolved.complete(obj); }
+        void reject(String msg) { rejected.complete(msg); }
+    }
     private static class Uri {
         final URI value;
         Uri(URI value) { this.value = value; }
@@ -1712,7 +1736,20 @@ ${origin}
         String getHost() { return value.getHost(); }
         String getUserInfo() { return value.getUserInfo(); }
         int getPort() { return value.getPort(); }
+        String getEncodedFragment() { return value.getRawFragment(); }
+        String getQueryParameter(String name) { return null; }
+        Set<String> getQueryParameterNames() { return Collections.emptySet(); }
+        List<String> getQueryParameters(String name) { return Collections.emptyList(); }
+        Builder buildUpon() { return new Builder(value); }
         public String toString() { return value.toString(); }
+        static class Builder {
+            final URI base;
+            Builder(URI base) { this.base = base; }
+            Builder encodedFragment(String f) { return this; }
+            Builder clearQuery() { return this; }
+            Builder appendQueryParameter(String k, String v) { return this; }
+            Uri build() { return new Uri(base); }
+        }
     }
     private static class JSONObject {
         static String quote(String s) { return "\\"" + s.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"") + "\\""; }
@@ -1947,6 +1984,86 @@ ${origin}
         String deliveredScript = p8.view.deliveredScripts.get(0);
         if (!deliveredScript.contains("__kikiShellDeliveredNonce===n") || !deliveredScript.contains("__kikiShellDeliveredNonce=n")) {
             throw new AssertionError("Expected buildCredentialDeliveryScript to guard duplicate same-nonce delivery: " + deliveredScript);
+        }
+
+        // Case 9: Native open() enters async fetchHandshake -> user switches computer (cancelOpen with opId) ->
+        // old handshake succeeds but MUST NOT loadUrl or overwrite activeAuth, and subsequent new open() succeeds normally.
+        NativeDeliveryCheck p9 = new NativeDeliveryCheck();
+        p9.view.url = "https://localhost/index.html";
+        p9.activeAuthOrigin = "http://192.168.1.99:5494";
+        p9.activeAuthServerId = "home-existing";
+        Reply inFlightOpenHandshake = new Reply("home-a", "host-a");
+        p9.replies.add(inFlightOpenHandshake);
+        Map<String, String> open1Params = new HashMap<>();
+        open1Params.put("opId", "op-auto-1");
+        open1Params.put("origin", ORIGIN);
+        open1Params.put("entry", ORIGIN + "/");
+        open1Params.put("serverId", "home-a");
+        open1Params.put("grantId", "grant-a");
+        PluginCall open1Call = new PluginCall(open1Params);
+        p9.open(open1Call);
+        if (!inFlightOpenHandshake.started.await(5, TimeUnit.SECONDS)) {
+            throw new AssertionError("Native open(op-auto-1) did not start fetchHandshake");
+        }
+        // User clicks Switch computer while native open handshake is in flight -> cancelOpen("op-auto-1")
+        Map<String, String> cancelParams = new HashMap<>();
+        cancelParams.put("opId", "op-auto-1");
+        PluginCall cancelCall = new PluginCall(cancelParams);
+        p9.cancelOpen(cancelCall);
+        JSObject cancelRes = cancelCall.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.TRUE.equals(cancelRes.data.get("cancelled"))) {
+            throw new AssertionError("Expected cancelOpen(op-auto-1) to cancel uncommitted open");
+        }
+        // Release the old handshake with a valid 200 mutual-verified response
+        inFlightOpenHandshake.release.countDown();
+        JSObject open1Res = open1Call.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(open1Res.data.get("ok")) || !"aborted".equals(open1Res.data.get("reason"))) {
+            throw new AssertionError("Expected cancelled open1 to resolve with reason=aborted, got: " + open1Res.data);
+        }
+        Runnable unexpectedPost = p9.view.posted.poll(200, TimeUnit.MILLISECONDS);
+        if (unexpectedPost != null) unexpectedPost.run();
+        if (!"https://localhost/index.html".equals(p9.view.url)) {
+            throw new AssertionError("Cancelled native open still called loadUrl: " + p9.view.url);
+        }
+        if (!"home-existing".equals(p9.activeAuthServerId)) {
+            throw new AssertionError("Cancelled native open clobbered existing activeAuthServerId: " + p9.activeAuthServerId);
+        }
+
+        // Subsequent new open("op-new-2") succeeds normally and loads the target entry
+        Reply nextOpenHandshake = new Reply("home-a", "host-a");
+        p9.replies.add(nextOpenHandshake);
+        Map<String, String> open2Params = new HashMap<>();
+        open2Params.put("opId", "op-new-2");
+        open2Params.put("origin", ORIGIN);
+        open2Params.put("entry", ORIGIN + "/");
+        open2Params.put("serverId", "home-a");
+        open2Params.put("grantId", "grant-a");
+        PluginCall open2Call = new PluginCall(open2Params);
+        p9.open(open2Call);
+        if (!nextOpenHandshake.started.await(5, TimeUnit.SECONDS)) {
+            throw new AssertionError("Subsequent open(op-new-2) did not start fetchHandshake");
+        }
+        // Cancelling with a stale opId ("op-auto-1") must NOT affect the new open ("op-new-2")
+        PluginCall staleCancelCall = new PluginCall(cancelParams);
+        p9.cancelOpen(staleCancelCall);
+        if (Boolean.TRUE.equals(staleCancelCall.resolved.get(5, TimeUnit.SECONDS).data.get("cancelled"))) {
+            throw new AssertionError("Stale opId cancelled the newer open");
+        }
+        nextOpenHandshake.release.countDown();
+        Runnable loadPost = p9.view.posted.poll(5, TimeUnit.SECONDS);
+        if (loadPost == null) throw new AssertionError("Subsequent open did not post loadUrl");
+        loadPost.run();
+        JSObject open2Res = open2Call.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.TRUE.equals(open2Res.data.get("ok")) || !(ORIGIN + "/").equals(p9.view.url)) {
+            throw new AssertionError("Subsequent open did not load expected URL: " + p9.view.url);
+        }
+        // Once committed, cancelOpen("op-new-2") returns false and preserves the established connection
+        Map<String, String> postCommitCancelParams = new HashMap<>();
+        postCommitCancelParams.put("opId", "op-new-2");
+        PluginCall postCommitCancelCall = new PluginCall(postCommitCancelParams);
+        p9.cancelOpen(postCommitCancelCall);
+        if (Boolean.TRUE.equals(postCommitCancelCall.resolved.get(5, TimeUnit.SECONDS).data.get("cancelled")) || !"home-a".equals(p9.activeAuthServerId)) {
+            throw new AssertionError("cancelOpen after commit must not revoke established connection");
         }
     }
 }
@@ -2818,10 +2935,13 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
         localStorage.setItem('kiki.shell.servers', JSON.stringify(saved));
         localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
         window.__openedPairedEntries = [];
+        window.__cancelledOpenOps = [];
         window.__probeCalls = [];
         window.__networkDown = true;
         window.__holdProbe = false;
+        window.__holdNativeOpen = false;
         window.__pendingProbeResolvers = [];
+        window.__pendingOpenResolvers = [];
         window.Capacitor = {
           isNativePlatform: () => true,
           nativePromise: async (_plugin, method, payload) => {
@@ -2845,7 +2965,16 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
                 mutualProofVerified: true,
               };
             }
+            if (method === 'cancelOpen') {
+              window.__cancelledOpenOps.push(payload?.opId);
+              return { ok: true, cancelled: true };
+            }
             if (method === 'open') {
+              if (window.__holdNativeOpen) {
+                return await new Promise((resolve) => {
+                  window.__pendingOpenResolvers.push({ payload, resolve });
+                });
+              }
               if (window.__networkDown) {
                 return { ok: false, reason: 'unreachable' };
               }
@@ -2982,6 +3111,41 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       );
       assert.equal(afterEditRace.serverValue, '192.168.1.77:5494');
       assert.equal(afterEditRace.buttonDisabled, false);
+
+      // Boundary 4: Native open in-flight handshake race — probe succeeds and KikiShell.open is called with opId,
+      // then user clicks Switch computer while native open is awaiting handshake -> launcher calls KikiShell.cancelOpen({ opId }) ->
+      // subsequent manual open on Computers tab succeeds cleanly:
+      await unreachablePairedPage.evaluate(() => {
+        window.__openedPairedEntries.length = 0;
+        window.__cancelledOpenOps.length = 0;
+        window.__pendingOpenResolvers.length = 0;
+        window.__holdProbe = false;
+        window.__holdNativeOpen = true;
+        window.__networkDown = false;
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
+        window.location.hash = '';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      await unreachablePairedPage.evaluate(() => {
+        window.location.hash = '#unreachable';
+      });
+      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      await unreachablePairedPage.evaluate(() => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await unreachablePairedPage.waitForFunction(() => window.__pendingOpenResolvers.length === 1);
+      const inFlightOpId = await unreachablePairedPage.evaluate(() => window.__pendingOpenResolvers[0]?.payload?.opId);
+      assert.ok(typeof inFlightOpId === 'string' && inFlightOpId.startsWith('open-'), 'KikiShell.open must receive a non-empty opId');
+      await unreachablePairedPage.click('#switch-computer');
+      const cancelledOps = await unreachablePairedPage.evaluate(() => window.__cancelledOpenOps);
+      assert.deepEqual(cancelledOps, [inFlightOpId], 'stopAutoReconnect must call KikiShell.cancelOpen with the exact in-flight opId');
+      await unreachablePairedPage.evaluate(() => {
+        window.__holdNativeOpen = false;
+        const pending = window.__pendingOpenResolvers.shift();
+        pending?.resolve({ ok: false, reason: 'aborted' });
+      });
+      await unreachablePairedPage.waitForTimeout(200);
+      assert.equal(await unreachablePairedPage.evaluate(() => document.querySelector('#view-computers').hidden), false);
       await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();

@@ -408,6 +408,7 @@ let autoReconnectFlight = false;
 let autoReconnectEpoch = 0;
 let autoReconnectAttempt = 0;
 let openFlightEpoch = 0;
+let openFlightOpId = null;
 let openFlightAbortController = null;
 const addressStatus = new Map();
 
@@ -417,9 +418,18 @@ function isNativeShell() {
 
 function cancelInFlightOpen() {
   openFlightEpoch += 1;
+  const activeOpId = openFlightOpId;
+  openFlightOpId = null;
   if (openFlightAbortController !== null) {
     openFlightAbortController.abort();
     openFlightAbortController = null;
+  }
+  if (activeOpId !== null && isNativeShell()) {
+    try {
+      void window.Capacitor.nativePromise('KikiShell', 'cancelOpen', { opId: activeOpId });
+    } catch {
+      /* ignore */
+    }
   }
   if (button.disabled) {
     button.disabled = false;
@@ -814,10 +824,12 @@ async function openServer(origin, entry, options = {}) {
 
   openFlightEpoch += 1;
   const callOpenEpoch = openFlightEpoch;
+  const callOpId = `open-${callOpenEpoch}-${Date.now()}`;
+  openFlightOpId = callOpId;
   const abortController = new AbortController();
   openFlightAbortController = abortController;
   const isStaleOpen = () => {
-    if (callOpenEpoch !== openFlightEpoch || abortController.signal.aborted) {
+    if (callOpenEpoch !== openFlightEpoch || openFlightOpId !== callOpId || abortController.signal.aborted) {
       return true;
     }
     if (options.fromAutoRecovery) {
@@ -892,6 +904,7 @@ async function openServer(origin, entry, options = {}) {
   if (isNativeShell()) {
     try {
       const res = await window.Capacitor.nativePromise('KikiShell', 'open', {
+        opId: callOpId,
         origin,
         entry: resolved.finalEntry,
         serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
@@ -899,10 +912,11 @@ async function openServer(origin, entry, options = {}) {
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
       });
-      if (isStaleOpen()) {
+      if (isStaleOpen() || res?.reason === 'aborted') {
         return;
       }
       if (!res || res.ok === false) {
+        if (openFlightOpId === callOpId) openFlightOpId = null;
         button.disabled = false;
         renderSavedServers();
         if (res?.reason === 'identity_mismatch' && targetServerId) {
@@ -928,12 +942,14 @@ async function openServer(origin, entry, options = {}) {
         }
         return;
       }
+      if (openFlightOpId === callOpId) openFlightOpId = null;
       stopAutoReconnect(true);
       return;
     } catch {
       if (isStaleOpen()) {
         return;
       }
+      if (openFlightOpId === callOpId) openFlightOpId = null;
       button.disabled = false;
       renderSavedServers();
       reportUnreachable(origin, {
