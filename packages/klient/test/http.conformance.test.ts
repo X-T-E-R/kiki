@@ -336,7 +336,7 @@ it('SendMessage keeps immutable downloadable attachments and freezes delivery fo
     const tool = main.accessor.get(ISendMessageTool);
     const delivery = live.accessor.get(ISessionDeliveryService);
     await writeFile(join(workDir, 'report.txt'), 'original immutable report');
-    await writeFile(join(homeDir, 'outside.txt'), 'not shared');
+    await writeFile(join(homeDir, 'outside.txt'), 'outside workspace report');
     const run = async (text: string, path?: string, to?: string) => {
       const resolution = await tool.resolveExecution({ text, to, attachments: path === undefined ? undefined : [{ path }] });
       if (!('execute' in resolution)) return resolution;
@@ -353,7 +353,10 @@ it('SendMessage keeps immutable downloadable attachments and freezes delivery fo
     await writeFile(join(workDir, 'report.txt'), 'changed after sending');
     const download = await klient.rest.sessions.media(created.id, receipt.attachments[0]!.blob_id);
     expect(new TextDecoder().decode(download.bytes)).toBe('original immutable report');
-    await expect(run('Escape', join(homeDir, 'outside.txt'))).rejects.toThrow('outside');
+    const outsideSent = await run('External report', join(homeDir, 'outside.txt'));
+    const outsideReceipt = JSON.parse(outsideSent.output as string) as { attachments: Array<{ blob_id: string }> };
+    const outsideDownload = await klient.rest.sessions.media(created.id, outsideReceipt.attachments[0]!.blob_id);
+    expect(new TextDecoder().decode(outsideDownload.bytes)).toBe('outside workspace report');
     await expect(run('Invalid recipient', undefined, 'someone')).rejects.toThrow('Recipient');
     await expect(run('   ')).rejects.toThrow('blank');
     delivery.endTurn();

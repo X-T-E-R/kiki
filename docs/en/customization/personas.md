@@ -63,7 +63,7 @@ When `SendMessage` confirms delivery to the user, its result tells the model to 
 
 The shipped `agent` profile exposes `SendMessage` in message mode and omits it in reply mode. A custom profile with an explicit `tools` allowlist must include it; delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so a delivery change applies to the next one.
 
-`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories or the persona's own area, not arbitrary filesystem paths. Set an attachment's `kind` to request `image`, `audio`, `voice`, or `video` delivery; omitting it preserves ordinary `file` delivery. A message can contain attachments without text:
+`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are stored as immutable copies from a readable host file path (workspace-relative or explicit absolute) or a session `file_id`. Set an attachment's `kind` to request `image`, `audio`, `voice`, or `video` delivery; omitting it preserves ordinary `file` delivery. A message can contain attachments without text:
 
 ```json
 {

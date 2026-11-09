@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -147,7 +147,7 @@ describe('SendMessage completion guidance', () => {
     expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
   });
 
-  it('sends a generated session media artifact by file_id without widening path roots', async () => {
+  it('sends a generated session media artifact by file_id and rejects missing or truncated file_id', async () => {
     await messageAgent();
     const data = Buffer.from('generated-media');
     await ctx.get(ISessionMediaStore).materialize({
@@ -161,6 +161,155 @@ describe('SendMessage completion guidance', () => {
     const wire = JSON.parse(result.output as string);
     expect(wire.delivered_to).toEqual(['user']);
     expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'image', mime_type: 'image/png', size: data.length })]);
+
+    const missingExecution = await ctx.get(ISendMessageTool).resolveExecution({ attachments: [{ file_id: 'f_missing_session_media' }] });
+    if (!('execute' in missingExecution)) throw new Error('Expected an executable tool.');
+    await expect(missingExecution.execute({ turnId: 0, toolCallId: 'missing-fid', signal: new AbortController().signal }))
+      .rejects.toThrow('Attachment file_id is not available in this session: f_missing_session_media');
+  });
+
+  it('copies readable attachments from workspace-relative paths, outside-workspace absolute paths, symlink targets outside workspace, and Chinese/space paths into blobs for single and batch sends while rejecting missing or directory paths', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'send-message-cwd-'));
+    const outsideDir = await mkdtemp(join(tmpdir(), 'send-message-outside-'));
+    dirs.push(cwd, outsideDir);
+
+    const relDir = join(cwd, '子目录 附件');
+    await mkdir(relDir, { recursive: true });
+    const relBytes = Buffer.from('relative-attachment-bytes-中文');
+    const relSubPath = join('子目录 附件', '说明 文档.txt');
+    await writeFile(join(cwd, relSubPath), relBytes);
+
+    const outsideSubDir = join(outsideDir, '外部 导出');
+    await mkdir(outsideSubDir, { recursive: true });
+    const outsideBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xaa, 0xbb]);
+    const outsideFilePath = join(outsideSubDir, '测试 图片 01.png');
+    await writeFile(outsideFilePath, outsideBytes);
+
+    const linkedDirPath = join(cwd, 'linked-outside-dir');
+    await symlink(outsideSubDir, linkedDirPath, process.platform === 'win32' ? 'junction' : 'dir');
+    const linkedFileInWorkspace = join(linkedDirPath, '测试 图片 01.png');
+
+    const batchOutsideFilePath = join(outsideDir, 'batch-report.md');
+    const batchOutsideBytes = Buffer.from('# External Batch Report\nLine 2');
+    await writeFile(batchOutsideFilePath, batchOutsideBytes);
+
+    const sentInputs: Parameters<IUserMessageRouter['sendMessage']>[0][] = [];
+    ctx = createTestAgent(
+      { cwd },
+      appServices((reg) => reg.definePartialInstance(IUserMessageRouter, {
+        listChannels: async () => [internalMessageChannel()],
+        sendMessage: async (input) => {
+          sentInputs.push(input);
+          return routeUserMessage(input, [internalMessageChannel()]);
+        },
+      })),
+    );
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+
+    const sessionMediaBytes = Buffer.from('session-media-artifact-bytes');
+    await ctx.get(ISessionMediaStore).materialize({
+      fileId: 'f_session_item',
+      name: 'artifact.json',
+      mimeType: 'application/json',
+      size: sessionMediaBytes.length,
+      stream: () => Readable.from([sessionMediaBytes]),
+    });
+
+    const singleRes = await execute({
+      text: 'Single send with external, relative, symlinked, and file_id attachments',
+      attachments: [
+        { path: outsideFilePath, kind: 'image', title: '外部图片.png' },
+        { path: relSubPath, title: '相对说明.txt' },
+        { path: linkedFileInWorkspace, kind: 'image' },
+        { file_id: 'f_session_item', title: '会话产物.json' },
+      ],
+    }, { turnId: 0, toolCallId: 'single-attach', signal: new AbortController().signal });
+
+    const singleWire = JSON.parse(singleRes.output as string) as {
+      delivered_to: string[];
+      attachments: Array<{ blob_id: string; path: string; title?: string; mime_type?: string; size?: number; kind?: string }>;
+    };
+    const realOutsideFile = await realpath(outsideFilePath);
+    const realRelFile = await realpath(join(cwd, relSubPath));
+    expect(singleWire.delivered_to).toEqual(['user']);
+    expect(singleWire.attachments).toHaveLength(4);
+    expect(singleWire.attachments[0]).toMatchObject({
+      path: realOutsideFile,
+      title: '外部图片.png',
+      mime_type: 'image/png',
+      size: outsideBytes.length,
+      kind: 'image',
+    });
+    expect(singleWire.attachments[1]).toMatchObject({
+      path: realRelFile,
+      title: '相对说明.txt',
+      mime_type: 'text/plain',
+      size: relBytes.length,
+      kind: 'file',
+    });
+    expect(singleWire.attachments[2]).toMatchObject({
+      path: realOutsideFile,
+      mime_type: 'image/png',
+      size: outsideBytes.length,
+      kind: 'image',
+    });
+    expect(singleWire.attachments[2]?.blob_id).toBe(singleWire.attachments[0]?.blob_id);
+    expect(singleWire.attachments[3]).toMatchObject({
+      title: '会话产物.json',
+      mime_type: 'application/json',
+      size: sessionMediaBytes.length,
+      kind: 'file',
+    });
+
+    const blobs = ctx.get(IBlobStore);
+    const blobScope = ctx.get(IAgentScopeContext).scope('blobs');
+    const readBlob = async (blobId: string): Promise<Uint8Array | undefined> => {
+      const hash = blobId.split(':').at(-1)!;
+      return blobs.get(blobScope, hash);
+    };
+    expect(Buffer.from((await readBlob(singleWire.attachments[0]!.blob_id))!)).toEqual(outsideBytes);
+    expect(Buffer.from((await readBlob(singleWire.attachments[1]!.blob_id))!)).toEqual(relBytes);
+    expect(Buffer.from((await readBlob(singleWire.attachments[3]!.blob_id))!)).toEqual(sessionMediaBytes);
+    expect(sentInputs).toHaveLength(1);
+    expect(sentInputs[0]?.attachments).toHaveLength(4);
+
+    const batchRes = await execute({
+      messages: [
+        { text: 'Batch item 0', attachments: [{ path: batchOutsideFilePath, title: '报告.md' }] },
+        { text: 'Batch item 1', attachments: [{ path: '子目录 附件/说明 文档.txt' }, { file_id: 'f_session_item' }] },
+      ],
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'batch-attach', signal: new AbortController().signal });
+    const batchWire = JSON.parse(batchRes.output as string) as {
+      messages: Array<{ index: number; delivery: string; attachments: Array<{ blob_id: string; path: string; size: number; mime_type: string }> }>;
+    };
+    expect(batchWire.messages).toHaveLength(2);
+    expect(batchWire.messages[0]?.attachments[0]).toMatchObject({
+      path: await realpath(batchOutsideFilePath),
+      mime_type: 'text/markdown',
+      size: batchOutsideBytes.length,
+    });
+    expect(Buffer.from((await readBlob(batchWire.messages[0]!.attachments[0]!.blob_id))!)).toEqual(batchOutsideBytes);
+    expect(batchWire.messages[1]?.attachments).toHaveLength(2);
+    expect(Buffer.from((await readBlob(batchWire.messages[1]!.attachments[0]!.blob_id))!)).toEqual(relBytes);
+    expect(Buffer.from((await readBlob(batchWire.messages[1]!.attachments[1]!.blob_id))!)).toEqual(sessionMediaBytes);
+    expect(batchRes.stopTurn).toBe(true);
+
+    const missingPathExec = await ctx.get(ISendMessageTool).resolveExecution({
+      attachments: [{ path: join(outsideDir, 'does-not-exist.png') }],
+    });
+    if (!('execute' in missingPathExec)) throw new Error('Expected an executable tool.');
+    await expect(missingPathExec.execute({ turnId: 0, toolCallId: 'missing-path', signal: new AbortController().signal }))
+      .rejects.toThrow('Attachment path does not exist:');
+
+    const dirPathExec = await ctx.get(ISendMessageTool).resolveExecution({
+      attachments: [{ path: outsideSubDir }],
+    });
+    if (!('execute' in dirPathExec)) throw new Error('Expected an executable tool.');
+    await expect(dirPathExec.execute({ turnId: 0, toolCallId: 'dir-path', signal: new AbortController().signal }))
+      .rejects.toThrow('Attachment is not a file:');
   });
 
   it('sends an ordered batch through one SendMessage execution and preserves media channel facts', async () => {

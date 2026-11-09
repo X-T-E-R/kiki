@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { createDecorator, IInstantiationService, type LiveRef, type ServiceIdentifier, type ServicesAccessor, ref } from '#/_base/di/instantiation';
@@ -16,7 +16,6 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 import {
   IRoomMessageRouter,
   IUserMessageRouter,
@@ -162,7 +161,6 @@ export class SendMessageTool implements ISendMessageTool {
   constructor(
     @ISessionContext private readonly session: ISessionContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
-    @ISessionWorkspaceInfo private readonly workspaceInfo: ISessionWorkspaceInfo,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -891,7 +889,6 @@ export class SendMessageTool implements ISendMessageTool {
 
   private async copyAttachments(inputs: readonly AttachmentInput[]): Promise<readonly MessageAttachmentReceipt[]> {
     if (inputs.length === 0) return [];
-    const roots = inputs.some((input) => 'path' in input) ? await this.allowedRoots() : [];
     const copied: MessageAttachmentReceipt[] = [];
     for (const input of inputs) {
       let path: string;
@@ -911,9 +908,6 @@ export class SendMessageTool implements ISendMessageTool {
         path = await this.fs.realpath(candidate).catch(() => {
           throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment path does not exist: ${input.path}`);
         });
-        if (!roots.some((root) => within(root, path))) {
-          throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `Attachment path is outside the workspace or Bot directory: ${input.path}`);
-        }
         const stat = await this.fs.stat(path);
         if (!stat.isFile) throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment is not a file: ${input.path}`);
         data = await this.fs.readBytes(path);
@@ -930,17 +924,6 @@ export class SendMessageTool implements ISendMessageTool {
       });
     }
     return copied;
-  }
-
-  private async allowedRoots(): Promise<readonly string[]> {
-    await this.workspaceInfo.ready;
-    const candidates = [this.session.cwd, ...this.workspaceInfo.additionalDirs, resolve(this.bootstrap.homeDir, 'bots')];
-    const roots: string[] = [];
-    for (const candidate of candidates) {
-      const path = await this.fs.realpath(candidate).catch(() => undefined);
-      if (path !== undefined) roots.push(path);
-    }
-    return roots;
   }
 }
 
@@ -1288,11 +1271,6 @@ async function readMediaFile(file: SessionMediaFile): Promise<Uint8Array> {
     offset += chunk.byteLength;
   }
   return data;
-}
-
-function within(root: string, path: string): boolean {
-  const suffix = relative(root, path);
-  return suffix === '' || (!suffix.startsWith('..') && !isAbsolute(suffix));
 }
 
 function messageKindForMime(mimeType: string): string {
