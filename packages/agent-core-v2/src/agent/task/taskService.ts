@@ -1498,6 +1498,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private resolveRestoredCleanup(info: AgentTaskInfo): AgentTaskInfo {
+    const previous = stripStaleCleanupRetryGuidance(info.stopReason);
     return {
       ...info,
       status: TERMINAL_STATUSES.has(info.status) ? info.status : 'lost',
@@ -1506,9 +1507,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       receipt: undefined,
       receiptVerification: 'invalid',
       stopReason: [
-        'Process cleanup was never confirmed before this process tracking ended, and the restart has no ownership handle for that tree. Cleanup cannot be confirmed or retried from here, and the final outcome stays uncertified.',
-        'Inspect the preserved output and check whether the recorded command still has running processes before starting replacement work.',
-        info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
+        'Process cleanup was never confirmed before restart, and no ownership handle remains; inspect preserved output and check for remaining processes before starting replacement work.',
+        previous === undefined ? undefined : `Previous diagnostic: ${previous}`,
       ].filter((part) => part !== undefined).join(' '),
     };
   }
@@ -1530,7 +1530,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     for (const [taskId, stored] of this.ghosts) {
       if (this.restoreDisposed) break;
       if (this.localTaskIds.has(taskId)) continue;
-      if (stored.cleanupPending === true) {
+      if (stored.kind === 'process' && stored.cleanupPending === true) {
         const resolved = this.resolveRestoredCleanup(stored);
         this.ghosts.set(taskId, resolved);
         changed = true;
@@ -1557,6 +1557,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             ...info,
             status: known.status,
             endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
+            cleanupPending: undefined,
             stopReason: known.stopReason,
           };
           try {
@@ -1574,6 +1575,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           }
           continue;
         }
+      }
+      if (info.cleanupPending === true) {
+        const resolved = this.resolveRestoredCleanup(info);
+        this.ghosts.set(taskId, resolved);
+        changed = true;
+        await persistence.writeTask(resolved);
+        lostTasks.push(resolved);
+        continue;
       }
       const updated: AgentTaskInfo = {
         ...info,
@@ -2513,6 +2522,14 @@ function generateTaskId(kind: string): string {
 function normalizeReason(reason: string | undefined): string | undefined {
   const trimmed = reason?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function stripStaleCleanupRetryGuidance(reason: string | undefined): string | undefined {
+  const normalized = normalizeReason(reason);
+  if (normalized === undefined) return undefined;
+  return normalizeReason(
+    normalized.replace(/^Task cleanup is unconfirmed;\s*retry TaskStop[^.]*\.\s*/u, ''),
+  );
 }
 
 function isSerializedUserCancellation(reason: string | undefined): boolean {

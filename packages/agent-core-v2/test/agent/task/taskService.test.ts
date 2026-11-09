@@ -1928,6 +1928,8 @@ describe('AgentTaskService', () => {
     );
     const runningCleanupTaskId = 'bash-stale001';
     const timedOutCleanupTaskId = 'bash-stale002';
+    const pausedAgentTaskId = 'agent-paused01';
+    const committedAgentTaskId = 'agent-done0001';
     await persistence.writeTask({
       taskId: runningCleanupTaskId,
       description: 'Run go test',
@@ -1957,15 +1959,61 @@ describe('AgentTaskService', () => {
       pid: 67460,
       exitCode: 1,
     });
+    await persistence.writeTask({
+      taskId: pausedAgentTaskId,
+      description: 'Paused subagent with unconfirmed descendant cleanup',
+      status: 'running',
+      detached: true,
+      startedAt: 1_794_250_000_000,
+      endedAt: null,
+      stopReason: 'Task cleanup is unconfirmed; retry TaskStop for the same task (agent-paused01) before replacing its work. os.process.kill_failed: cleanup deadline',
+      cleanupPending: true,
+      kind: 'agent',
+      agentId: 'agent-paused',
+    });
+    await persistence.writeTask({
+      taskId: committedAgentTaskId,
+      description: 'Subagent with durable completed outcome',
+      status: 'running',
+      detached: true,
+      startedAt: 1_794_250_000_000,
+      endedAt: null,
+      stopReason: 'Task cleanup is unconfirmed; retry TaskStop for the same task (agent-done0001) before replacing its work. os.process.kill_failed: cleanup deadline',
+      cleanupPending: true,
+      kind: 'agent',
+      agentId: 'agent-done',
+    });
 
     const freshIx = buildAgentIx('main', docs, bytes);
+    freshIx.stub(ISessionExecutionControl, {
+      ...runningExecution,
+      resumePoint: (id: string) => (id === 'agent-paused' ? ({ agentId: id } as never) : undefined),
+    });
+    freshIx.stub(ISessionMetadata, {
+      read: async () => ({
+        id: 'test-session',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: {
+          'agent-done': {
+            parentAgentId: 'main',
+            taskId: committedAgentTaskId,
+            status: 'completed',
+            resultSummary: 'subagent finished cleanly',
+            completedAt: 1_794_250_020_000,
+          },
+        },
+      }),
+    });
     const freshService = freshIx.get(IAgentTaskService);
     await (freshService as TaskServiceTestManager).loadFromDisk();
     const reconciled = await (freshService as TaskServiceTestManager).reconcile();
 
     expect(reconciled.map((info) => info.taskId)).toEqual(
-      expect.arrayContaining([runningCleanupTaskId, timedOutCleanupTaskId]),
+      expect.arrayContaining([runningCleanupTaskId, timedOutCleanupTaskId, committedAgentTaskId]),
     );
+    expect(reconciled.map((info) => info.taskId)).not.toContain(pausedAgentTaskId);
     expect(freshService.getTask(runningCleanupTaskId)).toMatchObject({
       taskId: runningCleanupTaskId,
       status: 'lost',
@@ -1974,11 +2022,12 @@ describe('AgentTaskService', () => {
       cleanupPending: undefined,
       receipt: undefined,
       receiptVerification: 'invalid',
-      stopReason: expect.stringContaining('Process cleanup was never confirmed before this process tracking ended'),
+      stopReason: expect.stringContaining('Process cleanup was never confirmed before restart, and no ownership handle remains'),
     });
     expect(freshService.getTask(runningCleanupTaskId)?.stopReason).toContain(
-      'Previous diagnostic: Task cleanup is unconfirmed',
+      'Previous diagnostic: os.process.kill_failed: Windows process helper did not confirm cleanup before its deadline.; details={"cleanupComplete":false,"phase":"deadline","pid":214628}',
     );
+    expect(freshService.getTask(runningCleanupTaskId)?.stopReason).not.toContain('retry TaskStop');
     expect(await persistence.readTask(runningCleanupTaskId)).toMatchObject({
       taskId: runningCleanupTaskId,
       status: 'lost',
@@ -1996,7 +2045,23 @@ describe('AgentTaskService', () => {
       cleanupPending: undefined,
       receipt: undefined,
       receiptVerification: 'invalid',
-      stopReason: expect.stringContaining('Process cleanup was never confirmed before this process tracking ended'),
+      stopReason: expect.stringContaining('Process cleanup was never confirmed before restart, and no ownership handle remains'),
+    });
+    expect(freshService.getTask(timedOutCleanupTaskId)?.stopReason).not.toContain('retry TaskStop');
+    expect(freshService.getTask(pausedAgentTaskId)).toMatchObject({
+      taskId: pausedAgentTaskId,
+      status: 'running',
+      agentId: 'agent-paused',
+      cleanupPending: true,
+    });
+    expect(freshService.getTask(committedAgentTaskId)).toMatchObject({
+      taskId: committedAgentTaskId,
+      status: 'completed',
+      agentId: 'agent-done',
+      endedAt: 1_794_250_020_000,
+      cleanupPending: undefined,
+      receiptVerification: 'verified',
+      stopReason: undefined,
     });
     expect(freshService.list(true)).toEqual([]);
   });
