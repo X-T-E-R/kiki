@@ -1,14 +1,29 @@
 /**
  * Preview workspace tab state — the pure reducer behind the resident preview
- * panel. Tab identity is a host file path, a built-in skill name, or a panel
+ * panel. Tab identity is a host file path, a canonical session-media
+ * attachment, an external web URL, a built-in skill name, or a panel
  * descriptor; ordering is user-controlled via drag reorder. Kept framework-free so tab semantics
  * (activate-on-reopen, neighbor activation on close, bounded reorder) are
  * unit-testable without a DOM.
  */
 
+import type { MediaRef } from '@kiki/session-core/composer/media';
+
 export interface FileTab {
   readonly kind: 'file';
   readonly path: string;
+}
+
+export interface AttachmentTab {
+  readonly kind: 'attachment';
+  readonly item: MediaRef;
+  readonly sessionId?: string;
+}
+
+export interface WebTab {
+  readonly kind: 'web';
+  readonly url: string;
+  readonly title?: string;
 }
 
 export interface PanelTab {
@@ -22,7 +37,7 @@ export interface SkillTab {
   readonly name: string;
 }
 
-export type PreviewTab = FileTab | PanelTab | SkillTab;
+export type PreviewTab = FileTab | AttachmentTab | WebTab | PanelTab | SkillTab;
 
 export interface PreviewTabsState {
   /** Open tabs, in strip order. */
@@ -36,6 +51,12 @@ export const EMPTY_PREVIEW_TABS: PreviewTabsState = { tabs: [], active: null };
 export function previewTabKey(tab: PreviewTab | string): string {
   if (typeof tab === 'string') return tab;
   if (tab.kind === 'file') return tab.path;
+  if (tab.kind === 'attachment') {
+    const id = tab.item.fileId ?? tab.item.blobHash ?? tab.item.url ?? tab.item.name ?? '';
+    const sourceSuffix = tab.item.sourceId === undefined ? '' : `:${tab.item.sourceId}`;
+    return `attachment:${tab.sessionId ?? ''}:${id}${sourceSuffix}`;
+  }
+  if (tab.kind === 'web') return `web:${tab.url}`;
   return tab.kind === 'panel' ? `panel:${tab.agentId}` : `skill:builtin:${tab.name}`;
 }
 
@@ -52,7 +73,11 @@ export function openPreviewTab(
   const key = previewTabKey(tab);
   const existingIndex = state.tabs.findIndex((t) => previewTabKey(t) === key);
   if (existingIndex !== -1) {
-    if (tab.kind === 'panel' && tab.title && state.tabs[existingIndex]?.kind === 'panel') {
+    if (
+      (tab.kind === 'panel' && tab.title && state.tabs[existingIndex]?.kind === 'panel') ||
+      (tab.kind === 'web' && tab.title && state.tabs[existingIndex]?.kind === 'web') ||
+      (tab.kind === 'attachment' && state.tabs[existingIndex]?.kind === 'attachment')
+    ) {
       const updated = [...state.tabs];
       updated[existingIndex] = tab;
       return { tabs: updated, active: key };

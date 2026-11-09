@@ -2,10 +2,13 @@ import { Readable } from 'node:stream';
 import type { FastifyReply } from 'fastify';
 
 import {
+  IBootstrapService,
+  IWorkspaceService,
+} from '@kiki/agent-core-v2';
+import {
   ISessionMediaStore,
   type SessionMediaFile,
 } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
-import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import {
   FileErrors,
   IFileService,
@@ -283,6 +286,95 @@ async function openPersistedToolMedia(
           yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
         },
   };
+}
+
+const SOURCE_ID_RE = /^[a-f0-9]{64}$/u;
+
+interface PersistedAttachmentSourceRecord {
+  readonly version?: number;
+  readonly sourceId?: string;
+  readonly sessionId?: string;
+  readonly agentId?: string;
+  readonly blobId?: string;
+  readonly path?: string;
+}
+
+export async function resolveTrustedSessionAttachmentHostSource(
+  core: Scope,
+  sessionId: string,
+  fileId: string,
+  _service?: TranscriptService,
+  signal?: AbortSignal,
+  sourceId?: string,
+): Promise<{ readonly path: string; readonly workspaceRoot?: string } | undefined> {
+  signal?.throwIfAborted();
+  let summary: Awaited<ReturnType<ISessionIndex['get']>>;
+  try {
+    summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  } catch {
+    summary = undefined;
+  }
+  if (summary === undefined) return undefined;
+  let workspaceRoot = summary.cwd;
+  if (workspaceRoot === undefined) {
+    try {
+      workspaceRoot = (await core.accessor.get(IWorkspaceService).get(summary.workspaceId))?.root;
+    } catch {
+      workspaceRoot = undefined;
+    }
+  }
+  const sessionScope = sessionScopeOf(
+    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+    sessionId,
+  );
+  if (!fileId.startsWith('blobref:')) {
+    try {
+      const store = new ScopedMediaStore(
+        `${sessionScope}/media`,
+        core.accessor.get(IFileSystemStorageService),
+        core.accessor.get(IAtomicDocumentStore),
+      );
+      const file = await store.open(fileId);
+      if (file?.path !== undefined && file.path.length > 0) {
+        return { path: file.path, workspaceRoot };
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+  const ref = parseMediaBlobRef(fileId);
+  if (ref?.kind !== 'agent') return undefined;
+  if (sourceId === undefined || !SOURCE_ID_RE.test(sourceId)) return undefined;
+  const agentScope = agentScopeOf(sessionScope, ref.agentId);
+  let documents: IAtomicDocumentStore | undefined;
+  try {
+    documents = core.accessor.get(IAtomicDocumentStore);
+  } catch {
+    documents = undefined;
+  }
+  if (documents === undefined) return undefined;
+  try {
+    const sourceRecord = await documents.get<PersistedAttachmentSourceRecord>(
+      `${agentScope}/blobs`,
+      `sources/${sourceId}.json`,
+    );
+    if (
+      sourceRecord !== undefined &&
+      sourceRecord.version === 1 &&
+      sourceRecord.sourceId === sourceId &&
+      sourceRecord.sessionId === sessionId &&
+      sourceRecord.agentId === ref.agentId &&
+      sourceRecord.blobId === fileId &&
+      typeof sourceRecord.path === 'string' &&
+      sourceRecord.path.length > 0
+    ) {
+      return { path: sourceRecord.path, workspaceRoot };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 async function openStagedUpload(

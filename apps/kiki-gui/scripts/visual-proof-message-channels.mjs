@@ -85,6 +85,7 @@ async function noteTexts(page, blockId) {
 const page = await browser.newPage({ viewport: { width: 1440, height: 2400 }, deviceScaleFactor: 1 });
 page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`); });
 await page.addInitScript(() => {
+  if (window !== window.top) return;
   localStorage.setItem('kiki.locale', 'zh');
   localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
   // Use the browser's anchor-download path (the one a browser without the File
@@ -148,19 +149,90 @@ try {
   report.media.audio = played;
   check(typeof played.currentTime === 'number' && played.currentTime > 0, `the voice note did not play: ${JSON.stringify(played)}`);
 
-  await page.locator(`${delivered} [data-message-media="file"] [data-message-attachment-open]`).click();
-  await page.waitForSelector('[role="dialog"]', { timeout: STEP_TIMEOUT });
-  const dialog = page.locator('[role="dialog"]');
-  const documentText = await dialog.innerText();
+  await page.locator(`${delivered} [data-message-attachment-subtype="markdown"] [data-message-attachment-open]`).click();
+  await page.waitForSelector('[data-preview-workspace] [data-attachment-preview]', { timeout: STEP_TIMEOUT });
+  const previewPane = page.locator('[data-preview-workspace] [data-attachment-preview]').first();
+  await page.waitForFunction(
+    () => (document.querySelector('[data-preview-workspace] [data-attachment-preview]')?.textContent ?? '').includes('周四冻结'),
+    null,
+    { timeout: STEP_TIMEOUT },
+  );
+  const documentText = await previewPane.innerText();
   report.media.document = { preview: documentText.includes('周四冻结') };
   check(documentText.includes('周四冻结'), 'the delivered document has no readable preview');
   const download = page.waitForEvent('download', { timeout: STEP_TIMEOUT });
-  await dialog.getByRole('button', { name: '下载' }).click();
+  await previewPane.locator('[data-download-file]').first().click();
   const saved = await download.catch((error) => ({ suggestedFilename: () => String(error) }));
   report.media.download = { name: saved.suggestedFilename() };
   check(saved.suggestedFilename().endsWith('.md'), `the document did not download: ${saved.suggestedFilename()}`);
-  await page.keyboard.press('Escape');
-  await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: STEP_TIMEOUT }).catch(() => undefined);
+
+  await page.route('https://status.example.com/**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: '<!doctype html><html lang="zh"><head><meta charset="utf-8"/><title>Release 0.31 Status</title></head><body style="margin:0;padding:24px;font-family:system-ui,-apple-system,sans-serif;background:#faf8f5;color:#1e1d1a"><div style="border:1px solid #e2ddd5;border-radius:12px;padding:18px;background:#fff"><div style="font-family:monospace;font-size:11px;color:#2f6f4e;letter-spacing:.08em">STATUS.EXAMPLE.COM</div><h1 style="font-size:18px;margin:6px 0 8px">Release 0.31 · All Checks Green</h1><p style="font-size:13px;color:#5c5852;margin:0">Desktop packaging, SEA sidecar, and timeline preview regression checks passed.</p></div></body></html>',
+    });
+  });
+
+  // 2a-ii. HTML attachment opens in PreviewWorkspace with relative CSS/JS and isolated origin.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(`${delivered} [data-message-attachment-subtype="html"]`).scrollIntoViewIfNeeded();
+  await page.locator(`${delivered} [data-message-attachment-subtype="html"] [data-message-attachment-open]`).click();
+  await page.waitForSelector('[data-preview-workspace] iframe[data-preview-html]', { timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(400);
+  await shot(page, '02a-html-preview-workspace-1440');
+
+  // 2a-iii. PDF attachment opens in PreviewWorkspace via DocumentTabView.
+  await page.locator(`${delivered} [data-message-attachment-subtype="pdf"] [data-message-attachment-open]`).click();
+  await page.waitForSelector('[data-preview-workspace] [data-preview-document] [data-preview-asset]', { timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(400);
+  await shot(page, '02a-pdf-preview-workspace-1440');
+
+  // 2a-iv. Unsupported archive attachment shows honest unsupported notice + download in PreviewWorkspace.
+  await page.locator(`${delivered} [data-message-attachment-subtype="archive"] [data-message-attachment-open]`).click();
+  await page.waitForSelector('[data-preview-workspace] [data-preview-unsupported]', { timeout: STEP_TIMEOUT });
+  await shot(page, '02a-unsupported-preview-workspace-1440');
+
+  // 2a-v. Web link card opens WebTab in PreviewWorkspace (opaque origin sandbox, isolated from parent).
+  await page.locator(`${delivered} [data-message-web-preview] [data-message-web-open]`).first().click();
+  await page.waitForSelector('[data-preview-workspace] iframe[data-preview-web]', { timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(400);
+  const webSandbox = await page.locator('[data-preview-workspace] iframe[data-preview-web]').getAttribute('sandbox');
+  check((webSandbox ?? '').includes('allow-scripts') && !(webSandbox ?? '').includes('allow-same-origin'),
+    `WebTab iframe sandbox must not include allow-same-origin: ${webSandbox}`);
+  const webFrame = page.frames().find((f) => f.url().startsWith('https://status.example.com'));
+  check(webFrame !== undefined, 'WebTab iframe frame not found');
+  if (webFrame !== undefined) {
+    const webIsolation = await webFrame.evaluate(() => {
+      let parentAccessible = false;
+      let storageAccessible = false;
+      try { parentAccessible = window.parent.document !== undefined; } catch {}
+      try { storageAccessible = window.localStorage.getItem('kiki.locale') !== null; } catch {}
+      return { origin: window.origin, parentAccessible, storageAccessible };
+    });
+    report.dom.webIsolation = webIsolation;
+    check(webIsolation.origin === 'null', `WebTab iframe origin must be opaque null: ${webIsolation.origin}`);
+    check(webIsolation.parentAccessible === false, 'WebTab iframe must not access parent document');
+    check(webIsolation.storageAccessible === false, 'WebTab iframe must not access same-origin localStorage');
+  }
+  await shot(page, '02a-web-preview-workspace-1440');
+
+  // 2a-vi. Process view check: verify specialized cards and PreviewWorkspace in Process view.
+  await page.locator('[data-timeline-view-option="process"]').click();
+  await page.waitForSelector('[data-timeline-view-option="process"][aria-checked="true"]', { timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(300);
+  await page.locator(`${delivered} [data-message-attachment-subtype="html"] [data-message-attachment-open]`).click();
+  await page.waitForTimeout(300);
+  await shot(page, '02a-process-html-preview-1440');
+  await page.locator('[data-timeline-view-option="message"]').click();
+  await page.waitForSelector('[data-message-view-row="message"]', { timeout: STEP_TIMEOUT });
+
+  // Close all tabs in PreviewWorkspace before continuing.
+  await page.locator('[data-preview-workspace] [role="tab"]').first().click({ button: 'right' });
+  const closeAllBtn = page.locator('[data-preview-tab-menu] button').nth(2);
+  if (await closeAllBtn.count() > 0) await closeAllBtn.click();
+  await page.waitForSelector('[data-preview-workspace]', { state: 'detached', timeout: STEP_TIMEOUT }).catch(() => undefined);
+  await page.setViewportSize({ width: 1440, height: 2400 });
 
   // 2b. A clip plays through a playback grant, and closing the preview gives
   //     that grant back. The chat and the reader's draft stay where they were.
@@ -208,7 +280,7 @@ try {
   report.media.revokeSummary = { minted: playbackLog?.minted.length ?? 0, released };
   check(released > 0, `closing the preview did not release the grant: ${JSON.stringify(revocations)}`);
   check(released === (playbackLog?.minted.length ?? 0), `a minted grant leaked: ${released} of ${playbackLog?.minted.length ?? 0} released`);
-  const keptDraft = await page.locator('[data-composer-input]').inputValue();
+  const keptDraft = await page.locator('[data-composer-input]').evaluate((el) => ('value' in el ? el.value : el.textContent ?? ''));
   report.dom.draft = { kept: keptDraft === draft, sameSession: page.url() === sessionBefore };
   check(keptDraft === draft, `the draft was lost while the preview opened: ${keptDraft}`);
   check(page.url() === sessionBefore, 'opening the clip moved the session');
@@ -301,8 +373,35 @@ try {
   check(narrow.overflow <= 1, `the narrow layout overflows by ${narrow.overflow}px`);
   check(narrow.audio >= 1, 'the voice note is missing at 390');
   await shot(page, '05-delivered-media-390');
+  await page.locator(`${delivered} [data-message-attachment-subtype="html"]`).scrollIntoViewIfNeeded().catch(() => undefined);
+  await page.locator(`${delivered} [data-message-attachment-subtype="html"] [data-message-attachment-open]`).click();
+  await page.waitForSelector('[data-preview-workspace] iframe[data-preview-html]', { timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(400);
+  await shot(page, '05b-preview-workspace-390');
+  await page.locator('[data-preview-collapse]').click().catch(async () => {
+    await page.locator('[data-preview-workspace] [role="tab"] button[aria-label]').first().click();
+  });
+  await page.waitForTimeout(300);
   await page.locator('[data-block-id="tool-t5-send"]').scrollIntoViewIfNeeded().catch(() => undefined);
   await shot(page, '06-pending-and-partial-390');
+
+  // 9. English locale at desktop width: verify localized subtype labels and PreviewWorkspace.
+  const enPage = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  await enPage.addInitScript(() => {
+    if (window !== window.top) return;
+    localStorage.setItem('kiki.locale', 'en');
+    localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
+  });
+  await enPage.goto(url(`/s/${SESSION}`), { waitUntil: 'domcontentloaded' });
+  await enPage.waitForSelector('[data-message-view-row="message"]', { timeout: STEP_TIMEOUT });
+  await enPage.locator(`${delivered} [data-message-attachment-subtype="html"]`).scrollIntoViewIfNeeded();
+  await enPage.locator(`${delivered} [data-message-attachment-subtype="html"] [data-message-attachment-open]`).click();
+  await enPage.waitForSelector('[data-preview-workspace] iframe[data-preview-html]', { timeout: STEP_TIMEOUT });
+  await enPage.waitForTimeout(300);
+  await enPage.locator(`${delivered} [data-message-attachment-subtype="html"]`).scrollIntoViewIfNeeded();
+  await enPage.waitForTimeout(300);
+  await shot(enPage, '07-delivered-media-en-1440');
+  await enPage.close();
 } catch (error) {
   errors.push(`walk: ${error.message.split('\n')[0]}`);
 } finally {

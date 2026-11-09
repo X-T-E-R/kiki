@@ -2,11 +2,22 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import type { Scope } from '@kiki/agent-core-v2';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  IAppendLogStore,
+  IAtomicDocumentStore,
+  IBootstrapService,
+  IFileSystemStorageService,
+  IHostFileSystem,
+  ISessionIndex,
+  IWorkspaceService,
+  type Scope,
+  type WireRecord,
+} from '@kiki/agent-core-v2';
+import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerHtmlPreviewRoutes, HTML_PREVIEW_OPAQUE_CSP } from '../src/routes/htmlPreview';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
-import { randomUUID } from 'node:crypto';
 import { createOriginHook, isOriginAllowed } from '../src/middleware/origin';
 import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
 import { ConnectionAudience } from '../src/services/connections/audience';
@@ -216,7 +227,7 @@ it('serves remote-host bytes through a local capability and revokes on connectio
 });
 
 it('requires target-owner authorization rather than treating peer credentials as a host-root grant', async () => {
-  const audience = new ConnectionAudience({ authorize: () => ({ id: 'peer-grant', revision: 1 }), attach: () => () => {} } as unknown as ConnectionAdmission, 'owner-token', async () => true, () => 'example-space');
+  const audience = new ConnectionAudience({ matchBearer: () => ({ id: 'peer-grant', revision: 1 }), authorize: () => ({ id: 'peer-grant', revision: 1 }), attach: () => () => {} } as unknown as ConnectionAdmission, 'owner-token', async () => true, () => 'example-space');
   const app = Fastify();
   app.addHook('onRequest', async (request, reply) => { await audience.authorize('peer-token', request, reply); });
   registerHtmlPreviewRoutes(app, { accessor: { get: () => ({ realpath: () => { throw new Error('must not open peer host root'); } }) } } as unknown as Scope, {} as RemoteConnectionManager);
@@ -416,5 +427,546 @@ describe('remote HTML refusals through the real connection manager', () => {
     await expect(f.manager.forward(f.record.id, { operation: 'htmlPreviewResource', params: { previewId: 'fixture' } }, lease.signal)).rejects.toMatchObject({ status: 403 });
     expect(cancelled).toBe(true); expect(pulls).toBeLessThanOrEqual(2);
     expect(lease.signal.aborted).toBe(true); lease.release();
+  });
+});
+
+describe('canonical session HTML attachment preview', () => {
+  async function sessionHtmlAttachmentFixture() {
+    const root = await mkdtemp(join(tmpdir(), 'html-session-preview-'));
+    const outside = await mkdtemp(join(tmpdir(), 'html-session-outside-'));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    cleanups.push(() => rm(outside, { recursive: true, force: true }));
+    await mkdir(join(root, 'slides'), { recursive: true });
+    await mkdir(join(root, 'slides-b'), { recursive: true });
+    await mkdir(join(root, 'shared'), { recursive: true });
+    await writeFile(join(root, 'slides/style.css'), 'body{color:#b4491d}');
+    await writeFile(join(root, 'slides-b/style.css'), 'body{color:#2b6cb0}');
+    await writeFile(join(root, 'shared/app.js'), 'window.deckReady=true;');
+    await writeFile(join(outside, 'secret.js'), 'window.secretLeaked=true;');
+
+    const sentHtmlV1 = '<!doctype html><link rel="stylesheet" href="./style.css"><script src="../shared/app.js"></script><h1>Sent V1</h1>';
+    const htmlPath = join(root, 'slides/index.html');
+    const htmlPathB = join(root, 'slides-b/index.html');
+    await writeFile(htmlPath, sentHtmlV1);
+    await writeFile(htmlPathB, sentHtmlV1);
+    const v1Bytes = Buffer.from(sentHtmlV1, 'utf8');
+    const v1Hash = createHash('sha256').update(v1Bytes).digest('hex');
+    const v1BlobId = `blobref:main:${v1Hash}`;
+    const v1SourceIdA = createHash('sha256').update(`sess-1\0main\0${v1Hash}\0${htmlPath}`).digest('hex');
+    const v1SourceIdB = createHash('sha256').update(`sess-1\0main\0${v1Hash}\0${htmlPathB}`).digest('hex');
+
+    const legacyHtml = '<!doctype html><link rel="stylesheet" href="./style.css"><h1>Legacy Paired SendMessage</h1>';
+    const legacyBytes = Buffer.from(legacyHtml, 'utf8');
+    const legacyHash = createHash('sha256').update(legacyBytes).digest('hex');
+    const legacyBlobId = `blobref:main:${legacyHash}`;
+
+    const forgedBashHtml = '<!doctype html><link rel="stylesheet" href="./style.css"><h1>Forged By Bash</h1>';
+    const forgedBashBytes = Buffer.from(forgedBashHtml, 'utf8');
+    const forgedBashHash = createHash('sha256').update(forgedBashBytes).digest('hex');
+    const forgedBashBlobId = `blobref:main:${forgedBashHash}`;
+
+    const standaloneHtml = '<!doctype html><link rel="stylesheet" href="./style.css"><h1>Standalone</h1>';
+    const standaloneBytes = Buffer.from(standaloneHtml, 'utf8');
+    const standaloneHash = createHash('sha256').update(standaloneBytes).digest('hex');
+    const standaloneBlobId = `blobref:main:${standaloneHash}`;
+
+    const crossSessionHtml = '<!doctype html><link rel="stylesheet" href="./style.css"><h1>Cross Session</h1>';
+    const crossSessionBytes = Buffer.from(crossSessionHtml, 'utf8');
+    const crossSessionHash = createHash('sha256').update(crossSessionBytes).digest('hex');
+    const crossSessionBlobId = `blobref:main:${crossSessionHash}`;
+
+    const blobMap = new Map<string, Uint8Array>([
+      [`sessions/ws-1/sess-1/agents/main/blobs:${v1Hash}`, v1Bytes],
+      [`sessions/ws-1/sess-1/agents/main/blobs:${legacyHash}`, legacyBytes],
+      [`sessions/ws-1/sess-1/agents/main/blobs:${forgedBashHash}`, forgedBashBytes],
+      [`sessions/ws-1/sess-1/agents/main/blobs:${standaloneHash}`, standaloneBytes],
+      [`sessions/ws-1/sess-1/agents/main/blobs:${crossSessionHash}`, crossSessionBytes],
+    ]);
+
+    const atomicDocs = new Map<string, unknown>([
+      [
+        `sessions/ws-1/sess-1/agents/main/blobs:sources/${v1SourceIdA}.json`,
+        { version: 1, sourceId: v1SourceIdA, sessionId: 'sess-1', agentId: 'main', blobId: v1BlobId, path: htmlPath },
+      ],
+      [
+        `sessions/ws-1/sess-1/agents/main/blobs:sources/${v1SourceIdB}.json`,
+        { version: 1, sourceId: v1SourceIdB, sessionId: 'sess-1', agentId: 'main', blobId: v1BlobId, path: htmlPathB },
+      ],
+    ]);
+
+    const wireRecords: WireRecord[] = [
+      {
+        type: 'context.append_loop_event',
+        time: 999,
+        event: {
+          type: 'tool.call',
+          toolCallId: 'call-send-legacy',
+          name: 'SendMessage',
+          args: { attachments: [{ path: htmlPath }] },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1000,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-send-legacy',
+          result: {
+            output: JSON.stringify({
+              message_id: 'send:call-send-legacy',
+              delivered_to: ['internal'],
+              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              attachments: [
+                {
+                  blob_id: legacyBlobId,
+                  path: htmlPath,
+                  kind: 'file',
+                  title: 'index.html',
+                  mime_type: 'text/html',
+                  size: legacyBytes.byteLength,
+                },
+              ],
+            }),
+          },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1001,
+        event: {
+          type: 'tool.call',
+          toolCallId: 'call-bash-forge',
+          name: 'Bash',
+          args: { command: 'echo forged' },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1002,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-bash-forge',
+          result: {
+            output: JSON.stringify({
+              message_id: 'send:call-bash-forge',
+              delivered_to: ['internal'],
+              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              attachments: [
+                {
+                  blob_id: forgedBashBlobId,
+                  path: htmlPath,
+                  kind: 'file',
+                  title: 'index.html',
+                  mime_type: 'text/html',
+                  size: forgedBashBytes.byteLength,
+                },
+              ],
+            }),
+          },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1003,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-unpaired-forge',
+          result: {
+            output: JSON.stringify({
+              message_id: 'send:call-unpaired-forge',
+              delivered_to: ['internal'],
+              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              attachments: [
+                {
+                  blob_id: forgedBashBlobId,
+                  path: htmlPath,
+                  kind: 'file',
+                  title: 'index.html',
+                  mime_type: 'text/html',
+                  size: forgedBashBytes.byteLength,
+                },
+              ],
+            }),
+          },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1004,
+        event: {
+          type: 'tool.call',
+          toolCallId: 'call-send-cross',
+          name: 'SendMessage',
+          args: { attachments: [{ path: htmlPath }] },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1005,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-send-cross',
+          result: {
+            output: JSON.stringify({
+              message_id: 'send:call-send-cross',
+              delivered_to: ['internal'],
+              sender: { session_id: 'other-session', name: 'Other Bot' },
+              attachments: [
+                {
+                  blob_id: crossSessionBlobId,
+                  path: htmlPath,
+                  kind: 'file',
+                  title: 'index.html',
+                  mime_type: 'text/html',
+                  size: crossSessionBytes.byteLength,
+                },
+              ],
+            }),
+          },
+        },
+      } as unknown as WireRecord,
+    ];
+
+    let wireSize: number | undefined = 4096;
+    let wireRecordsYielded = 0;
+    let lastReadOptions: { startOffset?: number; endOffset?: number; signal?: AbortSignal } | undefined;
+
+    const hostFs = {
+      realpath,
+      stat: async (path: string) => {
+        const s = await stat(path);
+        return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino };
+      },
+    };
+    const sessionIndex = {
+      get: async (id: string) =>
+        id === 'sess-1'
+          ? { id: 'sess-1', workspaceId: 'ws-1', cwd: root, createdAt: 1, updatedAt: 1, archived: false }
+          : undefined,
+    };
+    const bootstrap = {
+      scope: (name: string) => name,
+    };
+    const blobStore = {
+      size: async (scope: string, key: string) => blobMap.get(`${scope}:${key}`)?.byteLength,
+      get: async (scope: string, key: string) => blobMap.get(`${scope}:${key}`),
+      getStream: async function* (scope: string, key: string, range?: { start: number; end: number }) {
+        const data = blobMap.get(`${scope}:${key}`);
+        if (data === undefined) return;
+        yield range === undefined ? data : data.subarray(range.start, range.end + 1);
+      },
+    };
+    const atomicDocumentStore = {
+      get: async (scope: string, key: string) => atomicDocs.get(`${scope}:${key}`),
+      set: async (scope: string, key: string, value: unknown) => {
+        atomicDocs.set(`${scope}:${key}`, value);
+      },
+    };
+    const storageService = {
+      size: async (scope: string, key: string) =>
+        scope === 'sessions/ws-1/sess-1/agents/main' && key === 'wire.jsonl' ? wireSize : undefined,
+    };
+    const appendLogStore = {
+      read: async function* (
+        scope: string,
+        key: string,
+        options?: { startOffset?: number; endOffset?: number; signal?: AbortSignal; onRecordBytes?: (bytes: number) => void },
+      ) {
+        lastReadOptions = options;
+        if (scope === 'sessions/ws-1/sess-1/agents/main' && key === 'wire.jsonl') {
+          for (const rec of wireRecords) {
+            options?.signal?.throwIfAborted();
+            options?.onRecordBytes?.(256);
+            wireRecordsYielded += 1;
+            yield rec;
+          }
+        }
+      },
+    };
+    const workspaceService = {
+      get: async (id: string) => (id === 'ws-1' ? { id: 'ws-1', root } : undefined),
+    };
+
+    const core = {
+      accessor: {
+        get: (token: unknown) => {
+          if (token === IHostFileSystem) return hostFs;
+          if (token === ISessionIndex) return sessionIndex;
+          if (token === IBootstrapService) return bootstrap;
+          if (token === IBlobStore) return blobStore;
+          if (token === IAtomicDocumentStore) return atomicDocumentStore;
+          if (token === IFileSystemStorageService) return storageService;
+          if (token === IAppendLogStore) return appendLogStore;
+          if (token === IWorkspaceService) return workspaceService;
+          throw new Error(`Unexpected token: ${String(token)}`);
+        },
+      },
+    } as unknown as Scope;
+
+    const app = Fastify();
+    app.addHook('onRequest', createOriginHook({}));
+    app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
+    registerHtmlPreviewRoutes(app, core, {} as RemoteConnectionManager, {
+      registeredRoots: async () => [root],
+    });
+    cleanups.push(() => app.close());
+
+    return {
+      app,
+      root,
+      outside,
+      htmlPath,
+      htmlPathB,
+      sentHtmlV1,
+      v1BlobId,
+      v1SourceIdA,
+      v1SourceIdB,
+      legacyHtml,
+      legacyBlobId,
+      forgedBashHtml,
+      forgedBashBlobId,
+      standaloneHtml,
+      standaloneBlobId,
+      crossSessionHtml,
+      crossSessionBlobId,
+      wireRecords,
+      setWireSize: (next: number | undefined) => {
+        wireSize = next;
+      },
+      getWireRecordsYielded: () => wireRecordsYielded,
+      resetWireMetrics: () => {
+        wireRecordsYielded = 0;
+        lastReadOptions = undefined;
+      },
+      getLastReadOptions: () => lastReadOptions,
+    };
+  }
+
+  it('serves the sent canonical blob after the host entry HTML is modified, using the persisted SendMessage attachment source without scanning wire', async () => {
+    const f = await sessionHtmlAttachmentFixture();
+    await writeFile(f.htmlPath, '<!doctype html><h1>Modified On Host V2</h1>');
+    f.resetWireMetrics();
+
+    const opened = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.v1BlobId,
+        source_id: f.v1SourceIdA,
+        name: 'index.html',
+      },
+    });
+    expect(opened.statusCode, opened.body).toBe(200);
+    expect(f.getWireRecordsYielded()).toBe(0);
+    const { url } = opened.json().data as { url: string };
+
+    const entryResponse = await f.app.inject(url);
+    expect(entryResponse.statusCode).toBe(200);
+    expect(entryResponse.body).toBe(f.sentHtmlV1);
+    expect(entryResponse.body).not.toContain('Modified On Host V2');
+
+    const cssResponse = await f.app.inject(new URL('./style.css', url).pathname);
+    expect(cssResponse.statusCode).toBe(200);
+    expect(cssResponse.body).toBe('body{color:#b4491d}');
+
+    const jsResponse = await f.app.inject(new URL('../shared/app.js', url).pathname);
+    expect(jsResponse.statusCode).toBe(200);
+    expect(jsResponse.body).toBe('window.deckReady=true;');
+
+    const outsideResponse = await f.app.inject(new URL('../../secret.js', url).pathname);
+    expect(outsideResponse.statusCode).toBe(404);
+  });
+
+  it('keeps identical HTML blobs sent from different directories isolated by source_id and rejects mismatched or forged source_id / path overrides', async () => {
+    const f = await sessionHtmlAttachmentFixture();
+    f.resetWireMetrics();
+
+    const openA = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.v1BlobId,
+        source_id: f.v1SourceIdA,
+        name: 'index.html',
+      },
+    });
+    expect(openA.statusCode, openA.body).toBe(200);
+    const urlA = (openA.json().data as { url: string }).url;
+    expect((await f.app.inject(urlA)).body).toBe(f.sentHtmlV1);
+    expect((await f.app.inject(new URL('./style.css', urlA).pathname)).body).toBe('body{color:#b4491d}');
+
+    const openB = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.v1BlobId,
+        source_id: f.v1SourceIdB,
+        name: 'index.html',
+      },
+    });
+    expect(openB.statusCode, openB.body).toBe(200);
+    const urlB = (openB.json().data as { url: string }).url;
+    expect((await f.app.inject(urlB)).body).toBe(f.sentHtmlV1);
+    expect((await f.app.inject(new URL('./style.css', urlB).pathname)).body).toBe('body{color:#2b6cb0}');
+
+    const reopenA = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.v1BlobId,
+        source_id: f.v1SourceIdA,
+        path: f.htmlPathB,
+        root: join(f.root, 'slides-b'),
+        name: 'index.html',
+      },
+    });
+    expect(reopenA.statusCode, reopenA.body).toBe(200);
+    const urlReopenA = (reopenA.json().data as { url: string }).url;
+    expect((await f.app.inject(new URL('./style.css', urlReopenA).pathname)).body).toBe('body{color:#b4491d}');
+
+    const mismatchedBlob = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.standaloneBlobId,
+        source_id: f.v1SourceIdB,
+        path: f.htmlPathB,
+        name: 'index.html',
+      },
+    });
+    expect(mismatchedBlob.statusCode, mismatchedBlob.body).toBe(200);
+    const urlMismatched = (mismatchedBlob.json().data as { url: string }).url;
+    expect((await f.app.inject(urlMismatched)).body).toBe(f.standaloneHtml);
+    expect((await f.app.inject(new URL('./style.css', urlMismatched).pathname)).statusCode).toBe(404);
+    expect(f.getWireRecordsYielded()).toBe(0);
+  });
+
+  it('opens legacy blobref attachments without source_id as single-file canonical HTML even when a recent tail receipt sent identical bytes from another directory (A older than 32 MiB tail, B recent)', async () => {
+    const f = await sessionHtmlAttachmentFixture();
+    f.setWireSize(32 * 1024 * 1024);
+    f.wireRecords.push(
+      {
+        type: 'context.append_loop_event',
+        time: 1010,
+        event: {
+          type: 'tool.call',
+          toolCallId: 'call-send-recent-b',
+          name: 'SendMessage',
+          args: { attachments: [{ path: f.htmlPathB }] },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        time: 1011,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-send-recent-b',
+          result: {
+            output: JSON.stringify({
+              message_id: 'send:call-send-recent-b',
+              delivered_to: ['internal'],
+              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              attachments: [
+                {
+                  blob_id: f.v1BlobId,
+                  path: f.htmlPathB,
+                  kind: 'file',
+                  title: 'index.html',
+                  mime_type: 'text/html',
+                  size: Buffer.byteLength(f.sentHtmlV1),
+                },
+              ],
+            }),
+          },
+        },
+      } as unknown as WireRecord,
+    );
+    f.resetWireMetrics();
+
+    const oldAWithoutSourceId = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.v1BlobId,
+        name: 'index.html',
+      },
+    });
+    expect(oldAWithoutSourceId.statusCode, oldAWithoutSourceId.body).toBe(200);
+    expect(f.getWireRecordsYielded()).toBe(0);
+    const oldAUrl = (oldAWithoutSourceId.json().data as { url: string }).url;
+    expect((await f.app.inject(oldAUrl)).body).toBe(f.sentHtmlV1);
+    expect((await f.app.inject(new URL('./style.css', oldAUrl).pathname)).statusCode).toBe(404);
+
+    const legacyWithoutSourceId = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.legacyBlobId,
+        name: 'index.html',
+      },
+    });
+    expect(legacyWithoutSourceId.statusCode, legacyWithoutSourceId.body).toBe(200);
+    expect(f.getWireRecordsYielded()).toBe(0);
+    const legacyUrl = (legacyWithoutSourceId.json().data as { url: string }).url;
+    expect((await f.app.inject(legacyUrl)).body).toBe(f.legacyHtml);
+    expect((await f.app.inject(new URL('./style.css', legacyUrl).pathname)).statusCode).toBe(404);
+
+    const bashForged = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.forgedBashBlobId,
+        name: 'index.html',
+      },
+    });
+    expect(bashForged.statusCode, bashForged.body).toBe(200);
+    expect(f.getWireRecordsYielded()).toBe(0);
+    const bashForgedUrl = (bashForged.json().data as { url: string }).url;
+    expect((await f.app.inject(bashForgedUrl)).body).toBe(f.forgedBashHtml);
+    expect((await f.app.inject(new URL('./style.css', bashForgedUrl).pathname)).statusCode).toBe(404);
+  });
+
+  it('ignores caller-supplied path/root overrides and isolates cross-session or pathless blobs as single-file entries', async () => {
+    const f = await sessionHtmlAttachmentFixture();
+
+    const forged = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.standaloneBlobId,
+        name: 'index.html',
+        path: join(f.outside, 'secret.js'),
+        root: f.outside,
+        workspace_root: f.outside,
+      },
+    });
+    expect(forged.statusCode, forged.body).toBe(200);
+    const forgedUrl = (forged.json().data as { url: string }).url;
+    expect((await f.app.inject(forgedUrl)).body).toBe(f.standaloneHtml);
+    expect((await f.app.inject(new URL('./style.css', forgedUrl).pathname)).statusCode).toBe(404);
+    expect((await f.app.inject(new URL('./secret.js', forgedUrl).pathname)).statusCode).toBe(404);
+
+    const cross = await f.app.inject({
+      method: 'POST',
+      url: '/api/fs:html-preview',
+      payload: {
+        session_id: 'sess-1',
+        file_id: f.crossSessionBlobId,
+        name: 'index.html',
+      },
+    });
+    expect(cross.statusCode, cross.body).toBe(200);
+    const crossUrl = (cross.json().data as { url: string }).url;
+    expect((await f.app.inject(crossUrl)).body).toBe(f.crossSessionHtml);
+    expect((await f.app.inject(new URL('./style.css', crossUrl).pathname)).statusCode).toBe(404);
   });
 });

@@ -301,7 +301,12 @@ export async function registerApiV1Routes(
         core,
         opts.transcriptService,
       );
-      registerDocumentPreviewRoutes(apiV1 as unknown as Parameters<typeof registerDocumentPreviewRoutes>[0], core, opts.allowExternalHostDocumentPaths === true);
+      registerDocumentPreviewRoutes(
+        apiV1 as unknown as Parameters<typeof registerDocumentPreviewRoutes>[0],
+        core,
+        opts.allowExternalHostDocumentPaths === true,
+        opts.transcriptService,
+      );
       registerFsRoutes(apiV1 as unknown as Parameters<typeof registerFsRoutes>[0], core);
       registerGuiStoreRoutes(apiV1 as unknown as Parameters<typeof registerGuiStoreRoutes>[0], opts.guiStore);
       registerShortcutRoutes(apiV1 as unknown as Parameters<typeof registerShortcutRoutes>[0], opts.guiStore);

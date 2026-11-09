@@ -404,7 +404,11 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
     return <InternalLink to={href}>{children}</InternalLink>;
   }
   const url = href ?? '';
+  const canPreviewWeb = preview?.openWeb !== undefined && /^https?:\/\//iu.test(url);
   const entries: MiniMenuEntry[] = [
+    ...(canPreviewWeb
+      ? [{ key: 'open-preview', label: t('file.openPreview'), run: () => { preview?.openWeb?.(url); } }]
+      : []),
     { key: 'open-link', label: t('link.open'), run: () => openExternalUrl(host, url, t('common.popupBlocked')) },
     { key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(url) },
   ];

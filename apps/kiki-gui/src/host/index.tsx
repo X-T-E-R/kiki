@@ -7,6 +7,7 @@ import { tauriHost } from './tauri';
 import { isVscodeWebview, vscodeHost } from './vscode';
 
 export * from './host';
+export * from './external';
 export { browserHost } from './browser';
 export { tauriHost } from './tauri';
 export { vscodeHost } from './vscode';

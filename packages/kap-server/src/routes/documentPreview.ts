@@ -5,7 +5,6 @@ import type { FastifyRequest } from 'fastify';
 import {
   Error2,
   ErrorCodes,
-  IFileService,
   IRuntimeResolver,
   ISessionContext,
   ISessionWorkspaceContext,
@@ -14,7 +13,8 @@ import {
   IPluginService,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { TranscriptService } from '../services/transcript/transcriptService';
+import { openSessionMedia } from './sessionMedia';
 import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
 import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import type { DocumentPreviewRequest, DocumentPreviewResponse } from '@kiki/protocol';
@@ -94,7 +94,7 @@ interface OpenedPreviewFile {
 const MAX_OFFICE_PNG_BYTES = 8 * 1024 * 1024;
 const PNG_MAGIC = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, core: Scope, allowExternalHostPaths = true): void {
+export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, core: Scope, allowExternalHostPaths = true, transcriptService?: TranscriptService): void {
   let pluginHost: IPluginHostService | undefined;
   try {
     pluginHost = core.accessor.get(IPluginHostService);
@@ -144,7 +144,7 @@ export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, cor
         authenticatedAuthorization(request) !== undefined && peerAudience(request) === undefined;
       let opened: OpenedPreviewFile | undefined;
       try {
-        opened = await openPreviewFile(core, typedReq.params.session_id, typedReq.body, allowHostPath);
+        opened = await openPreviewFile(core, typedReq.params.session_id, typedReq.body, allowHostPath, transcriptService);
         if (!opened.sessionExists) {
           typedReply.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', typedReq.id));
           return;
@@ -386,28 +386,44 @@ export async function settleReleases(releases: readonly (() => void | Promise<vo
   if (errors.length > 1) throw new AggregateError(errors, 'document preview release failed');
 }
 
-async function openPreviewFile(core: Scope, sessionId: string, request: DocumentPreviewRequest, allowHostPath: boolean): Promise<OpenedPreviewFile> {
-  const operation = await acquireSessionOperation(core, sessionId, 'document-preview');
-  if (operation.handle === undefined) return { sessionExists: false, dispose: () => operation.dispose() };
+async function openPreviewFile(
+  core: Scope,
+  sessionId: string,
+  request: DocumentPreviewRequest,
+  allowHostPath: boolean,
+  transcriptService?: TranscriptService,
+): Promise<OpenedPreviewFile> {
   if (request.source.kind === 'session-media') {
-    const opened = await operation.handle.accessor.get(ISessionMediaStore).open(request.source.file_id);
-    if (opened !== undefined) return { sessionExists: true, file: { ...opened, sourceKind: 'session-media', name: request.source.name ?? opened.name, mediaType: request.source.media_type ?? opened.mediaType }, dispose: () => operation.dispose() };
-    try {
-      const uploaded = await core.accessor.get(IFileService).get(request.source.file_id);
-      return {
-        sessionExists: true,
-        file: {
-          sourceKind: 'session-media', name: request.source.name ?? uploaded.meta.name,
-          mediaType: request.source.media_type ?? uploaded.meta.media_type, size: uploaded.meta.size,
-          stream: async function* (range) { for await (const chunk of uploaded.stream(range)) yield chunk as Uint8Array; },
-        },
-        dispose: () => operation.dispose(),
-      };
-    } catch {
-      await operation.dispose();
+    const opened = await openSessionMedia(core, sessionId, request.source.file_id, transcriptService);
+    const dispose = () => {
+      void Promise.resolve(opened.operation?.dispose()).catch(() => {});
+    };
+    if (!opened.sessionExists) {
+      dispose();
+      return { sessionExists: false, dispose: () => {} };
+    }
+    if (opened.file === undefined) {
+      dispose();
       return { sessionExists: true, dispose: () => {} };
     }
+    const mediaType =
+      request.source.media_type !== undefined && request.source.media_type !== 'application/octet-stream'
+        ? request.source.media_type
+        : opened.file.mediaType;
+    return {
+      sessionExists: true,
+      file: {
+        ...opened.file,
+        sourceKind: 'session-media',
+        name: request.source.name ?? opened.file.name,
+        mediaType,
+      },
+      dispose,
+    };
   }
+
+  const operation = await acquireSessionOperation(core, sessionId, 'document-preview');
+  if (operation.handle === undefined) return { sessionExists: false, dispose: () => operation.dispose() };
 
   const context = operation.handle.accessor.get(ISessionContext);
   const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);

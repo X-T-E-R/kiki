@@ -267,6 +267,18 @@ export function MediaPreviewProvider({
     revealPreview();
   }, [revealPreview]);
 
+  const openAttachmentInWorkspace = useCallback((item: MediaRef) => {
+    setNavigation(undefined);
+    setTabsState((state) => openPreviewTab(state, { kind: 'attachment', item, sessionId }));
+    revealPreview();
+  }, [sessionId, revealPreview]);
+
+  const openWeb = useCallback((url: string, title?: string) => {
+    setNavigation(undefined);
+    setTabsState((state) => openPreviewTab(state, { kind: 'web', url, title }));
+    revealPreview();
+  }, [revealPreview]);
+
   const togglePanel = useCallback(() => {
     if (cockpit) revealPreview();
     else setPanelOpen((value) => !value);
@@ -368,6 +380,8 @@ export function MediaPreviewProvider({
           setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId, galleryAgentId });
         }
       },
+      openAttachmentInWorkspace,
+      openWeb,
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
@@ -376,7 +390,7 @@ export function MediaPreviewProvider({
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
     }),
-    [cwd, sessionId, clientIdentity, snapshotAgentId, openGalleryImage, registerGalleryImage, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, cockpit, width, togglePanel, activeAgentPanelId],
+    [cwd, sessionId, clientIdentity, snapshotAgentId, openGalleryImage, registerGalleryImage, openFile, openAttachmentInWorkspace, openWeb, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, cockpit, width, togglePanel, activeAgentPanelId],
   );
 
   useEffect(() => {

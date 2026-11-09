@@ -27,7 +27,7 @@ function attachments(value: unknown): MessageAttachment[] {
     const blobId = string(entry?.['blob_id']);
     const path = string(entry?.['path']);
     if (blobId === undefined || path === undefined) return [];
-    return [{ blobId, path, title: string(entry?.['title']), mimeType: string(entry?.['mime_type']),
+    return [{ blobId, sourceId: string(entry?.['source_id']), path, title: string(entry?.['title']), mimeType: string(entry?.['mime_type']),
       size: typeof entry?.['size'] === 'number' ? entry['size'] : undefined, kind: string(entry?.['kind']) }];
   });
 }

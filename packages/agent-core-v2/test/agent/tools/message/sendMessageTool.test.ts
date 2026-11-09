@@ -32,6 +32,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { FakeImAdapter, fakeAdapterFactory, ImSessionBridge, type ImSessionPorts } from '@kiki-dsh/im-bridge-core';
@@ -138,12 +139,33 @@ describe('SendMessage completion guidance', () => {
   });
 
   it('sends a media-only message with an explicit kind through the in-app channel', async () => {
-    await mediaAgent(['clip.mp4']);
+    const cwd = await mediaAgent(['clip.mp4']);
     const result = await execute({ attachments: [{ path: 'clip.mp4', kind: 'video', mime_type: 'video/mp4' }] });
     const wire = JSON.parse(result.output as string);
     expect(wire.delivered_to).toEqual(['user']);
     expect(wire.channels).toEqual([{ channel_id: 'internal', status: 'delivered' }]);
-    expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'video', mime_type: 'video/mp4' })]);
+    expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'video', mime_type: 'video/mp4', source_id: expect.stringMatching(/^[a-f0-9]{64}$/u) })]);
+    const blobId = String(wire.attachments[0]?.blob_id ?? '');
+    const sourceId = String(wire.attachments[0]?.source_id ?? '');
+    const sourceDoc = await ctx.get(IAtomicDocumentStore).get<{
+      version: number;
+      sourceId: string;
+      sessionId: string;
+      agentId: string;
+      blobId: string;
+      path: string;
+    }>(
+      ctx.get(IAgentScopeContext).scope('blobs'),
+      `sources/${sourceId}.json`,
+    );
+    expect(sourceDoc).toMatchObject({
+      version: 1,
+      sourceId,
+      sessionId: ctx.get(ISessionContext).sessionId,
+      agentId: 'main',
+      blobId,
+      path: expect.stringContaining(cwd),
+    });
     expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
   });
 

@@ -9,6 +9,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -138,6 +139,10 @@ type ResolvedTtsConfig = {
   readonly sampleRateHz?: number;
   readonly options?: Record<string, unknown>;
   readonly ffmpegPath?: string;
+};
+
+type ExtendedAttachmentReceipt = MessageAttachmentReceipt & {
+  readonly sourceId?: string;
 };
 
 type ExtendedReceipt = SendMessageReceipt & {
@@ -887,11 +892,13 @@ export class SendMessageTool implements ISendMessageTool {
     return typeof roomId === 'string' && roomId.length > 0 ? roomId : undefined;
   }
 
-  private async copyAttachments(inputs: readonly AttachmentInput[]): Promise<readonly MessageAttachmentReceipt[]> {
+  private async copyAttachments(inputs: readonly AttachmentInput[]): Promise<readonly ExtendedAttachmentReceipt[]> {
     if (inputs.length === 0) return [];
-    const copied: MessageAttachmentReceipt[] = [];
+    const documents = optionalService(this.instantiation, IAtomicDocumentStore);
+    const copied: ExtendedAttachmentReceipt[] = [];
     for (const input of inputs) {
       let path: string;
+      let trustedHostPath: string | undefined;
       let name: string | undefined;
       let storedMediaType: string | undefined;
       let data: Uint8Array;
@@ -899,6 +906,7 @@ export class SendMessageTool implements ISendMessageTool {
         const file = this.media === undefined ? undefined : await this.media.open(input.file_id);
         if (file === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment file_id is not available in this session: ${input.file_id}`);
         path = file.path ?? input.file_id;
+        trustedHostPath = file.path;
         name = file.name;
         storedMediaType = file.mediaType;
         data = await readMediaFile(file);
@@ -911,11 +919,29 @@ export class SendMessageTool implements ISendMessageTool {
         const stat = await this.fs.stat(path);
         if (!stat.isFile) throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment is not a file: ${input.path}`);
         data = await this.fs.readBytes(path);
+        trustedHostPath = path;
       }
       const hash = createHash('sha256').update(data).digest('hex');
-      await this.blobs.put(this.agent.scope('blobs'), hash, data);
+      const blobId = `blobref:${this.agent.agentId}:${hash}`;
+      const blobScope = this.agent.scope('blobs');
+      await this.blobs.put(blobScope, hash, data);
+      let sourceId: string | undefined;
+      if (trustedHostPath !== undefined && documents !== undefined) {
+        sourceId = createHash('sha256')
+          .update(`${this.session.sessionId}\0${this.agent.agentId}\0${hash}\0${trustedHostPath}`)
+          .digest('hex');
+        await documents.set(blobScope, `sources/${sourceId}.json`, {
+          version: 1,
+          sourceId,
+          sessionId: this.session.sessionId,
+          agentId: this.agent.agentId,
+          blobId,
+          path: trustedHostPath,
+        }).catch(() => undefined);
+      }
       copied.push({
-        blobId: `blobref:${this.agent.agentId}:${hash}`,
+        blobId,
+        sourceId,
         path,
         title: input.title ?? name,
         mimeType: input.mime_type ?? storedMediaType ?? mimeTypeFor(path),
@@ -1314,8 +1340,9 @@ function toWireReceipt(receipt: ExtendedReceipt): Record<string, unknown> {
       unsupported: channel.unsupported, detail: channel.detail, borrowed: channel.borrowed,
     })),
     ...(receipt.attachments === undefined ? {} : {
-      attachments: receipt.attachments.map((attachment) => ({
+      attachments: receipt.attachments.map((attachment: ExtendedAttachmentReceipt) => ({
         blob_id: attachment.blobId,
+        ...(attachment.sourceId === undefined ? {} : { source_id: attachment.sourceId }),
         path: attachment.path,
         kind: attachment.kind,
         ...(attachment.title === undefined ? {} : { title: attachment.title }),

@@ -88,7 +88,10 @@ vi.mock('../host', () => {
     writeFileText: (path: string, text: string) => writeMock(path, text),
   };
   const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath };
-  return { useHost: () => hostMock.desktop ? desktopHost : host };
+  return {
+    useHost: () => hostMock.desktop ? desktopHost : host,
+    openExternalUrl: vi.fn(),
+  };
 });
 
 vi.mock('./CodeEditor', () => ({
@@ -2195,5 +2198,127 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     expect(document.querySelector('[data-preview-tab-menu]')).toBeNull();
     expect(anyOverlayOpen()).toBe(false);
     expect(document.activeElement).toBe(tab);
+  });
+
+  it('renders AttachmentTab for HTML (sandboxed origin) and unsupported binaries, and WebTab for external URLs without falling back to host paths on missing blobs', async () => {
+    htmlPreviewMock.open.mockReset();
+    htmlPreviewMock.open.mockResolvedValue({
+      preview_id: 'prev-html-1',
+      url: 'http://prev-html-1.kiki-document.localhost:59999/html-preview/prev-html-1/index.html',
+      sandbox: HTML_PREVIEW_SANDBOX,
+      expires_at: Date.now() + 60_000,
+    });
+    const probe = makeRoot();
+    const htmlTab = {
+      kind: 'attachment' as const,
+      sessionId: 'sess-1',
+      item: {
+        kind: 'file' as const,
+        fileId: 'blobref:main:html1',
+        sourceId: 'a'.repeat(64),
+        path: '/work/slides/index.html',
+        name: 'index.html',
+        mime: 'text/html',
+        size: 1024,
+      },
+    };
+    const zipTab = {
+      kind: 'attachment' as const,
+      sessionId: 'sess-1',
+      item: {
+        kind: 'file' as const,
+        fileId: 'blobref:main:zip1',
+        name: 'bundle.zip',
+        mime: 'application/zip',
+        size: 2048,
+      },
+    };
+    const webTab = {
+      kind: 'web' as const,
+      url: 'https://docs.example.com/guide',
+      title: 'Guide',
+    };
+    await renderSettled(
+      probe.root,
+      <PreviewWorkspace
+        tabs={[htmlTab, zipTab, webTab]}
+        active={`attachment:sess-1:blobref:main:html1:${'a'.repeat(64)}`}
+        dirtyPaths={new Set()}
+        width={420}
+        cwd="/work"
+        sessionId="sess-1"
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseAll={vi.fn()}
+        onMove={vi.fn()}
+        onCollapse={vi.fn()}
+        onWidthChange={vi.fn()}
+        onOpenImage={vi.fn()}
+        reportDirty={vi.fn()}
+      />,
+    );
+    expect(htmlPreviewMock.open).toHaveBeenCalledWith({
+      session_id: 'sess-1',
+      file_id: 'blobref:main:html1',
+      source_id: 'a'.repeat(64),
+      name: 'index.html',
+    });
+    expect(htmlPreviewMock.open).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/work/slides/index.html' }),
+    );
+    const htmlFrame = workspace().querySelector<HTMLIFrameElement>('iframe[data-preview-html]');
+    expect(htmlFrame).not.toBeNull();
+    expect(htmlFrame?.getAttribute('src')).toBe('http://prev-html-1.kiki-document.localhost:59999/html-preview/prev-html-1/index.html');
+    expect(htmlFrame?.getAttribute('sandbox')).toBe(HTML_PREVIEW_SANDBOX);
+
+    await renderSettled(
+      probe.root,
+      <PreviewWorkspace
+        tabs={[htmlTab, zipTab, webTab]}
+        active="attachment:sess-1:blobref:main:zip1"
+        dirtyPaths={new Set()}
+        width={420}
+        cwd="/work"
+        sessionId="sess-1"
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseAll={vi.fn()}
+        onMove={vi.fn()}
+        onCollapse={vi.fn()}
+        onWidthChange={vi.fn()}
+        onOpenImage={vi.fn()}
+        reportDirty={vi.fn()}
+      />,
+    );
+    expect(workspace().querySelector('[data-preview-unsupported]')).not.toBeNull();
+
+    await renderSettled(
+      probe.root,
+      <PreviewWorkspace
+        tabs={[htmlTab, zipTab, webTab]}
+        active="web:https://docs.example.com/guide"
+        dirtyPaths={new Set()}
+        width={420}
+        cwd="/work"
+        sessionId="sess-1"
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseAll={vi.fn()}
+        onMove={vi.fn()}
+        onCollapse={vi.fn()}
+        onWidthChange={vi.fn()}
+        onOpenImage={vi.fn()}
+        reportDirty={vi.fn()}
+      />,
+    );
+    const webFrame = workspace().querySelector<HTMLIFrameElement>('iframe[data-preview-web]');
+    expect(webFrame).not.toBeNull();
+    expect(webFrame?.getAttribute('src')).toBe('https://docs.example.com/guide');
+    expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups');
+    expect(webFrame?.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(workspace().querySelector('[data-web-open-external]')).not.toBeNull();
   });
 });

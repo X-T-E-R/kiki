@@ -39,6 +39,10 @@ export interface MediaPreviewApi {
   readonly openBuiltinSkill: (name: string) => void;
   /** Open an attachment backed by a canonical session media id. */
   readonly openAttachment: (item: MediaRef, galleryAgentId?: string) => void;
+  /** Open a canonical attachment inside the resident preview workspace. */
+  readonly openAttachmentInWorkspace?: (item: MediaRef) => void;
+  /** Open a web URL inside the resident preview workspace. */
+  readonly openWeb?: (url: string, title?: string) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */
   readonly previewTabCount: number;
   /** Whether the preview workspace panel is currently expanded. */

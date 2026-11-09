@@ -23,16 +23,25 @@ import { deliveryNotes } from './messageDelivery';
 
 // The preview seam: opening an attachment is what a message row offers, and
 // the ref it hands over is what the assertion reads.
-const previewProbe = vi.hoisted(() => ({ openAttachment: vi.fn(), openImage: vi.fn() }));
+const previewProbe = vi.hoisted(() => ({
+  openAttachment: vi.fn(),
+  openAttachmentInWorkspace: vi.fn(),
+  openWeb: vi.fn(),
+  openImage: vi.fn(),
+  workspaceEnabled: false,
+}));
 vi.mock('../mediaPreviewContext', async (importOriginal) => {
   const original = await importOriginal<typeof import('../mediaPreviewContext')>();
   return {
     ...original,
     useMediaPreview: () => ({
       sessionId: 'session',
+      cwd: '/workspace',
       openImage: previewProbe.openImage,
       openFile: () => {},
       openAttachment: previewProbe.openAttachment,
+      openAttachmentInWorkspace: previewProbe.workspaceEnabled ? previewProbe.openAttachmentInWorkspace : undefined,
+      openWeb: previewProbe.openWeb,
       previewTabCount: 0,
       previewPanelOpen: false,
       togglePreviewPanel: () => {},
@@ -207,6 +216,129 @@ describe('attachment media kinds', () => {
     const container = render(<MessageAttachmentView attachment={image} readable={false} />);
     expect(container.querySelector('[data-message-media="image"]')).not.toBeNull();
     expect(container.querySelector('[data-message-attachment-open]')).toBeNull();
+  });
+
+  it('distinguishes HTML, PDF, Office, Markdown, code, archive and web links in timeline cards and routes clicks to PreviewWorkspace', () => {
+    const htmlAtt: MessageAttachment = {
+      blobId: 'blobref:main:html1',
+      path: '/workspace/demo/index.html',
+      title: '互动路演.html',
+      mimeType: 'text/html',
+      size: 4096,
+      kind: 'file',
+    };
+    const docxAtt: MessageAttachment = {
+      blobId: 'blobref:main:docx1',
+      path: '/workspace/docs/spec.docx',
+      title: '架构方案.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: 16384,
+      kind: 'file',
+    };
+    const mdAtt: MessageAttachment = {
+      blobId: 'blobref:main:md1',
+      path: '/workspace/README.md',
+      title: 'README.md',
+      mimeType: 'text/markdown',
+      size: 2048,
+      kind: 'file',
+    };
+    const zipAtt: MessageAttachment = {
+      blobId: 'blobref:main:zip1',
+      path: '/workspace/bundle.zip',
+      title: 'bundle.zip',
+      mimeType: 'application/zip',
+      size: 65536,
+      kind: 'file',
+    };
+
+    previewProbe.workspaceEnabled = true;
+    previewProbe.openAttachmentInWorkspace.mockClear();
+    previewProbe.openWeb.mockClear();
+    try {
+      const container = draw(message({
+        text: '请审阅页面 [路演看板](https://board.example.com/roadshow/2026) 与以下附件：',
+        attachments: [htmlAtt, report, docxAtt, mdAtt, zipAtt],
+      }));
+
+      expect(container.querySelector('[data-message-attachment-subtype="html"]')).not.toBeNull();
+      expect(container.querySelector('[data-message-attachment-subtype="pdf"]')).not.toBeNull();
+      expect(container.querySelector('[data-message-attachment-subtype="docx"]')).not.toBeNull();
+      expect(container.querySelector('[data-message-attachment-subtype="markdown"]')).not.toBeNull();
+      expect(container.querySelector('[data-message-attachment-subtype="archive"]')).not.toBeNull();
+
+      const htmlOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blobref:main:html1"] [data-message-attachment-open]');
+      expect(htmlOpen).not.toBeNull();
+      act(() => { htmlOpen?.click(); });
+      expect(previewProbe.openAttachmentInWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'file',
+        fileId: 'blobref:main:html1',
+        path: '/workspace/demo/index.html',
+        mime: 'text/html',
+      }));
+
+      const pdfOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blob-report"] [data-message-attachment-open]');
+      act(() => { pdfOpen?.click(); });
+      expect(previewProbe.openAttachmentInWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'file',
+        fileId: 'blob-report',
+        path: undefined,
+        mime: 'application/pdf',
+      }));
+
+      const webCard = container.querySelector<HTMLElement>('[data-message-web-preview="https://board.example.com/roadshow/2026"]');
+      expect(webCard).not.toBeNull();
+      const webOpen = webCard?.querySelector<HTMLButtonElement>('[data-message-web-open]');
+      act(() => { webOpen?.click(); });
+      expect(previewProbe.openWeb).toHaveBeenCalledWith('https://board.example.com/roadshow/2026', '路演看板');
+    } finally {
+      previewProbe.workspaceEnabled = false;
+    }
+  });
+
+  it('never exposes a cross-session sender path or opens a cross-session HTML/file attachment', () => {
+    const crossHtml: MessageAttachment = {
+      blobId: 'blobref:peer:html9',
+      path: 'C:/Users/sender/secret/index.html',
+      title: 'sender.html',
+      mimeType: 'text/html',
+      size: 512,
+      kind: 'file',
+    };
+    const container = render(
+      <MessageRow
+        block={message({ sourceSessionId: 'other-session', attachments: [crossHtml] })}
+        speaker={SPEAKER}
+        continued={false}
+        currentSessionId="session"
+      />,
+    );
+    const card = container.querySelector<HTMLElement>('[data-message-attachment="blobref:peer:html9"]');
+    expect(card).not.toBeNull();
+    expect(card?.dataset['messageAttachmentReadable']).toBe('false');
+    expect(card?.querySelector('[data-message-attachment-open]')).toBeNull();
+    expect(card?.innerHTML).not.toContain('C:/Users/sender/secret/index.html');
+  });
+
+  it('renders and opens web preview cards when a message URL contains malformed percent-encoded pathname sequences', () => {
+    previewProbe.openWeb.mockClear();
+    const container = draw(message({
+      text: '参见 https://example.test/% 与 https://example.test/docs/%E0%A4 的说明。',
+    }));
+
+    const barePercentCard = container.querySelector<HTMLElement>('[data-message-web-preview="https://example.test/%"]');
+    expect(barePercentCard).not.toBeNull();
+    expect(barePercentCard?.textContent).toContain('example.test / %');
+    const barePercentOpen = barePercentCard?.querySelector<HTMLButtonElement>('[data-message-web-open]');
+    act(() => { barePercentOpen?.click(); });
+    expect(previewProbe.openWeb).toHaveBeenCalledWith('https://example.test/%', 'example.test / %');
+
+    const truncatedUtf8Card = container.querySelector<HTMLElement>('[data-message-web-preview="https://example.test/docs/%E0%A4"]');
+    expect(truncatedUtf8Card).not.toBeNull();
+    expect(truncatedUtf8Card?.textContent).toContain('example.test / docs/%E0%A4');
+    const truncatedUtf8Open = truncatedUtf8Card?.querySelector<HTMLButtonElement>('[data-message-web-open]');
+    act(() => { truncatedUtf8Open?.click(); });
+    expect(previewProbe.openWeb).toHaveBeenCalledWith('https://example.test/docs/%E0%A4', 'example.test / docs/%E0%A4');
   });
 });
 

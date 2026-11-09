@@ -184,7 +184,7 @@ import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList } from './mediaParts';
 import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
-import { MediaGalleryOrder } from './mediaPreviewContext';
+import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
@@ -2642,6 +2642,7 @@ const BlockView = memo(function BlockView({
 function ProcessMessage({ block }: { block: MessageBlock }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
+  const preview = useMediaPreview();
   const speaker = speakerOf(block, context.persona, t('agentMessage.agent'));
   if (block.handoff !== undefined && block.status === 'sent') {
     const handoff = block.handoff;
@@ -2655,7 +2656,7 @@ function ProcessMessage({ block }: { block: MessageBlock }) {
       />
     );
   }
-  return <MessageRow block={block} speaker={speaker} continued={false} currentSessionId={context.sessionId} />;
+  return <MessageRow block={block} speaker={speaker} continued={false} currentSessionId={context.sessionId ?? preview?.sessionId} />;
 }
 
 /** A timeline row: the process view's display nodes plus the message view's activity summaries. */
@@ -2694,6 +2695,7 @@ const MessageViewRow = memo(function MessageViewRow({
 }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
+  const preview = useMediaPreview();
   const agentLabel = t('agentMessage.agent');
   const turnId = displayNodeTurnId(node);
   let body: ReactNode;
@@ -2721,7 +2723,7 @@ const MessageViewRow = memo(function MessageViewRow({
           speaker={speaker}
           continued={speakerKey(previous) === speakerKey(node) && speakerKey(node) !== undefined}
           replyToText={replyToText}
-          currentSessionId={context.sessionId}
+          currentSessionId={context.sessionId ?? preview?.sessionId}
           onOpenProcess={() => { onOpenProcess(turnId, node.id); }}
         />
       );

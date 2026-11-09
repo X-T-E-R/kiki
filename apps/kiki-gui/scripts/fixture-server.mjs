@@ -2224,6 +2224,69 @@ class FixtureServer {
       return;
     }
 
+    // HTML preview capability URL: bearer-free so the sandboxed iframe can load
+    // its entry document and relative sibling resources (`./app.js`, `./style.css`, etc.).
+    const htmlPreviewResource = /^\/html-preview\/([^/]+)\/(.+)$/u.exec(url.pathname);
+    if (htmlPreviewResource !== null && req.method === 'GET') {
+      const previewId = decodeURIComponent(htmlPreviewResource[1]);
+      const relPath = htmlPreviewResource[2].split('/').map(decodeURIComponent).join('/');
+      const entry = this.htmlPreviews?.get(previewId);
+      if (entry === undefined) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40409, msg: 'html_preview_expired', data: null }));
+        return;
+      }
+      const csp = "sandbox allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads; object-src 'none'";
+      if (entry.sessionHtml !== undefined) {
+        if (relPath === entry.sessionHtml.entryPath) {
+          res.writeHead(200, {
+            'content-type': entry.sessionHtml.mime,
+            'content-length': entry.sessionHtml.bytes.length,
+            'content-security-policy': csp,
+            'access-control-allow-origin': '*',
+          });
+          res.end(entry.sessionHtml.bytes);
+          return;
+        }
+        if (entry.root === '') {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ code: 40409, msg: 'preview_resource_not_found', data: null }));
+          return;
+        }
+      }
+      const candidate = `${entry.root.replace(/\/+$/u, '')}/${relPath.replace(/^\/+/u, '')}`;
+      const file = this.scenario?.data.fsFiles?.[candidate];
+      if (file === undefined) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40409, msg: 'preview_resource_not_found', data: null }));
+        return;
+      }
+      const bytes =
+        file.base64 !== undefined
+          ? Buffer.from(file.base64, 'base64')
+          : Buffer.from(file.content ?? '', 'utf8');
+      res.writeHead(200, {
+        'content-type': file.mime ?? 'text/html',
+        'content-length': bytes.length,
+        'content-security-policy': csp,
+        'access-control-allow-origin': '*',
+      });
+      res.end(bytes);
+      return;
+    }
+
+    // Mock external web page for WebTab preview in visual proofs.
+    const webPreviewMock = /^\/web-preview-mock\/(.+)$/u.exec(url.pathname);
+    if (webPreviewMock !== null && req.method === 'GET') {
+      const slug = decodeURIComponent(webPreviewMock[1]);
+      const custom = this.scenario?.data.webPages?.[slug];
+      const html = custom ?? `<!doctype html><html lang="zh"><head><meta charset="utf-8"/><title>${slug}</title></head><body style="margin:0;padding:24px;font-family:system-ui,sans-serif;background:#faf8f5;color:#1f1e1b"><h1 style="font-size:18px;margin:0 0 8px">${slug}</h1><p style="font-size:13px;color:#5c5952;margin:0">Live web preview surface (${slug})</p></body></html>`;
+      const bytes = Buffer.from(html, 'utf8');
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': bytes.length });
+      res.end(bytes);
+      return;
+    }
+
     // A scenario-seeded remote image, bearer-free for the same reason as the
     // playback grant: an `<img src>` cannot send the fixture token. This lets a
     // transcript carry a genuine same-origin http(s) image URL — the lightbox
@@ -4112,6 +4175,174 @@ class FixtureServer {
     if (playbackRelease !== null && method === 'DELETE') {
       releaseSessionPlayback(this, decodeURIComponent(playbackRelease[1]));
       return this.envelope(res, null);
+    }
+    if (path === '/fs:html-preview' && method === 'POST') {
+      this.htmlPreviews ??= new Map();
+      const previewId = `${(++this.fileCounter).toString(16).padStart(32, 'a')}`;
+      const expiresAt = Date.now() + 30 * 60 * 1000;
+      const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads';
+      const hostHeader = typeof req.headers.host === 'string' ? req.headers.host : '127.0.0.1:5177';
+      const port = hostHeader.includes(':') ? hostHeader.split(':')[1] : '5177';
+      const hostname = `${previewId.slice(0, 32)}.kiki-document.localhost`;
+      if (typeof body?.path === 'string' && body.path !== '') {
+        const normalizedPath = body.path.replaceAll('\\', '/');
+        const file = this.scenario?.data.fsFiles?.[normalizedPath] ?? this.scenario?.data.fsFiles?.[body.path];
+        if (file === undefined) {
+          return this.failureEnvelope(res, 404, 40409, 'preview_resource_not_found');
+        }
+        const slash = normalizedPath.lastIndexOf('/');
+        const root = slash >= 0 ? normalizedPath.slice(0, slash) : '';
+        const entryName = slash >= 0 ? normalizedPath.slice(slash + 1) : normalizedPath;
+        this.htmlPreviews.set(previewId, { root });
+        return this.envelope(res, {
+          preview_id: previewId,
+          expires_at: expiresAt,
+          sandbox,
+          url: `http://${hostname}:${port}/html-preview/${previewId}/${encodeURIComponent(entryName)}`,
+        });
+      }
+      if (typeof body?.session_id === 'string' && typeof body?.file_id === 'string') {
+        try {
+          const media = sessionMediaBytes(this, body.session_id, body.file_id, 'original');
+          let entryPath = typeof body?.name === 'string' && body.name.trim() !== '' ? body.name.trim() : 'index.html';
+          let root = '';
+          const snapshot = this.scenario?.data.snapshots?.[body.session_id];
+          const items = snapshot?.agent_transcripts?.main?.items ?? [];
+          for (const item of items) {
+            if (item?.kind !== 'turn') continue;
+            for (const step of item.steps ?? []) {
+              for (const frame of step.frames ?? []) {
+                if (frame?.kind !== 'tool' || frame?.name !== 'SendMessage' || typeof frame?.output !== 'string') continue;
+                try {
+                  const parsed = JSON.parse(frame.output);
+                  const senderSid = parsed?.sender?.session_id;
+                  if (senderSid !== undefined && senderSid !== body.session_id) continue;
+                  for (const att of parsed?.attachments ?? []) {
+                    if (att?.blob_id === body.file_id && typeof att?.path === 'string') {
+                      const normalized = att.path.replaceAll('\\', '/');
+                      const slash = normalized.lastIndexOf('/');
+                      if (slash >= 0) {
+                        root = normalized.slice(0, slash);
+                        entryPath = normalized.slice(slash + 1) || entryPath;
+                      }
+                    }
+                  }
+                } catch {}
+              }
+            }
+          }
+          this.htmlPreviews.set(previewId, {
+            root,
+            sessionHtml: { bytes: media.bytes, mime: 'text/html', entryPath },
+          });
+          return this.envelope(res, {
+            preview_id: previewId,
+            expires_at: expiresAt,
+            sandbox,
+            url: `http://${hostname}:${port}/html-preview/${previewId}/${encodeURIComponent(entryPath)}`,
+          });
+        } catch {
+          return this.failureEnvelope(res, 404, 40409, 'preview_resource_not_found');
+        }
+      }
+      return this.failureEnvelope(res, 400, 40001, 'invalid_html_preview_request');
+    }
+    const htmlPreviewClose = /^\/fs:html-preview\/([^/]+)$/.exec(path);
+    if (htmlPreviewClose !== null && method === 'DELETE') {
+      this.htmlPreviews?.delete(decodeURIComponent(htmlPreviewClose[1]));
+      return this.envelope(res, null);
+    }
+    const docPreviewRoute = /^\/sessions\/([^/]+)\/document-preview$/.exec(path);
+    if (docPreviewRoute !== null && method === 'POST') {
+      const sessionId = decodeURIComponent(docPreviewRoute[1]);
+      const source = body?.source;
+      this.docPreviewAssets ??= new Map();
+      let fileBytes;
+      let fileMime = 'application/octet-stream';
+      let fileName = 'document';
+      if (source?.kind === 'workspace' && typeof source.path === 'string') {
+        const entry = this.scenario?.data.fsFiles?.[source.path];
+        if (entry === undefined) return this.failureEnvelope(res, 404, 40409, 'fs.path_not_found');
+        fileBytes = entry.base64 !== undefined ? Buffer.from(entry.base64, 'base64') : Buffer.from(entry.content ?? '', 'utf8');
+        fileMime = entry.mime ?? 'application/octet-stream';
+        fileName = source.path.split(/[\\/]/u).at(-1) ?? 'document';
+      } else if (source?.kind === 'session-media' && typeof source.file_id === 'string') {
+        try {
+          const media = sessionMediaBytes(this, sessionId, source.file_id, 'original');
+          fileBytes = media.bytes;
+          fileMime = source.media_type && source.media_type !== 'application/octet-stream' ? source.media_type : media.mime;
+          fileName = source.name ?? 'document';
+        } catch {
+          return this.failureEnvelope(res, 404, 40409, 'media.not_found');
+        }
+      } else {
+        return this.failureEnvelope(res, 400, 40001, 'invalid_document_preview_request');
+      }
+      const lowerName = String(fileName).toLowerCase();
+      const sourceInfo = {
+        kind: source.kind,
+        name: fileName,
+        media_type: fileMime,
+        size: fileBytes.length,
+      };
+      if (fileMime === 'text/csv' || lowerName.endsWith('.csv')) {
+        const text = fileBytes.toString('utf8');
+        return this.envelope(res, {
+          kind: 'text',
+          format: 'csv',
+          fidelity: 'source',
+          source: sourceInfo,
+          encoding: 'utf-8',
+          content: text,
+          offset: 0,
+          next_offset: fileBytes.length,
+          truncated: false,
+          total_bytes: fileBytes.length,
+          read_only: true,
+        });
+      }
+      if (fileMime === 'application/pdf' || lowerName.endsWith('.pdf') || lowerName.endsWith('.docx') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.pptx')) {
+        const assetId = `doc_asset_fixture_${String(++this.fileCounter).padStart(16, '0')}`;
+        const format = lowerName.endsWith('.docx') ? 'docx' : lowerName.endsWith('.xlsx') ? 'xlsx' : lowerName.endsWith('.pptx') ? 'pptx' : 'pdf';
+        const pagePng = this.scenario?.data.docPreviewPngBase64 !== undefined
+          ? Buffer.from(this.scenario.data.docPreviewPngBase64, 'base64')
+          : fileBytes;
+        this.docPreviewAssets.set(assetId, { bytes: pagePng, mime: 'image/png' });
+        return this.envelope(res, {
+          kind: 'ready',
+          format,
+          fidelity: 'rendered',
+          renderer: format === 'pdf' ? 'poppler' : 'officecli',
+          source: sourceInfo,
+          navigation: format === 'xlsx'
+            ? { kind: 'sheet', sheet: 'Sheet1', sheets: ['Sheet1'], sheet_index: 1, sheet_count: 1 }
+            : { kind: 'page', page: 1, page_count: 1 },
+          assets: [
+            {
+              asset_id: assetId,
+              mime: 'image/png',
+              url: `/api/sessions/${encodeURIComponent(sessionId)}/document-preview/assets/${assetId}`,
+            },
+          ],
+          read_only: true,
+        });
+      }
+      return this.envelope(res, {
+        kind: 'unsupported',
+        format: 'binary',
+        source: sourceInfo,
+        reason: 'format',
+        recovery: { kind: 'download-original' },
+        read_only: true,
+      });
+    }
+    const docAssetRoute = /^\/sessions\/([^/]+)\/document-preview\/assets\/([^/]+)$/.exec(path);
+    if (docAssetRoute !== null && method === 'GET') {
+      const asset = this.docPreviewAssets?.get(decodeURIComponent(docAssetRoute[2]));
+      if (asset === undefined) return this.failureEnvelope(res, 404, 40409, 'asset.not_found');
+      res.writeHead(200, { 'content-type': asset.mime, 'content-length': asset.bytes.length });
+      res.end(asset.bytes);
+      return;
     }
     // Host-file write mock for the preview workspace editor. The REAL
     // kap-server deliberately has no unconfined write endpoint (fs:content is

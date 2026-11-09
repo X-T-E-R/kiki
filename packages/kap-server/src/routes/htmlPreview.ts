@@ -4,6 +4,8 @@ import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } fro
 import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { IHostFileSystem, type Scope } from '@kiki/agent-core-v2';
+import type { TranscriptService } from '../services/transcript/transcriptService';
+import { openSessionMedia, resolveTrustedSessionAttachmentHostSource } from './sessionMedia';
 import { peerAudience } from '../services/connections/audience';
 import { buildEtag, guessMime } from '@kiki/agent-core-v2/_base/utils/fileMeta';
 import { findGitWorkTree } from '@kiki/agent-core-v2/app/git/workTree';
@@ -16,19 +18,22 @@ import type { RemoteConnectionManager } from '../services/connections/manager';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { stripPort } from '../middleware/hostnames';
 import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
 
 export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; object-src 'none'`;
 export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace('allow-same-origin ', '')}; object-src 'none'`;
 const TTL = 30 * 60 * 1000;
 const resourceOptions = { config: { htmlPreviewResource: true } };
-interface LocalPreview { root: string; fileOnly?: string; excludedRoots: readonly string[]; expiresAt: number }
+interface SessionHtmlResource { bytes: Buffer; mime: string; entryPath: string }
+interface LocalPreview { root: string; fileOnly?: string; sessionHtml?: SessionHtmlResource; excludedRoots: readonly string[]; expiresAt: number }
 interface RemotePreview { connectionId: string; remoteId: string; expiresAt: number; dispose(): void }
 interface HtmlPreviewOptions {
   readonly allowAutomaticRoot?: boolean;
   readonly registeredRoots?: () => Promise<readonly string[]>;
   readonly privateHomes?: readonly string[];
   readonly web?: WebAccess;
+  readonly transcriptService?: TranscriptService;
 }
 
 async function nearestProjectRoot(fs: IHostFileSystem, directory: string, registeredRoots: Promise<readonly string[]> | undefined): Promise<string> {
@@ -111,9 +116,99 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   const entryOf = (id: string): LocalPreview => {
     sweep(); const entry = local.get(id); if (entry === undefined) throw new AdmissionError(404, 'html_preview_expired'); return entry;
   };
-  const open = async (body: unknown): Promise<HtmlPreviewResponse> => {
+  const open = async (body: unknown, signal?: AbortSignal): Promise<HtmlPreviewResponse> => {
     reserve();
     const input = htmlPreviewRequestSchema.parse(body);
+    if (input.session_id !== undefined || input.file_id !== undefined) {
+      if (input.session_id === undefined || input.file_id === undefined) {
+        throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
+      }
+      const opened = await openSessionMedia(core, input.session_id, input.file_id, options.transcriptService, signal);
+      try {
+        signal?.throwIfAborted();
+        if (!opened.sessionExists || opened.file === undefined) {
+          throw new AdmissionError(404, 'preview_resource_not_found');
+        }
+        const rawName = (input.name ?? opened.file.name ?? 'index.html').replace(/[\\/]/gu, '_').trim();
+        let entryPath = /\.(html?|xhtml)$/iu.test(rawName) ? rawName : `${rawName || 'index'}.html`;
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for await (const chunk of opened.file.stream()) {
+          signal?.throwIfAborted();
+          total += chunk.byteLength;
+          if (total > 16 * 1024 * 1024) throw new AdmissionError(400, 'html_document_required');
+          chunks.push(chunk);
+        }
+        const bytes = Buffer.concat(chunks);
+        const resolvedMime = /\.xhtml$/iu.test(entryPath) || opened.file.mediaType === 'application/xhtml+xml' ? 'application/xhtml+xml' : 'text/html';
+        let root = '';
+        let fileOnly: string | undefined;
+        let excludedRoots: readonly string[] = [];
+        const trustedSource = await resolveTrustedSessionAttachmentHostSource(
+          core,
+          input.session_id,
+          input.file_id,
+          options.transcriptService,
+          signal,
+          input.source_id,
+        );
+        if (trustedSource !== undefined && isAbsolute(trustedSource.path)) {
+          const explicitRoot = allowAutomaticRoot ? undefined : trustedSource.workspaceRoot;
+          if ((allowAutomaticRoot || explicitRoot !== undefined) && (explicitRoot === undefined || (isAbsolute(explicitRoot) && inside(resolve(explicitRoot), resolve(trustedSource.path))))) {
+            const sourceReal = await hostFs.realpath(trustedSource.path).catch(() => undefined);
+            const dirReal = sourceReal !== undefined ? dirname(sourceReal) : await hostFs.realpath(dirname(trustedSource.path)).catch(() => undefined);
+            if (dirReal !== undefined) {
+              const targetFile = sourceReal ?? join(dirReal, entryPath);
+              let candidateRoot = dirReal;
+              let rootValid = true;
+              if (explicitRoot !== undefined) {
+                const resolvedExplicit = await hostFs.realpath(explicitRoot).catch(() => undefined);
+                if (resolvedExplicit === undefined || resolvedExplicit === parse(resolvedExplicit).root || !inside(resolvedExplicit, targetFile) || relative(resolvedExplicit, targetFile) === '') {
+                  rootValid = false;
+                } else {
+                  candidateRoot = resolvedExplicit;
+                }
+              }
+              if (rootValid) {
+                const homes = explicitRoot === undefined ? await privateHomes : [];
+                const documentHome = homes.find((home) => inside(home, candidateRoot));
+                if (explicitRoot === undefined && documentHome === undefined && dirname(candidateRoot) !== candidateRoot) {
+                  const hint = trustedSource.workspaceRoot;
+                  const workspaceRoot = hint !== undefined && isAbsolute(hint) && (inside(hint, candidateRoot) || inside(hint, trustedSource.path))
+                    ? await hostFs.realpath(hint).catch(() => undefined)
+                    : undefined;
+                  if (workspaceRoot !== undefined && workspaceRoot !== parse(workspaceRoot).root && inside(workspaceRoot, candidateRoot)) candidateRoot = workspaceRoot;
+                  else candidateRoot = await nearestProjectRoot(hostFs, candidateRoot, options.registeredRoots?.().catch((error: unknown) => {
+                    app.log.warn({ err: error }, 'HTML preview could not read registered workspace roots');
+                    return [];
+                  }));
+                }
+                const relEntry = explicitRoot === undefined
+                  ? relative(candidateRoot, targetFile)
+                  : relative(resolve(explicitRoot), resolve(trustedSource.path));
+                if (relEntry !== '' && !relEntry.startsWith('..') && !isAbsolute(relEntry)) {
+                  entryPath = relEntry.split(sep).join('/');
+                  root = candidateRoot;
+                  fileOnly = documentHome !== undefined || candidateRoot === parse(candidateRoot).root ? targetFile : undefined;
+                  excludedRoots = fileOnly === undefined ? homes : [];
+                }
+              }
+            }
+          }
+        }
+        const id = randomBytes(32).toString('hex'); const expiresAt = Date.now() + TTL;
+        local.set(id, { root, fileOnly, sessionHtml: { bytes, mime: resolvedMime, entryPath }, excludedRoots, expiresAt });
+        try {
+          const url = await documentUrl(id, entryPath);
+          return { preview_id: id, expires_at: expiresAt, sandbox: HTML_PREVIEW_SANDBOX, url };
+        } catch (error) { release(id); throw error; }
+      } finally {
+        await opened.operation?.dispose();
+      }
+    }
+    if (input.path === undefined) {
+      throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
+    }
     const explicitRoot = input.root ?? (allowAutomaticRoot ? undefined : input.workspace_root);
     if (!isAbsolute(input.path) || (!allowAutomaticRoot && explicitRoot === undefined) || (explicitRoot !== undefined && !isAbsolute(explicitRoot))) {
       throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
@@ -150,6 +245,15 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   };
   const serveLocal = async (id: string, path: string, req: FastifyRequest, reply: FastifyReply) => {
     const entry = entryOf(id);
+    if (entry.sessionHtml !== undefined) {
+      const normalized = resourcePath(path);
+      if (normalized === entry.sessionHtml.entryPath) {
+        reply.header('accept-ranges', 'bytes').type(entry.sessionHtml.mime);
+        reply.header('content-length', entry.sessionHtml.bytes.byteLength);
+        return reply.send(entry.sessionHtml.bytes);
+      }
+      if (entry.root === '') throw new AdmissionError(404, 'preview_resource_not_found');
+    }
     const candidate = resolve(entry.root, resourcePath(path));
     if (entry.fileOnly !== undefined && candidate !== entry.fileOnly) throw new AdmissionError(403, 'preview_path_outside_root');
     const canonical = await hostFs.realpath(candidate);
@@ -225,7 +329,9 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     try {
       if (peerAudience(req) !== undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
       requireLocalClient(req);
-      return await reply.send(okEnvelope(await open(req.body), req.id));
+      return await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) =>
+        reply.send(okEnvelope(await open(req.body, signal), req.id)),
+      );
     } catch (error) { return sendError(error, reply); }
   });
   app.delete('/api/fs::html-preview/:previewId', async (req, reply) => {

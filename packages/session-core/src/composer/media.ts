@@ -31,6 +31,8 @@ export interface MediaRef {
   readonly size?: number;
   /** Canonical session-media or staged-upload id, resolved through the session. */
   readonly fileId?: string;
+  /** Host-persisted attachment source identity for disambiguating identical blobs sent from different directories. */
+  readonly sourceId?: string;
   /**
    * The transcript window omitted this attachment's source (too large or an
    * inline data URL); read it by reference when the user opens it.

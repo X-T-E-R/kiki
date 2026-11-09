@@ -26,19 +26,33 @@ import { memo, useMemo, type ReactNode } from 'react';
 import type { MessageAttachment, MessageBlock } from '@kiki/session-core/session';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { formatBytes } from '@kiki/session-core/composer/media';
+import type { I18nKey } from '@kiki/session-core/i18n';
 
+import { openExternalUrl, useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { streamingMessageText } from '../../lib/partialJson';
+import { useOptionalConnection } from '../../state/connection';
 import { Markdown } from '../Markdown';
 import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, MESSAGE_TEXT_ROOTS } from '../ContentContinuation';
+import { isRemoteConnection } from '../imageActions';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
-import { Icon } from '../icons';
+import { Icon, type IconName } from '../icons';
 import { DeliveryNotes, withheldKinds } from './messageDelivery';
 import {
-  attachmentDisplayName, attachmentReceiptKind, isVoiceIntent, messageMediaKind, messageMediaRef, type MessageMediaKind,
+  attachmentDisplayName,
+  attachmentReceiptKind,
+  extractMessageWebLinks,
+  isVoiceIntent,
+  messageAttachmentSubtype,
+  messageMediaKind,
+  messageMediaRef,
+  resolveSameSessionAttachmentPath,
+  type MessageAttachmentSubtype,
+  type MessageMediaKind,
+  type MessageWebLink,
 } from './messageMedia';
 
 export interface MessageSpeaker {
@@ -94,38 +108,222 @@ export function SpeakerHead({
   );
 }
 
-function attachmentDetail(attachment: MessageAttachment): string {
-  return [attachment.size === undefined ? undefined : formatBytes(attachment.size), attachment.mimeType]
-    .filter((part): part is string => part !== undefined).join(' · ');
+interface SubtypeStyle {
+  readonly badge: string;
+  readonly icon: IconName;
+  readonly labelKey: I18nKey;
+  readonly badgeClass: string;
 }
 
-function AttachmentCard({ attachment, kind, readable }: { readonly attachment: MessageAttachment; readonly kind: MessageMediaKind; readonly readable: boolean }) {
+const SUBTYPE_STYLE: Readonly<Record<MessageAttachmentSubtype, SubtypeStyle>> = {
+  html: {
+    badge: 'HTML',
+    icon: 'web',
+    labelKey: 'message.media.html',
+    badgeClass: 'border-accent/35 bg-accent/[0.08] text-accent',
+  },
+  pdf: {
+    badge: 'PDF',
+    icon: 'read',
+    labelKey: 'message.media.pdf',
+    badgeClass: 'border-danger/30 bg-danger/[0.07] text-danger',
+  },
+  docx: {
+    badge: 'DOCX',
+    icon: 'read',
+    labelKey: 'message.media.docx',
+    badgeClass: 'border-hairline-strong bg-ink/[0.05] text-ink-soft',
+  },
+  xlsx: {
+    badge: 'XLSX',
+    icon: 'board',
+    labelKey: 'message.media.xlsx',
+    badgeClass: 'border-sage-rule/50 bg-sage-card text-sage-ink',
+  },
+  pptx: {
+    badge: 'PPTX',
+    icon: 'board',
+    labelKey: 'message.media.pptx',
+    badgeClass: 'border-amber-rule/50 bg-amber-card text-amber-ink',
+  },
+  csv: {
+    badge: 'CSV',
+    icon: 'board',
+    labelKey: 'message.media.csv',
+    badgeClass: 'border-sage-rule/50 bg-sage-card text-sage-ink',
+  },
+  markdown: {
+    badge: 'MD',
+    icon: 'notes',
+    labelKey: 'message.media.markdown',
+    badgeClass: 'border-hairline-strong bg-ink/[0.05] text-ink-soft',
+  },
+  code: {
+    badge: 'CODE',
+    icon: 'terminal',
+    labelKey: 'message.media.code',
+    badgeClass: 'border-hairline-strong bg-ink/[0.05] text-ink-soft',
+  },
+  archive: {
+    badge: 'ZIP',
+    icon: 'folder',
+    labelKey: 'message.media.archive',
+    badgeClass: 'border-hairline bg-ink/[0.04] text-ink-faint',
+  },
+  file: {
+    badge: 'FILE',
+    icon: 'file',
+    labelKey: 'message.media.file',
+    badgeClass: 'border-hairline bg-ink/[0.04] text-ink-faint',
+  },
+};
+
+function attachmentDetail(
+  attachment: MessageAttachment,
+  subtype: MessageAttachmentSubtype,
+  readable: boolean,
+  t: (key: I18nKey) => string,
+): string {
+  const typeLabel = t(SUBTYPE_STYLE[subtype].labelKey);
+  const sizeLabel = attachment.size === undefined ? undefined : formatBytes(attachment.size);
+  const crossSessionLabel = readable ? undefined : t('message.media.crossSession');
+  return [typeLabel, sizeLabel, crossSessionLabel]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join(' · ');
+}
+
+function AttachmentCard({
+  attachment,
+  kind,
+  readable,
+}: {
+  readonly attachment: MessageAttachment;
+  readonly kind: MessageMediaKind;
+  readonly readable: boolean;
+}) {
   const { t } = useI18n();
   const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const remote = isRemoteConnection(connection);
   const name = attachmentDisplayName(attachment);
-  const detail = attachmentDetail(attachment);
+  const subtype = messageAttachmentSubtype(attachment);
+  const style = SUBTYPE_STYLE[subtype];
+  const detail = attachmentDetail(attachment, subtype, readable, t);
   const openable = preview !== null && readable;
+  const hostPath = useMemo(
+    () => (subtype === 'html' ? resolveSameSessionAttachmentPath(attachment, { readable, remote, cwd: preview?.cwd }) : undefined),
+    [attachment, readable, remote, subtype, preview?.cwd],
+  );
+  const openAttachment = () => {
+    if (!openable) return;
+    const ref = messageMediaRef(attachment, kind, hostPath);
+    if (preview.openAttachmentInWorkspace !== undefined) {
+      preview.openAttachmentInWorkspace(ref);
+    } else {
+      preview.openAttachment(ref);
+    }
+  };
+
   return (
-    <div data-message-attachment={attachment.blobId} className="flex max-w-full items-center gap-2 rounded-lg bg-panel py-2 pr-2 pl-3 ring-1 ring-hairline sm:max-w-[360px]">
-      <span className="text-ink-faint"><Icon name="file" size={16} /></span>
+    <div
+      data-message-attachment={attachment.blobId}
+      data-message-attachment-subtype={subtype}
+      data-message-attachment-readable={readable ? 'true' : 'false'}
+      onClick={openable ? openAttachment : undefined}
+      className={`flex max-w-full items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors sm:max-w-[400px] ${
+        openable ? 'cursor-pointer hover:ring-hairline-strong' : 'opacity-80'
+      }`}
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
+        <Icon name={style.icon} size={14} />
+      </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[12.5px] text-ink" title={attachment.path}>{name}</span>
-        {detail !== '' ? <span className="block truncate text-[11.5px] text-ink-faint">{detail}</span> : null}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide ${style.badgeClass}`}>
+            {style.badge}
+          </span>
+          <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={readable ? attachment.path : name}>
+            {name}
+          </span>
+        </span>
+        {detail !== '' ? (
+          <span className="mt-0.5 block truncate text-[11.5px] text-ink-faint">{detail}</span>
+        ) : null}
       </span>
       {openable ? (
         <button
           type="button"
           data-message-attachment-open
-          onClick={() => {
-            // The receipt's blob id is already a canonical session-media id
-            // (`blobref:<agent>:<sha>`); it is passed through untouched.
-            preview.openAttachment(messageMediaRef(attachment, kind));
+          onClick={(event) => {
+            event.stopPropagation();
+            openAttachment();
           }}
-          className="min-h-8 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
         >
           {t('message.openAttachment')}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+function WebLinkPreviewCard({ link }: { readonly link: MessageWebLink }) {
+  const host = useHost();
+  const { t } = useI18n();
+  const preview = useMediaPreview();
+  const openInWorkspace = () => {
+    if (preview?.openWeb !== undefined) {
+      preview.openWeb(link.url, link.title);
+    } else {
+      void openExternalUrl(host, link.url, t('common.popupBlocked'));
+    }
+  };
+  return (
+    <div
+      data-message-web-preview={link.url}
+      onClick={openInWorkspace}
+      className="flex max-w-full cursor-pointer items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors hover:ring-hairline-strong sm:max-w-[400px]"
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
+        <Icon name="compass" size={14} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0 rounded border border-hairline-strong bg-ink/[0.05] px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide text-ink-soft">
+            WEB
+          </span>
+          <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={link.url}>
+            {link.title}
+          </span>
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[11px] text-ink-faint">
+          {link.hostname} · {t('message.media.web')}
+        </span>
+      </span>
+      <button
+        type="button"
+        data-message-web-open
+        onClick={(event) => {
+          event.stopPropagation();
+          openInWorkspace();
+        }}
+        className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        {t('message.openAttachment')}
+      </button>
+      <button
+        type="button"
+        data-message-web-external
+        title={t('message.openInBrowser')}
+        aria-label={t('message.openInBrowser')}
+        onClick={(event) => {
+          event.stopPropagation();
+          void openExternalUrl(host, link.url, t('common.popupBlocked'));
+        }}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        <Icon name="external" size={12} />
+      </button>
     </div>
   );
 }
@@ -253,6 +451,7 @@ export const MessageRow = memo(function MessageRow({
   const visual = attachments.filter((attachment) => readable
     && (messageMediaKind(attachment) === 'image' || messageMediaKind(attachment) === 'video'));
   const stacked = attachments.filter((attachment) => !visual.includes(attachment));
+  const webLinks = useMemo(() => (sending ? [] : extractMessageWebLinks(text)), [sending, text]);
   const spokenElsewhere = block.reached === 'elsewhere';
   const unconfirmed = block.status === 'pending' || block.reached === 'unconfirmed';
 
@@ -318,7 +517,7 @@ export const MessageRow = memo(function MessageRow({
           {sending || source === undefined ? null : (
             <ContentContinuation source={source} roots={roots} label={t('message.body')} className="mt-1" />
           )}
-          {attachments.length > 0 ? (
+          {attachments.length > 0 || webLinks.length > 0 ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {visual.length > 0 ? (
                 <div className="flex flex-wrap items-start gap-2">
@@ -329,6 +528,9 @@ export const MessageRow = memo(function MessageRow({
               ) : null}
               {stacked.map((attachment) => (
                 <MessageAttachmentView key={attachment.blobId} attachment={attachment} readable={readable} />
+              ))}
+              {webLinks.map((link) => (
+                <WebLinkPreviewCard key={link.url} link={link} />
               ))}
             </div>
           ) : null}

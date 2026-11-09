@@ -33,13 +33,14 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExterna
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
-import { basenameOf, formatBytes, previewKindOf, resolveHostPath, type FileReference } from '@kiki/session-core/composer/media';
+import { basenameOf, formatBytes, previewKindOf, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
-import { useHost, type HostAdapter } from '../host';
+import { openExternalUrl, useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
-import { runToastAction } from '../lib/toasts';
+import { pushToast, runToastAction } from '../lib/toasts';
+import { errorToText } from '@kiki/session-core/util';
 import { useOptionalConnection } from '../state/connection';
 import {
   HostFileEditorController,
@@ -56,11 +57,14 @@ import { ConfirmDialog } from './ConfirmDialog';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
+import { imageDownloadFailureText, isRemoteConnection, saveMediaToDisk } from './imageActions';
+import { safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { ImageViewport } from './ImageViewport';
-import { useMessageImageMenu } from './mediaParts';
+import { attachmentName, MediaLoadFailure, useMessageImageMenu, useSessionMedia } from './mediaParts';
 import { useMediaPreview } from './mediaPreviewContext';
 import { DocumentTabView } from './preview/DocumentTabView';
+import { useSessionMediaPlayback } from './useSessionMediaPlayback';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -315,6 +319,39 @@ export function PreviewWorkspace({
                   if (dragged !== null && dragged !== key) onMove(dragged, index);
                 }}
               />
+            ) : tab.kind === 'attachment' ? (
+              <PreviewAttachmentTab
+                key={key}
+                tabKey={key}
+                item={tab.item}
+                active={isTabActive}
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
+            ) : tab.kind === 'web' ? (
+              <PreviewWebTab
+                key={key}
+                tabKey={key}
+                url={tab.url}
+                title={tab.title}
+                active={isTabActive}
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
             ) : tab.kind === 'skill' ? (
               <PreviewSkillTab
                 key={key}
@@ -418,6 +455,34 @@ export function PreviewWorkspace({
           return <PreviewSkillView key={key} tabKey={key} name={tab.name} visible={isTabActive && !hidden}
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }} />;
+        }
+        if (tab.kind === 'attachment') {
+          if (!seenTabs.has(key)) return null;
+          return (
+            <PreviewAttachmentView
+              key={key}
+              tabKey={key}
+              item={tab.item}
+              sessionId={tab.sessionId ?? sessionId}
+              workspaceRoot={cwd}
+              visible={isTabActive && !hidden}
+              onOpenImage={onOpenImage}
+              position={scrollPositions?.[key]}
+              onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
+            />
+          );
+        }
+        if (tab.kind === 'web') {
+          if (!seenTabs.has(key)) return null;
+          return (
+            <PreviewWebView
+              key={key}
+              tabKey={key}
+              url={tab.url}
+              title={tab.title}
+              visible={isTabActive && !hidden}
+            />
+          );
         }
         if (!seenTabs.has(key)) return null;
         return (
@@ -734,6 +799,167 @@ function PreviewSkillTab({
   );
 }
 
+function PreviewAttachmentTab({
+  tabKey,
+  item,
+  active,
+  onActivate,
+  onClose,
+  onContextMenu,
+  onDragStart,
+  onDrop,
+}: {
+  readonly tabKey: string;
+  readonly item: MediaRef;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onClose: () => void;
+  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onDragStart: () => void;
+  readonly onDrop: () => void;
+}) {
+  const { t } = useI18n();
+  const name = attachmentName(item, undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  return (
+    <div
+      role="tab"
+      tabIndex={0}
+      aria-selected={active}
+      title={item.path ?? name}
+      draggable
+      data-preview-tab={item.fileId ?? item.path ?? name}
+      data-preview-tab-key={tabKey}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', tabKey);
+        onDragStart();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop();
+      }}
+      onClick={onActivate}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+        active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      <span className="min-w-0 truncate">{name}</span>
+      <button
+        type="button"
+        aria-label={`${t('common.close')} ${name}`}
+        onClick={(event) => { event.stopPropagation(); onClose(); }}
+        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+        }`}
+      >
+        <Icon name="close" size={12} />
+      </button>
+    </div>
+  );
+}
+
+function webUrlDisplayLabel(url: string, title?: string): string {
+  if (title !== undefined && title.trim() !== '') return title.trim();
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./iu, '') || url;
+  } catch {
+    return url;
+  }
+}
+
+function PreviewWebTab({
+  tabKey,
+  url,
+  title,
+  active,
+  onActivate,
+  onClose,
+  onContextMenu,
+  onDragStart,
+  onDrop,
+}: {
+  readonly tabKey: string;
+  readonly url: string;
+  readonly title?: string;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onClose: () => void;
+  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onDragStart: () => void;
+  readonly onDrop: () => void;
+}) {
+  const { t } = useI18n();
+  const label = webUrlDisplayLabel(url, title);
+  return (
+    <div
+      role="tab"
+      tabIndex={0}
+      aria-selected={active}
+      title={url}
+      draggable
+      data-preview-tab={url}
+      data-preview-tab-key={tabKey}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', tabKey);
+        onDragStart();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop();
+      }}
+      onClick={onActivate}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+        active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      <Icon name="compass" size={12} className="shrink-0 text-ink-faint" />
+      <span className="min-w-0 truncate">{label}</span>
+      <button
+        type="button"
+        aria-label={`${t('common.close')} ${label}`}
+        onClick={(event) => { event.stopPropagation(); onClose(); }}
+        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+        }`}
+      >
+        <Icon name="close" size={12} />
+      </button>
+    </div>
+  );
+}
+
 function PreviewPanelTab({
   tabKey,
   tab,
@@ -863,6 +1089,12 @@ function TabContextMenu({
         { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath!(filePath) },
       );
     }
+  } else if (tab.kind === 'web') {
+    entries.push(
+      { separator: true },
+      { key: 'copy-url', label: t('preview.copyUrl'), run: () => copyTextToClipboard(tab.url) },
+      { key: 'open-browser', label: t('message.openInBrowser'), run: () => { void openExternalUrl(host, tab.url, t('common.popupBlocked')); } },
+    );
   } else if (tab.kind === 'panel') {
     entries.push({ separator: true });
     if (workspaceNavigation !== undefined) {
@@ -2153,6 +2385,458 @@ function TextTabView({
         )}
       </div>
     </>
+  );
+}
+
+function isAttachmentTextPreview(mime: string, name: string): boolean {
+  if (mime.startsWith('text/')) return true;
+  if (mime === 'application/json' || mime === 'application/xml' || mime.endsWith('+json')) return true;
+  return /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv|xml|html?|xhtml|css|jsx?|tsx?|py|rs|go|java|c|cc|cpp|h|hpp|sh|zsh|fish|ps1)$/iu.test(name);
+}
+
+function isAttachmentHtml(mime: string, name: string): boolean {
+  if (mime === 'text/html' || mime === 'application/xhtml+xml') return true;
+  return /\.(?:html?|xhtml)$/iu.test(name);
+}
+
+function isAttachmentMarkdown(mime: string, name: string): boolean {
+  if (mime === 'text/markdown' || mime === 'text/x-markdown') return true;
+  return /\.(?:md|markdown|mdx)$/iu.test(name);
+}
+
+function isAttachmentDocument(mime: string, name: string): boolean {
+  if (
+    mime === 'application/pdf' ||
+    mime === 'text/csv' ||
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ) {
+    return true;
+  }
+  return /\.(?:pdf|docx|xlsx|pptx|csv)$/iu.test(name);
+}
+
+function PreviewAttachmentView({
+  tabKey,
+  item,
+  sessionId,
+  workspaceRoot,
+  visible,
+  onOpenImage,
+  position,
+  onScrollPosition,
+}: {
+  readonly tabKey: string;
+  readonly item: MediaRef;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
+  readonly visible: boolean;
+  readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
+  readonly position?: PreviewScrollPosition;
+  readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
+}) {
+  const host = useHost();
+  const { t } = useI18n();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const remoteScope = isRemoteConnection(connection);
+  const name = attachmentName(item, undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
+  const mime = (item.mime ?? '').toLowerCase();
+  const html = isAttachmentHtml(mime, name);
+  const markdown = !html && isAttachmentMarkdown(mime, name);
+  const documentPreview = !html && !markdown && isAttachmentDocument(mime, name) && item.fileId !== undefined && sessionId !== undefined;
+  const textPreview = !html && !documentPreview && (markdown || isAttachmentTextPreview(mime, name));
+  const viewable =
+    html ||
+    documentPreview ||
+    textPreview ||
+    item.kind !== 'file' ||
+    /^(?:image|video|audio)\//iu.test(mime);
+
+  const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [attempt, setAttempt] = useState(0);
+  const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
+  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const canonicalItem = useMemo<MediaRef>(
+    () => (item.fileId !== undefined ? { ...item, path: undefined } : item),
+    [item],
+  );
+  const playback = useSessionMediaPlayback(canonicalItem, sessionId, client, remoteScope, attempt);
+  const shouldLoadBytes =
+    viewable &&
+    !documentPreview &&
+    playback.status === 'fallback' &&
+    (!html || mode === 'source' || htmlPreviewState.status === 'error');
+  const load = useSessionMedia(canonicalItem, sessionId, shouldLoadBytes, false, attempt);
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+
+  useEffect(() => {
+    if (load.status === 'ready' || htmlPreviewState.status === 'ready') onReadingReady();
+  }, [load.status, htmlPreviewState.status, mode, onReadingReady]);
+
+  useEffect(() => {
+    if (!html) {
+      setHtmlPreviewState({ status: 'idle' });
+      return undefined;
+    }
+    if (client === undefined) {
+      setHtmlPreviewState({ status: 'loading' });
+      return undefined;
+    }
+    let cancelled = false;
+    let activePreviewId: string | null = null;
+    setHtmlPreviewState({ status: 'loading' });
+    const openHtml = async () => {
+      if (item.fileId !== undefined && sessionId !== undefined) {
+        return await client.openHtmlPreview({
+          session_id: sessionId,
+          file_id: item.fileId,
+          source_id: item.sourceId,
+          name,
+        });
+      }
+      const hostPath = !remoteScope && item.path !== undefined ? resolveHostPath(item.path, workspaceRoot) : undefined;
+      if (hostPath !== undefined) {
+        return await client.openHtmlPreview({ path: hostPath, workspace_root: workspaceRoot });
+      }
+      throw new Error('html_preview_unavailable');
+    };
+    openHtml().then(
+      (response) => {
+        if (cancelled) {
+          void client.closeHtmlPreview(response.preview_id);
+          return;
+        }
+        activePreviewId = response.preview_id;
+        const resolvedUrl = new URL(response.url, client.baseUrl).toString();
+        setHtmlPreviewState({
+          status: 'ready',
+          previewId: response.preview_id,
+          url: resolvedUrl,
+          sandbox: response.sandbox,
+          expiresAt: response.expires_at,
+        });
+        const ttl = Math.max(0, response.expires_at - Date.now());
+        if (expiryTimerRef.current !== null) clearTimeout(expiryTimerRef.current);
+        expiryTimerRef.current = setTimeout(() => {
+          if (!cancelled) setHtmlPreviewState({ status: 'error', error: new Error('html_preview_expired') });
+        }, ttl);
+      },
+      (error: unknown) => {
+        if (!cancelled) setHtmlPreviewState({ status: 'error', error });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (expiryTimerRef.current !== null) {
+        clearTimeout(expiryTimerRef.current);
+        expiryTimerRef.current = null;
+      }
+      if (activePreviewId !== null) {
+        void client.closeHtmlPreview(activePreviewId);
+        activePreviewId = null;
+      }
+    };
+  }, [client, html, item.path, item.fileId, item.sourceId, sessionId, workspaceRoot, remoteScope, name, attempt]);
+
+  const downloadAttachment = useCallback(async () => {
+    try {
+      await saveMediaToDisk(
+        {
+          url: item.url ?? (load.status === 'ready' ? load.url : undefined),
+          path: item.fileId !== undefined ? undefined : item.path,
+          fileId: item.fileId,
+        },
+        downloadName ?? name,
+        host,
+        client as Parameters<typeof saveMediaToDisk>[3],
+        sessionId,
+      );
+    } catch (error) {
+      pushToast({ tone: 'error', text: imageDownloadFailureText(error, t), detail: errorToText(error) });
+    }
+  }, [item.url, item.path, item.fileId, load, downloadName, host, client, sessionId, t]);
+
+  const hasRenderedToggle = html || markdown;
+  const sizeBytes = load.status === 'ready' ? load.bytes.byteLength : item.size;
+
+  return (
+    <div
+      ref={panelRef}
+      role="tabpanel"
+      hidden={!visible}
+      className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
+      data-preview-tabpanel={tabKey}
+      data-attachment-preview
+    >
+      {documentPreview ? (
+        <DocumentTabView
+          source={{
+            kind: 'session-media',
+            fileId: item.fileId!,
+            name,
+            mediaType: item.mime,
+          }}
+          sessionId={sessionId}
+          client={client}
+          active={visible}
+          onDownload={() => { void downloadAttachment(); }}
+        />
+      ) : (
+        <>
+          <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={item.path ?? name}>
+              {name}
+            </span>
+            {sizeBytes !== undefined ? (
+              <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+                {formatBytes(sizeBytes)}
+              </span>
+            ) : null}
+            {hasRenderedToggle ? (
+              <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+                {(['rendered', 'source'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    data-preview-mode={option}
+                    data-md-mode={markdown ? option : undefined}
+                    data-html-mode={html ? option : undefined}
+                    aria-pressed={mode === option}
+                    onClick={() => { setMode(option); }}
+                    className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+                      mode === option
+                        ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                        : 'text-ink-faint hover:text-ink-soft'
+                    }`}
+                  >
+                    {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
+                  </button>
+                ))}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              title={t('media.download')}
+              aria-label={t('media.download')}
+              data-download-file
+              onClick={() => { void downloadAttachment(); }}
+              className={HEADER_ACTION_CLASS}
+            >
+              <Icon name="arrowDown" size={12} />
+            </button>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col">
+            {html && mode === 'rendered' ? (
+          htmlPreviewState.status === 'ready' ? (
+            <SandboxedHtmlPreview url={htmlPreviewState.url} sandbox={htmlPreviewState.sandbox} title={name} />
+          ) : htmlPreviewState.status === 'loading' ? (
+            <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
+              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+              {t('preview.loading')}
+            </p>
+          ) : htmlPreviewState.status === 'error' ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center" data-html-preview-error={classifyHtmlPreviewError(htmlPreviewState.error)}>
+              <p className="max-w-md text-[13px] text-danger" role="alert">{t('preview.failed')}</p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  data-html-reload
+                  onClick={() => { setAttempt((value) => value + 1); }}
+                  className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+                >
+                  {t('preview.htmlReload')}
+                </button>
+                <button
+                  type="button"
+                  data-html-view-source
+                  onClick={() => { setMode('source'); }}
+                  className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-soft hover:border-hairline-strong hover:text-ink"
+                >
+                  {t('preview.source')}
+                </button>
+              </div>
+            </div>
+          ) : null
+        ) : !viewable ? (
+          <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported>
+            <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
+            <button
+              type="button"
+              data-download-file
+              onClick={() => { void downloadAttachment(); }}
+              className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+            >
+              {t('media.download')}
+            </button>
+          </div>
+        ) : playback.status === 'ready' ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+            {playback.mime.startsWith('video/') ? (
+              <video src={playback.url} controls playsInline onError={playback.fail} data-preview-video className="max-h-full max-w-full" />
+            ) : (
+              <audio src={playback.url} controls onError={playback.fail} data-preview-audio className="w-full max-w-2xl" />
+            )}
+          </div>
+        ) : playback.status === 'failed' ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4" data-preview-attachment-error>
+            <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
+          </div>
+        ) : load.status === 'loading' ? (
+          <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('preview.loading')}
+          </p>
+        ) : load.status === 'failed' ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4" data-preview-attachment-error>
+            <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
+          </div>
+        ) : load.mime.startsWith('image/') ? (
+          <ImageViewport
+            src={load.url}
+            alt={name}
+            caption={<span title={name}>{name}</span>}
+            meta={formatBytes(load.bytes.byteLength)}
+            actions={
+              <button
+                type="button"
+                onClick={() => { onOpenImage(load.url, name); }}
+                title={t('media.viewImage')}
+                aria-label={t('media.viewImage')}
+                className={CAPTION_ACTION_CLASS}
+              >
+                <Icon name="eye" size={14} />
+              </button>
+            }
+          />
+        ) : load.mime.startsWith('video/') ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+            <video src={load.url} controls playsInline data-preview-video className="max-h-full max-w-full" />
+          </div>
+        ) : load.mime.startsWith('audio/') ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+            <audio src={load.url} controls data-preview-audio className="w-full max-w-2xl" />
+          </div>
+        ) : textPreview || html ? (
+          (() => {
+            const text = new TextDecoder().decode(load.bytes);
+            if (markdown && mode === 'rendered') {
+              return (
+                <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
+                  <Markdown mode="static" text={text} />
+                </div>
+              );
+            }
+            return (
+              <div className="min-h-0 flex-1 flex-col flex">
+                <CodeEditor
+                  key={`${name}:${attempt}`}
+                  path={name}
+                  value={text}
+                  generation={attempt}
+                  readOnly
+                  onChange={() => {}}
+                  ariaLabel={t('preview.openFile', { name })}
+                />
+              </div>
+            );
+          })()
+        ) : (
+          <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported>
+            <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
+            <button
+              type="button"
+              data-download-file
+              onClick={() => { void downloadAttachment(); }}
+              className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+            >
+              {t('media.download')}
+            </button>
+          </div>
+        )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PreviewWebView({
+  tabKey,
+  url,
+  title,
+  visible,
+}: {
+  readonly tabKey: string;
+  readonly url: string;
+  readonly title?: string;
+  readonly visible: boolean;
+}) {
+  const host = useHost();
+  const { t } = useI18n();
+  const [reloadKey, setReloadKey] = useState(0);
+  const label = webUrlDisplayLabel(url, title);
+  return (
+    <div
+      role="tabpanel"
+      hidden={!visible}
+      className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
+      data-preview-tabpanel={tabKey}
+      data-preview-web-panel={url}
+    >
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <Icon name="compass" size={12} className="shrink-0 text-ink-faint" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-soft" title={url}>
+          {url}
+        </span>
+        <button
+          type="button"
+          title={t('preview.reload')}
+          aria-label={t('preview.reload')}
+          data-web-reload
+          onClick={() => { setReloadKey((k) => k + 1); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+        <button
+          type="button"
+          title={t('preview.copyUrl')}
+          aria-label={t('preview.copyUrl')}
+          data-web-copy-url
+          onClick={() => { void copyTextToClipboard(url); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="copy" size={12} />
+        </button>
+        <button
+          type="button"
+          data-web-open-external
+          onClick={() => { void openExternalUrl(host, url, t('common.popupBlocked')); }}
+          className="shrink-0 inline-flex items-center gap-1 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <span>{t('message.openInBrowser')}</span>
+          <Icon name="external" size={12} />
+        </button>
+      </div>
+      <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/60 px-3 py-1 text-[11px] text-ink-faint">
+        <span className="truncate">{t('preview.webHint')}</span>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col bg-paper">
+        <iframe
+          key={`${url}:${reloadKey}`}
+          title={label}
+          data-preview-web
+          src={url}
+          sandbox="allow-scripts allow-forms allow-popups"
+          referrerPolicy="no-referrer"
+          className="min-h-0 min-w-0 flex-1 border-0 bg-paper"
+        />
+      </div>
+    </div>
   );
 }
 

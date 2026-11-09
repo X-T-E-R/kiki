@@ -1150,6 +1150,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       registeredRoots: async () => (await core.accessor.get(IWorkspacePersistence).load())?.workspaces.map(({ root }) => root) ?? [],
       privateHomes: baseHomeDir === undefined ? [homeDir] : [homeDir, baseHomeDir],
       web,
+      transcriptService,
     });
     registerHostMediaPreviewRoutes(app, core, transcriptService);
   }

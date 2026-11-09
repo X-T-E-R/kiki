@@ -341,6 +341,7 @@ export interface MessageBlock {
 
 export interface MessageAttachment {
   readonly blobId: string;
+  readonly sourceId?: string;
   readonly path: string;
   readonly title?: string;
   readonly mimeType?: string;
