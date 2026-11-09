@@ -76,7 +76,7 @@ room_budget = 12
 
 发给用户的 `SendMessage` 会使用名为 `internal` 的 Kiki 内部信道，以及该会话已启用的 IM 绑定。新增 IM 绑定不会关闭内部信道。HTTP 客户端可用 `rest.imSessions.channelViews(sessionId)` 查看信道。
 
-每个附件至少要有一个已启用信道支持，否则发送会报 `media_unsupported`；没有任何启用目标时会报 `no_destination`。只有部分信道支持某个附件时，Kiki 会向支持端投递该附件，其它端原样发送所支持的内容（如正文），并在工具收据的 `unsupported` 中记录跳过的类型，不向用户正文追加提示或另发通知。收据的 `channels` 逐端返回 `delivered`、`partial`、`unsupported`、`failed` 或 `unknown`；已投递部分内容的信道状态为 `partial`，并在 `unsupported` 中列出跳过的类型。`unknown` 表示无法确认结果，平台可能已经接收，不要自动重发。
+每个附件至少要有一个已启用信道支持，否则发送会报 `media_unsupported`；没有任何启用目标时会报 `no_destination`。只有部分信道支持某个附件时，Kiki 会向支持端投递该附件，其它端原样发送所支持的内容（如正文），并在工具收据的 `unsupported` 中记录跳过的类型，不向用户正文追加提示或另发通知。收据的 `channels` 逐端返回 `delivered`、`partial`、`unsupported`、`failed` 或 `unknown`；因不支持附件而部分投递时，`unsupported` 会列出跳过的类型。`unknown` 表示无法确认结果，平台可能已经接收，不要自动重发。
 
 `voice` 是明确的语音意图，不会静默降为文件。内部信道用音频播放器播放 `audio` 和 `voice`。Discord、Slack、Matrix 支持普通 `audio`，但不支持发送平台原生 `voice`：Discord 和 Slack 把音频作为附件上传，Matrix 使用 `m.audio`。Matrix 仅支持未加密房间，向加密房间发送明文会被拒绝。
 

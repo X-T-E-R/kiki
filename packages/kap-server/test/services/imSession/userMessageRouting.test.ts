@@ -208,7 +208,7 @@ it('preserves an uncertain text send when a later attachment is refused as unsup
   const { bridge } = await boundBridge(adapter, sessionPorts);
   const attempts: string[] = [];
   adapter.sendTextParts = async () => { attempts.push('text'); throw new ImSendError('timeout', [], undefined, 'unknown'); };
-  adapter.sendMedia = async () => { attempts.push('image'); return { status: 'unsupported', unsupported: ['image'] }; };
+  adapter.sendMedia = async () => { attempts.push('image'); return { status: 'unsupported', unsupported: ['image'], detail: 'rejected_by_platform' }; };
   adapter.sendText = async () => { attempts.push('notice'); throw new ImSendError('notice_rejected'); };
   try {
     const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
@@ -216,6 +216,7 @@ it('preserves an uncertain text send when a later attachment is refused as unsup
     expect(receipt.delivery).toBe('pending');
     expect(receipt.channels).toEqual([expect.objectContaining({ status: 'unknown', unsupported: ['image'], detail: 'timeout' })]);
     expect(attempts).toEqual(['text', 'image']);
+    expect(adapter.sent).toHaveLength(0);
   } finally { await bridge.close(); }
 });
 
