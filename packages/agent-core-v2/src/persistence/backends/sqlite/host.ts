@@ -9,14 +9,23 @@ interface Pending {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly operation: StoreOperation;
+  readonly priority: boolean;
   readonly signal?: AbortSignal;
   readonly cancellation?: Int32Array;
   readonly abort?: () => void;
 }
 
+const MAX_PRIORITY_BURST = 4;
+
+function isPriorityRead(operation: StoreOperation): boolean {
+  return operation.type === 'get' && operation.priority === true;
+}
+
 export class QueryStoreWorker {
   private readonly worker: Worker;
+  private readonly priorityWaiting: Pending[] = [];
   private readonly waiting: Pending[] = [];
+  private priorityStreak = 0;
   private active?: Pending;
   private serial = 0;
   private stopped = false;
@@ -44,7 +53,7 @@ export class QueryStoreWorker {
     });
     this.worker.on('error', (error) => this.fail(error));
     this.worker.on('exit', (code) => {
-      if (this.active !== undefined || this.waiting.length > 0) this.fail(new Error(`Query store worker exited (${code})`));
+      if (this.active !== undefined || this.priorityWaiting.length > 0 || this.waiting.length > 0) this.fail(new Error(`Query store worker exited (${code})`));
       this.stopped = true;
     });
   }
@@ -52,7 +61,8 @@ export class QueryStoreWorker {
   request<T>(operation: StoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Query store worker closed'));
-    if (this.waiting.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(new QueryStoreBusyError());
+    const queue = isPriorityRead(operation) ? this.priorityWaiting : this.waiting;
+    if (queue.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(new QueryStoreBusyError());
     return this.enqueue<T>(operation, signal);
   }
 
@@ -60,23 +70,28 @@ export class QueryStoreWorker {
 
   private enqueue<T>(operation: StoreOperation, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      const priority = isPriorityRead(operation);
+      const queue = priority ? this.priorityWaiting : this.waiting;
       const cancellation = signal === undefined ? undefined : new Int32Array(new SharedArrayBuffer(4));
       const abort = signal === undefined ? undefined : (): void => {
-        const index = this.waiting.indexOf(pending);
-        if (index >= 0) { this.waiting.splice(index, 1); signal.removeEventListener('abort', abort!); reject(signal.reason); }
+        const index = queue.indexOf(pending);
+        if (index >= 0) { queue.splice(index, 1); signal.removeEventListener('abort', abort!); reject(signal.reason); }
         else if (this.active === pending) Atomics.store(cancellation!, 0, 1);
       };
-      const pending: Pending = { operation, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
+      const pending: Pending = { operation, priority, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
       signal?.addEventListener('abort', abort!, { once: true });
-      this.waiting.push(pending);
+      queue.push(pending);
       this.pump();
     });
   }
 
   private pump(): void {
     if (this.active !== undefined || this.stopped) return;
-    const pending = this.waiting.shift();
+    const takePriority = this.priorityWaiting.length > 0 &&
+      (this.waiting.length === 0 || this.priorityStreak < MAX_PRIORITY_BURST);
+    const pending = takePriority ? this.priorityWaiting.shift() : this.waiting.shift() ?? this.priorityWaiting.shift();
     if (pending === undefined) { if (this.closing === undefined) this.worker.unref(); return; }
+    this.priorityStreak = pending.priority ? this.priorityStreak + 1 : 0;
     this.active = pending;
     this.worker.ref();
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies StoreRequest); }
@@ -93,13 +108,14 @@ export class QueryStoreWorker {
 
   private fail(error: Error): void {
     this.stopped = true;
-    for (const pending of [this.active, ...this.waiting]) {
+    for (const pending of [this.active, ...this.priorityWaiting, ...this.waiting]) {
       if (pending === undefined) continue;
       if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
       const writing = pending.operation.type === 'batch' || pending.operation.type === 'drop' || pending.operation.type === 'index';
       pending.reject(writing ? Object.assign(new Error(`${error.message}${pending === this.active ? '; write outcome must be reconciled from source' : '; write was not dispatched'}`, { cause: error }), { committed: pending === this.active ? undefined : false }) : error);
     }
     this.active = undefined;
+    this.priorityWaiting.length = 0;
     this.waiting.length = 0;
     void this.worker.terminate();
   }

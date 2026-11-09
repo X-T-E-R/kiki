@@ -256,7 +256,7 @@ export class SessionViewHttpConnection {
         const service = this.browse?.service;
         if (service === undefined) throw new RPCError(50001, 'session view unavailable');
         const roster = await timeSessionViewPhase('cold_roster', fields,
-          () => abortable(service.readColdRoster(fields.sessionId), cold.signal), timing);
+          () => abortable(service.readColdRoster(fields.sessionId, cold.signal), cold.signal), timing);
         cold.signal.throwIfAborted();
         if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
         const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));

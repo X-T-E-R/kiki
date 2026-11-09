@@ -1785,28 +1785,35 @@ export class TranscriptService {
    * to the index; an unreadable or missing metadata file yields an empty
    * roster (best-effort — transcripts work without descriptors).
    */
-  async readColdRoster(sessionId: string): Promise<AgentDescriptor[] | undefined> {
-    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+  async readColdRoster(sessionId: string, signal?: AbortSignal): Promise<AgentDescriptor[] | undefined> {
+    signal?.throwIfAborted();
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId, undefined, signal);
+    signal?.throwIfAborted();
     if (summary === undefined) return undefined;
     const path = join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE);
     let revision: string;
     let meta: SessionMeta;
     try {
-      revision = stateFingerprint(await stat(path, { bigint: true }));
+      const statPromise = stat(path, { bigint: true });
+      revision = stateFingerprint(signal === undefined ? await statPromise : await abortable(statPromise, signal));
       const cached = this.coldRosterCache.get(sessionId);
       if (cached?.revision === revision) {
         this.coldRosterCache.delete(sessionId);
         this.coldRosterCache.set(sessionId, cached);
         return [...cached.roster];
       }
-      meta = JSON.parse(await readFile(path, 'utf-8')) as SessionMeta;
-    } catch {
+      meta = JSON.parse(await readFile(path, { encoding: 'utf-8', signal })) as SessionMeta;
+    } catch (error) {
+      if (signal?.aborted === true || (error instanceof Error && (error.name === 'AbortError' || (error as { code?: unknown }).code === 'ABORT_ERR'))) throw error;
       return [];
     }
+    signal?.throwIfAborted();
     const roster = Object.entries(meta.agents ?? {}).map(([agentId, agentMeta]) =>
       descriptorFromMeta(agentId, agentMeta),
     );
-    const after = await stat(path, { bigint: true }).catch(() => undefined);
+    const afterStat = stat(path, { bigint: true });
+    const after = await (signal === undefined ? afterStat : abortable(afterStat, signal)).catch(() => undefined);
+    signal?.throwIfAborted();
     this.coldRosterCache.delete(sessionId);
     if (after !== undefined && stateFingerprint(after) === revision) {
       this.coldRosterCache.set(sessionId, { revision, roster });

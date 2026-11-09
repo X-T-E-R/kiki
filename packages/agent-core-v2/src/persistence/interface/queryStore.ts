@@ -131,7 +131,7 @@ export interface IQueryStore {
   batchIf?(conditions: readonly WriteCondition[], ops: readonly WriteOp[], staged?: StagedWrite): Promise<boolean>;
   createStaging?(source: string): Promise<QueryStaging>;
   delete(collection: string, key: string): Promise<void>;
-  get<T>(collection: string, key: string, signal?: AbortSignal): Promise<T | undefined>;
+  get<T>(collection: string, key: string, signal?: AbortSignal, options?: { readonly priority?: boolean }): Promise<T | undefined>;
   /** Point reads for several keys; missing keys are absent from the result. */
   getMany<T>(collection: string, keys: readonly string[], signal?: AbortSignal): Promise<Map<string, T>>;
   query<T>(collection: string): IQuery<T>;
@@ -146,7 +146,7 @@ export interface IQueryStore {
   listKeys(collection: string): Promise<readonly string[]>;
   /** Delete the whole collection; a no-op when it does not exist. */
   dropCollection(collection: string): Promise<void>;
-  getCheckpoint(source: string, signal?: AbortSignal): Promise<Checkpoint | undefined>;
+  getCheckpoint(source: string, signal?: AbortSignal, options?: { readonly priority?: boolean }): Promise<Checkpoint | undefined>;
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void>;
   withExclusive?<T>(operation: () => Promise<T>, source?: string): Promise<T>;
   /** Drain and retire cached readers/writers without deleting persisted data; new operations wait for recovery. */

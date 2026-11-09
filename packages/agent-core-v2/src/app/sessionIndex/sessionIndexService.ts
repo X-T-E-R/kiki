@@ -5,6 +5,7 @@ import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { abortable as abortableWithSignal } from '#/_base/utils/abort';
 import { IntervalTimer, TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -79,16 +80,7 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal === undefined) return promise;
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => { reject(signal.reason); };
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
-    );
-  });
+  return signal === undefined ? promise : abortableWithSignal(promise, signal);
 }
 
 function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
@@ -631,7 +623,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   async get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {
     signal?.throwIfAborted();
     return this.withPointReadModel(
-      (generation) => this.getFromReadModel(generation, id, undefined, workspaceId, signal),
+      (generation) => this.getFromReadModel(generation, id, undefined, workspaceId, signal, true),
       () => abortable(this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]), signal),
       signal,
     );
@@ -688,7 +680,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     let manifest: Checkpoint | undefined;
     try {
-      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, signal);
+      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, signal, { priority: true });
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
       if (isQueryStoreBusy(error)) return legacy();
@@ -790,13 +782,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     pending: readonly SessionSummary[] = this.mirror.pending(),
     workspaceId?: string,
     signal?: AbortSignal,
+    priority?: boolean,
   ): Promise<SessionSummary | undefined> {
     signal?.throwIfAborted();
     const queued = pending.find((summary) => summary.id === id);
     if (queued !== undefined) {
       if (workspaceId === undefined || queued.workspaceId === workspaceId) return this.withOwnUpdatedAt(queued, signal);
     } else {
-      const cached: unknown = await this.queryStore.get(sessionCollection(generation), id, signal);
+      const cached: unknown = await this.queryStore.get(sessionCollection(generation), id, signal, { priority });
       if (isSessionSummaryShape(cached)) {
         const summary = stripRecencyField(generation, cached);
         if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary, signal);

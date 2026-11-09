@@ -28,6 +28,7 @@ import {
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import type {
   ConfigWarningItem,
   SessionCreatedEvent,
@@ -935,13 +936,14 @@ export class SessionEventBroadcaster {
 
   async getCursor(sessionId: string, signal?: AbortSignal, indexed = false): Promise<{ seq: number; epoch: string }> {
     signal?.throwIfAborted();
-    const state = await this.ensureState(sessionId);
+    const statePromise = this.ensureState(sessionId);
+    const state = signal === undefined ? await statePromise : await abortable(statePromise, signal);
     signal?.throwIfAborted();
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId, signal, indexed);
       return cold ?? { seq: 0, epoch: '' };
     }
-    await state.queue;
+    await (signal === undefined ? state.queue : abortable(state.queue, signal));
     signal?.throwIfAborted();
     return { seq: state.journal.seq, epoch: state.journal.epoch };
   }

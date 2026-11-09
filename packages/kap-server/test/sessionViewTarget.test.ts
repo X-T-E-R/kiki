@@ -755,9 +755,13 @@ describe('SessionViewTarget', () => {
     const collect = (message: unknown): void => { records.push(message as Record<string, unknown>); };
     timing.subscribe(collect);
     let releaseRoster!: () => void;
+    let passedSignal: AbortSignal | undefined;
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
-      readColdRoster: vi.fn(() => new Promise<never[]>((resolve) => { releaseRoster = () => resolve([]); })),
+      readColdRoster: vi.fn((_sessionId: string, signal?: AbortSignal) => {
+        passedSignal = signal;
+        return new Promise<never[]>((resolve) => { releaseRoster = () => resolve([]); });
+      }),
       readColdPageSnapshot: vi.fn(),
     };
     const send = vi.fn();
@@ -772,7 +776,10 @@ describe('SessionViewTarget', () => {
         input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
       } });
       await vi.waitFor(() => expect(service.readColdRoster).toHaveBeenCalledOnce());
+      expect(passedSignal).toBeInstanceOf(AbortSignal);
+      expect(passedSignal?.aborted).toBe(false);
       connection.receive({ type: 'view_detach', id: 'v1' });
+      expect(passedSignal?.aborted).toBe(true);
       await vi.waitFor(() => expect(records).toContainEqual(expect.objectContaining({
         stage: 'cold_roster', outcome: 'cancelled', signalAborted: true, sessionId: 's1', viewId: 'v1',
       })));

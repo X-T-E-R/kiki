@@ -11,7 +11,7 @@ export interface ReadQuery {
 }
 
 export type StoreOperation =
-  | { readonly type: 'get'; readonly collection: string; readonly keys: readonly string[] }
+  | { readonly type: 'get'; readonly collection: string; readonly keys: readonly string[]; readonly priority?: boolean }
   | { readonly type: 'batch'; readonly ops: readonly WriteOp[]; readonly conditions?: readonly WriteCondition[]; readonly staged?: StagedWrite }
   | { readonly type: 'query'; readonly query: ReadQuery }
   | { readonly type: 'keys'; readonly collection: string }

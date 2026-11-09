@@ -3,6 +3,7 @@ import { join } from 'pathe';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { abortable } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
 import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
@@ -57,7 +58,8 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
 
   private async request<T>(operation: StoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
-    const worker = await this.ready();
+    const ready = this.ready();
+    const worker = signal === undefined ? await ready : await abortable(ready, signal);
     signal?.throwIfAborted();
     return worker.request<T>(operation, signal);
   }
@@ -104,7 +106,9 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
   async batch(ops: readonly WriteOp[]): Promise<void> { if (ops.length > 0) await this.request({ type: 'batch', ops }); }
   batchIf(conditions: readonly WriteCondition[], ops: readonly WriteOp[], staged?: StagedWrite): Promise<boolean> { return this.request({ type: 'batch', conditions, ops, staged }); }
   async delete(collection: string, key: string): Promise<void> { await this.batch([{ kind: 'delete', collection, key }]); }
-  async get<T>(collection: string, key: string, signal?: AbortSignal): Promise<T | undefined> { return (await this.getMany<T>(collection, [key], signal)).get(key); }
+  async get<T>(collection: string, key: string, signal?: AbortSignal, options?: { readonly priority?: boolean }): Promise<T | undefined> {
+    return (await this.request<Array<[string, T]>>({ type: 'get', collection, keys: [key], priority: options?.priority }, signal))[0]?.[1];
+  }
   async getMany<T>(collection: string, keys: readonly string[], signal?: AbortSignal): Promise<Map<string, T>> {
     if (keys.length === 0) return new Map();
     return new Map(await this.request<Array<[string, T]>>({ type: 'get', collection, keys }, signal));
@@ -116,7 +120,7 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
   async ensureIndex(collection: string, definition: IndexDef): Promise<void> { await this.request({ type: 'index', collection, definition }); }
   listKeys(collection: string): Promise<readonly string[]> { return this.request({ type: 'keys', collection }); }
   async dropCollection(collection: string): Promise<void> { await this.request({ type: 'drop', collection }); }
-  getCheckpoint(source: string, signal?: AbortSignal): Promise<Checkpoint | undefined> { return this.get('__checkpoint__', source, signal); }
+  getCheckpoint(source: string, signal?: AbortSignal, options?: { readonly priority?: boolean }): Promise<Checkpoint | undefined> { return this.get('__checkpoint__', source, signal, options); }
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> { return this.put('__checkpoint__', source, checkpoint); }
 
   async withExclusive<T>(operation: () => Promise<T>, source?: string): Promise<T> {

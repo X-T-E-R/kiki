@@ -4308,6 +4308,118 @@ describe('FileSessionIndex (read model)', () => {
     expect(at50k.ops).toEqual(at1k.ops);
   });
 
+  it('prioritizes explicit foreground SQLite point reads with bounded fairness, preserves ordinary FIFO order, and cancels queued waiters without degrading', async () => {
+    overrideScopedService(LifecycleScope.App, IQueryStore, SqliteQueryStore, ScopeActivation.OnDemand, 'storage');
+    await seedSession('target', { title: 'open-me', createdAt: 1, updatedAt: 10 });
+    const store = build();
+    expect((await store.prepare()).state).toBe('ready');
+
+    const fifoOrder: string[] = [];
+    const fifoPayload = { blob: 'f'.repeat(16_384) };
+    const fifoFirstWrite = queryStore.batch(
+      Array.from({ length: 20 }, (_, j) => ({
+        kind: 'put' as const,
+        collection: 'fifo:test',
+        key: `w1-${j}`,
+        value: fifoPayload,
+      })),
+    ).then(() => { fifoOrder.push('write-1'); });
+    const fifoOrdinaryRead = queryStore.get<{ blob: string }>('fifo:test', 'w1-0').then((val) => {
+      fifoOrder.push(`ordinary-read:${val !== undefined}`);
+    });
+    const fifoSecondWrite = queryStore.put('fifo:test', 'w2', { ok: true }).then(() => {
+      fifoOrder.push('write-2');
+    });
+    await Promise.all([fifoFirstWrite, fifoOrdinaryRead, fifoSecondWrite]);
+    expect(fifoOrder).toEqual(['write-1', 'ordinary-read:true', 'write-2']);
+
+    const order: string[] = [];
+    const backgroundPayload = { blob: 'x'.repeat(32_768) };
+    const backgroundBatches: Promise<void>[] = [];
+    for (let i = 0; i < 40; i++) {
+      const idx = i;
+      backgroundBatches.push(
+        queryStore.batch(
+          Array.from({ length: 25 }, (_, j) => ({
+            kind: 'put' as const,
+            collection: 'background:heavy',
+            key: `row-${idx}-${j}`,
+            value: backgroundPayload,
+          })),
+        ).then(() => {
+          order.push(`batch-${idx}`);
+        }),
+      );
+    }
+
+    const cancelledController = new AbortController();
+    const cancelledRead = store.get('target', undefined, cancelledController.signal).then(
+      () => 'resolved',
+      (error: unknown) => error,
+    );
+    const workerHost = (queryStore as unknown as { worker: { priorityWaiting: unknown[]; waiting: unknown[] } }).worker;
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(workerHost.waiting.length).toBeGreaterThan(20);
+    expect(workerHost.priorityWaiting.length).toBe(1);
+    cancelledController.abort(new DOMException('View detached', 'AbortError'));
+    expect(workerHost.priorityWaiting.length).toBe(0);
+    const cancelOutcome = await cancelledRead;
+    expect(cancelOutcome).toBeInstanceOf(DOMException);
+    expect((cancelOutcome as DOMException).name).toBe('AbortError');
+
+    const pointStart = performance.now();
+    const found = await store.get('target');
+    const pointMs = performance.now() - pointStart;
+    order.push('point-read');
+
+    const streamReads = Array.from({ length: 12 }, (_, idx) =>
+      store.get('target').then((res) => {
+        order.push(`priority-stream-${idx}`);
+        return res;
+      }),
+    );
+
+    await Promise.all([...backgroundBatches, ...streamReads]);
+    const pointPosition = order.indexOf('point-read');
+    const lastStreamIndex = order.lastIndexOf('priority-stream-11');
+    const batchesDuringPriorityStream = order
+      .slice(0, lastStreamIndex)
+      .filter((entry) => entry.startsWith('batch-')).length;
+    console.log(
+      `[contention] sqlite point-read ${JSON.stringify({ pointMs: Math.round(pointMs * 100) / 100, pointPosition, batchesDuringPriorityStream, totalQueuedBatches: backgroundBatches.length })}`,
+    );
+
+    expect(found).toMatchObject({ id: 'target', workspaceId, title: 'open-me', updatedAt: 10, ownUpdatedAt: 10 });
+    expect(pointPosition).toBeLessThan(backgroundBatches.length / 2);
+    expect(batchesDuringPriorityStream).toBeGreaterThanOrEqual(3);
+    expect(store.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+  });
+
+  it('releases an aborted caller waiting on SqliteQueryStore.ready() recovery without cancelling sibling waiters', async () => {
+    overrideScopedService(LifecycleScope.App, IQueryStore, SqliteQueryStore, ScopeActivation.OnDemand, 'storage');
+    await seedSession('s-ready', { title: 'ready-session', createdAt: 1, updatedAt: 5 });
+    const store = build();
+    await store.prepare();
+
+    const holdRecovery = deferred<void>();
+    (queryStore as unknown as { recovery: Promise<void> }).recovery = holdRecovery.promise;
+
+    const abortController = new AbortController();
+    const abortedWaiter = store.get('s-ready', undefined, abortController.signal);
+    const siblingWaiter = store.get('s-ready');
+
+    abortController.abort(new DOMException('Caller cancelled during recovery wait', 'AbortError'));
+    await expect(abortedWaiter).rejects.toMatchObject({ name: 'AbortError' });
+
+    (queryStore as unknown as { recovery: Promise<void> | undefined }).recovery = undefined;
+    holdRecovery.resolve();
+    await expect(siblingWaiter).resolves.toMatchObject({ id: 's-ready', title: 'ready-session' });
+    expect(store.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+  });
+
   it('cancels an in-flight fallback point read when aborted without affecting sibling callers', async () => {
     const probing = deferred<void>();
     const releaseProbe = deferred<void>();
