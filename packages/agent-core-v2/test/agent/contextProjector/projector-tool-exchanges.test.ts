@@ -4,6 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService, type ILogger } from '#/_base/log/log';
+import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHandoff';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentContextProjectorService } from '#/agent/contextProjector/contextProjector';
 import { AgentContextProjectorService } from '#/agent/contextProjector/contextProjectorService';
@@ -151,6 +152,31 @@ describe('projector tool-exchange normalization', () => {
     const history = [user('go'), assistant('', ['c1']), toolResult('c1', 'one'), user('next')];
     expect(shape(history)).toEqual(['user', 'assistant', 'tool:c1', 'user']);
     expect(project(history)).toHaveLength(4);
+  });
+
+  it('uses the compaction summary to anchor leading retained tool exchanges', () => {
+    const toolImage = { type: 'image_url', imageUrl: { url: 'https://example.test/trace.png' } } as const;
+    const history: ContextMessage[] = [
+      { ...user('Inspect the trace'), origin: { kind: 'system_trigger', name: 'subagent' } },
+      assistant('', ['image']),
+      { ...toolResult('image', 'Trace screenshot'), content: [toolImage] },
+      assistant('Keep working'),
+      assistant('', ['recent']),
+      toolResult('recent', 'Recent result'),
+    ];
+    const compacted = buildContextCompactionShape(history, { summary: 'Continue the trace analysis.', compactedCount: 4, tokensBefore: 20_000 }).messages;
+    expect(compacted[0]?.role).toBe('assistant');
+    for (const messages of [project(compacted), projectStrict(compacted)]) {
+      expect(messages.map(message => [message.role, message.toolCallId])).toEqual([
+        ['user', undefined], ['assistant', undefined], ['tool', 'image'], ['assistant', undefined], ['tool', 'recent'],
+      ]);
+      expect(messages[0]?.content).toEqual(compacted.find(message => message.origin?.kind === 'compaction_summary')?.content);
+      expect(messages[2]?.content).toContainEqual(toolImage);
+      expect(messages[4]?.content).toEqual(toolResult('recent', 'Recent result').content);
+    }
+    expect(shape([user('Original request'), ...compacted])).toEqual([
+      'user', 'assistant', 'tool:image', 'user', 'assistant', 'tool:recent',
+    ]);
   });
 
   it('merges same-step user messages without changing canonical identities', () => {

@@ -73,11 +73,8 @@ export function project(
   options?: ProjectOptions,
 ): Message[] {
   const layout = sliceLayout(history);
-  return flattenBlocks(
-    applyToolResultAppendix(history, pairBlocks(history, layout, onAnomaly), options),
-    layout,
-    onAnomaly,
-  );
+  const blocks = applyToolResultAppendix(history, pairBlocks(history, layout, onAnomaly), options);
+  return flattenBlocks(anchorCompactedToolHistory(blocks), layout, onAnomaly);
 }
 
 export function projectStrict(
@@ -136,6 +133,16 @@ type Block =
     }
   | { readonly kind: 'exchange'; readonly exchange: Exchange }
   | { readonly kind: 'boundary' };
+
+function anchorCompactedToolHistory(blocks: readonly Block[]): readonly Block[] {
+  const first = blocks.find((block) => block.kind !== 'boundary');
+  if (first?.kind !== 'exchange' || first.exchange.source.role !== 'assistant') return blocks;
+
+  const firstUserIndex = blocks.findIndex((block) => block.kind === 'message' && block.source.role === 'user');
+  const summary = blocks[firstUserIndex];
+  if (summary?.kind !== 'message' || summary.source.origin?.kind !== 'compaction_summary') return blocks;
+  return [summary, ...blocks.slice(0, firstUserIndex), ...blocks.slice(firstUserIndex + 1)];
+}
 
 function pairBlocks(
   history: readonly ContextMessage[],
