@@ -1236,11 +1236,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const admittedGeneration = managedTokenStore?.generation();
     let admitted: Awaited<ReturnType<ConnectionAudience['authorizeSocket']>> = 'local';
     let browser: WebPrincipal | undefined;
+    let candidate: string | null = null;
     if (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined || peerRequests.has(req)) {
       const header = req.headers.authorization;
       const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
       const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
-      const candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
+      candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
       try {
         if (header === undefined && !hasBearerProtocol) {
           if (peerRequests.has(req)) throw new AdmissionError(401, 'connection_not_approved');
@@ -1277,7 +1278,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       if (admitted !== 'local') {
         const detach = admission.attach(admitted.grantId, () => { ws.terminate(); });
         ws.once('close', detach);
-        try { admission.authorize((req.headers['x-kiki-connection-grant'] as string | undefined) ?? req.headers['sec-websocket-protocol']?.split(',').find((p) => p.trim().startsWith('kiki.grant.'))?.trim().slice(11)); }
+        try { admission.authorize(peerGrant(req.headers) ?? candidate ?? undefined); }
         catch { ws.close(4001, 'connection revoked'); return; }
       }
       wss.emit('connection', ws, req);

@@ -1662,6 +1662,9 @@ ${origin}
         Bridge(WebView v) { this.v = v; }
         String getLocalUrl() { return "https://localhost"; }
         WebView getWebView() { return v; }
+        void removeWebViewListener(WebViewListener ignored) {
+            if (this.listener == ignored) this.listener = null;
+        }
         void addWebViewListener(WebViewListener listener) { this.listener = listener; }
     }
     private static abstract class WebViewListener {
@@ -1879,6 +1882,35 @@ ${origin}
         }
         if (constantTimeEquals(resProof1, resProof2)) {
             throw new AssertionError("Replayed response proof from nonce1 matched nonce2");
+        }
+
+        // Case 8: Capacitor Bridge.Builder.create() overwrites bridge.webViewListeners after plugin.load();
+        // ensureWebViewListenersRegistered() restores the listener so onPageCommitVisible / onPageLoaded
+        // deliver the peer credential, and buildCredentialDeliveryScript guards duplicate same-nonce delivery.
+        NativeDeliveryCheck p8 = new NativeDeliveryCheck();
+        p8.pendingAuthEpoch = 13;
+        p8.activeAuthOrigin = ORIGIN;
+        p8.activeAuthServerId = "home-a";
+        p8.load();
+        if (p8.bridge.listener == null) throw new AssertionError("Expected load() to register WebViewListener");
+        p8.bridge.listener = null; // Simulate Bridge.Builder.create() calling bridge.setWebViewListeners(emptyList)
+        p8.ensureWebViewListenersRegistered();
+        if (p8.bridge.listener == null) throw new AssertionError("Expected ensureWebViewListenersRegistered() to restore clobbered WebViewListener");
+        p8.view.documentId = "Restored-Listener-Document";
+        Reply restoredCommit = new Reply("home-a", "host-a");
+        p8.replies.add(restoredCommit);
+        p8.bridge.listener.onPageCommitVisible(p8.view, p8.view.url);
+        if (!restoredCommit.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("Restored listener onPageCommitVisible did not start handshake");
+        restoredCommit.release.countDown();
+        Runnable restoredDelivery = p8.view.posted.poll(5, TimeUnit.SECONDS);
+        if (restoredDelivery == null) throw new AssertionError("Restored listener did not schedule credential delivery");
+        restoredDelivery.run();
+        if (!p8.view.deliveries.equals(Arrays.asList("Restored-Listener-Document"))) {
+            throw new AssertionError("Expected restored listener to deliver credential, got: " + p8.view.deliveries);
+        }
+        String deliveredScript = p8.view.deliveredScripts.get(0);
+        if (!deliveredScript.contains("__kikiShellDeliveredNonce===n") || !deliveredScript.contains("__kikiShellDeliveredNonce=n")) {
+            throw new AssertionError("Expected buildCredentialDeliveryScript to guard duplicate same-nonce delivery: " + deliveredScript);
         }
     }
 }

@@ -73,7 +73,16 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['pluginMediaService', new Set(['sources', 'catalog', 'providers', 'capabilities', 'voices', 'jobs', 'job'])],
   ['agentPluginMediaService', new Set(['cancel', 'resume'])],
 ]);
-const peerEventServices = new Set(['roomService', 'configService', 'sessionMetadata', 'sessionSkillCatalog']);
+const peerEventServices = new Set([
+  'roomService',
+  'configService',
+  'providerService',
+  'modelService',
+  'pluginService',
+  'sessionExecutionControl',
+  'sessionMetadata',
+  'sessionSkillCatalog',
+]);
 /**
  * Whether an approved GUI peer may invoke this engine procedure.
  *

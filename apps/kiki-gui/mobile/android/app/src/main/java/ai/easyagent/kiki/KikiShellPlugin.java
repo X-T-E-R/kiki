@@ -31,7 +31,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -78,6 +80,7 @@ public class KikiShellPlugin extends Plugin {
     private volatile long pendingAuthEpoch = 0;
     private volatile long documentNavEpoch = 0;
     private volatile String currentDocumentNavNonce;
+    private WebViewListener shellWebViewListener;
 
     private static final class HandshakeResult {
         final boolean ok;
@@ -111,25 +114,7 @@ public class KikiShellPlugin extends Plugin {
     @Override
     public void load() {
         capturePairIntent(getActivity().getIntent());
-        getBridge()
-            .addWebViewListener(
-                new WebViewListener() {
-                    @Override
-                    public void onPageStarted(WebView view) {
-                        invalidateCurrentDocumentNavigation();
-                    }
-
-                    @Override
-                    public void onPageCommitVisible(WebView view, String url) {
-                        deliverCommittedToken(view, url, false);
-                    }
-
-                    @Override
-                    public void onPageLoaded(WebView view) {
-                        deliverCommittedToken(view, view == null ? null : view.getUrl(), true);
-                    }
-                }
-            );
+        ensureWebViewListenersRegistered();
         getActivity()
             .getOnBackPressedDispatcher()
             .addCallback(
@@ -147,6 +132,31 @@ public class KikiShellPlugin extends Plugin {
                     }
                 }
             );
+    }
+
+    List<WebViewListener> ensureWebViewListenersRegistered() {
+        if (shellWebViewListener == null) {
+            shellWebViewListener =
+                new WebViewListener() {
+                    @Override
+                    public void onPageStarted(WebView view) {
+                        invalidateCurrentDocumentNavigation();
+                    }
+
+                    @Override
+                    public void onPageCommitVisible(WebView view, String url) {
+                        deliverCommittedToken(view, url, false);
+                    }
+
+                    @Override
+                    public void onPageLoaded(WebView view) {
+                        deliverCommittedToken(view, view == null ? null : view.getUrl(), true);
+                    }
+                };
+        }
+        getBridge().removeWebViewListener(shellWebViewListener);
+        getBridge().addWebViewListener(shellWebViewListener);
+        return Collections.singletonList(shellWebViewListener);
     }
 
     /** The entry just below a server's first page is the launcher: leaving it is not "back". */
@@ -405,7 +415,10 @@ public class KikiShellPlugin extends Plugin {
             activeAuthOrigin = origin;
             activeAuthServerId = serverId;
             prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
-            getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(cleanEntry));
+            getBridge().getWebView().post(() -> {
+                ensureWebViewListenersRegistered();
+                getBridge().getWebView().loadUrl(cleanEntry);
+            });
             JSObject result = new JSObject();
             result.put("ok", true);
             result.put("origin", origin);
@@ -639,11 +652,13 @@ public class KikiShellPlugin extends Plugin {
             ";if(!t)return false;try{var raw=window.localStorage.getItem(\"kiki.connection\");var managed=window.localStorage.getItem(\"kiki.shell.managed\")===\"1\";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token===\"string\"?parsed.token.trim():\"\";var pUrl=parsed&&typeof parsed.url===\"string\"?parsed.url.trim():\"\";if(pTok!==\"\"&&(!managed||pUrl!==\"\")){try{window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}" +
             "try{window.localStorage.removeItem(\"kiki.connection\");window.localStorage.removeItem(\"kiki.shell.managed\");}catch(e){}" +
             "try{window.sessionStorage.removeItem(\"kiki.peer.token\");}catch(e){}" +
+            "try{if(doc.__kikiShellDeliveredNonce&&doc.__kikiShellDeliveredNonce===n)return true;}catch(e){}" +
             "try{var used=false;Object.defineProperty(doc,\"__kikiShellStagedCredential\",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:" +
             originJson +
             ",token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:" +
             originJson +
             ",token:t};}catch(e2){return false;}}" +
+            "try{if(n){try{Object.defineProperty(doc,\"__kikiShellDeliveredNonce\",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellDeliveredNonce=n;}}}catch(e){}" +
             "try{window.dispatchEvent(new CustomEvent(\"kiki:shell-token\",{detail:{origin:" +
             originJson +
             ",token:t}}));}catch(e){}return true;}catch(e){return false;}})();"

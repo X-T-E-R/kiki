@@ -101,6 +101,39 @@ describe('short-code pairing on two real servers', () => {
       expect((await targetClient.rest!.threadBridges.status()).inbound).toHaveLength(1);
       const mobileMetaRes = await fetch(`${mobileScanned.endpoint}/api/meta`, { headers: { authorization: `Bearer ${mobileClaimed.peerToken}`, 'x-kiki-connection-grant': mobileClaimed.peerToken } });
       expect(mobileMetaRes.status).toBe(200);
+      const mobileDirectClient = createKlient({ endpoint: mobileScanned.endpoint, token: mobileClaimed.peerToken });
+      try {
+        expect((await mobileDirectClient.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
+        const catalogSubs = [
+          mobileDirectClient.events.on('config.changed', () => undefined),
+          mobileDirectClient.events.on('kosong.models.changed', () => undefined),
+          mobileDirectClient.events.on('kosong.providers.changed', () => undefined),
+          mobileDirectClient.events.on('plugins.reloaded', () => undefined),
+          mobileDirectClient.session('pair-target').events.on('execution.changed', () => undefined),
+        ];
+        try {
+          await Promise.all(catalogSubs.map((sub) => sub.ready));
+          const mobileSnapshot = await new Promise<{ readonly session: { readonly id: string } }>((resolve, reject) => {
+            const timeout = setTimeout(() => { sub.close(); reject(new Error('mobile peer WS view bootstrap timed out')); }, 10_000);
+            const sub = mobileDirectClient.session('pair-target').view.bootstrap!({ transcriptGrades: { main: 'delta' } }, (signal) => {
+              if (signal.type === 'snapshot') {
+                clearTimeout(timeout);
+                sub.close();
+                resolve(signal.snapshot);
+              } else if (signal.type === 'protocolError') {
+                clearTimeout(timeout);
+                sub.close();
+                reject(new Error(signal.detail));
+              }
+            });
+          });
+          expect(mobileSnapshot.session.id).toBe('pair-target');
+        } finally {
+          for (const sub of catalogSubs) sub.dispose();
+        }
+      } finally {
+        await mobileDirectClient.close();
+      }
       const sourceWorkspaces = await source.core.accessor.get(IWorkspaceService).list();
       const targetWorkspaces = await target.core.accessor.get(IWorkspaceService).list();
       const primarySourceWorkspace = sourceWorkspaces.find((ws) => ws.root === sourceWorkDir) ?? sourceWorkspaces[0]!;
