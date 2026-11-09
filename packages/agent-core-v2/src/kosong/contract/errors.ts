@@ -771,9 +771,15 @@ function isUpstreamBodyFieldConsumed(
   return false;
 }
 
+const STREAM_PROTOCOL_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'sequence_number', 'text', 'thinking', 'redacted_thinking', 'reasoning',
+  'reasoning_content', 'encrypted_content', 'delta', 'output', 'output_text',
+]);
+
 function extractUpstreamStructuredDetails(
   body: unknown,
-  context?: UpstreamMappingContext,
+  context: UpstreamMappingContext,
+  protocolPayloadKeys?: ReadonlySet<string>,
 ): Readonly<Record<string, unknown>> | undefined {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined;
   const envelope = body as Record<string, unknown>;
@@ -782,7 +788,7 @@ function extractUpstreamStructuredDetails(
   const extra: Record<string, unknown> = {};
   for (const source of nested === undefined ? [envelope] : [envelope, error]) {
     for (const [key, value] of Object.entries(source)) {
-      if (isSensitiveStatusErrorKey(key)) continue;
+      if (isSensitiveStatusErrorKey(key) || protocolPayloadKeys?.has(key)) continue;
       if (value === undefined || value === null) continue;
       if (isUpstreamBodyFieldConsumed(key, value, context)) continue;
       extra[key] = redactSensitiveValue(value);
@@ -833,7 +839,7 @@ export function providerStreamErrorDetails(
     mappedStatus,
     mappedRequestId,
     displayMessage,
-  });
+  }, STREAM_PROTOCOL_PAYLOAD_KEYS);
   if (upstreamDetails !== undefined) details['upstreamDetails'] = upstreamDetails;
   return details;
 }

@@ -3307,8 +3307,10 @@ describe('Responses safe stream diagnostics', () => {
   it.each(['error', 'response.failed'] as const)('retains direct %s classification and safe event identifiers', async type => {
     const response = finalizedResponse([], 'failed');
     const event = type === 'error'
-      ? { type, code: 'stream_failed', message: 'fixture failure', param: null, request_id: 'event-request', api_key: 'body-secret', text: 'private body' }
-      : { type, response: { ...response, error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure', thinking: 'private reasoning' } } };
+      ? { type, code: 'stream_failed', message: 'fixture failure', param: 'tools[0].name', reason: 'schema_mismatch',
+          request_id: 'event-request', api_key: 'body-secret', text: 'private body', sequence_number: 4 }
+      : { type, response: { ...response, error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure',
+          thinking: 'private reasoning', details: [{ reason: 'worker_unavailable', domain: 'example.test' }] } } };
     const payload = await diagnosticFailure([event]);
     expect(payload).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error' });
     expect(payload.details).toMatchObject({
@@ -3319,6 +3321,9 @@ describe('Responses safe stream diagnostics', () => {
       ? { terminalStatus: null, terminalTextChars: null, terminalEventCount: 0 }
       : { terminalStatus: 'failed', terminalTextChars: 0, terminalEventCount: 1 });
     expect(JSON.stringify(payload)).not.toMatch(/body-secret|private body|private reasoning|header-secret/);
+    expect(payload.details?.['upstreamDetails']).toEqual(type === 'error'
+      ? { param: 'tools[0].name', reason: 'schema_mismatch' }
+      : { details: [{ reason: 'worker_unavailable', domain: 'example.test' }] });
     expect(fromErrorPayload(payload).details).toEqual(payload.details);
   });
 
