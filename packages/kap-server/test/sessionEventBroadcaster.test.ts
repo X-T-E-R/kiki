@@ -1991,7 +1991,9 @@ describe('SessionEventBroadcaster', () => {
     });
     expect(s1View.envelopes[0]!.session_id).not.toBe('__global__');
     expect(s2View.envelopes[0]!.session_id).toBe('s1');
-    expect(s1View.envelopes[0]!.volatile).toBeUndefined();
+    expect(s1View.envelopes[0]!.volatile).toBe(true);
+    expect(s1View.envelopes[0]!.seq).toBe(0);
+    expect(await bc.getCursor('s1')).toMatchObject({ seq: 0 });
   });
 
   it('broadcasts event.session.created under the real session id and fans out to every connection', async () => {
@@ -2960,6 +2962,9 @@ describe('SessionEventBroadcaster', () => {
 
     await vi.waitFor(() => expect(envelopes).toHaveLength(1));
     expect(envelopes[0]!.type).toBe('session.meta.updated');
+    expect(envelopes[0]!.volatile).toBe(true);
+    expect(envelopes[0]!.seq).toBe(0);
+    expect(await bc.getCursor('s1')).toMatchObject({ seq: 0 });
   });
 
   it.each(['question', 'approval'] as const)('delivers session %s interactions past agent filters live and on replay', async (kind) => {

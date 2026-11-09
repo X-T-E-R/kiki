@@ -2297,7 +2297,15 @@ export class FixtureKlient {
   }
 
   deliver(socket, active, frame) {
-    if (frame.volatile) return;
+    if (frame.volatile) {
+      if (frame.type === 'session.meta.updated') {
+        const title = frame.payload?.patch?.title ?? frame.payload?.title;
+        if (typeof title === 'string') {
+          this.signal(socket, active, { type: 'sessionCursorAdvanced', cursor: { seq: frame.seq, epoch: frame.epoch }, title });
+        }
+      }
+      return;
+    }
     const cursor = { seq: frame.seq, epoch: frame.epoch };
     const payload = frame.payload;
     if (frame.type === 'event.session.history_rewritten') {

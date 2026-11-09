@@ -1471,14 +1471,39 @@ describe('server-v2 /api/sessions', () => {
     expect(liveSnapshot.body.data.session.last_seq).toBe(pointBefore.body.data.last_seq);
 
     await postJson<SessionWire>(`/api/sessions/${id}/profile`, { title: 'Updated title' });
+    const pointAfterRename = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointAfterRename.body.data.last_seq).toBe(pointBefore.body.data.last_seq);
+
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.started',
+      turnId: 0,
+      origin: { kind: 'user' },
+    } as unknown as Event2);
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.ended',
+      turnId: 0,
+      reason: 'completed',
+    } as unknown as Event2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
     const pointAfter = await getJson<SessionWire>(`/api/sessions/${id}`);
     expect(pointAfter.body.data.last_seq).toBeGreaterThan(pointBefore.body.data.last_seq);
     const listAfter = await getJson<PageWire>('/api/sessions');
     expect(listAfter.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointAfter.body.data.last_seq);
 
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const pointAfterDeferredRecency = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointAfterDeferredRecency.body.data.last_seq).toBe(pointAfter.body.data.last_seq);
+
     await closeSessionById((server as RunningServer).core.accessor, id);
+    const pointAfterClose = await getJson<SessionWire>(`/api/sessions/${id}`);
     const coldList = await getJson<PageWire>('/api/sessions');
-    expect(coldList.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointAfter.body.data.last_seq);
+    expect(coldList.body.data.items.find((item) => item.id === id)?.last_seq).toBe(pointAfterClose.body.data.last_seq);
+    expect(coldList.body.data.items.find((item) => item.id === id)?.last_seq).toBeGreaterThanOrEqual(pointAfter.body.data.last_seq);
   });
 
   it('keeps every canonical sidebar ID reachable under preview pressure and does not resolve missing prefixes', async () => {

@@ -33,9 +33,9 @@ describe('SessionViewTarget', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
     target.begin(4, true);
-    target.send({ ...durable(9), type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'old title' } });
+    target.send({ ...durable(9), volatile: true, type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'old title' } });
     target.send({ ...durable(10), type: 'agent.created', payload: { type: 'agent.created', agentId: 'child' } });
-    target.send({ ...durable(11), type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'new title' } });
+    target.send({ ...durable(10), volatile: true, type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'new title' } });
     target.send({ ...durable(12), type: 'event.session.history_rewritten', payload: {
       type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-test',
     } });
@@ -48,7 +48,7 @@ describe('SessionViewTarget', () => {
     target.finish({ seq: 10, epoch: 'session-epoch' }, false);
     expect(signals.map((signal) => signal.type)).toEqual(['transcript', 'snapshot', 'sessionCursorAdvanced', 'sessionCursorAdvanced', 'historyRewritten', 'ready']);
     expect(signals[2]).toMatchObject({ rosterAgentId: 'child', cursor: { seq: 10 } });
-    expect(signals[3]).toMatchObject({ title: 'new title', cursor: { seq: 11 } });
+    expect(signals[3]).toMatchObject({ title: 'new title', cursor: { seq: 10 } });
     expect(signals.at(-1)).toMatchObject({ currentSessionCursor: { seq: 12, epoch: 'session-epoch' } });
   });
 

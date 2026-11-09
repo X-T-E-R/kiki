@@ -13,13 +13,11 @@
  * The store is a pub/sub with a cached snapshot, like `layoutPrefs`, because
  * both the sidebar rows and the activity page read it through
  * `useSyncExternalStore` and must repaint the moment a session is opened.
- * Entries for long-gone sessions are pruned on write.
  */
 
 import { spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
 
 const KEY = 'kiki.sessionSeen.v1';
-const MAX_ENTRIES = 300;
 
 /** The high-water mark for one session: the last event sequence seen. */
 export type SessionSeenMap = Readonly<Record<string, number>>;
@@ -47,21 +45,44 @@ function parse(raw: string | null): SessionSeenMap {
   }
 }
 
+function readStored(): SessionSeenMap {
+  try {
+    return parse(spaceStorage.getItem(KEY));
+  } catch {
+    return EMPTY;
+  }
+}
+
+function mergeSeen(base: SessionSeenMap, incoming: SessionSeenMap): SessionSeenMap {
+  const out: Record<string, number> = { ...base };
+  let changed = false;
+  for (const [sessionId, value] of Object.entries(incoming)) {
+    const seq = Math.max(0, Math.trunc(value));
+    if ((out[sessionId] ?? -1) < seq) {
+      out[sessionId] = seq;
+      changed = true;
+    }
+  }
+  return changed ? out : base;
+}
+
 function read(): SessionSeenMap {
   const key = spaceStorageKey(KEY);
   if (cache !== undefined && cacheKey === key) return cache;
   cacheKey = key;
-  try {
-    cache = parse(spaceStorage.getItem(KEY));
-  } catch {
-    cache = EMPTY;
-  }
+  cache = readStored();
   return cache;
 }
 
-function publish(next: SessionSeenMap): void {
+function commit(next: SessionSeenMap, remove = false): void {
   cacheKey = spaceStorageKey(KEY);
   cache = next;
+  try {
+    if (remove) spaceStorage.removeItem(KEY);
+    else spaceStorage.setItem(KEY, JSON.stringify(next));
+  } catch {
+    // storage full / unavailable — read state is a convenience
+  }
   for (const listener of listeners) listener();
 }
 
@@ -97,19 +118,12 @@ export function markSessionSeen(sessionId: string, lastSeq: number): void {
   if (sessionId === '' || !Number.isFinite(lastSeq)) return;
   const seq = Math.max(0, Math.trunc(lastSeq));
   const current = read();
-  if ((current[sessionId] ?? -1) >= seq) return;
-  const next: Record<string, number> = { ...current, [sessionId]: seq };
-  const keys = Object.keys(next);
-  if (keys.length > MAX_ENTRIES) {
-    // Insertion order: the oldest recorded sessions fall out first.
-    for (const stale of keys.slice(0, keys.length - MAX_ENTRIES)) delete next[stale];
+  const merged = mergeSeen(current, readStored());
+  if ((merged[sessionId] ?? -1) >= seq) {
+    if (merged !== current) commit(merged);
+    return;
   }
-  publish(next);
-  try {
-    spaceStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    // storage full / unavailable — read state is a convenience
-  }
+  commit({ ...merged, [sessionId]: seq });
 }
 
 /**
@@ -119,50 +133,34 @@ export function markSessionSeen(sessionId: string, lastSeq: number): void {
  */
 export function markSessionsSeen(entries: readonly { readonly sessionId: string; readonly lastSeq: number }[]): void {
   const current = read();
-  const next: Record<string, number> = { ...current };
-  let changed = false;
+  const merged = mergeSeen(current, readStored());
+  const next: Record<string, number> = { ...merged };
+  let changed = merged !== current;
   for (const { sessionId, lastSeq } of entries) {
     if (sessionId === '' || !Number.isFinite(lastSeq)) continue;
     const seq = Math.max(0, Math.trunc(lastSeq));
     if ((next[sessionId] ?? -1) >= seq) continue;
-    // Re-insert so a refreshed mark counts as the newest for pruning.
-    delete next[sessionId];
     next[sessionId] = seq;
     changed = true;
   }
   if (!changed) return;
-  const keys = Object.keys(next);
-  if (keys.length > MAX_ENTRIES) {
-    for (const stale of keys.slice(0, keys.length - MAX_ENTRIES)) delete next[stale];
-  }
-  publish(next);
-  try {
-    spaceStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    // storage full / unavailable — read state is a convenience
-  }
+  commit(next);
 }
 
 /** Drop one session's mark (it was deleted, or the user asked to re-flag it). */
 export function forgetSessionSeen(sessionId: string): void {
   const current = read();
-  if (!(sessionId in current)) return;
-  const next = { ...current };
-  delete next[sessionId];
-  publish(next);
-  try {
-    spaceStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    // ignore
+  const merged = mergeSeen(current, readStored());
+  if (!(sessionId in merged)) {
+    if (merged !== current) commit(merged);
+    return;
   }
+  const next = { ...merged };
+  delete next[sessionId];
+  commit(next);
 }
 
 /** Test seam: forget everything, including the cached snapshot. */
 export function resetSessionSeen(): void {
-  publish(EMPTY);
-  try {
-    spaceStorage.removeItem(KEY);
-  } catch {
-    // ignore
-  }
+  commit(EMPTY, true);
 }

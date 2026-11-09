@@ -440,6 +440,7 @@ const VOLATILE_TYPES = new Set([
   'shell.output',
   'shell.completed',
   'agent.status.updated',
+  'session.meta.updated',
 ]);
 
 let idCounter = 0;

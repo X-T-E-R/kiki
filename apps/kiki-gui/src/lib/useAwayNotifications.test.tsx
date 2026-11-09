@@ -350,4 +350,52 @@ describe('conversation completion and read confirmation', () => {
     expect(buildInboxModel(nextRows, sessionSeenSnapshot()).unread).toEqual([]);
     expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
   });
+
+  it('keeps read sessions read across cross-window late storage writes and >300 viewed sessions while still flagging a new episode unread', async () => {
+    const manySessions: Session[] = Array.from({ length: 305 }, (_, index) => ({
+      ...sessions[0]!,
+      id: `s-${index + 1}`,
+      title: `Session ${index + 1}`,
+      last_seq: 10,
+      updated_at: '2026-10-07T00:00:00Z',
+    }));
+    await mount('/s/s-1');
+    await act(async () => { replaceSessions(manySessions); });
+    await flush();
+    expect(sessionSeenSnapshot()['s-1']).toBe(10);
+
+    // Another window marks s-2 read in localStorage before its storage event arrives,
+    // while this window switches across 303 more sessions (>300 total).
+    localStorage.setItem(
+      'kiki.space.home-example.kiki.sessionSeen.v1',
+      JSON.stringify({ 's-1': 10, 's-2': 10 }),
+    );
+    for (let i = 3; i <= 305; i += 1) {
+      await act(async () => { await navigate(`/s/s-${i}`); });
+    }
+    await flush();
+
+    const seen = sessionSeenSnapshot();
+    expect(seen['s-1']).toBe(10);
+    expect(seen['s-2']).toBe(10);
+    expect(seen['s-305']).toBe(10);
+    expect(sessionRowState(manySessions[0]!, seen)).toBe('read');
+    expect(sessionRowState(manySessions[1]!, seen)).toBe('read');
+    expect(buildInboxModel(manySessions, seen).unread).toEqual([]);
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
+
+    // A genuine new episode on s-1 advances last_seq and marks only s-1 unread.
+    const updatedMany = manySessions.map((row) =>
+      row.id === 's-1'
+        ? { ...row, last_seq: 15, updated_at: '2026-10-07T00:02:00Z', last_turn_reason: 'completed' as const }
+        : row,
+    );
+    await act(async () => { replaceSessions(updatedMany); });
+    completions = [{ session_id: 's-1', episode_id: 'episode-s-1-new', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(sessionRowState(updatedMany[0]!, sessionSeenSnapshot())).toBe('unread');
+    expect(sessionRowState(updatedMany[1]!, sessionSeenSnapshot())).toBe('read');
+    expect(buildInboxModel(updatedMany, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['s-1']);
+    expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['s-1']);
+  });
 });

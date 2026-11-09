@@ -69,7 +69,8 @@ export class SessionViewTarget implements BroadcastTarget {
           this.sendControl({ type: 'resync_required', payload: { reason: 'epoch_changed', current_seq: cursor.seq, epoch: cursor.epoch } });
           continue;
         }
-        if (signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === undefined && signal.cursor.seq <= cursor.seq) continue;
+        if (signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === undefined && signal.title === undefined && signal.cursor.seq <= cursor.seq) continue;
+        if (signal.type === 'sessionCursorAdvanced' && signal.title !== undefined && signal.cursor.seq < cursor.seq) continue;
       }
       this.publishSignal(signal);
     }
@@ -78,7 +79,7 @@ export class SessionViewTarget implements BroadcastTarget {
   private publishSignal(signal: SessionViewSignal): void {
     if (signal.type === 'sessionCursorAdvanced' || signal.type === 'historyRewritten') {
       if (this.recoveryRequired) return;
-      if (this.attaching && (signal.type === 'historyRewritten' || signal.rosterAgentId === undefined)) {
+      if (this.attaching && (signal.type === 'historyRewritten' || (signal.rosterAgentId === undefined && signal.title === undefined))) {
         const key = `${signal.type}:${signal.cursor.epoch ?? ''}:${signal.cursor.seq}`;
         if (this.durableSeen.has(key)) return;
         this.durableSeen.add(key);
@@ -141,6 +142,12 @@ export class SessionViewTarget implements BroadcastTarget {
     }
     if (this.recoveryRequired) return undefined;
     if (envelope.volatile === true) {
+      if (envelope.type === 'session.meta.updated' && envelope.payload !== null && typeof envelope.payload === 'object') {
+        const event = envelope.payload as { title?: unknown; patch?: { title?: unknown } };
+        const title = event.patch?.title ?? event.title;
+        if (typeof title === 'string') return { type: 'sessionCursorAdvanced', cursor: { seq: envelope.seq, epoch: envelope.epoch }, title, generation: this.generation };
+        return undefined;
+      }
       if (envelope.type !== 'agent.status.updated' || envelope.payload === null || typeof envelope.payload !== 'object') return undefined;
       const event = envelope.payload as { agentId?: unknown; model?: unknown; thinkingEffort?: unknown; phase?: { kind?: unknown; turnId?: unknown; reason?: unknown } };
       if (typeof event.agentId !== 'string' || event.agentId === '' || event.agentId === 'main') return undefined;
