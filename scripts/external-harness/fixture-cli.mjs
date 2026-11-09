@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import { readFile, writeFile } from 'node:fs/promises';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -23,6 +23,22 @@ let networkScenario;
 const args = process.argv.slice(2);
 const conversation = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'fixture-conversation';
 const resumeConversation = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const networkStatePath = 'native-network-state.json';
+const readNetworkState = () => {
+  try { return JSON.parse(readFileSync(networkStatePath, 'utf8')); } catch { return { scenario: undefined, turns: 0 }; }
+};
+const writeNetworkState = state => writeFileSync(networkStatePath, JSON.stringify(state));
+const recoverableLatePrompts = new Set([
+  'partial-response-late-wsarecv',
+  'post-tool-error-late-wsarecv',
+  'complete-response-stale-network-issue-empty-response',
+  'complete-response-stale-network-issue-mismatched-response',
+]);
+const exitOnEofAndWait = (exitCode = 3) => new Promise(done => {
+  const finish = () => setTimeout(() => { done(); process.exit(exitCode); }, 25);
+  if (process.stdin.readableEnded) { finish(); return; }
+  process.stdin.once('end', finish);
+});
 if (args[0] === 'models') {
   process.stdout.write('fixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n');
   process.exit(0);
@@ -38,16 +54,42 @@ for (const key of Object.keys(process.env).filter(key => key.startsWith('KIKI_AG
   await requestHookPermission({ type: 'mcp_bootstrap', key });
   if (process.env.AGY_FIXTURE_MCP_OFF !== 'ready') await requestHookPermission({ type: 'mcp_ready', key });
 }
-for await (const line of createInterface({ input: process.stdin })) {
+const stdinLines = createInterface({ input: process.stdin });
+for await (const line of stdinLines) {
   const input = JSON.parse(line);
-  if (typeof input.message?.content === 'string' && input.message.content.startsWith('network-recover')) networkScenario = input.message.content;
+  if (typeof input.message?.content === 'string' && input.message.content.startsWith('network-recover')) {
+    networkScenario = input.message.content;
+    writeNetworkState({ scenario: networkScenario, turns: 0 });
+  }
   const relaunchContinuation = conversation === resumeConversation &&
     input.message?.content?.startsWith('The connection to the model provider was interrupted');
-  if (relaunchContinuation) networkScenario = 'network-recover-exit';
-  const announced = networkScenario === 'network-recover-exit' ? resumeConversation : conversation;
-  if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: announced,
+  if (relaunchContinuation) {
+    const saved = readNetworkState();
+    if (saved.scenario) {
+      networkScenario = saved.scenario;
+      turns = saved.turns ?? 1;
+    } else if (!networkScenario) {
+      turns = 1;
+    }
+  }
+  const announced = networkScenario || recoverableLatePrompts.has(input.message?.content) || relaunchContinuation
+    ? resumeConversation
+    : conversation;
+  if (turns === 0 || relaunchContinuation) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: announced,
     init: { model: args.includes('--model') ? model : undefined, agent, cwd: process.cwd(), permission_mode: 'request-review' } }) + '\n');
   turns++;
+  if (networkScenario) writeNetworkState({ scenario: networkScenario, turns });
+  if (relaunchContinuation && !networkScenario) {
+    const response = `turn-${turns}`;
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+      step_update: { step_type: 'user_input', step_index: turns * 10, state: 'DONE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+      step_update: { step_type: 'agent_response', step_index: turns * 10 + 1, state: 'ACTIVE', text_delta: response.slice(0, 3) } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
+      step_update: { step_type: 'agent_response', step_index: turns * 10 + 1, state: 'DONE', text_delta: response.slice(3) } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status: 'SUCCESS', response, num_turns: turns } }) + '\n');
+    continue;
+  }
   if (input.message.content === 'command-guidance') {
     const output = await invokeHook({ conversationId: conversation, workspacePaths: [process.cwd()] }, 'kiki-agy-command-guidance', 'SessionStart');
     process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: JSON.stringify(output) } }) + '\n');
@@ -78,11 +120,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (networkScenario) {
-    // Mirrors the real agent-1386 shape: the prompt was consumed, tools settled, and the model
-    // request that followed failed with a recoverable network summary. A continuation arrives as
-    // a new user frame on the same native conversation, so `turns` identifies which segment runs.
+    // Mirrors the real headless AGY lifecycle on recoverable network failure: the prompt was
+    // consumed, tools settled, and the model request that followed failed with a terminal ERROR
+    // summary before the CLI flushes native state and exits with code 3. The continuation arrives
+    // on a relaunched CLI process with `--conversation <UUID>`.
     const scenario = networkScenario;
-    const announced = scenario === 'network-recover-exit' ? resumeConversation : conversation;
     const networkError = 'There was a network issue connecting to the server, please try again.';
     const step = (type, index, extra = {}) => process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
       step_update: { step_type: type, step_index: index, state: 'DONE', ...extra } }) + '\n');
@@ -107,13 +149,17 @@ for await (const line of createInterface({ input: process.stdin })) {
       step('agent_response', index + 4, { text_delta: text });
       process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status: 'SUCCESS', response: text } }) + '\n');
     };
+    const exitAfterTerminalError = async () => {
+      if (scenario === 'network-recover-no-exit') {
+        const hold = setInterval(() => {}, 10000);
+        await new Promise(done => process.once('exit', () => { clearInterval(hold); done(); }));
+        return;
+      }
+      await exitOnEofAndWait(3);
+    };
     const base = turns * 10;
     if (scenario === 'network-recover-early-exit' && turns > 1) process.exit(9);
     step('user_input', base);
-    if (relaunchContinuation) {
-      succeed(base, 'recovered-by-relaunch');
-      continue;
-    }
     if (turns === 1) {
       if (scenario === 'network-recover-partial') {
         process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
@@ -121,13 +167,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       }
       if (scenario !== 'network-recover-no-tools') runToolOnce(base + 1);
       failNetwork(base + 1);
-      if (scenario === 'network-recover-exit') {
-        // Mirrors headless AGY after a terminal network error: the CLI is still alive when stdout
-        // flushes the result frame, ignores further stdin while finishing native storage cleanup,
-        // and exits shortly after with code 3.
-        await new Promise(done => setTimeout(done, 40));
-        process.exit(3);
-      }
+      await exitAfterTerminalError();
       continue;
     }
     if (scenario === 'network-recover-exit') {
@@ -138,14 +178,23 @@ for await (const line of createInterface({ input: process.stdin })) {
       succeed(base, `recovered-after-continuation-${turns}`);
       continue;
     }
-    if (scenario === 'network-recover-twice') { failNetwork(base); continue; }
+    if (scenario === 'network-recover-twice') {
+      failNetwork(base);
+      await exitAfterTerminalError();
+      continue;
+    }
     if (scenario === 'network-recover-live-progress-then-fail') {
       runToolOnce(base + 1);
-      if (turns === 2) failNetwork(base + 1);
-      else succeed(base + 1, `recovered-again-${turns}`);
+      if (turns === 2) {
+        failNetwork(base + 1);
+        await exitAfterTerminalError();
+      } else {
+        succeed(base + 1, `recovered-again-${turns}`);
+      }
       continue;
     }
     failNetwork(base);
+    await exitAfterTerminalError();
     continue;
   }
   if (input.message.content === 'native-interrupted') {
@@ -203,24 +252,26 @@ for await (const line of createInterface({ input: process.stdin })) {
       : input.message.content === 'complete-response-stale-network-issue-mismatched-response'
         ? `${response}-mismatch`
         : response;
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status, response: resultResponse, error } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status, response: resultResponse, error } }) + '\n');
+    if (recoverableLatePrompts.has(input.message.content)) await exitOnEofAndWait(3);
     continue;
   }
   if (input.message.content === 'partial-response-late-wsarecv' || input.message.content === 'post-tool-error-late-wsarecv') {
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
       step_update: { step_type: 'user_input', step_index: turns * 10, state: 'DONE' } }) + '\n');
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
       step_update: { step_type: 'agent_response', step_index: turns * 10 + 1, state: input.message.content === 'partial-response-late-wsarecv' ? 'ACTIVE' : 'DONE', text_delta: 'partial-or-pretool' } }) + '\n');
     if (input.message.content === 'post-tool-error-late-wsarecv') {
-      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
         step_update: { step_type: 'tool', step_index: turns * 10 + 2, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { CommandLine: 'npm test' } } } }) + '\n');
-      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
         step_update: { step_type: 'tool', step_index: turns * 10 + 2, tool_name: 'run_command', state: 'DONE', tool_info: { parameters: { CommandLine: 'npm test' }, output: 'ok' } } }) + '\n');
-      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: announced,
         step_update: { step_type: 'error_message', step_index: turns * 10 + 3, state: 'DONE' } }) + '\n');
     }
-    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response: 'partial-or-pretool',
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: announced, status: 'ERROR', response: 'partial-or-pretool',
       error: 'API error (attempt 1): request failed: read tcp: wsarecv: A connection attempt failed' } }) + '\n');
+    await exitOnEofAndWait(3);
     continue;
   }
   if (input.message.content === 'tool-hang') {

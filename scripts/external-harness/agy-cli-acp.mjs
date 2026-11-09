@@ -30,6 +30,7 @@ const NETWORK_RECOVERY_INSTRUCTION = 'The connection to the model provider was i
   + 'Continue the same task from where it stopped. Do not repeat tool calls that already finished.';
 const MAX_NETWORK_RECOVERIES_PER_STREAK = 1;
 const MAX_NETWORK_RECOVERIES_PER_TURN = 8;
+const NETWORK_RECOVERY_EXIT_GRACE_MS = 5000;
 
 function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
   let bytes = Buffer.from(value);
@@ -190,7 +191,14 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
       throw new Error('AGY legacy native turn has unresolved steps or unknown steering; do not replay it');
     }
     const step0Row = db.prepare('SELECT step_payload FROM steps WHERE idx = 0 AND length(step_payload) <= 65536').get();
-    const step0Uris = nativeStringsAt(step0Row?.step_payload ?? [], [19, 12, 12], true);
+    const step0Bytes = step0Row?.step_payload ?? [];
+    if (proof.promptSha256 !== undefined) {
+      const step0Text = nativeBytesAt(step0Bytes, [19, 2], true);
+      if (typeof step0Text !== 'string' || createHash('sha256').update(step0Text).digest('hex') !== proof.promptSha256) {
+        throw new Error('AGY legacy native initial prompt differs from its audited prompt digest');
+      }
+    }
+    const step0Uris = nativeStringsAt(step0Bytes, [19, 12, 12], true);
     if (step0Uris.length > 0) {
       const step0Roots = new Set(step0Uris.map(uri => canonical(fileURLToPath(uri))));
       if (step0Uris.length !== expectedRoots.size || step0Roots.size !== expectedRoots.size ||
@@ -276,8 +284,11 @@ function unconsumedNetworkContinuationProof(records, { sessionId, conversationId
   if (launchIndex < 0 || records.some((record, index) => index > launchIndex && record?.type === 'launch')) return undefined;
   if (records.some(record => ['session_loaded', 'legacy_native_recovered'].includes(record?.type))) return undefined;
   if (records.filter(record => record?.type === 'prompt_sent').length !== 1) return undefined;
+  const launch = records[launchIndex];
+  if (!Number.isSafeInteger(launch?.pid) || launch.pid <= 0) return undefined;
   const turnRecords = records.slice(lastTurnIndex + 1);
-  if (turnRecords.filter(record => record?.type === 'prompt_sent').length !== 1) return undefined;
+  const promptSent = turnRecords.filter(record => record?.type === 'prompt_sent');
+  if (promptSent.length !== 1 || !/^[0-9a-f]{64}$/i.test(String(promptSent[0].promptSha256 ?? ''))) return undefined;
   const consumed = turnRecords.filter(record => record?.type === 'prompt_consumed');
   if (consumed.length !== 1 || consumed[0].stepIndex !== 0) return undefined;
   if (turnRecords.some(record => typeof record?.type === 'string' && (record.type.startsWith('steer_') || record.type === 'pre_tool_hook_denied'))) return undefined;
@@ -294,6 +305,10 @@ function unconsumedNetworkContinuationProof(records, { sessionId, conversationId
       sentIndex <= turnRecords.indexOf(consumed[0])) return undefined;
   const afterSent = turnRecords.slice(sentIndex + 1);
   if (afterSent.some(record => record?.type !== 'native_frame_delivered' && record?.type !== 'close')) return undefined;
+  const closes = afterSent.filter(record => record?.type === 'close');
+  if (closes.length !== 1 || closes[0].pid !== launch.pid || closes[0].processEnded !== true ||
+      (closes[0].signal !== undefined && closes[0].signal !== null) ||
+      (closes[0].exitCode !== undefined && (!Number.isSafeInteger(closes[0].exitCode) || closes[0].exitCode < 0))) return undefined;
   const toolsByStep = new Map();
   for (const record of turnRecords) {
     if (record?.type !== 'tool_state') continue;
@@ -325,6 +340,7 @@ function unconsumedNetworkContinuationProof(records, { sessionId, conversationId
     conversationId,
     model,
     effort,
+    promptSha256: String(promptSent[0].promptSha256).toLowerCase(),
     terminalError: requested[0].error,
     disclosedCwd: cwd,
     additionalDirectories: additionalDirectories.length ? [...additionalDirectories] : undefined,
@@ -495,8 +511,9 @@ async function terminate(child) {
 }
 
 export class AgyBridge {
-  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit } = {}) {
+  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit, continuationExitGraceMs = NETWORK_RECOVERY_EXIT_GRACE_MS } = {}) {
     this.stopProcess = stopProcess;
+    this.continuationExitGraceMs = continuationExitGraceMs;
     if (!isAbsolute(cliPath ?? '')) throw new Error('Pass the exact absolute AGY executable path');
     if (typeof model !== 'string' || !model || /\s/.test(model)) throw new Error('AGY model must be a nonempty engine ID');
     if (account && model !== DEFAULT && !account.modelIds.includes(model)) throw new Error('The selected account does not provide the bound AGY model');
@@ -1273,6 +1290,22 @@ export class AgyBridge {
           session.broken = true;
           session.failure = message;
           stopAfterResult = true;
+        } else if (sent?.outcome === 'exit_unconfirmed') {
+          const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'};`
+            + ` headless CLI did not exit cleanly after the terminal error (${sent.reason}`
+            + `; exitCode: ${sent.exitCode ?? 'none'}, signal: ${sent.signal ?? 'none'})`
+            + '; native state flush is unconfirmed, so automatic continuation was not sent; inspect the native outcome before continuing';
+          await this.audit(session, 'network_recovery_failed', {
+            conversationId: result.conversation_id, attempt, delivery: 'not_sent',
+            reason: sent.reason, exitCode: sent.exitCode ?? null, signal: sent.signal ?? null,
+          });
+          error = new Error(message);
+          error.details = { nativeError: result.error, attempt, recoveries: active.networkRecoveriesTotal, preservedTools,
+            conversationId: result.conversation_id, delivery: 'not_sent', reason: sent.reason,
+            exitCode: sent.exitCode ?? null, signal: sent.signal ?? null };
+          session.broken = true;
+          session.failure = message;
+          stopAfterResult = true;
         } else {
           await this.audit(session, 'network_recovery_skipped', {
             conversationId: result.conversation_id, attempt, reason: 'conversation_evidence_incomplete',
@@ -1363,7 +1396,7 @@ export class AgyBridge {
     }
     if (stopReason === 'cancelled') {
       await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: false, resumeSupported: false, unresolvedTools: unresolved });
-    } else if (!unresolved.length && error?.details?.delivery !== 'unknown') {
+    } else if (!unresolved.length && error?.details?.delivery !== 'unknown' && error?.details?.delivery !== 'not_sent') {
       await this.audit(session, 'native_turn_reconciled', {
         status: result.status,
         preservedCompletedResponse: postResponseTerminalError !== undefined ? true : undefined,
@@ -1434,58 +1467,48 @@ export class AgyBridge {
 
   /**
    * Continues the same native conversation after a recoverable network terminal error, using
-   * only evidence the adapter already confirmed: the finished terminal result, the native
-   * conversation ID it named, and settled tool states. Two delivery paths follow that evidence.
+   * only evidence the adapter already confirmed: the finished terminal result, the native UUID
+   * conversation ID it named, settled tool states, and a natural process exit.
    *
-   * - For a real native UUID conversation (`NATIVE_ID`), the headless CLI that emitted the
-   *   terminal `result: ERROR` frame is ending its invocation loop and will exit once it flushes
-   *   its native database and transcript. Close its stdin, wait for that process to exit cleanly,
-   *   relaunch the CLI with the recorded `--conversation`, and send only the continuation frame.
-   *   This is the audited native-resume entry (`agy_result` then `close` then `--conversation`
-   *   re-init of the same ID), not a new conversation and not a replay.
-   * - For a persistent in-process test harness without a native UUID, append one new user frame
-   *   to the running child's stdin. Nothing else changes, so completed text and tool results stay
-   *   where they are.
-   *
-   * Returns `undefined` when the evidence does not authorize a continuation at all. A failed
-   * write is reported as unknown delivery and is never retried.
+   * After emitting a terminal `result: ERROR` frame, headless AGY ends its invocation loop and
+   * exits once its native SQLite and transcript flush completes. Close its stdin, wait for that
+   * natural exit, relaunch the CLI with the recorded `--conversation`, and send only the
+   * continuation frame. If the process must be force-stopped on timeout or exits via a signal,
+   * native persistence is unconfirmed and the continuation is not sent.
    */
   async continueNetworkFailure(session, active, attempt, result) {
     if (session.active !== active || session.cancelling || session.denied) return undefined;
     const conversationId = typeof result?.conversation_id === 'string' && result.conversation_id ? result.conversation_id : undefined;
-    if (!conversationId) return undefined;
+    if (!conversationId || !NATIVE_ID.test(conversationId)) return undefined;
     if (session.init?.conversation_id !== undefined && session.init.conversation_id !== conversationId) return undefined;
     if (session.conversationId !== undefined && session.conversationId !== conversationId) return undefined;
+    const owned = session.child;
+    if (!owned) return undefined;
     const frame = JSON.stringify({ event: 'user',
       message: { content: `${NETWORK_RECOVERY_INSTRUCTION} (automatic continuation ${attempt}).` } }) + '\n';
-    const owned = session.child;
-    const alreadyGone = !owned || owned.exitCode !== null || owned.signalCode !== null;
-    if (!alreadyGone && !NATIVE_ID.test(conversationId)) {
-      const delivered = await this.#writeContinuation(session, active, frame);
-      if (delivered === 'unknown') return { outcome: 'unknown', conversationId };
-      if (delivered === 'written') {
-        return { outcome: 'sent', conversationId, relaunched: false, bytes: Buffer.byteLength(frame),
-          frameSha256: createHash('sha256').update(frame).digest('hex') };
-      }
-    }
-    if (!NATIVE_ID.test(conversationId)) return undefined;
     session.restarting = true;
+    let exitUnconfirmed;
     try {
       const prepare = async () => {
-        if (owned && owned.exitCode === null && owned.signalCode === null) {
+        let forceStopped = false;
+        if (owned.exitCode === null && owned.signalCode === null) {
           owned.stdin.end();
           let timer;
           const stopFallback = new Promise((_, reject) => {
-            timer = setTimeout(() => { void this.stopProcess(owned).catch(reject); }, 5000);
+            timer = setTimeout(() => {
+              forceStopped = true;
+              void this.stopProcess(owned).catch(reject);
+            }, this.continuationExitGraceMs);
           });
           try { await Promise.race([session.exited, stopFallback]); } finally { clearTimeout(timer); }
         }
         await session.exited;
         if (session.active !== active || session.cancelling) return;
+        const exitCode = owned.exitCode ?? null;
+        const signal = owned.signalCode ?? null;
         await session.permissionChannel?.close();
         await this.closeSteeringHook(session);
         await session.mcpPlugin?.close();
-        if (session.active !== active || session.cancelling) return;
         session.child = undefined;
         session.init = undefined;
         session.exited = undefined;
@@ -1494,6 +1517,18 @@ export class AgyBridge {
         session.mcpPlugin = undefined;
         session.mcpBound.clear();
         session.mcpReady.clear();
+        if (forceStopped || signal !== null || !Number.isSafeInteger(exitCode) || exitCode < 0) {
+          exitUnconfirmed = {
+            outcome: 'exit_unconfirmed',
+            conversationId,
+            reason: forceStopped ? 'exit_timeout_stopped' : signal !== null ? 'signal_exit' : 'missing_exit_code',
+            exitCode,
+            signal,
+          };
+          return;
+        }
+        await this.audit(session, 'close', { pid: owned.pid, processEnded: true, exitCode, signal: null });
+        if (session.active !== active || session.cancelling) return;
         session.conversationId = conversationId;
         session.broken = false;
         await this.syncPermissionHook(session);
@@ -1504,6 +1539,7 @@ export class AgyBridge {
       session.preparing = prepare();
       try { await session.preparing; } finally { session.preparing = undefined; }
     } finally { session.restarting = false; }
+    if (exitUnconfirmed) return exitUnconfirmed;
     if (session.active !== active || session.broken || session.cancelling) return undefined;
     const relaunched = await this.#writeContinuation(session, active, frame);
     if (relaunched === 'not-written') return undefined;

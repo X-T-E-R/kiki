@@ -1820,10 +1820,11 @@ void test('terminal quota or auth vendor failure stops the owned CLI process and
       const recoveredAudit = (await readFile(join(auditDir, `${recoveredId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
       assert.equal(recoveredAudit.filter(r => r.type === 'network_recovery_sent').length, 1);
       assert.equal(recoveredAudit.filter(r => r.type === 'prompt_sent').length, 1);
+      assert.equal(recoveredAudit.filter(r => r.type === 'launch').length, 2);
       assert.equal(recoveredAudit.some(r => r.type === 'post_response_terminal_error'), false);
       assert.equal(recoveredAudit.some(r => r.type === 'network_recovery_exhausted'), false);
       assert.equal(recoveredAudit.some(r => r.type === 'native_turn_reconciled' && r.status === 'SUCCESS'), true);
-      assert.equal(first.session(recoveredId).init.conversation_id, 'fixture-conversation');
+      assert.equal(first.session(recoveredId).init.conversation_id, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
     }
   } finally { await first.close(); await second.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -1832,6 +1833,7 @@ void test('a recoverable network error after completed tools continues the same 
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(tmpdir(), 'agy-network-continue-'));
   const auditDir = join(root, 'audit');
+  const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const b = bridge('claude-opus-5-5-high'); b.auditDir = auditDir;
   const messages = [];
   try {
@@ -1839,16 +1841,18 @@ void test('a recoverable network error after completed tools continues the same 
     assert.equal(b.session(id).child, undefined);
     assert.deepEqual(await turn(b, id, 'network-recover', messages), { stopReason: 'end_turn' });
     const native = b.session(id);
-    assert.equal(native.init.conversation_id, 'fixture-conversation');
-    assert.equal(native.conversationId, undefined);
+    assert.equal(native.init.conversation_id, conversationId);
+    assert.equal(native.conversationId, conversationId);
     assert.equal(native.broken, false);
     assert.equal(messages.filter(message => message.update.sessionUpdate === 'agent_message_chunk')
       .map(message => message.update.content.text).join(''), 'recovered-after-continuation-2');
     const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
-    assert.equal(records.filter(record => record.type === 'launch').length, 1);
+    assert.equal(records.filter(record => record.type === 'launch').length, 2);
+    assert.deepEqual(records.filter(record => record.type === 'close').map(record => [record.processEnded, record.exitCode, record.signal]), [[true, 3, null]]);
     assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => [record.attempt, record.preservedTools]), [[1, 1]]);
     assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 1);
+    assert.equal(records.filter(record => record.type === 'network_recovery_sent')[0].relaunched, true);
     assert.equal(records.some(record => record.type === 'network_recovery_exhausted'), false);
     assert.equal(records.some(record => record.type === 'native_turn_reconciled' && record.status === 'SUCCESS'), true);
     assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n');
@@ -1861,6 +1865,7 @@ void test('a continuation that produces real progress reopens the recovery budge
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(tmpdir(), 'agy-network-progress-'));
   const auditDir = join(root, 'audit');
+  const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const b = bridge('claude-opus-5-5-high'); b.auditDir = auditDir;
   try {
     const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
@@ -1872,8 +1877,8 @@ void test('a continuation that produces real progress reopens the recovery budge
     assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => record.attempt), [1, 1]);
     assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 2);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
-    assert.equal(records.filter(record => record.type === 'launch').length, 1);
-    assert.equal(b.session(id).init.conversation_id, 'fixture-conversation');
+    assert.equal(records.filter(record => record.type === 'launch').length, 3);
+    assert.equal(b.session(id).init.conversation_id, conversationId);
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1881,16 +1886,17 @@ void test('a repeated network failure stops after one continuation and reports t
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(tmpdir(), 'agy-network-twice-'));
   const auditDir = join(root, 'audit');
+  const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const b = bridge('claude-opus-5-5-high'); b.auditDir = auditDir;
   try {
     const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
     const failure = await turn(b, id, 'network-recover-twice', []).then(() => undefined, error => error);
     assert.match(failure.message, /^AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./);
     assert.match(failure.message, /automatic continuation stopped after 1 continue attempt without a completed model response/);
-    assert.match(failure.message, /every completed tool result \(1\) and native conversation fixture-conversation are retained/);
+    assert.match(failure.message, new RegExp(`every completed tool result \\(1\\) and native conversation ${conversationId} are retained`));
     assert.match(failure.message, /load that exact native conversation to continue it/);
     assert.deepEqual(failure.details, { nativeError: 'There was a network issue connecting to the server, please try again.', recoveries: 1, preservedTools: 1,
-      conversationId: 'fixture-conversation' });
+      conversationId });
     const native = b.session(id);
     assert.equal(native.broken, true);
     assert.notEqual(native.child.exitCode, null);
@@ -2037,6 +2043,29 @@ void test('loadSession reconciles an unconsumed network continuation followed by
       consumedDb.prepare('DELETE FROM steps WHERE idx = 36').run();
     } finally { consumedDb.close(); }
 
+    // Reject if the old launch lacks an explicit natural close record or exited via signal.
+    await writeAudit(baseAudit.filter(row => row.type !== 'close'));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+    await writeAudit(baseAudit.map(row => row.type === 'close' ? { ...row, signal: 'SIGTERM' } : row));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+    await writeAudit(baseAudit.map(row => row.type === 'close' ? { ...row, pid: 99999 } : row));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+
+    // Reject if the initial prompt digest in prompt_sent differs from SQLite step 0 [19,2] or transcript step 0.
+    await writeAudit(baseAudit.map(row => row.type === 'prompt_sent' ? { ...row, promptSha256: '0'.repeat(64) } : row));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+    const promptMismatchDb = new DatabaseSync(dbPath);
+    try {
+      promptMismatchDb.prepare('UPDATE steps SET step_payload = ? WHERE idx = 0').run(
+        field(19, Buffer.concat([field(2, 'Different initial prompt text'), field(12, Buffer.concat(sortedUris.map(uri => field(12, uri))))])),
+      );
+      await writeAudit(baseAudit);
+      await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+      promptMismatchDb.prepare('UPDATE steps SET step_payload = ? WHERE idx = 0').run(
+        field(19, Buffer.concat([field(2, promptText), field(12, Buffer.concat(sortedUris.map(uri => field(12, uri))))])),
+      );
+    } finally { promptMismatchDb.close(); }
+
     // Reject if an audited tool is missing its DONE terminal state or if prompt_consumed is absent.
     await writeAudit(baseAudit.filter(row => !(row.type === 'tool_state' && row.toolCallId === `agy-${conversationId}-7` && row.state === 'DONE')));
     await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
@@ -2080,8 +2109,9 @@ void test('a continuation write with unknown delivery retains the original termi
   try {
     const id = (await b.newSession({ cwd: root })).sessionId;
     const audit = b.audit.bind(b);
+    let launches = 0;
     b.audit = async (target, type, data) => {
-      if (type === 'network_recovery_requested') {
+      if (type === 'launch' && ++launches === 2) {
         const { stdin } = target.child;
         const original = stdin.write;
         stdin.write = (_frame, done) => {
@@ -2099,11 +2129,53 @@ void test('a continuation write with unknown delivery retains the original termi
       return true;
     });
     const records = (await readFile(join(b.auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
-    assert.equal(records.filter(record => record.type === 'launch').length, 1);
+    assert.equal(records.filter(record => record.type === 'launch').length, 2);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
     assert.equal(records.some(record => ['network_recovery_sent', 'native_turn_reconciled'].includes(record.type)), false);
     assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n');
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('when the headless CLI does not exit naturally after a terminal network error, force-stopping it does not relaunch or mark the turn reconciled', { timeout: 30000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-network-no-exit-'));
+  const auditDir = join(root, 'audit');
+  const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const b = new AgyBridge({
+    cliPath: process.execPath,
+    cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))],
+    model: 'claude-opus-5-5-high',
+    auditDir,
+    continuationExitGraceMs: 80,
+  });
+  const loader = bridge('claude-opus-5-5-high');
+  loader.auditDir = auditDir;
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await assert.rejects(turn(b, id, 'network-recover-no-exit', []), error => {
+      assert.match(error.message, /^AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./);
+      assert.match(error.message, /headless CLI did not exit cleanly after the terminal error \(exit_timeout_stopped/);
+      assert.equal(error.details.conversationId, conversationId);
+      assert.equal(error.details.delivery, 'not_sent');
+      assert.equal(error.details.reason, 'exit_timeout_stopped');
+      assert.equal(error.details.preservedTools, 1);
+      return true;
+    });
+    const native = b.session(id);
+    assert.equal(native.broken, true);
+    assert.equal(native.child, undefined);
+    const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.filter(record => record.type === 'launch').length, 1);
+    assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
+    assert.equal(records.some(record => record.type === 'network_recovery_sent'), false);
+    assert.equal(records.some(record => record.type === 'native_turn_reconciled'), false);
+    const failed = records.filter(record => record.type === 'network_recovery_failed');
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].delivery, 'not_sent');
+    assert.equal(failed[0].reason, 'exit_timeout_stopped');
+    assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n');
+    await assert.rejects(loader.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), { code: 'AGY_SESSION_UNCONFIRMED' });
+  } finally { await b.close(); await loader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 void test('a child exit after a continuation write but before a new terminal result settles the original turn', async () => {
