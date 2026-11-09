@@ -255,7 +255,8 @@ export class SessionViewHttpConnection {
       const readColdAgents = async () => {
         const service = this.browse?.service;
         if (service === undefined) throw new RPCError(50001, 'session view unavailable');
-        const roster = await timeSessionViewPhase('cold_roster', fields, () => service.readColdRoster(fields.sessionId), timing);
+        const roster = await timeSessionViewPhase('cold_roster', fields,
+          () => abortable(service.readColdRoster(fields.sessionId), cold.signal), timing);
         cold.signal.throwIfAborted();
         if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
         const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));
@@ -290,7 +291,8 @@ export class SessionViewHttpConnection {
       };
       const [snapshot] = await Promise.all([input.bootstrap === true ? readShell() : undefined, readColdAgents()]);
       const cursor = snapshot === undefined
-        ? await timeSessionViewPhase('attach_cursor', fields, () => broadcaster.getCursor(fields.sessionId), timing)
+        ? await timeSessionViewPhase('attach_cursor', fields,
+          () => broadcaster.getCursor(fields.sessionId, cold.signal, true), timing)
         : { seq: snapshot.as_of_seq, epoch: snapshot.epoch };
       cold.signal.throwIfAborted();
       if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
@@ -365,6 +367,18 @@ export class SessionViewHttpConnection {
     this.expansions.clear();
     this.tasks.clear();
   }
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => { reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
 }
 
 function attachGrades(frame: KlientFrame): { generation: unknown; grades: TranscriptGradeSpec } | undefined {

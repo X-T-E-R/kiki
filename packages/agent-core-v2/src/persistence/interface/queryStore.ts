@@ -146,7 +146,7 @@ export interface IQueryStore {
   listKeys(collection: string): Promise<readonly string[]>;
   /** Delete the whole collection; a no-op when it does not exist. */
   dropCollection(collection: string): Promise<void>;
-  getCheckpoint(source: string): Promise<Checkpoint | undefined>;
+  getCheckpoint(source: string, signal?: AbortSignal): Promise<Checkpoint | undefined>;
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void>;
   withExclusive?<T>(operation: () => Promise<T>, source?: string): Promise<T>;
   /** Drain and retire cached readers/writers without deleting persisted data; new operations wait for recovery. */

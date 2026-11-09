@@ -152,11 +152,14 @@ export async function assembleBrowseSnapshotSource(
     return assembleSnapshotSource(core, broadcaster, sessionId, 'transcript', timing.signal, timing);
   }
   const fields = { sessionId, requestId: timing.requestId };
-  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
+  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, timing.signal), timing);
+  timing.signal?.throwIfAborted();
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
   const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
+  timing.signal?.throwIfAborted();
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
-  const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
+  const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId, timing.signal, true), timing);
+  timing.signal?.throwIfAborted();
   const workspace = await timeSessionViewPhase('snapshot_workspace', fields,
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   timing.signal?.throwIfAborted();
@@ -235,12 +238,14 @@ async function assembleColdSnapshot(
   const { signal } = timing;
   const fields = { sessionId, requestId: timing.requestId };
   signal?.throwIfAborted();
-  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
+  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, signal), timing);
+  signal?.throwIfAborted();
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
   const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
   signal?.throwIfAborted();
-  const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
+  const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId, signal, true), timing);
+  signal?.throwIfAborted();
   const projection = await timeSessionViewPhase('snapshot_history', fields,
     () => readColdMainWireProjection(core, summary.workspaceId, sessionId, signal), timing);
   const aligned = alignFrozenContextHistory(projection.transcript, projection.transcript.logicalEntries);
@@ -477,9 +482,9 @@ export async function readBrowseSnapshotContent(
       return readContentSegment({ messages }, ref);
     }
     if (core.accessor.get(ISessionManager).get(sessionId) === undefined) {
-      const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
-      if (summary === undefined) return undefined;
+      const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, timing.signal), timing);
       timing.signal?.throwIfAborted();
+      if (summary === undefined) return undefined;
       if (field !== 'subagents' && field !== 'session') return readContentSegment({ in_flight_turn: null, pending_approvals: [], pending_questions: [] }, ref);
       const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
       if (meta === undefined) return undefined;
@@ -508,7 +513,7 @@ export async function readBrowseSnapshotContent(
           ? enrichSnapshotSubagents(candidates, meta.agents, broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id)))
           : candidates }, ref);
       }
-      const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
+      const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId, timing.signal, true), timing);
       timing.signal?.throwIfAborted();
       const workspace = await timeSessionViewPhase('snapshot_workspace', fields, () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
       timing.signal?.throwIfAborted();
@@ -587,9 +592,9 @@ async function readSnapshotMessageSource(
   timing: SessionViewTimingContext,
 ): Promise<SessionSnapshotResponse['messages'] | undefined> {
   const fields = { sessionId, requestId: timing.requestId };
-  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
-  if (summary === undefined) return undefined;
+  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, timing.signal), timing);
   timing.signal?.throwIfAborted();
+  if (summary === undefined) return undefined;
   const live = core.accessor.get(ISessionManager).get(sessionId);
   if (live === undefined) {
     const projection = await timeSessionViewPhase('snapshot_content_history', fields,

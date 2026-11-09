@@ -748,6 +748,43 @@ describe('SessionViewTarget', () => {
     const event = await readColdSessionViewBaseline(service as never, 's1', 'main', 'delta', new AbortController().signal);
     expect(event).toMatchObject({ cursor: { seq: 0, epoch: 'cold:s1:main' }, coverage: { kind: 'unknown', hasMoreOlder: true } });
   });
+
+  it('cancels cold_roster immediately on view_detach without waiting for a stalled roster read', async () => {
+    const timing = channel('kiki.session-view.timing');
+    const records: Array<Record<string, unknown>> = [];
+    const collect = (message: unknown): void => { records.push(message as Record<string, unknown>); };
+    timing.subscribe(collect);
+    let releaseRoster!: () => void;
+    const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
+      readColdRoster: vi.fn(() => new Promise<never[]>((resolve) => { releaseRoster = () => resolve([]); })),
+      readColdPageSnapshot: vi.fn(),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection({
+      getCursor: async () => ({ seq: 7, epoch: 'session-epoch' }), unsubscribe: vi.fn(),
+    } as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+        generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
+      } });
+      await vi.waitFor(() => expect(service.readColdRoster).toHaveBeenCalledOnce());
+      connection.receive({ type: 'view_detach', id: 'v1' });
+      await vi.waitFor(() => expect(records).toContainEqual(expect.objectContaining({
+        stage: 'cold_roster', outcome: 'cancelled', signalAborted: true, sessionId: 's1', viewId: 'v1',
+      })));
+      expect(service.readColdPageSnapshot).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      releaseRoster?.();
+      connection.dispose();
+      timing.unsubscribe(collect);
+    }
+  });
 });
 
 it.each(['journal_gap', 'future_reason'])('blocks coverage acknowledgement after %s and recovers on a new generation', (reason) => {

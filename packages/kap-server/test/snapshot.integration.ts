@@ -161,6 +161,37 @@ describe('server-v2 snapshot route enrichment', () => {
     }
   });
 
+  it('forwards abort signal to cold snapshot_index and skips subsequent phases after cancellation', async () => {
+    const entered = deferred();
+    const logger = { warn: vi.fn() };
+    const cancellation = new AbortController();
+    const indexGet = vi.fn((_id: string, _workspaceId?: string, signal?: AbortSignal) => {
+      entered.resolve();
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const getCursor = vi.fn(async () => ({ seq: 0, epoch: '' }));
+    const core = { accessor: fakeAccessor([
+      [ISessionManager, { get: () => undefined }],
+      [ISessionIndex, { get: indexGet }],
+      [IAtomicDocumentStore, { get: vi.fn() }],
+    ]) };
+    const pending = assembleBrowseSnapshot(core as never, { getCursor } as never, 's1', {
+      logger, signal: cancellation.signal, requestId: 'cold-abort-request',
+    }).catch((error: unknown) => error);
+    await entered.promise;
+    cancellation.abort(new DOMException('View detached', 'AbortError'));
+    const error = await pending;
+    expect(error).toBeInstanceOf(DOMException);
+    expect((error as DOMException).name).toBe('AbortError');
+    expect(indexGet).toHaveBeenCalledExactlyOnceWith('s1', undefined, cancellation.signal);
+    expect(getCursor).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'snapshot_index', outcome: 'cancelled', signalAborted: true, sessionId: 's1', requestId: 'cold-abort-request',
+    }), 'session view phase');
+  });
+
   it('keeps legacy parity while transcript mode uses materialized display fields', async () => {
     const sessionId = 'sess_snapshot';
     const promptId = 'msg_snapshot_prompt';

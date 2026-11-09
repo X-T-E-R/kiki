@@ -4307,4 +4307,34 @@ describe('FileSessionIndex (read model)', () => {
     expect(at10k.ops).toEqual(at1k.ops);
     expect(at50k.ops).toEqual(at1k.ops);
   });
+
+  it('cancels an in-flight fallback point read when aborted without affecting sibling callers', async () => {
+    const probing = deferred<void>();
+    const releaseProbe = deferred<void>();
+    class SlowProbeStorage extends FileStorageService {
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        if (key === 'slow-session') {
+          probing.resolve();
+          await releaseProbe.promise;
+        }
+        return super.mtime(scope, key);
+      }
+    }
+    await seedSession('slow-session', { title: 'slow', createdAt: 1, updatedAt: 5 });
+    const store = build(new SlowProbeStorage(homeDir));
+    await store.prepare();
+    await queryStore.delete(sessionCollection(1), 'slow-session');
+
+    const abortController = new AbortController();
+    const abortedCaller = store.get('slow-session', undefined, abortController.signal);
+    const activeCaller = store.get('slow-session');
+    await probing.promise;
+
+    abortController.abort(new DOMException('Caller left view', 'AbortError'));
+    await expect(abortedCaller).rejects.toMatchObject({ name: 'AbortError' });
+
+    releaseProbe.resolve();
+    await expect(activeCaller).resolves.toMatchObject({ id: 'slow-session', title: 'slow' });
+    expect(store.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+  });
 });

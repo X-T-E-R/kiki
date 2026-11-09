@@ -933,13 +933,16 @@ export class SessionEventBroadcaster {
     return { events: applyFilter(fromDisk), resyncRequired: false, currentSeq, epoch };
   }
 
-  async getCursor(sessionId: string): Promise<{ seq: number; epoch: string }> {
+  async getCursor(sessionId: string, signal?: AbortSignal, indexed = false): Promise<{ seq: number; epoch: string }> {
+    signal?.throwIfAborted();
     const state = await this.ensureState(sessionId);
+    signal?.throwIfAborted();
     if (state === undefined) {
-      const cold = await this.readColdWatermark(sessionId);
+      const cold = await this.readColdWatermark(sessionId, signal, indexed);
       return cold ?? { seq: 0, epoch: '' };
     }
     await state.queue;
+    signal?.throwIfAborted();
     return { seq: state.journal.seq, epoch: state.journal.epoch };
   }
 
@@ -1030,7 +1033,7 @@ export class SessionEventBroadcaster {
     const state = await timeSessionViewPhase('snapshot_state', fields, () => this.ensureState(sessionId), timing);
     timing.signal?.throwIfAborted();
     if (state === undefined) {
-      const cold = await this.readColdWatermark(sessionId);
+      const cold = await this.readColdWatermark(sessionId, timing.signal);
       return {
         seq: cold?.seq ?? 0,
         epoch: cold?.epoch ?? '',
@@ -1099,9 +1102,15 @@ export class SessionEventBroadcaster {
    */
   private async readColdWatermark(
     sessionId: string,
+    signal?: AbortSignal,
+    indexed = false,
   ): Promise<{ seq: number; epoch: string } | undefined> {
-    const summary = await this.opts.core.accessor.get(ISessionIndex).get(sessionId);
-    if (summary === undefined) return undefined;
+    signal?.throwIfAborted();
+    if (!indexed) {
+      const summary = await this.opts.core.accessor.get(ISessionIndex).get(sessionId, undefined, signal);
+      if (summary === undefined) return undefined;
+    }
+    signal?.throwIfAborted();
     return SessionEventJournal.peekWatermark(
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,

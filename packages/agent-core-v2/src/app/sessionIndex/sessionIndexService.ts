@@ -72,6 +72,25 @@ class AuthoritativeReadFailure extends Error {
   constructor(cause: unknown) { super('authoritative metadata read failed', { cause }); }
 }
 
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted === true && error === signal.reason) return true;
+  if (!(error instanceof Error)) return false;
+  return error.name === 'AbortError' || (error as { code?: unknown }).code === 'ABORT_ERR';
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => { reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
 function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
   if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
@@ -609,10 +628,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     });
   }
 
-  async get(id: string, workspaceId?: string): Promise<SessionSummary | undefined> {
+  async get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {
+    signal?.throwIfAborted();
     return this.withPointReadModel(
-      (generation) => this.getFromReadModel(generation, id, undefined, workspaceId),
-      () => this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]),
+      (generation) => this.getFromReadModel(generation, id, undefined, workspaceId, signal),
+      () => abortable(this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]), signal),
+      signal,
     );
   }
 
@@ -653,7 +674,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async withPointReadModel<T>(
     op: (generation: number) => Promise<T>,
     legacy: () => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     if (!this.readModelEnabled()) return legacy();
     if (this.mirror.dirtyEpoch() !== undefined) {
       void this.ensureDirtyCatchUp().catch(() => false);
@@ -665,8 +688,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     let manifest: Checkpoint | undefined;
     try {
-      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, signal);
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       if (isQueryStoreBusy(error)) return legacy();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
@@ -681,6 +705,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     try {
       return await op(manifest.seq);
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       if (error instanceof AuthoritativeReadFailure) throw error.cause;
       if (isQueryStoreBusy(error)) return legacy();
       this.markDegraded('read model read failed', error);
@@ -764,19 +789,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     id: string,
     pending: readonly SessionSummary[] = this.mirror.pending(),
     workspaceId?: string,
+    signal?: AbortSignal,
   ): Promise<SessionSummary | undefined> {
+    signal?.throwIfAborted();
     const queued = pending.find((summary) => summary.id === id);
     if (queued !== undefined) {
-      if (workspaceId === undefined || queued.workspaceId === workspaceId) return this.withOwnUpdatedAt(queued);
+      if (workspaceId === undefined || queued.workspaceId === workspaceId) return this.withOwnUpdatedAt(queued, signal);
     } else {
-      const cached: unknown = await this.queryStore.get(sessionCollection(generation), id);
+      const cached: unknown = await this.queryStore.get(sessionCollection(generation), id, signal);
       if (isSessionSummaryShape(cached)) {
         const summary = stripRecencyField(generation, cached);
-        if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary);
+        if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary, signal);
       }
     }
-    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId])
-      .catch((error: unknown) => { throw new AuthoritativeReadFailure(error); });
+    const summary = await abortable(this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]), signal)
+      .catch((error: unknown) => {
+        if (isAbortError(error, signal)) throw error;
+        throw new AuthoritativeReadFailure(error);
+      });
     if (summary !== undefined) this.mirror.record(summary);
     return summary;
   }
@@ -839,9 +869,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return { ...merged, items: await Promise.all(merged.items.map((summary) => this.withOwnUpdatedAt(summary))) };
   }
 
-  private async withOwnUpdatedAt(summary: SessionSummary): Promise<SessionSummary> {
+  private async withOwnUpdatedAt(summary: SessionSummary, signal?: AbortSignal): Promise<SessionSummary> {
     if (summary.ownUpdatedAt !== undefined) return summary;
-    const result = await readSessionSummaryResult(this.docs, this.sessionsScope, summary.workspaceId, summary.id, this.log);
+    const result = await abortable(readSessionSummaryResult(this.docs, this.sessionsScope, summary.workspaceId, summary.id, this.log), signal);
     if (result.kind !== 'found' || result.summary.ownUpdatedAt === undefined) return summary;
     const current = this.mirror.pending().find((entry) => entry.id === summary.id);
     const original = current === undefined ? result.summary : {

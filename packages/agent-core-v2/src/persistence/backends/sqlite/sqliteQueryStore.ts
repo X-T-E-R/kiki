@@ -116,7 +116,7 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
   async ensureIndex(collection: string, definition: IndexDef): Promise<void> { await this.request({ type: 'index', collection, definition }); }
   listKeys(collection: string): Promise<readonly string[]> { return this.request({ type: 'keys', collection }); }
   async dropCollection(collection: string): Promise<void> { await this.request({ type: 'drop', collection }); }
-  getCheckpoint(source: string): Promise<Checkpoint | undefined> { return this.get('__checkpoint__', source); }
+  getCheckpoint(source: string, signal?: AbortSignal): Promise<Checkpoint | undefined> { return this.get('__checkpoint__', source, signal); }
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> { return this.put('__checkpoint__', source, checkpoint); }
 
   async withExclusive<T>(operation: () => Promise<T>, source?: string): Promise<T> {

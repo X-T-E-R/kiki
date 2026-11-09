@@ -192,11 +192,13 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     await this.withDb((db) => db.del(physicalKey(collection, key)));
   }
 
-  async get<T>(collection: string, key: string): Promise<T | undefined> {
+  async get<T>(collection: string, key: string, signal?: AbortSignal): Promise<T | undefined> {
+    signal?.throwIfAborted();
     return this.withDb((db) => db.get(physicalKey(collection, key)) as Promise<T | undefined>);
   }
 
-  async getMany<T>(collection: string, keys: readonly string[]): Promise<Map<string, T>> {
+  async getMany<T>(collection: string, keys: readonly string[], signal?: AbortSignal): Promise<Map<string, T>> {
+    signal?.throwIfAborted();
     if (keys.length === 0) return new Map();
     const values = await this.withDb((db) =>
       db.mget(keys.map((key) => physicalKey(collection, key))),
@@ -266,8 +268,8 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     this.ensuredIndexes.add(guard);
   }
 
-  async getCheckpoint(source: string): Promise<Checkpoint | undefined> {
-    return this.get<Checkpoint>(CHECKPOINT_COLLECTION, source);
+  async getCheckpoint(source: string, signal?: AbortSignal): Promise<Checkpoint | undefined> {
+    return this.get<Checkpoint>(CHECKPOINT_COLLECTION, source, signal);
   }
 
   async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
