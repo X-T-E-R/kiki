@@ -122,9 +122,11 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (scenario !== 'network-recover-no-tools') runToolOnce(base + 1);
       failNetwork(base + 1);
       if (scenario === 'network-recover-exit') {
-        // The terminal error is confirmed; this CLI then exits before the adapter can write.
-        await new Promise(done => process.stdout.write('', done));
-        process.exit(0);
+        // Mirrors headless AGY after a terminal network error: the CLI is still alive when stdout
+        // flushes the result frame, ignores further stdin while finishing native storage cleanup,
+        // and exits shortly after with code 3.
+        await new Promise(done => setTimeout(done, 40));
+        process.exit(3);
       }
       continue;
     }

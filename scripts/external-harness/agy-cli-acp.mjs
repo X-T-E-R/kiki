@@ -261,6 +261,77 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
   } finally { db.close(); }
 }
 
+function unconsumedNetworkContinuationProof(records, { sessionId, conversationId, model, effort, cwd, additionalDirectories = [] }) {
+  if (!Array.isArray(records) || !NATIVE_ID.test(sessionId ?? '') || !NATIVE_ID.test(conversationId ?? '')) return undefined;
+  let lastTurnIndex = -1;
+  for (let index = 0; index < records.length; index += 1) {
+    const type = records[index]?.type;
+    if (type === 'native_turn_pending' || type === 'native_turn_reconciled') lastTurnIndex = index;
+  }
+  if (lastTurnIndex < 0 || records[lastTurnIndex]?.type !== 'native_turn_pending') return undefined;
+  let launchIndex = -1;
+  for (let index = lastTurnIndex; index >= 0; index -= 1) {
+    if (records[index]?.type === 'launch') { launchIndex = index; break; }
+  }
+  if (launchIndex < 0 || records.some((record, index) => index > launchIndex && record?.type === 'launch')) return undefined;
+  if (records.some(record => ['session_loaded', 'legacy_native_recovered'].includes(record?.type))) return undefined;
+  if (records.filter(record => record?.type === 'prompt_sent').length !== 1) return undefined;
+  const turnRecords = records.slice(lastTurnIndex + 1);
+  if (turnRecords.filter(record => record?.type === 'prompt_sent').length !== 1) return undefined;
+  const consumed = turnRecords.filter(record => record?.type === 'prompt_consumed');
+  if (consumed.length !== 1 || consumed[0].stepIndex !== 0) return undefined;
+  if (turnRecords.some(record => typeof record?.type === 'string' && (record.type.startsWith('steer_') || record.type === 'pre_tool_hook_denied'))) return undefined;
+  const results = turnRecords.filter(record => record?.type === 'agy_result');
+  const requested = turnRecords.filter(record => record?.type === 'network_recovery_requested');
+  const sent = turnRecords.filter(record => record?.type === 'network_recovery_sent');
+  if (results.length !== 1 || requested.length !== 1 || sent.length !== 1) return undefined;
+  if (results[0].conversationId !== conversationId || results[0].status !== 'ERROR' ||
+      requested[0].conversationId !== conversationId || requested[0].nativeStatus !== 'ERROR' ||
+      requested[0].attempt !== 1 || requested[0].totalAttempts !== 1 ||
+      sent[0].conversationId !== conversationId || sent[0].attempt !== 1 || sent[0].relaunched !== false) return undefined;
+  const sentIndex = turnRecords.indexOf(sent[0]);
+  if (sentIndex < turnRecords.indexOf(requested[0]) || sentIndex < turnRecords.indexOf(results[0]) ||
+      sentIndex <= turnRecords.indexOf(consumed[0])) return undefined;
+  const afterSent = turnRecords.slice(sentIndex + 1);
+  if (afterSent.some(record => record?.type !== 'native_frame_delivered' && record?.type !== 'close')) return undefined;
+  const toolsByStep = new Map();
+  for (const record of turnRecords) {
+    if (record?.type !== 'tool_state') continue;
+    const match = /^agy-([0-9a-f-]+)-(\d+)$/i.exec(String(record.toolCallId ?? ''));
+    if (!match || match[1] !== conversationId) return undefined;
+    const stepIndex = Number(match[2]);
+    if (!Number.isSafeInteger(stepIndex) || stepIndex <= 0) return undefined;
+    toolsByStep.set(stepIndex, {
+      stepIndex,
+      name: record.name,
+      state: record.state,
+      ...(typeof record.error === 'string' && record.error.trim() ? { error: record.error } : {}),
+    });
+  }
+  if (!toolsByStep.size) return undefined;
+  const tools = [];
+  for (const tool of [...toolsByStep.values()].sort((a, b) => a.stepIndex - b.stepIndex)) {
+    if (tool.state !== 'DONE' && tool.state !== 'ERROR') return undefined;
+    tools.push({
+      stepIndex: tool.stepIndex,
+      name: tool.name,
+      ...(tool.state === 'ERROR' ? { failed: true } : {}),
+      ...(tool.state === 'ERROR' && tool.error ? { error: tool.error } : {}),
+    });
+  }
+  return {
+    version: 1,
+    sessionId,
+    conversationId,
+    model,
+    effort,
+    terminalError: requested[0].error,
+    disclosedCwd: cwd,
+    additionalDirectories: additionalDirectories.length ? [...additionalDirectories] : undefined,
+    tools,
+  };
+}
+
 export function launchArgs(session) {
   validateEffort(session.model, session.effort);
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
@@ -542,9 +613,41 @@ export class AgyBridge {
       }
       const turn = latest.findLast(record => record.type === 'native_turn_pending' || record.type === 'native_turn_reconciled');
       if (turn?.type === 'native_turn_pending') {
-        const error = new Error('AGY native session has an unconfirmed turn; wait for its native outcome to be reconciled before loading; do not replay the interrupted prompt or commands');
-        error.code = 'AGY_SESSION_UNCONFIRMED';
-        throw error;
+        const unconsumedProof = !mcpBinding
+          ? unconsumedNetworkContinuationProof(latest, {
+            sessionId: params.sessionId,
+            conversationId: init.conversationId,
+            model,
+            effort,
+            cwd: workspace.cwd,
+            additionalDirectories: workspace.additionalDirectories ?? [],
+          })
+          : undefined;
+        let reconciled = false;
+        if (unconsumedProof !== undefined) {
+          try {
+            await readLegacyNativeRecovery({
+              nativeHome: this.nativeHome,
+              cwd: workspace.cwd,
+              additionalDirectories: workspace.additionalDirectories ?? [],
+              sessionId: params.sessionId,
+              proof: unconsumedProof,
+              model,
+            });
+            reconciled = true;
+          } catch {}
+        }
+        if (!reconciled) {
+          const error = new Error('AGY native session has an unconfirmed turn; wait for its native outcome to be reconciled before loading; do not replay the interrupted prompt or commands');
+          error.code = 'AGY_SESSION_UNCONFIRMED';
+          throw error;
+        }
+        await this.audit({ id: params.sessionId }, 'native_turn_reconciled', {
+          conversationId: init.conversationId,
+          status: 'ERROR',
+          reconciledFromNativeDb: true,
+          unconsumedContinuationAttempt: 1,
+        });
       }
       await this.newSession(params, params.sessionId, 'session_loaded');
       const session = this.session(params.sessionId);
@@ -1334,12 +1437,15 @@ export class AgyBridge {
    * only evidence the adapter already confirmed: the finished terminal result, the native
    * conversation ID it named, and settled tool states. Two delivery paths follow that evidence.
    *
-   * - The owned CLI is still running: append one new user frame. Nothing else changes, so the
-   *   completed text and tool results stay exactly where they are.
-   * - The terminal result was confirmed but the owned CLI already exited: relaunch the same
-   *   Claude-bound CLI with the recorded `--conversation` and send only the continuation. This is
-   *   the audited native-resume entry (`agy_result` then `close` then `--conversation` re-init of
-   *   the same ID), not a new conversation and not a replay.
+   * - For a real native UUID conversation (`NATIVE_ID`), the headless CLI that emitted the
+   *   terminal `result: ERROR` frame is ending its invocation loop and will exit once it flushes
+   *   its native database and transcript. Close its stdin, wait for that process to exit cleanly,
+   *   relaunch the CLI with the recorded `--conversation`, and send only the continuation frame.
+   *   This is the audited native-resume entry (`agy_result` then `close` then `--conversation`
+   *   re-init of the same ID), not a new conversation and not a replay.
+   * - For a persistent in-process test harness without a native UUID, append one new user frame
+   *   to the running child's stdin. Nothing else changes, so completed text and tool results stay
+   *   where they are.
    *
    * Returns `undefined` when the evidence does not authorize a continuation at all. A failed
    * write is reported as unknown delivery and is never retried.
@@ -1354,7 +1460,7 @@ export class AgyBridge {
       message: { content: `${NETWORK_RECOVERY_INSTRUCTION} (automatic continuation ${attempt}).` } }) + '\n';
     const owned = session.child;
     const alreadyGone = !owned || owned.exitCode !== null || owned.signalCode !== null;
-    if (!alreadyGone) {
+    if (!alreadyGone && !NATIVE_ID.test(conversationId)) {
       const delivered = await this.#writeContinuation(session, active, frame);
       if (delivered === 'unknown') return { outcome: 'unknown', conversationId };
       if (delivered === 'written') {
@@ -1366,6 +1472,14 @@ export class AgyBridge {
     session.restarting = true;
     try {
       const prepare = async () => {
+        if (owned && owned.exitCode === null && owned.signalCode === null) {
+          owned.stdin.end();
+          let timer;
+          const stopFallback = new Promise((_, reject) => {
+            timer = setTimeout(() => { void this.stopProcess(owned).catch(reject); }, 5000);
+          });
+          try { await Promise.race([session.exited, stopFallback]); } finally { clearTimeout(timer); }
+        }
         await session.exited;
         if (session.active !== active || session.cancelling) return;
         await session.permissionChannel?.close();

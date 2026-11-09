@@ -816,13 +816,16 @@ describe('recoverable ACP broken resume', () => {
     }
   });
 
-  it.each(['account-switch', 'legacy-network', 'legacy-settled-tool-error', 'legacy-load-failure', 'legacy-unsettled'] as const)('uses real profile/dispatch for original-session recovery: %s', async (scenario) => {
+  it.each(['account-switch', 'legacy-network', 'legacy-continue-exit', 'legacy-settled-tool-error', 'legacy-load-failure', 'legacy-unsettled'] as const)('uses real profile/dispatch for original-session recovery: %s', async (scenario) => {
     const legacy = scenario !== 'account-switch';
     const legacySessionId = '11111111-1111-4111-8111-111111111111';
     const nativeId = '22222222-2222-4222-8222-222222222222';
-    const networkError = scenario === 'legacy-settled-tool-error'
-      ? 'AGY terminal status ERROR: The stream was interrupted. Please continue the task you were working on.'
-      : 'AGY terminal status ERROR: There was a network issue connecting to the server, please try again.';
+    const expectedTerminalError = scenario === 'legacy-settled-tool-error'
+      ? 'The stream was interrupted. Please continue the task you were working on.'
+      : 'There was a network issue connecting to the server, please try again.';
+    const networkError = scenario === 'legacy-continue-exit'
+      ? `AGY exited before terminal result (code: 3, signal: none): error: ${expectedTerminalError}`
+      : `AGY terminal status ERROR: ${expectedTerminalError}`;
     const familyDesc = {
       id: 'agy-cli',
       protocol: 'acp-v1' as const,
@@ -1281,7 +1284,7 @@ describe('recoverable ACP broken resume', () => {
         expect(loads.length).toBeGreaterThan(0);
         expect(loads[0]).toMatchObject({ sessionId: legacySessionId, _meta: { 'kiki.agyLegacyRecovery': {
           version: 1, sessionId: legacySessionId, conversationId: nativeId, model: 'model-a', effort: 'medium',
-          terminalError: networkError.slice('AGY terminal status ERROR: '.length),
+          terminalError: expectedTerminalError,
           tools: [scenario === 'legacy-settled-tool-error'
             ? { stepIndex: 2, name: 'edit_file', failed: true, error: 'file does not exist' }
             : { stepIndex: 2, name: 'read_file' }],

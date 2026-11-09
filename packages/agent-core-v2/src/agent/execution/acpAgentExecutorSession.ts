@@ -562,9 +562,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const turn = this.#states.get(turnKey).lastEnded;
     const disclosedCwd = binding.environmentDisclosure?.cwd;
     const hasAdditionalDirs = (roots.additionalDirs?.length ?? 0) > 0;
-    const terminalError = turn?.error?.message?.startsWith(AGY_TERMINAL_ERROR_PREFIX)
-      ? turn.error.message.slice(AGY_TERMINAL_ERROR_PREFIX.length).trim()
-      : '';
+    const terminalError = legacyAgyTerminalError(turn?.error?.message);
     if (executorSourceId(descriptor) !== 'agy-cli' || state.executorId !== descriptor.id ||
         launchHome(descriptor) !== '' || !sameLaunchHome(state.sessionRef, descriptor) ||
         state.sessionRef?.ref['localSource'] !== undefined || state.sessionEpoch !== 1 ||
@@ -1488,8 +1486,15 @@ function originalRemoteResumeFields(
 const AGY_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const AGY_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/i;
 const AGY_TERMINAL_ERROR_PREFIX = 'AGY terminal status ERROR: ';
+const AGY_EARLY_EXIT_DIAGNOSTIC = /^AGY exited before terminal result \(code: \d+, signal: none\): (?:error:\s*)?(.+)$/i;
 const AGY_UNRECOVERABLE_TERMINAL_ERROR = /^(?:interrupted|canceled|cancelled)$/i;
 const AGY_SYNTHETIC_TOOL_ERROR = /^(?:External tool did not report a terminal result before the turn ended\.|AGY turn (?:canceled|cancelled|interrupted)|AGY permission denied|tool call denied by pre-tool hook:|AGY terminal result arrived before a tool terminal update:|AGY terminal status )/i;
+
+function legacyAgyTerminalError(message: string | undefined): string {
+  if (message === undefined) return '';
+  if (message.startsWith(AGY_TERMINAL_ERROR_PREFIX)) return message.slice(AGY_TERMINAL_ERROR_PREFIX.length).trim();
+  return AGY_EARLY_EXIT_DIAGNOSTIC.exec(message)?.[1]?.trim() ?? '';
+}
 
 function sameWorkspacePath(left: string, right: string): boolean {
   const normalize = (value: string) => {

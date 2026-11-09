@@ -1903,7 +1903,7 @@ void test('a repeated network failure stops after one continuation and reports t
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-void test('when the CLI already exited after the confirmed terminal error, the continuation relaunches the same native conversation instead of a new one', { timeout: 30000 }, async () => {
+void test('when the headless CLI is still alive or exiting after the confirmed terminal error, the continuation waits for exit and relaunches the same native conversation', { timeout: 30000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(tmpdir(), 'agy-network-relaunch-'));
   const auditDir = join(root, 'audit');
@@ -1912,21 +1912,15 @@ void test('when the CLI already exited after the confirmed terminal error, the c
   try {
     const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
     const messages = [];
-    const audit = b.audit.bind(b);
-    b.audit = async (target, type, data) => {
-      if (type === 'network_recovery_requested') {
-        const child = target.child;
-        await target.exited;
-        assert.equal(child.exitCode, 0);
-      }
-      return audit(target, type, data);
-    };
     assert.deepEqual(await turn(b, id, 'network-recover-exit', messages), { stopReason: 'end_turn' });
     assert.equal(b.session(id).init.conversation_id, conversationId);
     assert.equal(messages.filter(message => message.update.sessionUpdate === 'agent_message_chunk')
       .map(message => message.update.content.text).join(''), 'recovered-by-relaunch');
     const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
+    const requested = records.filter(record => record.type === 'network_recovery_requested');
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0].liveChild, true);
     const launches = records.filter(record => record.type === 'launch');
     assert.equal(launches.length, 2);
     assert.equal(launches[1].args[launches[1].args.indexOf('--conversation') + 1], conversationId);
@@ -1938,6 +1932,145 @@ void test('when the CLI already exited after the confirmed terminal error, the c
     assert.equal(sent[0].conversationId, conversationId);
     assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-exit-tool\n');
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('loadSession reconciles an unconsumed network continuation followed by CLI exit against authoritative native SQLite and transcript', { timeout: 30000 }, async () => {
+  const { mkdir, mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { createHash } = await import('node:crypto');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = await mkdtemp(join(tmpdir(), 'agy-unconsumed-continue-load-'));
+  const extraA = join(root, 'extra-a');
+  const extraB = join(root, 'extra-b');
+  const sessionId = '7b81d313-f9cf-4a65-80a7-59eaa3330c92';
+  const conversationId = '40332887-97ab-49ce-9b38-4f3056fb408a';
+  const model = 'claude-opus-5-5-high';
+  const promptText = 'Inspect mobile disconnect resume behavior and verify the call path.';
+  const promptSha256 = createHash('sha256').update(promptText).digest('hex');
+  const streamError = 'The stream was interrupted. Please continue the task you were working on.';
+  const terminalError = 'There was a network issue connecting to the server, please try again.';
+  const continuationFrame = JSON.stringify({
+    event: 'user',
+    message: { content: 'The connection to the model provider was interrupted after the previous tool actions completed. Continue the same task from where it stopped; do not repeat completed tool calls or re-create changes already on disk (automatic continuation 1).' },
+  }) + '\n';
+  const continuationSha256 = createHash('sha256').update(continuationFrame).digest('hex');
+  const auditDir = join(root, 'audit');
+  const auditPath = join(auditDir, `${sessionId}.ndjson`);
+  const dbPath = join(root, 'conversations', `${conversationId}.db`);
+  const transcriptDir = join(root, 'brain', conversationId, '.system_generated', 'logs');
+  const varint = value => {
+    const bytes = [];
+    while (value >= 128) { bytes.push((value & 127) | 128); value >>>= 7; }
+    return Buffer.from([...bytes, value]);
+  };
+  const field = (number, value) => {
+    const bytes = Buffer.from(value);
+    return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+  };
+  const writeAudit = rows => writeFile(auditPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+  const baseAudit = [
+    { at: '2026-11-10T20:51:43.479Z', sessionId, type: 'session_new', cwd: root, additionalDirectories: [extraA, extraB], mcpCount: 0, permissionMode: 'yolo' },
+    { at: '2026-11-10T20:51:43.495Z', sessionId, type: 'launch', pid: 14296, cliPath: 'agy.exe', args: ['--mode', 'agent', '--input-format', 'stream-json', '--output-format', 'stream-json', '--workspace', root, '--add-dir', extraA, '--add-dir', extraB, '--yolo', '--model', model, '--effort', 'high'], model, effort: 'high', permissionMode: 'yolo', resumeConversationId: null },
+    { at: '2026-11-10T20:51:43.497Z', sessionId, type: 'native_turn_pending', conversationId: null },
+    { at: '2026-11-10T20:51:43.498Z', sessionId, type: 'prompt_sent', promptSha256, bytes: Buffer.byteLength(promptText) },
+    { at: '2026-11-10T20:51:46.299Z', sessionId, type: 'agy_init', conversationId, model, cwd: root, permissionMode: 'yolo' },
+    { at: '2026-11-10T20:51:46.501Z', sessionId, type: 'prompt_consumed', conversationId, stepIndex: 0 },
+    { at: '2026-11-10T20:52:03.902Z', sessionId, type: 'native_frame_received', sequence: 6, event: 'step_update', stepIndex: 4, stepType: 'tool', state: 'ACTIVE' },
+    { at: '2026-11-10T20:52:03.903Z', sessionId, type: 'tool_state', toolCallId: `agy-${conversationId}-4`, name: 'run_command', state: 'ACTIVE' },
+    { at: '2026-11-10T20:52:06.103Z', sessionId, type: 'native_frame_received', sequence: 7, event: 'step_update', stepIndex: 4, stepType: 'tool', state: 'DONE' },
+    { at: '2026-11-10T20:52:06.105Z', sessionId, type: 'tool_state', toolCallId: `agy-${conversationId}-4`, name: 'run_command', state: 'DONE' },
+    { at: '2026-11-10T20:52:13.389Z', sessionId, type: 'native_frame_received', sequence: 10, event: 'step_update', stepIndex: 7, stepType: 'tool', state: 'ACTIVE' },
+    { at: '2026-11-10T20:52:13.390Z', sessionId, type: 'tool_state', toolCallId: `agy-${conversationId}-7`, name: 'read_file', state: 'ACTIVE' },
+    { at: '2026-11-10T20:52:13.990Z', sessionId, type: 'native_frame_received', sequence: 12, event: 'step_update', stepIndex: 7, stepType: 'tool', state: 'DONE' },
+    { at: '2026-11-10T20:52:13.991Z', sessionId, type: 'tool_state', toolCallId: `agy-${conversationId}-7`, name: 'read_file', state: 'DONE' },
+    { at: '2026-11-10T20:54:04.535Z', sessionId, type: 'native_frame_received', sequence: 51, event: 'step_update', stepIndex: 34, stepType: 'error_message', state: 'DONE' },
+    { at: '2026-11-10T20:54:08.536Z', sessionId, type: 'native_frame_received', sequence: 52, event: 'step_update', stepIndex: 35, stepType: 'error_message', state: 'DONE' },
+    { at: '2026-11-10T20:54:08.562Z', sessionId, type: 'native_frame_received', sequence: 53, event: 'result', status: 'ERROR' },
+    { at: '2026-11-10T20:54:08.563Z', sessionId, type: 'agy_result', conversationId, status: 'ERROR' },
+    { at: '2026-11-10T20:54:08.564Z', sessionId, type: 'network_recovery_requested', conversationId, nativeStatus: 'ERROR', error: terminalError, attempt: 1, totalAttempts: 1, preservedTools: 2, preservedTextLength: 0, liveChild: true },
+    { at: '2026-11-10T20:54:08.565Z', sessionId, type: 'network_recovery_sent', conversationId, attempt: 1, relaunched: false, bytes: Buffer.byteLength(continuationFrame), frameSha256: continuationSha256 },
+    { at: '2026-11-10T20:54:08.566Z', sessionId, type: 'native_frame_delivered', sequence: 53 },
+    { at: '2026-11-10T20:54:09.319Z', sessionId, type: 'close', pid: 14296, processEnded: true },
+  ];
+  const params = { sessionId, cwd: root, additionalDirectories: [extraA, extraB], mcpServers: [] };
+  const b = bridge(model); b.auditDir = auditDir; b.nativeHome = root;
+  const c = bridge(model); c.auditDir = auditDir; c.nativeHome = root;
+  try {
+    await mkdir(auditDir, { recursive: true });
+    await mkdir(join(root, 'conversations'), { recursive: true });
+    await mkdir(transcriptDir, { recursive: true });
+    const sortedUris = [extraA, extraB, root].map(dir => pathToFileURL(dir).href);
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('CREATE TABLE trajectory_metadata_blob(id TEXT, data BLOB); CREATE TABLE gen_metadata(idx INTEGER, data BLOB); CREATE TABLE steps(idx INTEGER, step_type INTEGER, status INTEGER, step_payload BLOB)');
+      db.prepare('INSERT INTO trajectory_metadata_blob VALUES (?, ?)').run('main', Buffer.concat([
+        field(6, conversationId),
+        ...sortedUris.map(uri => field(7, uri)),
+      ]));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(0, field(1, field(19, model)));
+      db.prepare('INSERT INTO gen_metadata VALUES (?, ?)').run(1, Buffer.concat([field(1, Buffer.alloc(0)), field(4, Buffer.alloc(360_000))]));
+      const step = db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)');
+      step.run(0, 14, 3, field(19, Buffer.concat([field(2, promptText), field(12, Buffer.concat(sortedUris.map(uri => field(12, uri))))])));
+      for (let idx = 1; idx < 34; idx++) {
+        if (idx === 4) step.run(idx, 132, 3, field(5, field(4, field(2, 'run_command'))));
+        else if (idx === 7) step.run(idx, 132, 3, field(5, field(4, field(2, 'read_file'))));
+        else step.run(idx, 15, 3, Buffer.alloc(0));
+      }
+      step.run(34, 17, 3, field(24, field(3, field(1, streamError))));
+      step.run(35, 17, 3, field(24, field(3, field(1, terminalError))));
+    } finally { db.close(); }
+    const transcriptRows = [];
+    for (let idx = 0; idx <= 34; idx++) {
+      if (idx === 0) transcriptRows.push({ step_index: 0, type: 'USER_INPUT', status: 'DONE', content: promptText });
+      else if (idx === 4) transcriptRows.push({ step_index: 4, type: 'GENERIC', status: 'DONE' });
+      else if (idx === 7) transcriptRows.push({ step_index: 7, type: 'GENERIC', status: 'DONE' });
+      else if (idx === 34) transcriptRows.push({ step_index: 34, type: 'ERROR_MESSAGE', status: 'DONE', error: streamError });
+      else transcriptRows.push({ step_index: idx, type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: idx === 3 ? [{ name: 'run_command' }] : idx === 6 ? [{ name: 'read_file' }] : [] });
+    }
+    await writeFile(join(transcriptDir, 'transcript_full.jsonl'), transcriptRows.map(row => JSON.stringify(row)).join('\n'));
+
+    // Reject if the second user_input frame actually landed in SQLite (meaning the continuation was consumed).
+    await writeAudit(baseAudit);
+    const consumedDb = new DatabaseSync(dbPath);
+    try {
+      consumedDb.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(36, 14, 3, Buffer.alloc(0));
+      await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+      consumedDb.prepare('DELETE FROM steps WHERE idx = 36').run();
+    } finally { consumedDb.close(); }
+
+    // Reject if an audited tool is missing its DONE terminal state or if prompt_consumed is absent.
+    await writeAudit(baseAudit.filter(row => !(row.type === 'tool_state' && row.toolCallId === `agy-${conversationId}-7` && row.state === 'DONE')));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+    await writeAudit(baseAudit.filter(row => row.type !== 'prompt_consumed'));
+    await assert.rejects(b.loadSession(params), { code: 'AGY_SESSION_UNCONFIRMED' });
+
+    // Reconcile when authoritative SQLite and transcript prove the continuation was unconsumed and the turn is terminal.
+    await writeAudit(baseAudit);
+    const loaded = await b.loadSession(params);
+    assert.equal(loaded.configOptions[0].currentValue, 'high');
+    assert.equal(b.session(sessionId).conversationId, conversationId);
+    const reconciledRecords = (await readFile(auditPath, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(reconciledRecords.filter(r => r.type === 'native_turn_reconciled').map(r => ({
+      conversationId: r.conversationId,
+      status: r.status,
+      reconciledFromNativeDb: r.reconciledFromNativeDb,
+      unconsumedContinuationAttempt: r.unconsumedContinuationAttempt,
+    })), [{
+      conversationId,
+      status: 'ERROR',
+      reconciledFromNativeDb: true,
+      unconsumedContinuationAttempt: 1,
+    }]);
+    await b.close();
+
+    // Subsequent load uses the written native_turn_reconciled record and resumes on the original native conversationId.
+    await c.loadSession(params);
+    assert.deepEqual(await turn(c, sessionId, 'continue after reconciled load', []), { stopReason: 'end_turn' });
+    assert.equal(c.session(sessionId).init.conversation_id, conversationId);
+    const finalRecords = (await readFile(auditPath, 'utf8')).trim().split('\n').map(JSON.parse);
+    const launches = finalRecords.filter(r => r.type === 'launch');
+    assert.equal(launches.length, 2);
+    assert.equal(launches[1].args[launches[1].args.indexOf('--conversation') + 1], conversationId);
+  } finally { await b.close(); await c.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 void test('a continuation write with unknown delivery retains the original terminal error and blocks replay', async () => {
