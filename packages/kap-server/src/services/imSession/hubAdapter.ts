@@ -14,6 +14,8 @@ import {
   type SessionCursorStore,
   type SessionHub,
   type SessionInbound,
+  type SessionInboundPart,
+  type SessionMediaKind,
   type SessionOutbound,
   type SessionPlatformId,
   type SessionReceipt,
@@ -389,8 +391,32 @@ export class HubSessionAdapter implements ImSessionAdapter {
     const payload = event.payload;
     if (payload.type === 'text') return { ...base, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
     if (payload.type === 'callback') return { ...base, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
-    if (payload.type === 'media_unavailable') return { ...base, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
-    const kind = payload.media.kind === 'voice' ? 'audio' as const : payload.media.kind;
+    if (payload.type === 'parts') {
+      const hasUsablePart = payload.parts.some(
+        (part) => (part.type === 'text' && part.text.trim().length > 0) || part.type === 'media',
+      );
+      const parts = payload.parts.map((part) => toInboundPart(part, hasUsablePart));
+      const text = parts.flatMap((part) => part.kind === 'text' && part.text ? [part.text] : []).join('\n');
+      return { ...base, kind: 'message', parts, text, preview: text.length > 0 ? text.slice(0, 80) : undefined };
+    }
+    if (payload.type === 'media_unavailable') {
+      const unavailableKind = toInboundMediaKind(payload.kind);
+      const caption = payload.caption?.trim() ? payload.caption : '';
+      if (caption.length > 0) {
+        return {
+          ...base,
+          kind: 'message',
+          parts: [
+            { kind: 'text', text: caption },
+            { kind: unavailableKind, text: payload.reason },
+          ],
+          text: caption,
+          preview: caption.slice(0, 80),
+        };
+      }
+      return { ...base, kind: unavailableKind, tooLarge: true, text: '' };
+    }
+    const kind = toInboundMediaKind(payload.media.kind);
     return {
       ...base, kind, text: payload.caption ?? '', preview: payload.caption?.slice(0, 80),
       media: { name: payload.media.filename, mediaType: payload.media.mime, bytes: payload.media.bytes },
@@ -548,4 +574,22 @@ function realtimeCapability(platform: SessionPlatformId) {
 
 function isSessionMediaKind(kind: string): kind is 'file' | 'image' | 'audio' | 'voice' | 'video' {
   return kind === 'file' || kind === 'image' || kind === 'audio' || kind === 'voice' || kind === 'video';
+}
+
+function toInboundMediaKind(kind: SessionMediaKind): 'image' | 'file' | 'audio' | 'video' {
+  return kind === 'voice' ? 'audio' : kind;
+}
+
+function toInboundPart(part: SessionInboundPart, degradeTooLarge: boolean): NonNullable<ImInboundEvent['parts']>[number] {
+  if (part.type === 'text') return { kind: 'text', text: part.text };
+  if (part.type === 'media_unavailable') {
+    const kind = toInboundMediaKind(part.kind);
+    return part.reason === 'too_large' && !degradeTooLarge ? { kind, tooLarge: true } : { kind, text: part.reason };
+  }
+  const kind = toInboundMediaKind(part.media.kind);
+  return {
+    kind,
+    text: part.caption,
+    media: { name: part.media.filename, mediaType: part.media.mime, bytes: part.media.bytes },
+  };
 }

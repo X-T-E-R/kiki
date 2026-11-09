@@ -1855,4 +1855,234 @@ describe('IM group wake and reply routing', () => {
       await bridge.close();
     }
   });
+
+  it('submits Feishu rich-text post messages, oversized media with caption, and Telegram failed-media captions while rejecting pure oversized media', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const sentRequests: Record<string, unknown>[] = [];
+    let mediaIndex = 0;
+    const base = ports({
+      saveMedia: async (input) => [
+        ...(input.text === undefined ? [] : [{ type: 'text' as const, text: input.text }]),
+        { type: 'image' as const, name: input.name, source: { kind: 'session_media' as const, file_id: `media-${++mediaIndex}` } },
+      ],
+      submit: async (input) => {
+        received.push(structuredClone(input));
+        return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' };
+      },
+    });
+    const documents = new Map<string, unknown>();
+    base.ports = {
+      ...base.ports,
+      credentials: {
+        list: () => [
+          { id: 'fs-rich-inst', providerId: 'feishu_app', configured: true },
+          { id: 'tg-rich-inst', providerId: 'telegram', configured: true },
+        ],
+        read: (id) => id === 'fs-rich-inst' ? 'cli_0011223344556690\nsecret' : '888888:HHHHHHHHHHHHHHHHHHHH',
+        write: async () => undefined,
+        check: async (id) => ({ ok: true, accountId: id === 'fs-rich-inst' ? 'cli_0011223344556690' : '88' }),
+        create: async ({ providerKind }) => ({ instanceId: providerKind === 'feishu_app' ? 'fs-rich-inst' : 'tg-rich-inst' }),
+      },
+      history: {
+        get: async <T>(key: string) => structuredClone(documents.get(key)) as T | undefined,
+        set: async (key, value) => { documents.set(key, structuredClone(value)); },
+        delete: async (key) => { documents.delete(key); },
+      },
+    };
+    let feishuHandlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    const feishuRaw = createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'fs-rich-inst',
+      app_id: 'cli_0011223344556690',
+      app_secret: 'secret',
+      connection: {
+        async open(next) {
+          feishuHandlers = next;
+          return { ok: true, bot_open_id: 'ou_bot_self' };
+        },
+        async send(request) {
+          if (request.op === 'download') {
+            if (request.resource_key === 'img_broken') return { ok: false, http_status: 500 };
+            if (request.resource_key === 'img_big') return { ok: false, too_large: true };
+            if (request.resource_key === 'img_a') return { ok: true, bytes: Uint8Array.of(1, 2) };
+            if (request.resource_key === 'img_b') return { ok: true, bytes: Uint8Array.of(3, 4) };
+          }
+          if (request.op !== 'download') {
+            sentRequests.push(request as unknown as Record<string, unknown>);
+          }
+          return { ok: true, message_id: 'om_sent' };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+
+    const tgUpdates: unknown[] = [];
+    let tgNotify: (() => void) | undefined;
+    const tgAccepted = new Map<string, () => void>();
+    base.ports.logger.info = (fields) => {
+      const id = (fields as { event_id?: string }).event_id;
+      if (id !== undefined) tgAccepted.get(id)?.();
+    };
+    const tgRaw = createTelegramSessionAdapter({
+      platform: 'telegram',
+      instance_id: 'tg-rich-inst',
+      token: '888888:HHHHHHHHHHHHHHHHHHHH',
+      retry_ms: 0,
+      transport: {
+        async call(request, signal) {
+          if (request.method === 'getMe') return { http_status: 200, body: { ok: true, result: { id: 88, username: 'KikiBot' } } };
+          if (request.method === 'getWebhookInfo') return { http_status: 200, body: { ok: true, result: { url: '' } } };
+          if (request.method === 'getUpdates') {
+            if (tgUpdates.length === 0) {
+              await new Promise<void>((resolve) => {
+                const done = () => { signal.removeEventListener('abort', done); tgNotify = undefined; resolve(); };
+                tgNotify = done;
+                if (signal.aborted) done();
+                else signal.addEventListener('abort', done, { once: true });
+              });
+            }
+            return { http_status: 200, body: { ok: true, result: tgUpdates.splice(0) } };
+          }
+          if (request.method === 'getFile') {
+            return { http_status: 500, body: { ok: false, error_code: 500, description: 'failed' } };
+          }
+          return { http_status: 200, body: { ok: true, result: { message_id: 1 } } };
+        },
+        async download() {
+          return { ok: true, bytes: Uint8Array.of(5, 6) };
+        },
+      },
+    }, { async load() { return undefined; }, async save() {} });
+
+    const bridge = new ImSessionBridge({
+      ports: base.ports,
+      factories: [
+        { providerKind: 'feishu_app', create: () => new HubSessionAdapter(feishuRaw) },
+        { providerKind: 'telegram', create: () => new HubSessionAdapter(tgRaw) },
+      ],
+      wait: async () => undefined,
+    });
+    const emitFeishu = async (eventId: string, message: Record<string, unknown>) => {
+      await feishuHandlers?.onMessage({
+        event_id: eventId,
+        app_id: 'cli_0011223344556690',
+        sender: { sender_id: { open_id: 'ou_alice' } },
+        message: {
+          chat_id: 'oc_rich_room',
+          chat_type: 'group',
+          ...message,
+        },
+      });
+    };
+
+    try {
+      await bridge.setListening('fs-rich-inst', true);
+      await emitFeishu('fs-pair', { message_id: 'om_pair', message_type: 'text', content: JSON.stringify({ text: 'pair' }) });
+      const fsDiscovery = (await bridge.snapshot()).discoveries.find((d) => d.provider_instance_id === 'fs-rich-inst')!;
+      await bridge.confirm(fsDiscovery.id, {
+        target: { kind: 'session', session_id: 'sess' },
+        binding_scope: 'chat',
+        group_policy: { wake: 'mention_or_reply' },
+      });
+
+      const postEvent = {
+        message_id: 'om_post_full',
+        parent_id: 'om_parent_0',
+        message_type: 'post',
+        content: JSON.stringify({
+          zh_cn: {
+            title: 'UI Regression',
+            content: [
+              [{ tag: 'at', user_id: '@_user_1', user_name: 'Kiki' }, { tag: 'text', text: ' first screenshot:' }],
+              [{ tag: 'img', image_key: 'img_a' }],
+              [{ tag: 'text', text: 'middle failed and oversized:' }, { tag: 'img', image_key: 'img_broken' }, { tag: 'img', image_key: 'img_big' }],
+              [{ tag: 'text', text: 'final screenshot:' }, { tag: 'img', image_key: 'img_b' }, { tag: 'text', text: 'please fix' }],
+            ],
+          },
+        }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_self' }, name: 'Kiki' }],
+      };
+      await emitFeishu('fs-post-1', postEvent);
+      await emitFeishu('fs-post-1', postEvent);
+
+      expect(received).toHaveLength(1);
+      expect(received[0]?.promptId).toBe('im:fs-rich-inst:feishu:cli_0011223344556690:fs-post-1');
+      expect(received[0]?.im).toMatchObject({
+        source_message_id: 'om_post_full',
+        reply_to_message_id: 'om_parent_0',
+        mentioned: true,
+        mention_ids: ['ou_bot_self'],
+      });
+      expect(received[0]?.content).toEqual([
+        { type: 'text', text: 'UI Regression\n@Kiki first screenshot:' },
+        { type: 'image', name: 'image', source: { kind: 'session_media', file_id: 'media-1' } },
+        { type: 'text', text: 'middle failed and oversized:' },
+        { type: 'text', text: '[Unavailable external image: download_failed]' },
+        { type: 'text', text: '[Unavailable external image: too_large]' },
+        { type: 'text', text: 'final screenshot:' },
+        { type: 'image', name: 'image', source: { kind: 'session_media', file_id: 'media-2' } },
+        { type: 'text', text: 'please fix' },
+      ]);
+
+      await emitFeishu('fs-single-big-caption', {
+        message_id: 'om_big_cap',
+        parent_id: 'om_parent_0',
+        message_type: 'image',
+        content: JSON.stringify({ image_key: 'img_big', caption: '@Kiki caption survives oversized image' }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_self' }, name: 'Kiki' }],
+      });
+      expect(received).toHaveLength(2);
+      expect(received[1]?.content).toEqual([
+        { type: 'text', text: '@Kiki caption survives oversized image' },
+        { type: 'text', text: '[Unavailable external image: too_large]' },
+      ]);
+
+      const sentBeforePureReject = sentRequests.length;
+      await emitFeishu('fs-single-big-pure', {
+        message_id: 'om_big_pure',
+        parent_id: 'om_parent_0',
+        message_type: 'image',
+        content: JSON.stringify({ image_key: 'img_big' }),
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_self' }, name: 'Kiki' }],
+      });
+      expect(received).toHaveLength(2);
+      expect(sentRequests.length).toBeGreaterThan(sentBeforePureReject);
+
+      await bridge.setListening('tg-rich-inst', true);
+      const emitTgBatch = async (eventKey: string, items: Record<string, unknown>[]) => {
+        const done = new Promise<void>((resolve) => { tgAccepted.set(eventKey, resolve); });
+        tgUpdates.push(...items);
+        tgNotify?.();
+        await done;
+      };
+      await emitTgBatch('tg:88:300', [
+        { update_id: 300, message: { message_id: 700, text: 'pair tg', chat: { id: 99, type: 'private' }, from: { id: 7 } } },
+      ]);
+      const tgDiscovery = (await bridge.snapshot()).discoveries.find((d) => d.provider_instance_id === 'tg-rich-inst')!;
+      await bridge.confirm(tgDiscovery.id, { target: { kind: 'session', session_id: 'home' } });
+
+      await emitTgBatch('tg:88:301', [
+        {
+          update_id: 301,
+          message: {
+            message_id: 701,
+            caption: 'Telegram caption survives failed download',
+            photo: [{ file_id: 'tg_fail', file_size: 4 }],
+            chat: { id: 99, type: 'private' },
+            from: { id: 7 },
+          },
+        },
+      ]);
+
+      expect(received).toHaveLength(3);
+      expect(received[2]?.sessionId).toBe('home');
+      expect(received[2]?.im?.source_message_id).toBe('701');
+      expect(received[2]?.content).toEqual([
+        { type: 'text', text: 'Telegram caption survives failed download' },
+        { type: 'text', text: '[Unavailable external image: download_failed]' },
+      ]);
+    } finally {
+      await bridge.close();
+    }
+  });
 });

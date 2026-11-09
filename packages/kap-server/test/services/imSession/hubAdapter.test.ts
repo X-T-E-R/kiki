@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SESSION_CAPABILITIES, createFeishuSessionAdapter, createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
@@ -432,5 +432,283 @@ describe('strict session media', () => {
     expect(requests).toEqual([{ url: 'https://matrix.example.test/_matrix/client/v3/account/whoami', authorization: 'Bearer secret' }]);
     const failing: typeof fetch = async () => { throw new Error('secret'); };
     expect(await checkRealtimeSessionAccount('matrix', 'https://matrix.example.test\nsecret', failing)).toEqual({ ok: false, detail: 'connection_failed' });
+  });
+
+  it('maps Feishu post rich-text, failed/oversized media with caption, Telegram failed caption and OneBot ordered parts into multipart ImInboundEvent', async () => {
+    let feishuHandlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    const feishuRaw = createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'packaged-feishu-rich',
+      app_id: 'cli_0011223344556688',
+      app_secret: 'offline-secret',
+      connection: {
+        async open(next) {
+          feishuHandlers = next;
+          return { ok: true, bot_open_id: 'ou_bot' };
+        },
+        async send(request) {
+          if (request.op === 'download') {
+            if (request.resource_key === 'img_fail') return { ok: false, http_status: 404 };
+            if (request.resource_key === 'img_big') return { ok: false, too_large: true };
+            if (request.resource_key === 'img_1') return { ok: true, bytes: Uint8Array.of(10, 11) };
+            if (request.resource_key === 'img_2') return { ok: true, bytes: Uint8Array.of(12, 13) };
+          }
+          return { ok: true, message_id: 'om_out' };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+    const feishuHub = new HubSessionAdapter(feishuRaw);
+    const feishuEvents: unknown[] = [];
+    await feishuHub.start(async (event) => { feishuEvents.push(event); });
+    try {
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-feishu-post-rich',
+        app_id: 'cli_0011223344556688',
+        sender: { sender_id: { open_id: 'ou_alice' } },
+        message: {
+          message_id: 'om_post_rich',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'post',
+          content: JSON.stringify({
+            zh_cn: {
+              title: 'Release Check',
+              content: [
+                [{ tag: 'at', user_id: '@_user_1', user_name: 'Kiki' }, { tag: 'text', text: ' check both images:' }],
+                [{ tag: 'img', image_key: 'img_1' }],
+                [{ tag: 'text', text: 'second image failed:' }, { tag: 'img', image_key: 'img_fail' }, { tag: 'img', image_key: 'img_big' }, { tag: 'text', text: 'tail text stays' }],
+              ],
+            },
+          }),
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: 'Kiki' }],
+        },
+      });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-feishu-single-fail-caption',
+        app_id: 'cli_0011223344556688',
+        sender: { sender_id: { open_id: 'ou_alice' } },
+        message: {
+          message_id: 'om_img_fail_cap',
+          chat_id: 'oc_group',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_fail', caption: 'Caption survives failed image' }),
+        },
+      });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-feishu-single-too-large-caption',
+        app_id: 'cli_0011223344556688',
+        sender: { sender_id: { open_id: 'ou_alice' } },
+        message: {
+          message_id: 'om_img_big_cap',
+          chat_id: 'oc_group',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_big', caption: 'Too large image with caption' }),
+        },
+      });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-feishu-single-too-large-pure',
+        app_id: 'cli_0011223344556688',
+        sender: { sender_id: { open_id: 'ou_alice' } },
+        message: {
+          message_id: 'om_img_big_pure',
+          chat_id: 'oc_group',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_big' }),
+        },
+      });
+      expect(feishuEvents).toHaveLength(4);
+      expect(feishuEvents[0]).toMatchObject({
+        eventId: 'feishu:cli_0011223344556688:ev-feishu-post-rich',
+        sourceMessageId: 'om_post_rich',
+        kind: 'message',
+        mentioned: true,
+        mentionIds: ['ou_bot'],
+        parts: [
+          { kind: 'text', text: 'Release Check\n@Kiki check both images:' },
+          { kind: 'image', media: { name: 'image', mediaType: 'image/jpeg', bytes: Uint8Array.of(10, 11) } },
+          { kind: 'text', text: 'second image failed:' },
+          { kind: 'image', text: 'download_failed' },
+          { kind: 'image', text: 'too_large' },
+          { kind: 'text', text: 'tail text stays' },
+        ],
+      });
+      expect(feishuEvents[1]).toMatchObject({
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'Caption survives failed image' },
+          { kind: 'image', text: 'download_failed' },
+        ],
+        text: 'Caption survives failed image',
+      });
+      expect(feishuEvents[2]).toMatchObject({
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'Too large image with caption' },
+          { kind: 'image', text: 'too_large' },
+        ],
+        text: 'Too large image with caption',
+      });
+      expect(feishuEvents[3]).toMatchObject({
+        kind: 'image',
+        tooLarge: true,
+        text: '',
+      });
+    } finally {
+      await feishuHub.stop();
+    }
+
+    let tgPolls = 0;
+    let tgDone: () => void = () => undefined;
+    const tgFinished = new Promise<void>((resolve) => { tgDone = resolve; });
+    const tgRaw = createTelegramSessionAdapter({
+      platform: 'telegram',
+      instance_id: 'packaged-tg-rich',
+      token: '777777:GGGGGGGGGGGGGGGGGGGG',
+      retry_ms: 0,
+      transport: {
+        async call(request, signal) {
+          if (request.method === 'getMe') return { http_status: 200, body: { ok: true, result: { id: 77, username: 'KikiTgBot' } } };
+          if (request.method === 'getWebhookInfo') return { http_status: 200, body: { ok: true, result: { url: '' } } };
+          if (request.method === 'getUpdates') {
+            tgPolls += 1;
+            if (tgPolls === 1) {
+              return {
+                http_status: 200,
+                body: {
+                  ok: true,
+                  result: [
+                    {
+                      update_id: 201,
+                      message: {
+                        message_id: 501,
+                        caption: 'Telegram caption with failed download',
+                        photo: [{ file_id: 'bad_id', file_size: 8 }],
+                        chat: { id: 9, type: 'private' },
+                        from: { id: 8 },
+                      },
+                    },
+                  ],
+                },
+              };
+            }
+            await new Promise<void>((resolve) => {
+              if (signal.aborted) resolve();
+              else signal.addEventListener('abort', () => resolve(), { once: true });
+            });
+            throw new DOMException('Aborted', 'AbortError');
+          }
+          if (request.method === 'getFile') {
+            return { http_status: 500, body: { ok: false, error_code: 500, description: 'failed' } };
+          }
+          return { http_status: 200, body: { ok: true, result: {} } };
+        },
+        async download() {
+          return { ok: true, bytes: Uint8Array.of(9, 8) };
+        },
+      },
+    }, { async load() { return undefined; }, async save() {} });
+    const tgHub = new HubSessionAdapter(tgRaw);
+    const tgEvents: unknown[] = [];
+    await tgHub.start(async (event) => {
+      tgEvents.push(event);
+      if (tgEvents.length === 1) tgDone();
+    });
+    try {
+      await tgFinished;
+      expect(tgEvents).toHaveLength(1);
+      expect(tgEvents[0]).toMatchObject({
+        sourceMessageId: '501',
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'Telegram caption with failed download' },
+          { kind: 'image', text: 'download_failed' },
+        ],
+      });
+    } finally {
+      await tgHub.stop();
+    }
+
+    let onebotFrame: ((frame: unknown) => void) | undefined;
+    let onebotClose: (() => void) | undefined;
+    let onebotDone: () => void = () => undefined;
+    const onebotFinished = new Promise<void>((resolve) => { onebotDone = resolve; });
+    const onebotRaw = createOneBotSessionAdapter({
+      platform: 'qq_onebot_v11',
+      mode: 'forward',
+      endpoint: 'ws://127.0.0.1:6710/',
+      instance_id: 'packaged-qq-rich',
+      retry_ms: 0,
+      transport: {
+        async connect() {
+          return {
+            role: 'universal',
+            send() {},
+            onFrame(handler) { onebotFrame = handler; },
+            onClose(handler) { onebotClose = handler; },
+            close() { onebotClose?.(); },
+          };
+        },
+        async listen() { return { port: 1 }; },
+      },
+    }, { async load() { return undefined; }, async save() {} });
+    const onebotHub = new HubSessionAdapter(onebotRaw);
+    const onebotEvents: unknown[] = [];
+    await onebotHub.start(async (event) => {
+      onebotEvents.push(event);
+      if (onebotEvents.length === 2) onebotDone();
+    });
+    try {
+      onebotFrame?.({
+        post_type: 'message',
+        message_type: 'private',
+        message_id: 87,
+        self_id: 100,
+        user_id: 200,
+        message: [
+          { type: 'text', data: { text: 'Before image ' } },
+          { type: 'image', data: { file: 'base64://AQ==' } },
+          { type: 'text', data: { text: ' after image' } },
+        ],
+      });
+      onebotFrame?.({
+        post_type: 'message',
+        message_type: 'private',
+        message_id: 88,
+        self_id: 100,
+        user_id: 200,
+        message: [
+          { type: 'text', data: { text: 'OneBot text ' } },
+          { type: 'image', data: { file: 'base64://AQ==' } },
+          { type: 'image', data: { file: 'file:///tmp/local.jpg' } },
+        ],
+      });
+      await onebotFinished;
+      expect(onebotEvents[0]).toMatchObject({
+        eventId: 'qq:100:private:87',
+        sourceMessageId: '87',
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'Before image ' },
+          { kind: 'image', media: { name: 'image', mediaType: 'image/jpeg' } },
+          { kind: 'text', text: ' after image' },
+        ],
+      });
+      expect(onebotEvents[1]).toMatchObject({
+        eventId: 'qq:100:private:88',
+        sourceMessageId: '88',
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'OneBot text ' },
+          { kind: 'image', media: { name: 'image', mediaType: 'image/jpeg' } },
+          { kind: 'image', text: 'local_path_not_fetched' },
+        ],
+      });
+    } finally {
+      await onebotHub.stop();
+    }
   });
 });

@@ -1,0 +1,726 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 91e805a..3518301 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -17 +17 @@ export { SESSION_CONTRACT, TELEGRAM_TEXT_CHARACTERS, TELEGRAM_CAPTION_CHARACTERS
+-export type { SessionAccount, SessionAdmit, SessionAdapter, SessionButton, SessionChatKind, SessionConnectionDetail, SessionCursorStore, SessionIdentity, SessionInbound, SessionLimits, SessionMedia, SessionOutbound, SessionPeer, SessionPlatformId, SessionReceipt, SessionRunState, SessionSink, SessionSpec, SessionTarget } from './session/contract.ts';
++export type { SessionAccount, SessionAdmit, SessionAdapter, SessionButton, SessionChatKind, SessionConnectionDetail, SessionCursorStore, SessionIdentity, SessionInbound, SessionInboundPart, SessionInboundPayload, SessionInboundUnavailableReason, SessionLimits, SessionMedia, SessionOutbound, SessionPeer, SessionPlatformId, SessionReceipt, SessionRunState, SessionSink, SessionSpec, SessionTarget } from './session/contract.ts';
+diff --git a/src/index.ts b/src/index.ts
+index 11088f8..d934300 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -27 +27,2 @@ export type { SessionAccount, SessionAdmit, SessionAdapter, SessionButton, Sessi
+-  SessionCursorStore, SessionIdentity, SessionInbound, SessionLimits, SessionMedia,
++  SessionCursorStore, SessionIdentity, SessionInbound, SessionInboundPart, SessionInboundPayload,
++  SessionInboundUnavailableReason, SessionLimits, SessionMedia,
+diff --git a/src/session/contract.ts b/src/session/contract.ts
+index 2af1ed8..9fa21ca 100644
+--- a/src/session/contract.ts
++++ b/src/session/contract.ts
+@@ -52,0 +53,5 @@ export interface SessionMedia {
++export type SessionInboundUnavailableReason = 'too_large' | 'download_failed' | 'local_path_not_fetched';
++export type SessionInboundPart =
++  | { type: 'text'; text: string }
++  | { type: 'media'; media: SessionMedia; caption?: string }
++  | { type: 'media_unavailable'; kind: SessionMediaKind; reason: SessionInboundUnavailableReason };
+@@ -56 +61,2 @@ export type SessionInboundPayload =
+-  | { type: 'media_unavailable'; kind: SessionMediaKind; reason: 'too_large' | 'download_failed' | 'local_path_not_fetched' }
++  | { type: 'media_unavailable'; kind: SessionMediaKind; reason: SessionInboundUnavailableReason; caption?: string }
++  | { type: 'parts'; parts: readonly SessionInboundPart[] }
+diff --git a/src/session/feishu.ts b/src/session/feishu.ts
+index 0120267..633fba7 100644
+--- a/src/session/feishu.ts
++++ b/src/session/feishu.ts
+@@ -2,2 +2,3 @@ import type { FeishuConnection, FeishuRequest, FeishuResponse, SessionAccount, S
+-  SessionAdmit, SessionButton, SessionCursorStore, SessionIdentity, SessionInbound, SessionLimits,
+-  SessionMedia, SessionOutbound, SessionReceipt, SessionSink, SessionSpec, SessionTarget } from './contract.ts';
++  SessionAdmit, SessionButton, SessionCursorStore, SessionIdentity, SessionInbound, SessionInboundPart,
++  SessionLimits, SessionMedia, SessionMediaKind, SessionOutbound, SessionReceipt, SessionSink,
++  SessionSpec, SessionTarget } from './contract.ts';
+@@ -42 +43,15 @@ function fromResponse(response: FeishuResponse): SessionReceipt {
+-function collectText(node: unknown, out: string[]): void {
++type FeishuPostToken =
++  | { type: 'text'; text: string }
++  | { type: 'newline' }
++  | { type: 'media'; kind: SessionMediaKind; resourceKey: string; fileName?: string };
++
++function resolvePostBody(content: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
++  if (!content) return undefined;
++  if (Array.isArray(content.content) || typeof content.title === 'string') return content;
++  for (const key of ['zh_cn', 'en_us', 'ja_jp', ...Object.keys(content)]) {
++    const candidate = record(content[key]);
++    if (candidate && (Array.isArray(candidate.content) || typeof candidate.title === 'string')) return candidate;
++  }
++  return content;
++}
++function collectPostNode(node: unknown, out: FeishuPostToken[]): void {
+@@ -44 +59 @@ function collectText(node: unknown, out: string[]): void {
+-    for (const item of node) collectText(item, out);
++    for (const item of node) collectPostNode(item, out);
+@@ -49,2 +64,54 @@ function collectText(node: unknown, out: string[]): void {
+-  if (typeof body.text === 'string') out.push(body.text);
+-  for (const [key, value] of Object.entries(body)) if (key !== 'text') collectText(value, out);
++  const tag = typeof body.tag === 'string' ? body.tag : '';
++  if (tag === 'img') {
++    const key = typeof body.image_key === 'string' ? body.image_key :
++      typeof body.file_key === 'string' ? body.file_key : '';
++    out.push({ type: 'media', kind: 'image', resourceKey: key });
++    return;
++  }
++  if (tag === 'media') {
++    const key = typeof body.file_key === 'string' ? body.file_key :
++      typeof body.image_key === 'string' ? body.image_key : '';
++    const fileName = typeof body.file_name === 'string' && body.file_name.length > 0 ? body.file_name : undefined;
++    out.push({ type: 'media', kind: typeof body.file_key === 'string' ? 'video' : 'image', resourceKey: key,
++      ...(fileName ? { fileName } : {}) });
++    return;
++  }
++  if (tag === 'at') {
++    const text = typeof body.text === 'string' && body.text.length > 0 ? body.text :
++      typeof body.user_name === 'string' && body.user_name.length > 0 ? `@${body.user_name}` :
++      typeof body.user_id === 'string' && body.user_id.length > 0 ? `@${body.user_id}` : '';
++    if (text.length > 0) out.push({ type: 'text', text });
++    return;
++  }
++  if (typeof body.text === 'string' && body.text.length > 0) {
++    out.push({ type: 'text', text: body.text });
++  }
++  for (const [key, value] of Object.entries(body)) {
++    if (key !== 'text' && key !== 'tag' && key !== 'image_key' && key !== 'file_key') collectPostNode(value, out);
++  }
++}
++function collectPostTokens(content: Record<string, unknown> | undefined): FeishuPostToken[] {
++  const post = resolvePostBody(content);
++  if (!post) return [];
++  const tokens: FeishuPostToken[] = [];
++  if (typeof post.title === 'string' && post.title.length > 0) {
++    tokens.push({ type: 'text', text: post.title });
++  }
++  if (Array.isArray(post.content)) {
++    for (const row of post.content) {
++      const rowStart = tokens.length;
++      if (rowStart > 0 && tokens[rowStart - 1]?.type === 'text') tokens.push({ type: 'newline' });
++      collectPostNode(row, tokens);
++      if (tokens.length === rowStart + 1 && tokens[rowStart]?.type === 'newline') tokens.pop();
++    }
++    return tokens;
++  }
++  for (const [key, value] of Object.entries(post)) {
++    if (key !== 'title') collectPostNode(value, tokens);
++  }
++  return tokens;
++}
++function captionOf(content: Record<string, unknown> | undefined): string | undefined {
++  const raw = typeof content?.text === 'string' ? content.text :
++    typeof content?.caption === 'string' ? content.caption : '';
++  return raw.length > 0 ? raw : undefined;
+@@ -221,3 +288 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-      const pieces: string[] = [];
+-      collectText(content, pieces);
+-      inbound = pieces.length > 0 ? eventOf(eventKey, eventId, identity, { type: 'text', text: pieces.join('') }) : 'drop';
++      inbound = await postEvent(eventKey, eventId, identity, message, content);
+@@ -299,10 +364,2 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-  async function mediaEvent(eventKey: string, eventId: string, identity: SessionIdentity,
+-    message: Record<string, unknown>, content: Record<string, unknown> | undefined,
+-    messageType: string): Promise<SessionInbound | 'drop' | 'skip'> {
+-    const kind = messageType === 'image' ? 'image' as const :
+-      messageType === 'audio' ? 'voice' as const :
+-      messageType === 'media' ? 'video' as const : 'file' as const;
+-    const resourceKey = typeof content?.file_key === 'string' && messageType !== 'image' ? content.file_key :
+-      typeof content?.image_key === 'string' ? content.image_key :
+-      typeof content?.file_key === 'string' ? content.file_key : '';
+-    const messageId = typeof message.message_id === 'string' ? message.message_id : '';
++  async function loadResource(kind: SessionMediaKind, messageId: string, resourceKey: string,
++    fileName?: string): Promise<Extract<SessionInboundPart, { type: 'media' | 'media_unavailable' }> | 'skip'> {
+@@ -310,2 +367 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    if (!resourceKey || !messageId) return eventOf(eventKey, eventId, identity,
+-      { type: 'media_unavailable', kind, reason: 'download_failed' });
++    if (!resourceKey || !messageId) return { type: 'media_unavailable', kind, reason: 'download_failed' };
+@@ -321,3 +377 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    if (!response) {
+-      return eventOf(eventKey, eventId, identity, { type: 'media_unavailable', kind, reason: 'download_failed' });
+-    }
++    if (!response) return { type: 'media_unavailable', kind, reason: 'download_failed' };
+@@ -325 +379 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-      return eventOf(eventKey, eventId, identity, { type: 'media_unavailable', kind, reason: 'too_large' });
++      return { type: 'media_unavailable', kind, reason: 'too_large' };
+@@ -328 +382 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-      return eventOf(eventKey, eventId, identity, { type: 'media_unavailable', kind, reason: 'download_failed' });
++      return { type: 'media_unavailable', kind, reason: 'download_failed' };
+@@ -331 +385 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-      typeof content?.file_name === 'string' && content.file_name.length > 0 ? content.file_name.slice(0, 180) :
++      fileName && fileName.length > 0 ? fileName.slice(0, 180) :
+@@ -335 +389,50 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+-    return eventOf(eventKey, eventId, identity, { type: 'media', media: { kind, filename, mime, bytes: response.bytes } });
++    return { type: 'media', media: { kind, filename, mime, bytes: response.bytes } };
++  }
++  async function postEvent(eventKey: string, eventId: string, identity: SessionIdentity,
++    message: Record<string, unknown>, content: Record<string, unknown> | undefined): Promise<SessionInbound | 'drop' | 'skip'> {
++    const tokens = collectPostTokens(content);
++    const hasMedia = tokens.some((token) => token.type === 'media');
++    if (!hasMedia) {
++      const text = tokens.map((token) => token.type === 'text' ? token.text : '\n').join('');
++      return text.length > 0 ? eventOf(eventKey, eventId, identity, { type: 'text', text }) : 'drop';
++    }
++    const messageId = typeof message.message_id === 'string' ? message.message_id : '';
++    const parts: SessionInboundPart[] = [];
++    let buffer = '';
++    const flushText = (): void => {
++      const trimmed = buffer.replace(/^\n+|\n+$/gu, '');
++      if (trimmed.length > 0) parts.push({ type: 'text', text: trimmed });
++      buffer = '';
++    };
++    for (const token of tokens) {
++      if (token.type === 'text') {
++        buffer += token.text;
++        continue;
++      }
++      if (token.type === 'newline') {
++        if (buffer.length > 0 && !buffer.endsWith('\n')) buffer += '\n';
++        continue;
++      }
++      flushText();
++      const loaded = await loadResource(token.kind, messageId, token.resourceKey, token.fileName);
++      if (loaded === 'skip') return 'skip';
++      parts.push(loaded);
++    }
++    flushText();
++    return parts.length > 0 ? eventOf(eventKey, eventId, identity, { type: 'parts', parts }) : 'drop';
++  }
++  async function mediaEvent(eventKey: string, eventId: string, identity: SessionIdentity,
++    message: Record<string, unknown>, content: Record<string, unknown> | undefined,
++    messageType: string): Promise<SessionInbound | 'drop' | 'skip'> {
++    const kind = messageType === 'image' ? 'image' as const :
++      messageType === 'audio' ? 'voice' as const :
++      messageType === 'media' ? 'video' as const : 'file' as const;
++    const resourceKey = typeof content?.file_key === 'string' && messageType !== 'image' ? content.file_key :
++      typeof content?.image_key === 'string' ? content.image_key :
++      typeof content?.file_key === 'string' ? content.file_key : '';
++    const messageId = typeof message.message_id === 'string' ? message.message_id : '';
++    const caption = captionOf(content);
++    const fileName = typeof content?.file_name === 'string' ? content.file_name : undefined;
++    const loaded = await loadResource(kind, messageId, resourceKey, fileName);
++    if (loaded === 'skip') return 'skip';
++    return eventOf(eventKey, eventId, identity, { ...loaded, ...(caption === undefined ? {} : { caption }) });
+diff --git a/src/session/onebot.ts b/src/session/onebot.ts
+index 15284c4..ecf6f45 100644
+--- a/src/session/onebot.ts
++++ b/src/session/onebot.ts
+@@ -4,2 +4,2 @@ import type { OneBotLink, OneBotTransport, SessionAccount, SessionAdapter, Sessi
+-  SessionIdentity, SessionInbound, SessionLimits, SessionOutbound, SessionReceipt, SessionSink,
+-  SessionSpec, SessionTarget } from './contract.ts';
++  SessionIdentity, SessionInbound, SessionInboundPart, SessionLimits, SessionOutbound, SessionReceipt,
++  SessionSink, SessionSpec, SessionTarget } from './contract.ts';
+@@ -233,7 +233,34 @@ function buildOneBot(spec: OneBotSpec, store: SessionCursorStore, key: string):
+-    const media = message.map(record).find((segment) => segment?.type === 'image' || segment?.type === 'record');
+-    if (!media) return { ...base, payload: { type: 'text', text: caption } };
+-    const kind = media.type === 'record' ? 'voice' as const : 'image' as const;
+-    const ref = mediaRef(media);
+-    const loaded = await loadMedia(ref);
+-    if (loaded.kind === 'unavailable') {
+-      return { ...base, payload: { type: 'media_unavailable', kind, reason: loaded.reason } };
++    const mediaSegments = message.map(record).filter((segment): segment is Record<string, unknown> =>
++      segment?.type === 'image' || segment?.type === 'record');
++    if (mediaSegments.length === 0) return { ...base, payload: { type: 'text', text: caption } };
++    const parts: SessionInboundPart[] = [];
++    let textBuffer = '';
++    const flushText = (): void => {
++      if (textBuffer.length > 0) parts.push({ type: 'text', text: textBuffer });
++      textBuffer = '';
++    };
++    for (const rawSegment of message) {
++      const segment = record(rawSegment);
++      if (!segment) continue;
++      if (segment.type === 'text' && typeof record(segment.data)?.text === 'string') {
++        textBuffer += record(segment.data)?.text as string;
++        continue;
++      }
++      if (segment.type === 'image' || segment.type === 'record') {
++        flushText();
++        const kind = segment.type === 'record' ? 'voice' as const : 'image' as const;
++        const loaded = await loadMedia(mediaRef(segment));
++        if (loaded.kind === 'unavailable') {
++          parts.push({ type: 'media_unavailable', kind, reason: loaded.reason });
++        } else {
++          parts.push({ type: 'media', media: { kind, filename: kind === 'voice' ? 'record' : 'image',
++            mime: kind === 'voice' ? 'application/octet-stream' : 'image/jpeg', bytes: loaded.bytes } });
++        }
++      }
++    }
++    flushText();
++    if (mediaSegments.length === 1 && parts.length === 1 && parts[0]?.type !== 'text') {
++      return { ...base, payload: parts[0]! };
++    }
++    if (mediaSegments.length === 1 && parts.length === 2 && parts[0]?.type === 'text' && parts[1]?.type !== 'text') {
++      return { ...base, payload: { ...parts[1]!, caption: parts[0].text } };
+@@ -241,3 +268 @@ function buildOneBot(spec: OneBotSpec, store: SessionCursorStore, key: string):
+-    return { ...base, payload: { type: 'media', media: { kind, filename: kind === 'voice' ? 'record' : 'image',
+-      mime: kind === 'voice' ? 'application/octet-stream' : 'image/jpeg', bytes: loaded.bytes },
+-    ...(caption ? { caption } : {}) } };
++    return { ...base, payload: { type: 'parts', parts } };
+diff --git a/src/session/realtime.ts b/src/session/realtime.ts
+index 0c8e9f3..8549428 100644
+--- a/src/session/realtime.ts
++++ b/src/session/realtime.ts
+@@ -2 +2 @@ import type { RealtimeConnection, RealtimeRequest, SessionAdapter, SessionCursor
+-  SessionInbound, SessionMediaKind, SessionOutbound, SessionReceipt, SessionSpec } from './contract.ts';
++  SessionInbound, SessionInboundPart, SessionMediaKind, SessionOutbound, SessionReceipt, SessionSpec } from './contract.ts';
+@@ -109,28 +109,30 @@ export function createRealtimeSessionAdapter(spec: RealtimeSpec, store: SessionC
+-                  const count = message.files.length || (message.text ? 1 : 0);
+-                  if (Array.from({ length: count }, (_, index) => `${baseKey}:${index}`).every((id) => recent.includes(id))) return;
+-                  const payloads: SessionInbound['payload'][] = [];
+-                  if (!message.files.length && message.text) payloads.push({ type: 'text', text: message.text });
+-                  for (const file of message.files) {
+-                    if (file.size > limits.media_bytes) { payloads.push({ type: 'media_unavailable', kind: file.kind, reason: 'too_large' }); continue; }
+-                    try {
+-                      const bytes = await connection.download(file.url, signal);
+-                      payloads.push(bytes.byteLength > limits.media_bytes ? { type: 'media_unavailable', kind: file.kind, reason: 'too_large' } :
+-                        { type: 'media', media: { kind: file.kind, filename: file.filename, mime: file.mime, bytes },
+-                          ...(message.text ? { caption: message.text } : {}) });
+-                    } catch { if (signal.aborted) return; payloads.push({ type: 'media_unavailable', kind: file.kind, reason: 'download_failed' }); }
+-                  }
+-                  for (const [index, payload] of payloads.entries()) {
+-                    const eventKey = `${baseKey}:${index}`;
+-                    if (recent.includes(eventKey)) continue;
+-                    const inbound: SessionInbound = { event_key: eventKey, platform_event_id: message.id,
+-                      identity: { platform: spec.platform, account_id: accountId, chat_id: message.chat,
+-                        sender_id: message.sender, topic_id: message.topic || '0', chat_kind: message.private ? 'private' : 'group' },
+-                      payload, reply_context: spec.platform === 'slack' ? str(object(object(raw).event).ts) : message.id,
+-                      cursor: message.id };
+-                    while (!signal.aborted) {
+-                      const admitted = await sink.admit(inbound).catch(() => ({ decision: 'defer' as const }));
+-                      if (admitted.decision === 'accepted') {
+-                        const next = [...recent, eventKey].slice(-512);
+-                        await store.save(`${scope}:recent`, JSON.stringify(next));
+-                        recent = next;
+-                        break;
++                  const eventKey = `${baseKey}:0`;
++                  const count = message.files.length ? 1 : (message.text ? 1 : 0);
++                  if (!count || recent.includes(eventKey)) return;
++                  const captionField = message.text ? { caption: message.text } : {};
++                  let payload: SessionInbound['payload'];
++                  if (!message.files.length) {
++                    payload = { type: 'text', text: message.text };
++                  } else if (message.files.length === 1) {
++                    const file = message.files[0]!;
++                    if (file.size > limits.media_bytes) {
++                      payload = { type: 'media_unavailable', kind: file.kind, reason: 'too_large', ...captionField };
++                    } else {
++                      try {
++                        const bytes = await connection.download(file.url, signal);
++                        payload = bytes.byteLength > limits.media_bytes ?
++                          { type: 'media_unavailable', kind: file.kind, reason: 'too_large', ...captionField } :
++                          { type: 'media', media: { kind: file.kind, filename: file.filename, mime: file.mime, bytes },
++                            ...captionField };
++                      } catch {
++                        if (signal.aborted) return;
++                        payload = { type: 'media_unavailable', kind: file.kind, reason: 'download_failed', ...captionField };
++                      }
++                    }
++                  } else {
++                    const parts: SessionInboundPart[] = [];
++                    if (message.text) parts.push({ type: 'text', text: message.text });
++                    for (const file of message.files) {
++                      if (file.size > limits.media_bytes) {
++                        parts.push({ type: 'media_unavailable', kind: file.kind, reason: 'too_large' });
++                        continue;
+@@ -138 +140,24 @@ export function createRealtimeSessionAdapter(spec: RealtimeSpec, store: SessionC
+-                      await delay(spec.retry_ms ?? 1000, signal);
++                      try {
++                        const bytes = await connection.download(file.url, signal);
++                        parts.push(bytes.byteLength > limits.media_bytes ?
++                          { type: 'media_unavailable', kind: file.kind, reason: 'too_large' } :
++                          { type: 'media', media: { kind: file.kind, filename: file.filename, mime: file.mime, bytes } });
++                      } catch {
++                        if (signal.aborted) return;
++                        parts.push({ type: 'media_unavailable', kind: file.kind, reason: 'download_failed' });
++                      }
++                    }
++                    payload = { type: 'parts', parts };
++                  }
++                  const inbound: SessionInbound = { event_key: eventKey, platform_event_id: message.id,
++                    identity: { platform: spec.platform, account_id: accountId, chat_id: message.chat,
++                      sender_id: message.sender, topic_id: message.topic || '0', chat_kind: message.private ? 'private' : 'group' },
++                    payload, reply_context: spec.platform === 'slack' ? str(object(object(raw).event).ts) : message.id,
++                    cursor: message.id };
++                  while (!signal.aborted) {
++                    const admitted = await sink.admit(inbound).catch(() => ({ decision: 'defer' as const }));
++                    if (admitted.decision === 'accepted') {
++                      const next = [...recent, eventKey].slice(-512);
++                      await store.save(`${scope}:recent`, JSON.stringify(next));
++                      recent = next;
++                      break;
+@@ -139,0 +165 @@ export function createRealtimeSessionAdapter(spec: RealtimeSpec, store: SessionC
++                    await delay(spec.retry_ms ?? 1000, signal);
+diff --git a/src/session/telegram.ts b/src/session/telegram.ts
+index e5af89e..efadcdf 100644
+--- a/src/session/telegram.ts
++++ b/src/session/telegram.ts
+@@ -320,0 +321 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
++    const captionField = caption !== undefined && caption.length > 0 ? { caption } : {};
+@@ -322 +323 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    if (announced > TELEGRAM_DOWNLOAD_BYTES) return { type: 'media_unavailable', kind, reason: 'too_large' };
++    if (announced > TELEGRAM_DOWNLOAD_BYTES) return { type: 'media_unavailable', kind, reason: 'too_large', ...captionField };
+@@ -324 +325 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    if (!fileId) return { type: 'media_unavailable', kind, reason: 'download_failed' };
++    if (!fileId) return { type: 'media_unavailable', kind, reason: 'download_failed', ...captionField };
+@@ -327,2 +328,2 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    catch { return { type: 'media_unavailable', kind, reason: 'download_failed' }; }
+-    if (!info.ok) return { type: 'media_unavailable', kind, reason: 'download_failed' };
++    catch { return { type: 'media_unavailable', kind, reason: 'download_failed', ...captionField }; }
++    if (!info.ok) return { type: 'media_unavailable', kind, reason: 'download_failed', ...captionField };
+@@ -331 +332 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    if (remoteSize > TELEGRAM_DOWNLOAD_BYTES) return { type: 'media_unavailable', kind, reason: 'too_large' };
++    if (remoteSize > TELEGRAM_DOWNLOAD_BYTES) return { type: 'media_unavailable', kind, reason: 'too_large', ...captionField };
+@@ -333 +334 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    if (!safeFilePath(filePath)) return { type: 'media_unavailable', kind, reason: 'download_failed' };
++    if (!safeFilePath(filePath)) return { type: 'media_unavailable', kind, reason: 'download_failed', ...captionField };
+@@ -336 +337 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-      return { type: 'media_unavailable', kind, reason: downloaded.ok ? 'too_large' : 'download_failed' };
++      return { type: 'media_unavailable', kind, reason: downloaded.ok ? 'too_large' : 'download_failed', ...captionField };
+diff --git a/test/session-feishu.test.ts b/test/session-feishu.test.ts
+index 7343fe0..eda31a4 100644
+--- a/test/session-feishu.test.ts
++++ b/test/session-feishu.test.ts
+@@ -611,0 +612,128 @@ test('Feishu SDK publishes ready and receives messages even when /bot/v3/info ha
++
++test('Feishu post rich-text messages extract ordered text and images, locale wrappers, failed images and single-media captions', async () => {
++  const link = connection((request) => {
++    if (request.op === 'download') {
++      if (request.resource_key === 'img_fail') return { ok: false, http_status: 404 };
++      if (request.resource_key === 'img_big') return { ok: false, too_large: true };
++      if (request.resource_key === 'img_1') return { ok: true, bytes: Uint8Array.from([1, 1]) };
++      if (request.resource_key === 'img_2') return { ok: true, bytes: Uint8Array.from([2, 2]) };
++      return { ok: true, bytes: Uint8Array.from([3, 3]) };
++    }
++    return { ok: true, message_id: 'om_out' };
++  });
++  const events: SessionInbound[] = [];
++  const adapter = createFeishuSessionAdapter({
++    platform: 'feishu_app',
++    instance_id: 'fs.rich-post',
++    app_id: 'cli_0011223344556688',
++    app_secret: SECRET,
++    connection: link,
++    retry_ms: 0,
++  }, memory());
++  await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++  try {
++    await link.handlers?.onMessage({
++      event_id: 'e-post-direct',
++      app_id: 'cli_0011223344556688',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_post_1',
++        chat_id: 'oc_group',
++        chat_type: 'group',
++        message_type: 'post',
++        content: JSON.stringify({
++          title: 'Bug Report',
++          content: [
++            [{ tag: 'at', user_id: '@_user_1', user_name: 'Kiki' }, { tag: 'text', text: ' look at first screenshot:' }],
++            [{ tag: 'img', image_key: 'img_1' }],
++            [{ tag: 'text', text: 'and second screenshot:' }, { tag: 'img', image_key: 'img_2' }, { tag: 'text', text: 'After second image' }],
++          ],
++        }),
++        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: 'Kiki' }],
++      },
++    });
++    await link.handlers?.onMessage({
++      event_id: 'e-post-locale-fail',
++      app_id: 'cli_0011223344556688',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_post_2',
++        chat_id: 'oc_group',
++        chat_type: 'p2p',
++        message_type: 'post',
++        content: JSON.stringify({
++          zh_cn: {
++            title: '',
++            content: [
++              [{ tag: 'text', text: 'Text before broken image' }],
++              [{ tag: 'img', image_key: 'img_fail' }],
++              [{ tag: 'text', text: 'Text after broken image' }],
++            ],
++          },
++        }),
++      },
++    });
++    await link.handlers?.onMessage({
++      event_id: 'e-post-text-only',
++      app_id: 'cli_0011223344556688',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_post_3',
++        chat_id: 'oc_group',
++        chat_type: 'p2p',
++        message_type: 'post',
++        content: JSON.stringify({
++          title: 'Heading',
++          content: [
++            [{ tag: 'text', text: 'Line 1 ' }, { tag: 'a', text: 'link', href: 'https://example.com' }],
++            [{ tag: 'text', text: 'Line 2' }],
++          ],
++        }),
++      },
++    });
++    await link.handlers?.onMessage({
++      event_id: 'e-single-media-caption',
++      app_id: 'cli_0011223344556688',
++      sender: { sender_id: { open_id: 'ou_alice' } },
++      message: {
++        message_id: 'om_img_cap',
++        chat_id: 'oc_group',
++        chat_type: 'p2p',
++        message_type: 'image',
++        content: JSON.stringify({ image_key: 'img_fail', caption: 'Single image caption survives failure' }),
++      },
++    });
++
++    assert.equal(events.length, 4);
++    assert.deepEqual(events[0]?.payload, {
++      type: 'parts',
++      parts: [
++        { type: 'text', text: 'Bug Report\n@Kiki look at first screenshot:' },
++        { type: 'media', media: { kind: 'image', filename: 'image', mime: 'image/jpeg', bytes: Uint8Array.from([1, 1]) } },
++        { type: 'text', text: 'and second screenshot:' },
++        { type: 'media', media: { kind: 'image', filename: 'image', mime: 'image/jpeg', bytes: Uint8Array.from([2, 2]) } },
++        { type: 'text', text: 'After second image' },
++      ],
++    });
++    assert.deepEqual(events[1]?.payload, {
++      type: 'parts',
++      parts: [
++        { type: 'text', text: 'Text before broken image' },
++        { type: 'media_unavailable', kind: 'image', reason: 'download_failed' },
++        { type: 'text', text: 'Text after broken image' },
++      ],
++    });
++    assert.deepEqual(events[2]?.payload, {
++      type: 'text',
++      text: 'Heading\nLine 1 link\nLine 2',
++    });
++    assert.deepEqual(events[3]?.payload, {
++      type: 'media_unavailable',
++      kind: 'image',
++      reason: 'download_failed',
++      caption: 'Single image caption survives failure',
++    });
++  } finally {
++    await adapter.stop();
++  }
++});
+diff --git a/test/session-onebot.test.ts b/test/session-onebot.test.ts
+index 43f28c8..7d842ea 100644
+--- a/test/session-onebot.test.ts
++++ b/test/session-onebot.test.ts
+@@ -269,0 +270,80 @@ test('OneBot default download reads public http and does not call private addres
++test('OneBot preserves caption when single media is unavailable and emits ordered parts for text-image-text and multi-image messages', async () => {
++  const api = link();
++  const transport: OneBotTransport = {
++    async connect() { return api; },
++    async listen() { throw new Error('onebot_listen_unused'); },
++  };
++  const events: SessionInbound[] = [];
++  const adapter = createOneBotSessionAdapter({
++    platform: 'qq_onebot_v11',
++    mode: 'forward',
++    endpoint: 'ws://127.0.0.1:6704/',
++    instance_id: 'qq.multipart',
++    transport,
++    retry_ms: 0,
++  }, memory());
++  await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++  for (let i = 0; i < 20 && adapter.state !== 'running'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
++  api.emit({
++    post_type: 'message',
++    message_type: 'private',
++    message_id: 40,
++    self_id: 100,
++    user_id: 200,
++    message: [
++      { type: 'text', data: { text: 'caption stays visible' } },
++      { type: 'image', data: { file: 'file:///tmp/local.jpg' } },
++    ],
++  });
++  api.emit({
++    post_type: 'message',
++    message_type: 'private',
++    message_id: 41,
++    self_id: 100,
++    user_id: 200,
++    message: [
++      { type: 'text', data: { text: 'before ' } },
++      { type: 'image', data: { file: 'base64://AQ==' } },
++      { type: 'text', data: { text: 'after' } },
++    ],
++  });
++  api.emit({
++    post_type: 'message',
++    message_type: 'private',
++    message_id: 42,
++    self_id: 100,
++    user_id: 200,
++    message: [
++      { type: 'text', data: { text: 'first ' } },
++      { type: 'image', data: { file: 'base64://AQ==' } },
++      { type: 'text', data: { text: 'middle' } },
++      { type: 'image', data: { file: 'file:///tmp/missing.jpg' } },
++    ],
++  });
++  for (let i = 0; i < 20 && events.length < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
++  assert.equal(events.length, 3);
++  assert.deepEqual(events[0]?.payload, {
++    type: 'media_unavailable',
++    kind: 'image',
++    reason: 'local_path_not_fetched',
++    caption: 'caption stays visible',
++  });
++  assert.deepEqual(events[1]?.payload, {
++    type: 'parts',
++    parts: [
++      { type: 'text', text: 'before ' },
++      { type: 'media', media: { kind: 'image', filename: 'image', mime: 'image/jpeg', bytes: Buffer.from([1]) } },
++      { type: 'text', text: 'after' },
++    ],
++  });
++  assert.deepEqual(events[2]?.payload, {
++    type: 'parts',
++    parts: [
++      { type: 'text', text: 'first ' },
++      { type: 'media', media: { kind: 'image', filename: 'image', mime: 'image/jpeg', bytes: Buffer.from([1]) } },
++      { type: 'text', text: 'middle' },
++      { type: 'media_unavailable', kind: 'image', reason: 'local_path_not_fetched' },
++    ],
++  });
++  await adapter.stop();
++});
+diff --git a/test/session-realtime.test.ts b/test/session-realtime.test.ts
+index 729afd8..4ae4651 100644
+--- a/test/session-realtime.test.ts
++++ b/test/session-realtime.test.ts
+@@ -85,0 +86,44 @@ test('reconnect remains cancellable, auth expires without retry and receipts do
++
++test('realtime adapter preserves caption on failed single attachment and coalesces multi-attachment messages into one multipart event', async () => {
++  const f = fixture();
++  const hub = createSessionHub({ store: f.store });
++  const spec: SessionSpec = { platform: 'discord', bot_token: 'discord-multi', instance_id: 'discord-multi', retry_ms: 1, connection: f.connection };
++  const adapter = hub.acquire(spec);
++  const received: SessionInbound[] = [];
++  await adapter.start({ async admit(event) { received.push(event); return { decision: 'accepted' }; } });
++  await f.handlers.onEvent({
++    id: '200',
++    channel_id: '11',
++    channel: { type: 1 },
++    author: { id: 'user' },
++    content: 'text with failed attachment',
++    attachments: [{ url: 'fail', filename: 'broken.png', content_type: 'image/png', size: 3 }],
++  });
++  await f.handlers.onEvent({
++    id: '201',
++    channel_id: '11',
++    channel: { type: 1 },
++    author: { id: 'user' },
++    content: 'two attachments once',
++    attachments: [
++      { url: 'ok-1', filename: 'one.png', content_type: 'image/png', size: 3 },
++      { url: 'fail', filename: 'two.png', content_type: 'image/png', size: 3 },
++    ],
++  });
++  assert.equal(received.length, 2);
++  assert.deepEqual(received[0]?.payload, {
++    type: 'media_unavailable',
++    kind: 'image',
++    reason: 'download_failed',
++    caption: 'text with failed attachment',
++  });
++  assert.deepEqual(received[1]?.payload, {
++    type: 'parts',
++    parts: [
++      { type: 'text', text: 'two attachments once' },
++      { type: 'media', media: { kind: 'image', filename: 'one.png', mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) } },
++      { type: 'media_unavailable', kind: 'image', reason: 'download_failed' },
++    ],
++  });
++  await hub.release(spec);
++});
+diff --git a/test/session-telegram.test.ts b/test/session-telegram.test.ts
+index 320e151..3812ca1 100644
+--- a/test/session-telegram.test.ts
++++ b/test/session-telegram.test.ts
+@@ -310,0 +311,74 @@ test('Telegram defer does not advance the cursor', async () => {
++test('Telegram preserves caption on failed or oversized media download', async () => {
++  let page = 0;
++  const store = memory();
++  const transport: TelegramBotTransport = {
++    async call(request, signal) {
++      if (request.method === 'getMe') return { http_status: 200, body: { ok: true, result: { id: 6, username: 'KikiBot' } } };
++      if (request.method === 'getWebhookInfo') return { http_status: 200, body: { ok: true, result: { url: '' } } };
++      if (request.method === 'getUpdates') {
++        page += 1;
++        if (page === 1) {
++          return {
++            http_status: 200,
++            body: {
++              ok: true,
++              result: [
++                update(10, {
++                  message: {
++                    message_id: 100,
++                    caption: 'Caption for failed photo',
++                    photo: [{ file_id: 'bad_photo', file_size: 10 }],
++                    chat: { id: 1, type: 'private' },
++                    from: { id: 2 },
++                  },
++                }),
++                update(11, {
++                  message: {
++                    message_id: 101,
++                    caption: 'Caption for huge photo',
++                    photo: [{ file_id: 'huge_photo', file_size: 30_000_000 }],
++                    chat: { id: 1, type: 'private' },
++                    from: { id: 2 },
++                  },
++                }),
++              ],
++            },
++          };
++        }
++        return hang(signal);
++      }
++      if (request.method === 'getFile') {
++        return { http_status: 500, body: { ok: false, error_code: 500, description: 'failed' } };
++      }
++      return { http_status: 200, body: { ok: true, result: {} } };
++    },
++    async download() {
++      return { ok: true, bytes: Uint8Array.from([7, 8]) };
++    },
++  };
++  const events: SessionInbound[] = [];
++  const adapter = createTelegramSessionAdapter({
++    platform: 'telegram',
++    instance_id: 'tg.caption-fail',
++    token: '666666:FFFFFFFFFFFFFFFFFFFF',
++    transport,
++    retry_ms: 0,
++  }, store);
++  await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++  for (let i = 0; i < 20 && events.length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
++  assert.equal(events.length, 2);
++  assert.deepEqual(events[0]?.payload, {
++    type: 'media_unavailable',
++    kind: 'image',
++    reason: 'download_failed',
++    caption: 'Caption for failed photo',
++  });
++  assert.deepEqual(events[1]?.payload, {
++    type: 'media_unavailable',
++    kind: 'image',
++    reason: 'too_large',
++    caption: 'Caption for huge photo',
++  });
++  assert.equal(store.values.get('nb-im-session:tg.caption-fail'), '{"v":1,"offset":12}');
++  await adapter.stop();
++});

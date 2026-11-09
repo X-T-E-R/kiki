@@ -2,9 +2,10 @@ import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { IBotService, IConfigService, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
+import { IAgentContextMemoryService, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IAgentPromptService, IBootstrapService, IBotService, IConfigService, IEventService, IFileService, ISessionContext, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionMediaStore, ISessionMetadata, ISessionQuestionService, ITelemetryService, promptAdmission, type Scope } from '@kiki/agent-core-v2';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
-import { FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink } from '@nb-im/core';
+import { createFeishuSessionAdapter, FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NotificationService } from '../../../src/services/notifications/notificationService';
@@ -593,5 +594,234 @@ describe('long replies', () => {
     expect(notice).toBe(1);
     expect(sent.some((item) => item.type === 'media')).toBe(false);
     expect(sent.some((item) => item.type === 'text' && item.text === text)).toBe(true);
+  });
+
+  it('routes a Feishu post rich-text message through createImSessionHost saveMedia and submit into IAgentPromptService', async () => {
+    const home = await tempHome();
+    let storedConfig: unknown;
+    const docs = new Map<string, unknown>();
+    const savedFiles = new Map<string, { id: string; name: string; media_type: string; size: number; bytes: Buffer }>();
+    const submittedPrompts: unknown[] = [];
+    let fileSeq = 0;
+
+    const promptService = {
+      lookup: () => undefined,
+      list: () => ({ pending: [] }),
+      [promptAdmission]: (promptId?: string) => ({
+        id: promptId ?? 'reserved',
+        submit: async (message: unknown) => {
+          submittedPrompts.push(message);
+          return {
+            id: promptId ?? 'reserved',
+            state: 'pending',
+            launched: Promise.resolve(),
+            completion: new Promise(() => {}),
+          };
+        },
+        dispose: async () => undefined,
+      }),
+    };
+    const agent = {
+      accessor: {
+        get: (key: unknown) => {
+          if (key === IAgentPromptService) return promptService;
+          if (key === IAgentProfileService) return { getModelProviderType: () => 'openai', data: () => ({ executorId: 'native' }) };
+          if (key === IAgentLoopService) return { status: () => ({ activeTurnId: undefined }) };
+          if (key === IAgentContextMemoryService) return { get: () => [] };
+          throw new Error('unexpected_agent_service');
+        },
+      },
+    };
+    const sessionMediaStore = {
+      materialize: async () => undefined,
+      retain: async () => undefined,
+      open: async (id: string) => {
+        const entry = savedFiles.get(id);
+        return entry === undefined ? undefined : { size: entry.size, mediaType: entry.media_type };
+      },
+      read: async (id: string) => {
+        const entry = savedFiles.get(id);
+        return entry === undefined ? undefined : { name: entry.name, data: entry.bytes };
+      },
+    };
+    const sessionHandle = {
+      accessor: {
+        get: (key: unknown) => {
+          if (key === IAgentLifecycleService) return { get: () => agent, create: async () => agent };
+          if (key === ISessionContext) return { sessionDir: home };
+          if (key === ISessionMediaStore) return sessionMediaStore;
+          if (key === ISessionMetadata) return { read: async () => ({ title: 'Home', titleKind: 'custom' }), update: async () => undefined };
+          if (key === ISessionInteractionService) return { listPending: () => [], isRecentlyResolved: () => false };
+          throw new Error('unexpected_session_service');
+        },
+      },
+    };
+    const fileService = {
+      save: async (stream: AsyncIterable< Uint8Array >, name: string, options?: { mimeType?: string }) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        const id = `file_${++fileSeq}`;
+        const meta = { id, name, media_type: options?.mimeType ?? 'image/png', size: bytes.byteLength };
+        savedFiles.set(id, { ...meta, bytes });
+        return meta;
+      },
+      get: async (id: string) => {
+        const entry = savedFiles.get(id)!;
+        return { meta: { id: entry.id, name: entry.name, media_type: entry.media_type, size: entry.size }, data: entry.bytes };
+      },
+      delete: async () => undefined,
+    };
+    const core = {
+      instantiation: { provide() {} },
+      accessor: {
+        get: (key: unknown) => {
+          if (key === IConfigService) {
+            return {
+              ready: Promise.resolve(),
+              get: () => storedConfig,
+              replaceSections: async (sections: Record<string, unknown>) => { storedConfig = sections['notifications']; },
+            };
+          }
+          if (key === IBootstrapService) return { cacheDir: home, scope: () => 'store' };
+          if (key === IAtomicDocumentStore) {
+            return {
+              get: async (_scope: string, k: string) => docs.get(k),
+              set: async (_scope: string, k: string, v: unknown) => { docs.set(k, v); },
+              delete: async (_scope: string, k: string) => { docs.delete(k); },
+              read: async (_scope: string, k: string) => docs.get(k),
+              write: async (_scope: string, k: string, v: unknown) => { docs.set(k, v); },
+            };
+          }
+          if (key === ISessionIndex) return { get: async (id: string) => id === 'home' ? { id, title: 'Home' } : undefined, listRecent: async () => ({ items: [{ id: 'home', title: 'Home' }] }) };
+          if (key === ISessionManager) return { list: () => [], get: () => sessionHandle, acquire: async () => ({ handle: sessionHandle, dispose: async () => undefined }) };
+          if (key === IBotService) return { list: async () => [{ personaId: 'ada', name: 'Ada', homeSessionId: 'home' }], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };
+          if (key === IPluginHostService) return { attachImAdapters: async () => undefined };
+          if (key === IFileService) return fileService;
+          if (key === ITelemetryService) return { withContext: () => ({ track() {}, track2() {} }) };
+          if (key === IEventService) return { publish() {} };
+          throw new Error('unexpected_app_service');
+        },
+      },
+    } as unknown as Scope;
+
+    service = new NotificationService(core, home, () => false, () => undefined);
+    await service.start();
+    const pngBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    let feishuHandlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    const feishuRaw = createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'fs-host-slice',
+      app_id: 'cli_0011223344556692',
+      app_secret: 'secret',
+      connection: {
+        async open(next) {
+          feishuHandlers = next;
+          return { ok: true, bot_open_id: 'ou_bot_slice' };
+        },
+        async send(request) {
+          if (request.op === 'download') {
+            if (request.resource_key === 'img_fail') return { ok: false, http_status: 500 };
+            if (request.resource_key === 'img_big') return { ok: false, too_large: true };
+            return { ok: true, bytes: new Uint8Array(pngBytes) };
+          }
+          return { ok: true, message_id: 'om_sent' };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+
+    const bridge = await createImSessionHost({
+      core,
+      homeDir: home,
+      notifications: service,
+      logger: { info() {} },
+      factories: [{ providerKind: 'feishu_app', create: () => new HubSessionAdapter(feishuRaw, home) }],
+      wechatFetch: () => Promise.reject(new Error('wechat_fetch_blocked')),
+    });
+    try {
+      const pasted = await bridge.paste({ text: 'app_id=cli_0011223344556692\napp_secret=secret' });
+      await bridge.setListening(pasted.provider_instance_id, true);
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-pair',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_pair',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'pair' }),
+        },
+      });
+      const discovery = (await bridge.snapshot()).discoveries[0]!;
+      await bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'home' }, busy: 'queue' });
+
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-post',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_post',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'post',
+          content: JSON.stringify({
+            title: 'Rich Post Title',
+            content: [
+              [{ tag: 'text', text: 'First paragraph before image' }],
+              [{ tag: 'img', image_key: 'img_ok' }],
+              [{ tag: 'text', text: 'Middle paragraph before failed and oversized images' }, { tag: 'img', image_key: 'img_fail' }, { tag: 'img', image_key: 'img_big' }],
+              [{ tag: 'text', text: 'Closing paragraph' }],
+            ],
+          }),
+        },
+      });
+
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-single-big-caption',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_big_cap',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_big', caption: 'Single oversized image with caption' }),
+        },
+      });
+
+      expect(submittedPrompts).toHaveLength(2);
+      const submitted = submittedPrompts[0] as {
+        role: string;
+        providerMessageId?: string;
+        content: { type: string; text?: string; imageUrl?: { url: string } }[];
+      };
+      expect(submitted.role).toBe('user');
+      expect(submitted.providerMessageId).toBe('om_slice_post');
+      expect(submitted.content.map((part) => part.type)).toEqual(['text', 'image_url', 'text', 'text', 'text', 'text']);
+      expect(submitted.content[0]?.text).toBe('Rich Post Title\nFirst paragraph before image');
+      expect(submitted.content[1]?.imageUrl?.url).toBe('kimi-file://file_1');
+      expect(submitted.content[2]?.text).toBe('Middle paragraph before failed and oversized images');
+      expect(submitted.content[3]?.text).toBe('[Unavailable external image: download_failed]');
+      expect(submitted.content[4]?.text).toBe('[Unavailable external image: too_large]');
+      expect(submitted.content[5]?.text).toBe('Closing paragraph');
+
+      const submittedSingleBig = submittedPrompts[1] as {
+        role: string;
+        providerMessageId?: string;
+        content: { type: string; text?: string }[];
+      };
+      expect(submittedSingleBig.providerMessageId).toBe('om_slice_big_cap');
+      expect(submittedSingleBig.content).toEqual([
+        { type: 'text', text: 'Single oversized image with caption', presentation: undefined },
+        { type: 'text', text: '[Unavailable external image: too_large]', presentation: undefined },
+      ]);
+    } finally {
+      await bridge.close();
+    }
   });
 });
