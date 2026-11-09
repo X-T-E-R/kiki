@@ -1567,10 +1567,21 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ): Promise<FinishReason> {
     const finishReason = response.providerFinishReason ?? 'completed';
     if (response.message.toolCalls.length === 0) return finishReason === 'tool_calls' ? 'other' : finishReason;
+    const onlySendMessageCalls = response.message.toolCalls.every(call => call.name === 'SendMessage');
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
     let stopTurn = runtime.pendingStep?.stopTurn ?? false;
+    let sendMessageCompletionBlocked = runtime.pendingStep?.sendMessageCompletionBlocked ?? false;
     while (pending.length > 0) {
-      runtime.pendingStep = { step: currentStep, stepId: stepUuid, ...stepIdentity, response, trace, tools: pending, stopTurn };
+      runtime.pendingStep = {
+        step: currentStep,
+        stepId: stepUuid,
+        ...stepIdentity,
+        response,
+        trace,
+        tools: pending,
+        stopTurn,
+        sendMessageCompletionBlocked,
+      };
       try { await this.pauseAtBoundary(runtime); }
       finally { runtime.pendingStep = undefined; }
       signal.throwIfAborted();
@@ -1601,6 +1612,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             toolCallId: batch.call.id, name: batch.call.name, args: batch.args, extras: batch.call.extras });
           this.context.appendLoopEvent({ type: 'tool.result', parentUuid: callUuid, toolCallId: batch.call.id,
             result: { isError: true, output: batch.output } });
+          if (batch.call.name === 'SendMessage') sendMessageCompletionBlocked = true;
           continue;
         }
         for await (const toolResult of this.toolExecutor.execute(batch.tools.map(tool => tool.call), {
@@ -1624,11 +1636,17 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
               fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } } });
           await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: result.isError });
-          if (result.stopTurn === true && (toolResult.toolName !== 'SendMessage' || response.message.toolCalls.length === 1)) stopTurn = true;
+          if (toolResult.toolName === 'SendMessage') {
+            if (result.isError === true || result.userDeliveryConfirmed !== true) sendMessageCompletionBlocked = true;
+            else if (result.stopTurn === true && onlySendMessageCalls) stopTurn = true;
+          } else if (result.stopTurn === true) {
+            stopTurn = true;
+          }
         }
       }
       pending = [...suspended, ...pending.slice(processed)];
     }
+    if (onlySendMessageCalls && sendMessageCompletionBlocked) stopTurn = false;
     return stopTurn ? 'completed' : 'tool_calls';
   }
 

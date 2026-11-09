@@ -91,7 +91,7 @@ export const SendMessageToolInputSchema = z.object({
   voice_mode: SendMessageVoiceModeSchema.optional().describe('Voice delivery mode: none (default unless configured in Settings), append (keep text and attach native voice), or only (send native voice without text).'),
   tts: SendMessageTtsInputSchema.optional().describe('Optional TTS synthesis configuration, provider/voice/model overrides, and separate speech text.'),
   messages: z.array(MessageBatchItemSchema).min(1).max(32).optional(),
-  end_turn: z.boolean().optional().describe('Set true for the final answer when the request is complete and no work remains; omit for progress updates. Skips the tool continuation only after full user delivery and when this is the step’s only tool call. Pending messages and goal work still run.'),
+  end_turn: z.boolean().optional().describe('Set true for the final answer when the request is complete and no work remains; omit for progress updates. Skips the tool continuation after confirmed user delivery when every tool call in the step is a confirmed SendMessage. Pending messages and goal work still run.'),
 }).strict().superRefine((input, ctx) => {
   const hasBatch = input.messages !== undefined;
   const hasLegacyContent = input.text !== undefined || input.attachments !== undefined || input.reply_to !== undefined || input.mention_ids !== undefined || input.tts?.text !== undefined;
@@ -156,7 +156,7 @@ function optionalService<T>(instantiation: IInstantiationService, id: ServiceIde
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Native TTS voice synthesis can be controlled per message or batch via voice_mode (none, append, only) and tts (mode, text, provider, model, voice, language, format, sample_rate_hz, options); omitted fields use Settings defaults. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. For the final answer, if the request is complete and no work remains, set end_turn=true. It skips the tool continuation only after full user delivery and when this is the step’s only tool call; goal work and queued messages still run. Omit end_turn for progress messages and continue any required tools or pending work. Do not send a closing SendMessage or ordinary-text confirmation.';
+  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Native TTS voice synthesis can be controlled per message or batch via voice_mode (none, append, only) and tts (mode, text, provider, model, voice, language, format, sample_rate_hz, options); omitted fields use Settings defaults. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. For the final answer, if the request is complete and no work remains, set end_turn=true. It skips the tool continuation after confirmed user delivery when every tool call in the step is a confirmed SendMessage; goal work and queued messages still run. Omit end_turn for progress messages and continue any required tools or pending work. Do not send a closing SendMessage or ordinary-text confirmation.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
@@ -188,17 +188,19 @@ export class SendMessageTool implements ISendMessageTool {
     };
   }
 
-  private async singleResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean }> {
+  private async singleResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
     const receipt = await this.sendOne(input, ctx);
     const notes = notesForReceipt(receipt);
+    const userDeliveryConfirmed = confirmedUserDelivery(receipt, input);
     return {
       output: JSON.stringify(toWireReceipt(receipt), null, 2),
       note: notes.length > 0 ? `<system>${notes.join(' ')}</system>` : undefined,
-      stopTurn: input.end_turn === true && fullyDeliveredToUser(receipt) ? true : undefined,
+      userDeliveryConfirmed: userDeliveryConfirmed ? true : undefined,
+      stopTurn: input.end_turn === true && userDeliveryConfirmed ? true : undefined,
     };
   }
 
-  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean }> {
+  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
     const messages: Record<string, unknown>[] = [];
     const notes = new Set<string>();
     const batch = input.messages!;
@@ -229,7 +231,7 @@ export class SendMessageTool implements ISendMessageTool {
       try {
         const receipt = await this.sendOne(itemInput, { ...ctx, toolCallId: itemCallId });
         messages.push({ index, ...toWireReceipt(receipt) });
-        fullyDelivered = fullyDelivered && fullyDeliveredToUser(receipt);
+        fullyDelivered = fullyDelivered && confirmedUserDelivery(receipt, itemInput);
         for (const note of notesForReceipt(receipt)) notes.add(note);
       } catch (error) {
         fullyDelivered = false;
@@ -245,6 +247,7 @@ export class SendMessageTool implements ISendMessageTool {
     return {
       output: JSON.stringify({ messages }, null, 2),
       note: notes.size > 0 ? `<system>${[...notes].join(' ')}</system>` : undefined,
+      userDeliveryConfirmed: fullyDelivered ? true : undefined,
       stopTurn: input.end_turn === true && fullyDelivered ? true : undefined,
     };
   }
@@ -1233,10 +1236,31 @@ function spawnErrno(error: unknown): string | undefined {
     : undefined;
 }
 
-function fullyDeliveredToUser(receipt: SendMessageReceipt): boolean {
+function hasExplicitChannelTargets(input: { readonly channel?: unknown; readonly channels?: unknown }): boolean {
+  if (typeof input.channel === 'string' && input.channel.trim().length > 0) return true;
+  return Array.isArray(input.channels) && input.channels.length > 0;
+}
+
+function confirmedChannelDelivery(
+  channels: readonly { readonly status?: unknown }[] | undefined,
+  explicitTargets: boolean,
+  voiceOnly: boolean,
+): boolean {
+  if (channels === undefined) return true;
+  if (channels.length === 0) return false;
+  if (channels.some((channel) => channel.status === 'unknown')) return false;
+  if (explicitTargets) return channels.every((channel) => channel.status === 'delivered');
+  if (voiceOnly) return channels.some((channel) => channel.status === 'delivered');
+  return channels.some((channel) => channel.status === 'delivered' || channel.status === 'partial');
+}
+
+function confirmedUserDelivery(
+  receipt: ExtendedReceipt,
+  input: { readonly channel?: unknown; readonly channels?: unknown },
+): boolean {
   return receipt.deliveredTo.includes('user') &&
     (receipt.delivery === undefined || receipt.delivery === 'delivered') &&
-    (receipt.channels === undefined || receipt.channels.every((channel) => channel.status === 'delivered'));
+    confirmedChannelDelivery(receipt.channels, hasExplicitChannelTargets(input), receipt.voiceOnly === true);
 }
 
 function notesForReceipt(receipt: SendMessageReceipt): readonly string[] {

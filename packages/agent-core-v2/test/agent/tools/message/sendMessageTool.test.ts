@@ -36,9 +36,12 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { FakeImAdapter, fakeAdapterFactory, ImSessionBridge, type ImSessionPorts } from '@kiki-dsh/im-bridge-core';
 import type { MediaGenerateInput, MediaJob } from '@kiki/protocol';
+import { ChatProviderError, markProviderEventError } from '#/kosong/contract/errors';
+import type { HookDef } from '#/features/externalHooks/internal/types';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
-import { appServices, createTestAgent, homeDirServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
+import { appServices, createTestAgent, externalHookServices, homeDirServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
+import { makeHookRunner, nodeCommand } from '../../../features/externalHooks/runner-stub';
 
 let ctx: TestAgentContext;
 const dirs: string[] = [];
@@ -90,7 +93,20 @@ describe('SendMessage completion guidance', () => {
     expect((await execute({ messages: [{ text: 'Unsent' }], end_turn: true }, { turnId: 0, toolCallId: 'cancelled-batch', signal: controller.signal })).stopTurn).toBeUndefined();
   });
 
-  it.each(['partial', 'failed', 'unknown'] as const)('continues after a final send with %s channel delivery', async (status) => {
+  it.each(['partial', 'failed', 'unknown'] as const)('continues after an explicit-channel final send with %s channel delivery', async (status) => {
+    const send = vi.fn(async (): Promise<SendMessageReceipt> => ({
+      messageId: 'send:final', deliveredTo: ['user'], delivery: 'delivered',
+      channels: [{ channelId: 'notify:fixture', status }],
+    }));
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    expect((await execute({ channel: 'notify:fixture', messages: [{ text: 'First' }, { text: 'Last' }], end_turn: true })).stopTurn).toBeUndefined();
+    ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Final answer","channel":"notify:fixture","end_turn":true}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Delivery requires attention.' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer the question.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+  });
+
+  it.each(['failed', 'unknown'] as const)('continues after an implicit fan-out final send when the only channel is %s', async (status) => {
     const send = vi.fn(async (): Promise<SendMessageReceipt> => ({
       messageId: 'send:final', deliveredTo: ['user'], delivery: 'delivered',
       channels: [{ channelId: 'notify:fixture', status }],
@@ -244,6 +260,248 @@ describe('SendMessage completion guidance', () => {
     expect(sendCalls()).toEqual(['send-final']);
     expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
     await ctx.expectResumeMatches();
+  });
+
+  it('ends a final SendMessage batch under implicit bound-output fan-out when each item reaches at least one channel without triggering StopFailure', async () => {
+    const stopFailureHook: HookDef = {
+      event: 'StopFailure',
+      command: nodeCommand('process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: { action: "continue", userMessage: "继续" } } }));'),
+      timeout: 5,
+    };
+    const runner = makeHookRunner([stopFailureHook]);
+    const trigger = vi.spyOn(runner, 'trigger');
+    const channels: UserMessageChannel[] = [
+      internalMessageChannel(),
+      {
+        id: 'im:tg-1',
+        kind: 'im',
+        bound: true,
+        enabled: true,
+        capabilities: [{ kind: 'file' }, { kind: 'voice', mimeTypes: ['audio/ogg'] }],
+        send: async () => ({ status: 'delivered', messageIds: ['tg-m1'] }),
+      },
+      {
+        id: 'im:wx-1',
+        kind: 'im',
+        bound: true,
+        enabled: true,
+        capabilities: [{ kind: 'file' }],
+        send: async () => ({ status: 'delivered', messageIds: ['wx-m1'] }),
+      },
+      {
+        id: 'im:fs-offline',
+        kind: 'im',
+        bound: true,
+        enabled: true,
+        capabilities: [{ kind: 'file' }],
+        send: async () => ({ status: 'failed', detail: 'offline_peer' }),
+      },
+      {
+        id: 'im:legacy-voice',
+        kind: 'im',
+        bound: true,
+        enabled: true,
+        capabilities: [{ kind: 'file' }],
+        send: async () => ({ status: 'failed', unsupported: ['voice'], detail: 'unsupported_voice' }),
+      },
+    ];
+    try {
+      await messageAgent(
+        externalHookServices(runner),
+        appServices((reg) => reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => channels,
+          sendMessage: async (input) => routeUserMessage(input, channels),
+        })),
+      );
+      ctx.mockNextResponse({
+        type: 'function',
+        id: 'send-fanout-batch',
+        name: 'SendMessage',
+        arguments: JSON.stringify({
+          end_turn: true,
+          messages: [
+            { text: 'First final batch item.' },
+            { text: 'Second final batch item.' },
+          ],
+        }),
+      });
+      ctx.mockNextProviderResponse({
+        parts: [],
+        error: markProviderEventError(new ChatProviderError('Upstream closed without a terminal event'), 'antigravity_missing_terminal'),
+      });
+      const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Send the final batch.' }] });
+      expect(result.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toHaveLength(0);
+      expect(ctx.contextData().history.filter((msg) => msg.origin?.kind === 'system_trigger')).toEqual([]);
+      const toolResultMsg = ctx.contextData().history.find((msg) => msg.role === 'tool' && msg.toolCallId === 'send-fanout-batch');
+      const wire = JSON.parse(
+        toolResultMsg!.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
+      ) as { messages: Array<{ delivered_to: string[]; channels: Array<{ channel_id: string; status: string; unsupported?: string[] }> }> };
+      expect(wire.messages).toHaveLength(2);
+      for (const item of wire.messages) {
+        expect(item.delivered_to).toContain('user');
+        expect(item.channels.filter((ch) => ch.status === 'delivered')).toHaveLength(3);
+        expect(item.channels).toEqual(expect.arrayContaining([
+          expect.objectContaining({ channel_id: 'internal', status: 'delivered' }),
+          expect.objectContaining({ channel_id: 'im:tg-1', status: 'delivered' }),
+          expect.objectContaining({ channel_id: 'im:wx-1', status: 'delivered' }),
+          expect.objectContaining({ channel_id: 'im:fs-offline', status: 'failed', detail: 'offline_peer' }),
+          expect.objectContaining({ channel_id: 'im:legacy-voice', status: 'failed', unsupported: ['voice'] }),
+        ]));
+      }
+      await ctx.expectResumeMatches();
+    } finally {
+      await runner.dispose();
+    }
+  });
+
+  it('ends after multiple same-step SendMessage calls when all are confirmed delivered and at least one sets end_turn=true without triggering StopFailure', async () => {
+    const stopFailureHook: HookDef = {
+      event: 'StopFailure',
+      command: nodeCommand('process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: { action: "continue", userMessage: "继续" } } }));'),
+      timeout: 5,
+    };
+    const runner = makeHookRunner([stopFailureHook]);
+    const trigger = vi.spyOn(runner, 'trigger');
+    try {
+      await messageAgent(externalHookServices(runner));
+      ctx.mockNextResponse(
+        { type: 'function', id: 'send-part-1', name: 'SendMessage', arguments: '{"text":"First delivered message."}' },
+        { type: 'function', id: 'send-part-2', name: 'SendMessage', arguments: '{"text":"Second delivered message.","end_turn":true}' },
+      );
+      ctx.mockNextProviderResponse({
+        parts: [],
+        error: markProviderEventError(new ChatProviderError('Upstream closed without a terminal event'), 'antigravity_missing_terminal'),
+      });
+      const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Send two messages.' }] });
+      expect(result.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(sendCalls()).toEqual(['send-part-1', 'send-part-2']);
+      expect(trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toHaveLength(0);
+      expect(ctx.contextData().history.filter((msg) => msg.origin?.kind === 'system_trigger')).toEqual([]);
+      await ctx.expectResumeMatches();
+    } finally {
+      await runner.dispose();
+    }
+  });
+
+  it('ends when a 32-item SendMessage batch receipt is spilled and truncated alongside a sibling end_turn=true SendMessage without triggering StopFailure', async () => {
+    const stopFailureHook: HookDef = {
+      event: 'StopFailure',
+      command: nodeCommand('process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: { action: "continue", userMessage: "继续" } } }));'),
+      timeout: 5,
+    };
+    const runner = makeHookRunner([stopFailureHook]);
+    const trigger = vi.spyOn(runner, 'trigger');
+    const channels: UserMessageChannel[] = [
+      internalMessageChannel(),
+      ...Array.from({ length: 12 }, (_, idx): UserMessageChannel => ({
+        id: `im:bound-channel-${idx}`,
+        kind: 'im',
+        bound: true,
+        enabled: true,
+        capabilities: [{ kind: 'file' }],
+        send: async ({ toolCallId }) => ({
+          status: idx < 10 ? 'delivered' : 'failed',
+          messageIds: idx < 10 ? [`msg-${toolCallId}-ch-${idx}-${'x'.repeat(80)}`] : undefined,
+          detail: idx < 10 ? `delivered-receipt-${'d'.repeat(80)}` : `offline-peer-${'f'.repeat(80)}`,
+        }),
+      })),
+    ];
+    try {
+      await messageAgent(
+        externalHookServices(runner),
+        appServices((reg) => reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => channels,
+          sendMessage: async (input) => routeUserMessage(input, channels),
+        })),
+      );
+      const batchItems = Array.from({ length: 32 }, (_, idx) => ({
+        text: `Batch item ${idx + 1}`,
+      }));
+      ctx.mockNextResponse(
+        {
+          type: 'function',
+          id: 'send-large-batch',
+          name: 'SendMessage',
+          arguments: JSON.stringify({ messages: batchItems }),
+        },
+        {
+          type: 'function',
+          id: 'send-final-sibling',
+          name: 'SendMessage',
+          arguments: JSON.stringify({ text: 'All 32 items and closing note sent.', end_turn: true }),
+        },
+      );
+      ctx.mockNextProviderResponse({
+        parts: [],
+        error: markProviderEventError(new ChatProviderError('Upstream closed without a terminal event'), 'antigravity_missing_terminal'),
+      });
+      const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Send 32 items and final note.' }] });
+      expect(result.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(sendCalls()).toEqual(['send-large-batch', 'send-final-sibling']);
+      expect(trigger.mock.calls.filter(([event]) => event === 'StopFailure')).toHaveLength(0);
+      expect(ctx.contextData().history.filter((msg) => msg.origin?.kind === 'system_trigger')).toEqual([]);
+      const largeBatchToolMsg = ctx.contextData().history.find((msg) => msg.role === 'tool' && msg.toolCallId === 'send-large-batch');
+      const largeBatchText = largeBatchToolMsg!.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+      expect(largeBatchText).toContain('output_path:');
+      expect(() => JSON.parse(largeBatchText)).toThrow();
+      await ctx.expectResumeMatches();
+    } finally {
+      await runner.dispose();
+    }
+  });
+
+  it('continues when a same-step sibling SendMessage is not confirmed even if another SendMessage sets end_turn=true', async () => {
+    const send = vi.fn(async (input: Parameters<IUserMessageRouter['sendMessage']>[0]): Promise<SendMessageReceipt> => ({
+      messageId: `send:${input.toolCallId}`,
+      deliveredTo: ['user'],
+      delivery: 'delivered',
+      channels: [{
+        channelId: 'im:primary',
+        status: input.toolCallId === 'send-ok' ? 'delivered' : 'unknown',
+      }],
+    }));
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    ctx.mockNextResponse(
+      { type: 'function', id: 'send-ok', name: 'SendMessage', arguments: '{"text":"Confirmed part.","end_turn":true}' },
+      { type: 'function', id: 'send-unconfirmed', name: 'SendMessage', arguments: '{"text":"Uncertain part."}' },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'Inspecting uncertain sibling delivery.' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Send both parts.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(historyText(1)).toContain('Do not resend automatically');
+  });
+
+  it('continues when implicit fan-out includes an unknown channel status or when an explicit multi-channel send has a non-delivered target', async () => {
+    let mode: 'implicit-unknown' | 'explicit-partial' = 'implicit-unknown';
+    const send = vi.fn(async (input: Parameters<IUserMessageRouter['sendMessage']>[0]): Promise<SendMessageReceipt> => ({
+      messageId: `send:${input.toolCallId}`,
+      deliveredTo: ['user'],
+      delivery: 'delivered',
+      channels: mode === 'implicit-unknown'
+        ? [
+            { channelId: 'internal', status: 'delivered' },
+            { channelId: 'im:timeout', status: 'unknown', detail: 'transport_timeout' },
+          ]
+        : [
+            { channelId: 'internal', status: 'delivered' },
+            { channelId: 'im:wx', status: 'partial', unsupported: ['voice'] },
+          ],
+    }));
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+
+    expect((await execute({ text: 'Uncertain implicit fan-out.', end_turn: true })).stopTurn).toBeUndefined();
+    ctx.mockNextResponse({ type: 'function', id: 'send-implicit-unknown', name: 'SendMessage', arguments: '{"text":"Uncertain implicit fan-out.","end_turn":true}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Checked unknown channel.' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Reply.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+
+    mode = 'explicit-partial';
+    expect((await execute({ text: 'Explicit channels.', channels: ['internal', 'im:wx'], end_turn: true })).stopTurn).toBeUndefined();
   });
 
   it('keeps sibling tool results available to the model even when SendMessage requests completion', async () => {
@@ -1337,7 +1595,7 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
         { channel_id: 'im:discord-1', status: 'unsupported', unsupported: ['voice'] },
       ],
     });
-    expect(result.stopTurn).toBeUndefined();
+    expect(result.stopTurn).toBe(true);
   });
 
   it('fans out SendMessage through ImSessionBridge without appending or sending unsupported-media notices on WeChat or runtime-refused channels', async () => {
@@ -1465,7 +1723,7 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
           { channel_id: fsChannelId, status: 'partial', message_ids: ['m1'], unsupported: ['voice'], detail: 'voice_rejected' },
         ],
       });
-      expect(res.stopTurn).toBeUndefined();
+      expect(res.stopTurn).toBe(true);
     } finally {
       await bridge.close();
     }

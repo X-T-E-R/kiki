@@ -780,6 +780,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         result.stopTurn === true ||
         didCtx.stopTurn === true ||
         effectiveResult.stopTurn === true,
+      userDeliveryConfirmed:
+        effectiveResult.isError === true
+          ? undefined
+          : effectiveResult.userDeliveryConfirmed ?? result.userDeliveryConfirmed,
       stopBatchAfterThis: result.stopBatchAfterThis,
       delivery: coercedResult.delivery,
     };
@@ -1031,6 +1035,7 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
   const base: {
     output: ToolResult['output'];
     stopTurn?: boolean;
+    userDeliveryConfirmed?: boolean;
     truncated?: true;
     note?: string;
     runtimeId?: string;
@@ -1042,6 +1047,7 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
   } = {
     output,
     stopTurn: result.stopTurn,
+    userDeliveryConfirmed: result.isError === true ? undefined : result.userDeliveryConfirmed,
     runtimeId: result.runtimeId,
     spill: result.spill,
     spillExempt: result.spillExempt,
