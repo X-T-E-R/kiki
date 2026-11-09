@@ -34,6 +34,7 @@ import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProce
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { FakeImAdapter, fakeAdapterFactory, ImSessionBridge, type ImSessionPorts } from '@kiki-dsh/im-bridge-core';
 import type { MediaGenerateInput, MediaJob } from '@kiki/protocol';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
@@ -1337,5 +1338,136 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
       ],
     });
     expect(result.stopTurn).toBeUndefined();
+  });
+
+  it('fans out SendMessage through ImSessionBridge without appending or sending unsupported-media notices on WeChat or runtime-refused channels', async () => {
+    const mediaMock = mockTtsMediaService();
+    const wechatAdapter = new FakeImAdapter('wechat_bridge', 'wx-account');
+    wechatAdapter.voice = false;
+    const telegramAdapter = new FakeImAdapter('telegram', 'tg-account');
+    const feishuAdapter = new FakeImAdapter('feishu_app', 'fs-account');
+    feishuAdapter.sendMedia = async ({ kind }) => ({ status: 'unsupported', unsupported: [kind], detail: 'voice_rejected' });
+
+    const secrets = new Map<string, { providerId: string; credential: string }>([
+      ['inst-wx', { providerId: 'wechat_bridge', credential: 'wx-token\nwx-account' }],
+      ['inst-tg', { providerId: 'telegram', credential: '123456:abcdefghijklmnopqrstuvwxyz' }],
+      ['inst-fs', { providerId: 'feishu_app', credential: 'cli_a\nsec_b' }],
+    ]);
+    let storedState = '';
+    let bridge!: ImSessionBridge;
+
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, mediaMock);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async (sessionId) => bridge.channelViews(sessionId),
+          sendMessage: async (input) => bridge.sendUserMessage(input),
+        });
+      }),
+    );
+
+    const sessionId = ctx.get(ISessionContext).sessionId;
+    const ports: ImSessionPorts = {
+      credentials: {
+        list: () => [...secrets.entries()].map(([id, item]) => ({ id, providerId: item.providerId, configured: true })),
+        read: (id) => secrets.get(id)?.credential,
+        write: async (id, value) => {
+          const prev = secrets.get(id);
+          secrets.set(id, { providerId: prev?.providerId ?? 'telegram', credential: value });
+        },
+        check: async (id) => ({ ok: true, accountId: secrets.get(id)?.providerId ?? 'account' }),
+      },
+      sessions: {
+        listPersonas: async () => [],
+        listSessions: async () => [{ id: sessionId, title: 'Session' }],
+        owns: async (id) => id === sessionId,
+        ensureHome: async () => ({ homeSessionId: sessionId }),
+        activity: async () => ({ busy: false, pending: 'none', queueLength: 0 }),
+        submit: async ({ promptId }) => ({ duplicate: false, promptId, turnId: 1, deliveryState: 'pending' }),
+        steer: async () => 'steered',
+        abort: async () => false,
+        saveMedia: async () => [],
+        readAttachment: async ({ blobId }) => {
+          const hash = blobId.split(':').at(-1) ?? '';
+          const bytes = await ctx.get(IBlobStore).get(ctx.get(IAgentScopeContext).scope('blobs'), hash);
+          return bytes === undefined ? undefined : { bytes, name: 'voice.ogg', mediaType: 'audio/ogg' };
+        },
+        readVisible: async () => ({ text: '', done: true, media: [] }),
+        listInteractions: async () => ({ approvals: [], questions: [] }),
+        decideApproval: async () => 'decided',
+        decideHostKey: async () => 'decided',
+        answerQuestion: async () => 'answered',
+      },
+      logger: { info: () => undefined },
+      load: async () => storedState === '' ? undefined : storedState,
+      save: async (value) => { storedState = value; },
+    };
+
+    bridge = new ImSessionBridge({
+      ports,
+      factories: [
+        fakeAdapterFactory(wechatAdapter),
+        fakeAdapterFactory(telegramAdapter),
+        fakeAdapterFactory(feishuAdapter),
+      ],
+      editIntervalMs: 0,
+      now: () => 1_700_000_000_000,
+      wait: async () => undefined,
+    });
+
+    try {
+      for (const id of ['inst-wx', 'inst-tg', 'inst-fs']) {
+        await bridge.setListening(id, true);
+      }
+      await wechatAdapter.emit({ eventId: 'wx-d', identity: { chatId: 'wx-c', senderId: 'u', topicId: '0', chatKind: 'private' }, kind: 'text', text: 'hi' });
+      await telegramAdapter.emit({ eventId: 'tg-d', identity: { chatId: 'tg-c', senderId: 'u', topicId: '0', chatKind: 'private' }, kind: 'text', text: 'hi' });
+      await feishuAdapter.emit({ eventId: 'fs-d', identity: { chatId: 'fs-c', senderId: 'u', topicId: '0', chatKind: 'private' }, kind: 'text', text: 'hi' });
+      for (const d of (await bridge.snapshot()).discoveries) {
+        await bridge.confirm(d.id, { target: { kind: 'session', session_id: sessionId } });
+      }
+      const bindings = (await bridge.snapshot()).bindings;
+      const wxChannelId = `im:${bindings.find((b) => b.provider_kind === 'wechat_bridge')!.id}`;
+      const tgChannelId = `im:${bindings.find((b) => b.provider_kind === 'telegram')!.id}`;
+      const fsChannelId = `im:${bindings.find((b) => b.provider_kind === 'feishu_app')!.id}`;
+
+      const exactBody = 'Here is the exact reply body without any unsupported tail.';
+      const res = await execute({
+        text: exactBody,
+        voice_mode: 'append',
+        end_turn: true,
+      }, { turnId: 0, toolCallId: 'bridge-fanout-append', signal: new AbortController().signal });
+      const wire = JSON.parse(res.output as string);
+
+      expect(wechatAdapter.sent).toEqual([
+        expect.objectContaining({ code: 'send_message', text: exactBody, messageId: 'm1' }),
+      ]);
+      expect(wechatAdapter.files).toHaveLength(0);
+
+      expect(feishuAdapter.sent).toEqual([
+        expect.objectContaining({ code: 'send_message', text: exactBody, messageId: 'm1' }),
+      ]);
+      expect(feishuAdapter.files).toHaveLength(0);
+
+      expect(telegramAdapter.sent).toEqual([
+        expect.objectContaining({ code: 'send_message', text: exactBody, messageId: 'm1' }),
+      ]);
+      expect(telegramAdapter.files).toEqual([
+        expect.objectContaining({ deliveredAs: 'voice', mediaType: 'audio/ogg' }),
+      ]);
+
+      expect(wire).toMatchObject({
+        delivered_to: ['user'],
+        delivery: 'delivered',
+        channels: [
+          { channel_id: 'internal', status: 'delivered' },
+          { channel_id: wxChannelId, status: 'partial', message_ids: ['m1'], unsupported: ['voice'] },
+          { channel_id: tgChannelId, status: 'delivered', message_ids: ['m1', 'f2'] },
+          { channel_id: fsChannelId, status: 'partial', message_ids: ['m1'], unsupported: ['voice'], detail: 'voice_rejected' },
+        ],
+      });
+      expect(res.stopTurn).toBeUndefined();
+    } finally {
+      await bridge.close();
+    }
   });
 });

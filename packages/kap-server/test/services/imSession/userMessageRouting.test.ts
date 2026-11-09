@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { SessionAdapter, SessionOutbound, SessionSink } from '@nb-im/core';
 
 import type { MessageAttachmentReceipt } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
+import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
 import { ImSendError } from '../../../src/services/imSession/adapter';
 import type { ImSessionPorts } from '../../../src/services/imSession/ports';
 
@@ -114,7 +116,7 @@ describe('im session user message channels', () => {
     } finally { await bridge.close(); }
   });
 
-  it('marks unsupported voice per channel instead of downgrading it to a file', async () => {
+  it('marks unsupported voice per channel without sending a channel notice or downgrading it to a file', async () => {
     const sessionPorts = ports();
     sessionPorts.saved.push(voice.blobId);
     const adapter = new FakeImAdapter('telegram', '42');
@@ -123,9 +125,9 @@ describe('im session user message channels', () => {
     try {
       const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: '', attachments: [voice] });
       const im = receipt.channels?.find((channel) => channel.channelId !== 'internal');
-      expect(im).toMatchObject({ status: 'unsupported', unsupported: ['voice'] });
+      expect(im).toMatchObject({ status: 'unsupported', messageIds: [], unsupported: ['voice'] });
       expect(adapter.files).toHaveLength(0);
-      expect(adapter.sent.at(-1)?.text).toContain('This channel cannot take: voice.');
+      expect(adapter.sent).toHaveLength(0);
       expect(receipt.channels?.find((channel) => channel.channelId === 'internal')?.status).toBe('delivered');
     } finally { await bridge.close(); }
   });
@@ -181,7 +183,7 @@ it('keeps an uncertain channel unknown and does not resend even when another cha
   } finally { await bridge.close(); }
 });
 
-it('notifies a channel when a runtime refusal makes its declared media unavailable', async () => {
+it('records a runtime media refusal in the channel receipt without sending an extra notice message', async () => {
   const sessionPorts = ports();
   sessionPorts.saved.push(image.blobId);
   const adapter = new FakeImAdapter('telegram', '42');
@@ -189,12 +191,17 @@ it('notifies a channel when a runtime refusal makes its declared media unavailab
   adapter.sendMedia = async () => ({ status: 'unsupported', unsupported: ['image'], detail: 'rejected_by_platform' });
   try {
     const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'dynamic', text: '', attachments: [image] });
-    expect(receipt.channels?.find((channel) => channel.channelId !== 'internal')).toMatchObject({ status: 'unsupported', unsupported: ['image'] });
-    expect(adapter.sent.at(-1)).toMatchObject({ code: 'media_unsupported', text: expect.stringContaining('image') });
+    expect(receipt.channels?.find((channel) => channel.channelId !== 'internal')).toMatchObject({
+      status: 'unsupported',
+      messageIds: [],
+      unsupported: ['image'],
+      detail: 'rejected_by_platform',
+    });
+    expect(adapter.sent).toHaveLength(0);
   } finally { await bridge.close(); }
 });
 
-it('does not replace an uncertain send with a definite failure when its unsupported-media notice fails', async () => {
+it('preserves an uncertain text send when a later attachment is refused as unsupported without sending a notice', async () => {
   const sessionPorts = ports();
   sessionPorts.saved.push(image.blobId);
   const adapter = new FakeImAdapter('telegram', '42');
@@ -207,12 +214,12 @@ it('does not replace an uncertain send with a definite failure when its unsuppor
     const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
     const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'uncertain-refusal', channel: im.id, text: 'look', attachments: [image] });
     expect(receipt.delivery).toBe('pending');
-    expect(receipt.channels).toEqual([expect.objectContaining({ status: 'unknown', unsupported: ['image'] })]);
-    expect(attempts).toEqual(['text', 'image', 'notice']);
+    expect(receipt.channels).toEqual([expect.objectContaining({ status: 'unknown', unsupported: ['image'], detail: 'timeout' })]);
+    expect(attempts).toEqual(['text', 'image']);
   } finally { await bridge.close(); }
 });
 
-it('returns a partial receipt when the IM target skips one attachment that internal can carry', async () => {
+it('returns a partial receipt when the IM target skips one attachment that internal can carry, keeping text verbatim', async () => {
   const sessionPorts = ports();
   sessionPorts.saved.push(image.blobId, voice.blobId);
   const adapter = new FakeImAdapter('telegram', '42');
@@ -223,8 +230,9 @@ it('returns a partial receipt when the IM target skips one attachment that inter
     expect(receipt.delivery).toBe('delivered');
     expect(receipt.channels).toEqual([
       expect.objectContaining({ channelId: 'internal', status: 'delivered' }),
-      expect.objectContaining({ status: 'partial', unsupported: ['voice'] }),
+      expect.objectContaining({ status: 'partial', messageIds: ['m1', 'f2'], unsupported: ['voice'] }),
     ]);
+    expect(adapter.sent).toEqual([expect.objectContaining({ code: 'send_message', text: 'mixed media', messageId: 'm1' })]);
     expect(adapter.files).toEqual([expect.objectContaining({ asImage: true, mediaType: 'image/png' })]);
   } finally { await bridge.close(); }
 });
@@ -254,7 +262,7 @@ it.each(['text', 'media'] as const)('keeps accepted %s with empty message IDs in
   } finally { await bridge.close(); }
 });
 
-it('does not count an unsupported-media notice as delivery of failed message content', async () => {
+it('keeps a channel failed with empty messageIds when one attachment is unsupported and another fails without text', async () => {
   const sessionPorts = ports();
   sessionPorts.saved.push(image.blobId, voice.blobId);
   const { bridge, adapter } = await boundBridge(new FakeImAdapter('telegram', '42'), sessionPorts);
@@ -265,8 +273,8 @@ it('does not count an unsupported-media notice as delivery of failed message con
     const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
     const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'notice-only', channel: im.id, text: '', attachments: [image, voice] });
     expect(receipt.delivery).toBe('undeliverable');
-    expect(receipt.channels).toEqual([expect.objectContaining({ channelId: im.id, status: 'failed', messageIds: [expect.any(String)], unsupported: ['image'], detail: 'media_rejected' })]);
-    expect(adapter.sent).toEqual([expect.objectContaining({ code: 'media_unsupported' })]);
+    expect(receipt.channels).toEqual([expect.objectContaining({ channelId: im.id, status: 'failed', messageIds: [], unsupported: ['image'], detail: 'media_rejected' })]);
+    expect(adapter.sent).toHaveLength(0);
   } finally { await bridge.close(); }
 });
 
@@ -293,4 +301,128 @@ it('tests only an enabled confirmed binding and preserves an uncertain outcome w
     expect(await bridge.testBinding(binding.id)).toMatchObject({ status: 'failed', detail: 'channel_not_connected' });
     expect(attempts).toBe(2);
   } finally { await bridge.close(); }
+});
+
+it('fans out through HubSessionAdapter keeping WeChat/runtime-refused text verbatim while delivering voice to Telegram', async () => {
+  const sessionPorts = ports();
+  sessionPorts.saved.push(voice.blobId);
+  const secrets = new Map<string, { providerId: string; credential: string }>([
+    ['inst-wx', { providerId: 'wechat_bridge', credential: 'wx-token\nwx-bot' }],
+    ['inst-tg', { providerId: 'telegram', credential: '123456:abcdefghijklmnopqrstuvwxyz' }],
+    ['inst-fs', { providerId: 'feishu_app', credential: 'cli_a\nsec_b' }],
+  ]);
+  sessionPorts.ports.credentials.list = () => [...secrets.entries()].map(([id, item]) => ({ id, providerId: item.providerId, configured: true }));
+  sessionPorts.ports.credentials.read = (id) => secrets.get(id)?.credential;
+
+  const makeHub = (
+    platform: 'personal_wechat' | 'telegram' | 'feishu_app',
+    instanceId: string,
+    voiceMime: readonly string[] | null,
+    refuseMediaAtRuntime = false,
+  ) => {
+    const sent: SessionOutbound[] = [];
+    let sink: SessionSink | undefined;
+    let seq = 0;
+    const raw: SessionAdapter = {
+      platform,
+      instance_id: instanceId,
+      account: { platform, account_id: `${platform}_acc` },
+      limits: {
+        text_characters: 4096,
+        text_utf8_bytes: null,
+        callback_data_bytes: null,
+        voice_mime: voiceMime,
+        image_bytes: null,
+        file_bytes: 20 * 1024 * 1024,
+      },
+      state: 'running',
+      async start(nextSink) { sink = nextSink; },
+      async stop() {},
+      async send(message) {
+        sent.push(message);
+        if (refuseMediaAtRuntime && message.type === 'media') {
+          return { status: 'failed', message_ids: [], error_kind: 'unsupported', diagnostic_code: 'feishu_voice_unsupported' };
+        }
+        return { status: 'accepted', message_ids: [`${platform}_msg_${++seq}`] };
+      },
+    };
+    return {
+      sent,
+      emit: (eventKey: string, chatId: string) => sink!.admit({
+        event_key: eventKey,
+        platform_event_id: eventKey,
+        cursor: eventKey,
+        identity: { platform, account_id: `${platform}_acc`, chat_id: chatId, sender_id: 'u1', topic_id: '0', chat_kind: 'private' },
+        payload: { type: 'text', text: 'hello' },
+      }),
+      adapter: new HubSessionAdapter(raw),
+    };
+  };
+
+  const wx = makeHub('personal_wechat', 'inst-wx', null);
+  const tg = makeHub('telegram', 'inst-tg', ['audio/ogg', 'audio/opus']);
+  const fs = makeHub('feishu_app', 'inst-fs', ['audio/ogg', 'audio/opus'], true);
+
+  const bridge = new ImSessionBridge({
+    ports: sessionPorts.ports,
+    factories: [
+      { providerKind: 'wechat_bridge', mediaCapabilities: () => wx.adapter.mediaCapabilities, create: () => wx.adapter },
+      { providerKind: 'telegram', mediaCapabilities: () => tg.adapter.mediaCapabilities, create: () => tg.adapter },
+      { providerKind: 'feishu_app', mediaCapabilities: () => fs.adapter.mediaCapabilities, create: () => fs.adapter },
+    ],
+    editIntervalMs: 0,
+    now: () => 1_700_000_000_000,
+    wait: () => Promise.resolve(),
+  });
+
+  try {
+    await bridge.setListening('inst-wx', true);
+    await bridge.setListening('inst-tg', true);
+    await bridge.setListening('inst-fs', true);
+    await wx.emit('wx-1', 'wx-chat');
+    await tg.emit('tg-1', 'tg-chat');
+    await fs.emit('fs-1', 'fs-chat');
+    for (const d of (await bridge.snapshot()).discoveries) {
+      await bridge.confirm(d.id, { target: { kind: 'session', session_id: 'sess' } });
+    }
+    const bindings = (await bridge.snapshot()).bindings;
+    const wxId = `im:${bindings.find((b) => b.provider_kind === 'wechat_bridge')!.id}`;
+    const tgId = `im:${bindings.find((b) => b.provider_kind === 'telegram')!.id}`;
+    const fsId = `im:${bindings.find((b) => b.provider_kind === 'feishu_app')!.id}`;
+
+    const body = '纯正的回复正文，绝不拼接不支持提示。';
+    const receipt = await bridge.sendUserMessage({
+      sessionId: 'sess',
+      toolCallId: 'hub-fanout-1',
+      text: body,
+      attachments: [voice],
+    });
+
+    expect(receipt.delivery).toBe('delivered');
+    expect(wx.sent).toEqual([{ type: 'text_parts', target: { chat_id: 'wx-chat', chat_kind: 'private' }, parts: [body] }]);
+    expect(fs.sent).toEqual([
+      { type: 'text_parts', target: { chat_id: 'fs-chat', chat_kind: 'private' }, parts: [body] },
+      {
+        type: 'media',
+        target: { chat_id: 'fs-chat', chat_kind: 'private' },
+        media: expect.objectContaining({ kind: 'voice', mime: 'audio/ogg' }),
+      },
+    ]);
+    expect(tg.sent).toEqual([
+      { type: 'text_parts', target: { chat_id: 'tg-chat', chat_kind: 'private' }, parts: [body] },
+      {
+        type: 'media',
+        target: { chat_id: 'tg-chat', chat_kind: 'private' },
+        media: expect.objectContaining({ kind: 'voice', mime: 'audio/ogg' }),
+      },
+    ]);
+    expect(receipt.channels).toEqual([
+      { channelId: 'internal', status: 'delivered' },
+      { channelId: wxId, status: 'partial', messageIds: ['personal_wechat_msg_1'], unsupported: ['voice'] },
+      { channelId: tgId, status: 'delivered', messageIds: ['telegram_msg_1', 'telegram_msg_2'] },
+      { channelId: fsId, status: 'partial', messageIds: ['feishu_app_msg_1'], unsupported: ['voice'], detail: 'feishu_voice_unsupported' },
+    ]);
+  } finally {
+    await bridge.close();
+  }
 });

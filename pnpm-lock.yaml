@@ -2215,7 +2215,7 @@ packages:
     resolution: {integrity: sha512-KggLoj2MnRSfIqTeKe1EmbljTX2vuV7mh79k89PCL1pyqiDULcPM1L47twxXt0hkb68F70bXiL31MxsuoZtKFw==}
 
   '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
-    resolution: {integrity: sha512-GtS7zMShlJlij/C92ht2k4ipqWMvNMAd1Mnz201FPiDZ89UA7wgzVjOTDq/ELnuYJs/fJAuF4bC8J6rwFv6pww==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
+    resolution: {integrity: sha512-F5jXkDgZdNweCJAAqOUw62pIO7vdO6qGsi03t5ugqWbP7PllqrfPSUHejnO4vQtIsIehWFmRGKl8CivR7n+Kgg==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
     version: 0.1.0
 
   '@larksuiteoapi/node-sdk@1.76.0':
