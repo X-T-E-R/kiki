@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -2223,5 +2223,276 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
   } finally {
     await browser.close();
     webListener.close();
+  }
+});
+
+await test('launcher Connect screen defaults to a centered scan-first hierarchy with quiet manual disclosure and auto-expands on fallback, error, and incoming pair flows', async () => {
+  const launcherRoot = resolve(import.meta.dirname, '../launcher');
+  const mimeTypes = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.woff2': 'font/woff2',
+  };
+  const launcherServer = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    const relPath = url.pathname === '/' ? '/index.html' : url.pathname;
+    const safePath = resolve(launcherRoot, `.${relPath}`);
+    if (!safePath.startsWith(launcherRoot) || !existsSync(safePath)) {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    const ext = safePath.slice(safePath.lastIndexOf('.'));
+    res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream' });
+    res.end(readFileSync(safePath));
+  });
+  await new Promise((r) => {
+    launcherServer.listen(0, '127.0.0.1', r);
+  });
+  const launcherBaseUrl = `http://127.0.0.1:${launcherServer.address().port}`;
+  const proofDir = process.env.KIKI_MOBILE_PROOF_DIR ?? '';
+  if (proofDir) {
+    mkdirSync(proofDir, { recursive: true });
+  }
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    // 1. Default collapsed state + manual disclosure in light/zh at 390x844 phone width
+    const zhCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      locale: 'zh-CN',
+      colorScheme: 'light',
+      deviceScaleFactor: 2,
+    });
+    try {
+      const page = await zhCtx.newPage();
+      await page.goto(`${launcherBaseUrl}/index.html`, { waitUntil: 'networkidle' });
+
+      const collapsedState = await page.evaluate(() => {
+        const topbar = document.querySelector('.topbar').getBoundingClientRect();
+        const tabbar = document.querySelector('.tabbar').getBoundingClientRect();
+        const stage = document.querySelector('#connect-stage').getBoundingClientRect();
+        const scanBtn = document.querySelector('#scan-qr').getBoundingClientRect();
+        const toggleBtn = document.querySelector('#manual-toggle');
+        const toggleRect = toggleBtn.getBoundingClientRect();
+        const form = document.querySelector('#connect');
+        const server = document.querySelector('#server');
+        const pairCode = document.querySelector('#pair-code');
+        const hint = document.querySelector('#hint');
+        const openBtn = document.querySelector('#open');
+        const availableCenterY = (topbar.bottom + tabbar.top) / 2;
+        const stageCenterY = (stage.top + stage.bottom) / 2;
+        const scanCenterX = (scanBtn.left + scanBtn.right) / 2;
+        return {
+          scanText: document.querySelector('#scan-qr [data-i18n="scanQr"]').textContent,
+          toggleText: toggleBtn.textContent,
+          ariaExpanded: toggleBtn.getAttribute('aria-expanded'),
+          ariaControls: toggleBtn.getAttribute('aria-controls'),
+          formHidden: form.hidden,
+          serverVisible: server.offsetParent !== null,
+          pairCodeVisible: pairCode.offsetParent !== null,
+          hintVisible: hint.offsetParent !== null,
+          openVisible: openBtn.offsetParent !== null,
+          centerOffsetY: Math.abs(stageCenterY - availableCenterY),
+          centerOffsetX: Math.abs(scanCenterX - window.innerWidth / 2),
+          toggleBelowScan: toggleRect.top >= scanBtn.bottom,
+        };
+      });
+
+      assert.equal(collapsedState.scanText, '扫码连接');
+      assert.equal(collapsedState.toggleText, '手动输入');
+      assert.equal(collapsedState.ariaExpanded, 'false');
+      assert.equal(collapsedState.ariaControls, 'connect');
+      assert.equal(collapsedState.formHidden, true);
+      assert.equal(collapsedState.serverVisible, false);
+      assert.equal(collapsedState.pairCodeVisible, false);
+      assert.equal(collapsedState.hintVisible, false);
+      assert.equal(collapsedState.openVisible, false);
+      assert.equal(collapsedState.toggleBelowScan, true);
+      assert.ok(
+        collapsedState.centerOffsetY < 48,
+        `Expected scan stage vertically centered in content area, offset was ${collapsedState.centerOffsetY}px`,
+      );
+      assert.ok(
+        collapsedState.centerOffsetX < 2,
+        `Expected scan button horizontally centered, offset was ${collapsedState.centerOffsetX}px`,
+      );
+
+      if (proofDir) {
+        await page.screenshot({ path: join(proofDir, 'connect-collapsed-zh-light-390x844.png') });
+      }
+
+      // Keyboard disclosure expand + collapse
+      await page.focus('#manual-toggle');
+      await page.keyboard.press('Enter');
+
+      const expandedState = await page.evaluate(() => {
+        const toggleBtn = document.querySelector('#manual-toggle');
+        const form = document.querySelector('#connect');
+        return {
+          ariaExpanded: toggleBtn.getAttribute('aria-expanded'),
+          toggleText: toggleBtn.textContent,
+          formHidden: form.hidden,
+          serverVisible: document.querySelector('#server').offsetParent !== null,
+          pairCodeVisible: document.querySelector('#pair-code').offsetParent !== null,
+          hintVisible: document.querySelector('#hint').offsetParent !== null,
+          openVisible: document.querySelector('#open').offsetParent !== null,
+          activeId: document.activeElement?.id ?? '',
+        };
+      });
+
+      assert.equal(expandedState.ariaExpanded, 'true');
+      assert.equal(expandedState.toggleText, '收起手动输入');
+      assert.equal(expandedState.formHidden, false);
+      assert.equal(expandedState.serverVisible, true);
+      assert.equal(expandedState.pairCodeVisible, true);
+      assert.equal(expandedState.hintVisible, true);
+      assert.equal(expandedState.openVisible, true);
+      assert.equal(expandedState.activeId, 'server');
+
+      if (proofDir) {
+        await page.screenshot({ path: join(proofDir, 'connect-expanded-zh-light-390x844.png') });
+      }
+
+      // Simple way to collapse again
+      await page.click('#manual-toggle');
+      const recollapsed = await page.evaluate(() => ({
+        ariaExpanded: document.querySelector('#manual-toggle').getAttribute('aria-expanded'),
+        toggleText: document.querySelector('#manual-toggle').textContent,
+        formHidden: document.querySelector('#connect').hidden,
+      }));
+      assert.equal(recollapsed.ariaExpanded, 'false');
+      assert.equal(recollapsed.toggleText, '手动输入');
+      assert.equal(recollapsed.formHidden, true);
+
+      // Programmatic scan cancel / denied / invalid QR fallbacks auto-expand and focus manual input
+      await page.evaluate(() => {
+        window.__kikiTestScanQr = async () => ({ status: 'cancelled' });
+      });
+      await page.click('#scan-qr');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), false);
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'server');
+
+      await page.click('#manual-toggle');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), true);
+
+      await page.evaluate(() => {
+        window.__kikiTestScanQr = async () => ({ status: 'denied' });
+      });
+      await page.click('#scan-qr');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), false);
+      assert.equal(await page.evaluate(() => document.querySelector('#scan-feedback').hidden), false);
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'server');
+
+      await page.click('#manual-toggle');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), true);
+
+      await page.evaluate(() => {
+        window.__kikiTestScanQr = async () => ({ status: 'scanned', value: 'NOT-A-VALID-QR' });
+      });
+      await page.click('#scan-qr');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), false);
+      assert.equal(await page.evaluate(() => document.querySelector('#scan-feedback').hidden), false);
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'server');
+    } finally {
+      await zhCtx.close();
+    }
+
+    // 2. Narrow/dark check (360x780, en-US, dark) + incoming pair / unreachable error flows
+    const darkCtx = await browser.newContext({
+      viewport: { width: 360, height: 780 },
+      locale: 'en-US',
+      colorScheme: 'dark',
+      deviceScaleFactor: 2,
+    });
+    try {
+      const page = await darkCtx.newPage();
+      await page.goto(`${launcherBaseUrl}/index.html`, { waitUntil: 'networkidle' });
+
+      const narrowCollapsed = await page.evaluate(() => ({
+        scanText: document.querySelector('#scan-qr [data-i18n="scanQr"]').textContent,
+        toggleText: document.querySelector('#manual-toggle').textContent,
+        ariaExpanded: document.querySelector('#manual-toggle').getAttribute('aria-expanded'),
+        formHidden: document.querySelector('#connect').hidden,
+        noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+      }));
+      assert.equal(narrowCollapsed.scanText, 'Scan QR code');
+      assert.equal(narrowCollapsed.toggleText, 'Enter manually');
+      assert.equal(narrowCollapsed.ariaExpanded, 'false');
+      assert.equal(narrowCollapsed.formHidden, true);
+      assert.equal(narrowCollapsed.noHorizontalOverflow, true);
+
+      if (proofDir) {
+        await page.screenshot({ path: join(proofDir, 'connect-collapsed-en-dark-360x780.png') });
+      }
+
+      // Incoming native pending pair URI that fails claim auto-expands manual form with populated address & code
+      await page.evaluate(() => {
+        window.Capacitor = {
+          isNativePlatform: () => true,
+          nativePromise: async (_plugin, method, payload) => {
+            if (method === 'consumePendingPair' && !window.__consumedOnce) {
+              window.__consumedOnce = true;
+              return { uri: 'kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5494&code=2345-6789' };
+            }
+            if (method === 'claimPair') {
+              window.__lastClaimPayload = payload;
+              return { ok: false, reason: 'rejected' };
+            }
+            return { ok: false };
+          },
+        };
+        window.location.hash = '#pair';
+      });
+      await page.waitForFunction(() => document.querySelector('#problem').hidden === false);
+
+      const afterPendingPair = await page.evaluate(() => ({
+        formHidden: document.querySelector('#connect').hidden,
+        ariaExpanded: document.querySelector('#manual-toggle').getAttribute('aria-expanded'),
+        serverValue: document.querySelector('#server').value,
+        codeValue: document.querySelector('#pair-code').value,
+        problemHidden: document.querySelector('#problem').hidden,
+        problemText: document.querySelector('#problem').textContent,
+        claimPayload: window.__lastClaimPayload,
+      }));
+      assert.equal(afterPendingPair.formHidden, false);
+      assert.equal(afterPendingPair.ariaExpanded, 'true');
+      assert.equal(afterPendingPair.serverValue, '192.168.1.40:5494');
+      assert.equal(afterPendingPair.codeValue, '2345-6789');
+      assert.equal(afterPendingPair.problemHidden, false);
+      assert.match(afterPendingPair.problemText, /expired|already used/i);
+      assert.equal(afterPendingPair.claimPayload?.endpoint, 'http://192.168.1.40:5494');
+      assert.equal(afterPendingPair.claimPayload?.code, '2345-6789');
+
+      if (proofDir) {
+        await page.screenshot({ path: join(proofDir, 'connect-expanded-en-dark-360x780.png') });
+      }
+
+      // Saved computer unreachable / #unreachable fallback auto-expands manual form on Connect tab
+      await page.evaluate(() => {
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.55:5494');
+      });
+      await page.click('#manual-toggle');
+      assert.equal(await page.evaluate(() => document.querySelector('#connect').hidden), true);
+      await page.evaluate(() => {
+        window.location.hash = '#unreachable';
+      });
+      await page.waitForFunction(() => document.querySelector('#connect').hidden === false);
+      const afterUnreachable = await page.evaluate(() => ({
+        connectHidden: document.querySelector('#view-connect').hidden,
+        formHidden: document.querySelector('#connect').hidden,
+        ariaExpanded: document.querySelector('#manual-toggle').getAttribute('aria-expanded'),
+        problemText: document.querySelector('#problem').textContent,
+      }));
+      assert.equal(afterUnreachable.connectHidden, false);
+      assert.equal(afterUnreachable.formHidden, false);
+      assert.equal(afterUnreachable.ariaExpanded, 'true');
+      assert.match(afterUnreachable.problemText, /192\.168\.1\.55:5494/);
+    } finally {
+      await darkCtx.close();
+    }
+  } finally {
+    await browser.close();
+    launcherServer.close();
   }
 });

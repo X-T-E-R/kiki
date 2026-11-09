@@ -224,6 +224,8 @@ const COPY = {
     scanning: 'Scanning…',
     scannerPrompt: 'Point at the QR code',
     scanCancel: 'Enter manually',
+    manualToggle: 'Enter manually',
+    manualCollapse: 'Hide manual entry',
     manualDivider: 'Or enter address',
     label: 'Server address or entry link',
     codeLabel: 'Pairing code',
@@ -287,6 +289,8 @@ const COPY = {
     scanning: '正在扫码…',
     scannerPrompt: '对准电脑上的二维码',
     scanCancel: '手动输入',
+    manualToggle: '手动输入',
+    manualCollapse: '收起手动输入',
     manualDivider: '或手动输入',
     label: '服务器地址或访问链接',
     codeLabel: '配对码',
@@ -357,6 +361,7 @@ const layerBadge = document.querySelector('#layer-badge');
 const button = document.querySelector('#open');
 const problem = document.querySelector('#problem');
 const scanButton = document.querySelector('#scan-qr');
+const manualToggle = document.querySelector('#manual-toggle');
 const scanFeedback = document.querySelector('#scan-feedback');
 const scannerPanel = document.querySelector('#scanner-panel');
 const scannerVideo = document.querySelector('#scanner-video');
@@ -452,11 +457,28 @@ function probeOkMessageFor(origin) {
   return copy.probeOk.replace('{host}', hostOf(origin)).replace('{layer}', layerLabelFor(origin));
 }
 
+function setManualExpanded(expanded) {
+  const isOpen = Boolean(expanded);
+  form.hidden = !isOpen;
+  if (manualToggle) {
+    manualToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    manualToggle.textContent = isOpen ? copy.manualCollapse : copy.manualToggle;
+  }
+  if (isOpen || !scannerPanel.hidden || !scanFeedback.hidden) {
+    views.connect.dataset.manualOpen = 'true';
+  } else {
+    delete views.connect.dataset.manualOpen;
+  }
+}
+
 function showProblem(text) {
   problem.textContent = text;
   problem.hidden = text === '';
   input.ariaInvalid = text === '' ? 'false' : 'true';
-  if (text !== '') setTab('connect', { scroll: false });
+  if (text !== '') {
+    setManualExpanded(true);
+    setTab('connect', { scroll: false });
+  }
 }
 
 function showProbeResult(text, tone) {
@@ -468,6 +490,7 @@ function showProbeResult(text, tone) {
 function showScanFeedback(text) {
   scanFeedback.textContent = text;
   scanFeedback.hidden = text === '';
+  setManualExpanded(!form.hidden);
 }
 
 function readAnyTarget(raw) {
@@ -709,6 +732,7 @@ function stopCameraScanner(options = {}) {
   scanButton.disabled = false;
   const labelNode = scanButton.querySelector('[data-i18n="scanQr"]');
   if (labelNode) labelNode.textContent = copy.scanQr;
+  setManualExpanded(!form.hidden);
   if (scannerHistoryEntry) {
     scannerHistoryEntry = false;
     if (!options.fromHistory) history.back();
@@ -721,7 +745,7 @@ async function handleScannedPayload(rawValue) {
   const parsed = readScanPayload(rawValue);
   if (!parsed.ok) {
     showScanFeedback(copy.invalid_qr);
-    input.focus();
+    focusManualConnectInput();
     return;
   }
   showScanFeedback('');
@@ -729,11 +753,13 @@ async function handleScannedPayload(rawValue) {
   if (parsed.kind === 'pair') {
     codeInput.value = parsed.code;
   }
+  setManualExpanded(true);
   updateInputAffordances();
   await submitConnect(parsed);
 }
 
 function focusManualConnectInput() {
+  setManualExpanded(true);
   if (input.value.trim() !== '') {
     codeInput.focus();
   } else {
@@ -763,6 +789,7 @@ async function startWebCameraLoop() {
   activeStream = stream;
   scannerVideo.srcObject = stream;
   scannerPanel.hidden = false;
+  setManualExpanded(!form.hidden);
   scanButton.disabled = true;
   const labelNode = scanButton.querySelector('[data-i18n="scanQr"]');
   if (labelNode) labelNode.textContent = copy.scanning;
@@ -824,9 +851,9 @@ async function startQrScan() {
       await handleScannedPayload(res.value);
     } else if (res?.status === 'denied') {
       showScanFeedback(copy.cameraDenied);
-      input.focus();
+      focusManualConnectInput();
     } else if (res?.status === 'cancelled') {
-      input.focus();
+      focusManualConnectInput();
     }
     return;
   }
@@ -840,12 +867,12 @@ async function startQrScan() {
       }
       if (result?.status === 'denied') {
         showScanFeedback(copy.cameraDenied);
-        input.focus();
+        focusManualConnectInput();
         return;
       }
       if (result?.status === 'cancelled') {
         stopCameraScanner();
-        input.focus();
+        focusManualConnectInput();
         return;
       }
     } catch {
@@ -1133,9 +1160,17 @@ scanButton.addEventListener('click', () => {
   void startQrScan();
 });
 
+manualToggle?.addEventListener('click', () => {
+  const nextExpanded = form.hidden;
+  setManualExpanded(nextExpanded);
+  if (nextExpanded) {
+    focusManualConnectInput();
+  }
+});
+
 scanCancel.addEventListener('click', () => {
   stopCameraScanner();
-  input.focus();
+  focusManualConnectInput();
 });
 
 window.addEventListener('popstate', () => {
@@ -1145,7 +1180,7 @@ window.addEventListener('popstate', () => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && activeStream) {
     stopCameraScanner();
-    input.focus();
+    focusManualConnectInput();
   }
 });
 
@@ -1259,7 +1294,9 @@ function showUnreachable() {
   button.disabled = false;
   updateInputAffordances();
   if (attempted === null) {
+    setManualExpanded(true);
     setTab('connect');
+    input.focus();
     return;
   }
   reportUnreachable(attempted);

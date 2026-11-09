@@ -15,19 +15,23 @@
 
       <main class="views">
         <section id="view-connect" class="view" aria-labelledby="connect-title">
-          <h1 id="connect-title" class="view-title" data-i18n="connectTitle">Connect a computer</h1>
-          <p class="view-lede" data-i18n="lede">Scan the QR code or enter the address shown on your computer.</p>
+          <h1 id="connect-title" class="view-title sr-only" data-i18n="connectTitle">Connect a computer</h1>
 
-          <button id="scan-qr" type="button" class="primary scan-button">
-            <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-              <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-              <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-              <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
-            </svg>
-            <span data-i18n="scanQr">Scan QR code</span>
-          </button>
+          <div id="connect-stage" class="connect-stage">
+            <button id="scan-qr" type="button" class="primary scan-button">
+              <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
+              </svg>
+              <span data-i18n="scanQr">Scan QR code</span>
+            </button>
+
+            <button id="manual-toggle" type="button" class="manual-toggle" aria-expanded="false" aria-controls="connect" data-i18n="manualToggle">Enter manually</button>
+          </div>
+
           <p id="scan-feedback" class="scan-feedback" role="status" hidden></p>
 
           <div id="scanner-panel" class="scanner-panel" hidden>
@@ -41,11 +45,7 @@
             </div>
           </div>
 
-          <div class="divider" role="separator">
-            <span data-i18n="manualDivider">Or enter address</span>
-          </div>
-
-          <form id="connect" novalidate>
+          <form id="connect" novalidate hidden>
             <div class="label-row">
               <label for="server" class="label" data-i18n="label">Server address or entry link</label>
               <span id="layer-badge" class="layer-badge" hidden></span>
