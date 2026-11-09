@@ -35,6 +35,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import type { AgentTask, AgentTaskInfoBase } from '#/agent/task/types';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import {
@@ -759,6 +760,7 @@ function createLane(
           };
         }
         if (serviceId === ITelemetryService) return noopTelemetryService;
+        if (serviceId === IAgentPermissionGate) return ix.get(IAgentPermissionGate);
         return undefined;
       }) as IAgentScopeHandle['accessor']['get'],
     },
@@ -1184,6 +1186,7 @@ function createLane(
   ix.set(IAgentStateService, callerStates);
   ix.stub(IAgentProfileService, handles.get('main')!.accessor.get(IAgentProfileService));
   ix.stub(IAgentPermissionModeService, handles.get('main')!.accessor.get(IAgentPermissionModeService));
+  ix.stub(IAgentPermissionGate, { authorize: async () => undefined });
   ix.stub(IAgentRuntimeService, runtimeService);
   ix.stub(IAgentToolPolicyService, {
     isToolActive: () => true,
@@ -1332,9 +1335,12 @@ describe('AgentRun and dispatch parity golden', () => {
     const lane = createLane(disposables, 'internal', { profile, subagentConfig: {
       modelSelection: global, autoModel: { weights: { 'parity-model': 0, 'next-model': 1 } },
     } });
+    const authorize = vi.fn<IAgentPermissionGate['authorize']>();
+    lane.ix.stub(IAgentPermissionGate, { authorize });
     const result = await lane.runInternal({ profile: 'coder', model_alias: pin, prompt: 'work', description: 'Select a model', background: true });
     expect(result.isError).not.toBe(true);
     expect(fieldMap(outputText(result.output))['actual_model']).toBe(expected);
+    expect(authorize).not.toHaveBeenCalled();
     await complete(lane, 0);
   });
 
@@ -1354,18 +1360,27 @@ describe('AgentRun and dispatch parity golden', () => {
         JSON.stringify(input.candidates) !== JSON.stringify([{alias:'parity-model', thinking_effort:'high'}, {alias:'next-model', when:'Independent evidence', thinking_effort:'high'}])) process.exit(27);
       process.stdout.write(JSON.stringify({model_alias:'next-model'}));
     });`;
+    const script = { id: 'owner', command: process.execPath, args: ['-e', code], workspaces: [workDir], timeout: 10 };
     const lane = createLane(disposables, 'internal', { profile, workDir, pathClass: process.platform === 'win32' ? 'win32' : 'posix',
-      subagentConfig: { denyModels: ['main-model'], autoModel: { script: 'owner', scripts: [
-        { id: 'owner', command: process.execPath, args: ['-e', code], workspaces: [workDir], timeout: 10 },
-      ] } },
+      subagentConfig: { denyModels: ['main-model'], autoModel: { script: 'owner', scripts: [script] } },
     });
-    const host = new HostProcessService();
+    const host = disposables.add(new HostProcessService());
     const spawn = vi.spyOn(host, 'spawn');
     lane.ix.stub(IHostProcessService, host);
+    const authorize = vi.fn<IAgentPermissionGate['authorize']>()
+      .mockResolvedValueOnce({ veto: { isError: true, output: 'Owner rejected this selector' } })
+      .mockImplementationOnce(async () => { script.timeout = 5; })
+      .mockResolvedValue(undefined);
+    lane.ix.stub(IAgentPermissionGate, { authorize });
+    const args = { profile: 'coder', name: 'selected', model_alias: 'auto', effort: 'high',
+      prompt: 'private dispatch brief', description: 'Select once', background: true } as const;
+    expect(await lane.runInternal(args)).toMatchObject({ isError: true, output: 'subagent error: Owner rejected this selector' });
+    expect(await lane.runInternal(args)).toMatchObject({ isError: true, output: expect.stringContaining('changed during approval') });
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
     vi.stubEnv('SELECTOR_TEST_SECRET', 'must-not-cross');
     try {
-      const result = await lane.runInternal({ profile: 'coder', name: 'selected', model_alias: 'auto', effort: 'high',
-        prompt: 'private dispatch brief', description: 'Select once', background: true });
+      const result = await lane.runInternal(args);
       expect(result.isError, outputText(result.output)).not.toBe(true);
       const receipt = fieldMap(outputText(result.output));
       expect(receipt['actual_model']).toBe('next-model');
@@ -1381,6 +1396,9 @@ describe('AgentRun and dispatch parity golden', () => {
       expect(lane.handles.get(agentId)?.accessor.get(IAgentProfileService).data().thinkingLevel).toBe('high');
       expect(lane.probe.resumeBindings.at(-1)?.modelAlias).toBeUndefined();
       expect(spawn).toHaveBeenCalledTimes(1);
+      expect(authorize).toHaveBeenCalledTimes(3);
+      expect(authorize.mock.calls[2]![0]).toMatchObject({ permissionAuthority: 'owner', toolCall: { name: 'AgentRunSelector' },
+        args: { purpose: 'AgentRun model selection', workDir, selector: { kind: 'script', command: process.execPath, timeout: 5 } } });
       await complete(lane, 1);
     } finally {
       vi.unstubAllEnvs();
@@ -1392,7 +1410,12 @@ describe('AgentRun and dispatch parity golden', () => {
     const execute = vi.fn(async () => ({ output: '{"model_alias":"other-model"}' }));
     const definition = { schemaVersion: 1 as const, name: 'PickModel', description: 'Select a model', accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const };
     lane.ix.stub(IPluginHostService, { list: async () => [{ pluginId: 'example', definition }], execute });
-    const result = await lane.runInternal({ profile: 'coder', model_alias: 'auto', prompt: 'owner-only', description: 'Select a model', background: true });
+    const authorize = vi.fn<IAgentPermissionGate['authorize']>().mockResolvedValueOnce({ veto: { isError: true, output: 'Plugin not approved' } }).mockResolvedValue(undefined);
+    lane.ix.stub(IAgentPermissionGate, { authorize });
+    const args = { profile: 'coder', model_alias: 'auto', prompt: 'owner-only', description: 'Select a model', background: true } as const;
+    expect(await lane.runInternal(args)).toMatchObject({ isError: true, output: 'subagent error: Plugin not approved' });
+    expect(execute).not.toHaveBeenCalled();
+    const result = await lane.runInternal(args);
     expect(result).toMatchObject({ isError: true, output: expect.stringContaining('outside the eligible candidates') });
     expect(execute).toHaveBeenCalledExactlyOnceWith('example', 'PickModel', { description: 'Select a model', prompt: 'owner-only',
       candidates: [{ alias: 'parity-model', when: undefined, thinking_effort: 'high' }] }, expect.any(AbortSignal), undefined,

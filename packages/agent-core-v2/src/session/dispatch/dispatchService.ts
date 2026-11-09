@@ -74,8 +74,10 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { autoModelCandidates, weightedAutoModel, requireAutoModelChoice } from '#/session/subagent/autoModel';
-import { runAutoModelScript } from '#/session/subagent/autoModelScript';
-import { runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
+import { resolveAutoModelScript, runAutoModelScript } from '#/session/subagent/autoModelScript';
+import { resolveAutoModelPlugin, runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
+import { autoModelApprovalContext, authorizeAutoModelSelector } from '#/session/subagent/autoModelApproval';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
@@ -636,6 +638,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       autoChoice = await this.selectAutoModel({
         profile: effectiveProfile, thinkingEffort: options.bindingOverride?.thinkingEffort,
         description: options.description, prompt: originalRequest.prompt, signal: options.signal,
+        requesterAgentId: options.requesterAgentId ?? child.agentId, selectorCall: options.selectorCall,
         workDir: () => child.agent.accessor.get(IAgentRuntimeService).workspaceRoots?.()?.workDir ?? child.agent.accessor.get(ISessionWorkspaceContext).workDir,
         current: { model: childData.modelAlias, thinking: childData.thinkingLevel },
       });
@@ -908,6 +911,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       profile: { ...profile, modelAlias: resolveInheritedModelAlias(profile.modelAlias, caller.modelAlias) },
       thinkingEffort: filled.thinkingEffort ?? selection.route?.lockedThinkingEffort,
       description: input.description, prompt: input.message, signal: input.signal,
+      requesterAgentId: input.requesterAgentId, selectorCall: input.selectorCall,
       workDir: () => input.workDir, researchReadonly,
     });
     return {
@@ -926,32 +930,58 @@ export class SessionDispatchService implements ISessionDispatchService {
     readonly description?: string;
     readonly prompt: string;
     readonly signal: AbortSignal;
+    readonly requesterAgentId: string;
+    readonly selectorCall?: import('./dispatch').DispatchSelectorCall;
     readonly workDir: () => string;
     readonly researchReadonly?: boolean;
     readonly current?: { readonly model?: string; readonly thinking: string };
   }): Promise<import('#/session/subagent/autoModel').AutoModelCandidate> {
-    const config = this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.autoModel;
-    if (input.researchReadonly && (config?.script !== undefined || config?.plugin !== undefined)) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Plan-mode dispatch cannot run a model selector script or plugin. Specify a concrete model.');
-    }
-    const candidates = autoModelCandidates(input.profile, input.thinkingEffort, {
-      config: this.config, models: this.models, modelCatalog: this.modelCatalog, executors: this.executors,
-    }, input.current);
-    if (candidates.length === 0) {
-      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Automatic model selection found no model and effort that satisfy this dispatch.');
-    }
-    const request = { description: input.description ?? '', prompt: input.prompt, candidates };
-    if (config?.script !== undefined) {
+    const readConfig = () => this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.autoModel;
+    const config = readConfig();
+    const candidatesForRequest = () => {
+      const candidates = autoModelCandidates(input.profile, input.thinkingEffort, {
+        config: this.config, models: this.models, modelCatalog: this.modelCatalog, executors: this.executors,
+      }, input.current);
+      if (candidates.length === 0) {
+        throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Automatic model selection found no model and effort that satisfy this dispatch.');
+      }
+      return candidates;
+    };
+    const candidates = candidatesForRequest();
+    if (config?.script === undefined && config?.plugin === undefined) return weightedAutoModel(candidates, config?.weights);
+    const assertSelectorAllowed = () => {
+      const policy = this.readLaunchPolicy(input.requesterAgentId);
+      if (input.researchReadonly || policy.planActive || policy.callerRestriction === 'research-readonly') {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Plan-mode dispatch cannot run a model selector script or plugin. Specify a concrete model.');
+      }
+    };
+    assertSelectorAllowed();
+    const workDir = input.workDir();
+    const authorize = async (destination: unknown) => {
+      const caller = this.requireHandle(input.requesterAgentId, 'Requester agent');
+      await authorizeAutoModelSelector(caller.accessor.get(IAgentPermissionGate),
+        autoModelApprovalContext(destination, workDir, input.signal, input.selectorCall));
+      assertSelectorAllowed();
+    };
+    const makeRequest = () => ({ description: input.description ?? '', prompt: input.prompt, candidates: candidatesForRequest() });
+    const changed = () => new Error2(ErrorCodes.CONFIG_INVALID, 'The configured model selector changed during approval. Retry against the current configuration.');
+    if (config.script !== undefined) {
       const processes = this.hostProcess.current;
       if (processes === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The local process service is unavailable for the model selector.');
-      return requireAutoModelChoice(await runAutoModelScript(processes, config, input.workDir(), request, input.signal), candidates);
+      const script = resolveAutoModelScript(config, workDir);
+      await authorize(script);
+      if (JSON.stringify(resolveAutoModelScript(readConfig(), workDir)) !== JSON.stringify(script)) throw changed();
+      const request = makeRequest();
+      return requireAutoModelChoice(await runAutoModelScript(processes, script, request, input.signal), request.candidates);
     }
-    if (config?.plugin !== undefined) {
-      const hosts = this.pluginHost.current;
-      if (hosts === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The local plugin host is unavailable for the model selector.');
-      return requireAutoModelChoice(await runAutoModelPlugin(hosts, config.plugin, request, input.signal), candidates);
-    }
-    return weightedAutoModel(candidates, config?.weights);
+    const hosts = this.pluginHost.current;
+    if (hosts === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The local plugin host is unavailable for the model selector.');
+    const plugin = await resolveAutoModelPlugin(hosts, config.plugin!);
+    await authorize(plugin);
+    const current = readConfig()?.plugin;
+    if (current?.id !== plugin.id || current.tool !== plugin.tool) throw changed();
+    const request = makeRequest();
+    return requireAutoModelChoice(await runAutoModelPlugin(hosts, plugin, request, input.signal), request.candidates);
   }
 
   private resolveBinding(

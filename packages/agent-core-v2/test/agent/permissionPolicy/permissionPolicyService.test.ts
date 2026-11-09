@@ -16,7 +16,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { AgentToolApprovalService } from '#/agent/toolApproval/toolApprovalService';
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { createServices, type TestInstantiationService } from '#/_base/di/test';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
 import {
   literalRulePattern,
   matchesGlobRuleSubject,
@@ -31,6 +31,7 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { AgentPermissionPolicyService } from '#/agent/permissionPolicy/permissionPolicyService';
 import {
   type DangerousBashGuard,
+  type PermissionConfig,
   PERMISSION_SECTION,
 } from '#/agent/permissionRules/configSection';
 import {
@@ -42,7 +43,7 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IBashParserService } from '#/app/bashParser/bashParser';
 import { BashParserService } from '#/app/bashParser/bashParserService';
-import { IConfigService } from '#/app/config/config';
+import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { IGitService } from '#/app/git/git';
 import { IWorktreeService, type SessionWorktree } from '#/app/git/worktreeModel';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -62,6 +63,20 @@ import { AgentPermissionGate } from '#/agent/permissionGate/permissionGateServic
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { stubToolExecutorEvents } from '../toolExecutor/stubs';
+import { WriteTool } from '#/agent/tools/os/write/writeTool';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ConfigRegistry, ConfigService } from '#/app/config/configService';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
+import { resolveAutoModelScript, runAutoModelScript } from '#/session/subagent/autoModelScript';
+import { autoModelApprovalContext, authorizeAutoModelSelector } from '#/session/subagent/autoModelApproval';
+import * as path from 'node:path';
+import { stubBootstrap } from '../../app/bootstrap/stubs';
+import { stubLog } from '../../_base/log/stubs';
 
 import { stubPermissionModeService } from '../permissionMode/stubs';
 import { recordingTelemetry } from '../../app/telemetry/stubs';
@@ -168,6 +183,118 @@ describe('AgentPermissionPolicyService chain', () => {
     const svc = service();
     return svc.evaluate(policyContext(input));
   }
+
+  it('loads a selector from isolated config.toml written by an ordinary Auto tool call', async () => {
+    const isolated = await mkdtemp(join(tmpdir(), 'agentrun-selector-approval-'));
+    const home = join(isolated, 'home');
+    const work = join(isolated, 'workspace');
+    const store = new DisposableStore();
+    const processes = new HostProcessService();
+    try {
+      await Promise.all([mkdir(home), mkdir(work)]);
+      const cfg = store.add(new TestInstantiationService());
+      cfg.stub(ILogService, stubLog());
+      cfg.stub(IBootstrapService, stubBootstrap(home, {}));
+      cfg.stub(IFileSystemStorageService, new FileStorageService(home));
+      cfg.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      cfg.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+      cfg.set(IConfigService, new SyncDescriptor(ConfigService));
+      const config = cfg.get(IConfigService);
+      await config.ready;
+      mode = 'auto';
+      ix.stub(ISessionWorkspaceContext, workspaceStub(work).stub);
+      const runtime = ix.get(IAgentRuntimeService).inspect();
+      const local = { ...runtime, fs: hostFs, path: { ...path, separator: path.sep },
+        environment: { ...runtime.environment, pathClass: process.platform === 'win32' ? 'win32' as const : 'posix' as const } };
+      ix.stub(IAgentRuntimeService, { inspect: () => local, acquire: () => ({ runtime: local, dispose: () => {}, track: (r) => r }) });
+      const code = 'process.stdout.write(JSON.stringify({ model_alias: "example" }));';
+      const args = { path: join(home, 'config.toml'), content: [
+        '[permission]', 'allow = [{ tool = "AgentRunSelector" }, { tool = "AgentRun" }]',
+        '[subagent.auto_model]', 'script = "example"', '[[subagent.auto_model.scripts]]', 'id = "example"',
+        `command = ${JSON.stringify(process.execPath)}`, `args = ${JSON.stringify(['-e', code])}`,
+        `workspaces = ${JSON.stringify([work])}`,
+      ].join('\n') };
+      const execution = await ix.createInstance(WriteTool).resolveExecution(args);
+      if (execution.isError) throw new Error(JSON.stringify(execution.output));
+      const context = { ...policyContext({ toolName: 'Write', args }), execution };
+      await expect(service().evaluate(context)).resolves.toMatchObject({ policyName: 'auto-mode-approve', result: { kind: 'approve' } });
+      expect(await ix.get(IAgentPermissionGate).authorize(context)).toBeUndefined();
+      expect(await execution.execute({ turnId: 1, toolCallId: 'write', signal })).not.toHaveProperty('isError', true);
+      await config.reload();
+      const loaded = config.get<SubagentConfig>(SUBAGENT_SECTION)?.autoModel;
+      expect(loaded).toMatchObject({ script: 'example' });
+      const destination = resolveAutoModelScript(loaded, work);
+      const approval = autoModelApprovalContext(destination, work, signal);
+      rules = [...config.get<PermissionConfig>(PERMISSION_SECTION)!.rules!];
+      expect(rules.map((rule) => rule.pattern)).toEqual(['AgentRunSelector', 'AgentRun']);
+      sessionApprovalRulePatterns.push('AgentRunSelector', 'AgentRun');
+      const spawn = vi.spyOn(processes, 'spawn');
+      await expect(authorizeAutoModelSelector(ix.get(IAgentPermissionGate), approval)).rejects.toThrow('Not approved');
+      expect(spawn).not.toHaveBeenCalled();
+      sessionApprovalRulePatterns.push(approval.execution.approvalRule);
+      await authorizeAutoModelSelector(ix.get(IAgentPermissionGate), approval);
+      await expect(runAutoModelScript(processes, destination, {
+        description: 'Choose model', prompt: 'Assign work', candidates: [{ alias: 'example', thinking_effort: 'off' }],
+      }, signal)).resolves.toEqual({ model_alias: 'example' });
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      await processes.dispose();
+      await store.dispose();
+      await rm(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it('requires a human in Review, reuses the exact session approval, and preserves YOLO and explicit denial', async () => {
+    mode = 'review';
+    ix.stub(ISessionContext, { sessionId: 'selector-session' });
+    ix.stub(IEventDispatcher, { dispatch: async () => {} });
+    ix.stub(ILogService, stubLog());
+    const review = vi.fn();
+    ix.stub(IModelCatalog, { getRequester: review });
+    const approve = vi.fn<ISessionApprovalService['request']>(async () => ({ decision: 'approved', scope: 'session' }));
+    ix.stub(ISessionApprovalService, { request: approve });
+    ix.stub(IAgentPermissionRulesService, { ...permissionRulesStub({ rules: () => rules, sessionApprovalRulePatterns: () => sessionApprovalRulePatterns }),
+      get rules() { return rules; },
+      get sessionApprovalRulePatterns() { return sessionApprovalRulePatterns; },
+      recordApprovalResult: (record) => {
+        if (record.sessionApprovalRule !== undefined) sessionApprovalRulePatterns.push(record.sessionApprovalRule);
+      },
+    });
+    ix.set(IAgentToolApprovalService, new SyncDescriptor(AgentToolApprovalService));
+    const gate = ix.get(IAgentPermissionGate);
+    const destination = { kind: 'plugin', id: 'example', tool: 'Pick' };
+    const context = autoModelApprovalContext(destination, '/workspace', signal, { turnId: 1, toolCallId: 'run-1' });
+    await authorizeAutoModelSelector(gate, context);
+    expect(approve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ toolName: 'AgentRunSelector',
+      turnId: 1, toolCallId: 'run-1', approvalRule: undefined }));
+    expect(sessionApprovalRulePatterns).toEqual([context.execution.approvalRule]);
+    expect(review).not.toHaveBeenCalled();
+    await authorizeAutoModelSelector(gate, autoModelApprovalContext(destination, '/workspace', signal, { turnId: 2, toolCallId: 'run-2' }));
+    expect(approve).toHaveBeenCalledTimes(1);
+    const changed = autoModelApprovalContext({ ...destination, tool: 'PickOther' }, '/workspace', signal);
+    expect(changed.execution.approvalRule).not.toBe(context.execution.approvalRule);
+    await authorizeAutoModelSelector(gate, changed);
+    expect(approve).toHaveBeenCalledTimes(2);
+    mode = 'yolo';
+    const otherWorkspace = autoModelApprovalContext(destination, '/other-workspace', signal);
+    await authorizeAutoModelSelector(gate, otherWorkspace);
+    expect(approve).toHaveBeenCalledTimes(2);
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'AgentRunSelector' });
+    await expect(authorizeAutoModelSelector(gate, otherWorkspace)).rejects.toThrow(/denied by permission rule/);
+  });
+
+  it.each([false, true])('does not run a selector without an approval consumer; interactive=%s', async (interactive) => {
+    mode = 'auto';
+    ix.stub(IAgentPermissionModeService, { ...stubPermissionModeService(() => mode), interactive });
+    ix.stub(ISessionContext, { sessionId: 'selector-session' });
+    ix.stub(IEventDispatcher, { dispatch: async () => {} });
+    ix.stub(ILogService, stubLog());
+    ix.set(IAgentToolApprovalService, new SyncDescriptor(AgentToolApprovalService));
+    const context = autoModelApprovalContext({ kind: 'plugin', id: 'example', tool: 'Pick' }, '/workspace', signal);
+    await expect(authorizeAutoModelSelector(ix.get(IAgentPermissionGate), context)).rejects.toThrow(interactive
+      ? /cancelled the approval request \(no_consumer\)/
+      : /needs owner approval.*interactive session/);
+  });
 
   it.each([false, true])('keeps plugin approval and deny rules with independent scheduling=%s', async (parallel) => {
     const name = 'plugin__fixture__generate';

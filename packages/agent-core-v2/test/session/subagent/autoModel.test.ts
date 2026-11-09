@@ -10,8 +10,8 @@ import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { SubagentConfigSchema } from '#/session/subagent/configSection';
 import { autoModelCandidates, weightedAutoModel, requireAutoModelChoice } from '#/session/subagent/autoModel';
-import { runAutoModelScript } from '#/session/subagent/autoModelScript';
-import { runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
+import { resolveAutoModelScript, runAutoModelScript } from '#/session/subagent/autoModelScript';
+import { resolveAutoModelPlugin, runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 
 const candidates = [
@@ -88,18 +88,15 @@ describe('first-dispatch model selectors', () => {
   ] as const)('reports a script failure without an alternate selection: %s', async (code, message) => {
     const host = new HostProcessService();
     try {
-      await expect(runAutoModelScript(host, script(code, 1), process.cwd(), request, new AbortController().signal)).rejects.toThrow(message);
+      const destination = resolveAutoModelScript(script(code, 1), process.cwd());
+      await expect(runAutoModelScript(host, destination, request, new AbortController().signal)).rejects.toThrow(message);
     } finally {
       await host.dispose();
     }
   });
 
-  it('does not spawn a script registered for another workspace', async () => {
-    const host = new HostProcessService();
-    const spawn = vi.spyOn(host, 'spawn');
-    await expect(runAutoModelScript(host, script(''), `${process.cwd()}/not-approved`, request, new AbortController().signal)).rejects.toThrow(/not registered/);
-    expect(spawn).not.toHaveBeenCalled();
-    await host.dispose();
+  it('does not resolve a script registered for another workspace', () => {
+    expect(() => resolveAutoModelScript(script(''), `${process.cwd()}/not-approved`)).toThrow(/not registered/);
   });
 
   it('does not return or log plugin exceptions containing dispatch text', async () => {
@@ -107,7 +104,9 @@ describe('first-dispatch model selectors', () => {
     services.push(ix);
     const definition = { schemaVersion: 1 as const, name: 'Pick', description: 'Pick', accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const };
     ix.stub(IPluginHostService, { list: async () => [{ pluginId: 'example', definition }], execute: async () => { throw new Error(request.prompt); } });
-    const failure = await runAutoModelPlugin(ix.get(IPluginHostService), { id: 'example', tool: 'Pick' }, request,
+    const host = ix.get(IPluginHostService);
+    const destination = await resolveAutoModelPlugin(host, { id: 'example', tool: 'Pick' });
+    const failure = await runAutoModelPlugin(host, destination, request,
       new AbortController().signal).catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: 'config.invalid', message: 'Model selector plugin execution failed.' });
     expect(JSON.stringify(failure)).not.toContain(request.prompt);

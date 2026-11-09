@@ -144,7 +144,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     const approvalRequest = {
       ...requestFields,
       approvalRule: origin === 'fallback-ask' && result.resolveApproval === undefined
-        && display.kind !== 'external_permission' ? context.execution.approvalRule : undefined,
+        && context.permissionAuthority !== 'owner' && display.kind !== 'external_permission' ? context.execution.approvalRule : undefined,
     };
     const approvalContext = {
       ...requestFields,
@@ -155,6 +155,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     let response: ApprovalResponse;
     const approvalService = this.tryApprovalService();
     const reviewer = this.modeService.mode === 'review'
+      && context.permissionAuthority !== 'owner'
       && origin !== 'user-configured-ask'
       && display.kind !== 'external_permission'
       ? await this.review(context, origin, result.reason)
@@ -324,7 +325,9 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     return {
       kind: 'deny',
       reason: result.reason,
-      message: `Tool "${context.toolCall.name}" requires approval; non-interactive run denied (use an allow rule or --permission-mode auto).`,
+      message: context.permissionAuthority === 'owner'
+        ? `Tool "${context.toolCall.name}" needs owner approval. Use an interactive session to approve this destination, or dispatch a concrete model.`
+        : `Tool "${context.toolCall.name}" requires approval; non-interactive run denied (use an allow rule or --permission-mode auto).`,
     };
   }
 

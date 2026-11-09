@@ -10,24 +10,27 @@ import type { AutoModelInput } from './autoModel';
 const PROCESS_ENV = new Set(['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE']);
 const OUTPUT_BYTES = 8192;
 
-export async function runAutoModelScript(
-  processes: IHostProcessService,
-  config: SubagentConfig['autoModel'],
-  cwd: string,
-  input: AutoModelInput,
-  signal: AbortSignal,
-): Promise<unknown> {
+export function resolveAutoModelScript(config: SubagentConfig['autoModel'], cwd: string) {
   const script = config?.scripts?.find((entry) => entry.id === config.script &&
     entry.workspaces.some((workspace) => resolve(workspace) === resolve(cwd)));
   if (script === undefined || process.platform === 'win32' && !/\.exe$/i.test(script.command)) {
     throw new Error2(ErrorCodes.CONFIG_INVALID, 'Model selector script is not registered for this workspace with an absolute executable.');
   }
+  return { kind: 'script' as const, id: script.id, command: script.command, args: [...script.args], timeout: script.timeout, cwd };
+}
+
+export async function runAutoModelScript(
+  processes: IHostProcessService,
+  script: ReturnType<typeof resolveAutoModelScript>,
+  input: AutoModelInput,
+  signal: AbortSignal,
+): Promise<unknown> {
   const deadline = createDeadlineAbortSignal(signal, script.timeout * 1000);
   let proc: IHostProcess | undefined;
   try {
     deadline.signal.throwIfAborted();
     proc = await processes.spawn(script.command, script.args, {
-      cwd, shell: false, ownedProcessTree: true,
+      cwd: script.cwd, shell: false, ownedProcessTree: true,
       envUnset: ['KIKI_HOME', ...Object.keys(process.env).filter((key) => !PROCESS_ENV.has(key.toUpperCase()))],
     });
     deadline.signal.throwIfAborted();

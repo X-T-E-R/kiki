@@ -15,6 +15,9 @@ export class SessionApprovalHistoryPermissionPolicyService implements Permission
   ) {}
 
   evaluate(context: ResolvedToolExecutionHookContext): PermissionPolicyResult | undefined {
+    if (context.permissionAuthority === 'owner') {
+      return this.rulesService.sessionApprovalRulePatterns.includes(context.execution.approvalRule) ? { kind: 'approve' } : undefined;
+    }
     if (context.toolCall.name === 'Bash') {
       const key = context.execution.sessionApprovalRule;
       return key !== undefined && this.rulesService.sessionApprovalRulePatterns.includes(key)

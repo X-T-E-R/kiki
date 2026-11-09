@@ -25,6 +25,7 @@ import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMd
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import '#/agent/permissionMode/permissionModeService';
 import {
   permissionModeConfiguredKey,
@@ -1584,6 +1585,7 @@ describe('AgentLifecycleService', () => {
     const select = vi.fn(async () => ({ output: JSON.stringify({ model_alias: chosen }) }));
     const definition = { schemaVersion: 1 as const, name: 'Pick', description: 'Pick', accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const };
     ix.stub(IPluginHostService, { list: async () => [{ pluginId: 'fixture', definition }], execute: select });
+    ix.stub(IAgentPermissionGate, { authorize: async () => undefined });
     ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
     ix.stub(IAgentContextMemoryService, { get: () => [] });
     const executeSwitch = vi.fn<IAgentModelSwitchService['execute']>(async (input) => ({

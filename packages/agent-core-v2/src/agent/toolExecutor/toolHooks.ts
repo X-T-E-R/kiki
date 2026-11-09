@@ -21,7 +21,7 @@ export interface ToolExecutionHookContext {
 }
 
 export interface ResolvedToolExecutionHookContext extends ToolExecutionHookContext {
-  readonly permissionAuthority?: 'external-inherit';
+  readonly permissionAuthority?: 'external-inherit' | 'owner';
   readonly execution: RunnableToolExecution;
 }
 

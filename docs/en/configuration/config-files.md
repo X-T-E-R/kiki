@@ -855,7 +855,9 @@ Candidates come from configured native models or the external executor's model c
 
 Without a custom selector, Kiki draws from eligible models with equal weight. To favor a model, assign it a larger weight under `[subagent.auto_model.weights]`. Use the candidate's model ID as the key, quote keys containing `/`, and set a weight to `0` to leave that model out of the draw. Unlisted models still have weight `1`. The draw fails if no eligible candidate has positive weight.
 
-For a custom decision, name one local script or enabled plugin tool in `[subagent.auto_model]`. This configuration authorizes that destination to receive the dispatch `description`, `prompt`, and filtered `candidates` (`alias`, optional `when`, and `thinking_effort`). Configure only code you trust with that text. The selector must return just `{"model_alias":"candidate-id"}`; it cannot add a candidate or change the effort. A selector failure does not fall back to a different model.
+For a custom decision, name one local script or enabled plugin tool in `[subagent.auto_model]`. Before sending dispatch text to that destination, Kiki asks for approval for `AgentRunSelector`. Select **Always allow AgentRunSelector in this session** when approving to reuse the approval for the same selector configuration and working directory. If the destination changes, approve it again. A setting or allow rule in `config.toml` alone does not grant this approval. YOLO mode still allows the action unless an explicit deny applies.
+
+An approved selector receives the dispatch `description`, `prompt`, and filtered `candidates` (`alias`, optional `when`, and `thinking_effort`). Approve only code you trust with that text. The selector returns just `{"model_alias":"candidate-id"}`; it cannot add a candidate or change the effort. If approval or selection fails, Kiki does not fall back to another model. Weighted selection and a concrete `model_alias` do not require this approval.
 
 ```toml
 [subagent.auto_model]

@@ -841,7 +841,9 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 不配置自定义选择器时，Kiki 在合格候选中等权抽选。要提高某个模型被选中的概率，在 `[subagent.auto_model.weights]` 下给它设更大的权重。用候选模型 ID 作键，含 `/` 的键加引号；设为 `0` 就不参加抽选。未列出的模型权重仍是 `1`。没有权重为正的合格候选时会报错。
 
-如需自定义选模，在 `[subagent.auto_model]` 中指定一个本地脚本或已启用的插件工具。这样会授权该选择器接收本次派发的 `description`、`prompt` 与过滤后的 `candidates`（`alias`、可选的 `when` 和 `thinking_effort`）。请只把正文交给你信任的代码。选择器只能返回 `{"model_alias":"candidate-id"}`，不能添加候选或修改思考强度。选择失败时不会改用另一个模型。
+如需自定义选模，在 `[subagent.auto_model]` 中指定一个本地脚本或已启用的插件工具。Kiki 会先请求批准 `AgentRunSelector`，再把派发正文交给该选择器。批准时勾选**本会话内始终允许 AgentRunSelector**，同一选择器配置在同一工作目录可复用批准；更换选择器后需要重新批准。只改 `config.toml` 的设置或允许规则不会授予这项权限。YOLO 模式仍可放行，显式禁止规则优先。
+
+获准的选择器接收 `description`、`prompt` 与过滤后的 `candidates`（`alias`、可选的 `when` 和 `thinking_effort`）。请只把正文交给信任的代码。选择器只能返回 `{"model_alias":"candidate-id"}`，不能添加候选或修改思考强度。未获准或选择失败时，Kiki 不会改用其他模型。权重抽选和显式指定具体 `model_alias` 不需要这项批准。
 
 ```toml
 [subagent.auto_model]

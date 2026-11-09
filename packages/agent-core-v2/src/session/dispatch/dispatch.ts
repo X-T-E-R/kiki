@@ -15,6 +15,11 @@ export interface DispatchResolvedBinding {
   readonly selection?: BindingSelectionInput;
 }
 
+export interface DispatchSelectorCall {
+  readonly turnId: number;
+  readonly toolCallId: string;
+}
+
 export interface DispatchLaunchInput {
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly delegator: DelegatorRef;
@@ -30,6 +35,7 @@ export interface DispatchLaunchInput {
   readonly snapshot?: AgentProfileCatalogSnapshot;
   readonly message: string;
   readonly description?: string;
+  readonly selectorCall?: DispatchSelectorCall;
   readonly name?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
@@ -66,6 +72,7 @@ export type DispatchIdlePolicy = 'execution' | 'quiescent';
 export interface DispatchRunOptions {
   readonly operationId?: string;
   readonly description?: string;
+  readonly selectorCall?: DispatchSelectorCall;
   readonly sourceRef?: string;
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
