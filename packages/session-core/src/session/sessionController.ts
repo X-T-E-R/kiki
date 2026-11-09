@@ -105,7 +105,6 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const TOOL_DETAIL_PREPARING_RETRY_MS = 80;
 export const OLDER_HISTORY_TIMEOUT_MS = 10_000;
-const OLDER_PREPARING_BATCH_LIMIT = 16;
 const OLDER_PAGE_TURNS = 40;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
@@ -1662,16 +1661,15 @@ export class SessionController {
         const obsolete = () => this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation;
         const read = async () => {
           let continuation: string | undefined;
-          for (let preparing = 0; ; preparing += 1) {
+          for (;;) {
             controller.signal.throwIfAborted();
             const result = await this.view.transcript.page({ agentId,
               beforeItem: continuation ?? page.beforeItem, beforeTurn: continuation === undefined ? page.beforeTurn : undefined,
               pageSize: OLDER_PAGE_TURNS }, { signal: controller.signal });
             if (result.items.length > 0 || !result.has_more || result.read?.stale !== undefined ||
                 result.read?.readiness !== 'preparing' && result.read?.reason !== 'budget') return result;
-            if (preparing + 1 >= OLDER_PREPARING_BATCH_LIMIT) throw new Error('History preview is still preparing. Retry to continue.');
             continuation = result.next_cursor ?? continuation;
-            await new Promise<void>(resolve => { setTimeout(resolve, 0); });
+            await new Promise<void>(resolve => { setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS); });
           }
         };
         let result = await this.readPreparedContent(read, controller.signal);
@@ -1758,23 +1756,29 @@ export class SessionController {
     const deadline = new AbortController();
     const owned = AbortSignal.any([signal, deadline.signal]);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<OlderLoadResult>((resolve) => {
+    let resolveExpired!: (result: OlderLoadResult) => void;
+    const armDeadline = (): void => {
+      clearTimeout(timer);
       timer = setTimeout(() => {
         deadline.abort();
         if (signal.aborted || this.closed || this.isSuspended) {
-          resolve({ kind: 'cancelled', changed: false });
+          resolveExpired({ kind: 'cancelled', changed: false });
           return;
         }
         const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
         this.publishAgentView(agentId, setOlderError(current, 'Loading earlier messages timed out. Retry to continue.'));
-        resolve({ kind: 'failed', changed: false });
+        resolveExpired({ kind: 'failed', changed: false });
       }, OLDER_HISTORY_TIMEOUT_MS);
+    };
+    const expired = new Promise<OlderLoadResult>((resolve) => {
+      resolveExpired = resolve;
+      armDeadline();
     });
-    try { return await Promise.race([this.loadOlderTranscript(agentId, owned), expired]); }
+    try { return await Promise.race([this.loadOlderTranscript(agentId, owned, armDeadline), expired]); }
     finally { clearTimeout(timer); }
   }
 
-  private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
+  private async loadOlderTranscript(agentId: string, signal: AbortSignal, onProgress?: () => void): Promise<OlderLoadResult> {
     if (this.resyncInFlight) {
       const resyncStatus = await this.waitForResyncIdle(signal);
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
@@ -1840,10 +1844,9 @@ export class SessionController {
         this.olderPageCursors.set(agentId, nextCursor);
         this.olderPageTurns.delete(agentId);
       };
-      let preparingBatches = 0;
       for (;;) {
         const read = () => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: OLDER_PAGE_TURNS }, { signal });
-        let page = await this.readPreparedContent(read, signal);
+        let page = await this.readPreparedContent(read, signal, onProgress);
         if (obsolete()) return { kind: 'cancelled', changed: false };
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
         if (page.read?.stale !== undefined) {
@@ -1859,7 +1862,7 @@ export class SessionController {
           }
           let recovered: TranscriptTurn | undefined;
           if (oldest?.origin.kind === 'other' && oldest.message === undefined && oldest.promptId === undefined && oldest.startedAt === undefined) {
-            const preview = await this.readTurnContentPreview(agentId, oldest.turnId, signal, true);
+            const preview = await this.readTurnContentPreview(agentId, oldest.turnId, signal, true, onProgress);
             if (obsolete()) return { kind: 'cancelled', changed: false };
             if (preview?.startedAt === undefined) throw new Error('Could not recover the earlier message opening');
             const { steps: _steps, contentRefs, ...header } = preview;
@@ -1871,7 +1874,7 @@ export class SessionController {
               ],
             };
           }
-          page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
+          page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal, onProgress);
           if (obsolete()) return { kind: 'cancelled', changed: false };
           if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
           if (recovered !== undefined) page = { ...page, items: [...page.items.filter(item => item.kind !== 'turn' || item.turnId !== recovered.turnId), recovered] };
@@ -1902,15 +1905,15 @@ export class SessionController {
         if (page.read !== undefined) this.historyReads.set(agentId, page.read);
         if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
         if (readIsPreparing || readIsPartial) {
+          onProgress?.();
           rememberContinuationCursor(page.next_cursor);
-          if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) throw new Error('Earlier history is still preparing. Retry to continue.');
           this.publishProjectedAgent(agentId, store, {
             loadingOlder: true,
             fetchedOlder: true,
             olderError: undefined,
             historyCoverageKind: 'unknown',
           });
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS));
           if (obsolete()) return { kind: 'cancelled', changed: false };
           continue;
         }
@@ -1936,6 +1939,7 @@ export class SessionController {
         else this.olderPageTurns.delete(agentId);
         this.forestDirtyAgents.add(agentId);
         if (recoveredOpening && !addedItems && page.has_more && page.next_cursor !== undefined && page.next_cursor !== beforeItem) {
+          onProgress?.();
           beforeItem = page.next_cursor;
           beforeTurn = undefined;
           this.publishProjectedAgent(agentId, store, {
@@ -2560,13 +2564,13 @@ export class SessionController {
     } finally { this.contentPumpRunning = false; }
   }
 
-  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(read: () => Promise<T>, staleMessage: string, signal?: AbortSignal): Promise<T> {
-    const result = await this.readPreparedContent(read, signal);
+  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(read: () => Promise<T>, staleMessage: string, signal?: AbortSignal, onProgress?: () => void): Promise<T> {
+    const result = await this.readPreparedContent(read, signal, onProgress);
     if (result.read?.stale !== undefined) throw new Error(staleMessage);
     return result;
   }
 
-  private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal, onProgress?: () => void): Promise<T> {
     let failures = 0;
     for (;;) {
       signal?.throwIfAborted();
@@ -2578,6 +2582,7 @@ export class SessionController {
         const transient = code === -1 || code === API_CODES.TIMEOUT ||
           error instanceof TypeError || (error instanceof RPCError && error.reason === 'transport.timeout');
         if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
+        if (preparing) onProgress?.();
         const delay = preparing ? TOOL_DETAIL_PREPARING_RETRY_MS : RESYNC_BACKOFF_MS[failures++];
         await new Promise<void>((resolve) => setTimeout(resolve, delay));
       }
@@ -2650,27 +2655,26 @@ export class SessionController {
     return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
   }
 
-  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false): Promise<TranscriptTurn | undefined> {
+  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false, onProgress?: () => void): Promise<TranscriptTurn | undefined> {
     const items = this.composeAgentSnapshot(agentId).items;
     const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
     if (index < 0) return undefined;
     const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
     let beforeItem: string | undefined;
     const cursors = new Set<string>();
-    let preparingBatches = 0;
     for (;;) {
       const page = await this.readPreparedContent(() => this.view.transcript.page(
         { agentId, beforeTurn: beforeItem === undefined && nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, beforeItem, pageSize: 1 },
         { signal },
-      ), signal);
+      ), signal, onProgress);
       if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
       const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
       if (preview !== undefined && (openingOnly ? preview.startedAt !== undefined : preview.stepsPartial !== true)) return preview;
       const budgeted = page.items.length === 0 && page.has_more && (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
       if (budgeted || (preview !== undefined && !openingOnly)) {
-        if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) return preview;
+        onProgress?.();
         if (budgeted) beforeItem = page.next_cursor ?? beforeItem;
-        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+        await new Promise<void>((resolve) => { setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS); });
         signal.throwIfAborted();
         continue;
       }

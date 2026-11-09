@@ -2226,32 +2226,31 @@ export class TranscriptService {
         low = mid + 1;
       } else high = mid - 1;
     }
-    if (fittedWithinCap) return fitted;
-    const adjacent = Math.max(0, older.length - 1);
-    low = 0;
-    high = allOld;
-    fitted = projectFrom(adjacent, 0);
-    fittedWithinCap = fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      const candidate = projectFrom(adjacent, mid);
-      if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
-        fitted = candidate;
-        fittedWithinCap = true;
-        low = mid + 1;
-      } else high = mid - 1;
-    }
     if (fittedWithinCap || older.length === 0) return fitted;
-    low = 0;
-    high = older.length - 1;
-    fitted = projectFrom(older.length - 1, allOld);
+    const lastOlder = older.length - 1;
+    fitted = projectFrom(lastOlder, 0);
+    low = 1;
+    high = lastOlder - 1;
     while (low <= high) {
       const mid = (low + high) >> 1;
-      const candidate = projectFrom(mid, allOld);
+      const candidate = projectFrom(mid, 0);
       if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
         fitted = candidate;
         high = mid - 1;
       } else low = mid + 1;
+    }
+    const chosenKeepFrom = fitted.keepFrom;
+    if (fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
+      low = 1;
+      high = allOld;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        const candidate = projectFrom(chosenKeepFrom, mid);
+        if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
+          fitted = candidate;
+          low = mid + 1;
+        } else high = mid - 1;
+      }
     }
     return fitted;
   }

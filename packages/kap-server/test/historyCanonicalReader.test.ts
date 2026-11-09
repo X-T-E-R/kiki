@@ -857,3 +857,82 @@ it('applies configurable detail retention at the next read without turning zero 
     expect(f.nav.canonicalReadReport().oversizedCacheEntries).toBe(0);
   } finally { await f.close(); }
 });
+
+
+it('extends cold window backward across an >8 MiB orphan turn with standalone markers and preserves all standalone items and skippedTurnIds without certifying skipped turns as complete', async () => {
+  const chunk = 'y'.repeat(1_200_000);
+  const t6Records = turnRecords(6, 'turn-six-output');
+  const standaloneMarkerBetween6And7 = {
+    type: 'agent.model_switch',
+    operationId: 'op-between-6-7',
+    time: 1700000000000,
+    previousModelAlias: 'model-a',
+    modelAlias: 'model-b',
+  };
+  const t7Records = [
+    { type: 'turn.prompt', turnId: 7, input: [{ type: 'text', text: 't7 opening prompt' }], origin: { kind: 'user' } },
+    event({ type: 'step.started', turnId: 7, stepUuid: 't7-s0', stepIndex: 0 }),
+    event({ type: 'content.part', turnId: 7, stepUuid: 't7-s0', uuid: 't7-p0', part: { type: 'text', text: `t7-head:${chunk}` } }),
+    event({ type: 'step.finished', turnId: 7, stepUuid: 't7-s0', stepIndex: 0, reason: 'tool_calls' }),
+    ...Array.from({ length: 8 }, (_, idx) => [
+      event({ type: 'step.started', turnId: 7, stepUuid: `t7-mid-${idx}`, stepIndex: idx + 1 }),
+      event({ type: 'content.part', turnId: 7, stepUuid: `t7-mid-${idx}`, uuid: `t7-mid-p-${idx}`, part: { type: 'text', text: `t7-mid-${idx}:${chunk}` } }),
+      ...(idx === 3 ? [{
+        type: 'agent.model_switch',
+        operationId: 'op-mid-t7',
+        time: 1700000001000,
+        previousModelAlias: 'model-b',
+        modelAlias: 'model-c',
+      }] : []),
+      event({ type: 'step.finished', turnId: 7, stepUuid: `t7-mid-${idx}`, stepIndex: idx + 1, reason: 'tool_calls' }),
+    ]).flat(),
+    event({ type: 'step.started', turnId: 7, stepUuid: 't7-tail', stepIndex: 99 }),
+    event({ type: 'content.part', turnId: 7, stepUuid: 't7-tail', uuid: 't7-tail-p', part: { type: 'text', text: 't7-tail-text' } }),
+    event({ type: 'step.finished', turnId: 7, stepUuid: 't7-tail', stepIndex: 99, reason: 'stop' }),
+    { type: 'turn.result', turnId: 7, status: 'completed' },
+  ];
+  const t8Records = turnRecords(8, 'turn-eight-output');
+  const records = [...t6Records, standaloneMarkerBetween6And7, ...t7Records, ...t8Records];
+  const f = await fixture(records);
+  const app = Fastify();
+  registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: f.service });
+  try {
+    const baseline = await readColdSessionViewBaseline(f.service, 's', 'main', 'delta', new AbortController().signal);
+    expect(baseline).toBeDefined();
+    let cursor = baseline!.snapshot.olderCursor;
+    const seenTurns = new Set(baseline!.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
+    const seenMarkers = new Set(baseline!.snapshot.items.flatMap(item => item.kind === 'marker' ? [item.markerId] : []));
+    let calls = 0;
+    while (cursor !== undefined && (!seenTurns.has('t7') || !seenTurns.has('t6')) && calls < 16) {
+      calls += 1;
+      const reply = await app.inject({
+        method: 'GET',
+        url: `/api/klient/session-view/s/transcript?agent_id=main&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}&page_size=40&before_item=${encodeURIComponent(cursor)}`,
+      });
+      expect(reply.statusCode).toBe(200);
+      const env = reply.json<{ code: number; data: TranscriptResponse }>();
+      expect(env.code).toBe(0);
+      for (const item of env.data.items) {
+        if (item.kind === 'turn') seenTurns.add(item.turnId);
+        if (item.kind === 'marker') seenMarkers.add(item.markerId);
+      }
+      cursor = env.data.next_cursor;
+      if (!env.data.has_more) break;
+    }
+    expect([...seenTurns]).toEqual(expect.arrayContaining(['t8', 't7', 't6']));
+    expect([...seenMarkers]).toEqual(expect.arrayContaining(['model-switch:op-between-6-7', 'model-switch:op-mid-t7']));
+    expect(await f.service.readRetainedColdTurn('s', 'main', 't7', new AbortController().signal)).toBeUndefined();
+    let canonicalT7: TranscriptTurn | undefined;
+    for (let attempt = 0; attempt < 5 && canonicalT7 === undefined; attempt += 1) {
+      try {
+        canonicalT7 = (await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't7' })) as TranscriptTurn;
+      } catch (error) {
+        if (!(error instanceof CanonicalEntityPreparingError)) throw error;
+      }
+    }
+    expect(canonicalT7?.steps).toHaveLength(10);
+  } finally {
+    await app.close();
+    await f.close();
+  }
+}, 60_000);

@@ -206,20 +206,55 @@ describe('bounded session-view canonical reads', () => {
     expect(verify).toHaveBeenCalledTimes(1);
   });
 
-  it('bounds a stalled server read and aborts its underlying work without changing its input cursor', async () => {
+  it('bounds a 5-second server read slice into resumable preparing state while preserving client abort and real IO failures', async () => {
     vi.useFakeTimers();
-    let signal: AbortSignal | undefined;
-    const read = vi.fn(async (_session: string, _agent: string, _project: unknown, inputSignal: AbortSignal) => {
-      signal = inputSignal;
-      return new Promise<AgentTranscriptSnapshot>(() => {});
+    const turn19: TranscriptTurn = { kind: 'turn', turnId: 't19', ordinal: 19, state: 'completed', origin: { kind: 'user' }, prompt: 'recovered after 5s slice', steps: [] };
+    const turn20: TranscriptTurn = { kind: 'turn', turnId: 't20', ordinal: 20, state: 'completed', origin: { kind: 'user' }, prompt: 'tail', steps: [] };
+    let sliceSignal: AbortSignal | undefined;
+    let slow = true;
+    const read = vi.fn(async (_session: string, _agent: string, project: (snap: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, inputSignal: AbortSignal) => {
+      sliceSignal = inputSignal;
+      if (slow) {
+        return new Promise<AgentTranscriptSnapshot>((_resolve, reject) => {
+          inputSignal.addEventListener('abort', () => reject(inputSignal.reason), { once: true });
+        });
+      }
+      return project({ ...empty(), items: [turn19, turn20], hasMoreOlder: false });
     });
-    const service = { forSessionLive: () => undefined, readColdPageSnapshot: read } as unknown as TranscriptService;
+    const service = {
+      forSessionLive: () => undefined,
+      readColdRoster: async () => [],
+      readColdPageSnapshot: read,
+      reconcileQuestionSnapshot: (_s: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
     try {
-      const outcome = readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t20' }).catch(error => error);
+      const firstPromise = readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t20' });
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(await outcome).toMatchObject({ code: 'session.busy', message: 'History page timed out. Retry to continue.' });
-      expect(signal?.aborted).toBe(true);
-      expect(read).toHaveBeenCalledTimes(1);
+      const firstPage = await firstPromise;
+      expect(sliceSignal?.aborted).toBe(true);
+      expect(firstPage?.read?.readiness).toBe('preparing');
+      expect(firstPage?.has_more).toBe(true);
+      expect(firstPage?.next_cursor).toBeDefined();
+
+      slow = false;
+      const secondPage = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: firstPage!.next_cursor });
+      expect(secondPage?.items.map(item => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t19']);
+
+      slow = true;
+      const previewPromise = readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', pageSize: 1 }).catch(err => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await previewPromise).toBeInstanceOf(CanonicalEntityPreparingError);
+
+      const clientAbort = new AbortController();
+      const abortPromise = readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t20', signal: clientAbort.signal }).catch(err => err);
+      clientAbort.abort(new DOMException('Client left view', 'AbortError'));
+      expect(await abortPromise).toMatchObject({ name: 'AbortError' });
+
+      const ioErrorService = {
+        forSessionLive: () => undefined,
+        readColdPageSnapshot: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); },
+      } as unknown as TranscriptService;
+      await expect(readSessionViewTranscriptPage(ioErrorService, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t20' })).rejects.toThrow('EACCES');
     } finally { vi.useRealTimers(); }
   });
 

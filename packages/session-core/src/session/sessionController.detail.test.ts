@@ -416,8 +416,12 @@ describe('SessionController transcript detail', () => {
     }));
     const { controller, deliver, view } = harness(undefined, content);
     const base = { session_id: 'session_test', agent_id: 'child', tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
-    vi.mocked(view.transcript.page)
-      .mockRejectedValueOnce(new RPCError(40923, 'history_canonical_preparing'))
+    const pageMock = vi.mocked(view.transcript.page);
+    pageMock.mockRejectedValueOnce(new RPCError(40923, 'history_canonical_preparing'));
+    for (let idx = 0; idx < 18; idx += 1) {
+      pageMock.mockResolvedValueOnce({ ...base, items: [orphanPartial], has_more: true, next_cursor: `cursor-prep-${idx}`, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'derived', readiness: 'preparing' } });
+    }
+    pageMock
       .mockResolvedValueOnce({ ...base, items: [canonicalPreview], has_more: true, next_cursor: 'cursor-orphan-t0', coverage: { kind: 'unknown', hasMoreOlder: true } })
       .mockResolvedValueOnce({ ...base, items: [{ ...canonicalPreview, steps: [step0, step1], contentRefs: undefined }], has_more: true, next_cursor: 'cursor-refreshed-t0', coverage: { kind: 'unknown', hasMoreOlder: true } })
       .mockResolvedValueOnce({ ...base, items: [], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
@@ -430,7 +434,7 @@ describe('SessionController transcript detail', () => {
         const state = controller.getAgentState('child');
         expect(state.blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['earlier step', 'tail step']);
         expect(state.blocks.some(block => block.kind === 'user' && block.text === 'Recovered child opening')).toBe(true);
-      });
+      }, { timeout: 3000 });
       expect(controller.getAgentState('child').detailLoads['structure:t0']).toBeUndefined();
       const firstOlder = await controller.loadOlderHistory('child');
       expect(firstOlder).toEqual({ kind: 'exhausted', changed: true });
