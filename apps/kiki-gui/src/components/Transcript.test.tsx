@@ -8680,6 +8680,45 @@ describe('settled history folds and the unified locate entry', () => {
     expect(onLoadOlder).toHaveBeenCalled();
   });
 
+  it('continues a turn locate across a preparing slice without failing the jump', async () => {
+    resetTimelineLocatorsForTests();
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    let state = transcriptState(turnBlocks(3, 'latest'), { sessionId: 'session_preparing_locate', hasMoreHistory: true });
+    const render = () => renderSettled(root, (
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_preparing_locate" agentId="main">
+        {virtualTranscript(state, async () => false)}
+      </TranscriptDetailProvider>
+    ));
+    const locateTurn = vi.spyOn(controller, 'locateTurn')
+      .mockResolvedValueOnce({ kind: 'preparing', changed: false })
+      .mockImplementationOnce(async () => {
+        state = { ...state, blocks: [...turnBlocks(1, 'target'), ...state.blocks], hasMoreHistory: false };
+        await render();
+        return { kind: 'advanced', changed: true };
+      });
+    try {
+      await render();
+      await settleVirtualizer();
+      let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void locateInTimeline({ kind: 'turn', turnId: 't1' }, { sessionId: 'session_preparing_locate', notify: false }).then((value) => { outcome = value; });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      for (let frame = 0; frame < 150 && outcome === undefined; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+      }
+      expect(outcome).toEqual({ status: 'found' });
+      expect(locateTurn).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-turn-id="t1"]')).not.toBeNull();
+    } finally {
+      locateTurn.mockRestore();
+      await act(async () => { root.render(null); });
+      controller.close();
+    }
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();

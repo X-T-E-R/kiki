@@ -4961,8 +4961,22 @@ export function Transcript({
         return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
       }
       const loadedMore = structure ?? (target.kind === 'turn' && controller !== undefined
-        ? (await controller.locateTurn(agentId, normalizeTurnId(target.turnId), signal)).changed
-        : await loadOlderRef.current(signal));
+        ? await (async () => {
+          const result = await controller.locateTurn(agentId, normalizeTurnId(target.turnId), signal);
+          if (result.changed) return true;
+          if (result.kind !== 'preparing' || cancelled()) return false;
+          await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
+          return !cancelled();
+        })()
+        : await (async () => {
+          const loaded = await loadOlderRef.current(signal);
+          if (loaded || cancelled()) return loaded;
+          if (controller !== undefined && stateRef.current.resyncing && !stateRef.current.resyncFailed) {
+            await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
+            return !cancelled();
+          }
+          return false;
+        })());
       for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
         await nextFrame();
         if (cancelled()) return { status: 'no-timeline' };
@@ -5091,7 +5105,14 @@ export function Transcript({
       loadOlder: async () => {
         const structure = await readSeekStructure(signal);
         if (cancelled()) return false;
-        return structure ?? loadOlderRef.current(signal);
+        if (structure !== undefined) return structure;
+        const loaded = await loadOlderRef.current(signal);
+        if (loaded || cancelled()) return loaded;
+        if (controller !== undefined && stateRef.current.resyncing && !stateRef.current.resyncFailed) {
+          await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
+          return !cancelled();
+        }
+        return false;
       },
       hasLoadError: () => liveRef.current.olderError !== undefined,
       nextFrame,

@@ -395,6 +395,64 @@ describe('SessionController transcript detail', () => {
     } finally { lease.release(); controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('reanchors a stale %s structure read without blocking or requiring retry', async (agentId) => {
+    const turn0: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: Array.from({ length: 2 }, (_, index) =>
+        ({ kind: 'text', frameId: `f${index}`, role: 'assistant', text: `recovered body ${index}` })) }] };
+    const turn1: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'Newer turn', steps: [] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const base = { session_id: 'session_test', agent_id: agentId, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    const budget = { ...base, items: [], has_more: true, next_cursor: 'stale-anchor', coverage: { kind: 'unknown' as const, hasMoreOlder: true as const },
+      read: { source: 'cold' as const, readiness: 'partial' as const, reason: 'budget' as const } };
+    const stale = { ...base, items: [], has_more: true, coverage: { kind: 'unknown' as const, hasMoreOlder: true as const },
+      read: { source: 'derived' as const, readiness: 'partial' as const, reason: 'source_changed' as const, stale: { reason: 'source_changed' as const, retry: 'authoritative' as const } } };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce(budget)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce({ ...base, items: [turn0], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('stale-structure-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn0, stepsPartial: true, steps: [] }, turn1], hasMoreOlder: false }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const lease = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text))
+        .toEqual(['recovered body 0', 'recovered body 1']));
+      expect(vi.mocked(view.transcript.page).mock.calls.map(([input]) => input)).toEqual([
+        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 1 },
+        { agentId, beforeTurn: undefined, beforeItem: 'stale-anchor', pageSize: 1 },
+        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 1 },
+      ]);
+      expect(state().detailLoads['structure:t0']).toBeUndefined();
+    } finally { lease.release(); controller.close(); }
+  });
+
+  it('automatically backs off and retries a recoverable structure read without setting error or requiring retry', async () => {
+    const { RPCError } = await import('@kiki/klient/session-view');
+    const turn0: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: [
+        { kind: 'text', frameId: 'f0', role: 'assistant', text: 'auto retried structure' },
+      ] }] };
+    const ref: ContentRef = { source: { kind: 'turn', id: 't0' }, revision: 'rev-1', path: ['steps'], kind: 'array', offset: 0, total: 1 };
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>()
+      .mockRejectedValueOnce(new RPCError(40922, 'Content changed'))
+      .mockResolvedValueOnce({ ref, value: turn0.steps, contentRefs: [] });
+    const { controller, deliver, view } = harness(undefined, content);
+    const base = { session_id: 'session_test', agent_id: 'main', tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    vi.mocked(view.transcript.page).mockResolvedValue({
+      ...base, items: [{ ...turn0, steps: [], contentRefs: [ref] }], has_more: false, coverage: { kind: 'full', hasMoreOlder: false },
+    });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ ...turn0, stepsPartial: true, steps: [] }], hasMoreOlder: false }), 2));
+    const lease = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(controller.getState().blocks.filter(block => block.kind === 'assistant').map(block => block.text))
+        .toEqual(['auto retried structure']));
+      expect(content).toHaveBeenCalledTimes(2);
+      expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
+    } finally { lease.release(); controller.close(); }
+  });
+
   it('recovers an orphan partial turn opening during structure expansion and finishes older paging at source start without cursor error', async () => {
     const { RPCError } = await import('@kiki/klient/session-view');
     const source = { kind: 'turn' as const, id: 't0' };

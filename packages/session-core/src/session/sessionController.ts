@@ -325,7 +325,7 @@ export class SessionController {
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
-  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; paths?: readonly (readonly (string | number)[])[]; includeOlder: boolean; readers: number; blocked: boolean; retryVersion: number; ref?: ContentRef; controller?: AbortController }>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; paths?: readonly (readonly (string | number)[])[]; includeOlder: boolean; readers: number; blocked: boolean; retryVersion: number; retryAttempt?: number; retryTimer?: ReturnType<typeof setTimeout>; ref?: ContentRef; controller?: AbortController }>();
   private contentPumpRunning = false;
   private readonly contentPumpReads = new Map<string, object>();
   private readonly contentRanges = new Map<string, string>();
@@ -2542,6 +2542,8 @@ export class SessionController {
     const target = this.contentReaders.get(key) ?? { agentId, source, roots, paths, includeOlder, readers: 0, blocked: false, retryVersion: 0, ref: undefined, controller: undefined };
     target.readers += 1;
     target.retryVersion += 1;
+    target.retryAttempt = 0;
+    if (target.retryTimer !== undefined) { clearTimeout(target.retryTimer); target.retryTimer = undefined; }
     target.blocked = false;
     this.contentReaders.set(key, target);
     void this.pumpContentReads();
@@ -2557,19 +2559,36 @@ export class SessionController {
         this.accountContentBody(agentId, source);
         if (target.ref !== undefined && ![...this.contentReaders.values()].some((other) => other.agentId === agentId && JSON.stringify(other.source) === JSON.stringify(source) && other.roots.includes(String(target.ref!.path[0])))) this.cancelContentSegment(agentId, target.ref);
       },
-      retry: () => { if (released) return; target.retryVersion += 1; target.blocked = false; void this.pumpContentReads(); },
+      retry: () => {
+        if (released) return;
+        target.retryVersion += 1;
+        target.retryAttempt = 0;
+        if (target.retryTimer !== undefined) { clearTimeout(target.retryTimer); target.retryTimer = undefined; }
+        target.blocked = false;
+        void this.pumpContentReads();
+      },
     };
   }
 
   retryTurnStructureRead(agentId: string, turnId: string): void {
     for (const target of this.contentReaders.values()) if (target.agentId === agentId && target.source.kind === 'turn' &&
-      target.source.id === turnId && target.roots.includes('steps')) { target.retryVersion += 1; target.blocked = false; }
+      target.source.id === turnId && target.roots.includes('steps')) {
+      target.retryVersion += 1;
+      target.retryAttempt = 0;
+      if (target.retryTimer !== undefined) { clearTimeout(target.retryTimer); target.retryTimer = undefined; }
+      target.blocked = false;
+    }
     void this.pumpContentReads();
   }
 
   private retireContentRead(key: string): void {
     const target = this.contentReaders.get(key);
     if (target === undefined) return;
+    if (target.retryTimer !== undefined) {
+      clearTimeout(target.retryTimer);
+      target.retryTimer = undefined;
+    }
+    target.retryAttempt = 0;
     if (target.controller !== undefined) {
       target.controller.abort();
       this.snapshotControllers.delete(target.controller);
@@ -2588,7 +2607,7 @@ export class SessionController {
       if (this.closed || this.isSuspended) return;
       for (const [key, target] of this.contentReaders) {
         if (this.contentPumpReads.size >= 4) break;
-        if (target.readers === 0 || target.blocked || this.contentPumpReads.has(key)) continue;
+        if (target.readers === 0 || target.blocked || target.retryTimer !== undefined || this.contentPumpReads.has(key)) continue;
         const entity = this.contentEntity(target.agentId, target.source);
         const partial = target.source.kind === 'turn' && target.includeOlder && target.roots.includes('steps') &&
           (entity as TranscriptTurn | undefined)?.stepsPartial === true;
@@ -2605,12 +2624,28 @@ export class SessionController {
         const flight = {};
         const retryVersion = target.retryVersion;
         this.contentPumpReads.set(key, flight);
-        const read = controller === undefined ? this.loadContentSegment(target.agentId, ref!)
+        const read = controller === undefined
+          ? this.loadContentSegment(target.agentId, ref!).then((applied) => (applied ? 'applied' as const : 'blocked' as const))
           : this.loadPartialTurnStructure(target.agentId, target.source.id, controller);
-        void read.then((applied) => {
+        void read.then((outcome) => {
           if (this.contentPumpReads.get(key) !== flight) return;
+          const applied = outcome === 'applied';
           target.ref = applied ? undefined : ref;
-          if (!applied && target.readers > 0 && target.retryVersion === retryVersion) {
+          if (applied) {
+            target.retryAttempt = 0;
+            return;
+          }
+          if (target.readers > 0 && target.retryVersion === retryVersion) {
+            if (outcome === 'retry') {
+              const attempt = target.retryAttempt ?? 0;
+              target.retryAttempt = attempt + 1;
+              const delay = Math.min(2000, TOOL_DETAIL_PREPARING_RETRY_MS * (2 ** Math.min(attempt, 5)));
+              target.retryTimer = setTimeout(() => {
+                target.retryTimer = undefined;
+                if (!this.closed && !this.isSuspended && target.readers > 0 && target.retryVersion === retryVersion) void this.pumpContentReads();
+              }, delay);
+              return;
+            }
             target.blocked = partial || this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref!));
             if (target.blocked && ref !== undefined) {
               const detailKey = `content:${JSON.stringify(ref)}`;
@@ -2657,7 +2692,7 @@ export class SessionController {
     }
   }
 
-  private async loadPartialTurnStructure(agentId: string, turnId: string, controller: AbortController): Promise<boolean> {
+  private async loadPartialTurnStructure(agentId: string, turnId: string, controller: AbortController): Promise<'applied' | 'retry' | 'blocked'> {
     const source = { kind: 'turn' as const, id: turnId };
     const generation = this.historyGeneration.get(agentId) ?? 0;
     const key = `structure:${turnId}`;
@@ -2665,7 +2700,12 @@ export class SessionController {
     this.setDetailLoad(agentId, key, { status: 'loading' });
     try {
       let preview = await this.readTurnContentPreview(agentId, turnId, controller.signal);
-      if (preview === undefined || preview.stepsPartial === true) throw new Error('Step structure is still preparing. Retry to continue.');
+      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
+      if (preview?.stepsPartial === true) return 'retry';
+      if (preview === undefined) {
+        if (this.resyncInFlight) return 'retry';
+        throw new Error('Could not load turn step structure. Retry to continue.');
+      }
       const content = this.view.transcript.content?.bind(this.view.transcript);
       for (;;) {
         controller.signal.throwIfAborted();
@@ -2676,18 +2716,22 @@ export class SessionController {
         controller.signal.throwIfAborted();
         preview = applyContentSegment(preview, segment);
       }
-      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
       const current = this.contentEntity(agentId, source) as TranscriptTurn | undefined;
-      if (current === undefined) return false;
+      if (current === undefined) return 'blocked';
       const adopted = completeTranscriptTurnStructure(current, rebindTurnContentRefs(preview));
-      if (!this.replaceTimelineContentEntity(agentId, source, adopted)) return false;
+      if (!this.replaceTimelineContentEntity(agentId, source, adopted)) return 'blocked';
       this.accountContentBody(agentId, source, current);
       this.setDetailLoad(agentId, key, undefined);
-      return true;
+      return 'applied';
     } catch (error) {
-      if (!this.closed && !controller.signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation)
-        this.setDetailLoad(agentId, key, { status: 'error', message: error instanceof Error ? error.message : String(error) });
-      return false;
+      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
+      const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
+      if (code === 40922 || code === 40923 || code === API_CODES.SESSION_BUSY || code === API_CODES.SESSION_INDEX_BUILDING) {
+        return 'retry';
+      }
+      this.setDetailLoad(agentId, key, { status: 'error', message: error instanceof Error ? error.message : String(error) });
+      return 'blocked';
     } finally {
       this.snapshotControllers.delete(controller);
     }
@@ -2724,18 +2768,42 @@ export class SessionController {
   }
 
   private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false, onProgress?: () => void): Promise<TranscriptTurn | undefined> {
-    const items = this.composeAgentSnapshot(agentId).items;
-    const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
-    if (index < 0) return undefined;
-    const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
+    const anchor = () => {
+      const items = this.composeAgentSnapshot(agentId).items;
+      const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
+      if (index < 0) return undefined;
+      return {
+        turn: items[index] as TranscriptTurn,
+        nextTurn: items.slice(index + 1).find((item): item is TranscriptTurn => item.kind === 'turn'),
+      };
+    };
+    let current = anchor();
+    if (current === undefined) return undefined;
     let beforeItem: string | undefined;
+    let staleRetries = 0;
     const cursors = new Set<string>();
     for (;;) {
       const page = await this.readPreparedContent(() => this.view.transcript.page(
-        { agentId, beforeTurn: beforeItem === undefined && nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, beforeItem, pageSize: 1 },
+        { agentId, beforeTurn: beforeItem === undefined ? current?.nextTurn?.turnId : undefined, beforeItem, pageSize: 1 },
         { signal },
       ), signal, onProgress);
-      if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
+      if (this.closed || signal.aborted || page.agent_id !== agentId) return undefined;
+      if (page.read?.stale !== undefined) {
+        this.historyReads.set(agentId, page.read);
+        this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId), { historyCoverageKind: 'unknown' });
+        if (page.read.stale.retry === 'resync') {
+          void this.resync();
+          return undefined;
+        }
+        if (staleRetries >= 3) return undefined;
+        staleRetries += 1;
+        beforeItem = undefined;
+        cursors.clear();
+        current = anchor();
+        if (current === undefined) return undefined;
+        onProgress?.();
+        continue;
+      }
       const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
       if (preview !== undefined && (openingOnly ? preview.startedAt !== undefined : preview.stepsPartial !== true)) return preview;
       const budgeted = page.items.length === 0 && page.has_more && (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
@@ -2746,7 +2814,7 @@ export class SessionController {
         signal.throwIfAborted();
         continue;
       }
-      if (page.items.some((item) => item.kind === 'turn' && item.ordinal < (items[index] as TranscriptTurn).ordinal) ||
+      if (page.items.some((item) => item.kind === 'turn' && item.ordinal < current!.turn.ordinal) ||
         !page.has_more || page.next_cursor === undefined || cursors.has(page.next_cursor)) return undefined;
       cursors.add(page.next_cursor);
       beforeItem = page.next_cursor;
@@ -3184,7 +3252,10 @@ export class SessionController {
         this.observeContentPreview(agentId, op);
       }
       for (const target of this.contentReaders.values()) {
-        if (target.agentId !== agentId || !target.blocked) continue;
+        if (target.agentId !== agentId) continue;
+        target.retryAttempt = 0;
+        if (target.retryTimer !== undefined) { clearTimeout(target.retryTimer); target.retryTimer = undefined; }
+        if (!target.blocked) continue;
         const refs = this.contentRefsFor(agentId, target.source);
         if (target.ref === undefined || !refs.some((ref) => sameContentRef(ref, target.ref!))) target.blocked = false;
       }
