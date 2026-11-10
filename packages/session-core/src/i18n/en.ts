@@ -1736,8 +1736,8 @@ export const en = {
 
 
 
-  'transcript.marker.compactionFallback': 'Context compacted · summary',
-  'transcript.marker.compactionRescue': 'Context compacted · fresh start',
+  'transcript.marker.compactionFallback': 'Context compacted · summary generated',
+  'transcript.marker.compactionRescue': 'Context compacted · started fresh',
   'transcript.marker.reason.history_unavailable': 'Conversation history could not be read for the fresh start.',
   'transcript.marker.reason.notes_missing': 'The agent has no working notes for the handoff.',
   'transcript.marker.reason.notes_previous_window': 'The working notes cover an earlier context window.',

@@ -40,6 +40,7 @@ import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
 import { DisclosureChevron, Icon, type IconName } from '../icons';
+import { CopyButton } from '../timeline/ContentCopyButton';
 import { plainFailure } from '../agent-panel/failureText';
 import { DeliveryNotes, withheldKinds } from './messageDelivery';
 import {
@@ -477,19 +478,24 @@ export const MessageRow = memo(function MessageRow({
           <span className={MESSAGE_FACE} />
           <div className="min-w-0 flex-1">
             {block.failureDetail === undefined ? null : (
-              <button
-                type="button"
-                data-message-failure-detail
-                aria-expanded={failureOpen}
-                title={failureOpen ? undefined : block.failureDetail}
-                onClick={() => { setFailureOpen((value) => !value); }}
-                className="flex max-w-full min-w-0 cursor-pointer items-start gap-1 rounded-sm py-0.5 text-left font-mono text-[11.5px] leading-relaxed text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
-              >
-                <span className={failureOpen ? 'min-w-0 flex-1 break-words whitespace-pre-wrap' : 'min-w-0 flex-1 truncate'}>
-                  {failureOpen ? block.failureDetail : (plainFailure(block.failureDetail) ?? block.failureDetail)}
-                </span>
-                <DisclosureChevron open={failureOpen} className="mt-1 shrink-0" />
-              </button>
+              <div className="flex max-w-full min-w-0 items-start gap-1">
+                <button
+                  type="button"
+                  data-message-failure-detail
+                  aria-expanded={failureOpen}
+                  title={failureOpen ? undefined : block.failureDetail}
+                  onClick={() => { setFailureOpen((value) => !value); }}
+                  className="flex max-w-full min-w-0 flex-1 cursor-pointer items-start gap-1 rounded-sm py-0.5 text-left font-mono text-[11.5px] leading-relaxed text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  <span className={failureOpen ? 'min-w-0 flex-1 break-words whitespace-pre-wrap' : 'min-w-0 flex-1 truncate'}>
+                    {failureOpen ? block.failureDetail : (plainFailure(block.failureDetail) ?? block.failureDetail)}
+                  </span>
+                  <DisclosureChevron open={failureOpen} className="mt-1 shrink-0" />
+                </button>
+                {failureOpen ? (
+                  <CopyButton text={block.failureDetail} label={t('transcript.promptOutcome.details')} />
+                ) : null}
+              </div>
             )}
             <DeliveryNotes block={block} onOpenProcess={onOpenProcess} />
           </div>

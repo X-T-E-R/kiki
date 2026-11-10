@@ -2832,7 +2832,7 @@ describe('live and event chrome', () => {
       },
     ]);
     const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe('Context compacted · summary');
+    expect(toggle.textContent).toBe('Context compacted · summary generated');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
     await act(async () => { click(toggle); });
@@ -10358,7 +10358,7 @@ describe('ordinary bounded message reading', () => {
 
     // 3. Compaction summary expands and mounts ContentContinuation for marker payload
     const compactToggle = container.querySelector<HTMLButtonElement>('[data-notice-key="transcript.marker.compactionFallback"] [data-notice-toggle]')!;
-    expect(compactToggle.textContent).toBe('Context compacted · summary');
+    expect(compactToggle.textContent).toBe('Context compacted · summary generated');
     await act(async () => { click(compactToggle); });
     expect(container.querySelector('[data-compaction-summary]')?.textContent).toContain('Initial prefix');
     await act(async () => { click(container.querySelector('[data-compaction-summary] [data-content-continuation-action]')!); });
@@ -10371,11 +10371,14 @@ describe('ordinary bounded message reading', () => {
     await act(async () => { click(endedRow.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!); });
     expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: crossTaskSource, path: ['resultSummary'] }));
 
-    // 5. Same-turn absorbed SubagentCompactCard reveals final subagent result (not just running receipt) + hydrates task resultSummary
+    // 5. Same-turn absorbed SubagentCompactCard reveals final subagent result directly (no visible Receipt Body heading) + hydrates task resultSummary
     const compactSubagent = container.querySelector('[data-subagent-id="worker-same"]')!;
     await act(async () => { click(compactSubagent.querySelector<HTMLButtonElement>('[data-invocation-toggle]')!); });
-    expect(compactSubagent.querySelector('[data-subagent-result-summary]')?.textContent).toContain('Same-turn preview prefix');
-    await act(async () => { click(compactSubagent.querySelector<HTMLButtonElement>('[data-subagent-result-summary] [data-content-continuation-action]')!); });
+    const sameResultSummary = compactSubagent.querySelector('[data-subagent-result-summary]')!;
+    expect(sameResultSummary.textContent).toContain('Same-turn preview prefix');
+    expect(sameResultSummary.firstElementChild?.textContent).toBe('Same-turn preview prefix');
+    expect(sameResultSummary.querySelector('[data-copy-state]')?.getAttribute('aria-label')).toContain(translate('en', 'subagent.call.receiptBody'));
+    await act(async () => { click(sameResultSummary.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!); });
     expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: sameTaskSource, path: ['resultSummary'] }));
 
     // 6. SubagentEventRow with error only (no message) expands full stack trace; sent message row hydrates frame input; PlainSystemMessage hydrates frame text

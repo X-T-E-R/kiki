@@ -8104,8 +8104,8 @@ describe('compaction summary, error details, and bounded content sources', () =>
     });
     expect(translate('zh', 'transcript.marker.compactionFallback')).toBe('上下文已压缩 · 已生成摘要');
     expect(translate('zh', 'transcript.marker.compactionRescue')).toBe('上下文已压缩 · 已重新开始');
-    expect(translate('en', 'transcript.marker.compactionFallback')).toBe('Context compacted · summary');
-    expect(translate('en', 'transcript.marker.compactionRescue')).toBe('Context compacted · fresh start');
+    expect(translate('en', 'transcript.marker.compactionFallback')).toBe('Context compacted · summary generated');
+    expect(translate('en', 'transcript.marker.compactionRescue')).toBe('Context compacted · started fresh');
 
     const frameNotice = projected.blocks.find((block) => block.kind === 'notice' && block.id === 'agent-frame-f-notice-err');
     expect(frameNotice).toMatchObject({

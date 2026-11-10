@@ -440,7 +440,7 @@ describe('delivery note contract', () => {
 });
 
 describe('failed message error disclosure', () => {
-  it('shows a concise failure headline by default and expands the full error detail on click', () => {
+  it('shows a concise failure headline by default and expands the full error detail with copy on click', () => {
     const fullDetail = 'Attachment path rejected by remote relay\nDiagnostic trace: gateway=edge-2\ncode=413_PAYLOAD_TOO_LARGE';
     const container = draw(message({
       status: 'failed',
@@ -453,9 +453,11 @@ describe('failed message error disclosure', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.textContent).toContain('Attachment path rejected by remote relay');
     expect(toggle.textContent).not.toContain('413_PAYLOAD_TOO_LARGE');
+    expect(container.querySelector('[data-copy-state]')).toBeNull();
 
     act(() => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain(fullDetail);
+    expect(container.querySelector('[data-copy-state]')).not.toBeNull();
   });
 });

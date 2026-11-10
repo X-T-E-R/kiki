@@ -184,13 +184,12 @@ export function SubagentResultSummary({
     : (signal: AbortSignal) => controller.copyContentField(caller, source, [copyRoot], signal);
   return (
     <div data-subagent-result-summary className="space-y-1.5 text-ink">
-      <div className="flex items-center justify-between text-[12px] font-medium text-ink-faint">
-        <span>{label}</span>
-        {trimmed === '' ? null : <CopyButton label={label} text={trimmed} prepare={prepareCopy} />}
-      </div>
       {trimmed === '' ? null : (
-        <div className="kiki-prose max-h-[28rem] overflow-auto pr-1 !text-[13.5px] text-ink">
-          <Markdown text={trimmed} />
+        <div className="flex items-start gap-2">
+          <div className="kiki-prose min-w-0 flex-1 max-h-[28rem] overflow-auto pr-1 !text-[13.5px] text-ink">
+            <Markdown text={trimmed} />
+          </div>
+          <CopyButton label={label} text={trimmed} prepare={prepareCopy} />
         </div>
       )}
       <ContentContinuation
@@ -198,7 +197,6 @@ export function SubagentResultSummary({
         roots={TASK_SUMMARY_ROOTS}
         callerAgentId={callerAgentId}
         label={label}
-        headingPresent
         renderText={(markdown) => <Markdown text={markdown} />}
       />
     </div>
