@@ -10,6 +10,7 @@ import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { openPermissionChannel, permissionChannelIdentity, requestHookPermission } from './agy-permission-hook.mjs';
 import { homedir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT = 'engine-default';
@@ -28,8 +29,8 @@ const NATIVE_ERROR = 7;
 const LEGACY_NETWORK_FAILURE = 'There was a network issue connecting to the server, please try again.';
 const NETWORK_RECOVERY_INSTRUCTION = 'The connection to the model provider was interrupted after your last completed step. '
   + 'Continue the same task from where it stopped. Do not repeat tool calls that already finished.';
-const MAX_NETWORK_RECOVERIES_PER_STREAK = 1;
-const MAX_NETWORK_RECOVERIES_PER_TURN = 8;
+const MAX_CONSECUTIVE_NETWORK_RECOVERIES = 3;
+const NETWORK_RECOVERY_BACKOFF_MS = [0, 1000, 3000];
 const NETWORK_RECOVERY_EXIT_GRACE_MS = 5000;
 
 function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
@@ -511,9 +512,10 @@ async function terminate(child) {
 }
 
 export class AgyBridge {
-  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit, continuationExitGraceMs = NETWORK_RECOVERY_EXIT_GRACE_MS } = {}) {
+  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit, continuationExitGraceMs = NETWORK_RECOVERY_EXIT_GRACE_MS, networkRecoveryBackoffMs = NETWORK_RECOVERY_BACKOFF_MS } = {}) {
     this.stopProcess = stopProcess;
     this.continuationExitGraceMs = continuationExitGraceMs;
+    this.networkRecoveryBackoffMs = networkRecoveryBackoffMs;
     if (!isAbsolute(cliPath ?? '')) throw new Error('Pass the exact absolute AGY executable path');
     if (typeof model !== 'string' || !model || /\s/.test(model)) throw new Error('AGY model must be a nonempty engine ID');
     if (account && model !== DEFAULT && !account.modelIds.includes(model)) throw new Error('The selected account does not provide the bound AGY model');
@@ -1130,6 +1132,7 @@ export class AgyBridge {
         active.finalResponseDone = false;
         active.finalResponseStepIndex = undefined;
         active.finalResponseText = '';
+        if (Number.isSafeInteger(step.step_index)) active.progressFloor = Math.max(active.progressFloor, step.step_index);
         await this.audit(session, 'prompt_consumed', { stepIndex: step.step_index });
       } else {
         active.lastStepType = step.step_type;
@@ -1141,6 +1144,7 @@ export class AgyBridge {
           active.finalResponseText = '';
         }
       }
+      const freshStep = active.promptConsumed && Number.isSafeInteger(step.step_index) && step.step_index > active.progressFloor;
       if (step.step_type === 'agent_response') {
         if (active.finalResponseStepIndex !== step.step_index) {
           active.finalResponseStepIndex = step.step_index;
@@ -1154,7 +1158,7 @@ export class AgyBridge {
             update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.text_delta } } });
         }
         active.finalResponseDone = step.state === 'DONE' && active.finalResponseText.length > 0;
-        if (active.finalResponseDone) active.progressSinceRecovery = true;
+        if (freshStep && active.finalResponseDone && active.finalResponseText.trim()) active.progressSinceRecovery = true;
       }
       if (step.step_type === 'tool') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
@@ -1176,7 +1180,7 @@ export class AgyBridge {
         await this.audit(session, 'tool_state', { toolCallId: id, ...detail });
         if (session.active === active && (step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
           const failed = step.state === 'ERROR' || Boolean(step.tool_info?.error);
-          if (!failed) active.progressSinceRecovery = true;
+          if (freshStep && !failed) active.progressSinceRecovery = true;
           const error = step.tool_info?.error ?? step.error;
           session.toolIds.set(id, 'settled');
           const errorText = typeof error === 'string' ? error : error?.message;
@@ -1253,8 +1257,7 @@ export class AgyBridge {
       active.progressSinceRecovery = false;
     }
     const continuationAllowed = recoverableNetworkError
-      && active.networkRecoveries < MAX_NETWORK_RECOVERIES_PER_STREAK
-      && active.networkRecoveriesTotal < MAX_NETWORK_RECOVERIES_PER_TURN;
+      && active.networkRecoveries < MAX_CONSECUTIVE_NETWORK_RECOVERIES;
     if (continuationAllowed) {
       const attempt = active.networkRecoveries + 1;
       const preservedTools = session.toolIds.size;
@@ -1331,15 +1334,16 @@ export class AgyBridge {
     }
     if (recoverableNetworkError && !continuationAllowed) {
       const preservedTools = session.toolIds.size;
+      const consecutiveRecoveries = active.networkRecoveries;
       const message = `AGY terminal status ${result.status}: ${result.error ?? 'no success result'}; automatic continuation stopped after`
-        + ` ${active.networkRecoveriesTotal} continue attempt${active.networkRecoveriesTotal === 1 ? '' : 's'} without a completed model response;`
+        + ` ${consecutiveRecoveries} consecutive attempts without progress;`
         + ` every completed tool result (${preservedTools}) and native conversation ${result.conversation_id ?? '(unknown)'} are retained;`
         + ' load that exact native conversation to continue it, instead of replaying the prompt or the finished tool calls';
       await this.audit(session, 'network_recovery_exhausted', {
-        conversationId: result.conversation_id, error: result.error, recoveries: active.networkRecoveriesTotal, preservedTools,
+        conversationId: result.conversation_id, error: result.error, recoveries: active.networkRecoveriesTotal, consecutiveRecoveries, preservedTools,
       });
       error = new Error(message);
-      error.details = { nativeError: result.error, recoveries: active.networkRecoveriesTotal, preservedTools,
+      error.details = { nativeError: result.error, recoveries: active.networkRecoveriesTotal, consecutiveRecoveries, preservedTools,
         conversationId: result.conversation_id };
       session.broken = true;
       session.failure = message;
@@ -1423,7 +1427,7 @@ export class AgyBridge {
     const content = promptText(params.prompt);
     const promise = new Promise((resolveTurn, rejectTurn) => {
       const active = { client, text: '', steering: [], networkRecoveries: 0, networkRecoveriesTotal: 0, segmentStart: 0,
-        progressSinceRecovery: false,
+        progressSinceRecovery: false, progressFloor: -1, recoveryAbort: new AbortController(),
         resolve: value => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
         reject: error => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
       session.active = active;
@@ -1528,7 +1532,13 @@ export class AgyBridge {
           return;
         }
         await this.audit(session, 'close', { pid: owned.pid, processEnded: true, exitCode, signal: null });
-        if (session.active !== active || session.cancelling) return;
+        const backoff = this.networkRecoveryBackoffMs[attempt - 1];
+        const { signal: recoverySignal } = active.recoveryAbort;
+        if (backoff > 0) {
+          try { await delay(backoff, undefined, { signal: recoverySignal }); }
+          catch (error) { if (error.code !== 'ABORT_ERR') throw error; }
+        }
+        if (session.active !== active || session.cancelling || recoverySignal.aborted) return;
         session.conversationId = conversationId;
         session.broken = false;
         await this.syncPermissionHook(session);
@@ -1568,6 +1578,7 @@ export class AgyBridge {
 
   async cancelOwnedSession(session) {
     const active = session.active;
+    active?.recoveryAbort.abort();
     session.broken = true;
     let requestAuditError;
     try {

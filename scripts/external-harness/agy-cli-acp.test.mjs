@@ -1882,30 +1882,73 @@ void test('a continuation that produces real progress reopens the recovery budge
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-void test('a repeated network failure stops after one continuation and reports the native reason, count and preserved tools', { timeout: 30000 }, async () => {
+void test('repeated network errors stop after three consecutive attempts without fresh completed progress', { timeout: 30000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const root = await mkdtemp(join(tmpdir(), 'agy-network-twice-'));
+  const root = await mkdtemp(join(tmpdir(), 'agy-network-no-progress-'));
   const auditDir = join(root, 'audit');
   const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const b = bridge('claude-opus-5-5-high'); b.auditDir = auditDir;
   try {
     const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
-    const failure = await turn(b, id, 'network-recover-twice', []).then(() => undefined, error => error);
+    const failure = await turn(b, id, 'network-recover-no-progress', []).then(() => undefined, error => error);
     assert.match(failure.message, /^AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./);
-    assert.match(failure.message, /automatic continuation stopped after 1 continue attempt without a completed model response/);
+    assert.match(failure.message, /automatic continuation stopped after 3 consecutive attempts without progress/);
     assert.match(failure.message, new RegExp(`every completed tool result \\(1\\) and native conversation ${conversationId} are retained`));
     assert.match(failure.message, /load that exact native conversation to continue it/);
-    assert.deepEqual(failure.details, { nativeError: 'There was a network issue connecting to the server, please try again.', recoveries: 1, preservedTools: 1,
+    assert.deepEqual(failure.details, { nativeError: 'There was a network issue connecting to the server, please try again.', recoveries: 3, consecutiveRecoveries: 3, preservedTools: 1,
       conversationId });
     const native = b.session(id);
     assert.equal(native.broken, true);
     assert.notEqual(native.child.exitCode, null);
     const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
-    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 1);
+    assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => record.attempt), [1, 2, 3]);
+    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 3);
     assert.equal(records.filter(record => record.type === 'network_recovery_exhausted').length, 1);
     assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n');
     await assert.rejects(turn(b, id, 'again', []), /load that exact native conversation/);
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('fresh completed work resets retries after earlier empty attempts and removes the per-turn recovery cap', { timeout: 30000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-network-many-'));
+  const b = bridge('claude-opus-5-5-high'); b.auditDir = join(root, 'audit'); b.networkRecoveryBackoffMs = [0, 0, 0];
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const messages = [];
+    assert.deepEqual(await turn(b, id, 'network-recover-late-progress', messages), { stopReason: 'end_turn' });
+    const records = (await readFile(join(b.auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => record.attempt), [1, 2, 3, 1, 2, 3, 1, 2, 3, 1]);
+    assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
+    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 10);
+    assert.equal(records.some(record => record.type === 'network_recovery_exhausted'), false);
+    assert.equal(messages.filter(message => message.update.sessionUpdate === 'agent_message_chunk')
+      .map(message => message.update.content.text).join(''), 'finished-after-ten-continuations');
+    assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n'.repeat(4));
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+void test('cancel interrupts network recovery backoff without sending another continuation', { timeout: 10000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-network-backoff-cancel-'));
+  const b = bridge('claude-opus-5-5-high'); b.auditDir = join(root, 'audit'); b.networkRecoveryBackoffMs = [0, 60000, 60000];
+  let reachedBackoff;
+  const ready = new Promise(done => { reachedBackoff = done; });
+  const audit = b.audit.bind(b);
+  b.audit = async (target, type, data) => {
+    await audit(target, type, data);
+    if (type === 'close' && target.active?.networkRecoveries === 2) reachedBackoff();
+  };
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const pending = turn(b, id, 'network-recover-no-progress', []);
+    await ready;
+    await b.cancel({ sessionId: id });
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    const records = (await readFile(join(b.auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 1);
+    assert.equal(records.filter(record => record.type === 'launch').length, 2);
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 

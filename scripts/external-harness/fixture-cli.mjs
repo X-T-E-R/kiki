@@ -178,9 +178,20 @@ for await (const line of stdinLines) {
       succeed(base, `recovered-after-continuation-${turns}`);
       continue;
     }
-    if (scenario === 'network-recover-twice') {
+    if (scenario === 'network-recover-no-progress') {
+      step('tool', 11, { tool_name: 'run_command', tool_info: { output: 'executions=1' } });
+      step('agent_response', base + 1, { state: 'ACTIVE', text_delta: 'partial' });
       failNetwork(base);
       await exitAfterTerminalError();
+      continue;
+    }
+    if (scenario === 'network-recover-late-progress') {
+      if (turns === 11) succeed(base, 'finished-after-ten-continuations');
+      else {
+        if (turns % 3 === 1) runToolOnce(base + 1);
+        failNetwork(base + 1);
+        await exitAfterTerminalError();
+      }
       continue;
     }
     if (scenario === 'network-recover-live-progress-then-fail') {
