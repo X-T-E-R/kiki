@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { buildAgentForest } from './agentTree';
 import {
   foldHistory,
   groupBlocks,
@@ -620,5 +621,55 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       'system',
       'assistant',
     ]);
+  });
+
+  it('fuses live forest status so completed, idle, and lost subagents dissolve SubagentGroup and fold into HistoryFold without polluting older runs', () => {
+    const batch: SubagentBlock[] = [
+      { ...agent('agent-carbon', 'completed', 't1'), id: 'subagent-carbon', name: 'dsh_microkernel_eval_carbon' },
+      { ...agent('agent-opus', 'running', 't1'), id: 'subagent-opus', name: 'dsh_microkernel_eval_opus', error: 'AGY terminal status ERROR' },
+      { ...agent('agent-clean', 'running', 't1'), id: 'subagent-clean', name: 'timeline_expand_summary_clean' },
+      { ...agent('agent-hooks', 'running', 't1'), id: 'subagent-hooks', name: 'hooks_v2_rich_context' },
+      { ...agent('agent-rev', 'running', 't1'), id: 'subagent-rev', name: 'blocked_prompt_f1_reviewer' },
+    ];
+    const blocks: Block[] = [
+      inTurn(text('user'), 't1'),
+      inTurn(read('/w/spec.ts'), 't1'),
+      ...batch,
+      inTurn(text('assistant'), 't1'),
+      inTurn(text('user'), 't2'),
+      inTurn(text('assistant'), 't2'),
+    ];
+    const withoutForest = foldHistory(blocks, 't2');
+    expect(withoutForest.some((node) => node.kind === 'subagent-group')).toBe(true);
+
+    const forest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'agent-carbon', parentAgentId: 'main', status: 'completed', toolCallCount: 3 },
+      { agentId: 'agent-opus', parentAgentId: 'main', status: 'idle', error: 'AGY terminal status ERROR', toolCallCount: 1 },
+      { agentId: 'agent-clean', parentAgentId: 'main', status: 'completed', toolCallCount: 4 },
+      { agentId: 'agent-hooks', parentAgentId: 'main', status: 'idle', toolCallCount: 2 },
+      { agentId: 'agent-rev', parentAgentId: 'main', status: 'lost', toolCallCount: 1 },
+    ]);
+    const withForest = foldHistory(blocks, 't2', { forest });
+    expect(withForest.some((node) => node.kind === 'subagent-group')).toBe(false);
+    expect(withForest.map((node) => node.kind)).toEqual(['user', 'history-fold', 'assistant', 'user', 'assistant']);
+    const fold = withForest[1] as HistoryFold;
+    expect(fold).toMatchObject({ turnId: 't1', agents: 5, steps: 1, failed: 2 });
+
+    const resumedBlocks: Block[] = [
+      inTurn(text('user'), 't1'),
+      inTurn(read('/w/old.ts'), 't1'),
+      { ...agent('agent-reuse', 'completed', 't1'), id: 'subagent-reuse-1', taskId: 'run-1' },
+      inTurn(text('assistant'), 't1'),
+      inTurn(text('user'), 't2'),
+      { ...agent('agent-reuse', 'running', 't2'), id: 'subagent-reuse-2', taskId: 'run-2' },
+    ];
+    const resumedForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'agent-reuse', parentAgentId: 'main', status: 'running', toolCallCount: 2 },
+    ]);
+    const resumedNodes = foldHistory(resumedBlocks, 't2', { forest: resumedForest });
+    expect(resumedNodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'assistant', 'user', 'subagent']);
+    expect((resumedNodes[1] as HistoryFold).agents).toBe(1);
   });
 });

@@ -12,10 +12,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import type { MediaRun, SubagentEnding, ToolBlock } from '@kiki/session-core/session';
+import { buildAgentForest, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup, type ToolBlock } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
-import { MediaRunRow, SubagentEndedRow } from './FoldRows';
+import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './FoldRows';
 
 // The gallery order seam wraps each thumbnail in a context provider and renders
 // no DOM of its own, so its props are what the seam is observed by; the real
@@ -256,5 +256,93 @@ describe('MediaRunRow gallery order', () => {
     galleryOrderProbe.calls.length = 0;
     await renderRun(run);
     expect(galleryOrderProbe.calls).toEqual([]);
+  });
+});
+
+describe('SubagentGroupRow settled status counting', () => {
+  function member(id: string, status: SubagentBlock['status']): SubagentBlock {
+    return {
+      kind: 'subagent',
+      id: `card-${id}`,
+      subagentId: id,
+      parentAgentId: 'main',
+      parentToolCallId: undefined,
+      parentTurnId: 't1',
+      name: id,
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status,
+      summary: undefined,
+      error: undefined,
+      startedAt: undefined,
+      endedAt: undefined,
+      toolCallCount: 0,
+      transcript: [],
+    };
+  }
+
+  it('counts completed, idle, and lost forest statuses as done and clears the running spinner when all 5 settle', async () => {
+    const members = [
+      member('dsh_microkernel_eval_carbon', 'completed'),
+      member('dsh_microkernel_eval_opus', 'running'),
+      member('timeline_expand_summary_clean', 'running'),
+      member('hooks_v2_rich_context', 'running'),
+      member('blocked_prompt_f1_reviewer', 'running'),
+    ];
+    const group: SubagentGroup = {
+      kind: 'subagent-group',
+      id: 'subagent-group-card-dsh_microkernel_eval_carbon',
+      turnId: 't1',
+      members,
+    };
+    const oneStillRunning: AgentForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'dsh_microkernel_eval_carbon', parentAgentId: 'main', status: 'completed' },
+      { agentId: 'dsh_microkernel_eval_opus', parentAgentId: 'main', status: 'idle', error: 'AGY terminal status ERROR' },
+      { agentId: 'timeline_expand_summary_clean', parentAgentId: 'main', status: 'completed' },
+      { agentId: 'hooks_v2_rich_context', parentAgentId: 'main', status: 'lost' },
+      { agentId: 'blocked_prompt_f1_reviewer', parentAgentId: 'main', status: 'running' },
+    ]);
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(
+        <I18nProvider>
+          <SubagentGroupRow
+            group={group}
+            forest={oneStillRunning}
+            renderMember={(item) => <span>{item.name}</span>}
+          />
+        </I18nProvider>,
+      );
+    });
+    const row = host.querySelector('[data-subagent-group="5"]')!;
+    expect(row.getAttribute('data-subagent-group-done')).toBe('4');
+    expect(row.textContent).toContain('4/5 done');
+    expect(host.querySelector('[data-subagent-group-status] [role="img"]')).not.toBeNull();
+
+    const allSettled: AgentForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'dsh_microkernel_eval_carbon', parentAgentId: 'main', status: 'completed' },
+      { agentId: 'dsh_microkernel_eval_opus', parentAgentId: 'main', status: 'idle', error: 'AGY terminal status ERROR' },
+      { agentId: 'timeline_expand_summary_clean', parentAgentId: 'main', status: 'completed' },
+      { agentId: 'hooks_v2_rich_context', parentAgentId: 'main', status: 'lost' },
+      { agentId: 'blocked_prompt_f1_reviewer', parentAgentId: 'main', status: 'idle' },
+    ]);
+    await act(async () => {
+      root!.render(
+        <I18nProvider>
+          <SubagentGroupRow
+            group={group}
+            forest={allSettled}
+            renderMember={(item) => <span>{item.name}</span>}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(host.querySelector('[data-subagent-group="5"]')?.getAttribute('data-subagent-group-done')).toBe('5');
+    expect(host.querySelector('[data-subagent-group-status] [role="img"]')).toBeNull();
   });
 });

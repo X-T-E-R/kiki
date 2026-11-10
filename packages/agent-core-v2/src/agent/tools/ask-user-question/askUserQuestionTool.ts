@@ -166,7 +166,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
           description,
           { questionCount: args.questions.length, toolCallId },
         ),
-        { detached: true },
+        { detached: true, ownerTurnId: turnId },
       );
     } catch (error) {
       admission?.release();

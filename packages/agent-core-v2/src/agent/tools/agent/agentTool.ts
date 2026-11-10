@@ -708,6 +708,7 @@ export class SubagentTool implements ISubagentTool {
         }
         const registerOptions: RegisterAgentTaskOptions = {
           taskId: allocatedTaskId,
+          ownerTurnId: turnId,
           detached: runInBackground,
           timeoutMs,
           detachTimeoutMs: timeoutMs,

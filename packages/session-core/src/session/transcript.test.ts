@@ -3808,6 +3808,106 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.some((block) => block.id === 'subagent-agent-outside-page')).toBe(false);
   });
 
+  it('anchors compacted-turn taskrefs to their preceding turn when ownerTurnId is missing and startedAt is valid, without drifting to later turns', () => {
+    const batch = ['agent-1430', 'agent-1431', 'agent-1432', 'agent-1433', 'agent-1434'];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2328',
+            ordinal: 2328,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'run 5 background evaluations',
+            startedAt: '2026-11-11T01:00:00.000Z',
+            endedAt: '2026-11-11T01:02:00.000Z',
+            stepsPartial: true,
+            steps: [],
+          },
+          {
+            kind: 'marker',
+            markerId: 'compaction-2328',
+            marker: 'compaction',
+            at: '2026-11-11T01:01:30.000Z',
+            payload: { phase: 'completed', summary: 'compacted step prefix' },
+          },
+          ...batch.map((agentId, index) => ({
+            kind: 'taskref' as const,
+            refId: `ref-${agentId}`,
+            taskId: `task-${agentId}`,
+            at: `2026-11-11T01:00:1${index}.000Z`,
+          })),
+          {
+            kind: 'turn',
+            turnId: 't2329',
+            ordinal: 2329,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'next question',
+            startedAt: '2026-11-11T01:05:00.000Z',
+            endedAt: '2026-11-11T01:06:00.000Z',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't2329.1',
+                turnId: 't2329',
+                ordinal: 1,
+                state: 'completed',
+                frames: [{ kind: 'text', frameId: 'f-2329', role: 'assistant', text: 'Answered t2329.' }],
+              },
+            ],
+          },
+          {
+            kind: 'turn',
+            turnId: 't2330',
+            ordinal: 2330,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'latest question',
+            startedAt: '2026-11-11T01:10:00.000Z',
+            endedAt: '2026-11-11T01:11:00.000Z',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't2330.1',
+                turnId: 't2330',
+                ordinal: 1,
+                state: 'completed',
+                frames: [{ kind: 'text', frameId: 'f-2330', role: 'assistant', text: 'Answered t2330.' }],
+              },
+            ],
+          },
+        ],
+        tasks: batch.map((agentId, index) => ({
+          taskId: `task-${agentId}`,
+          kind: 'subagent' as const,
+          state: index === 0 ? ('running' as const) : ('completed' as const),
+          detached: true,
+          agentId,
+          name: `eval_${index}`,
+          ownerTurnId: undefined,
+          parentToolCallId: `compacted-call-${index}`,
+          startedAt: `2026-11-11T01:00:1${index}.000Z`,
+          endedAt: index === 0 ? undefined : `2026-11-11T01:01:2${index}.000Z`,
+          outputTail: index === 0 ? '' : 'done',
+        })),
+      }),
+    );
+
+    const subagentBlocks = projected.blocks.filter((block): block is Extract<typeof block, { kind: 'subagent' }> => block.kind === 'subagent');
+    expect(subagentBlocks).toHaveLength(5);
+    expect(subagentBlocks.map((block) => block.parentTurnId)).toEqual(['t2328', 't2328', 't2328', 't2328', 't2328']);
+    const turn2329Index = projected.blocks.findIndex((block) => block.kind === 'user' && block.turnId === 't2329');
+    for (const block of subagentBlocks) {
+      const idx = projected.blocks.indexOf(block);
+      expect(idx).toBeGreaterThan(0);
+      expect(idx).toBeLessThan(turn2329Index);
+    }
+  });
+
   describe('subagent lifecycle event blocks', () => {
     const lifecycleSnapshot = (assistantText?: string, endedAt?: string): AgentTranscriptSnapshot => emptySnapshot({
       items: [

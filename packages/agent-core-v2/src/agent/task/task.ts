@@ -53,6 +53,7 @@ export interface RegisterAgentTaskOptions {
   readonly detachTimeoutMs?: number;
   readonly autoBackgroundOnTimeout?: boolean;
   readonly signal?: AbortSignal;
+  readonly ownerTurnId?: number;
   /** Preallocated by a transactional adapter before the task starts. */
   readonly taskId?: string;
   /** Keep the task private until a transactional caller commits registration. */

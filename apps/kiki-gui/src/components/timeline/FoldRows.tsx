@@ -7,7 +7,7 @@
 import { memo, useState, type ReactNode } from 'react';
 
 import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
-import type { AgentForest, MediaRun, SubagentBlock, SubagentEnding, SubagentGroup } from '@kiki/session-core/session';
+import { isLiveSubagentStatus, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
@@ -107,12 +107,18 @@ export const MediaRunRow = memo(function MediaRunRow({ run, agentId, blockOrder 
   );
 });
 
-function liveStatus(block: SubagentBlock, forest: AgentForest | undefined): string {
-  return forest?.byId[block.subagentId]?.status ?? block.status;
+function liveStatus(
+  block: SubagentBlock,
+  forest: AgentForest | undefined,
+  childBlocks: ReadonlyMap<string, SubagentBlock> | undefined,
+): string {
+  const latestCard = childBlocks?.get(block.subagentId);
+  const isLatestRun = latestCard === undefined || latestCard.id === block.id;
+  return isLatestRun ? (forest?.byId[block.subagentId]?.status ?? block.status) : block.status;
 }
 
 function settled(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+  return !isLiveSubagentStatus(status);
 }
 
 /**
@@ -123,15 +129,17 @@ function settled(status: string): boolean {
 export function SubagentGroupRow({
   group,
   forest,
+  childBlocks,
   renderMember,
 }: {
   group: SubagentGroup;
   forest: AgentForest | undefined;
+  childBlocks?: ReadonlyMap<string, SubagentBlock>;
   renderMember: (member: SubagentBlock) => ReactNode;
 }) {
   const { t, tp } = useI18n();
   const total = group.members.length;
-  const done = group.members.filter((member) => settled(liveStatus(member, forest))).length;
+  const done = group.members.filter((member) => settled(liveStatus(member, forest, childBlocks))).length;
   return (
     <ActivityRow
       attrs={{ 'data-subagent-group': total, 'data-subagent-group-done': done }}

@@ -200,6 +200,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   async send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly sourceTurnId?: number;
     readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;
@@ -208,7 +209,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     readonly waitForRunningDelivery?: boolean;
     readonly idleWake?: 'owned-child' | 'parent';
   }): Promise<AgentMessageAcceptance> {
-    const { waitForRunningDelivery, idleWake, ...messageInput } = input;
+    const { waitForRunningDelivery, idleWake, sourceTurnId, ...messageInput } = input;
     const storedInput = { sessionId: this.session.sessionId, ...messageInput };
     let child: DispatchChild | undefined;
     let handle = this.lifecycle.get(input.targetAgentId);
@@ -229,7 +230,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     if (handle === undefined) return acceptance;
     if (waitForRunningDelivery !== true) {
-      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child);
+      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId);
       return acceptance;
     }
     const resumed = await this.deliverOrWake(
@@ -239,6 +240,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       input.sourceAgentId,
       child,
       false,
+      sourceTurnId,
     );
     const refreshed = await this.store.accept(storedInput);
     if (
@@ -246,7 +248,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       idleWake !== undefined &&
       !this.withheld.has(acceptance.message.messageId)
     ) {
-      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child).catch((error: unknown) => {
+      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId).catch((error: unknown) => {
         this.reportContinuationFailure(input.sourceAgentId, acceptance.message.messageId, input.targetAgentId, error).catch(onUnexpectedError);
       });
     }
@@ -258,6 +260,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     idleWake: 'owned-child' | 'parent' | undefined,
     sourceAgentId: string,
     child: DispatchChild | undefined,
+    sourceTurnId?: number,
   ): Promise<void> {
     const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
     if (lease === undefined) return;
@@ -274,6 +277,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         sourceAgentId,
         child?.agent === pinnedHandle ? child : undefined,
         true,
+        sourceTurnId,
       );
       void (async () => {
         try {
@@ -440,6 +444,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     sourceAgentId: string,
     child: DispatchChild | undefined,
     followBusyCompletion: boolean,
+    sourceTurnId?: number,
   ): Promise<boolean> {
     if (!this.kikiMailEnabled(handle)) return false;
     let observedStart = false;
@@ -479,7 +484,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       const outcome = await this.serializeWake(handle.id, async () => {
         if (this.messageLanded(handle, message.messageId)) return 'skipped' as const;
         if (this.isStarting(handle) || this.executionBusy(handle) || this.admittedWorkWillRead(handle)) return 'skipped' as const;
-        return this.wakeWhenIdle(handle, message, idleWake, sourceAgentId, child);
+        return this.wakeWhenIdle(handle, message, idleWake, sourceAgentId, child, sourceTurnId);
       });
       if (outcome === 'landed' || outcome === 'other') observedStart = true;
       if (this.messageLanded(handle, message.messageId)) return observedStart;
@@ -547,6 +552,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     idleWake: 'owned-child' | 'parent',
     sourceAgentId: string,
     child?: DispatchChild,
+    sourceTurnId?: number,
   ): Promise<WakeAttempt> {
     const execution = handle.accessor.get(IAgentExecutionService);
     const loop = handle.accessor.get(IAgentLoopService);
@@ -588,7 +594,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       prompts.pending.length > 0
     ) return 'skipped';
     if (isExternalClientMain(await this.metadata.read(), handle.id)) return 'skipped';
-    return this.startWake(handle, message, idleWake, sourceAgentId, child);
+    return this.startWake(handle, message, idleWake, sourceAgentId, child, sourceTurnId);
   }
 
   private async startWake(
@@ -597,6 +603,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     idleWake: 'owned-child' | 'parent',
     sourceAgentId: string,
     child?: DispatchChild,
+    sourceTurnId?: number,
   ): Promise<WakeAttempt> {
     for (;;) {
       try {
@@ -604,7 +611,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         const run = await this.dispatch.runOnExisting(
           child ?? await this.dispatchChild(handle),
           { kind: 'mailbox', prompt: visibleAgentMessage(message), message: contextMessage },
-          { signal: new AbortController().signal },
+          { signal: new AbortController().signal, ownerTurnId: sourceTurnId },
         );
         if (idleWake === 'owned-child' && message.senderKind !== 'user') {
           this.dispatch.recordDelegatedRun(sourceAgentId, handle.id);

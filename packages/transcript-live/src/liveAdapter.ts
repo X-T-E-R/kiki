@@ -1445,6 +1445,11 @@ export class AgentTranscriptLiveAdapter {
       this.subagentTaskIds.delete(event.subagentId);
     }
     const startedAt = epochMsToIso(event.time);
+    const hit =
+      this.toolFrames.get(event.parentToolCallId) ?? this.adoptToolFrame(event.parentToolCallId);
+    const inferredOwnerTurnId =
+      turnOrdinalOf(hit?.turnId) ??
+      (this.currentTurn?.state === 'running' ? this.currentTurn.ordinal : undefined);
     const previous = this.tasks.get(taskKey) ?? this.lookups?.task?.(taskKey);
     const sameRun =
       previous?.taskId === taskKey &&
@@ -1455,6 +1460,7 @@ export class AgentTranscriptLiveAdapter {
     if (sameRun) {
       const task: TranscriptTask = {
         ...previous,
+        ownerTurnId: previous.ownerTurnId ?? inferredOwnerTurnId,
         name: event.name ?? previous.name,
         subagentName: event.subagentName,
         model: event.model ?? previous.model,
@@ -1476,6 +1482,7 @@ export class AgentTranscriptLiveAdapter {
         kind: 'subagent',
         state: 'running',
         detached: event.runInBackground,
+        ownerTurnId: event.taskId === undefined ? inferredOwnerTurnId : previous?.ownerTurnId ?? inferredOwnerTurnId,
         name: event.name,
         subagentName: event.subagentName,
         model: event.model,
@@ -1492,8 +1499,6 @@ export class AgentTranscriptLiveAdapter {
       this.tasks.set(taskKey, task);
       ops.push({ op: 'task.upsert', task });
     }
-    const hit =
-      this.toolFrames.get(event.parentToolCallId) ?? this.adoptToolFrame(event.parentToolCallId);
     if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
       const ref: AgentRef = {
         agentId: event.subagentId,
@@ -2111,6 +2116,12 @@ function mapTurnEndState(reason: 'completed' | 'cancelled' | 'failed' | 'blocked
     case 'blocked':
       return 'failed';
   }
+}
+
+function turnOrdinalOf(turnId: string | undefined): number | undefined {
+  if (turnId === undefined || !/^t\d+$/.test(turnId)) return undefined;
+  const ordinal = Number(turnId.slice(1));
+  return Number.isSafeInteger(ordinal) ? ordinal : undefined;
 }
 
 function mapTaskKind(kind: string): TranscriptTask['kind'] {

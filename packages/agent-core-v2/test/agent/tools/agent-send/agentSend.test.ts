@@ -48,6 +48,7 @@ describe('AgentSend', () => {
     expect(send).toHaveBeenCalledWith({
       sourceAgentId: CALLER_ID,
       sourceTaskName: 'root',
+      sourceTurnId: 0,
       targetAgentId: ANON_ID,
       targetTaskName: ANON_ID,
       content: 'continue with the open files',

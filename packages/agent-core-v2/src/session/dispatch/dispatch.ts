@@ -74,6 +74,7 @@ export interface DispatchRunOptions {
   readonly description?: string;
   readonly selectorCall?: DispatchSelectorCall;
   readonly sourceRef?: string;
+  readonly ownerTurnId?: number;
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;

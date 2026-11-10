@@ -101,6 +101,7 @@ export interface IAgentCollaborationMessagingService {
   send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly sourceTurnId?: number;
     readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;

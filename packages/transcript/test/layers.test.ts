@@ -5147,3 +5147,45 @@ it('anchors re-emitted task.started records to ownerTurnId and preserves origina
     startedAt: new Date(11_000).toISOString(),
   });
 });
+
+it('backfills ownerTurnId on subagent.spawned from the parent tool call or active turn when task.started has not arrived', () => {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    task: (taskId) => transcript.getTask(taskId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+  feed({ type: 'turn.prompt', turnId: 7, origin: { kind: 'user' }, input: [{ type: 'text', text: 'delegate' }], time: 1_000 });
+  feed({
+    type: 'context.append_loop_event',
+    time: 1_100,
+    event: { type: 'step.begin', turnId: 7, step: 1, uuid: 'step-7-1' },
+  });
+  feed({
+    type: 'context.append_loop_event',
+    time: 1_200,
+    event: {
+      type: 'content.part',
+      turnId: 7,
+      stepUuid: 'step-7-1',
+      uuid: 'part-call-7',
+      part: { type: 'tool_call', id: 'call_spawn_7', name: 'AgentRun', arguments: '{"description":"batch worker","prompt":"go"}' },
+    },
+  });
+  feed({
+    type: 'subagent.spawned',
+    subagentId: 'agent-child-7',
+    subagentName: 'batch_worker',
+    parentToolCallId: 'call_spawn_7',
+    runInBackground: true,
+    time: 1_300,
+  });
+  feed({ type: 'turn.ended', turnId: 7, reason: 'completed', time: 1_500 });
+  const spawned = transcript.snapshot().tasks.find((task) => task.agentId === 'agent-child-7');
+  expect(spawned).toMatchObject({
+    agentId: 'agent-child-7',
+    parentToolCallId: 'call_spawn_7',
+    ownerTurnId: 7,
+  });
+});

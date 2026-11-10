@@ -512,7 +512,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       status: 'running',
       options: entryOptions,
       startedAt: restored?.startedAt ?? Date.now(),
-      ownerTurnId: restored === undefined ? this.loop.status().activeTurnId : restored.ownerTurnId,
+      ownerTurnId: restored === undefined ? (options.ownerTurnId ?? this.loop.status().activeTurnId) : restored.ownerTurnId,
       goalId: restored === undefined ? this.currentGoal()?.goalId : restored.goalId,
       terminalNotificationSuppressed: restored?.terminalNotificationSuppressed,
       endedAt: null,

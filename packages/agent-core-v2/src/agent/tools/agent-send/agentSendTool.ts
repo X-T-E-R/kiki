@@ -69,6 +69,7 @@ export class AgentSendTool implements IAgentSendTool {
       const acceptance = await this.messaging.send({
         sourceAgentId: callerAgentId,
         sourceTaskName: callerTaskName(session, callerAgentId),
+        sourceTurnId: context.turnId,
         targetAgentId: child.agentId,
         targetTaskName,
         content: args.message,

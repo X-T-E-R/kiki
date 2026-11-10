@@ -978,6 +978,11 @@ export class TranscriptWireAdapter {
       if (explicitTaskId === undefined) this.#subagentTaskIds.delete(subagentId);
       else this.#subagentTaskIds.set(subagentId, explicitTaskId);
       const startedAt = isoOf(record.time);
+      const hit = this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
+      const current = this.#currentTurnId === undefined
+        ? undefined
+        : this.#turnHeaders.get(this.#currentTurnId) ?? this.lookups?.turn?.(this.#currentTurnId);
+      const inferredOwnerTurnId = turnOrdinalOf(hit?.turnId) ?? (current?.state === 'running' ? current.ordinal : undefined);
       const previous = this.#tasks.get(taskId);
       const sameRun =
         previous?.taskId === taskId &&
@@ -988,6 +993,7 @@ export class TranscriptWireAdapter {
       if (sameRun) {
         const task: TranscriptTask = {
           ...previous,
+          ownerTurnId: previous.ownerTurnId ?? inferredOwnerTurnId,
           name: stringOf(record['name']) ?? previous.name,
           subagentName: stringOf(record['subagentName']) ?? previous.subagentName,
           model: stringOf(record['model']) ?? previous.model,
@@ -1009,6 +1015,7 @@ export class TranscriptWireAdapter {
           kind: 'subagent',
           state: 'running',
           detached,
+          ownerTurnId: explicitTaskId === undefined ? inferredOwnerTurnId : previous?.ownerTurnId ?? inferredOwnerTurnId,
           name: stringOf(record['name']),
           subagentName: stringOf(record['subagentName']),
           model: stringOf(record['model']),
@@ -1025,7 +1032,6 @@ export class TranscriptWireAdapter {
         this.#tasks.set(taskId, task);
         operations.push({ op: 'task.upsert', task });
       }
-      const hit = this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
       if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === subagentId)) {
         const frame: ToolCallFrame = {
           ...hit.frame,
@@ -2986,6 +2992,12 @@ function turnIdOf(value: unknown, fallback: string | undefined): string | undefi
   if (raw !== undefined && /^\d+$/.test(raw)) return `t${raw}`;
   const n = numberOf(value);
   return n === undefined ? fallback : `t${n}`;
+}
+
+function turnOrdinalOf(turnId: string | undefined): number | undefined {
+  if (turnId === undefined || !/^t\d+$/.test(turnId)) return undefined;
+  const ordinal = Number(turnId.slice(1));
+  return Number.isSafeInteger(ordinal) ? ordinal : undefined;
 }
 
 function isoOf(value: number | undefined): string | undefined {

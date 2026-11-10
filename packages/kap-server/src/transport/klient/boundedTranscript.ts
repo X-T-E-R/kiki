@@ -20,14 +20,50 @@ export function boundedAttachment(attachment: TranscriptAttachment, agentId: str
 
 export const TRANSCRIPT_WINDOW_BYTES = 1024 * 1024;
 const GLOBAL_COLLECTION_BYTES = 4 * 1024;
+const TASK_COLLECTION_BYTES = 16 * 1024;
 
 export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
-  const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId);
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
   const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
-  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES * 2 - jsonBytes({ tasks, interactions, todos, meta });
+  const taskBudget = snapshot.tasks.length === 0 ? 2 : Math.min(TASK_COLLECTION_BYTES, Math.max(GLOBAL_COLLECTION_BYTES, Math.floor(windowBytes / 8)));
+  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES * 2 - taskBudget - jsonBytes({ interactions, todos, meta });
   const items = boundedItems(snapshot.items, budget, direction, agentId);
+  const referencedTaskOrder = new Map<string, number>();
+  const recordReferencedTask = (taskId: string | undefined) => {
+    if (taskId === undefined || taskId === '' || referencedTaskOrder.has(taskId)) return;
+    referencedTaskOrder.set(taskId, referencedTaskOrder.size);
+  };
+  const taskByParentToolCall = new Map<string, string>();
+  const latestTaskByAgent = new Map<string, string>();
+  for (const task of snapshot.tasks) {
+    if (task.parentToolCallId !== undefined) taskByParentToolCall.set(task.parentToolCallId, task.taskId);
+    if (task.agentId !== undefined && task.agentId !== '') latestTaskByAgent.set(task.agentId, task.taskId);
+  }
+  for (const item of items.toReversed()) {
+    if (item.kind === 'taskref') {
+      recordReferencedTask(item.taskId);
+      continue;
+    }
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps.toReversed()) {
+      for (const frame of step.frames.toReversed()) {
+        if ('taskId' in frame && typeof frame.taskId === 'string') recordReferencedTask(frame.taskId);
+        if (frame.kind === 'tool') {
+          recordReferencedTask(taskByParentToolCall.get(frame.toolCallId));
+          for (const ref of frame.agentRefs ?? []) recordReferencedTask(latestTaskByAgent.get(ref.agentId));
+        }
+      }
+    }
+  }
+  const referencedTaskIds = new Set(referencedTaskOrder.keys());
+  const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId,
+    (task) => boundedEntity(task, { kind: 'task', id: task.taskId }, 1024),
+    referencedTaskIds,
+    (task) => task.state === 'running',
+    32,
+    referencedTaskOrder,
+    taskBudget);
   const referencedPromptOrder = new Map<string, number>();
   for (const item of items.toReversed()) {
     if (item.kind !== 'turn' || item.promptId === undefined || referencedPromptOrder.has(item.promptId)) continue;
@@ -169,10 +205,11 @@ function boundedCollection<T extends object>(
   priority?: (value: T) => boolean,
   maxItems?: number,
   requiredOrder?: ReadonlyMap<string, number>,
+  maxCollectionBytes?: number,
 ): T[] {
   const selected = new Map<string, T>();
   const entityBytes = kind === 'todo' ? ENTITY_BYTES : 2048;
-  const collectionBytes = kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES;
+  const collectionBytes = maxCollectionBytes ?? (kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES);
   const requiredValues = values.filter((value) => required.has(id(value)));
   const orderedRequired = requiredOrder === undefined ? requiredValues : requiredValues.toSorted((left, right) =>
     (requiredOrder.get(id(left)) ?? Number.MAX_SAFE_INTEGER) - (requiredOrder.get(id(right)) ?? Number.MAX_SAFE_INTEGER));
@@ -180,7 +217,8 @@ function boundedCollection<T extends object>(
   const candidates = priority === undefined
     ? [...orderedRequired, ...values.filter((value) => !required.has(id(value))).toReversed()]
     : [
-        ...values.filter((value) => priority(value) === true),
+        ...orderedRequired.filter((value) => priority(value) === true),
+        ...values.filter((value) => !required.has(id(value)) && priority(value) === true),
         ...orderedRequired.filter((value) => priority(value) !== true),
         ...values.filter((value) => !required.has(id(value)) && priority(value) !== true).toReversed(),
       ];

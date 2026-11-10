@@ -7184,6 +7184,139 @@ describe('a dispatch card lays out only the descendants it provably created', ()
       Element.prototype.scrollIntoView = original;
     }
   });
+
+  it('dissolves a 5-subagent batch into its historical turn fold when forest settles as completed/idle/lost, and keeps running older batches anchored in their dispatch turn', async () => {
+    const batch = [
+      { agentId: 'agent-1430', name: 'dsh_microkernel_eval_carbon', taskState: 'completed' as const, forestStatus: 'completed' as const },
+      { agentId: 'agent-1431', name: 'dsh_microkernel_eval_opus', taskState: 'running' as const, forestStatus: 'idle' as const, error: 'AGY terminal status ERROR' },
+      { agentId: 'agent-1432', name: 'timeline_expand_summary_clean', taskState: 'running' as const, forestStatus: 'completed' as const },
+      { agentId: 'agent-1433', name: 'hooks_v2_rich_context', taskState: 'running' as const, forestStatus: 'idle' as const },
+      { agentId: 'agent-1434', name: 'blocked_prompt_f1_reviewer', taskState: 'running' as const, forestStatus: 'running' as const },
+    ];
+    const snapshot: AgentTranscriptSnapshot = {
+      attachments: [],
+      todos: [],
+      prompts: [],
+      interactions: [],
+      meta: {},
+      hasMoreOlder: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't2328',
+          ordinal: 2328,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'Dispatch 5 background evaluations',
+          startedAt: '2026-11-11T01:00:00.000Z',
+          endedAt: '2026-11-11T01:02:00.000Z',
+          stepsPartial: true,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't2328.2',
+              turnId: 't2328',
+              ordinal: 2,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'f-t2328-reply', role: 'assistant', text: 'Dispatched all 5 evaluations.' }],
+            },
+          ],
+        },
+        ...batch.map((entry, index) => ({
+          kind: 'taskref' as const,
+          refId: `ref-${entry.agentId}`,
+          taskId: `task-${entry.agentId}`,
+          at: `2026-11-11T01:00:1${index}.000Z`,
+        })),
+        {
+          kind: 'turn',
+          turnId: 't2329',
+          ordinal: 2329,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'Continue on next topic',
+          startedAt: '2026-11-11T01:05:00.000Z',
+          endedAt: '2026-11-11T01:06:00.000Z',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't2329.1',
+              turnId: 't2329',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'f-t2329-reply', role: 'assistant', text: 'Next topic done.' }],
+            },
+          ],
+        },
+      ],
+      tasks: batch.map((entry, index) => ({
+        taskId: `task-${entry.agentId}`,
+        kind: 'subagent' as const,
+        state: entry.taskState,
+        detached: true,
+        agentId: entry.agentId,
+        name: entry.name,
+        ownerTurnId: undefined,
+        parentToolCallId: `compacted-call-${index}`,
+        startedAt: `2026-11-11T01:00:1${index}.000Z`,
+        outputTail: '',
+        error: entry.error,
+      })),
+    };
+    const state = projectAgentTranscriptView(createViewState('session_batch_fold'), 'main', snapshot);
+    const { root, container } = makeRoot();
+    const makeForest = (lastStatus: 'running' | 'lost') =>
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          ...batch.map((entry, index) => ({
+            agentId: entry.agentId,
+            parentAgentId: 'main',
+            name: entry.name,
+            status: index === batch.length - 1 ? lastStatus : entry.forestStatus,
+            error: entry.error,
+            toolCallCount: 2,
+          })),
+        ],
+      );
+
+    await renderSettled(
+      root,
+      <Transcript
+        state={state}
+        forest={makeForest('running')}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+      />,
+    );
+    const liveGroup = container.querySelector('[data-subagent-group="5"]')!;
+    expect(liveGroup).not.toBeNull();
+    expect(liveGroup.getAttribute('data-subagent-group-done')).toBe('4');
+    const allRowsWhileRunning = [...container.querySelectorAll('[data-transcript-virtual-item]')];
+    const groupRowIndex = allRowsWhileRunning.findIndex((row) => row.contains(liveGroup));
+    const turn2329RowIndex = allRowsWhileRunning.findIndex((row) => row.textContent?.includes('Continue on next topic'));
+    expect(groupRowIndex).toBeGreaterThanOrEqual(0);
+    expect(groupRowIndex).toBeLessThan(turn2329RowIndex);
+
+    await renderSettled(
+      root,
+      <Transcript
+        state={state}
+        forest={makeForest('lost')}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+      />,
+    );
+    expect(container.querySelector('[data-subagent-group]')).toBeNull();
+    const fold = container.querySelector('[data-history-fold]');
+    expect(fold).not.toBeNull();
+    expect(fold?.textContent).toContain('5 subagents');
+  });
 });
 
 describe('background question tool history', () => {

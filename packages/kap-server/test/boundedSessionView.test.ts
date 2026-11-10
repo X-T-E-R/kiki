@@ -1617,4 +1617,44 @@ describe('bounded session-view canonical reads', () => {
       await first.app.close();
     }
   });
+
+  it('retains visible taskref subagent tasks in boundedTranscriptSnapshot even when newer shell tasks exceed 8 entries', () => {
+    const batchIds = ['agent-batch-1', 'agent-batch-2', 'agent-batch-3', 'agent-batch-4', 'agent-batch-5'];
+    const shellIds = Array.from({ length: 12 }, (_, index) => `bash-tail-${index}`);
+    const snapshot: AgentTranscriptSnapshot = {
+      ...empty(),
+      items: [
+        { kind: 'turn', turnId: 't2328', ordinal: 2328, state: 'completed', origin: { kind: 'user' }, prompt: 'dispatch batch', steps: [] },
+        ...batchIds.map((taskId) => ({ kind: 'taskref' as const, refId: `ref-${taskId}`, taskId, at: '2026-11-11T00:00:01.000Z' })),
+        { kind: 'turn', turnId: 't2329', ordinal: 2329, state: 'completed', origin: { kind: 'user' }, prompt: 'follow up', steps: [] },
+      ],
+      tasks: [
+        ...batchIds.map((taskId, index): TranscriptTask => ({
+          taskId,
+          kind: 'subagent',
+          state: index === 0 ? 'running' : 'completed',
+          detached: true,
+          agentId: `sub-${index}`,
+          name: `worker_${index}`,
+          ownerTurnId: 2328,
+          outputTail: 'summary',
+          startedAt: '2026-11-11T00:00:01.000Z',
+        })),
+        ...shellIds.map((taskId): TranscriptTask => ({
+          taskId,
+          kind: 'shell',
+          state: 'completed',
+          detached: false,
+          command: 'echo ok',
+          outputTail: 'ok',
+          startedAt: '2026-11-11T00:01:00.000Z',
+        })),
+      ],
+    };
+    const bounded = boundedTranscriptSnapshot(snapshot, 'main');
+    const retainedIds = new Set(bounded.tasks.map((task) => task.taskId));
+    for (const taskId of batchIds) {
+      expect(retainedIds.has(taskId)).toBe(true);
+    }
+  });
 });

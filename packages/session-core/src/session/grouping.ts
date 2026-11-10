@@ -14,6 +14,7 @@
  */
 
 import { extractToolOutputMedia, toolResultMedia } from '../composer/media';
+import type { AgentForest, AgentStatus } from './agentTree';
 import { mergeTaskNotifications } from './transcript/project';
 import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
@@ -144,9 +145,29 @@ function normTurn(turnId: string | undefined): string | undefined {
   return turnId.startsWith('t') ? turnId : `t${turnId}`;
 }
 
+/** An agent status whose run is still active or waiting on user input. */
+export function isLiveSubagentStatus(status: AgentStatus | SubagentBlock['status'] | string): boolean {
+  return status === 'running' || status === 'background' || status === 'suspended';
+}
+
+/** Resolve the effective status of a subagent card against the live forest. */
+export function effectiveSubagentStatus(
+  block: SubagentBlock,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): AgentStatus | SubagentBlock['status'] {
+  const isLatestRun = latestCardIdByAgent === undefined || latestCardIdByAgent.get(block.subagentId) === block.id;
+  if (!isLatestRun) return block.status;
+  return forest?.byId[block.subagentId]?.status ?? block.status;
+}
+
 /** A subagent whose run is still going (it needs watching, so it stays out). */
-export function subagentLive(block: SubagentBlock): boolean {
-  return block.status === 'running' || block.status === 'suspended';
+export function subagentLive(
+  block: SubagentBlock,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): boolean {
+  return isLiveSubagentStatus(effectiveSubagentStatus(block, forest, latestCardIdByAgent));
 }
 
 /**
@@ -178,7 +199,24 @@ function isFailedTaskSystemBlock(node: SystemBlock): boolean {
   );
 }
 
-function foldable(node: Row): boolean {
+function subagentFailed(
+  block: SubagentBlock,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): boolean {
+  const status = effectiveSubagentStatus(block, forest, latestCardIdByAgent);
+  if (isLiveSubagentStatus(status)) return false;
+  if (status === 'failed' || status === 'lost') return true;
+  const isLatestRun = latestCardIdByAgent === undefined || latestCardIdByAgent.get(block.subagentId) === block.id;
+  const error = isLatestRun ? (forest?.byId[block.subagentId]?.error ?? block.error) : block.error;
+  return error !== undefined && error !== '';
+}
+
+function foldable(
+  node: Row,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): boolean {
   switch (node.kind) {
     case 'subagent-ended':
       // A cross-turn or separated subagent ending stays in view at its first
@@ -201,7 +239,7 @@ function foldable(node: Row): boolean {
     case 'thinking':
       return !node.streaming;
     case 'subagent':
-      return !subagentLive(node);
+      return !subagentLive(node, forest, latestCardIdByAgent);
     case 'system-reminder':
     case 'skill':
       return true;
@@ -224,15 +262,24 @@ function foldable(node: Row): boolean {
   }
 }
 
-function nodeFailed(node: Row): boolean {
+function nodeFailed(
+  node: Row,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): boolean {
   if (node.kind === 'tool-group') return groupHasError(node);
   if (node.kind === 'tool') return node.status === 'error' || node.isError === true;
   if (node.kind === 'shell') return node.isError === true;
-  if (node.kind === 'subagent') return node.status === 'failed';
+  if (node.kind === 'subagent') return subagentFailed(node, forest, latestCardIdByAgent);
   return false;
 }
 
-function buildFold(run: readonly Row[], turnId: string | undefined): HistoryFold {
+function buildFold(
+  run: readonly Row[],
+  turnId: string | undefined,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): HistoryFold {
   let steps = 0;
   let thoughts = 0;
   let agents = 0;
@@ -247,7 +294,7 @@ function buildFold(run: readonly Row[], turnId: string | undefined): HistoryFold
   for (const node of run) {
     if (node.kind === 'tool-group') {
       failed += node.tools.filter((tool) => tool.status === 'error' || tool.isError === true).length;
-    } else if (nodeFailed(node)) {
+    } else if (nodeFailed(node, forest, latestCardIdByAgent)) {
       failed += 1;
     }
     if (node.kind === 'tool-group') {
@@ -467,10 +514,35 @@ export interface FoldOptions {
    * The fold catches up once they return to the end.
    */
   readonly keepOpen?: ReadonlySet<string>;
+  /**
+   * Live agent roster/tree state used to settle subagent cards whose frozen
+   * transcript block snapshot has not yet received a terminal task update.
+   */
+  readonly forest?: AgentForest;
+}
+
+function latestSubagentCardIds(nodes: readonly DisplayNode[]): ReadonlyMap<string, string> {
+  const latest = new Map<string, string>();
+  const visit = (node: DisplayNode) => {
+    if (node.kind === 'subagent') {
+      latest.set(node.subagentId, node.id);
+      return;
+    }
+    if (node.kind === 'subagent-group' || node.kind === 'history-fold') {
+      for (const member of node.members) visit(member);
+    }
+  };
+  for (const node of nodes) visit(node);
+  return latest;
 }
 
 /** Media runs and live subagent groups: rows of their own, never folded. */
-function gatherRows(nodes: readonly DisplayNode[], live: string | undefined): DisplayNode[] {
+function gatherRows(
+  nodes: readonly DisplayNode[],
+  live: string | undefined,
+  forest: AgentForest | undefined,
+  latestCardIdByAgent: ReadonlyMap<string, string>,
+): DisplayNode[] {
   const out: DisplayNode[] = [];
   let index = 0;
   while (index < nodes.length) {
@@ -497,7 +569,7 @@ function gatherRows(nodes: readonly DisplayNode[], live: string | undefined): Di
         members.push(next);
         index += 1;
       }
-      if (members.length >= 2 && members.some(subagentLive)) {
+      if (members.length >= 2 && members.some((member) => subagentLive(member, forest, latestCardIdByAgent))) {
         out.push({ kind: 'subagent-group', id: `agents-${members[0]!.id}`, turnId: turn, members });
       } else {
         out.push(...members);
@@ -526,7 +598,9 @@ export function foldHistory(
   options: FoldOptions = {},
 ): DisplayNode[] {
   const live = normTurn(liveTurnId);
-  const rows = gatherRows(nodes, live);
+  const forest = options.forest;
+  const latestCardIdByAgent = forest === undefined ? new Map<string, string>() : latestSubagentCardIds(nodes);
+  const rows = gatherRows(nodes, live, forest, latestCardIdByAgent);
   // The newest row of the live turn, when it is process (the one the reader
   // is watching arrive); a message at the end already closes the stretch.
   let newest: string | undefined;
@@ -542,7 +616,7 @@ export function foldHistory(
   let run: Row[] = [];
   let runTurn: string | undefined;
   const flush = () => {
-    if (run.length >= HISTORY_FOLD_MIN || run.some((node) => node.kind === 'shell')) out.push(buildFold(run, runTurn));
+    if (run.length >= HISTORY_FOLD_MIN || run.some((node) => node.kind === 'shell')) out.push(buildFold(run, runTurn, forest, latestCardIdByAgent));
     else out.push(...run);
     run = [];
     runTurn = undefined;
@@ -555,7 +629,7 @@ export function foldHistory(
     }
     const turn = normTurn(foldTurnId(node));
     const held = turn === live && (node.id === newest || keepOpen?.has(node.id) === true);
-    const eligible = turn !== undefined && !held && foldable(node);
+    const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {
       run.push(node);

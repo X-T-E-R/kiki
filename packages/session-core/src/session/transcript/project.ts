@@ -1366,7 +1366,7 @@ function subagentBlocksFromSnapshot(
         base?.parentTurnId ??
         pendingResume?.turnId ??
         normalizeTurnId(task.ownerTurnId) ??
-        (timestampMs(startedAt) === undefined ? previousTurnId : undefined);
+        eventTurn(startedAt, previousTurnId);
       recordRun(`task:${task.taskId}`, {
         kind: 'subagent',
         id: cardId,

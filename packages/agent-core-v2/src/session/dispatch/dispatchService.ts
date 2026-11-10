@@ -518,7 +518,14 @@ export class SessionDispatchService implements ISessionDispatchService {
       const tracked = this.trackCapacity(run, release);
       return requester === undefined || controller === undefined
         ? tracked
-        : this.registerOwnedContinuation(tracked, requester, controller, cleanup, options.operationId);
+        : this.registerOwnedContinuation(
+            tracked,
+            requester,
+            controller,
+            cleanup,
+            options.operationId,
+            options.ownerTurnId ?? options.selectorCall?.turnId,
+          );
     } catch (error) {
       cleanup();
       release();
@@ -765,6 +772,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     controller: AbortController,
     cleanup: () => void,
     operationId?: string,
+    ownerTurnId?: number,
   ): DispatchRun {
     return {
       ...run,
@@ -802,7 +810,7 @@ export class SessionDispatchService implements ISessionDispatchService {
                 : { taskName: run.child.name, agentType: run.child.profileName },
               () => childProfileService.getParentSteering?.(),
             ),
-            { timeoutMs: resolveSubagentTimeoutMs(this.config) },
+            { timeoutMs: resolveSubagentTimeoutMs(this.config), ownerTurnId },
           );
           await this.recordRun(run.child.agentId, taskId, run.child.sourceRef, operationId);
           await requester.accessor.get(IEventDispatcher).dispatch(

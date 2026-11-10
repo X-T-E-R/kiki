@@ -3388,7 +3388,7 @@ const TranscriptRow = memo(
       ) : member.kind === 'media-run' ? (
         <MediaRunRow run={member} agentId={agentId} blockOrder={blockOrder} />
       ) : member.kind === 'subagent-group' ? (
-        <SubagentGroupRow group={member} forest={forest} renderMember={(agent) => renderNode(agent, 'compact')} />
+        <SubagentGroupRow group={member} forest={forest} childBlocks={childBlocks} renderMember={(agent) => renderNode(agent, 'compact')} />
       ) : member.kind === 'tool-group' ? (
         <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} blockOrder={blockOrder} />
       ) : member.kind === 'tool' ? (
@@ -4172,8 +4172,8 @@ export function Transcript({
   const liveTurnId = state.busy ? latestTurnId(mergedNodes) : undefined;
   const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
   const processNodes = useMemo(
-    () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows }),
-    [mergedNodes, liveTurnId, heldRows],
+    () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows, forest: stableForest }),
+    [mergedNodes, liveTurnId, heldRows, stableForest],
   );
   const [previousFoldNodes, setPreviousFoldNodes] = useState(processNodes);
   if (previousFoldNodes !== processNodes) {
