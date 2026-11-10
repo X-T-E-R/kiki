@@ -4605,7 +4605,7 @@ function virtualBlocks(count: number, prefix = 'block'): Block[] {
 
 function virtualTranscript(
   state: SessionViewState,
-  onLoadOlder: () => Promise<boolean> = () => Promise.resolve(false),
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean> = () => Promise.resolve(false),
 ): ReactNode {
   return (
     <Transcript
@@ -8714,6 +8714,142 @@ describe('settled history folds and the unified locate entry', () => {
       expect(container.querySelector('[data-turn-id="t1"]')).not.toBeNull();
     } finally {
       locateTurn.mockRestore();
+      await act(async () => { root.render(null); });
+      controller.close();
+    }
+  });
+
+  it('continues an explicit locate past an in-flight older demand that finishes preparing, supports delayed initial load, and aborts on user scroll', async () => {
+    resetTimelineLocatorsForTests();
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller, client } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    try {
+      let state = transcriptState([], { sessionId: 'session_concurrent_locate', loaded: false, hasMoreHistory: true });
+      const render = () => renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_concurrent_locate" agentId="main">
+          {virtualTranscript(state, (signal) => controller.loadOlderMessages('main', signal))}
+        </TranscriptDetailProvider>
+      ));
+      await render();
+
+      // 1) Reverse order: explicit locate arrives while the cold session is still loading (>120 frames / delayed reset).
+      let delayedOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void locateInTimeline({ kind: 'turn', turnId: 't0' }, { sessionId: 'session_concurrent_locate', notify: false }).then((value) => {
+          delayedOutcome = value;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      for (let frame = 0; frame < 130; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
+      }
+      expect(delayedOutcome).toBeUndefined();
+
+      // Now initial snapshot arrives; simultaneously an initial top-edge / restore older demand starts first and shares OlderLoadCoordinator.
+      controller.handleTranscript(resetEvent('main', {
+        ...userTurnSnapshot(),
+        hasMoreOlder: true,
+      }, 1, true));
+      state = { ...controller.getState(), sessionId: 'session_concurrent_locate', loaded: true, hasMoreHistory: true };
+
+      let releaseSharedFlight!: () => void;
+      const sharedGate = new Promise<void>((resolve) => { releaseSharedFlight = resolve; });
+      let pageCalls = 0;
+      const pageSpy = vi.spyOn(controller['view'].transcript, 'page').mockImplementation(async () => {
+        pageCalls += 1;
+        if (pageCalls === 1) {
+          await sharedGate;
+          return {
+            session_id: 'session_concurrent_locate',
+            agent_id: 'main',
+            has_more: true,
+            items: [],
+            tasks: [],
+            interactions: [],
+            attachments: [],
+            todos: [],
+            prompts: [],
+            meta: {},
+            agents: [],
+            pending_interactions: [],
+            coverage: { kind: 'unknown', hasMoreOlder: true },
+            read: { source: 'cold', readiness: 'preparing' },
+            next_cursor: 'cursor-1',
+          };
+        }
+        state = {
+          ...state,
+          blocks: [...turnBlocks(0, 'older target'), ...state.blocks],
+          hasMoreHistory: true,
+        };
+        await render();
+        return {
+          session_id: 'session_concurrent_locate',
+          agent_id: 'main',
+          has_more: true,
+          items: [...olderTurnSnapshot().items],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+          agents: [],
+          pending_interactions: [],
+          coverage: { kind: 'unknown', hasMoreOlder: true },
+          next_cursor: 'cursor-2',
+        };
+      });
+
+      // Start an earlier top-edge / restore demand before locate's first turn check runs.
+      const earlierDemand = controller.loadOlderHistory('main');
+      await render();
+      await settleVirtualizer();
+
+      // Release the shared preparing slice: explicit locate joins the shared flight and continues across preparing until t0 lands.
+      await act(async () => { releaseSharedFlight(); await earlierDemand; });
+      for (let frame = 0; frame < 150 && delayedOutcome === undefined; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+      }
+      expect(delayedOutcome).toEqual({ status: 'found' });
+      expect(pageCalls).toBe(2);
+      expect(container.querySelector('[data-turn-id="t0"]')).not.toBeNull();
+
+      // 2) Block locate sharing an in-flight older demand that returns preparing, plus user scroll preemption.
+      let releaseBlockFlight!: () => void;
+      pageSpy.mockImplementation(async () => {
+        await new Promise<void>((resolve) => { releaseBlockFlight = resolve; });
+        return {
+          session_id: 'session_concurrent_locate',
+          agent_id: 'main',
+          has_more: true,
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+          agents: [],
+          pending_interactions: [],
+          coverage: { kind: 'unknown', hasMoreOlder: true },
+          read: { source: 'cold', readiness: 'preparing' },
+          next_cursor: 'cursor-block',
+        };
+      });
+      let blockOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void locateInTimeline({ kind: 'block', blockId: 'missing-yet' }, { sessionId: 'session_concurrent_locate', notify: false }).then((value) => {
+          blockOutcome = value;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+      await act(async () => { releaseBlockFlight?.(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+      expect(blockOutcome).toEqual({ status: 'no-timeline' });
+    } finally {
       await act(async () => { root.render(null); });
       controller.close();
     }

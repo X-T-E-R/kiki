@@ -922,7 +922,7 @@ describe('transcript authority projection', () => {
           turnId: 't22',
           ordinal: 30,
           state: 'completed',
-          frames: [{ kind: 'text', frameId: 'f30', text: 'live tail body' }],
+          frames: [{ kind: 'text', role: 'assistant', frameId: 'f30', text: 'live tail body' }],
         },
       ],
       contentRefs: [

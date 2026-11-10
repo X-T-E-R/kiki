@@ -4913,8 +4913,8 @@ export function Transcript({
     seekRequestRef.current = request;
     const signal = options?.signal === undefined ? request.signal : AbortSignal.any([request.signal, options.signal]);
     const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
-    for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
-      if (cancelled() || wait > 120) return { status: 'no-timeline' };
+    while (!liveRef.current.loaded || !initialScrollDoneRef.current) {
+      if (cancelled()) return { status: 'no-timeline' };
       await nextFrame();
     }
     if (cancelled()) return { status: 'no-timeline' };
@@ -4968,15 +4968,15 @@ export function Transcript({
           await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
           return !cancelled();
         })()
-        : await (async () => {
-          const loaded = await loadOlderRef.current(signal);
-          if (loaded || cancelled()) return loaded;
-          if (controller !== undefined && stateRef.current.resyncing && !stateRef.current.resyncFailed) {
+        : controller !== undefined
+          ? await (async () => {
+            const result = await controller.loadOlderHistory(agentId, signal);
+            if (result.changed) return true;
+            if (result.kind !== 'preparing' || cancelled()) return false;
             await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
             return !cancelled();
-          }
-          return false;
-        })());
+          })()
+          : await loadOlderRef.current(signal));
       for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
         await nextFrame();
         if (cancelled()) return { status: 'no-timeline' };
@@ -5106,13 +5106,14 @@ export function Transcript({
         const structure = await readSeekStructure(signal);
         if (cancelled()) return false;
         if (structure !== undefined) return structure;
-        const loaded = await loadOlderRef.current(signal);
-        if (loaded || cancelled()) return loaded;
-        if (controller !== undefined && stateRef.current.resyncing && !stateRef.current.resyncFailed) {
+        if (controller !== undefined) {
+          const result = await controller.loadOlderHistory(agentId, signal);
+          if (result.changed || cancelled()) return result.changed;
+          if (result.kind !== 'preparing') return false;
           await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
           return !cancelled();
         }
-        return false;
+        return loadOlderRef.current(signal);
       },
       hasLoadError: () => liveRef.current.olderError !== undefined,
       nextFrame,
@@ -5169,7 +5170,7 @@ export function Transcript({
       setReadingRestoreFailed(failure ?? t('locate.failedLoad'));
       throw new Error(failure ?? 'Reading restore is not ready');
     }
-  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure]);
+  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure, controller, agentId]);
   const reading = useNavSnapshotAdapter<TimelineReadingSnapshot>(readingKey, {
     // Reading a place back only makes sense once this transcript has rows: a
     // not-yet-loaded timeline would page history for an anchor it cannot see.
