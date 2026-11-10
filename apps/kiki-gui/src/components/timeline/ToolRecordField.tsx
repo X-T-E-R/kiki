@@ -4,7 +4,6 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS } from '../ContentContinuation';
 import { useTranscriptController } from '../transcriptDetail';
-import { toolPayloadIncomplete } from '../toolSemantics';
 import { toolRecordCopy } from '../toolRecordCopy';
 import { CopyButton } from './ContentCopyButton';
 import { LoadedToolText, recordText } from './LoadedToolText';
@@ -34,9 +33,8 @@ export function ToolRecordField({ block, agentId, field, children }: {
   return <div data-tool-record-field={field}>
     <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
       <span>{label}{field === 'output' && block.isError === true ? t('tc.outputError') : ''}</span>
-      {absent ? null : <CopyButton label={field === 'input' && prepare === undefined ? `${label} · ${toolRecordCopy('loadedOnly', locale)}` : label} text={text} prepare={prepare} />}
+      {absent ? null : <CopyButton label={label} text={text} prepare={prepare} />}
     </div>
-    {field === 'output' && toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
     {absent ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', locale)}</p>
       : range ? null : children ?? <LoadedToolText copy={false} text={text} />}
     <ContentContinuation source={source} roots={roots} callerAgentId={agentId} label={label} headingPresent className="mt-1" />

@@ -32,7 +32,7 @@ import {
   SemanticJumpSlot,
   useSemanticContext,
 } from './timeline/ToolSemanticParts';
-import { describeTool, toolPayloadIncomplete } from './toolSemantics';
+import { describeTool } from './toolSemantics';
 import { toolRecordCopy } from './toolRecordCopy';
 import { LoadedToolText, ReadableToolText, recordText } from './timeline/LoadedToolText';
 import { ToolRecordField } from './timeline/ToolRecordField';
@@ -385,8 +385,7 @@ function externalOutput(output: unknown): { text?: string; rawInput?: unknown; r
 
 /**
  * A foreign engine's result, as the engine handed it over: the preserved body
- * when the window carried one, the artifacts it names, and an honest note when
- * the payload was truncated on the way in.
+ * when the window carried one and the artifacts it names.
  */
 function ExternalOutput({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
   const { locale } = useI18n();
@@ -399,7 +398,6 @@ function ExternalOutput({ output, agentId, island = false }: { output: unknown; 
   }
   const media = extractToolOutputMedia(preserved.media);
   return <div className="space-y-2">
-    {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
     {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
     {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
     <details>

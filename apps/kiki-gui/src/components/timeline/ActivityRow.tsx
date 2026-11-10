@@ -259,10 +259,10 @@ export function TimelineDivider({
   const rule = tone === 'warn' ? 'bg-amber-rule/40' : 'bg-hairline';
   const text = tone === 'warn' ? 'text-amber-ink' : 'text-ink-faint';
   return (
-    <div data-timeline-divider className="anim-enter flex items-center gap-3 py-1" title={title} {...attrs}>
-      <span className={`h-px flex-1 ${rule}`} />
-      <span className={`shrink-0 text-[12px] ${text}`}>{children}</span>
-      <span className={`h-px flex-1 ${rule}`} />
+    <div data-timeline-divider className="anim-enter flex min-w-0 items-center gap-3 py-1" title={title} {...attrs}>
+      <span className={`h-px min-w-4 flex-1 ${rule}`} />
+      <span className={`min-w-0 max-w-[min(82%,44rem)] truncate text-[12px] ${text}`}>{children}</span>
+      <span className={`h-px min-w-4 flex-1 ${rule}`} />
     </div>
   );
 }

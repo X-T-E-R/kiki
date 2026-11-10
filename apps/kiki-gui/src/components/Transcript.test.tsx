@@ -2759,9 +2759,9 @@ describe('live and event chrome', () => {
     expect(container.textContent).toContain('Continue with the transcript labels');
   });
 
-  it('keeps the generic compaction label when the wire carries no strategy', async () => {
+  it('keeps the generic compaction label when the wire carries no strategy and expands every summary', async () => {
     const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
-      type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+      type: 'context.apply_compaction', summary: `summary ${index + 1}`, time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
     })));
     const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
@@ -2773,14 +2773,15 @@ describe('live and event chrome', () => {
     await act(async () => { click(toggle); });
     const entries = container.querySelectorAll('[data-compaction-history] li');
     expect(entries).toHaveLength(3);
-    expect(entries[0]?.textContent).toContain('The agent has no working notes');
-    expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
-    expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
+    expect(entries[0]?.textContent).toContain('summary 1');
+    expect(entries[1]?.textContent).toContain('summary 2');
+    expect(entries[0]?.textContent).not.toContain('The agent has no working notes');
+    expect(entries[1]?.textContent).not.toContain('Recent tool failures need to remain in context.');
   });
 
-  it('labels folded compactions as successful commits and expands every time and reason', async () => {
+  it('labels folded compactions as successful commits and expands every time and summary without internal reason codes', async () => {
     const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
-      type: 'context.apply_compaction', strategy: 'summarize', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+      type: 'context.apply_compaction', strategy: 'summarize', summary: `summary ${index + 1}`, time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
     })));
     const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
@@ -2790,9 +2791,9 @@ describe('live and event chrome', () => {
     await act(async () => { click(toggle); });
     const entries = container.querySelectorAll('[data-compaction-history] li');
     expect(entries).toHaveLength(3);
-    expect(entries[0]?.textContent).toContain('The agent has no working notes');
-    expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
-    expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
+    expect(entries[0]?.textContent).toContain('summary 1');
+    expect(entries[1]?.textContent).toContain('summary 2');
+    expect(entries[0]?.textContent).not.toContain('The agent has no working notes');
   });
 
   it('renders relay, summary, unknown and failed compaction labels from the committed mode', async () => {
@@ -2816,33 +2817,35 @@ describe('live and event chrome', () => {
     ]);
   });
 
-  it('says why a compaction fell back and lists the reasons on request', async () => {
+  it('keeps fallback compaction labels clean and expands the summary instead of internal reason codes', async () => {
     const container = await renderTranscript([
       {
         kind: 'notice',
         id: 'marker-c1',
+        markerId: 'c1',
         text: 'compaction',
         tone: 'neutral',
         i18n: { key: 'transcript.marker.compactionFallback' },
+        summary: '## Carryover\n- Preserved key decisions',
         reasonCodes: ['notes_missing', 'tool_error', 'future_code'],
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     ]);
     const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe(translate('en', 'transcript.marker.compactionFallback'));
+    expect(toggle.textContent).toBe('Context compacted · summary');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
     await act(async () => { click(toggle); });
-    const items = [...container.querySelectorAll('[data-notice-reason-list] li')].map((item) => item.textContent);
-    expect(items).toHaveLength(3);
-    expect(items[2]).toBe('future_code');
+    expect(container.querySelector('[data-compaction-summary]')?.textContent).toContain('Preserved key decisions');
+    expect(container.textContent).not.toContain('future_code');
+    expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
   });
 
-  it.each(['transcript.marker.compactionSummarize', 'transcript.marker.compactionFresh'] as const)('keeps %s visible beside an over-limit notes warning without opening details', async (key) => {
+  it.each(['transcript.marker.compactionSummarize', 'transcript.marker.compactionFresh'] as const)('omits internal notes_directives_budget boundary text beside %s', async (key) => {
     const container = await renderTranscript([{ kind: 'notice', id: 'notes-budget', text: 'compaction', tone: 'neutral',
       i18n: { key }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
-    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe(translate('en', key));
-    expect(container.querySelector('[data-compaction-notes-budget]')?.textContent).toBe(translate('en', 'transcript.marker.reason.notes_directives_budget'));
+    expect(container.querySelector('[data-timeline-divider]')?.textContent).toBe(translate('en', key));
+    expect(container.querySelector('[data-compaction-notes-budget]')).toBeNull();
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
   });
 
@@ -9589,7 +9592,7 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('The auth flow starts in login.ts.');
   });
 
-  it('gives a task its id, status and a clipped output preview, with the raw text one disclosure away', async () => {
+  it('gives a task its id, status and the full loaded output preview, with the raw text one disclosure away', async () => {
     const output = [
       'retrieval_status: success',
       'task_id: bash-k3',
@@ -9614,10 +9617,11 @@ describe('semantic tool cards', () => {
     expect(fields.textContent).toContain('Exit code');
     const preview = container.querySelector('[data-tool-semantic-preview]')!.textContent!;
     expect(preview).toContain('line 1');
-    expect(preview).not.toContain('line 30');
+    expect(preview).toContain('line 30');
+    expect(container.querySelector('[data-tool-preview-full]')).toBeNull();
     expect(container.querySelector('[data-tool-raw]')).toBeNull();
     await openRaw(container);
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('line 30');
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('retrieval_status: success');
   });
 
   it('counts a TaskWait timeout as the wait running out, not the task', async () => {
@@ -9727,7 +9731,7 @@ describe('semantic tool cards', () => {
     expect(path()).toBe('/rooms/release-contract');
   });
 
-  it('expands a room send to its whole body without a second expand inside it', async () => {
+  it('expands a room send to its whole body immediately without a second expand inside it', async () => {
     const content = Array.from({ length: 60 }, (_, index) => `line ${index}: the full room message body`).join('\n');
     const { container } = await renderCard(semanticTool(
       'ThreadSend',
@@ -9737,12 +9741,8 @@ describe('semantic tool cards', () => {
     await expand(container);
     const preview = container.querySelector('[data-tool-semantic-preview]')!;
     expect(preview.textContent).toContain('line 0: the full room message body');
-    // The complete body is one click away; it never nests a second expander.
-    const full = container.querySelector<HTMLButtonElement>('[data-tool-preview-full]')!;
-    expect(full).not.toBeNull();
-    expect(container.querySelectorAll('[data-tool-semantic-preview]')).toHaveLength(1);
-    await act(async () => { click(full); });
-    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('line 59: the full room message body');
+    expect(preview.textContent).toContain('line 59: the full room message body');
+    expect(container.querySelector('[data-tool-preview-full]')).toBeNull();
     expect(container.querySelectorAll('[data-tool-semantic-preview]')).toHaveLength(1);
   });
 
@@ -9810,7 +9810,7 @@ describe('semantic tool cards', () => {
     expect(fetched.container.querySelector('[data-tool-raw]')?.textContent).toContain('Body text.');
   });
 
-  it('previews a native partial fetch, expands the loaded article, and keeps Raw data separate', async () => {
+  it('previews a native partial fetch with its full loaded article immediately and keeps Raw data separate', async () => {
     const body = '# Article\nReadable body\n' + 'paragraph\n'.repeat(40) + 'loaded article tail';
     const output = JSON.stringify({ schema_version: 1, mode: 'fetch', action: 'run', execution: 'sync', status: 'partial',
       documents: [{ url: 'https://example.com/article', content: body, content_type: 'text/html', truncated: true,
@@ -9818,12 +9818,10 @@ describe('semantic tool cards', () => {
     const { container } = await renderCard(semanticTool('FetchURL', { source: { kind: 'url', url: 'https://example.com/article' }, max_content_chars: 10000 }, output,
       { status: 'error', isError: true }));
     await expand(container);
-    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Readable body');
-    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('truncated or incomplete');
-    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain('Content limit reached');
-    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).not.toContain('loaded article tail');
-    await act(async () => { click(container.querySelector('[data-tool-preview-full]')!); });
     expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toBe(body);
+    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).not.toContain('truncated or incomplete');
+    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain('Content limit reached');
+    expect(container.querySelector('[data-tool-preview-full]')).toBeNull();
     expect(container.querySelector('[data-tool-raw]')).toBeNull();
     await openRaw(container);
     expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"max_content_chars": 10000');
@@ -9924,7 +9922,7 @@ describe('semantic tool cards', () => {
     expect(legacy.container.textContent).toContain('1 match');
   });
 
-  it('reads and copies loaded input and generic JSON beyond 6000 characters without conflating display and payload cuts', async () => {
+  it('reads and copies loaded input and generic JSON beyond 6000 characters without boundary status disclaimers', async () => {
     const args = { content: 'input '.repeat(1200) + 'input record tail' };
     const output = { result: 'output '.repeat(1100) + 'output record tail', truncated: true };
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -9938,20 +9936,15 @@ describe('semantic tool cards', () => {
       expect(container.querySelector('[data-tool-show-full]')).toBeNull();
       expect(container.textContent).toContain('input record tail');
       expect(container.textContent).toContain('output record tail');
-      expect(container.querySelector('[data-tool-payload-status]')?.textContent).toContain('payload is truncated or incomplete');
-      // Each well's copy tile is named after the body it takes, so a column of
-      // identical glyphs still says which one a press acts on. The input well
-      // also keeps the "loaded record only" caveat in its name: this input
-      // arrived cut, and a bare "Copy" would overstate what lands.
+      expect(container.querySelector('[data-tool-payload-status]')).toBeNull();
       const copies = [...container.querySelectorAll('[data-copy-state]')];
       expect(copies.map((button) => button.getAttribute('aria-label'))).toEqual([
-        'Copy Input · Copies the loaded record only',
+        'Copy Input',
         'Copy Output',
       ]);
       expect(copies.every((button) => button.textContent === '')).toBe(true);
       await act(async () => { click(copies[0]!); click(copies[1]!); });
       expect(writeText.mock.calls.map((call) => call[0])).toEqual([JSON.stringify(args, null, 2), JSON.stringify(output, null, 2)]);
-      for (const button of container.querySelectorAll('[data-tool-show-full]')) await act(async () => { click(button); });
       expect(wells[0]!.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
       expect(wells[1]!.querySelector('pre')?.textContent).toBe(JSON.stringify(output, null, 2));
     } finally {
@@ -10159,6 +10152,246 @@ describe('ordinary bounded message reading', () => {
     await act(async () => { edit.click(); });
     expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe('prefixsuffix');
     expect(container.querySelector('[data-block-id="agent-frame-f0"] [data-row-action="copy"]')).not.toBeNull();
+  });
+
+  it('expands and hydrates bounded compaction summaries, subagent results (cross-turn and same-turn absorbed), and error disclosures', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const markerSource: import('@kiki/transcript').ContentSource = { kind: 'marker', id: 'compact-1' };
+    const crossTaskSource: import('@kiki/transcript').ContentSource = { kind: 'task', id: 'task-cross' };
+    const sameTaskSource: import('@kiki/transcript').ContentSource = { kind: 'task', id: 'task-same' };
+    const eventSource: import('@kiki/transcript').ContentSource = { kind: 'frame', id: 'f-send', turnId: 't1', stepId: 's1' };
+    const sysSource: import('@kiki/transcript').ContentSource = { kind: 'frame', id: 'f-plain-sys', turnId: 't1', stepId: 's1' };
+    const refs: import('@kiki/transcript').ContentRef[] = [
+      { source: markerSource, path: ['payload', 'summary'], revision: 'r1', kind: 'text', offset: 20, total: 2048 },
+      { source: crossTaskSource, path: ['resultSummary'], revision: 'r1', kind: 'text', offset: 24, total: 2048 },
+      { source: sameTaskSource, path: ['resultSummary'], revision: 'r1', kind: 'text', offset: 24, total: 2048 },
+      { source: eventSource, path: ['input', 'message'], revision: 'r1', kind: 'text', offset: 18, total: 1024 },
+      { source: sysSource, path: ['text'], revision: 'r1', kind: 'text', offset: 18, total: 1024 },
+    ];
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+
+    const sameTurnCard: Block = {
+      kind: 'subagent',
+      id: 'subagent-same',
+      subagentId: 'worker-same',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-run-same',
+      parentTurnId: 't1',
+      taskId: undefined,
+      name: 'worker_same',
+      description: 'Verify bounded hydration',
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'completed',
+      summary: undefined,
+      error: undefined,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      endedAt: '2026-01-01T00:01:00.000Z',
+      toolCallCount: 0,
+      transcript: [],
+    };
+    const sameTurnRunTool: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-run-same',
+      toolCallId: 'call-run-same',
+      name: 'AgentRun',
+      args: { description: 'Verify bounded hydration', prompt: 'Inspect bounded hydration', background: true },
+      argsText: '{}',
+      output: 'task_id: task-same\nagent_id: worker-same\nstatus: running\nautomatic_notification: true',
+      status: 'done',
+      display: undefined,
+      description: undefined,
+      isError: false,
+      durationMs: 12,
+      progressText: undefined,
+      turnId: 't1',
+    };
+    const sameTurnNotice: Block = {
+      kind: 'system',
+      id: 'sys-same-done',
+      variant: 'task',
+      taskId: 'task-same',
+      turnId: 't1',
+      createdAt: '2026-01-01T00:01:00.000Z',
+      text: 'Title: Background agent completed\nSame-turn preview prefix',
+    };
+    const crossTurnNotice: Block = {
+      kind: 'system',
+      id: 'sys-cross-done',
+      variant: 'task',
+      taskId: 'task-cross',
+      turnId: 't2',
+      createdAt: '2026-01-01T00:02:00.000Z',
+      text: 'Title: Background agent completed\nCross-turn preview prefix',
+    };
+    const dangerNotice: Block = {
+      kind: 'notice',
+      id: 'notice-err-1',
+      text: 'Anthropic error: upstream gateway timeout [type=api_error]',
+      errorDetails: 'Request ID: req_abc123\nUpstream status: 504',
+      tone: 'danger',
+      createdAt: '2026-01-01T00:02:10.000Z',
+    };
+    const compactionNotice: Block = {
+      kind: 'notice',
+      id: 'notice-compact-1',
+      markerId: 'compact-1',
+      text: 'compaction',
+      tone: 'neutral',
+      i18n: { key: 'transcript.marker.compactionFallback' },
+      summary: '## Carryover\n- Initial prefix',
+      summaryPending: true,
+      createdAt: '2026-01-01T00:02:20.000Z',
+    };
+    const subagentEventErr: Block = {
+      kind: 'subagent-event',
+      id: 'event-err-1',
+      subagentId: 'worker-err',
+      parentAgentId: 'main',
+      name: 'worker_err',
+      event: 'failed',
+      status: 'failed',
+      error: 'Subagent crashed: ECONNRESET\nStack line 1\nStack line 2',
+      at: '2026-01-01T00:02:30.000Z',
+    };
+    const subagentEventMsg: Block = {
+      kind: 'subagent-event',
+      id: 'event-msg-1',
+      subagentId: 'worker-same',
+      parentAgentId: 'main',
+      name: 'worker_same',
+      event: 'sent',
+      status: 'running',
+      message: 'Follow-up instruction prefix',
+      delivery: 'queued',
+      contentSource: eventSource,
+      at: '2026-01-01T00:02:35.000Z',
+    };
+    const plainSystem: Block = {
+      kind: 'system',
+      id: 'plain-sys-1',
+      variant: 'system',
+      text: 'System note prefix',
+      contentSource: sysSource,
+      createdAt: '2026-01-01T00:02:40.000Z',
+    };
+
+    const tasks = [
+      {
+        id: 'task-same',
+        session_id: 'session_test',
+        kind: 'subagent' as const,
+        agent_id: 'worker-same',
+        description: 'Verify bounded hydration',
+        status: 'completed' as const,
+        created_at: '2026-01-01T00:00:00.000Z',
+        output_preview: 'Same-turn preview prefix',
+      },
+      {
+        id: 'task-cross',
+        session_id: 'session_test',
+        kind: 'subagent' as const,
+        agent_id: 'worker-cross',
+        description: 'Cross-turn check',
+        status: 'completed' as const,
+        created_at: '2026-01-01T00:00:00.000Z',
+        output_preview: 'Cross-turn preview prefix',
+      },
+    ];
+    const state: SessionViewState = {
+      ...transcriptState([
+        userBlock({ id: 'u-t1', text: 'Run checks', turnId: 't1' }),
+        sameTurnRunTool,
+        sameTurnCard,
+        sameTurnNotice,
+        userBlock({ id: 'u-t2', text: 'Next step', turnId: 't2' }),
+        crossTurnNotice,
+        dangerNotice,
+        compactionNotice,
+        subagentEventErr,
+        subagentEventMsg,
+        plainSystem,
+      ]),
+      tasks,
+      turnTail: {
+        turnId: 't2',
+        state: 'failed',
+        endedAt: '2026-01-01T00:03:00.000Z',
+        durationMs: 2500,
+        ttftMs: undefined,
+        usage: undefined,
+        tokensPerSecond: undefined,
+        error: 'Anthropic error: missing terminal response [type=api_error]',
+        errorDetails: 'Diagnostic trace: stream closed prematurely at byte 4096',
+      },
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={refs} loadContent={loadContent}>
+        <Transcript
+          state={state}
+          onLoadOlder={async () => false}
+          onResolveApproval={noopActions}
+          onAnswerQuestion={noopActions}
+          onDismissQuestion={noopActions}
+        />
+      </TranscriptDetailProvider>,
+      true,
+    );
+
+    // 1. Danger notice headline is concise, expands full error + errorDetails
+    const dangerToggle = container.querySelector<HTMLButtonElement>('[data-notice-tone="danger"] [data-notice-toggle]')!;
+    expect(dangerToggle).not.toBeNull();
+    expect(dangerToggle.textContent).not.toContain('req_abc123');
+    await act(async () => { click(dangerToggle); });
+    expect(container.querySelector('[data-notice-error-details]')?.textContent).toContain('Request ID: req_abc123');
+
+    // 2. TurnTailLine error is concise single-line by default, expands full error + errorDetails on click
+    const tailToggle = container.querySelector<HTMLButtonElement>('[data-turn-tail-error-toggle]')!;
+    expect(tailToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(tailToggle.textContent).not.toContain('byte 4096');
+    await act(async () => { click(tailToggle); });
+    expect(tailToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(tailToggle.textContent).toContain('Diagnostic trace: stream closed prematurely at byte 4096');
+
+    // 3. Compaction summary expands and mounts ContentContinuation for marker payload
+    const compactToggle = container.querySelector<HTMLButtonElement>('[data-notice-key="transcript.marker.compactionFallback"] [data-notice-toggle]')!;
+    expect(compactToggle.textContent).toBe('Context compacted · summary');
+    await act(async () => { click(compactToggle); });
+    expect(container.querySelector('[data-compaction-summary]')?.textContent).toContain('Initial prefix');
+    await act(async () => { click(container.querySelector('[data-compaction-summary] [data-content-continuation-action]')!); });
+    expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: markerSource, path: ['payload', 'summary'] }));
+
+    // 4. Cross-turn SubagentEndedRow expands and mounts ContentContinuation for task resultSummary
+    const endedRow = container.querySelector('[data-subagent-ended]')!;
+    await act(async () => { click(endedRow.querySelector<HTMLButtonElement>('[data-activity-toggle]')!); });
+    expect(endedRow.textContent).toContain('Cross-turn preview prefix');
+    await act(async () => { click(endedRow.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!); });
+    expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: crossTaskSource, path: ['resultSummary'] }));
+
+    // 5. Same-turn absorbed SubagentCompactCard reveals final subagent result (not just running receipt) + hydrates task resultSummary
+    const compactSubagent = container.querySelector('[data-subagent-id="worker-same"]')!;
+    await act(async () => { click(compactSubagent.querySelector<HTMLButtonElement>('[data-invocation-toggle]')!); });
+    expect(compactSubagent.querySelector('[data-subagent-result-summary]')?.textContent).toContain('Same-turn preview prefix');
+    await act(async () => { click(compactSubagent.querySelector<HTMLButtonElement>('[data-subagent-result-summary] [data-content-continuation-action]')!); });
+    expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: sameTaskSource, path: ['resultSummary'] }));
+
+    // 6. SubagentEventRow with error only (no message) expands full stack trace; sent message row hydrates frame input; PlainSystemMessage hydrates frame text
+    const errEventRow = container.querySelector('[data-agent-event="failed"]')!;
+    await act(async () => { click(errEventRow.querySelector<HTMLButtonElement>('[data-activity-toggle]')!); });
+    expect(errEventRow.querySelector('[data-subagent-event-error]')?.textContent).toContain('Stack line 2');
+
+    const msgEventRow = container.querySelector('[data-agent-event="sent"]')!;
+    await act(async () => { click(msgEventRow.querySelector<HTMLButtonElement>('[data-activity-toggle]')!); });
+    await act(async () => { click(msgEventRow.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!); });
+    expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: eventSource, path: ['input', 'message'] }));
+
+    const sysRow = container.querySelector('[data-system="system"]')!;
+    await act(async () => { click(sysRow.querySelector<HTMLButtonElement>('[data-activity-toggle]')!); });
+    await act(async () => { click(sysRow.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!); });
+    expect(loadContent).toHaveBeenCalledWith(expect.objectContaining({ source: sysSource, path: ['text'] }));
   });
 });
 

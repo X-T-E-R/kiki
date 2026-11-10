@@ -21,7 +21,7 @@
  * the rest of its own field, so what the Bot said is never silently cut.
  */
 
-import { memo, useMemo, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 
 import type { MessageAttachment, MessageBlock } from '@kiki/session-core/session';
 import type { MediaRef } from '@kiki/session-core/composer/media';
@@ -39,7 +39,8 @@ import { useMediaPreview } from '../mediaPreviewContext';
 import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
-import { Icon, type IconName } from '../icons';
+import { DisclosureChevron, Icon, type IconName } from '../icons';
+import { plainFailure } from '../agent-panel/failureText';
 import { DeliveryNotes, withheldKinds } from './messageDelivery';
 import {
   attachmentDisplayName,
@@ -426,6 +427,7 @@ export const MessageRow = memo(function MessageRow({
   readonly onOpenProcess?: () => void;
 }) {
   const { t } = useI18n();
+  const [failureOpen, setFailureOpen] = useState(false);
   const text = messageDraftText(block);
   const sending = block.status === 'sending';
   const at = block.startedAt === undefined ? undefined : new Date(block.startedAt).toISOString();
@@ -475,9 +477,19 @@ export const MessageRow = memo(function MessageRow({
           <span className={MESSAGE_FACE} />
           <div className="min-w-0 flex-1">
             {block.failureDetail === undefined ? null : (
-              <p data-message-failure-detail title={block.failureDetail} className="line-clamp-2 font-mono text-[11.5px] leading-relaxed break-words text-ink-faint">
-                {block.failureDetail}
-              </p>
+              <button
+                type="button"
+                data-message-failure-detail
+                aria-expanded={failureOpen}
+                title={failureOpen ? undefined : block.failureDetail}
+                onClick={() => { setFailureOpen((value) => !value); }}
+                className="flex max-w-full min-w-0 cursor-pointer items-start gap-1 rounded-sm py-0.5 text-left font-mono text-[11.5px] leading-relaxed text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <span className={failureOpen ? 'min-w-0 flex-1 break-words whitespace-pre-wrap' : 'min-w-0 flex-1 truncate'}>
+                  {failureOpen ? block.failureDetail : (plainFailure(block.failureDetail) ?? block.failureDetail)}
+                </span>
+                <DisclosureChevron open={failureOpen} className="mt-1 shrink-0" />
+              </button>
             )}
             <DeliveryNotes block={block} onOpenProcess={onOpenProcess} />
           </div>

@@ -494,6 +494,19 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       { taskId: 'run-2', dispatchOnPage: false, dispatchCardId: undefined },
     ]);
 
+    const untaggedSameTurn = readSubagentEndings([
+      { ...agent('a1', 'completed', 't1'), id: 'subagent-untagged', taskId: undefined, summary: undefined },
+      note('n-run-1-same-turn', 'run-1', 't1', 'First result.'),
+    ], [tasks[0]!]);
+    expect(untaggedSameTurn).toEqual([
+      expect.objectContaining({
+        kind: 'subagent',
+        id: 'subagent-untagged',
+        taskId: 'run-1',
+        summary: 'First result.',
+      }),
+    ]);
+
     const runACard: SubagentBlock = {
       ...agent('a1', 'completed', 't1'),
       id: 'subagent-run-1',

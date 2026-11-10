@@ -27,36 +27,37 @@ describe('network tool previews', () => {
   it.each([
     ['current compact', 'The returned content is the main text extracted from the page. Cite it.\n\n# Article\nUseful body'],
     ['old compact', 'Fetched https://example.com/article. Cite it.\n\n# Article\nUseful body'],
-  ])('reads %s fetch text and keeps the source and completeness note', (_label, output) => {
+  ])('reads %s fetch text and keeps the source without boundary disclaimer fields', (_label, output) => {
     const view = semantics('FetchURL', output, { url: 'https://example.com/article' });
     expect(view.preview).toContain('Useful body');
     expect(view.fields?.map((field) => field.value).join(' ')).toContain('https://example.com/article');
-    expect(view.fields?.find((field) => field.label === 'Completeness')?.value).toContain('Cite it');
+    expect(view.fields?.find((field) => field.label === 'Completeness')).toBeUndefined();
   });
 
-  it('extracts fetch content from a native pretty-printed JSON envelope without physical blank lines', () => {
+  it('extracts full fetch content from a native pretty-printed JSON envelope without secondary slicing', () => {
     const output = native({ schema_version: 1, mode: 'fetch', action: 'run', execution: 'sync', status: 'succeeded', documents: [document], hints: [] });
     expect(output).not.toContain('\n\n');
     const view = semantics('FetchURL', output);
     expect(view.object).toBe(document.final_url);
-    expect(view.preview).toContain('Useful body');
-    expect(view.preview).not.toContain('article tail');
-    expect(view.previewFull).toBe(document.content);
+    expect(view.preview).toBe(document.content);
+    expect(view.preview).toContain('article tail');
     expect(view.fields?.map((field) => field.value)).toContain('text/html');
+    expect(view.fields?.find((field) => field.label === 'Completeness')).toBeUndefined();
   });
 
-  it.each(['partial', 'succeeded'])('preserves warnings and payload truncation for %s fetch', (status) => {
+  it.each(['partial', 'succeeded'])('preserves provider warnings for %s fetch without completeness disclaimers', (status) => {
     const view = semantics('FetchURL', native({ action: 'run', status, documents: [{ ...document, truncated: true,
       warnings: [{ code: 'CONTENT_LIMIT', message: 'Source text was limited' }] }], hints: [{ code: 'FALLBACK', message: 'Fallback provider used' }] }));
     expect(view.preview).toContain('Useful body');
-    expect(view.fields?.find((field) => field.label === 'Completeness')?.value).toContain('truncated or incomplete');
+    expect(view.fields?.find((field) => field.label === 'Completeness')).toBeUndefined();
     expect(view.previewNotice).toContain('Source text was limited');
     expect(view.previewNotice).toContain('Fallback provider used');
   });
 
-  it('does not label a warning-only fetch as verified complete', () => {
+  it('surfaces extraction warnings without completeness filler fields', () => {
     const view = semantics('FetchURL', native({ action: 'run', status: 'succeeded', documents: [{ ...document, warnings: [{ message: 'Extraction warning' }] }] }));
-    expect(view.fields?.find((field) => field.label === 'Completeness')?.value).toContain('not guaranteed');
+    expect(view.fields?.find((field) => field.label === 'Completeness')).toBeUndefined();
+    expect(view.previewNotice).toContain('Extraction warning');
   });
 
   it.each([native({ action: 'run', status: 'succeeded', output: { channel: 'results', results: [result] } }),
@@ -102,8 +103,7 @@ describe('network tool previews', () => {
     const read = semantics(name, native({ action: 'read', job_id: 'job-example', state: 'succeeded', artifact: { media_type: 'application/json', byte_length: 900 },
       chunks: [{ index: 0, offset: 0, byte_length: 10, data_base64: 'eyJ0ZXh0Ijoi' }], next_cursor: 'cursor-example' }), { action: 'read' });
     expect(read.preview).toContain('offset 0');
-    expect(read.previewNotice).toContain('not a reconstructed full document');
-    expect(read.previewNotice).toContain('not loaded');
+    expect(read.previewNotice).toBeUndefined();
     expect(read.count).toBeUndefined();
   });
 
@@ -181,11 +181,11 @@ describe('TodoList working note previews', () => {
   it.each([
     ['goal', 'Goal'], ['directives', 'User instructions'], ['decided', 'Decided'], ['rejected', 'Ruled out'],
     ['evidence', 'Evidence'], ['files', 'Files'], ['next', 'Next'], ['open', 'Open questions'],
-  ])('previews a %s-only update without needing tool output', (section, label) => {
+  ])('previews a %s-only update without needing tool output and preserves line breaks', (section, label) => {
     const view = semantics('TodoList', undefined, { notes: { [section]: 'Useful\n  section content' } });
     expect(view.verb).toBe('Update notes');
     expect(view.note).toBe(label);
-    expect(view.fields).toEqual([{ label, value: 'Useful section content' }]);
+    expect(view.fields).toEqual([{ label, value: 'Useful\n  section content' }]);
     expect(view.previewNotice).toBeUndefined();
   });
 
@@ -227,26 +227,26 @@ describe('TodoList working note previews', () => {
     expect(view.fields).toEqual([{ label: 'Working notes', value: 'Cleared' }]);
   });
 
-  it('marks display truncation and leaves the complete payload for Raw, without a third preview level', () => {
-    const args = { notes: { goal: 'g'.repeat(161), next: 'n'.repeat(160) } };
+  it('keeps long working-note sections intact on expand without secondary truncation or disclaimer copy', () => {
+    const args = { notes: { goal: `${'g'.repeat(161)}\nsecond line`, next: 'n'.repeat(160) } };
     const block = tool('TodoList', 'Updated', args);
     const view = describeTool(block, context)!;
-    expect(view.fields?.[0]?.value).toBe(`${'g'.repeat(159)}…`);
+    expect(view.fields?.[0]?.value).toBe(`${'g'.repeat(161)}\nsecond line`);
     expect(view.fields?.[1]?.value).toBe('n'.repeat(160));
-    expect(view.previewNotice).toBe('Note summaries are shortened; open Raw for full content');
-    expect(view.previewFull).toBeUndefined();
+    expect(view.previewNotice).toBeUndefined();
     expect(block.args).toEqual(args);
     expect(block.argsText).toBe(JSON.stringify(args));
   });
 
-  it('localizes section labels, deletion and truncation notices', () => {
+  it('localizes section labels and deletion without truncation notices', () => {
     const zhContext: SemanticContext = { ...context, locale: 'zh',
       t: (key, params) => translate('zh', key, params), tp: (key, count, params) => translatePlural('zh', key, count, params) };
     const view = describeTool(tool('TodoList', '', { notes: { goal: '中'.repeat(161), next: '' } }), zhContext)!;
     expect(view.verb).toBe('更新笔记');
     expect(view.note).toBe('目标 · 下一步');
+    expect(view.fields?.[0]?.value).toBe('中'.repeat(161));
     expect(view.fields?.[1]?.value).toBe('已清除');
-    expect(view.previewNotice).toContain('原始数据');
+    expect(view.previewNotice).toBeUndefined();
   });
 });
 
@@ -318,9 +318,7 @@ describe('room sends', () => {
   it('reads a long room body whole on expand, with no second show-full inside the preview', () => {
     const content = Array.from({ length: 40 }, (_, index) => `line ${index} of the room message`).join('\n');
     const view = sent({ content });
-    expect(view.previewFull).toBe(content);
-    expect(view.preview).not.toBe(view.previewFull);
-    expect(view.preview!.length).toBeLessThan(content.length);
+    expect(view.preview).toBe(content);
   });
 
   it('leaves a peer send exactly as it was, with its queue state', () => {

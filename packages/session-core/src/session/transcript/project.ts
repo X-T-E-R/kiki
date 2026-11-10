@@ -138,11 +138,13 @@ function reminderBlocks(
   reminders: readonly string[],
   turnId?: string,
   origin?: PromptOriginLike,
+  contentSource?: UserBlock['contentSource'],
 ): SystemReminderBlock[] {
   const category = reminderCategory(origin?.disclosure);
   return reminders.map((reminder, index) => ({
     kind: 'system-reminder',
     id: `reminder-${id}-${index}`,
+    contentSource,
     text: reminder,
     createdAt,
     turnId,
@@ -227,6 +229,7 @@ function classifiedTextToBlocks(input: {
       blocks.push({
         kind: 'skill',
         id: `skill-${input.id}`,
+        contentSource: input.contentSource,
         source: skill.source,
         name: skill.name,
         args: skill.args,
@@ -256,10 +259,11 @@ function classifiedTextToBlocks(input: {
       break;
     }
     case 'system':
-      if (classified.text !== '') {
+      if (classified.text !== '' || input.contentPending === true) {
         blocks.push({
           kind: 'system',
           id: `system-${input.id}`,
+          contentSource: input.contentSource,
           variant: classified.systemVariant ?? 'system',
           text: classified.text,
           createdAt: input.createdAt,
@@ -276,7 +280,7 @@ function classifiedTextToBlocks(input: {
       break;
   }
   blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId,
-    classified.origin?.kind === 'injection' ? classified.origin : undefined));
+    classified.origin?.kind === 'injection' ? classified.origin : undefined, input.contentSource));
   return blocks;
 }
 
@@ -742,11 +746,50 @@ function externalTextNoteOf(
   };
 }
 
+function extractCompactionSummary(record: Record<string, unknown> | undefined): string | undefined {
+  if (record === undefined) return undefined;
+  for (const key of ['summary', 'contextSummary'] as const) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const content = (value as { content?: unknown }).content;
+      if (typeof content === 'string' && content.trim() !== '') return content;
+      if (Array.isArray(content)) {
+        const text = content
+          .map((part) => (typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : undefined))
+          .filter((part): part is string => part !== undefined && part !== '')
+          .join('\n');
+        if (text.trim() !== '') return text;
+      }
+    }
+  }
+  return undefined;
+}
+
+function noticeFrameErrorDetails(detail: unknown): string | undefined {
+  if (detail === undefined || detail === null) return undefined;
+  if (typeof detail === 'string') return detail.trim() === '' ? undefined : detail;
+  if (typeof detail === 'object') {
+    const record = detail as Record<string, unknown>;
+    if (typeof record['errorDetails'] === 'string' && record['errorDetails'].trim() !== '') {
+      return record['errorDetails'];
+    }
+    try {
+      const json = JSON.stringify(detail, null, 2);
+      return json === undefined || json === '{}' || json === '[]' ? undefined : json;
+    } catch {
+      return undefined;
+    }
+  }
+  return String(detail);
+}
+
 function markerToBlock(item: {
   markerId: string;
   marker: string;
   at?: string;
   payload?: unknown;
+  contentRefs?: readonly import('@kiki/transcript').ContentRef[];
 }): Block | undefined {
   if (HIDDEN_MARKERS.has(item.marker)) return undefined;
   const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
@@ -845,6 +888,8 @@ function markerToBlock(item: {
   if (item.marker === 'compaction') {
     const result = payloadRecord?.['result'];
     const committed = typeof result === 'object' && result !== null ? result as Record<string, unknown> : payloadRecord;
+    const summary = extractCompactionSummary(committed) ?? extractCompactionSummary(payloadRecord);
+    const summaryPending = item.contentRefs?.some((ref) => ref.path[0] === 'payload') === true;
     const fallbackFrom = committed?.['fallbackFrom'];
     const key = committed?.['strategy'] === 'relay'
       ? fallbackFrom === 'summarize' ? 'transcript.marker.compactionRescue' : 'transcript.marker.compactionFresh'
@@ -864,11 +909,27 @@ function markerToBlock(item: {
       : effectivePhase === 'failed' ? 'transcript.marker.compactionFailed'
       : effectivePhase === 'cancelled' ? 'transcript.marker.compactionCancelled'
       : effectivePhase === 'interrupted' ? 'transcript.marker.compactionInterrupted' : key;
-    return { ...base, text: item.marker, tone: effectivePhase === 'failed' ? 'danger' : base.tone,
-      i18n: { key: stateKey }, reasonCodes, compactionPhase: effectivePhase, compactionFailure: reason,
-      compactionHistory: effectivePhase === 'completed' ? [{ id: base.id, createdAt: item.at,
+    return {
+      ...base,
+      markerId: item.markerId,
+      summary,
+      summaryPending: summaryPending || undefined,
+      text: item.marker,
+      tone: effectivePhase === 'failed' ? 'danger' : base.tone,
+      i18n: { key: stateKey },
+      reasonCodes,
+      compactionPhase: effectivePhase,
+      compactionFailure: reason,
+      compactionHistory: effectivePhase === 'completed' ? [{
+        id: base.id,
+        markerId: item.markerId,
+        createdAt: item.at,
         startedAt: typeof payloadRecord?.['startedAt'] === 'string' ? payloadRecord['startedAt'] : undefined,
-        source: payloadRecord?.['source'] === 'auto' || payloadRecord?.['source'] === 'manual' ? payloadRecord['source'] : undefined, reasonCodes }] : undefined,
+        source: payloadRecord?.['source'] === 'auto' || payloadRecord?.['source'] === 'manual' ? payloadRecord['source'] : undefined,
+        reasonCodes,
+        summary,
+        summaryPending: summaryPending || undefined,
+      }] : undefined,
     };
   }
 
@@ -1170,6 +1231,7 @@ function insertWithinTurnByTime(blocks: Block[], block: Block, turnId: string): 
 
 type RawSubagentEvent = {
   readonly id: string;
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly subagentId: string;
   readonly event: SubagentEventBlock['event'];
   readonly at: string | undefined;
@@ -1467,6 +1529,7 @@ function subagentBlocksFromSnapshot(
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
+              contentSource: { kind: 'frame', id: frame.frameId, turnId: item.turnId, stepId: step.stepId },
               subagentId: targetId,
               event: 'sent',
               at: frameAt,
@@ -1554,6 +1617,7 @@ function subagentBlocksFromSnapshot(
       terminalMarked.add(agentId);
       rawEvents.push({
         id: `subagent-event-${agentId}-${terminal}-${task.taskId}`,
+        contentSource: { kind: 'task', id: task.taskId },
         subagentId: agentId,
         event: terminal,
         at: task.endedAt,
@@ -1568,6 +1632,7 @@ function subagentBlocksFromSnapshot(
     if (terminal === undefined) continue;
     rawEvents.push({
       id: `subagent-event-${block.subagentId}-${terminal}`,
+      contentSource: block.taskId === undefined ? undefined : { kind: 'task', id: block.taskId },
       subagentId: block.subagentId,
       event: terminal,
       at: block.endedAt,
@@ -1596,6 +1661,7 @@ function subagentBlocksFromSnapshot(
     return {
       kind: 'subagent-event',
       id: raw.id,
+      contentSource: raw.contentSource,
       subagentId: raw.subagentId,
       parentAgentId,
       name: owner?.name ?? raw.subagentId,
@@ -2058,7 +2124,8 @@ function upsertPromptItemBlocks(
     })
       ? undefined
       : item.status;
-    const reminders = reminderBlocks(item.user_message_id, item.created_at, classified.reminders, existing.turnId);
+    const reminders = reminderBlocks(item.user_message_id, item.created_at, classified.reminders, existing.turnId,
+      classified.origin?.kind === 'injection' ? classified.origin : undefined, contentSource);
     const reminderPrefix = `reminder-${item.user_message_id}-`;
     const isPromptReminder = (block: Block) => block.kind === 'system-reminder' && block.id.startsWith(reminderPrefix);
     if (
@@ -2544,6 +2611,7 @@ function turnTailFromItem(item: {
   readonly state?: string;
   readonly cancellation?: TurnTailInfo['cancellation'];
   readonly error?: string;
+  readonly errorDetails?: string;
   readonly endedAt?: string;
   readonly durationMs?: number;
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
@@ -2558,6 +2626,7 @@ function turnTailFromItem(item: {
     state: item.state,
     cancellation: item.state === 'cancelled' ? item.cancellation ?? 'unknown' : undefined,
     error: item.error,
+    errorDetails: item.errorDetails,
     endedAt: item.endedAt,
     durationMs: item.durationMs,
     ttftMs: timing?.llmFirstTokenLatencyMs,
@@ -2740,6 +2809,8 @@ export function agentTranscriptToBlocks(
           const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
+            contentSource: { kind: 'marker', id: item.markerId },
+            contentPending: (item as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'payload') === true,
             createdAt: item.at ?? '',
             turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
@@ -3042,6 +3113,7 @@ export function agentTranscriptToBlocks(
               id: `agent-frame-${frame.frameId}`,
               text: frame.message,
               tone: frame.level === 'error' ? 'danger' : 'neutral',
+              errorDetails: noticeFrameErrorDetails('detail' in frame ? frame.detail : undefined),
             });
             break;
         }
@@ -3056,6 +3128,7 @@ export function agentTranscriptToBlocks(
         createdAt: item.endedAt,
         text: outcome.error ?? '',
         tone: outcome.state === 'failed' ? 'danger' : 'neutral',
+        errorDetails: outcome.errorDetails,
         i18n: { key: outcome.state === 'failed' ? 'notice.turnFailedDetail' : 'notice.turnCancelledDetail',
           params: { detail: outcome.error === undefined ? '' : `: ${outcome.error}` } },
       });

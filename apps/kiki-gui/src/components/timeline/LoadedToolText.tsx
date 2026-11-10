@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-import { useI18n } from '../../i18n';
-import { toolRecordCopy } from '../toolRecordCopy';
 import { CopyButton } from './ContentCopyButton';
 
 export function recordText(value: unknown): string {
@@ -28,10 +26,9 @@ export function LoadedToolText({
   copyLabel?: string;
   className?: string;
 }) {
-  const { locale } = useI18n();
   return (
     <div data-loaded-tool-text>
-      {copy ? <div className="flex justify-end text-[12px] text-ink-faint"><CopyButton text={text} prepare={prepareCopy} label={copyLabel === undefined || prepareCopy !== undefined ? copyLabel : `${copyLabel} · ${toolRecordCopy('loadedOnly', locale)}`} /></div> : null}
+      {copy ? <div className="flex justify-end text-[12px] text-ink-faint"><CopyButton text={text} prepare={prepareCopy} label={copyLabel} /></div> : null}
       <ReadableToolText text={text} className={className} />
     </div>
   );

@@ -97,6 +97,7 @@ export interface EarlierPromptOutcome {
 export interface SystemReminderBlock {
   readonly kind: 'system-reminder';
   readonly id: string;
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly text: string;
   readonly createdAt: string | undefined;
   readonly turnId?: string;
@@ -156,6 +157,7 @@ export interface TaskNotificationMeta {
 export interface SystemBlock {
   readonly kind: 'system';
   readonly id: string;
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly variant: SystemVariant;
   readonly text: string;
   readonly createdAt: string | undefined;
@@ -172,6 +174,7 @@ export interface SystemBlock {
 export interface SkillBlock {
   readonly kind: 'skill';
   readonly id: string;
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly source: 'skill' | 'plugin';
   readonly name: string;
   readonly args: string | undefined;
@@ -455,6 +458,7 @@ export type SubagentLifecycleEvent =
 export interface SubagentEventBlock {
   readonly kind: 'subagent-event';
   readonly id: string;
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly subagentId: string;
   readonly parentAgentId: string | undefined;
   readonly name: string;
@@ -476,17 +480,26 @@ export interface SubagentEventBlock {
   readonly anchorToolCallId?: string;
 }
 
+export interface CompactionHistoryEntry {
+  readonly id: string;
+  readonly markerId?: string;
+  readonly createdAt?: string;
+  readonly startedAt?: string;
+  readonly source?: 'auto' | 'manual';
+  readonly reasonCodes?: readonly string[];
+  readonly summary?: string;
+  readonly summaryPending?: boolean;
+}
+
 export interface NoticeBlock {
   readonly goalChange?: import('@kiki/transcript').GoalMarkerChange;
+  readonly markerId?: string;
+  readonly summary?: string;
+  readonly summaryPending?: boolean;
+  readonly errorDetails?: string;
   readonly compactionPhase?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   readonly compactionFailure?: string;
-  readonly compactionHistory?: readonly {
-    readonly id: string;
-    readonly createdAt?: string;
-    readonly startedAt?: string;
-    readonly source?: 'auto' | 'manual';
-    readonly reasonCodes?: readonly string[];
-  }[];
+  readonly compactionHistory?: readonly CompactionHistoryEntry[];
   readonly modelSwitch?: {
     readonly change?: 'model' | 'context' | 'effort' | 'resume' | 'binding';
     readonly operationId: string;
@@ -673,6 +686,7 @@ export interface TurnTailInfo {
    */
   readonly cancellation?: 'user' | 'aborted' | 'recovery' | 'unknown';
   readonly error?: string;
+  readonly errorDetails?: string;
   readonly endedAt: string;
   readonly durationMs: number | undefined;
   readonly ttftMs: number | undefined;

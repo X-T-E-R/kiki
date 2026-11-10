@@ -450,6 +450,7 @@ export function readSubagentEndings(
     return untaggedCards[0];
   };
   const precomputedCardSummaries = new Map<string, string>();
+  const precomputedCardTaskIds = new Map<string, string>();
   const absorbedNoteIndices = new Set<number>();
   for (let index = 0; index < merged.length; index += 1) {
     const node = merged[index]!;
@@ -463,6 +464,13 @@ export function readSubagentEndings(
       isContiguousSameTurn(matchedCard.index, index, turn);
     if (canAbsorbIntoCard) {
       absorbedNoteIndices.add(index);
+      if (
+        (matchedCard.card.taskId === undefined || matchedCard.card.taskId === '') &&
+        task.id !== '' &&
+        !precomputedCardTaskIds.has(matchedCard.card.id)
+      ) {
+        precomputedCardTaskIds.set(matchedCard.card.id, task.id);
+      }
       if (
         (matchedCard.card.summary === undefined || matchedCard.card.summary === '') &&
         !precomputedCardSummaries.has(matchedCard.card.id) &&
@@ -479,7 +487,10 @@ export function readSubagentEndings(
     const node = merged[index]!;
     if (node.kind === 'subagent') {
       const summary = precomputedCardSummaries.get(node.id);
-      out.push(summary !== undefined && (node.summary === undefined || node.summary === '') ? { ...node, summary } : node);
+      const taskId = precomputedCardTaskIds.get(node.id);
+      const nextSummary = summary !== undefined && (node.summary === undefined || node.summary === '') ? summary : node.summary;
+      const nextTaskId = taskId !== undefined && (node.taskId === undefined || node.taskId === '') ? taskId : node.taskId;
+      out.push(nextSummary !== node.summary || nextTaskId !== node.taskId ? { ...node, summary: nextSummary, taskId: nextTaskId } : node);
       continue;
     }
     const task = resolvedTasks[index];

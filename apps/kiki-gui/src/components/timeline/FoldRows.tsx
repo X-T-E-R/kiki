@@ -10,10 +10,13 @@ import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } fr
 import { isLiveSubagentStatus, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
+import { ContentContinuation, MESSAGE_TEXT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaParts';
 import { MediaGalleryOrder } from '../mediaPreviewContext';
+import { useContentContinuation, useTranscriptController, useTranscriptTarget, type ContentBodySource } from '../transcriptDetail';
 import { ActivityRow } from './ActivityRow';
+import { CopyButton } from './ContentCopyButton';
 import { useFindReveal } from './findReveal';
 
 /** How many thumbnails a settled strip shows before "+N". */
@@ -206,6 +209,8 @@ function EndedMark({ outcome }: { outcome: SubagentEnding['outcome'] }) {
  * tiles open the agent (the same entry as its card and the rail) and jump
  * back to its dispatch card; the row opens the full receipt as markdown.
  */
+const ENDED_NOTE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, 'content', 'payload'];
+
 export function SubagentEndedRow({
   ending,
   name,
@@ -228,9 +233,33 @@ export function SubagentEndedRow({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   useFindReveal(ending.id, open, setOpen);
+  const controller = useTranscriptController();
+  const target = useTranscriptTarget();
+  const callerAgentId = target?.agentId;
+  const taskSource: ContentBodySource | undefined = ending.task === undefined ? undefined : { kind: 'task', id: ending.taskId };
+  const taskContinuation = useContentContinuation(taskSource, TASK_SUMMARY_ROOTS);
+  const noteContinuation = useContentContinuation(ending.note.contentSource, ENDED_NOTE_ROOTS);
+  const useTaskContinuation = taskSource !== undefined && (
+    taskContinuation.pending.length > 0 ||
+    (summary !== undefined && summary.trim() !== '') ||
+    ending.note.contentSource === undefined
+  );
+  const activeSource = useTaskContinuation ? taskSource : ending.note.contentSource;
+  const activeRoots = useTaskContinuation ? TASK_SUMMARY_ROOTS : ENDED_NOTE_ROOTS;
+  const pending = (useTaskContinuation ? taskContinuation.pending : noteContinuation.pending).length > 0;
   const receipt = endingReceipt(ending, summary);
+  const canExpand = receipt !== '' || pending;
   const headline = firstSentence(receipt);
   const how = t(`transcript.agentEnd.${ending.outcome}` as const);
+  const receiptLabel = t('transcript.agentEnd.receiptAria', { name });
+  const copyRoot = useTaskContinuation
+    ? (taskContinuation.pending.some((ref) => ref.path[0] === 'outputTail') && !taskContinuation.pending.some((ref) => ref.path[0] === 'resultSummary')
+      ? 'outputTail'
+      : 'resultSummary')
+    : String(noteContinuation.pending[0]?.path[0] ?? 'text');
+  const prepareCopy = controller === undefined || callerAgentId === undefined || activeSource === undefined || !pending
+    ? undefined
+    : (signal: AbortSignal) => controller.copyContentField(callerAgentId, activeSource, [copyRoot], signal);
   return (
     <ActivityRow
       shrinkLabel
@@ -250,7 +279,7 @@ export function SubagentEndedRow({
       }
       meta={elapsed}
       expanded={open}
-      onToggle={receipt === '' ? undefined : () => { setOpen((value) => !value); }}
+      onToggle={!canExpand ? undefined : () => { setOpen((value) => !value); }}
       aside={
         <span className="flex shrink-0 items-center">
           {ending.dispatchOnPage && onLocateDispatch !== undefined ? (
@@ -283,10 +312,26 @@ export function SubagentEndedRow({
       {open ? (
         <div
           role="region"
-          aria-label={t('transcript.agentEnd.receiptAria', { name })}
-          className="kiki-prose max-h-72 overflow-auto border-l border-hairline pl-3 !text-[13.5px]"
+          aria-label={receiptLabel}
+          className="space-y-1.5 border-l border-hairline pl-3"
         >
-          {renderReceipt(receipt)}
+          {receipt !== '' ? (
+            <div className="flex items-start gap-2">
+              <div
+                data-subagent-ended-receipt
+                className="kiki-prose min-w-0 flex-1 max-h-[28rem] overflow-auto pr-1 !text-[13.5px]"
+              >
+                {renderReceipt(receipt)}
+              </div>
+              <CopyButton text={receipt} prepare={prepareCopy} label={receiptLabel} />
+            </div>
+          ) : null}
+          <ContentContinuation
+            source={activeSource}
+            roots={activeRoots}
+            label={receiptLabel}
+            renderText={renderReceipt}
+          />
         </div>
       ) : undefined}
     </ActivityRow>

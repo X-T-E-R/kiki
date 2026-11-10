@@ -1,8 +1,9 @@
-import { createContext, memo, useContext, useEffect, useState } from 'react';
+import { createContext, memo, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { ToolBlock } from '@kiki/session-core';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
-import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS } from '../ContentContinuation';
-import { useTranscriptController, useTranscriptTarget } from '../transcriptDetail';
+import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
+import { useContentContinuation, useTranscriptController, useTranscriptTarget, type ContentBodySource } from '../transcriptDetail';
+import { Markdown } from '../Markdown';
 import { ReadableToolText } from './LoadedToolText';
 
 import { useI18n } from '../../i18n';
@@ -153,32 +154,95 @@ export const SubagentInvocationView = memo(function SubagentInvocationView({ too
   );
 });
 
-export function useInvocationDetails(toolCallId: string | undefined, callerAgentId?: string, compact = false) {
+export interface SubagentResultSummaryProps {
+  readonly taskId?: string;
+  readonly summary?: string;
+  readonly callerAgentId?: string;
+}
+
+export function SubagentResultSummary({
+  taskId,
+  summary,
+  callerAgentId,
+}: SubagentResultSummaryProps): ReactNode {
+  const { t } = useI18n();
+  const controller = useTranscriptController();
+  const target = useTranscriptTarget();
+  const caller = callerAgentId ?? target?.agentId;
+  const source: ContentBodySource | undefined = taskId === undefined || taskId === '' ? undefined : { kind: 'task', id: taskId };
+  const continuation = useContentContinuation(source, TASK_SUMMARY_ROOTS, callerAgentId);
+  const pending = continuation.pending.length > 0;
+  const trimmed = summary?.trim() ?? '';
+  if (trimmed === '' && !pending) return null;
+  const label = t('subagent.call.receiptBody');
+  const copyRoot = continuation.pending.some((ref) => ref.path[0] === 'outputTail') &&
+    !continuation.pending.some((ref) => ref.path[0] === 'resultSummary')
+    ? 'outputTail'
+    : 'resultSummary';
+  const prepareCopy = controller === undefined || caller === undefined || source === undefined || !pending
+    ? undefined
+    : (signal: AbortSignal) => controller.copyContentField(caller, source, [copyRoot], signal);
+  return (
+    <div data-subagent-result-summary className="space-y-1.5 text-ink">
+      <div className="flex items-center justify-between text-[12px] font-medium text-ink-faint">
+        <span>{label}</span>
+        {trimmed === '' ? null : <CopyButton label={label} text={trimmed} prepare={prepareCopy} />}
+      </div>
+      {trimmed === '' ? null : (
+        <div className="kiki-prose max-h-[28rem] overflow-auto pr-1 !text-[13.5px] text-ink">
+          <Markdown text={trimmed} />
+        </div>
+      )}
+      <ContentContinuation
+        source={source}
+        roots={TASK_SUMMARY_ROOTS}
+        callerAgentId={callerAgentId}
+        label={label}
+        headingPresent
+        renderText={(markdown) => <Markdown text={markdown} />}
+      />
+    </div>
+  );
+}
+
+export function useInvocationDetails(
+  toolCallId: string | undefined,
+  callerAgentId?: string,
+  compact = false,
+  result?: SubagentResultSummaryProps & { readonly toggleKey?: string },
+) {
   const { t } = useI18n();
   const context = useContext(InvocationContext);
   const [open, setOpen] = useState(false);
   const controller = useTranscriptController();
   const target = useTranscriptTarget();
   const caller = callerAgentId ?? context?.callerAgentId ?? target?.agentId;
+  const taskSource: ContentBodySource | undefined = result?.taskId === undefined || result.taskId === ''
+    ? undefined
+    : { kind: 'task', id: result.taskId };
+  const taskPending = useContentContinuation(taskSource, TASK_SUMMARY_ROOTS, caller).pending.length > 0;
+  const hasResult = (result?.summary !== undefined && result.summary.trim() !== '') || taskPending;
+  const hasToolCall = toolCallId !== undefined && caller !== undefined;
+  const toggleId = toolCallId ?? result?.toggleKey;
   const lookupKey = `${target?.sessionId}/${caller}/${toolCallId}/${controller?.getState().transcriptResetVersion ?? 0}`;
   const [lookup, setLookup] = useState<{ key: string; value: Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup'] }>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
-  const current = caller === undefined || toolCallId === undefined ? undefined : controller?.getToolCallDetail(caller, toolCallId) ?? (lookup?.key === lookupKey ? lookup.value : undefined);
+  const current = !hasToolCall ? undefined : controller?.getToolCallDetail(caller, toolCallId) ?? (lookup?.key === lookupKey ? lookup.value : undefined);
   const fallback = caller === context?.callerAgentId ? context?.tools.get(toolCallId ?? '') : undefined;
   const tool = current?.status === 'found' ? invocationTool(current) : fallback;
   useEffect(() => {
     setLookup(undefined);
     setError(undefined);
-    if (!open || controller === undefined || caller === undefined || toolCallId === undefined) return;
+    if (!open || controller === undefined || !hasToolCall) return;
     const abort = new AbortController();
     void (async () => {
       try {
         while (!abort.signal.aborted) {
-          const result = await controller.lookupToolCall(caller, toolCallId, abort.signal);
+          const loaded = await controller.lookupToolCall(caller, toolCallId, abort.signal);
           if (abort.signal.aborted) return;
-          setLookup({ key: lookupKey, value: result });
-          if (result.status !== 'preparing') return;
+          setLookup({ key: lookupKey, value: loaded });
+          if (loaded.status !== 'preparing') return;
           await new Promise<void>((resolve) => setTimeout(resolve, 80));
         }
       } catch (failure) {
@@ -186,13 +250,13 @@ export function useInvocationDetails(toolCallId: string | undefined, callerAgent
       }
     })();
     return () => { abort.abort(); };
-  }, [open, controller, caller, toolCallId, lookupKey, attempt]);
+  }, [open, controller, hasToolCall, caller, toolCallId, lookupKey, attempt]);
   // The control is the icon, never the word: on the compact card it once shared
   // a white pill with the jump arrow at the row's right edge, which read as a
   // second label rather than a control. The tooltip carries the name, the aria
   // label follows the state, and the chevron is the family's disclosure mark.
-  const button = toolCallId === undefined || caller === undefined ? null : (
-    <button type="button" data-invocation-toggle={toolCallId} aria-expanded={open}
+  const button = !hasToolCall && (!hasResult || toggleId === undefined) ? null : (
+    <button type="button" data-invocation-toggle={toggleId} aria-expanded={open}
       data-invocation-open={open || undefined}
       aria-label={t(open ? 'subagent.call.collapseDetails' : 'subagent.call.expandDetails')}
       title={t(open ? 'subagent.call.collapseDetails' : 'subagent.call.expandDetails')}
@@ -203,10 +267,20 @@ export function useInvocationDetails(toolCallId: string | undefined, callerAgent
   );
   const body = !open ? null : (
     <div className="mt-1 space-y-3 border-l border-hairline pl-3" role="region" aria-label={t('subagent.call.details')}>
-      {tool === undefined ? <div className="text-[12px] text-ink-faint"><p>{error !== undefined ? t('subagent.call.failed') : t(current?.status === 'not_found' ? 'subagent.call.unavailable' : current?.status === 'preparing' ? 'subagent.call.preparing' : 'subagent.call.loading')}</p>{error !== undefined ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="mt-1 underline">{t('common.retry')}</button> : null}</div> : <SubagentInvocationView key={`${caller}/${tool.toolCallId}`} callerAgentId={caller} toolBlock={tool} />}
+      {hasResult ? (
+        <SubagentResultSummary taskId={result?.taskId} summary={result?.summary} callerAgentId={caller} />
+      ) : null}
+      {!hasToolCall ? null : tool === undefined ? (
+        <div className="text-[12px] text-ink-faint">
+          <p>{error !== undefined ? t('subagent.call.failed') : t(current?.status === 'not_found' ? 'subagent.call.unavailable' : current?.status === 'preparing' ? 'subagent.call.preparing' : 'subagent.call.loading')}</p>
+          {error !== undefined ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="mt-1 underline">{t('common.retry')}</button> : null}
+        </div>
+      ) : (
+        <SubagentInvocationView key={`${caller}/${tool.toolCallId}`} callerAgentId={caller} toolBlock={tool} />
+      )}
     </div>
   );
-  return { button, body };
+  return { button, body, open };
 }
 
 function invocationTool(lookup: Extract<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup'], { status: 'found' }>): ToolBlock {

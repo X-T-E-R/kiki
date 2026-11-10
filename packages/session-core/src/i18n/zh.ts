@@ -1719,8 +1719,8 @@ export const zh = {
 
 
 
-  'transcript.marker.compactionFallback': '上下文已压缩 · 已生成摘要（重新开始条件未满足）',
-  'transcript.marker.compactionRescue': '上下文已压缩 · 已重新开始（摘要失败）',
+  'transcript.marker.compactionFallback': '上下文已压缩 · 已生成摘要',
+  'transcript.marker.compactionRescue': '上下文已压缩 · 已重新开始',
   'transcript.marker.reason.history_unavailable': '换窗时无法读取会话历史。',
   'transcript.marker.reason.notes_missing': '智能体没有可用于接力的工作笔记。',
   'transcript.marker.reason.notes_previous_window': '工作笔记只覆盖了上一个上下文窗口。',

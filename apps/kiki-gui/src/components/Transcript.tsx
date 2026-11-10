@@ -18,6 +18,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useInsertionEffect,
   useLayoutEffect,
   useMemo,
@@ -187,8 +188,10 @@ import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
-import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
+import { InvocationContext, SubagentResultSummary, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
+import { plainFailure } from './agent-panel/failureText';
+import { CopyButton } from './timeline/ContentCopyButton';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
 import { AgentRefText, AgentRefResolutionProvider, useAgentRefResolution } from './AgentRefChip';
 import { ThreadRefText } from './ThreadRefChip';
@@ -200,7 +203,7 @@ import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
 import { useSessionRemainderPending } from './SessionRemainder';
-import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
+import { ContentContinuation, frameContentSource, INPUT_ROOTS, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TASK_SUMMARY_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
@@ -1101,6 +1104,9 @@ const REMINDER_CATEGORY_KEYS = {
   progress: 'transcript.reminder.progress',
 } as const;
 
+/** Field-path roots for injected/system/skill message bodies (turn/frame text or prompt/marker payload). */
+const SYSTEM_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, 'content', 'payload'];
+
 /** Daemon-injected reminder peeled out of a user message — left lane, dimmed,
  * collapsed by default so the user's own bubble stays clean. The first line
  * rides the collapsed row so it never reads as an empty "System reminder".
@@ -1116,6 +1122,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
   const category = block.category;
+  const labelText = t(category === undefined ? 'transcript.systemReminder' : REMINDER_CATEGORY_KEYS[category.kind]);
   const facts = category === undefined ? [] : [
     category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: category.triggers.join(' · ') }) : undefined,
     category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: category.epoch }) : undefined,
@@ -1125,18 +1132,24 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
     <ActivityRow
       attrs={{ 'data-reminder-kind': category?.kind }}
       glyph={<Icon name="system" />}
-      label={<span className="font-normal text-ink-faint">{t(category === undefined ? 'transcript.systemReminder' : REMINDER_CATEGORY_KEYS[category.kind])}</span>}
+      label={<span className="font-normal text-ink-faint">{labelText}</span>}
       detail={<span className="text-ink-faint/80">{injectionSummary(block.text)}</span>}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
       onToggle={() => { setOpen((value) => !value); }}
     >
       {open ? (
-        <div className="max-h-[140px] overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
-          {facts.length > 0 ? (
-            <p data-reminder-facts className="mb-1 font-mono text-[11px] whitespace-normal text-ink-faint/80">{facts.join('  ·  ')}</p>
-          ) : null}
-          {block.text}
+        <div className="space-y-1">
+          <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
+            <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
+              {facts.length > 0 ? (
+                <p data-reminder-facts className="mb-1 font-mono text-[11px] whitespace-normal text-ink-faint/80">{facts.join('  ·  ')}</p>
+              ) : null}
+              {block.text}
+            </div>
+            {block.text !== '' ? <CopyButton text={block.text} label={labelText} /> : null}
+          </div>
+          <ContentContinuation source={block.contentSource} roots={SYSTEM_MESSAGE_ROOTS} label={labelText} />
         </div>
       ) : undefined}
     </ActivityRow>
@@ -1240,8 +1253,14 @@ function PlainSystemMessage({ block }: { block: SystemBlock }) {
       onToggle={() => { setOpen((value) => !value); }}
     >
       {open ? (
-        <div className="max-h-[140px] overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
-          {block.text}
+        <div className="space-y-1">
+          <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
+            <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
+              {block.text}
+            </div>
+            {block.text !== '' ? <CopyButton text={block.text} label={label} /> : null}
+          </div>
+          <ContentContinuation source={block.contentSource} roots={SYSTEM_MESSAGE_ROOTS} label={label} />
         </div>
       ) : undefined}
     </ActivityRow>
@@ -1252,6 +1271,8 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
+  const pending = useContentContinuation(block.contentSource, SYSTEM_MESSAGE_ROOTS).pending.length > 0;
+  const hasBody = block.text !== '' || pending;
   const title =
     block.source === 'plugin'
       ? t('transcript.skill.plugin', { name: block.name })
@@ -1268,11 +1289,19 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
       }
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
-      onToggle={block.text === '' ? undefined : () => { setOpen((value) => !value); }}
+      onToggle={!hasBody ? undefined : () => { setOpen((value) => !value); }}
     >
-      {open && block.text !== '' ? (
-        <div className="max-h-36 overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
-          {block.text}
+      {open && hasBody ? (
+        <div className="space-y-1">
+          {block.text !== '' ? (
+            <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
+              <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
+                {block.text}
+              </div>
+              <CopyButton text={block.text} label={title} />
+            </div>
+          ) : null}
+          <ContentContinuation source={block.contentSource} roots={SYSTEM_MESSAGE_ROOTS} label={title} />
         </div>
       ) : undefined}
     </ActivityRow>
@@ -1599,7 +1628,7 @@ function SubagentCardBody({
           title={error}
           className={`mt-0.5 truncate ${bodyIndent} text-[13px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
         >
-          {error ?? description}
+          {(error !== undefined ? plainFailure(error) ?? error : undefined) ?? description}
         </p>
       ) : null}
     </>
@@ -1680,11 +1709,15 @@ function SubagentCompactCard({
   folded?: boolean;
 }) {
   const { t, tp, time } = useI18n();
+  const [errorOpen, setErrorOpen] = useState(false);
+  const errorDetailsId = useId();
+  const hasErrorBody = error !== undefined && error.trim() !== '';
   // A live run says what it is doing now (its latest step, else its task);
   // an old receipt would contradict "Running". A settled run gives the
   // receipt's first sentence as plain text, never raw markdown.
   const live = status === 'running' || status === 'background' || status === 'suspended';
-  const line = error ?? (live ? subagentActivity(block) : summary === undefined ? undefined : firstSentence(summary));
+  const errorSummary = error === undefined ? undefined : plainFailure(error) ?? error;
+  const line = errorSummary ?? (live ? subagentActivity(block) : summary === undefined ? undefined : firstSentence(summary));
   // The agent is the subject: its name is the label (the same line the main
   // and child timelines both use), the status word opens the detail and the
   // result summary follows. Unknown counts and timings leave their columns
@@ -1695,6 +1728,23 @@ function SubagentCompactCard({
       {line === undefined || line === '' ? null : <> · {line}</>}
     </>
   );
+  const combinedBody = (errorOpen && hasErrorBody) || invocationBody !== undefined ? (
+    <>
+      {errorOpen && hasErrorBody ? (
+        <div className={`${ACTIVITY_GUTTER} mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft`}>
+          <p
+            id={errorDetailsId}
+            data-subagent-error-details
+            className="min-w-0 flex-1 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap"
+          >
+            {error}
+          </p>
+          <CopyButton text={error} label={t('transcript.promptOutcome.details')} />
+        </div>
+      ) : null}
+      {invocationBody}
+    </>
+  ) : undefined;
   return (
     <ActivityRow
       nested={depth > 0}
@@ -1718,20 +1768,37 @@ function SubagentCompactCard({
       meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
       metaWidth="wide"
       aside={
-        <>{onExpand === undefined ? null : (
-          <button
-            type="button"
-            data-card-expand={block.subagentId}
-            aria-label={t('subagent.expandCard')}
-            title={t('subagent.expandCard')}
-            onClick={onExpand}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel hover:text-ink"
-          >
-            <Icon name="expand" size={12} className="text-current" />
-          </button>
-        )}{invocationButton}</>
+        <>
+          {hasErrorBody ? (
+            <button
+              type="button"
+              data-subagent-error-toggle={block.subagentId}
+              aria-expanded={errorOpen}
+              aria-controls={errorDetailsId}
+              aria-label={t('transcript.promptOutcome.details')}
+              title={t('transcript.promptOutcome.details')}
+              onClick={() => { setErrorOpen((value) => !value); }}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <DisclosureChevron open={errorOpen} className="text-current" />
+            </button>
+          ) : null}
+          {onExpand === undefined ? null : (
+            <button
+              type="button"
+              data-card-expand={block.subagentId}
+              aria-label={t('subagent.expandCard')}
+              title={t('subagent.expandCard')}
+              onClick={onExpand}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel hover:text-ink"
+            >
+              <Icon name="expand" size={12} className="text-current" />
+            </button>
+          )}
+          {invocationButton}
+        </>
       }
-    >{invocationBody}</ActivityRow>
+    >{combinedBody}</ActivityRow>
   );
 }
 
@@ -1833,8 +1900,19 @@ const SubagentCard = memo(function SubagentCard({
   const full = nested
     ? !nestedFold.folded
     : formOverride !== undefined ? formOverride === 'full' : active;
-  const invocation = useInvocationDetails(block.parentToolCallId, block.parentAgentId, !full);
+  const resultSummary = runIsLive ? undefined : runSummary;
+  const invocation = useInvocationDetails(block.parentToolCallId, block.parentAgentId, !full, {
+    taskId: runIsLive ? undefined : block.taskId,
+    summary: resultSummary,
+    toggleKey: block.id,
+  });
   const [expanded, setExpanded] = useState(() => active);
+  const [fullErrorOpen, setFullErrorOpen] = useState(false);
+  const fullErrorDetailsId = useId();
+  const hasFullError = runError !== undefined && runError.trim() !== '';
+  const fullTaskSource = runIsLive || block.taskId === undefined || block.taskId === '' ? undefined : { kind: 'task' as const, id: block.taskId };
+  const fullTaskPending = useContentContinuation(full ? fullTaskSource : undefined, TASK_SUMMARY_ROOTS, block.parentAgentId).pending.length > 0;
+  const showInlineFullResult = full && !invocation.open && ((resultSummary !== undefined && resultSummary.trim() !== '') || fullTaskPending);
   useEffect(() => {
     if (active) setExpanded(true);
   }, [active]);
@@ -1941,12 +2019,44 @@ const SubagentCard = memo(function SubagentCard({
             >
               {body}
             </button>
+            {hasFullError && node?.turnOutcome === undefined ? (
+              <div className={`mt-0.5 ${depth > 0 ? 'pl-[26px]' : 'pl-4'}`}>
+                <button
+                  type="button"
+                  data-subagent-error-toggle={block.subagentId}
+                  aria-expanded={fullErrorOpen}
+                  aria-controls={fullErrorDetailsId}
+                  onClick={() => { setFullErrorOpen((value) => !value); }}
+                  className="inline-flex min-h-6 cursor-pointer items-center gap-0.5 rounded-sm px-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {t('transcript.promptOutcome.details')}
+                  <DisclosureChevron open={fullErrorOpen} />
+                </button>
+                {fullErrorOpen ? (
+                  <div className="mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft">
+                    <p
+                      id={fullErrorDetailsId}
+                      data-subagent-error-details
+                      className="min-w-0 flex-1 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap"
+                    >
+                      {runError}
+                    </p>
+                    <CopyButton text={runError} label={t('transcript.promptOutcome.details')} />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
           </div>
           <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
             {invocation.button}
           </div>
         </div>
+        {showInlineFullResult ? (
+          <div className="mt-1 space-y-3 border-l border-hairline pl-3">
+            <SubagentResultSummary taskId={block.taskId} summary={resultSummary} callerAgentId={block.parentAgentId} />
+          </div>
+        ) : null}
         {invocation.body}
         {block.orphaned === true ? (
           <p className="mt-1 pl-1 text-[12px] text-ink-faint italic">
@@ -1997,6 +2107,8 @@ function agentMessageSummary(message: string, limit = 140): string {
   return compact.length <= limit ? compact : `${compact.slice(0, limit - 1).trimEnd()}…`;
 }
 
+const SUBAGENT_EVENT_ERROR_ROOTS: readonly string[] = ['error', 'stateReason'];
+
 /**
  * One-line lifecycle entry (G-4 compact form): status dot + name + event +
  * relative time; the whole row jumps to the agent page. Rows sit in place at
@@ -2012,25 +2124,42 @@ const SubagentEventRow = memo(function SubagentEventRow({
   const { t } = useI18n();
   const [openMessage, setOpenMessage] = useState(false);
   useFindReveal(block.id, openMessage, setOpenMessage);
-  const invocation = useInvocationDetails(block.anchorToolCallId);
+  const invocation = useInvocationDetails(block.anchorToolCallId, block.parentAgentId);
+  const eventRoots = block.error !== undefined ? SUBAGENT_EVENT_ERROR_ROOTS : INPUT_ROOTS;
+  const eventPending = useContentContinuation(block.contentSource, eventRoots, block.parentAgentId).pending.length > 0;
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
   const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);
-  const line = block.error ?? messageSummary;
+  const errorSummary = block.error === undefined ? undefined : plainFailure(block.error) ?? block.error;
+  const line = errorSummary ?? messageSummary;
   const detail = (
     <>
       <span className="text-ink">{block.name}</span>
       {line === undefined || line === '' ? null : (
         <>
           {' · '}
-          <span data-agent-message-summary={block.message === undefined ? undefined : true} title={block.message}>
+          <span data-agent-message-summary={block.message === undefined ? undefined : true} title={block.error ?? block.message}>
             {line}
           </span>
         </>
       )}
     </>
   );
-  const canToggleMessage = block.message !== undefined && block.message.trim() !== '' && invocation.button === null;
+  const bodyText = block.error ?? block.message;
+  const canToggleBody = ((bodyText !== undefined && bodyText.trim() !== '') || eventPending) && invocation.button === null;
+  const errorToggle = block.error !== undefined && block.error.trim() !== '' && invocation.button !== null ? (
+    <button
+      type="button"
+      data-subagent-event-error-toggle={block.id}
+      aria-expanded={openMessage}
+      aria-label={t('transcript.promptOutcome.details')}
+      title={t('transcript.promptOutcome.details')}
+      onClick={() => { setOpenMessage((value) => !value); }}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+    >
+      <DisclosureChevron open={openMessage} className="text-current" />
+    </button>
+  ) : null;
   return (
     <ActivityRow
       glyph={
@@ -2043,8 +2172,8 @@ const SubagentEventRow = memo(function SubagentEventRow({
       detail={detail}
       title={block.error ?? t('subagent.openAgent', { name: block.name })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
-      expanded={canToggleMessage ? openMessage : undefined}
-      onToggle={canToggleMessage ? () => { setOpenMessage((value) => !value); } : undefined}
+      expanded={canToggleBody ? openMessage : undefined}
+      onToggle={canToggleBody ? () => { setOpenMessage((value) => !value); } : undefined}
       meta={
         block.delivery !== undefined ? (
           <span
@@ -2064,17 +2193,49 @@ const SubagentEventRow = memo(function SubagentEventRow({
         'data-agent-message-id': block.messageId,
       }}
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
-      aside={invocation.button}
+      aside={<>{errorToggle}{invocation.button}</>}
     >
-      {invocation.body ?? (openMessage && block.message !== undefined ? (
-        <div
-          data-agent-message-body
-          className="mt-1 max-h-60 overflow-auto border-l border-hairline pl-3 text-[13px] leading-relaxed whitespace-pre-wrap break-words text-ink"
-        >
-          {block.messageId !== undefined ? (
-            <div className="mb-1 font-mono text-[11px] text-ink-faint">message_id: {block.messageId}</div>
+      {openMessage && block.error !== undefined ? (
+        <div className={`${ACTIVITY_GUTTER} mt-1 space-y-1`}>
+          <div
+            data-subagent-event-error
+            className="flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft"
+          >
+            <p className="min-w-0 flex-1 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap">
+              {block.error}
+            </p>
+            <CopyButton text={block.error} label={t('transcript.promptOutcome.details')} />
+          </div>
+          <ContentContinuation
+            source={block.contentSource}
+            roots={SUBAGENT_EVENT_ERROR_ROOTS}
+            callerAgentId={block.parentAgentId}
+            label={t('transcript.promptOutcome.details')}
+          />
+        </div>
+      ) : null}
+      {invocation.body ?? (openMessage && block.error === undefined && (block.message !== undefined || eventPending) ? (
+        <div className="mt-1 space-y-1">
+          {block.message !== undefined ? (
+            <div
+              data-agent-message-body
+              className="flex max-w-full items-start gap-2 border-l border-hairline pl-3"
+            >
+              <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words text-ink">
+                {block.messageId !== undefined ? (
+                  <div className="mb-1 font-mono text-[11px] text-ink-faint">message_id: {block.messageId}</div>
+                ) : null}
+                {block.message}
+              </div>
+              <CopyButton text={block.message} label={t('tc.sem.message')} />
+            </div>
           ) : null}
-          {block.message}
+          <ContentContinuation
+            source={block.contentSource}
+            roots={INPUT_ROOTS}
+            callerAgentId={block.parentAgentId}
+            label={t('tc.sem.message')}
+          />
         </div>
       ) : null)}
     </ActivityRow>
@@ -2118,77 +2279,129 @@ const GOAL_CHANGE_I18N_KEY: Record<GoalMarkerChange['kind'], I18nKey> = {
   cleared: 'transcript.marker.goal.cleared',
 };
 
+const COMPACTION_ROOTS = ['payload'] as const;
+
 /**
  * A notice is a boundary, not an event: compaction, a marker, the start of a
  * plan. It gets the divider rule so the log reads as regions. A danger notice
  * (a failed prompt) is the exception — it keeps the amber-coded rule so a
- * failure is visible in a fast scroll, but it stays one line of type rather
- * than a filled card.
+ * failure is visible in a fast scroll, while opening onto the full error or
+ * compaction summary on request.
  */
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
-  const baseText = block.goalChange !== undefined
+  const detailsId = useId();
+  useFindReveal(block.id, open, setOpen);
+  const fullText = block.goalChange !== undefined
     ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
     : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
-  const text = baseText;
-  const notesBudgetExceeded = block.reasonCodes?.includes('notes_directives_budget') === true;
-  // Why a compaction took the path it did (e.g. summary instead of a fresh
-  // window): one sentence per engine reason code; an unknown code reads as-is.
-  const reasonText = (code: string) => {
-    const key = `transcript.marker.reason.${code}` as I18nKey;
-    const translated = t(key);
-    return translated === key ? code : translated;
-  };
-  const reasons = [...(block.reasonCodes ?? []).map(reasonText), ...(block.compactionFailure === undefined ? [] : [block.compactionFailure])];
+  const isDangerOrError = block.tone === 'danger' || block.errorDetails !== undefined;
+  const rawErrorText = block.compactionFailure ?? (isDangerOrError ? (block.text !== '' && block.text !== 'compaction' ? block.text : fullText) : undefined);
+  const fullErrorDetails = block.errorDetails !== undefined
+    ? (rawErrorText !== undefined && !block.errorDetails.includes(rawErrorText) ? `${rawErrorText}\n\n${block.errorDetails}` : block.errorDetails)
+    : rawErrorText;
+  const errorExpandable = block.compactionFailure !== undefined || block.errorDetails !== undefined ||
+    (block.tone === 'danger' && rawErrorText !== undefined && (rawErrorText.includes('\n') || rawErrorText.length > 72));
+  const summaryHeadline = isDangerOrError && block.compactionFailure === undefined
+    ? (block.i18n?.key === 'notice.turnFailedDetail' && block.text !== ''
+      ? t('notice.turnFailedDetail', { detail: `: ${plainFailure(block.text) ?? firstLineOf(block.text)}` })
+      : plainFailure(fullText) ?? firstLineOf(fullText))
+    : fullText;
   const history = block.compactionHistory ?? [];
-  const expandable = reasons.length > 0 || history.length > 0;
-  // `goalChange.reason` is the engine string for this notice. Compaction
-  // reason codes stay in `reasons` and can also open under the line.
-  const title = [time.absoluteTime(block.createdAt), block.goalChange?.reason, ...reasons]
+  const hasCompactionSummary = block.summary !== undefined || block.summaryPending === true ||
+    history.some((entry) => entry.summary !== undefined || entry.summaryPending === true);
+  const expandable = errorExpandable || history.length > 1 || hasCompactionSummary;
+  const title = [time.absoluteTime(block.createdAt), block.goalChange?.reason, block.compactionFailure]
     .filter((part) => part !== undefined && part !== '')
     .join('\n');
   const count = block.markerRepeatCount ?? 1;
   const repeatedText = count > 1 ? history.length > 0
-    ? t('transcript.marker.compactionRepeated', { label: text, count }) : `${text} ×${count}` : text;
-  const label = block.tone === 'danger' ? <span className="font-medium text-danger">{repeatedText}</span> : repeatedText;
+    ? t('transcript.marker.compactionRepeated', { label: summaryHeadline, count }) : `${summaryHeadline} ×${count}` : summaryHeadline;
+  const label = block.tone === 'danger'
+    ? <span className="min-w-0 truncate font-medium text-danger">{repeatedText}</span>
+    : <span className="min-w-0 truncate">{repeatedText}</span>;
   return (
-    <div data-notice-reasons={reasons.length > 0 ? reasons.length : undefined}>
+    <div>
       <TimelineDivider
         tone={block.tone === 'danger' ? 'warn' : 'plain'}
-        title={title}
+        title={title === '' ? undefined : title}
         attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key, 'data-goal-change': block.goalChange?.kind }}
       >
         {expandable ? (
           <button
             type="button"
+            data-notice-toggle
             data-notice-reasons-toggle
             aria-expanded={open}
+            aria-controls={detailsId}
             onClick={() => { setOpen((value) => !value); }}
-            className="inline-flex min-h-6 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink"
+            className="inline-flex max-w-full min-h-6 min-w-0 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink"
           >
             {label}
             <DisclosureChevron open={open} />
           </button>
         ) : label}
       </TimelineDivider>
-      {notesBudgetExceeded ? <p data-compaction-notes-budget className="mt-1 text-[12px] leading-snug text-ink-soft">{t('transcript.marker.reason.notes_directives_budget')}</p> : null}
-      {/* The reasons are body text under the rule, not a centred aside: the
-          list starts on the column's left edge with the same hanging indent
-          as a list in an answer (.kiki-md ul), faint bullets like there too. */}
-      {open && history.length > 0 ? (
-        <ol data-compaction-history className="mt-0.5 mb-1 flex list-decimal flex-col gap-1 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
-          {history.map((entry) => <li key={entry.id}>
-            <span>{time.absoluteTime(entry.createdAt)}</span>
-            {entry.source !== undefined ? <span> · {t(`transcript.marker.compactionSource.${entry.source}` as I18nKey)}</span> : null}
-            {entry.startedAt !== undefined ? <span className="text-ink-faint"> · {t('transcript.marker.compactionStartedAt', { time: time.absoluteTime(entry.startedAt) ?? entry.startedAt })}</span> : null}
-            {(entry.reasonCodes ?? []).map((code) => <p key={code} className="text-ink-faint">{reasonText(code)}</p>)}
-          </li>)}
-        </ol>
-      ) : open && reasons.length > 0 ? (
-        <ul data-notice-reason-list className="mt-0.5 mb-1 flex list-disc flex-col gap-0.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
-          {reasons.map((reason, index) => <li key={`${block.id}:${index}`}>{reason}</li>)}
-        </ul>
+      {open ? (
+        <div id={detailsId} className="mt-1 mb-1.5 space-y-2">
+          {errorExpandable && fullErrorDetails !== undefined ? (
+            <div data-notice-error-details className="flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft">
+              <p className="min-w-0 flex-1 text-left font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap">
+                {fullErrorDetails}
+              </p>
+              <CopyButton text={fullErrorDetails} label={t('transcript.promptOutcome.details')} />
+            </div>
+          ) : null}
+          {history.length > 1 ? (
+            <ol data-compaction-history className="flex list-decimal flex-col gap-2.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
+              {history.map((entry) => (
+                <li key={entry.id} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate">
+                      <span>{time.absoluteTime(entry.createdAt)}</span>
+                      {entry.source !== undefined ? <span> · {t(`transcript.marker.compactionSource.${entry.source}` as I18nKey)}</span> : null}
+                      {entry.startedAt !== undefined ? <span className="text-ink-faint"> · {t('transcript.marker.compactionStartedAt', { time: time.absoluteTime(entry.startedAt) ?? entry.startedAt })}</span> : null}
+                    </span>
+                    {entry.summary !== undefined && entry.summary !== '' ? (
+                      <CopyButton text={entry.summary} label={summaryHeadline} />
+                    ) : null}
+                  </div>
+                  {entry.summary !== undefined && entry.summary !== '' ? (
+                    <div data-compaction-summary className="border-l border-hairline pl-3 text-[13px] leading-6 text-ink-soft">
+                      <Markdown text={entry.summary} />
+                    </div>
+                  ) : null}
+                  {entry.markerId !== undefined ? (
+                    <ContentContinuation
+                      source={{ kind: 'marker', id: entry.markerId }}
+                      roots={COMPACTION_ROOTS}
+                      label={summaryHeadline}
+                    />
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : hasCompactionSummary ? (
+            <div data-compaction-summary className="space-y-1.5">
+              {block.summary !== undefined && block.summary !== '' ? (
+                <div className="flex items-start gap-2 border-l border-hairline pl-3">
+                  <div className="min-w-0 flex-1 text-[13px] leading-6 text-ink-soft">
+                    <Markdown text={block.summary} />
+                  </div>
+                  <CopyButton text={block.summary} label={summaryHeadline} />
+                </div>
+              ) : null}
+              {block.markerId !== undefined ? (
+                <ContentContinuation
+                  source={{ kind: 'marker', id: block.markerId }}
+                  roots={COMPACTION_ROOTS}
+                  label={summaryHeadline}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -3698,6 +3911,7 @@ export const TurnTailLine = memo(function TurnTailLine({
 }) {
   const { t, time } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [errorOpen, setErrorOpen] = useState(false);
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
   // Failure and a stop each own their line; an empty completion only exists
@@ -3706,6 +3920,10 @@ export const TurnTailLine = memo(function TurnTailLine({
   // Only an explicit stop request reads as "Stopped by you"; engine aborts,
   // restarts and records without provenance say "Interrupted".
   const cancellation = tail.cancellation ?? 'unknown';
+  const fullErrorText = tail.errorDetails !== undefined
+    ? (tail.error !== undefined && !tail.errorDetails.includes(tail.error) ? `${tail.error}\n\n${tail.errorDetails}` : tail.errorDetails)
+    : tail.error;
+  const errorSummary = tail.error !== undefined ? (plainFailure(tail.error) ?? firstLineOf(tail.error)) : (fullErrorText === undefined ? undefined : plainFailure(fullErrorText) ?? firstLineOf(fullErrorText));
   const facts: string[] = [];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
@@ -3720,12 +3938,12 @@ export const TurnTailLine = memo(function TurnTailLine({
   }
 
   const handleCopyError = useCallback(() => {
-    if (tail.error === undefined) return;
-    void copyTextToClipboard(tail.error).then(() => {
+    if (fullErrorText === undefined) return;
+    void copyTextToClipboard(fullErrorText).then(() => {
       setCopied(true);
       setTimeout(() => { setCopied(false); }, 1500);
     });
-  }, [tail.error]);
+  }, [fullErrorText]);
 
   // A failed turn is a settled fact, not a call to act: it reads in neutral
   // ink with one small danger dot as the only colour (FOLDING: failures are
@@ -3783,12 +4001,12 @@ export const TurnTailLine = memo(function TurnTailLine({
           <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
-          {isFailed && tail.error !== undefined ? (
+          {isFailed && fullErrorText !== undefined ? (
             <button
               type="button"
               onClick={handleCopyError}
               className={TAIL_ACTION}
-              title={tail.error}
+              title={fullErrorText}
             >
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
@@ -3809,14 +4027,23 @@ export const TurnTailLine = memo(function TurnTailLine({
         </div>
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
       </div>
-      {isFailed && tail.error !== undefined ? (
-        <div
-          title={tail.error}
+      {isFailed && fullErrorText !== undefined ? (
+        <button
+          type="button"
           data-turn-tail-error
-          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-ink/[0.04] px-3 py-1 text-center font-mono text-[12px] text-ink-soft"
+          data-turn-tail-error-toggle
+          aria-expanded={errorOpen}
+          title={errorOpen ? undefined : fullErrorText}
+          onClick={() => { setErrorOpen((value) => !value); }}
+          className={`mx-auto mt-1 flex w-full max-w-[var(--kiki-chat-content-width,760px)] cursor-pointer gap-1.5 rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+            errorOpen ? 'items-start text-left' : 'items-center justify-center text-center'
+          }`}
         >
-          {tail.error}
-        </div>
+          <span className={errorOpen ? 'min-w-0 flex-1 leading-relaxed break-words whitespace-pre-wrap' : 'min-w-0 truncate'}>
+            {errorOpen ? fullErrorText : (errorSummary ?? fullErrorText)}
+          </span>
+          <DisclosureChevron open={errorOpen} className={errorOpen ? 'mt-0.5 shrink-0' : 'shrink-0'} />
+        </button>
       ) : null}
     </div>
   );

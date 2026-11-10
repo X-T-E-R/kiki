@@ -19,7 +19,6 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
 import { useMediaPreview } from '../mediaPreviewContext';
 import type { SemanticContext, SemanticLink, SemanticTone, ToolSemantics } from '../toolSemantics';
-import { toolRecordCopy } from '../toolRecordCopy';
 import { useRoomRefDirectory } from '../../lib/roomRefs';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
 import { useOptionalConnection } from '../../state/connection';
@@ -187,10 +186,9 @@ export function SemanticBody({
   /** A failure's full text, also shown alongside any returned content. */
   error?: string;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const follow = useFollowLink(onOpenAgent);
   const [showAll, setShowAll] = useState(false);
-  const [showFull, setShowFull] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const fields = semantics.fields ?? [];
   const items = semantics.items ?? [];
@@ -205,7 +203,7 @@ export function SemanticBody({
           {fields.map((field) => (
             <div key={field.label} className="contents">
               <dt className="text-ink-faint">{field.label}</dt>
-              <dd title={field.valueTitle} className={`min-w-0 break-words text-ink-soft ${field.mono === true ? 'font-mono' : ''}`}>{field.value}</dd>
+              <dd title={field.valueTitle} className={`min-w-0 break-words whitespace-pre-wrap text-ink-soft ${field.mono === true ? 'font-mono' : ''}`}>{field.value}</dd>
             </div>
           ))}
         </dl>
@@ -220,27 +218,27 @@ export function SemanticBody({
               </li>
             );
             const body = (
-              <>
-                <span className="min-w-0 flex-1 truncate text-ink-soft" title={item.primary}>{item.primary}</span>
+              <div className="min-w-0 flex-1 space-y-0.5 py-1">
+                <div className="break-words whitespace-pre-wrap text-ink-soft">{item.primary}</div>
                 {item.secondary === undefined || item.secondary === '' ? null : (
-                  <span className="max-w-[45%] shrink-0 truncate text-ink-faint" title={item.secondary}>{item.secondary}</span>
+                  <div className="break-words whitespace-pre-wrap text-ink-faint">{item.secondary}</div>
                 )}
-              </>
+              </div>
             );
             return (
               <li key={item.key}>
                 {item.link === undefined ? (
-                  <div className="flex min-h-7 items-center gap-3 px-2 text-[12px]">{body}</div>
+                  <div className="flex min-h-7 items-start gap-3 px-2 text-[12px]">{body}</div>
                 ) : (
                   <button
                     type="button"
                     data-tool-semantic-link={item.link.kind}
                     title={item.link.label}
                     onClick={() => { follow(item.link!); }}
-                    className="group/item flex min-h-7 w-full items-center gap-3 rounded-md px-2 text-left text-[12px] transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+                    className="group/item flex min-h-7 w-full items-start gap-3 rounded-md px-2 text-left text-[12px] transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                   >
                     {body}
-                    <Icon name="arrowUpRight" size={12} className="text-ink-faint opacity-0 group-hover/item:opacity-100 group-focus-visible/item:opacity-100" />
+                    <Icon name="arrowUpRight" size={12} className="mt-1.5 shrink-0 text-ink-faint opacity-0 group-hover/item:opacity-100 group-focus-visible/item:opacity-100" />
                   </button>
                 )}
               </li>
@@ -263,22 +261,10 @@ export function SemanticBody({
       {semantics.previewNotice !== undefined ? (
         <p data-tool-preview-notice className="text-[12px] whitespace-pre-wrap text-ink-faint">{semantics.previewNotice}</p>
       ) : null}
-      {(error === undefined || semantics.previewFull !== undefined) && semantics.preview !== undefined ? (
-        <div>
-          <pre data-tool-semantic-preview className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
-            {showFull ? semantics.previewFull ?? semantics.preview : semantics.preview}
-          </pre>
-          {semantics.previewFull !== undefined && semantics.previewFull !== semantics.preview ? (
-            <div className="text-[12px] text-ink-faint">
-              {!showFull ? <span>{toolRecordCopy('displayOmitted', locale)} · </span> : null}
-              <button type="button" data-tool-preview-full aria-expanded={showFull}
-                onClick={() => { setShowFull((value) => !value); }}
-                className="min-h-7 rounded-md px-2 underline-offset-2 transition-colors hover:text-ink hover:underline">
-                {toolRecordCopy(showFull ? 'collapse' : 'showFull', locale)}
-              </button>
-            </div>
-          ) : null}
-        </div>
+      {semantics.preview !== undefined ? (
+        <pre data-tool-semantic-preview className="max-h-[32rem] overflow-y-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap text-ink-soft">
+          {semantics.preview}
+        </pre>
       ) : null}
       <div>
         <button

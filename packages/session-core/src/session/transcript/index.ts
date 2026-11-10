@@ -13,6 +13,7 @@ export {
   type MessageChannelDelivery,
   type MessageReach,
   type Block,
+  type CompactionHistoryEntry,
   type EarlierPromptOutcome,
   type FloorEntry,
   type NoticeBlock,

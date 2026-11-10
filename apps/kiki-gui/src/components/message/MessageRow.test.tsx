@@ -438,3 +438,24 @@ describe('delivery note contract', () => {
     expect(externalPartial.calls).toContainEqual(['message.channelPartial', { channel: 'im:feishu' }]);
   });
 });
+
+describe('failed message error disclosure', () => {
+  it('shows a concise failure headline by default and expands the full error detail on click', () => {
+    const fullDetail = 'Attachment path rejected by remote relay\nDiagnostic trace: gateway=edge-2\ncode=413_PAYLOAD_TOO_LARGE';
+    const container = draw(message({
+      status: 'failed',
+      text: 'Report attached',
+      deliveredTo: [],
+      failureDetail: fullDetail,
+    }));
+    const toggle = container.querySelector<HTMLButtonElement>('[data-message-failure-detail]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('Attachment path rejected by remote relay');
+    expect(toggle.textContent).not.toContain('413_PAYLOAD_TOO_LARGE');
+
+    act(() => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain(fullDetail);
+  });
+});

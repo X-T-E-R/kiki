@@ -22,6 +22,7 @@ import {
 } from './__fixtures__/canonicalTranscript';
 
 import type { AgentTranscriptResponse } from '../transport';
+import { translate } from '../i18n';
 import { selectionCarryoverPresentation } from '../composer/selectionQuote';
 import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
 
@@ -8019,5 +8020,119 @@ describe('a finished turn that left nothing to read', () => {
     expect(turnReplyGap({ ...ready, contentRefs: [text] })).toBeUndefined();
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, source: { kind: 'turn', id: 't24' } }] })?.work).toBe('unknown');
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...text, path: ['output'] }] })?.work).toBe('unknown');
+  });
+});
+
+describe('compaction summary, error details, and bounded content sources', () => {
+  it('projects compaction markerId, summary, summaryPending, and errorDetails across turn outcomes and notice frames', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [
+        {
+          kind: 'marker',
+          markerId: 'marker-compact-1',
+          marker: 'compaction',
+          at: FIXED_AT,
+          payload: {
+            type: 'context.apply_compaction',
+            strategy: 'summarize',
+            fallbackFrom: 'relay',
+            summary: '## Carryover\n- Preserved architecture',
+            reasonCodes: ['notes_directives_budget'],
+            time: 1000,
+          },
+          contentRefs: [{
+            source: { kind: 'marker', id: 'marker-compact-1' },
+            path: ['payload', 'summary'],
+            revision: 'r1',
+            kind: 'text',
+            offset: 36,
+            total: 2048,
+          }],
+        },
+        {
+          kind: 'turn',
+          turnId: 't-fail',
+          ordinal: 1,
+          state: 'failed',
+          origin: { kind: 'user', payload: { promptId: 'p-fail' } },
+          prompt: 'Run check',
+          startedAt: FIXED_AT,
+          endedAt: FIXED_AT_1,
+          error: 'Anthropic error: upstream gateway timeout [type=api_error]',
+          errorDetails: 'Trace ID: req_99\nRetry exhausted after 3 attempts',
+          steps: [{
+            kind: 'step',
+            stepId: 's-fail',
+            turnId: 't-fail',
+            ordinal: 1,
+            state: 'failed',
+            frames: [
+              {
+                kind: 'notice',
+                frameId: 'f-notice-err',
+                level: 'error',
+                message: 'Provider relay disconnected',
+                detail: { code: 'ECONNRESET', endpoint: 'https://example.test/v1' },
+              },
+              {
+                kind: 'text',
+                frameId: 'f-sys',
+                role: 'user',
+                text: 'Bounded trigger prefix',
+                origin: { kind: 'system_trigger', name: 'goal_continuation' },
+              },
+              {
+                kind: 'text',
+                frameId: 'f-skill',
+                role: 'user',
+                text: 'Bounded skill body prefix',
+                origin: { kind: 'skill_activation', skillName: 'review', trigger: 'auto' },
+              },
+            ],
+          }],
+        },
+      ],
+    }));
+
+    const compaction = projected.blocks.find((block) => block.kind === 'notice' && block.id === 'agent-marker-marker-compact-1');
+    expect(compaction).toMatchObject({
+      kind: 'notice',
+      markerId: 'marker-compact-1',
+      summary: '## Carryover\n- Preserved architecture',
+      summaryPending: true,
+      i18n: { key: 'transcript.marker.compactionFallback' },
+    });
+    expect(translate('zh', 'transcript.marker.compactionFallback')).toBe('上下文已压缩 · 已生成摘要');
+    expect(translate('zh', 'transcript.marker.compactionRescue')).toBe('上下文已压缩 · 已重新开始');
+    expect(translate('en', 'transcript.marker.compactionFallback')).toBe('Context compacted · summary');
+    expect(translate('en', 'transcript.marker.compactionRescue')).toBe('Context compacted · fresh start');
+
+    const frameNotice = projected.blocks.find((block) => block.kind === 'notice' && block.id === 'agent-frame-f-notice-err');
+    expect(frameNotice).toMatchObject({
+      kind: 'notice',
+      tone: 'danger',
+      text: 'Provider relay disconnected',
+    });
+    expect(frameNotice?.kind === 'notice' ? frameNotice.errorDetails : undefined).toContain('ECONNRESET');
+
+    expect(projected.turnTail).toMatchObject({
+      turnId: 't-fail',
+      state: 'failed',
+      error: 'Anthropic error: upstream gateway timeout [type=api_error]',
+      errorDetails: 'Trace ID: req_99\nRetry exhausted after 3 attempts',
+    });
+
+    const sysBlock = projected.blocks.find((block) => block.kind === 'system');
+    expect(sysBlock).toMatchObject({
+      kind: 'system',
+      variant: 'system_trigger',
+      contentSource: { kind: 'frame', id: 'f-sys', turnId: 't-fail', stepId: 's-fail' },
+    });
+    const skillBlock = projected.blocks.find((block) => block.kind === 'skill');
+    expect(skillBlock).toMatchObject({
+      kind: 'skill',
+      name: 'review',
+      contentSource: { kind: 'frame', id: 'f-skill', turnId: 't-fail', stepId: 's-fail' },
+    });
   });
 });

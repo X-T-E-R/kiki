@@ -547,7 +547,12 @@ export function boundScenarioEntities(session, snapshot) {
   const frames = new Set(spec.frames ?? []);
   const turns = new Set(spec.turns ?? []);
   const tasks = new Set(spec.tasks ?? []);
+  const markers = new Set(spec.markers ?? []);
   const items = snapshot.items.map((item) => {
+    if (item.kind === 'marker') {
+      if (!markers.has(item.markerId)) return item;
+      return bounded.boundedEntity(canonicalEntity(session, `marker:${item.markerId}`, item), { kind: 'marker', id: item.markerId });
+    }
     if (item.kind !== 'turn') return item;
     const steps = item.steps.map((step) => ({
       ...step,
@@ -589,7 +594,7 @@ export class FixtureKlient {
   canonicalFor(session, ref, agentId = 'main') {
     const source = ref.source;
     if (source.kind === 'snapshot') return session.boundedCanonical.get('snapshot:root');
-    if (source.kind === 'frame' || source.kind === 'turn' || source.kind === 'task') {
+    if (source.kind === 'frame' || source.kind === 'turn' || source.kind === 'task' || source.kind === 'marker') {
       const seeded = session.boundedCanonical.get(`${source.kind}:${source.id}`);
       if (seeded !== undefined) return seeded;
     }

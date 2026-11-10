@@ -70,7 +70,7 @@ export function planReviewFromDisplay(display: unknown): PlanReviewDisplay | und
 const STRIP_CLASS =
   'anim-enter border-l-2 border-accent py-2 pr-3 pl-3';
 const DETAIL_WELL =
-  'mt-2 max-h-40 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
+  'mt-2 max-h-64 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
 const PRIMARY_BUTTON =
   'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
@@ -159,10 +159,9 @@ function externalKindLabel(kind: string, t: Translate): string {
   }
 }
 
-function boundedJson(value: unknown, limit = 400): string {
+function formatJson(value: unknown): string {
   try {
-    const json = JSON.stringify(value, null, 2) ?? '';
-    return json.length > limit ? `${json.slice(0, limit)}…` : json;
+    return JSON.stringify(value, null, 2) ?? '';
   } catch {
     return String(value);
   }
@@ -233,7 +232,7 @@ function approvalDetail(
   try {
     const json = JSON.stringify(display, null, 2);
     if (json === undefined || json === '{}') return undefined;
-    return { label: t('ia.detail.details'), text: json.length > 800 ? `${json.slice(0, 800)}…` : json };
+    return { label: t('ia.detail.details'), text: json };
   } catch {
     return undefined;
   }
@@ -488,7 +487,7 @@ export function ApprovalCard({
             <pre className={DETAIL_WELL}>
               {typeof external.display.detail === 'string'
                 ? external.display.detail
-                : boundedJson(external.display.detail)}
+                : formatJson(external.display.detail)}
             </pre>
           ) : null}
         </div>
@@ -793,8 +792,8 @@ function ExternalOptionButton({
             <DisclosureChevron open={expanded} />
           </button>
           {expanded ? (
-            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-paper px-3 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
-              {changes.map((change) => boundedJson(change, 300)).join('\n')}
+            <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-paper px-3 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+              {changes.map((change) => formatJson(change)).join('\n')}
             </pre>
           ) : null}
         </div>

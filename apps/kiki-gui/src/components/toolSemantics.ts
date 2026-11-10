@@ -63,10 +63,8 @@ export interface ToolSemantics {
   readonly items?: readonly SemanticItem[];
   /** More items exist than the result carried. */
   readonly itemsMore?: boolean;
-  /** A short, already-clipped preview of the text the tool returned. */
+  /** Full loaded text for the expanded reading well. */
   readonly preview?: string;
-  /** Full text already loaded, kept separate from the technical record. */
-  readonly previewFull?: string;
   readonly previewNotice?: string;
 }
 
@@ -129,14 +127,6 @@ export function outputJson(output: unknown): unknown {
   } catch {
     return undefined;
   }
-}
-
-/** Explicit payload limits only; absence of these flags does not prove source completeness. */
-export function toolPayloadIncomplete(output: unknown): boolean {
-  const record = rec(outputJson(output));
-  return record?.['truncated'] === true || record?.['status'] === 'partial'
-    || arr(record?.['documents']).some((doc) => rec(doc)?.['truncated'] === true)
-    || (outputText(output) ?? '').startsWith('The returned content is truncated and incomplete.');
 }
 
 /**
@@ -217,11 +207,9 @@ export function wireWord(value: string | undefined, ctx: Pick<SemanticContext, '
   return key === undefined ? value.replaceAll('_', ' ') : ctx.t(key);
 }
 
-function previewOf(text: string | undefined, lines = 6, chars = 600): string | undefined {
+function fullPreview(text: string | undefined): string | undefined {
   if (text === undefined || text.trim() === '') return undefined;
-  const head = text.split(/\r?\n/).slice(0, lines).join('\n');
-  const clipped = head.length > chars ? `${head.slice(0, chars - 1)}…` : head;
-  return clipped.length < text.trimEnd().length ? `${clipped.trimEnd()}\n…` : clipped;
+  return text.trimEnd();
 }
 
 const THREAD_TOOLS = new Set(['ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait']);
@@ -324,8 +312,7 @@ function roomSend(
       }]),
       ...(str(result?.['messageId']) === undefined ? [] : [{ label: t('tc.sem.field.messageId'), value: str(result?.['messageId'])!, mono: true }]),
     ],
-    preview: content === undefined ? undefined : previewOf(content, 24, 4000),
-    previewFull: content,
+    preview: fullPreview(content),
   };
 }
 
@@ -349,7 +336,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           ...(str(result?.['profile']) === undefined ? [] : [{ label: t('tc.sem.field.profile'), value: str(result?.['profile'])! }]),
           ...(str(result?.['cwd'] ?? args['cwd']) === undefined ? [] : [{ label: t('tc.sem.field.cwd'), value: str(result?.['cwd'] ?? args['cwd'])!, mono: true }]),
         ],
-        preview: prompt === undefined ? undefined : previewOf(prompt),
+        preview: fullPreview(prompt),
       };
     }
     case 'ThreadList': {
@@ -385,9 +372,9 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           const output = str(turn['output']);
           return {
             key: String(turnId ?? index),
-            primary: input === undefined ? t('tc.sem.noText') : clipLine(input, 120),
-            secondary: [turnId === undefined ? undefined : t('tc.sem.turnN', { n: turnId }), wireWord(str(turn['reason']), ctx), output === undefined ? undefined : clipLine(output, 80)]
-              .filter((part): part is string => part !== undefined).join(' · '),
+            primary: input === undefined ? t('tc.sem.noText') : input.trim(),
+            secondary: [turnId === undefined ? undefined : t('tc.sem.turnN', { n: turnId }), wireWord(str(turn['reason']), ctx), output?.trim()]
+              .filter((part): part is string => part !== undefined && part !== '').join(' · '),
             link: turnId === undefined ? undefined : threadLink(id, ctx, turnId),
           };
         }),
@@ -421,7 +408,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           ...(id === undefined ? [] : [threadField(id, ctx)]),
           ...(result?.['deduplicated'] === true ? [{ label: t('tc.sem.field.delivery'), value: t('agentMessage.deduplicated') }] : []),
         ],
-        preview: content === undefined ? undefined : previewOf(content, 12, 1200),
+        preview: fullPreview(content),
       };
     }
     case 'ThreadWait': {
@@ -496,7 +483,7 @@ function describeAgent(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           ...(fields.get('task_id') === undefined ? [] : [{ label: t('tc.sem.field.task'), value: fields.get('task_id')!, mono: true }]),
           ...(str(args['model_alias']) === undefined ? [] : [{ label: t('tc.sem.field.model'), value: str(args['model_alias'])! }]),
         ],
-        preview: previewOf(summary ?? str(args['prompt']), 8, 900),
+        preview: fullPreview(summary ?? str(args['prompt'])),
       };
     }
     case 'AgentList': {
@@ -537,7 +524,7 @@ function describeAgent(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
             ? { text: t('agentMessage.pending'), tone: 'warn' }
             : undefined,
         link: agentId === undefined || block.name !== 'AgentSend' ? undefined : { kind: 'agent', agentId, label: t('tc.sem.openAgent') },
-        preview: message === undefined ? undefined : previewOf(message, 12, 1200),
+        preview: fullPreview(message),
       };
     }
   }
@@ -609,7 +596,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         note: fields.get('description') === undefined ? undefined : taskId,
         state: taskState(fields.get('status'), ctx),
         fields: taskFields(fields, ctx),
-        preview: previewOf(text === undefined ? undefined : section(text, 'output'), 10, 1200),
+        preview: fullPreview(text === undefined ? undefined : section(text, 'output')),
       };
     case 'TaskStop':
       return {
@@ -643,7 +630,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         items: text === undefined ? [] : [
           ...(section(text, 'still_running') === undefined ? [] : taskItems(section(text, 'still_running')!, ctx)),
         ],
-        preview: previewOf(text === undefined ? undefined : section(text, 'output'), 10, 1200),
+        preview: fullPreview(text === undefined ? undefined : section(text, 'output')),
       };
     }
   }
@@ -690,7 +677,7 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
         state: historyState(result, ctx),
         items: hits.map((hit, index) => ({
           key: str(hit['ref']) ?? `${String(num(hit['turn']))}-${String(index)}`,
-          primary: clipLine(str(hit['snippet']) ?? '', 140),
+          primary: (str(hit['snippet']) ?? '').trim(),
           secondary: [
             num(hit['turn']) === undefined ? undefined : t('tc.sem.turnN', { n: num(hit['turn'])! }),
             wireWord(str(hit['role']), ctx),
@@ -714,7 +701,7 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
         note: str(args['session_id']) === undefined ? undefined : threadName(str(args['session_id']), ctx),
         state: historyState(result, ctx),
         link: historyLink(target, ctx),
-        preview: previewOf(text, 10, 1200),
+        preview: fullPreview(text),
       };
     }
     case 'HistoryList': {
@@ -742,7 +729,7 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
         count: result === undefined ? undefined : tp('tc.sem.turns', turns.length),
         items: turns.map((turn, index) => ({
           key: str(turn['ref']) ?? String(num(turn['turn']) ?? index),
-          primary: clipLine(str(turn['prompt_excerpt']) ?? t('tc.sem.noText'), 120),
+          primary: (str(turn['prompt_excerpt']) ?? t('tc.sem.noText')).trim(),
           secondary: [
             num(turn['turn']) === undefined ? undefined : t('tc.sem.turnN', { n: num(turn['turn'])! }),
             num(turn['tool_count']) === undefined ? undefined : tp('tc.sem.toolCalls', num(turn['tool_count'])!),
@@ -789,7 +776,7 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         ...(str(rec(card?.['storage'])?.['kind']) === undefined ? [] : [{ label: t('tc.sem.field.scope'), value: wireWord(str(rec(card?.['storage'])?.['kind']), ctx)! }]),
         ...(num(card?.['revision']) === undefined ? [] : [{ label: t('tc.sem.field.revision'), value: String(num(card?.['revision'])) }]),
       ],
-      preview: previewOf(str(args['description']) ?? str(patch?.['description'])),
+      preview: fullPreview(str(args['description']) ?? str(patch?.['description'])),
     };
   }
   const page = rec(value);
@@ -801,7 +788,7 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       object: str(page?.['title']) ?? str(args['id']),
       note: wireWord(str(page?.['status']), ctx),
       state: errorState,
-      preview: previewOf(str(page?.['description'])),
+      preview: fullPreview(str(page?.['description'])),
     };
   }
   if (action === 'preview') {
@@ -845,7 +832,7 @@ function describeCron(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         try { prompt = prompt === undefined ? undefined : String(JSON.parse(prompt)); } catch { /* keep raw */ }
         return {
           key: fields.get('id') ?? String(index),
-          primary: prompt === undefined ? fields.get('id') ?? '?' : clipLine(prompt, 100),
+          primary: prompt === undefined ? fields.get('id') ?? '?' : prompt.trim(),
           secondary: [fields.get('humanSchedule') ?? fields.get('cron'), fields.get('recurring') === 'false' ? t('tc.sem.cron.once') : undefined]
             .filter((part): part is string => part !== undefined).join(' · '),
         };
@@ -875,7 +862,7 @@ function describeCron(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       ...(fields.get('cron') === undefined ? [] : [{ label: t('tc.sem.field.cron'), value: fields.get('cron')!, mono: true }]),
       ...(fields.get('nextFireAt') === undefined || fields.get('nextFireAt') === 'null' ? [] : [{ label: t('tc.sem.field.nextRun'), value: fields.get('nextFireAt')! }]),
     ],
-    preview: previewOf(prompt),
+    preview: fullPreview(prompt),
   };
 }
 
@@ -950,15 +937,11 @@ function describeTodo(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     const value = notes?.[key];
     if (typeof value !== 'string') return [];
     return [{ label: t(`agentPanel.notes.${key}`), value: value.trim() === ''
-      ? toolRecordCopy('notesCleared', ctx.locale) : clipLine(value, 160) }];
+      ? toolRecordCopy('notesCleared', ctx.locale) : value.trim() }];
   });
   if (args['notes'] === null) noteFields.push({ label: t('agentPanel.notes'), value: toolRecordCopy('notesCleared', ctx.locale) });
   const notesChanged = noteFields.length > 0;
   const noteLabels = noteFields.map((field) => field.label).join(' · ');
-  const notesTruncated = noteSections.some((key) => {
-    const value = notes?.[key];
-    return typeof value === 'string' && value.replaceAll(/\s+/g, ' ').trim().length > 160;
-  });
   const verb = todos === undefined
     ? notesChanged ? t('tc.sem.todo.notes') : t('tc.sem.todo.read')
     : todos.length === 0 ? t('tc.sem.todo.clear') : t('tc.sem.todo.update');
@@ -979,7 +962,6 @@ function describeTodo(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     note: notesChanged ? clipLine(noteLabels) : undefined,
     noteTitle: notesChanged ? noteLabels : undefined,
     fields: fields.length > 0 ? fields : undefined,
-    previewNotice: notesTruncated ? toolRecordCopy('notesSummaryTruncated', ctx.locale) : undefined,
   };
 }
 
@@ -1038,12 +1020,11 @@ function webWarnings(envelope: Rec): string | undefined {
   return [...new Set([...messages, ...(error === undefined ? [] : [error])])].join('\n') || undefined;
 }
 
-function webPreview(body: string | undefined, notice?: string): Pick<ToolSemantics, 'preview' | 'previewFull' | 'previewNotice'> {
-  const preview = previewOf(body, 8, 900);
-  return { preview, previewFull: body, previewNotice: notice };
+function webPreview(body: string | undefined, notice?: string): Pick<ToolSemantics, 'preview' | 'previewNotice'> {
+  return { preview: fullPreview(body), previewNotice: notice };
 }
 
-function unknownWebPreview(block: ToolBlock, ctx: SemanticContext): Pick<ToolSemantics, 'preview' | 'previewFull' | 'previewNotice'> {
+function unknownWebPreview(block: ToolBlock, ctx: SemanticContext): Pick<ToolSemantics, 'preview' | 'previewNotice'> {
   let text = outputText(block.output);
   if (text === undefined && block.output !== undefined) {
     try { text = JSON.stringify(block.output, null, 2); } catch {
@@ -1089,7 +1070,7 @@ function webJob(envelope: Rec | undefined, args: Rec, ctx: SemanticContext): Par
   add('poll', poll === undefined ? undefined : String(poll));
   const artifact = rec(envelope['artifact']);
   add('artifact', artifact === undefined ? undefined : `${str(artifact['media_type']) ?? 'application/json'} · ${num(artifact['byte_length']) ?? '?'} bytes`);
-  let notice = webWarnings(envelope);
+  const notice = webWarnings(envelope);
   if (action === 'read') {
     const chunks = arr(envelope['chunks']);
     add('chunks', String(chunks.length));
@@ -1097,7 +1078,6 @@ function webJob(envelope: Rec | undefined, args: Rec, ctx: SemanticContext): Par
       const value = rec(chunk);
       return `#${num(value?.['index']) ?? '?'} · offset ${num(value?.['offset']) ?? '?'} · ${num(value?.['byte_length']) ?? '?'} bytes`;
     }).join('\n');
-    notice = [toolRecordCopy('encodedChunks', ctx.locale), str(envelope['next_cursor']) === undefined ? undefined : toolRecordCopy('moreChunks', ctx.locale), notice].filter(Boolean).join('\n');
     return { object: str(envelope['job_id']) ?? str(args['job_id']), state, fields, ...webPreview(ranges, notice) };
   }
   return { object: str(envelope['job_id']) ?? str(job?.['job_id']) ?? str(args['job_id']), state, fields, previewNotice: notice };
@@ -1183,8 +1163,6 @@ function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   if (Array.isArray(envelope?.['documents'])) {
     const documents = envelope['documents'].map(rec).filter((doc): doc is Rec => doc !== undefined);
     const warnings = webWarnings(envelope);
-    const incomplete = envelope['status'] === 'partial' || documents.some((doc) => doc['truncated'] === true);
-    const completeness = toolRecordCopy(incomplete ? 'payloadTruncated' : warnings === undefined ? 'returned' : 'warningCompleteness', ctx.locale);
     const body = documents.map((doc) => str(doc['content']) === undefined ? undefined
       : [documents.length > 1 ? str(doc['title']) ?? str(doc['final_url']) ?? str(doc['url']) : undefined, str(doc['content'])].filter(Boolean).join('\n\n')).filter(Boolean).join('\n\n---\n\n');
     const doc = documents[0];
@@ -1197,8 +1175,7 @@ function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       : unknownWebPreview(block, ctx);
     return { ...base, object: origin, state: webState(str(envelope['status']), ctx, knownEmpty),
       fields: [origin === undefined ? undefined : { label: toolRecordCopy('source', ctx.locale), value: origin },
-        contentType === undefined ? undefined : { label: toolRecordCopy('contentType', ctx.locale), value: contentType },
-        { label: toolRecordCopy('completeness', ctx.locale), value: completeness }].filter((field): field is SemanticField => field !== undefined),
+        contentType === undefined ? undefined : { label: toolRecordCopy('contentType', ctx.locale), value: contentType }].filter((field): field is SemanticField => field !== undefined),
       ...preview,
     };
   }
@@ -1207,7 +1184,6 @@ function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const compact = text !== undefined && /^(?:Fetched https?:\/\/|The returned content is |The returned content has )/.test(text);
   if (envelope === undefined && compact) {
     const body = text.split(/\r?\n\r?\n/).slice(1).join('\n\n');
-    fields.push({ label: toolRecordCopy('completeness', ctx.locale), value: text.split(/\r?\n\r?\n/, 1)[0]! });
     return { ...base, fields, ...webPreview(body || text) };
   }
   return { ...base, fields,
@@ -1254,7 +1230,7 @@ function describePlan(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     verb: t('tc.sem.plan.exit'),
     object: path,
     state: text.startsWith('Exited plan mode') ? { text: t('tc.sem.plan.approved'), tone: 'plain' } : undefined,
-    preview: previewOf(plan, 10, 1200),
+    preview: fullPreview(plan),
   };
 }
 
@@ -1265,7 +1241,7 @@ function describeSkill(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     verb: ctx.t('tc.sem.skill'),
     object: str(args['skill']) ?? str(args['path']) ?? (block.display?.kind === 'skill_call' ? block.display.skill_name : undefined),
     note: str(args['args']),
-    preview: previewOf(outputText(block.output), 6, 600),
+    preview: fullPreview(outputText(block.output)),
   };
 }
 

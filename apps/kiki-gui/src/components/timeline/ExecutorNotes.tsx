@@ -202,7 +202,7 @@ function UnknownUpdate({ note, title }: { note: Extract<ExecutorNote, { kind: 'u
   const [open, setOpen] = useState(false);
   const detail = useMemo(() => {
     if (note.payload === undefined) return undefined;
-    try { return JSON.stringify(note.payload, null, 2)?.slice(0, 16_384); }
+    try { return JSON.stringify(note.payload, null, 2); }
     catch { return undefined; }
   }, [note.payload]);
   return <ActivityRow attrs={{ 'data-executor-note': 'unknown' }} glyph={<Icon name="dash" size={12} />}
