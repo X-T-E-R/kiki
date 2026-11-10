@@ -82,9 +82,9 @@ export function harnessAccountProcess(processes: HostProcessServiceLike, context
           return candidateModels;
         };
         const models = validate(connection);
-        broker = await openHarnessAccountBroker(lease, prepare, validate, () => {
+        broker = gemini ? await openHarnessAccountBroker(lease, prepare, validate, () => {
           log.warn('Harness account connection cleanup failed', { executorId: descriptor.id, source: account.source });
-        });
+        }) : undefined;
         if (broker !== undefined) {
           connection = broker.connection;
           sensitive = [...sensitive, connection.baseUrl];

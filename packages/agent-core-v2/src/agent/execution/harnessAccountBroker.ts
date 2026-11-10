@@ -6,6 +6,11 @@ import type { PluginHarnessAccountLease } from '#/app/plugin/pluginHostService';
 
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
+function originForm(value: string | undefined): string | undefined {
+  if (value === undefined || !value.startsWith('/') || value.startsWith('//') || /[\u0000-\u0020\u007F\\#]/.test(value)) return undefined;
+  return value;
+}
+
 export interface HarnessAccountBroker {
   readonly connection: HarnessAccountConnection;
   close(): Promise<void>;
@@ -27,6 +32,7 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
   private readonly server: Server;
   private readonly abort = new AbortController();
   private readonly retired = new Map<PluginHarnessAccountLease, Promise<void>>();
+  private readonly inflight = new Map<PluginHarnessAccountLease, Set<Promise<void>>>();
   private readonly upstreams = new Set<ClientRequest>();
   private readonly capability: string;
   private current: PluginHarnessAccountLease;
@@ -89,7 +95,11 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
   private retire(lease: PluginHarnessAccountLease): Promise<void> {
     let retiring = this.retired.get(lease);
     if (retiring === undefined) {
-      retiring = lease.release().catch(() => { this.onReleaseError(); });
+      retiring = (async () => {
+        const active = this.inflight.get(lease);
+        if (active !== undefined) await Promise.allSettled(active);
+        await lease.release().catch(() => { this.onReleaseError(); });
+      })();
       this.retired.set(lease, retiring);
     }
     return retiring;
@@ -101,7 +111,7 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
     if (this.refreshing !== undefined) return this.refreshing.then(() => this.current);
     const previous = this.current;
     this.refreshing = (async () => {
-      await this.retire(previous);
+      void this.retire(previous);
       if (this.closed) throw new Error('Harness account broker is closed');
       const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)]);
       let next: PluginHarnessAccountLease | undefined;
@@ -124,8 +134,14 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const path = originForm(req.url);
+    if (path === undefined) {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('Expected an HTTP origin-form request target');
+      return;
+    }
     const gemini = this.current.connection.protocol === 'gemini-v1beta';
-    const queryKey = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('key');
+    const queryKey = new URL(path, 'http://127.0.0.1').searchParams.get('key');
     const authorized = gemini
       ? req.headers['x-goog-api-key'] === this.capability || queryKey === this.capability
       : req.headers.authorization === `Bearer ${this.capability}`;
@@ -134,22 +150,41 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
       res.end('Invalid scoped account capability');
       return;
     }
-    const lease = await this.leaseForRequest();
-    if (!this.closed && !res.destroyed) this.forward(req, res, lease);
+    let lease = await this.leaseForRequest();
+    while (!this.closed && this.current === lease && this.dead) lease = await this.leaseForRequest();
+    if (!this.closed && !res.destroyed) this.forward(req, res, lease, path);
   }
 
-  private forward(req: IncomingMessage, res: ServerResponse, lease: PluginHarnessAccountLease): void {
-    const target = new URL(req.url ?? '/', lease.connection.baseUrl);
+  private forward(req: IncomingMessage, res: ServerResponse, lease: PluginHarnessAccountLease, path: string): void {
+    const endpoint = new URL(lease.connection.baseUrl);
     const headers = { ...req.headers };
     for (const name of HOP_BY_HOP) delete headers[name];
-    headers.host = target.host;
-    if (lease.connection.protocol === 'gemini-v1beta') headers['x-goog-api-key'] = lease.connection.apiKey;
-    else headers.authorization = `Bearer ${lease.connection.apiKey}`;
-    if (target.searchParams.has('key')) target.searchParams.set('key', lease.connection.apiKey);
+    headers.host = endpoint.host;
+    let upstreamPath = path;
+    if (lease.connection.protocol === 'gemini-v1beta') {
+      headers['x-goog-api-key'] = lease.connection.apiKey;
+      const target = new URL(path, endpoint.origin);
+      if (target.searchParams.has('key')) {
+        target.searchParams.set('key', lease.connection.apiKey);
+        upstreamPath = `${target.pathname}${target.search}`;
+      }
+    } else headers.authorization = `Bearer ${lease.connection.apiKey}`;
     let clientGone = false;
     let failed = false;
-    const upstream = request(target, { method: req.method, headers, agent: false });
+    const upstream = request({
+      protocol: endpoint.protocol,
+      hostname: endpoint.hostname === '[::1]' ? '::1' : endpoint.hostname,
+      port: endpoint.port,
+      path: upstreamPath,
+      method: req.method,
+      headers,
+      agent: false,
+    });
     this.upstreams.add(upstream);
+    const completion = new Promise<void>((resolve) => { upstream.once('close', resolve); });
+    const active = this.inflight.get(lease) ?? new Set<Promise<void>>();
+    active.add(completion);
+    this.inflight.set(lease, active);
     const abandon = () => {
       clientGone = true;
       upstream.destroy();
@@ -170,7 +205,11 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
       res.writeHead(reply.statusCode ?? 502, reply.statusMessage, replyHeaders);
       reply.pipe(res);
     });
-    upstream.once('close', () => { this.upstreams.delete(upstream); });
+    upstream.once('close', () => {
+      this.upstreams.delete(upstream);
+      active.delete(completion);
+      if (active.size === 0) this.inflight.delete(lease);
+    });
     req.once('aborted', abandon);
     res.once('close', () => { if (!res.writableEnded) abandon(); });
     req.pipe(upstream);

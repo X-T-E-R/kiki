@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { describe, expect, it, vi } from 'vitest';
@@ -58,6 +58,8 @@ describe('plugin account process ownership', () => {
     expect(f.prepare).toHaveBeenCalledWith(f.source, { engineId, accountId: 'work', instanceId: 'instance-fixture', proxy: { mode: 'system', url: undefined } }, signal);
     const [, args, options] = f.spawn.mock.calls[0]!;
     expect(args?.[0]).toBe('original-arg');
+    if (engineId === 'codex-app-server') expect(args?.find((value) => value.includes('base_url'))).toContain(f.connection.baseUrl);
+    else expect(options?.env?.['GOOGLE_GEMINI_BASE_URL']).not.toBe(f.connection.baseUrl);
     expect(JSON.stringify(args)).not.toContain(f.connection.apiKey);
     expect(options?.env?.[engineId === 'agy-cli' ? 'GEMINI_API_KEY' : 'KIKI_HARNESS_API_KEY']).toBe(f.connection.apiKey);
     expect(options?.envUnset).not.toContain(engineId === 'agy-cli' ? 'GEMINI_API_KEY' : 'KIKI_HARNESS_API_KEY');
@@ -118,7 +120,7 @@ describe('loopback account lease continuation', () => {
     });
     const second = createServer((req, res) => {
       void (async () => {
-        secondBodies.push({ text: (await buffer(req)).toString(), key: req.headers['x-goog-api-key'] as string | undefined });
+        secondBodies.push({ text: (await buffer(req)).toString(), key: (req.headers['x-goog-api-key'] as string | undefined) ?? new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('key') ?? undefined });
         res.end('new-lease-result');
       })().catch(() => { req.socket.destroy(); });
     });
@@ -150,12 +152,14 @@ describe('loopback account lease continuation', () => {
       const [continued, concurrent] = await Promise.all([post('continuation-a'), post('continuation-b')]);
       expect(await continued.text()).toBe('new-lease-result');
       expect(await concurrent.text()).toBe('new-lease-result');
+      const queryContinuation = await fetch(`${stableUrl}?key=first-scoped-key`, { method: 'POST', body: 'continuation-query', signal: AbortSignal.timeout(5000) });
+      expect(await queryContinuation.text()).toBe('new-lease-result');
       expect(prepare).toHaveBeenCalledOnce();
       expect(prepareSignal?.aborted).toBe(false);
       expect(validate).toHaveBeenCalledWith(secondConnection);
       expect(firstBodies).toEqual([{ text: 'original-request', key: 'first-scoped-key' }]);
-      expect(secondBodies).toHaveLength(2);
-      expect(secondBodies.map(({ text }) => text).toSorted()).toEqual(['continuation-a', 'continuation-b']);
+      expect(secondBodies).toHaveLength(3);
+      expect(secondBodies.map(({ text }) => text).toSorted()).toEqual(['continuation-a', 'continuation-b', 'continuation-query']);
       expect(secondBodies.every(({ key }) => key === 'second-scoped-key')).toBe(true);
       expect(broker!.connection.baseUrl).toBe(stableUrl);
       await broker!.close();
@@ -196,6 +200,102 @@ describe('loopback account lease continuation', () => {
       await close(origin);
     }
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects non-origin-form targets without forwarding scoped credentials', async () => {
+    const leasePaths: string[] = [];
+    const foreignRequests: Array<{ path: string | undefined; key: string | undefined }> = [];
+    const origin = createServer((req, res) => {
+      leasePaths.push(req.url ?? '');
+      res.end('lease-result');
+    });
+    const foreign = createServer((req, res) => {
+      foreignRequests.push({ path: req.url, key: req.headers['x-goog-api-key'] as string | undefined });
+      res.end('foreign-result');
+    });
+    const release = vi.fn(async () => {});
+    const prepare = vi.fn();
+    let broker: Awaited<ReturnType<typeof openHarnessAccountBroker>>;
+    const [port, foreignPort] = await Promise.all([listen(origin), listen(foreign)]);
+    try {
+      const connection: HarnessAccountConnection = { protocol: 'gemini-v1beta', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'selected-key', modelIds: ['fixture-model'] };
+      broker = await openHarnessAccountBroker({ connection, release }, prepare, () => {}, vi.fn());
+      const endpoint = new URL(broker!.connection.baseUrl);
+      const send = (path: string) => new Promise<number>((resolve, reject) => {
+        const outgoing = httpRequest({ hostname: endpoint.hostname, port: endpoint.port, path, headers: { 'x-goog-api-key': 'selected-key' } }, (reply) => {
+          reply.resume();
+          reply.once('end', () => { resolve(reply.statusCode ?? 0); });
+        });
+        outgoing.once('error', reject);
+        outgoing.end();
+      });
+      for (const path of [
+        `http://127.0.0.1:${foreignPort}/outside?key=selected-key`,
+        `//127.0.0.1:${foreignPort}/outside`,
+        `/\\127.0.0.1:${foreignPort}/outside`,
+        '/models/fixture#outside',
+      ]) expect(await send(path)).toBe(400);
+      expect(foreignRequests).toEqual([]);
+      expect(leasePaths).toEqual([]);
+      expect(await send('/models/fixture?alt=sse')).toBe(200);
+      expect(leasePaths).toEqual(['/models/fixture?alt=sse']);
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      await broker?.close();
+      await Promise.all([close(origin), close(foreign)]);
+    }
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('drains other streams on a dead lease while later requests use its replacement', async () => {
+    const firstPaths: string[] = [];
+    const secondPaths: string[] = [];
+    let finishSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => { finishSlow = resolve; });
+    const first = createServer((req, res) => {
+      firstPaths.push(req.url ?? '');
+      if (req.url === '/slow') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.write('slow-');
+        void slowGate.then(() => { res.end('complete'); });
+        return;
+      }
+      req.socket.destroy();
+    });
+    const second = createServer((req, res) => {
+      secondPaths.push(req.url ?? '');
+      res.end('replacement-result');
+    });
+    const firstRelease = vi.fn(async () => {});
+    const secondRelease = vi.fn(async () => {});
+    let broker: Awaited<ReturnType<typeof openHarnessAccountBroker>>;
+    const [firstPort, secondPort] = await Promise.all([listen(first), listen(second)]);
+    const firstConnection: HarnessAccountConnection = { protocol: 'gemini-v1beta', baseUrl: `http://127.0.0.1:${firstPort}`, apiKey: 'first-key', modelIds: ['fixture-model'] };
+    const secondConnection: HarnessAccountConnection = { ...firstConnection, baseUrl: `http://127.0.0.1:${secondPort}`, apiKey: 'second-key' };
+    const prepare = vi.fn(async () => ({ connection: secondConnection, release: secondRelease }));
+    try {
+      broker = await openHarnessAccountBroker({ connection: firstConnection, release: firstRelease }, prepare, () => {}, vi.fn());
+      const get = (path: string) => fetch(`${broker!.connection.baseUrl}${path}`, { headers: { 'x-goog-api-key': 'first-key' }, signal: AbortSignal.timeout(5000) });
+      const slow = await get('/slow');
+      const slowBody = slow.text();
+      await expect(get('/failed-once')).rejects.toThrow();
+      expect(await (await get('/next-request')).text()).toBe('replacement-result');
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(firstPaths).toEqual(['/slow', '/failed-once']);
+      expect(secondPaths).toEqual(['/next-request']);
+      expect(firstRelease).not.toHaveBeenCalled();
+      finishSlow();
+      expect(await slowBody).toBe('slow-complete');
+      await vi.waitFor(() => { expect(firstRelease).toHaveBeenCalledOnce(); });
+      await broker!.close();
+      expect(secondRelease).toHaveBeenCalledOnce();
+    } finally {
+      finishSlow();
+      await broker?.close();
+      await Promise.all([close(first), close(second)]);
+    }
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
   });
 
   it('leaves remote account connections on their existing direct path', async () => {
