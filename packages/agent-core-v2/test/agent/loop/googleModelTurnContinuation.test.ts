@@ -387,7 +387,8 @@ describe('google model-turn continuation', () => {
     }
   });
 
-  it('carries a complete continuation token through an outer SDK retry without replaying visible output', async () => {
+  it('carries a complete continuation token through outer SDK retries without replaying visible output', async () => {
+    let toolRuns = 0;
     const fixture = await googleHttpAgent('gemini-4-argon', (attempt, _body, response) => {
       if (attempt === 1) {
         writeGoogleSse(response, [{
@@ -400,12 +401,76 @@ describe('google model-turn continuation', () => {
             continuationToken: 'token-resume',
           }],
         }]);
+      } else if (attempt === 2 || attempt === 3) {
+        response.socket?.destroy();
+      } else if (attempt === 4) {
+        writeGoogleSse(response, [googleResponse([
+          { text: ' after' },
+          { functionCall: { name: 'FinishWork', args: {} }, thoughtSignature: 'sig-call' },
+        ], 'STOP')]);
+      } else {
+        writeGoogleSse(response, [googleResponse([{ text: 'Work saved.' }], 'STOP')]);
+      }
+    }, 'yolo');
+    fixture.local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork',
+      description: 'Complete work.',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        approvalRule: 'FinishWork',
+        execute: async () => {
+          toolRuns += 1;
+          return { output: 'work saved' };
+        },
+      }),
+    });
+    fixture.local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    try {
+      const terminal = await (await prompt(fixture.local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(fixture.bodies).toHaveLength(5);
+      const bodies = fixture.bodies.map(body => JSON.parse(body) as Record<string, unknown>);
+      expect(bodies[0]?.['continuationToken']).toBeUndefined();
+      for (const index of [1, 2, 3]) {
+        expect(bodies[index]?.['continuationToken']).toBe('token-resume');
+        expect(bodies[index]?.['contents']).toEqual(bodies[0]?.['contents']);
+        expect(bodies[index]?.['systemInstruction']).toEqual(bodies[0]?.['systemInstruction']);
+        expect(bodies[index]?.['generationConfig']).toEqual(bodies[0]?.['generationConfig']);
+      }
+      expect(bodies[4]?.['continuationToken']).toBeUndefined();
+      expect(signaturesOf(bodies[4])).toEqual([SIGNATURE, 'sig-call']);
+      expect(toolRuns).toBe(1);
+      expect(storedContent(fixture.local)).toEqual([
+        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'text', text: 'Before' },
+        { type: 'text', text: ' after' },
+        { type: 'text', text: 'Work saved.' },
+      ]);
+      expect(deltaValues(fixture.local, 'thinking.delta')).toEqual([THINKING]);
+      expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after', 'Work saved.']);
+      expect(discardEvents(fixture.local)).toEqual([]);
+      expect(streamedText(fixture.local)).toBe(`${THINKING}Before afterWork saved.`);
+      await fixture.local.expectResumeMatches();
+    } finally {
+      await fixture.local.dispose();
+      await fixture.close();
+    }
+  });
+
+  it('keeps an outer continuation token through a pre-stream open failure', async () => {
+    const fixture = await googleHttpAgent('gemini-4-argon', (attempt, _body, response) => {
+      if (attempt === 1) {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          googleSseEvent({ candidates: [{
+            content: { role: 'model', parts: [{ text: 'Before' }] },
+            continuationToken: 'token-outer',
+          }] }) + truncatedGoogleSse('continuationToken'),
+        );
       } else if (attempt === 2) {
         response.socket?.destroy();
       } else {
-        writeGoogleSse(response, [{
-          candidates: [{ content: { role: 'model', parts: [{ text: ' after' }] }, finishReason: 'STOP' }],
-        }]);
+        writeGoogleSse(response, [googleResponse([{ text: ' after' }], 'STOP')]);
       }
     });
     try {
@@ -414,19 +479,19 @@ describe('google model-turn continuation', () => {
       expect(fixture.bodies).toHaveLength(3);
       const bodies = fixture.bodies.map(body => JSON.parse(body) as Record<string, unknown>);
       expect(bodies[0]?.['continuationToken']).toBeUndefined();
-      expect(bodies[1]?.['continuationToken']).toBe('token-resume');
-      expect(bodies[2]?.['continuationToken']).toBe('token-resume');
-      expect(bodies[2]?.['contents']).toEqual(bodies[0]?.['contents']);
-      expect(bodies[2]?.['systemInstruction']).toEqual(bodies[0]?.['systemInstruction']);
-      expect(bodies[2]?.['generationConfig']).toEqual(bodies[0]?.['generationConfig']);
+      for (const index of [1, 2]) {
+        expect(bodies[index]?.['continuationToken']).toBe('token-outer');
+        expect(bodies[index]?.['contents']).toEqual(bodies[0]?.['contents']);
+        expect(bodies[index]?.['systemInstruction']).toEqual(bodies[0]?.['systemInstruction']);
+        expect(bodies[index]?.['generationConfig']).toEqual(bodies[0]?.['generationConfig']);
+      }
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
         { type: 'text', text: 'Before' },
         { type: 'text', text: ' after' },
       ]);
-      expect(deltaValues(fixture.local, 'thinking.delta')).toEqual([THINKING]);
       expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after']);
       expect(discardEvents(fixture.local)).toEqual([]);
+      expect(streamedText(fixture.local)).toBe('Before after');
       await fixture.local.expectResumeMatches();
     } finally {
       await fixture.local.dispose();

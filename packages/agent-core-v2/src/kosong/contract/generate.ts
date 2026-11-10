@@ -112,7 +112,16 @@ export async function generate(
     : tools;
 
   options?.onRequestStart?.();
-  const stream = await provider.generate(systemPrompt, wireTools, history, options);
+  let stream: StreamedMessage;
+  try {
+    stream = await provider.generate(systemPrompt, wireTools, history, options);
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && options?.googleContinuationToken !== undefined &&
+      !isAbortError(error) && readGenerateContinuationToken(error) === undefined) {
+      generateContinuationTokens.set(error, options.googleContinuationToken);
+    }
+    throw error;
+  }
   let cancellation: Promise<void> | undefined;
   const onAbort = (): void => {
     cancellation ??= cancelStream(stream);
