@@ -31,6 +31,9 @@ export interface UserBlock {
     readonly partIndex: number;
     readonly text: string;
     readonly offset: number;
+    readonly totalLength: number;
+    readonly hasOwnPresentation: boolean;
+    readonly presentation?: import('@kiki/transcript').TextPresentation;
   }[];
   readonly id: string;
   readonly text: string;

@@ -1,5 +1,5 @@
 import type { Message } from '@kiki/protocol';
-import { contentTextPresentation, type TextPresentation } from '@kiki/transcript';
+import { readTextPresentation, type ContentRef, type TextPresentation, type TextPresentationSpan } from '@kiki/transcript';
 
 import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { SystemVariant, TaskNotificationMeta } from './types';
@@ -533,7 +533,36 @@ export function mediaFromTextPresentation(presentation: TextPresentation | undef
   });
 }
 
-export function projectMessageContent(content: Message['content']): {
+function contentPartsTextPresentation(
+  content: Message['content'],
+  contentRefs?: readonly ContentRef[],
+): TextPresentation | undefined {
+  const spans: TextPresentationSpan[] = [];
+  let offset = 0;
+  let textCount = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    const part = content[index];
+    if (part === undefined || part.type !== 'text') continue;
+    if (textCount++ > 0) offset += 1;
+    const textRef = contentRefs?.find(
+      (ref) => ref.kind === 'text' && ref.path.length === 3 && ref.path[0] === 'content' && ref.path[1] === index && ref.path[2] === 'text',
+    );
+    const totalLength = textRef !== undefined ? Math.max(part.text.length, textRef.total) : part.text.length;
+    const presentation = readTextPresentation((part as { readonly presentation?: unknown }).presentation);
+    for (const span of presentation?.spans ?? []) {
+      const start = Math.max(0, span.start);
+      const end = Math.min(part.text.length, totalLength, span.end);
+      if (end > start) spans.push({ ...span, start: offset + start, end: offset + end });
+    }
+    offset += part.text.length;
+  }
+  return spans.length === 0 ? undefined : { spans };
+}
+
+export function projectMessageContent(
+  content: Message['content'],
+  contentRefs?: readonly ContentRef[],
+): {
   text: string;
   presentation?: import('@kiki/transcript').TextPresentation;
   media: readonly MediaRef[];
@@ -542,6 +571,6 @@ export function projectMessageContent(content: Message['content']): {
   for (const part of content) {
     if (part.type === 'text') parts.push(part.text);
   }
-  const presentation = contentTextPresentation(content, '\n');
+  const presentation = contentPartsTextPresentation(content, contentRefs);
   return { text: parts.join('\n'), presentation, media: [...mediaFromContentParts(content), ...mediaFromTextPresentation(presentation)] };
 }

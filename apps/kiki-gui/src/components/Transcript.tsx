@@ -348,6 +348,24 @@ export interface SenderIdentity {
 const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds', 'payload'];
 const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_MESSAGE_DETAILS_ROOTS];
 
+function sliceClampedTextPresentation(
+  presentation: TextPresentation | undefined,
+  offset: number,
+  totalLength: number,
+): TextPresentation | undefined {
+  if (presentation === undefined || totalLength <= 0) return undefined;
+  const endLimit = offset + totalLength;
+  const spans = presentation.spans
+    .filter((span) => span.end > offset && span.start < endLimit)
+    .map((span) => {
+      const start = Math.max(0, span.start - offset);
+      const end = Math.min(totalLength, span.end - offset);
+      return { ...span, start, end };
+    })
+    .filter((span) => span.end > span.start);
+  return spans.length > 0 ? { spans } : undefined;
+}
+
 function isUserBlockContentIncomplete(user: UserBlock, contentRefs: readonly ContentRef[] | undefined): boolean {
   if (user.contentPending === true) return true;
   const source = user.contentSource;
@@ -449,26 +467,24 @@ const UserMessage = memo(function UserMessage({
     };
     for (const part of block.promptTextParts) {
       const rangeRef = promptRangeMap.get(part.partIndex);
+      const totalLength = rangeRef !== undefined ? Math.max(part.totalLength, rangeRef.total) : part.totalLength;
+      const partPresentation =
+        part.hasOwnPresentation
+          ? sliceClampedTextPresentation(part.presentation, 0, totalLength)
+          : sliceClampedTextPresentation(block.presentation, part.offset, totalLength);
       if (rangeRef !== undefined) {
         flushBubble();
-        const shifted =
-          block.presentation === undefined || part.offset === 0
-            ? block.presentation
-            : shiftTextPresentation(block.presentation, -part.offset);
         items.push({
           kind: 'range',
           key: JSON.stringify([rangeRef.source, rangeRef.path, rangeRef.revision]),
           ref: rangeRef,
-          presentation: shifted,
+          presentation: partPresentation,
         });
       } else {
         const projected = displayUserMessageText({
           ...block,
           text: part.text,
-          presentation:
-            block.presentation === undefined || part.offset === 0
-              ? block.presentation
-              : shiftTextPresentation(block.presentation, -part.offset),
+          presentation: partPresentation,
         });
         const partBody = parseSelectionCarryovers(projected.text, projected.presentation).body;
         if (partBody.trim() !== '') {
@@ -488,7 +504,8 @@ const UserMessage = memo(function UserMessage({
   const isServerLoading = !isServerFailed && serverRemaining && (automaticTextRead || serverStatus?.status === 'loading');
   const anyRange = continuation.pending.some((ref) => reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
   const incomplete = block.contentPending === true || continuation.pending.length > 0;
-  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && !incomplete;
+  const inConversationHistory = block.promptOutcome === undefined || block.promptOutcome.delivered;
+  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && inConversationHistory && !incomplete;
   const canLoadIncomplete = continuation.pending.length > 0 && continuation.canRequest === true && !anyRange;
   const anyContinuationFailed = continuation.pending.some((ref) => continuation.statusOf(ref)?.status === 'error');
   const errorSignature = continuation.pending

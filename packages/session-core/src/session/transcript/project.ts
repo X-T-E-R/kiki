@@ -19,7 +19,9 @@ import { adoptContentPreviewField, carryContentHydration, contentPathValue, merg
 import type {
   AgentState,
   AgentTranscriptSnapshot,
+  ContentRef,
   ContentWindow,
+  TextPresentation,
   TranscriptItem,
   TranscriptPrompt,
   TranscriptTask,
@@ -975,15 +977,46 @@ function promptContentParts(content: unknown): MessageContentPart[] {
   return content.filter(isPromptContentPart);
 }
 
-function extractPromptTextParts(content: unknown): UserBlock['promptTextParts'] {
+function clampPartTextPresentation(presentation: TextPresentation | undefined, totalLength: number): TextPresentation | undefined {
+  if (presentation === undefined) return undefined;
+  const spans = presentation.spans
+    .filter((span) => span.end > 0 && span.start < totalLength)
+    .map((span) => {
+      const start = Math.max(0, span.start);
+      const end = Math.min(totalLength, span.end);
+      return start === span.start && end === span.end ? span : { ...span, start, end };
+    })
+    .filter((span) => span.end > span.start);
+  return spans.length > 0 ? { spans } : undefined;
+}
+
+function extractPromptTextParts(content: unknown, contentRefs?: readonly ContentRef[]): UserBlock['promptTextParts'] {
   if (!Array.isArray(content)) return undefined;
-  const entries: { partIndex: number; text: string; offset: number }[] = [];
+  const hasPartPresentations = content.some(
+    (part) => isPromptContentPart(part) && part.type === 'text' && (part as { readonly presentation?: unknown }).presentation !== undefined,
+  );
+  const entries: {
+    partIndex: number;
+    text: string;
+    offset: number;
+    totalLength: number;
+    hasOwnPresentation: boolean;
+    presentation?: TextPresentation;
+  }[] = [];
   let offset = 0;
   for (let index = 0; index < content.length; index += 1) {
     const part = content[index];
     if (isPromptContentPart(part) && part.type === 'text') {
-      entries.push({ partIndex: index, text: part.text, offset });
-      offset += part.text.length + 1;
+      const textRef = contentRefs?.find(
+        (ref) => ref.kind === 'text' && ref.path.length === 3 && ref.path[0] === 'content' && ref.path[1] === index && ref.path[2] === 'text',
+      );
+      const totalLength = textRef !== undefined ? Math.max(part.text.length, textRef.total) : part.text.length;
+      const presentation = clampPartTextPresentation(
+        readTextPresentation((part as { readonly presentation?: unknown }).presentation),
+        totalLength,
+      );
+      entries.push({ partIndex: index, text: part.text, offset, totalLength, hasOwnPresentation: hasPartPresentations, presentation });
+      offset += totalLength + 1;
     }
   }
   return entries.length > 1 ? entries : undefined;
@@ -2100,9 +2133,11 @@ function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
   mediaOverride?: readonly MediaRef[],
-  contentWindow?: Pick<Parameters<typeof classifiedTextToBlocks>[0], 'contentSource' | 'contentPending' | 'promptTextParts'>,
+  contentWindow?: Pick<Parameters<typeof classifiedTextToBlocks>[0], 'contentSource' | 'contentPending' | 'promptTextParts'> & {
+    readonly contentRefs?: readonly ContentRef[];
+  },
 ): readonly Block[] {
-  const projection = projectMessageContent(item.content);
+  const projection = projectMessageContent(item.content, contentWindow?.contentRefs);
   const media = mediaOverride ?? projection.media;
   const nextMedia = media.length === 0 ? undefined : media;
   const queuedContent = item.status === 'queued' ? item.content : undefined;
@@ -2378,8 +2413,8 @@ function mergeSettledPromptUserBlock(
 ): UserBlock {
   const parts = promptContentParts(prompt.content);
   const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
-  const promptTextParts = extractPromptTextParts(prompt.content);
-  const projection = parts.length > 0 ? projectMessageContent(parts) : undefined;
+  const promptTextParts = extractPromptTextParts(prompt.content, prompt.contentRefs);
+  const projection = parts.length > 0 ? projectMessageContent(parts, prompt.contentRefs) : undefined;
   const classified =
     projection === undefined
       ? undefined
@@ -2470,7 +2505,7 @@ function placePromptOutcome(
   const parts = promptContentParts(prompt.content);
   const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
   if (parts.length === 0 && !contentPending) return undefined;
-  const projection = projectMessageContent(parts);
+  const projection = projectMessageContent(parts, prompt.contentRefs);
   const identity = prompt.userMessageId ?? prompt.promptId;
   const created = classifiedTextToBlocks({
     id: identity,
@@ -2481,7 +2516,7 @@ function placePromptOutcome(
     userMessageId: prompt.userMessageId,
     contentSource: { kind: 'prompt', id: prompt.promptId },
     contentPending,
-    promptTextParts: extractPromptTextParts(prompt.content),
+    promptTextParts: extractPromptTextParts(prompt.content, prompt.contentRefs),
   });
   const next = [...blocks];
   for (const block of created) {
@@ -2495,7 +2530,7 @@ function earlierPromptOutcomesBlock(prompts: readonly TerminalPrompt[]): NoticeB
   const outcomes: EarlierPromptOutcome[] = prompts
     .toSorted((a, b) => (timestampMs(a.finishedAt ?? a.createdAt) ?? 0) - (timestampMs(b.finishedAt ?? b.createdAt) ?? 0))
     .map((prompt) => {
-      const text = splitSystemReminders(projectMessageContent(promptContentParts(prompt.content)).text).text;
+      const text = splitSystemReminders(projectMessageContent(promptContentParts(prompt.content), prompt.contentRefs).text).text;
       return {
         promptId: prompt.promptId,
         userMessageId: prompt.userMessageId,
@@ -2552,7 +2587,7 @@ function mergeTranscriptPromptBlocks(
       continue;
     }
     const parts = promptContentParts(prompt.content);
-    const projection = projectMessageContent(parts);
+    const projection = projectMessageContent(parts, prompt.contentRefs);
     const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
     if (prompt.status === 'running') {
       const previousUser = previous.find(
@@ -2583,7 +2618,8 @@ function mergeTranscriptPromptBlocks(
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined, {
       contentSource: { kind: 'prompt', id: prompt.promptId },
       contentPending,
-      promptTextParts: extractPromptTextParts(prompt.content),
+      promptTextParts: extractPromptTextParts(prompt.content, prompt.contentRefs),
+      contentRefs: prompt.contentRefs,
     })];
     const owner = prompt.status === 'running' ? context.turns.get(prompt.promptId) : undefined;
     if (owner !== undefined) {

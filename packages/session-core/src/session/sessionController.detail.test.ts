@@ -3162,4 +3162,101 @@ describe('hidden prefix turn preview', () => {
       expect(controller.getState().olderError).toBeUndefined();
     } finally { controller.close(); }
   });
+
+  it('hydrates a bounded message.delivery marker loaded into olderPages via loadOlderMessages', async () => {
+    const fullText = 'OLDER_DELIVERY_HEAD:' + 'older-marker-body-'.repeat(160) + ':OLDER_DELIVERY_TAIL';
+    const canonicalMarker = {
+      kind: 'marker' as const,
+      markerId: 'message-delivery:um-older-delivery',
+      marker: 'message.delivery',
+      at: '2026-01-01T00:00:00.500Z',
+      payload: {
+        messageId: 'um-older-delivery',
+        text: fullText,
+        origin: { kind: 'user' },
+      },
+    };
+    const boundedMarker = boundedEntity(canonicalMarker, { kind: 'marker', id: canonicalMarker.markerId }, undefined, 'main');
+    expect((boundedMarker.payload as { text: string }).text).toHaveLength(1022);
+    expect(boundedMarker.contentRefs).toHaveLength(1);
+
+    const content = vi.fn(async ({ ref }: { agentId: string; ref: ContentRef }) =>
+      readContentSegment(canonicalMarker, ref, false, 'main'),
+    );
+    const olderTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'OLDER-TURN',
+      startedAt: '2026-01-01T00:00:00.100Z',
+      steps: [],
+    };
+    const { controller, publish, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockResolvedValue({
+      session_id: 'session_test',
+      agent_id: 'main',
+      items: [olderTurn, boundedMarker],
+      has_more: false,
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      agents: [],
+      pending_interactions: [],
+      cursor: { seq: 2, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+    });
+    const newerTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't2',
+      ordinal: 2,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'NEWER-TURN',
+      startedAt: '2026-01-01T00:00:10.000Z',
+      steps: [],
+    };
+    await controller.open();
+    publish({
+      type: 'transcript.reset',
+      session_id: 'session_test',
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 2, epoch: 'e' },
+      coverage: { kind: 'tail', hasMoreOlder: true },
+      snapshot: emptySnapshot({ items: [newerTurn], hasMoreOlder: true }),
+    });
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      const initialBlock = controller.getState().blocks.find(
+        (block): block is UserBlock => block.kind === 'user' && block.id === 'user-um-older-delivery',
+      );
+      expect(initialBlock).toMatchObject({
+        contentSource: { kind: 'marker', id: canonicalMarker.markerId },
+        contentPending: true,
+      });
+      expect(initialBlock?.text).toHaveLength(1022);
+      expect(controller.contentRefsFor('main', { kind: 'marker', id: canonicalMarker.markerId })).toHaveLength(1);
+
+      const lease = controller.beginContentRead('main', { kind: 'marker', id: canonicalMarker.markerId }, ['payload']);
+      try {
+        await vi.waitFor(() => {
+          expect(controller.contentRefsFor('main', { kind: 'marker', id: canonicalMarker.markerId })).toEqual([]);
+        });
+      } finally {
+        lease.release();
+      }
+      const hydratedBlock = controller.getState().blocks.find(
+        (block): block is UserBlock => block.kind === 'user' && block.id === 'user-um-older-delivery',
+      );
+      expect(hydratedBlock?.text).toBe(fullText);
+      expect(hydratedBlock?.contentPending).toBe(false);
+    } finally {
+      controller.close();
+    }
+  });
 });

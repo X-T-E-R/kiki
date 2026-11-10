@@ -2240,15 +2240,7 @@ export class SessionController {
     const entity = store === undefined ? undefined : transcriptContentEntity(store, source);
     if (entity !== undefined) return entity;
     const older = this.olderPages.get(agentId);
-    if (older === undefined) return undefined;
-    if (source.kind === 'turn') return older.items.find((item) => item.kind === 'turn' && item.turnId === source.id) as ContentWindow | undefined;
-    if (source.kind === 'frame') {
-      const turn = older.items.find((item) => item.kind === 'turn' && item.turnId === source.turnId);
-      return turn?.kind === 'turn' ? turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id) : undefined;
-    }
-    const collection = { task: older.tasks, attachment: older.attachments, prompt: older.prompts, interaction: older.interactions, todo: older.todos };
-    if (source.kind in collection) return collection[source.kind as keyof typeof collection].find((item) => Object.entries(item).some(([key, value]) => key.endsWith('Id') && value === source.id));
-    return source.kind === 'meta' ? older.meta : undefined;
+    return older === undefined ? undefined : snapshotContentEntity(older, source);
   }
 
   stepCanonicalIndex(agentId: string, turnId: string, stepId: string): number | undefined {

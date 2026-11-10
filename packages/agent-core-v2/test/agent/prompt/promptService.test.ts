@@ -3134,7 +3134,7 @@ describe('AgentPromptService', () => {
     expect(context.get().some((item) => item.content.some((part) => part.type === 'text' && part.text === 'correction'))).toBe(false);
   });
 
-  it('delivers a blocked prompt’s marked compression captions right after their host message', async () => {
+  it('does not write a hook-blocked user prompt or its compression captions into model context', async () => {
     const { prompt, context } = harness();
     prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
     const caption = '<system>Image compressed to fit model limits: 800x600</system>';
@@ -3149,12 +3149,30 @@ describe('AgentPromptService', () => {
     await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
 
     expect(handle.message.content).toEqual(messageWithCaption.content);
+    expect(context.get()).toEqual([]);
+  });
+
+  it('delivers Marked compression captions right after their host message when allowed by hooks', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    const caption = '<system>Image compressed to fit model limits: 800x600</system>';
+    const text = `${caption}look at this`;
+    const messageWithCaption: ContextMessage = {
+      ...message(text),
+      content: [{ type: 'text', text, presentation: {
+        spans: [{ start: 0, end: caption.length, kind: 'image_compression' }],
+      } }],
+    };
+    const handle = await prompt.enqueue({ id: 'prompt-caption-allowed', message: messageWithCaption });
+    await handle.launched;
+    loop.drainNextBatch(context);
+
+    expect(handle.message.content).toEqual(messageWithCaption.content);
     const history = context.get();
     expect(history).toHaveLength(2);
     expect(history[0]?.origin).toEqual({
       kind: 'injection',
       variant: 'image_compression',
-      ownerPromptId: 'prompt-caption',
+      ownerPromptId: 'prompt-caption-allowed',
     });
     expect(history[1]?.origin).toEqual({ kind: 'user' });
     expect(history[1]?.content).toEqual([{ type: 'text', text: 'look at this', presentation: undefined }]);
@@ -3165,12 +3183,12 @@ describe('AgentPromptService', () => {
     );
   });
 
-  it('leaves an unmarked caption-shaped user prompt untouched', async () => {
-    const { prompt, context } = harness();
-    prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
+  it('leaves an unmarked caption-shaped user prompt untouched when allowed by hooks', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
     const text = '<system>Image compressed to fit model limits: 800x600</system>keep this literal';
     const handle = await prompt.enqueue({ id: 'prompt-literal-caption', message: message(text) });
-    await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
+    await handle.launched;
+    loop.drainNextBatch(context);
 
     expect(context.get()).toEqual([expect.objectContaining({
       origin: { kind: 'user' },

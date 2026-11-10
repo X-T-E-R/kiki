@@ -1657,4 +1657,81 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(after.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['raced-b', 'raced-a']);
     expect(reads).toBe(1);
   });
+
+  it('keeps hook-blocked user prompts out of model context and marks their projected UserBlock as undelivered while messageActions rejects edit and fork', async () => {
+    const { id, main, submitted } = await createTerminalPrompt('delivered baseline prompt');
+    const blocker = main.accessor.get(IAgentPromptService).hooks.onBeforeSubmitPrompt.register('block-second', async (ctx, next) => {
+      ctx.block = true;
+      ctx.appendMessage!({
+        role: 'assistant',
+        content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (policy)\n</hook_result>' }],
+        toolCalls: [],
+        origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+      });
+      await next();
+    });
+    const client = createKlient({
+      endpoint: base,
+      token: server!.localOwnerToken,
+      WebSocket: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    const controller = new SessionController(createSessionTransport(client), client.session(id).view, id);
+    try {
+      await controller.open();
+      const blockedSubmit = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+        prompt_id: 'prompt-hook-blocked',
+        content: [{ type: 'text', text: 'secret blocked prompt never sent to llm' }],
+      });
+      expect(blockedSubmit.code, JSON.stringify(blockedSubmit)).toBe(0);
+      await waitForTerminal(main);
+
+      const contextTexts = main.accessor
+        .get(IAgentContextMemoryService)
+        .get()
+        .flatMap((entry) => entry.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])));
+      expect(contextTexts).not.toContain('secret blocked prompt never sent to llm');
+
+      const messagesPage = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+      expect(messagesPage.body.code).toBe(0);
+      expect(messagesPage.body.data.items.some((entry) => entry.id === blockedSubmit.data.user_message_id)).toBe(false);
+      expect(messagesPage.body.data.items.some((entry) => entry.id === submitted.data.user_message_id)).toBe(true);
+
+      const editRes = await postJson(`/api/sessions/${id}/messages/${blockedSubmit.data.user_message_id}:edit`, {
+        content: [{ type: 'text', text: 'cannot rewrite context-less blocked prompt' }],
+        expected_cursor: await stableCursor(id),
+      });
+      expect(editRes.code).toBe(40936);
+
+      const forkRes = await postJson(`/api/sessions/${id}:fork`, {
+        through_message_id: blockedSubmit.data.user_message_id,
+        expected_cursor: await stableCursor(id),
+      });
+      expect(forkRes.code).toBe(40936);
+
+      await vi.waitFor(() => {
+        controller.flushFrames();
+        const userBlocks = controller.getState().blocks.filter((block) => block.kind === 'user');
+        const deliveredBlock = userBlocks.find((block) => block.userMessageId === submitted.data.user_message_id);
+        const blockedBlock = userBlocks.find((block) => block.userMessageId === blockedSubmit.data.user_message_id);
+        expect(deliveredBlock).toMatchObject({
+          text: 'delivered baseline prompt',
+          turnId: expect.any(String),
+        });
+        expect(deliveredBlock?.promptOutcome).toBeUndefined();
+        expect(blockedBlock).toMatchObject({
+          text: 'secret blocked prompt never sent to llm',
+          promptOutcome: {
+            status: 'blocked',
+            delivered: false,
+            error: 'Blocked by UserPromptSubmit hook (policy)',
+          },
+        });
+        expect(blockedBlock?.turnId).toBeUndefined();
+      });
+    } finally {
+      await blocker.dispose();
+      controller.close();
+      client.close();
+    }
+  });
 });

@@ -2812,7 +2812,10 @@ export class AgentPromptService implements IAgentPromptService {
           const candidate = selected[index]!;
           if (candidate !== item) this.pending.splice(this.pending.indexOf(candidate), 1);
           const materialized = batch[index]!;
-          if (!materialized.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
+          const originKind = (materialized.message.origin ?? USER_PROMPT_ORIGIN).kind;
+          if (!materialized.alreadyMaterialized && originKind !== 'user') {
+            this.appendPrompt(materialized.message, materialized.captions);
+          }
           candidate.state = 'blocked';
           candidate.error = blockError;
           candidate.launchedDeferred.resolve(undefined);

@@ -357,6 +357,7 @@ beforeAll(() => {
   installElementProperty('offsetHeight', {
     get(this: HTMLElement) {
       if (this.hasAttribute('data-transcript-scroll')) return 320;
+      if (this.parentElement?.hasAttribute('data-content-range-text')) return 240;
       if (this.hasAttribute('data-transcript-virtual-item')) {
         const blockId = this.querySelector<HTMLElement>('[data-block-id]')?.dataset['blockId'];
         return elementHeights.get(this) ?? (blockId === undefined ? undefined : blockHeights.get(blockId)) ?? 96;
@@ -371,7 +372,9 @@ beforeAll(() => {
   });
   installElementProperty('clientHeight', {
     get(this: HTMLElement) {
-      return this.hasAttribute('data-transcript-scroll') ? 320 : 0;
+      if (this.hasAttribute('data-transcript-scroll')) return 320;
+      if (this.parentElement?.hasAttribute('data-content-range-text')) return 240;
+      return 0;
     },
   });
   installElementProperty('scrollHeight', {
@@ -4982,7 +4985,7 @@ describe('virtualized transcript scrolling', () => {
       );
     }
     const { root, container } = makeRoot();
-    await renderSettled(root, <HydrationHarness />, true);
+    await renderSettled(root, <HydrationHarness />);
     expect(setHarnessState).toBeDefined();
     const row = () => container.querySelector('[data-block-id="user-um-pending-blocked"]')!;
     expect(row().querySelector('[data-row-action="copy"]')).toBeNull();
@@ -5020,10 +5023,8 @@ describe('virtualized transcript scrolling', () => {
     expect(readDraft(sessionId)).toBe(fullText);
     expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBeNull();
     expect(row().querySelector('[data-row-action="copy"]')).not.toBeNull();
-    const editBtn = row().querySelector<HTMLButtonElement>('[data-row-action="edit"]')!;
-    expect(editBtn).not.toBeNull();
-    await act(async () => { editBtn.click(); });
-    expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe(fullText);
+    expect(row().querySelector('[data-row-action="edit"]')).toBeNull();
+    expect(row().querySelector('[data-row-action="fork"]')).toBeNull();
 
     const controllerSessionId = 'session_blocked_controller_hydration';
     const { useSyncExternalStore } = await import('react');
@@ -5113,7 +5114,7 @@ describe('virtualized transcript scrolling', () => {
     }
     const ctrlRoot = makeRoot();
     try {
-      await renderSettled(ctrlRoot.root, <ControllerSurface />, true);
+      await renderSettled(ctrlRoot.root, <ControllerSurface />);
       await act(async () => {
         await vi.waitFor(() => expect(controller.getState().detailLoads[contentSegmentKey(controllerRef)]?.status).toBe('error'));
       });
@@ -5137,16 +5138,17 @@ describe('virtualized transcript scrolling', () => {
       });
       expect(readDraft(controllerSessionId)).toBe(fullText);
       expect(ctrlRow().querySelector('[data-row-action="copy"]')).not.toBeNull();
-      expect(ctrlRow().querySelector('[data-row-action="edit"]')).not.toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="edit"]')).toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="fork"]')).toBeNull();
     } finally {
       controller.close();
     }
   });
 
-  it('restores copy/edit/fork/send-again for a delivery-less terminal prompt, hydrates standalone delivery markers, and preserves surrounding short parts around a ranged prompt part', { timeout: 30_000 }, async () => {
+  it('restores copy/send-again (without dead edit/fork) for an undelivered terminal prompt, hydrates standalone delivery markers, and preserves middle-part text past 1022 chars when a trailing part carries hidden presentation spans', { timeout: 30_000 }, async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const { boundedTranscriptSnapshot } = await import('../../../../packages/kap-server/src/transport/klient/boundedTranscript');
-    const { readContentSegment } = await import('../../../../packages/kap-server/src/transport/klient/boundedContent');
+    const { boundedEntity, readContentSegment } = await import('../../../../packages/kap-server/src/transport/klient/boundedContent');
     const { patchTranscriptContent } = await import('@kiki/session-core/session');
     const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
 
@@ -5204,7 +5206,7 @@ describe('virtualized transcript scrolling', () => {
       );
     }
     const r1 = makeRoot();
-    await renderSettled(r1.root, <SteerHarness />, true);
+    await renderSettled(r1.root, <SteerHarness />);
     const r1Row = () => r1.container.querySelector('[data-block-id="user-um-no-delivery"]')!;
     expect(r1Row().querySelector('[data-row-action="copy"]')).toBeNull();
     expect(r1Row().querySelector('[data-row-action="edit"]')).toBeNull();
@@ -5220,8 +5222,59 @@ describe('virtualized transcript scrolling', () => {
     });
     expect(readDraft(steerSessionId)).toBe(steerFullText);
     expect(r1Row().querySelector('[data-row-action="copy"]')).not.toBeNull();
-    expect(r1Row().querySelector('[data-row-action="edit"]')).not.toBeNull();
-    expect(r1Row().querySelector('[data-row-action="fork"]')).not.toBeNull();
+    expect(r1Row().querySelector('[data-row-action="edit"]')).toBeNull();
+    expect(r1Row().querySelector('[data-row-action="fork"]')).toBeNull();
+
+    const deliveredFailedRoot = makeRoot();
+    const deliveredFailedState = projectAgentTranscriptView(
+      createViewState('session_r1_delivered_failed'),
+      'main',
+      {
+        items: [{
+          kind: 'turn',
+          turnId: 't-delivered-failed',
+          ordinal: 1,
+          state: 'failed',
+          origin: { kind: 'user', payload: { promptId: 'p-delivered-failed', userMessageId: 'um-delivered-failed' } },
+          prompt: 'delivered before provider error',
+          promptId: 'p-delivered-failed',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:00:02.000Z',
+          error: 'Upstream provider timeout',
+          steps: [],
+        }],
+        prompts: [{
+          promptId: 'p-delivered-failed',
+          userMessageId: 'um-delivered-failed',
+          status: 'failed',
+          createdAt: '2026-01-01T00:00:01.000Z',
+          finishedAt: '2026-01-01T00:00:02.000Z',
+          error: 'Upstream provider timeout',
+          content: [{ type: 'text', text: 'delivered before provider error' }],
+        }],
+        tasks: [],
+        attachments: [],
+        todos: [],
+        interactions: [],
+        meta: {},
+      },
+      { cold: true },
+    );
+    await renderSettled(
+      deliveredFailedRoot.root,
+      <Transcript
+        state={deliveredFailedState}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        rowActions={actions}
+      />,
+    );
+    const deliveredFailedRow = deliveredFailedRoot.container.querySelector('[data-block-id="user-um-delivered-failed"]')!;
+    expect(deliveredFailedRow.querySelector('[data-row-action="copy"]')).not.toBeNull();
+    expect(deliveredFailedRow.querySelector('[data-row-action="edit"]')).not.toBeNull();
+    expect(deliveredFailedRow.querySelector('[data-row-action="fork"]')).not.toBeNull();
 
     const deliveryFullText = 'MAILBOX_START:' + 'standalone-delivery-'.repeat(160) + ':MAILBOX_END';
     const canonicalDeliverySnapshot: AgentTranscriptSnapshot = {
@@ -5294,7 +5347,7 @@ describe('virtualized transcript scrolling', () => {
     }
     const r2 = makeRoot();
     try {
-      await renderSettled(r2.root, <DeliverySurface />, true);
+      await renderSettled(r2.root, <DeliverySurface />);
       await act(async () => {
         await vi.waitFor(() =>
           expect(deliveryController.contentRefsFor('main', { kind: 'marker', id: 'message-delivery:um-standalone-delivery' })).toEqual([]),
@@ -5310,8 +5363,112 @@ describe('virtualized transcript scrolling', () => {
       deliveryController.close();
     }
 
-    const hugeMiddle = 'MIDDLE_RANGED_CHUNK_'.repeat(30_000);
-    const multiPartSnapshot: AgentTranscriptSnapshot = {
+    const middleBefore1022 = 'M'.repeat(1022);
+    const middleProtectedWindow = 'VISIBLE_AFTER_1022_MUST_NOT_BE_EATEN';
+    const hugeMiddle = middleBefore1022 + middleProtectedWindow + '_TAIL_'.repeat(90_000);
+    const nonRangeMiddle = middleBefore1022 + middleProtectedWindow + '_TAIL_'.repeat(500);
+    const hiddenTrailingContext = '<context_hidden_block>' + 'X'.repeat(60) + '</context_hidden_block>';
+    const canonicalHydrateSnapshot: AgentTranscriptSnapshot = {
+      items: [],
+      prompts: [{
+        promptId: 'p-multipart-hydrate',
+        userMessageId: 'um-multipart-hydrate',
+        status: 'blocked',
+        createdAt: '2026-01-01T00:00:08.000Z',
+        finishedAt: '2026-01-01T00:00:09.000Z',
+        error: 'Blocked by UserPromptSubmit hook',
+        content: [
+          { type: 'text', text: 'SHORT_PREFIX_HYDRATE' },
+          { type: 'text', text: nonRangeMiddle },
+          {
+            type: 'text',
+            text: `${hiddenTrailingContext}SHORT_SUFFIX_HYDRATE`,
+            presentation: {
+              spans: [{ start: 0, end: hiddenTrailingContext.length, kind: 'context' }],
+            },
+          },
+        ],
+      }],
+      tasks: [],
+      attachments: [],
+      todos: [],
+      interactions: [],
+      meta: {},
+    };
+    const canonicalHydratePrompt = canonicalHydrateSnapshot.prompts[0]!;
+    const boundedHydratePrompt = boundedEntity(
+      canonicalHydratePrompt,
+      { kind: 'prompt', id: canonicalHydratePrompt.promptId },
+      undefined,
+      'main',
+    );
+    expect(boundedHydratePrompt.contentRefs?.[0]?.offset).toBe(1022);
+    const hydrateViewFacade = {
+      snapshot: async () => ({ session: { id: 'session_r3_hydrate', title: 'Hydrate' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+      transcript: {
+        content: async ({ ref, range }: { agentId: string; ref: import('@kiki/transcript').ContentRef; range?: boolean }) =>
+          readContentSegment(canonicalHydratePrompt, ref, range, 'main'),
+      },
+      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+    const hydrateController = new SessionController(
+      {} as import('@kiki/session-core/transport').SessionTransport,
+      hydrateViewFacade,
+      'session_r3_hydrate',
+      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+    );
+    await hydrateController.open();
+    hydrateController.handleTranscript({
+      type: 'transcript.reset',
+      session_id: 'session_r3_hydrate',
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 1, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: { ...canonicalHydrateSnapshot, prompts: [boundedHydratePrompt] },
+    });
+    function HydrateMultiPartSurface() {
+      const state = useSyncExternalStore(hydrateController.subscribe, hydrateController.getState);
+      return (
+        <TranscriptDetailProvider
+          controller={hydrateController}
+          load={async () => false}
+          loads={state.detailLoads}
+          contentRefs={state.contentRefs}
+          loadContent={(ref) => hydrateController.loadContentSegment('main', ref)}
+          sessionId="session_r3_hydrate"
+          agentId="main"
+        >
+          <Transcript
+            state={state}
+            onLoadOlder={async () => false}
+            onResolveApproval={noopActions}
+            onAnswerQuestion={noopActions}
+            onDismissQuestion={noopActions}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>
+      );
+    }
+    const r3Hydrate = makeRoot();
+    try {
+      await renderSettled(r3Hydrate.root, <HydrateMultiPartSurface />);
+      await act(async () => {
+        await vi.waitFor(() =>
+          expect(hydrateController.contentRefsFor('main', { kind: 'prompt', id: canonicalHydratePrompt.promptId })).toEqual([]),
+        );
+      });
+      const hydrateRow = r3Hydrate.container.querySelector('[data-block-id="user-um-multipart-hydrate"]')!;
+      const hydrateText = hydrateRow.textContent ?? '';
+      expect(hydrateText).toContain('SHORT_PREFIX_HYDRATE');
+      expect(hydrateText).toContain(middleProtectedWindow);
+      expect(hydrateText).toContain('SHORT_SUFFIX_HYDRATE');
+      expect(hydrateText).not.toContain('<context_hidden_block>');
+    } finally {
+      hydrateController.close();
+    }
+
+    const canonicalMultiPartSnapshot: AgentTranscriptSnapshot = {
       items: [],
       prompts: [{
         promptId: 'p-multipart-range',
@@ -5322,17 +5479,21 @@ describe('virtualized transcript scrolling', () => {
         error: 'Blocked by UserPromptSubmit hook',
         content: [
           { type: 'text', text: 'SHORT_PREFIX_SEGMENT' },
-          { type: 'text', text: hugeMiddle.slice(0, 512) },
-          { type: 'text', text: 'SHORT_SUFFIX_SEGMENT' },
+          {
+            type: 'text',
+            text: hugeMiddle,
+            presentation: {
+              spans: [{ start: hugeMiddle.length + 10, end: hugeMiddle.length + 50, kind: 'context' }],
+            },
+          },
+          {
+            type: 'text',
+            text: `${hiddenTrailingContext}SHORT_SUFFIX_SEGMENT`,
+            presentation: {
+              spans: [{ start: 0, end: hiddenTrailingContext.length, kind: 'context' }],
+            },
+          },
         ],
-        contentRefs: [{
-          source: { kind: 'prompt', id: 'p-multipart-range' },
-          path: ['content', 1, 'text'],
-          revision: 'rev-multipart-range',
-          kind: 'text',
-          offset: 512,
-          total: hugeMiddle.length,
-        }],
       }],
       tasks: [],
       attachments: [],
@@ -5340,47 +5501,92 @@ describe('virtualized transcript scrolling', () => {
       interactions: [],
       meta: {},
     };
-    const multiPartState = projectAgentTranscriptView(createViewState('session_r3_multipart'), 'main', multiPartSnapshot, { cold: true });
-    const rangeRef = multiPartSnapshot.prompts[0]!.contentRefs![0]!;
-    const rangeController = {
-      contentRefsFor: () => [rangeRef],
-      isContentRange: (_agentId: string, candidate: import('@kiki/transcript').ContentRef) =>
-        candidate.path[0] === 'content' && candidate.path[1] === 1 && candidate.path[2] === 'text',
-      beginContentRead: () => ({ release() {}, retry() {} }),
-      readContentRange: async () => 'RANGED_WINDOW_SLICE',
-      historyPreviewPending: () => false,
-      retainHistoryPreview: () => () => {},
-    };
-    const r3 = makeRoot();
-    await renderSettled(
-      r3.root,
-      <TranscriptDetailProvider
-        controller={rangeController as unknown as SessionController}
-        load={async () => false}
-        loads={{}}
-        contentRefs={[rangeRef]}
-        sessionId="session_r3_multipart"
-        agentId="main"
-      >
-        <Transcript
-          state={{ ...multiPartState, contentRefs: [rangeRef] }}
-          onLoadOlder={async () => false}
-          onResolveApproval={noopActions}
-          onAnswerQuestion={noopActions}
-          onDismissQuestion={noopActions}
-          rowActions={actions}
-        />
-      </TranscriptDetailProvider>,
+    const canonicalMultiPartPrompt = canonicalMultiPartSnapshot.prompts[0]!;
+    const boundedMultiPartPrompt = boundedEntity(
+      canonicalMultiPartPrompt,
+      { kind: 'prompt', id: canonicalMultiPartPrompt.promptId },
+      undefined,
+      'main',
     );
-    const r3Row = r3.container.querySelector('[data-block-id="user-um-multipart-range"]')!;
-    const textContent = r3Row.textContent ?? '';
-    const prefixIdx = textContent.indexOf('SHORT_PREFIX_SEGMENT');
-    const rangeElement = r3Row.querySelector('[data-content-range-text]');
-    const suffixIdx = textContent.indexOf('SHORT_SUFFIX_SEGMENT');
-    expect(prefixIdx).toBeGreaterThanOrEqual(0);
-    expect(rangeElement).not.toBeNull();
-    expect(suffixIdx).toBeGreaterThan(prefixIdx);
-    expect(r3Row.querySelectorAll('[data-content-range-text]')).toHaveLength(1);
+    const boundedMultiPartSnapshot: AgentTranscriptSnapshot = {
+      ...canonicalMultiPartSnapshot,
+      prompts: [boundedMultiPartPrompt],
+    };
+    const multiPartState = projectAgentTranscriptView(
+      createViewState('session_r3_multipart'),
+      'main',
+      boundedMultiPartSnapshot,
+      { cold: true },
+    );
+    const rangeRef = boundedMultiPartSnapshot.prompts[0]!.contentRefs!.find(
+      (candidate) => candidate.path[0] === 'content' && candidate.path[1] === 1 && candidate.path[2] === 'text',
+    )!;
+    expect(rangeRef).toBeDefined();
+    expect(rangeRef.offset).toBe(1022);
+    const rangeViewFacade = {
+      snapshot: async () => ({ session: { id: 'session_r3_multipart', title: 'Range' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+      transcript: {
+        content: async ({ ref, range }: { agentId: string; ref: import('@kiki/transcript').ContentRef; range?: boolean }) =>
+          readContentSegment(canonicalMultiPartSnapshot.prompts[0]!, ref, range, 'main'),
+      },
+      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+    const rangeController = new SessionController(
+      {} as import('@kiki/session-core/transport').SessionTransport,
+      rangeViewFacade,
+      'session_r3_multipart',
+      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+    );
+    await rangeController.open();
+    rangeController.handleTranscript({
+      type: 'transcript.reset',
+      session_id: 'session_r3_multipart',
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 1, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: boundedMultiPartSnapshot,
+    });
+    const r3 = makeRoot();
+    try {
+      await renderSettled(
+        r3.root,
+        <TranscriptDetailProvider
+          controller={rangeController}
+          load={async () => false}
+          loads={{}}
+          contentRefs={[rangeRef]}
+          sessionId="session_r3_multipart"
+          agentId="main"
+        >
+          <Transcript
+            state={{ ...multiPartState, contentRefs: [rangeRef] }}
+            onLoadOlder={async () => false}
+            onResolveApproval={noopActions}
+            onAnswerQuestion={noopActions}
+            onDismissQuestion={noopActions}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>,
+      );
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(r3.container.querySelector('[data-content-range-text]')?.textContent).toContain(middleProtectedWindow);
+        });
+      });
+      const r3Row = r3.container.querySelector('[data-block-id="user-um-multipart-range"]')!;
+      const textContent = r3Row.textContent ?? '';
+      const prefixIdx = textContent.indexOf('SHORT_PREFIX_SEGMENT');
+      const middleIdx = textContent.indexOf(middleProtectedWindow);
+      const suffixIdx = textContent.indexOf('SHORT_SUFFIX_SEGMENT');
+      expect(prefixIdx).toBeGreaterThanOrEqual(0);
+      expect(middleIdx).toBeGreaterThan(prefixIdx);
+      expect(suffixIdx).toBeGreaterThan(middleIdx);
+      expect(textContent).not.toContain('<context_hidden_block>');
+      expect(r3Row.querySelectorAll('[data-content-range-text]')).toHaveLength(1);
+    } finally {
+      rangeController.close();
+    }
   });
 
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
