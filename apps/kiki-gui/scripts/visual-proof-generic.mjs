@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { applyFixtureTheme } from './lib/theme-preference.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_VIEWPORTS = {
@@ -492,17 +493,23 @@ export async function runGenericVisualProof({ argv = process.argv.slice(2), cwd 
           }, view);
           const page = await context.newPage();
           await page.emulateMedia({ colorScheme: view.theme });
+          const authToken = config.token ?? (fixtureUrl === undefined ? undefined : FIXTURE_TOKEN);
+          if (fixtureUrl !== undefined) {
+            await applyFixtureTheme(fixtureUrl, view.theme, authToken ?? FIXTURE_TOKEN);
+          }
           const setup = await resolveSetup(route, config);
-          const url = routeUrl(baseUrl, route.path, serverUrl, config.token ?? (fixtureUrl === undefined ? undefined : FIXTURE_TOKEN));
+          const url = routeUrl(baseUrl, route.path, serverUrl, authToken);
           console.log(`[visual-proof] route ${route.name} ${route.path} -> ${publicUrl(url)}`);
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: MAX_SETUP_TIMEOUT_MS });
           await waitNetworkIdle(page);
+          await page.waitForSelector(`html[data-theme="${view.theme}"]`, { timeout: MAX_SETUP_TIMEOUT_MS });
           const selectors = route.waitFor === undefined ? [] : (Array.isArray(route.waitFor) ? route.waitFor : [route.waitFor]);
           for (const selector of selectors) await page.waitForSelector(selector, { timeout: MAX_SETUP_TIMEOUT_MS });
           await runSetup(page, setup, { page, route, view, baseUrl, serverUrl, outputDir });
           await scrollPage(page, route.scroll);
           await settleAnimations(page, Number(route.animationTimeoutMs ?? 2000));
           await waitNetworkIdle(page);
+          await page.waitForSelector(`html[data-theme="${view.theme}"]`, { timeout: MAX_SETUP_TIMEOUT_MS });
           const file = `${safeName(route.name)}--${view.locale}--${view.theme}--${view.viewport}.png`;
           const path = join(outputDir, file);
           await page.screenshot({ path, fullPage: route.fullPage === true });
