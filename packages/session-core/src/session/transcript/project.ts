@@ -1396,7 +1396,8 @@ function subagentBlocksFromSnapshot(
       });
       admittedTaskIds.add(task.taskId);
       taskTurns.set(task.taskId, parentTurnId ?? previousTurnId);
-      if (!spawnMarked.has(task.agentId) && isEarliestRun) {
+      const isResumedRun = !isEarliestRun || pendingResume !== undefined || base?.resumed === true;
+      if (!spawnMarked.has(task.agentId) && !isResumedRun) {
         spawnMarked.add(task.agentId);
         rawEvents.push({
           id: `subagent-event-${task.agentId}-spawned-${task.taskId}`,
@@ -1649,11 +1650,39 @@ function nearestParentTurn(
 
 function insertSubagentByTimeline(blocks: Block[], block: SubagentBlock): void {
   if (block.parentTurnId !== undefined) {
-    let anchor = -1;
-    for (let index = 0; index < blocks.length; index += 1) {
-      if (sameTurnId(blockTurnId(blocks[index]!), block.parentTurnId)) anchor = index;
-    }
-    if (anchor >= 0) {
+    const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), block.parentTurnId);
+    const first = blocks.findIndex(inTurn);
+    if (first >= 0) {
+      const last = blocks.findLastIndex(inTurn);
+      const startedAt = blockTimelineMs(block);
+      let anchor = last;
+      if (startedAt !== undefined) {
+        anchor = -1;
+        for (let index = first; index <= last; index += 1) {
+          const candidate = blocks[index]!;
+          if (
+            candidate.kind === 'subagent' &&
+            sameTurnId(candidate.parentTurnId, block.parentTurnId)
+          ) {
+            if (compareSubagentTimeline(candidate, block) > 0) break;
+            anchor = index;
+            continue;
+          }
+          const candidateAt = blockTimelineMs(candidate);
+          if (candidateAt === undefined) {
+            if (anchor < 0 && (candidate.kind === 'user' || candidate.kind === 'system' || candidate.kind === 'system-reminder' || candidate.kind === 'skill')) {
+              anchor = index;
+            }
+            continue;
+          }
+          if (candidateAt > startedAt) break;
+          anchor = index;
+        }
+      }
+      if (anchor < 0) {
+        blocks.splice(first, 0, block);
+        return;
+      }
       while (
         blocks[anchor + 1]?.kind === 'subagent' &&
         sameTurnId((blocks[anchor + 1] as SubagentBlock).parentTurnId, block.parentTurnId) &&
@@ -1762,6 +1791,20 @@ function insertSubagentEventBlocks(
       }
     }
     const terminal = event.event === 'completed' || event.event === 'failed' || event.event === 'cancelled';
+    if (event.event === 'spawned') {
+      const dispatch = blocks.findIndex(
+        (block) =>
+          block.kind === 'subagent' &&
+          block.subagentId === event.subagentId &&
+          (event.id === `subagent-event-${event.subagentId}-spawned-${block.taskId ?? ''}` ||
+            sameTurnId(block.parentTurnId, event.turnId)),
+      );
+      if (dispatch >= 0) {
+        blocks.splice(dispatch + 1, 0, event);
+        continue;
+      }
+      if (event.turnId !== undefined && insertWithinTurnByTime(blocks, event, event.turnId)) continue;
+    }
     if (terminal && event.turnId !== undefined && insertWithinTurnByTime(blocks, event, event.turnId)) continue;
     if (blockTimelineMs(event) === undefined) {
       if (insertAtPreviousPosition(blocks, event, previous)) continue;
@@ -3998,56 +4041,159 @@ export function recoverTranscriptTurn(current: TranscriptTurn, opening: Transcri
     steps: opening.steps.length === 0 ? current.steps : [...steps.values()].toSorted((a, b) => a.ordinal - b.ordinal), contentRefs: refs });
 }
 
+function earlierTaskRefAt(currentAt: string | undefined, incomingAt: string | undefined): string | undefined {
+  if (incomingAt === undefined) return currentAt;
+  if (currentAt === undefined) return incomingAt;
+  const incomingMs = timestampMs(incomingAt);
+  const currentMs = timestampMs(currentAt);
+  if (incomingMs !== undefined && (currentMs === undefined || incomingMs < currentMs)) return incomingAt;
+  return currentAt;
+}
+
 export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
   older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
 ): AgentTranscriptSnapshot {
   const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
-  const insertions = new Map<number, TranscriptItem[]>();
-  const recovered = new Map<number, TranscriptItem>();
-  let pending: TranscriptItem[] = [];
-  let previousPosition: number | undefined;
-  const insert = (position: number) => {
-    if (pending.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...pending]);
-    pending = [];
-  };
+  const maxTurnOrdinalBefore: (number | undefined)[] = [];
+  let runningMaxTurnOrdinal: number | undefined;
+  for (let index = 0; index <= current.items.length; index += 1) {
+    maxTurnOrdinalBefore.push(runningMaxTurnOrdinal);
+    const item = current.items[index];
+    if (item?.kind === 'turn' && (runningMaxTurnOrdinal === undefined || item.ordinal > runningMaxTurnOrdinal)) {
+      runningMaxTurnOrdinal = item.ordinal;
+    }
+  }
+  const olderItems: TranscriptItem[] = [];
   const seen = new Set<string>();
   for (const item of older.items) {
     const key = transcriptItemId(item);
     if (seen.has(key)) continue;
     seen.add(key);
+    olderItems.push(item);
+  }
+  const nextTurnBoundAfter: ( { readonly ordinal: number; readonly position?: number } | undefined )[] = [];
+  let runningNextTurnBound: { readonly ordinal: number; readonly position?: number } | undefined;
+  for (let index = olderItems.length - 1; index >= 0; index -= 1) {
+    nextTurnBoundAfter[index] = runningNextTurnBound;
+    const item = olderItems[index]!;
+    if (item.kind === 'turn') {
+      const turnPosition = positions.get(transcriptItemId(item));
+      const ordinal = runningNextTurnBound === undefined ? item.ordinal : Math.min(item.ordinal, runningNextTurnBound.ordinal);
+      const position = turnPosition !== undefined
+        ? (runningNextTurnBound?.position === undefined ? turnPosition : Math.min(turnPosition, runningNextTurnBound.position))
+        : runningNextTurnBound?.position;
+      runningNextTurnBound = { ordinal, position };
+    }
+  }
+  const insertions = new Map<number, TranscriptItem[]>();
+  const recovered = new Map<number, TranscriptItem>();
+  const relocated = new Set<number>();
+  let pending: TranscriptItem[] = [];
+  let previousPosition: number | undefined;
+  let maxOlderTurnOrdinal: number | undefined;
+  const appendInsertion = (position: number, entries: readonly TranscriptItem[]) => {
+    if (entries.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...entries]);
+  };
+  const flushPending = (upperBound?: number) => {
+    if (pending.length === 0) return;
+    let sliceStart = 0;
+    let currentTurn = pending.find((entry): entry is TranscriptTurn => entry.kind === 'turn');
+    let afterPrevious = previousPosition === undefined ? undefined : previousPosition + 1;
+    let canRetreatBeforeLeadingNonTurns = previousPosition === undefined;
+    const placeChunk = (chunk: readonly TranscriptItem[], firstTurn: TranscriptTurn | undefined) => {
+      const laterTurn = firstTurn === undefined ? -1
+        : current.items.findIndex((entry) => entry.kind === 'turn' && entry.ordinal > firstTurn.ordinal);
+      let position = afterPrevious !== undefined && (laterTurn < 0 || afterPrevious <= laterTurn)
+        ? afterPrevious
+        : laterTurn >= 0
+          ? laterTurn
+          : firstTurn !== undefined && current.items.some((entry) => entry.kind === 'turn')
+            ? current.items.length
+            : 0;
+      if (upperBound !== undefined && position > upperBound) position = upperBound;
+      if (canRetreatBeforeLeadingNonTurns && firstTurn !== undefined) {
+        const first = chunk[0]!;
+        const at = timestampMs(first.kind === 'turn' ? first.startedAt : first.at) ?? timestampMs(firstTurn.startedAt);
+        while (position > 0) {
+          const preceding = current.items[position - 1]!;
+          if (preceding.kind === 'turn') break;
+          const precedingAt = timestampMs(preceding.at);
+          if (at === undefined || precedingAt === undefined || precedingAt < at) break;
+          position -= 1;
+        }
+      }
+      appendInsertion(position, chunk);
+      afterPrevious = position;
+      canRetreatBeforeLeadingNonTurns = false;
+    };
+    for (let idx = 0; idx < pending.length; idx += 1) {
+      const entry = pending[idx]!;
+      if (entry.kind === 'turn' && currentTurn !== undefined && entry !== currentTurn) {
+        const lowerOrdinal = currentTurn.ordinal;
+        const splitForCurrentTurn = current.items.some(
+          (existing) => existing.kind === 'turn' && existing.ordinal > lowerOrdinal && existing.ordinal < entry.ordinal,
+        );
+        if (splitForCurrentTurn) {
+          placeChunk(pending.slice(sliceStart, idx), currentTurn);
+          sliceStart = idx;
+          currentTurn = entry;
+          afterPrevious = undefined;
+        } else {
+          currentTurn = entry;
+        }
+      }
+    }
+    placeChunk(pending.slice(sliceStart), currentTurn);
+    pending = [];
+  };
+  for (let index = 0; index < olderItems.length; index += 1) {
+    const item = olderItems[index]!;
+    const key = transcriptItemId(item);
+    if (item.kind === 'turn' && (maxOlderTurnOrdinal === undefined || item.ordinal > maxOlderTurnOrdinal)) {
+      maxOlderTurnOrdinal = item.ordinal;
+    }
     const position = positions.get(key);
-    if (position === undefined) pending.push(item);
-    else {
+    const maxTurnBeforePosition = position === undefined ? undefined : maxTurnOrdinalBefore[position];
+    const nextTurnBound = nextTurnBoundAfter[index];
+    const violatesNonTurnOrder = position !== undefined && item.kind !== 'turn' && (
+      (maxOlderTurnOrdinal !== undefined && maxTurnBeforePosition !== undefined && maxTurnBeforePosition > maxOlderTurnOrdinal) ||
+      (nextTurnBound !== undefined && maxTurnBeforePosition !== undefined && maxTurnBeforePosition >= nextTurnBound.ordinal) ||
+      (nextTurnBound?.position !== undefined && position > nextTurnBound.position) ||
+      (previousPosition !== undefined && position < previousPosition)
+    );
+    if (position === undefined || violatesNonTurnOrder) {
+      if (position !== undefined && item.kind !== 'turn') {
+        const existing = current.items[position];
+        relocated.add(position);
+        pending.push(
+          item.kind === 'taskref' && existing?.kind === 'taskref'
+            ? { ...existing, at: earlierTaskRefAt(existing.at, item.at) }
+            : item,
+        );
+      } else {
+        pending.push(item);
+      }
+    } else {
       const existing = current.items[position];
       if (item.kind === 'turn' && existing?.kind === 'turn' && existing.origin.kind === 'other' &&
           existing.message === undefined && existing.promptId === undefined && existing.startedAt === undefined && item.startedAt !== undefined) {
         recovered.set(position, recoverTranscriptTurn(existing, item));
+      } else if (item.kind === 'taskref' && existing?.kind === 'taskref') {
+        const nextAt = earlierTaskRefAt(existing.at, item.at);
+        if (nextAt !== existing.at) {
+          recovered.set(position, { ...existing, at: nextAt });
+        }
       }
-      insert(position);
+      flushPending(position);
       previousPosition = position;
     }
   }
-  if (pending.length > 0) {
-    const firstTurn = pending.find((item) => item.kind === 'turn');
-    const laterTurn = firstTurn === undefined ? -1
-      : current.items.findIndex((item) => item.kind === 'turn' && item.ordinal > firstTurn.ordinal);
-    let position = previousPosition !== undefined ? previousPosition + 1
-      : laterTurn >= 0 ? laterTurn : firstTurn !== undefined && current.items.some((item) => item.kind === 'turn') ? current.items.length : 0;
-    if (previousPosition === undefined && firstTurn !== undefined) {
-      const first = pending[0]!;
-      const at = timestampMs(first.kind === 'turn' ? first.startedAt : first.at) ?? timestampMs(firstTurn.startedAt);
-      while (position > 0) {
-        const preceding = current.items[position - 1]!;
-        if (preceding.kind === 'turn') break;
-        const precedingAt = timestampMs(preceding.at);
-        if (at === undefined || precedingAt === undefined || precedingAt < at) break;
-        position -= 1;
-      }
-    }
-    insert(position);
-  }
-  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], recovered.get(index) ?? item]);
+  flushPending();
+  const items = current.items.flatMap((item, index) => [
+    ...insertions.get(index) ?? [],
+    ...(relocated.has(index) ? [] : [recovered.get(index) ?? item]),
+  ]);
   items.push(...insertions.get(current.items.length) ?? []);
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(

@@ -848,6 +848,304 @@ describe('transcript authority projection', () => {
       .toEqual([...current.items.slice(0, 3), ...gap, ...current.items.slice(3)]);
   });
 
+  it('keeps turn ordinals strictly monotonic when an older page shares a taskref misplaced after a newer live turn', () => {
+    const turn = (ordinal: number, minute: number) => ({
+      kind: 'turn' as const,
+      turnId: `t${ordinal}`,
+      ordinal,
+      startedAt: `2026-11-10T05:${String(minute).padStart(2, '0')}:00.000Z`,
+      state: 'completed' as const,
+      origin: { kind: 'user' as const },
+      prompt: `prompt ${ordinal}`,
+      steps: [],
+    });
+    const misplacedTaskref = {
+      kind: 'taskref' as const,
+      refId: 'ref-agent-21',
+      taskId: 'agent-21',
+      at: '2026-11-10T05:11:10.000Z',
+    };
+    const current = emptySnapshot({
+      items: [
+        turn(22, 4),
+        { kind: 'taskref' as const, refId: 'ref-agent-22', taskId: 'agent-22', at: '2026-11-10T05:05:30.000Z' },
+        turn(23, 8),
+        misplacedTaskref,
+        turn(24, 18),
+      ],
+      hasMoreOlder: true,
+    });
+    const older1 = {
+      items: [
+        turn(21, 1),
+        { kind: 'taskref' as const, refId: 'ref-bash-21', taskId: 'bash-21', at: '2026-11-10T05:01:05.000Z' },
+        { kind: 'taskref' as const, refId: 'ref-agent-21', taskId: 'agent-21', at: '2026-11-10T05:01:53.000Z' },
+      ],
+      attachments: [],
+      hasMoreOlder: true,
+    };
+    const older2 = {
+      items: [turn(19, 0), turn(20, 0)],
+      attachments: [],
+      hasMoreOlder: false,
+    };
+
+    const afterFirst = prependOlderTranscriptSnapshot(current, older1);
+    const afterSecond = prependOlderTranscriptSnapshot(afterFirst, older2);
+    expect(afterSecond.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
+      't19',
+      't20',
+      't21',
+      'ref-bash-21',
+      'ref-agent-21',
+      't22',
+      'ref-agent-22',
+      't23',
+      't24',
+    ]);
+    const recoveredRef = afterSecond.items.find((item) => item.kind === 'taskref' && item.refId === 'ref-agent-21');
+    expect(recoveredRef).toMatchObject({ at: '2026-11-10T05:01:53.000Z' });
+  });
+
+  it('bounds leading non-turn anchors by the next overlapping turn, keeps turns unique/idempotent, and preserves earlier taskref timestamps', () => {
+    const liveTurn22: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't22',
+      ordinal: 22,
+      state: 'completed',
+      origin: { kind: 'other' },
+      stepsPartial: true,
+      steps: [
+        {
+          kind: 'step',
+          stepId: 's30',
+          turnId: 't22',
+          ordinal: 30,
+          state: 'completed',
+          frames: [{ kind: 'text', frameId: 'f30', text: 'live tail body' }],
+        },
+      ],
+      contentRefs: [
+        {
+          source: { kind: 'turn', id: 't22' },
+          revision: 'r1',
+          path: ['steps'],
+          kind: 'array',
+          offset: 30,
+          total: 31,
+          direction: 'backward',
+        },
+      ],
+    };
+    const turn23: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't23',
+      ordinal: 23,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'turn 23',
+      steps: [],
+    };
+    const current = emptySnapshot({
+      items: [
+        liveTurn22,
+        turn23,
+        {
+          kind: 'taskref',
+          refId: 'ref-a',
+          taskId: 'a',
+          at: '2026-11-10T05:01:00.000Z',
+        },
+      ],
+      hasMoreOlder: true,
+    });
+    const older = {
+      items: [
+        {
+          kind: 'taskref' as const,
+          refId: 'ref-a',
+          taskId: 'a',
+          at: '2026-11-10T05:11:10.000Z',
+        },
+        {
+          kind: 'turn' as const,
+          turnId: 't22',
+          ordinal: 22,
+          startedAt: '2026-11-10T05:04:00.000Z',
+          state: 'completed' as const,
+          origin: { kind: 'user' as const },
+          prompt: 'recovered opening prompt',
+          steps: [],
+        },
+      ],
+      attachments: [],
+      hasMoreOlder: true,
+    };
+
+    const once = prependOlderTranscriptSnapshot(current, older);
+    const twice = prependOlderTranscriptSnapshot(once, older);
+    const ids = (snapshot: AgentTranscriptSnapshot) =>
+      snapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId));
+
+    expect(ids(once)).toEqual(['ref-a', 't22', 't23']);
+    expect(ids(twice)).toEqual(['ref-a', 't22', 't23']);
+    expect(twice.items).toEqual(once.items);
+
+    const relocatedRef = once.items[0];
+    expect(relocatedRef).toMatchObject({
+      kind: 'taskref',
+      refId: 'ref-a',
+      at: '2026-11-10T05:01:00.000Z',
+    });
+    const mergedT22 = once.items[1];
+    expect(mergedT22).toMatchObject({
+      kind: 'turn',
+      turnId: 't22',
+      prompt: 'recovered opening prompt',
+      startedAt: '2026-11-10T05:04:00.000Z',
+    });
+    if (mergedT22?.kind === 'turn') {
+      expect(mergedT22.steps).toBe(liveTurn22.steps);
+      expect(mergedT22.contentRefs).toEqual(liveTurn22.contentRefs);
+    }
+
+    const mkTurn = (n: number): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${n}`,
+      ordinal: n,
+      state: 'completed',
+      origin: { kind: 'user' },
+      steps: [],
+    });
+    for (const [resident, page, expected] of [
+      [[21, 23, 24], [22, 24], ['t21', 't22', 't23', 't24']],
+      [[21, 23, 25, 26], [22, 24, 26], ['t21', 't22', 't23', 't24', 't25', 't26']],
+      [[21, 23, 25, 26], [22, 24], ['t21', 't22', 't23', 't24', 't25', 't26']],
+    ] as const) {
+      const residentSnap = emptySnapshot({ items: resident.map(mkTurn), hasMoreOlder: true });
+      const pageSnap = { items: page.map(mkTurn), attachments: [], hasMoreOlder: true };
+      const mergedOnce = prependOlderTranscriptSnapshot(residentSnap, pageSnap);
+      const mergedTwice = prependOlderTranscriptSnapshot(mergedOnce, pageSnap);
+      expect(ids(mergedOnce)).toEqual(expected);
+      expect(ids(mergedTwice)).toEqual(expected);
+    }
+  });
+
+  it('places unanchored subagent cards at their dispatch time within a windowed turn instead of after later messages and endings', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't25',
+            ordinal: 25,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'coordinate rollout',
+            startedAt: '2026-11-10T05:22:24.000Z',
+            endedAt: '2026-11-10T05:32:56.000Z',
+            contentRefs: [
+              {
+                source: { kind: 'turn', id: 't25' },
+                path: ['steps'],
+                kind: 'array',
+                direction: 'backward',
+                offset: 30,
+                total: 34,
+                revision: 'rev-t25',
+              },
+            ],
+            steps: [
+              {
+                kind: 'step',
+                stepId: 's30',
+                turnId: 't25',
+                ordinal: 30,
+                state: 'completed',
+                startedAt: '2026-11-10T05:31:00.000Z',
+                endedAt: '2026-11-10T05:31:20.000Z',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f30',
+                    toolCallId: 'call_read_late',
+                    name: 'Read',
+                    state: 'done',
+                    input: { path: '/example.txt' },
+                    startedAt: '2026-11-10T05:31:18.000Z',
+                  },
+                ],
+              },
+              {
+                kind: 'step',
+                stepId: 's31',
+                turnId: 't25',
+                ordinal: 31,
+                state: 'completed',
+                startedAt: '2026-11-10T05:32:11.000Z',
+                endedAt: '2026-11-10T05:32:56.000Z',
+                frames: [
+                  {
+                    kind: 'text',
+                    frameId: 'f-peer-msg',
+                    role: 'user',
+                    text: 'status update from child',
+                    part: {
+                      partId: 'msg-child',
+                      messageId: 'msg-child',
+                      revision: 0,
+                      provenance: { source: 'engine' },
+                    },
+                    origin: { kind: 'agent_message', senderAgentId: 'agent-99' },
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            kind: 'taskref',
+            refId: 'ref-run-early',
+            taskId: 'task-run-early',
+            at: '2026-11-10T05:28:49.000Z',
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-run-early',
+            kind: 'subagent',
+            state: 'failed',
+            detached: true,
+            ownerTurnId: 25,
+            parentToolCallId: 'call_trimmed_agentrun',
+            agentId: 'agent-44',
+            name: 'media_worker',
+            outputTail: '',
+            startedAt: '2026-11-10T05:28:49.000Z',
+            endedAt: '2026-11-10T05:32:43.000Z',
+            error: 'origin_authentication_failed',
+          },
+        ],
+      }),
+    );
+
+    const ids = projected.blocks.map((block) => block.id);
+    const openingIndex = ids.indexOf('user-agent-turn-t25-prompt');
+    const cardIndex = ids.indexOf('subagent-agent-44');
+    const spawnedIndex = ids.indexOf('subagent-event-agent-44-spawned-task-run-early');
+    const lateReadIndex = ids.indexOf('tool-call_read_late');
+    const childMsgIndex = ids.indexOf('user-msg-child');
+    const failedEventIndex = ids.indexOf('subagent-event-agent-44-failed-task-run-early');
+
+    expect(openingIndex).toBeGreaterThanOrEqual(0);
+    expect(cardIndex).toBeGreaterThan(openingIndex);
+    expect(spawnedIndex).toBe(cardIndex + 1);
+    expect(cardIndex).toBeLessThan(lateReadIndex);
+    expect(lateReadIndex).toBeLessThan(childMsgIndex);
+    expect(childMsgIndex).toBeLessThan(failedEventIndex);
+  });
+
   it('anchors Agent entries on the real tool frame agentRefs', () => {
     const snapshots = new Map([
       [
