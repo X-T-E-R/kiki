@@ -4880,8 +4880,8 @@ export function Transcript({
   }, [visible, virtualizer, agentId, sessionIdForLocate]);
 
   // ---- unified locate entry (see lib/timelineLocate.ts) ----
-  const liveRef = useRef({ loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible });
-  liveRef.current = { loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible };
+  const liveRef = useRef({ loaded, loadError, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible });
+  liveRef.current = { loaded, loadError, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible };
   const nextFrame = useCallback(() => new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); }), []);
   // Where the last explicit locate put the reader. A repeated jump to the same
   // place is recognized from this (view geometry), not from the URL, so it does
@@ -4915,9 +4915,11 @@ export function Transcript({
     const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
     while (!liveRef.current.loaded || !initialScrollDoneRef.current) {
       if (cancelled()) return { status: 'no-timeline' };
+      if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       await nextFrame();
     }
     if (cancelled()) return { status: 'no-timeline' };
+    if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
     if (target.kind === 'latest') {
       if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
       landAtEnd(virtualizer);
@@ -4955,8 +4957,10 @@ export function Transcript({
     let hit = resolve();
     while (hit === undefined) {
       if (cancelled()) return { status: 'no-timeline' };
+      if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       const structure = target.kind === 'turn' ? undefined : await readSeekStructure(signal);
       if (cancelled()) return { status: 'no-timeline' };
+      if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       if (structure === undefined && !liveRef.current.hasMore) {
         return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
       }
@@ -4981,7 +4985,7 @@ export function Transcript({
         await nextFrame();
         if (cancelled()) return { status: 'no-timeline' };
       }
-      if (liveRef.current.olderError !== undefined) return { status: 'load-failed' };
+      if (liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
       if (!loadedMore && hit === undefined) return { status: 'load-failed' };
     }

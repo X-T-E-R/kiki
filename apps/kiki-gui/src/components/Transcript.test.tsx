@@ -8855,6 +8855,61 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  it('settles a waiting locate as load-failed when initial load fails after a delay without issuing history requests', async () => {
+    resetTimelineLocatorsForTests();
+    const { root } = makeRoot();
+    const onLoadOlder = vi.fn(async () => false);
+    const locateModule = await import('../lib/timelineLocate');
+    const originalRegister = locateModule.registerTimelineLocator;
+    let capturedLocator: Parameters<typeof registerTimelineLocator>[2] | undefined;
+    const regSpy = vi.spyOn(locateModule, 'registerTimelineLocator').mockImplementation((sessionId, agentId, locator) => {
+      capturedLocator = locator;
+      return originalRegister(sessionId, agentId, locator);
+    });
+    try {
+      let state = transcriptState([], { sessionId: 'session_delayed_load_error', loaded: false, hasMoreHistory: true });
+      const render = () => renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await render();
+      expect(capturedLocator).toBeDefined();
+
+      // 1) Initial load is still in flight (!loaded, !initialScrollDoneRef.current); locate() enters its rAF wait loop.
+      let waitingOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void capturedLocator!.locate({ kind: 'turn', turnId: 't1' }).then((value) => {
+          waitingOutcome = value;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      for (let frame = 0; frame < 5; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
+      }
+      expect(waitingOutcome).toBeUndefined();
+
+      // After a delay, a hard loadError arrives before initial load ever completes: locate() must settle as 'load-failed' on the next frame without hanging or calling onLoadOlder.
+      state = { ...state, loadError: 'Session failed to open' };
+      await render();
+      for (let frame = 0; frame < 5 && waitingOutcome === undefined; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
+      }
+      expect(waitingOutcome).toEqual({ status: 'load-failed' });
+      expect(onLoadOlder).not.toHaveBeenCalled();
+
+      // 2) Already loaded timeline with a hard loadError also immediately settles as 'load-failed' without issuing history requests.
+      state = transcriptState(turnBlocks(3, 'latest'), { sessionId: 'session_delayed_load_error', loaded: true, loadError: 'Connection lost', hasMoreHistory: true });
+      await render();
+      await settleVirtualizer();
+      let readyErrorOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        readyErrorOutcome = await locateInTimeline({ kind: 'turn', turnId: 't1' }, { sessionId: 'session_delayed_load_error', notify: false });
+      });
+      expect(readyErrorOutcome).toEqual({ status: 'load-failed' });
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally {
+      regSpy.mockRestore();
+      await act(async () => { root.render(null); });
+    }
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();
