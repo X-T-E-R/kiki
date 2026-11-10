@@ -25,9 +25,10 @@ await writeFile(join(scratch, 'ws-ambient.d.ts'), `declare module 'ws' {
     readonly readyState: number;
     constructor(url: string, options?: Record<string, unknown>);
     on(event: 'message', listener: (data: string | Buffer) => void): this;
-    on(event: 'close' | 'error' | 'open', listener: (...args: unknown[]) => void): this;
+    on(event: 'close' | 'error' | 'open' | 'pong', listener: (...args: unknown[]) => void): this;
     once(event: 'open' | 'error' | 'close', listener: (...args: unknown[]) => void): this;
     send(data: string): void;
+    ping(): void;
     close(): void;
     terminate(): void;
   }
@@ -59,7 +60,7 @@ await writeFile(join(scratch, 'tsconfig.json'), JSON.stringify({
   ],
 }, null, 2));
 run(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', join(scratch, 'tsconfig.json')]);
-for (const module of ['session/contract', 'session/telegram', 'session/telegram-http', 'session/wechat', 'session/feishu', 'session/feishu-sdk', 'session/onebot', 'session/realtime', 'providers']) {
+for (const module of ['session/contract', 'session/telegram', 'session/telegram-http', 'session/wechat', 'session/feishu', 'session/feishu-sdk', 'session/onebot', 'session/onebot-ws', 'session/realtime', 'providers']) {
   for (const extension of ['js', 'd.ts']) await copyFile(join(scratch, `generated/${module}.${extension}`), join(scratch, `package/dist/${module}.${extension}`));
 }
 run(process.execPath, ['--test', '--experimental-strip-types', 'test/session-telegram.test.ts', 'test/session-wechat.test.ts', 'test/session-feishu.test.ts', 'test/session-onebot.test.ts', 'test/session-realtime.test.ts', 'test/session-extended-media.test.ts', 'test/session-loop.test.ts'], join(scratch, 'package'));

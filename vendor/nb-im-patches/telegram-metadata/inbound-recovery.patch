@@ -97,6 +97,109 @@ diff --git a/src/session/feishu.ts b/src/session/feishu.ts
            onBotIdentity: (nextId) => {
              if (typeof nextId === 'string' && safeId(nextId)) botOpenId = nextId;
            },
+diff --git a/src/session/onebot-ws.ts b/src/session/onebot-ws.ts
+--- a/src/session/onebot-ws.ts
++++ b/src/session/onebot-ws.ts
+@@ -23,9 +23,40 @@ function roleFromHeader(value: string | undefined, url: string): OneBotLink['rol
+   if (role === 'universal') return 'universal';
+   return roleFromPath(url);
+ }
+-function linkFrom(socket: WebSocket, role: OneBotLink['role']): OneBotLink {
++interface OneBotWsOptions {
++  pingIntervalMs?: number;
++  pongTimeoutMs?: number;
++}
++function linkFrom(socket: WebSocket, role: OneBotLink['role'], options: OneBotWsOptions): OneBotLink {
+   const frames: Array<(frame: unknown) => void> = [];
+   const closes: Array<() => void> = [];
++  const pingIntervalMs = options.pingIntervalMs ?? 30_000;
++  const pongTimeoutMs = options.pongTimeoutMs ?? 10_000;
++  let stopped = false;
++  let pingTimer: ReturnType<typeof setTimeout> | undefined;
++  let pongTimer: ReturnType<typeof setTimeout> | undefined;
++  const clearWatchdog = (): void => {
++    if (pingTimer !== undefined) clearTimeout(pingTimer);
++    if (pongTimer !== undefined) clearTimeout(pongTimer);
++    pingTimer = undefined;
++    pongTimer = undefined;
++  };
++  const fail = (): void => {
++    if (stopped) return;
++    stopped = true;
++    clearWatchdog();
++    socket.terminate();
++  };
++  const armPing = (): void => {
++    if (stopped || pingTimer !== undefined || pongTimer !== undefined) return;
++    pingTimer = setTimeout(() => {
++      pingTimer = undefined;
++      if (stopped) return;
++      if (socket.readyState !== WebSocket.OPEN) { fail(); return; }
++      pongTimer = setTimeout(fail, pongTimeoutMs);
++      try { socket.ping(); } catch { fail(); }
++    }, pingIntervalMs);
++  };
+   socket.on('message', (data) => {
+     const text = typeof data === 'string' ? data : Buffer.from(data as Buffer).toString('utf8');
+     try {
+@@ -33,8 +64,19 @@ function linkFrom(socket: WebSocket, role: OneBotLink['role']): OneBotLink {
+       for (const handler of frames) handler(frame);
+     } catch { /* Ignore a frame that is not JSON. */ }
+   });
+-  socket.on('close', () => { for (const handler of closes) handler(); });
+-  socket.on('error', () => undefined);
++  socket.on('pong', () => {
++    if (stopped) return;
++    if (pongTimer !== undefined) clearTimeout(pongTimer);
++    pongTimer = undefined;
++    armPing();
++  });
++  socket.on('close', () => {
++    stopped = true;
++    clearWatchdog();
++    for (const handler of closes) handler();
++  });
++  socket.on('error', fail);
++  armPing();
+   return {
+     role,
+     send(frame) {
+@@ -42,7 +84,7 @@ function linkFrom(socket: WebSocket, role: OneBotLink['role']): OneBotLink {
+     },
+     onFrame(handler) { frames.push(handler); },
+     onClose(handler) { closes.push(handler); },
+-    close() { socket.terminate(); },
++    close: fail,
+   };
+ }
+ async function publicMedia(url: URL, signal: AbortSignal): Promise<{ ok: true; bytes: Uint8Array } | { ok: false }> {
+@@ -83,7 +125,7 @@ async function publicMedia(url: URL, signal: AbortSignal): Promise<{ ok: true; b
+   });
+ }
+
+-export function createOneBotWsTransport(): OneBotTransport {
++export function createOneBotWsTransport(options: OneBotWsOptions = {}): OneBotTransport {
+   return {
+     async connect(input) {
+       if (input.signal.aborted) throw abortError();
+@@ -99,7 +141,7 @@ async function publicMedia(url: URL, signal: AbortSignal): Promise<{ ok: true; b
+         socket.terminate();
+         throw error;
+       }
+-      return linkFrom(socket, roleFromPath(input.url));
++      return linkFrom(socket, roleFromPath(input.url), options);
+     },
+     async listen(input) {
+       if (input.host === '0.0.0.0' || input.host === '::' || input.host === '[::]') {
+@@ -127,7 +169,7 @@ async function publicMedia(url: URL, signal: AbortSignal): Promise<{ ok: true; b
+         }
+         const url = request.url ?? '/';
+         if (!input.authorize(headers, url)) { socket.close(); return; }
+-        input.accept(linkFrom(socket, roleFromHeader(headers['x-client-role'], url)));
++        input.accept(linkFrom(socket, roleFromHeader(headers['x-client-role'], url), options));
+       });
+       return { port };
+     },
 diff --git a/src/session/telegram.ts b/src/session/telegram.ts
 --- a/src/session/telegram.ts
 +++ b/src/session/telegram.ts
@@ -134,12 +237,20 @@ diff --git a/src/session/wechat.ts b/src/session/wechat.ts
  import { bufCursor, loadBuf } from './cursor.ts';
  import { createSessionRun } from './loop.ts';
  import { sessionFingerprint, shareSession } from './registry.ts';
-@@ -162,7 +162,8 @@ function buildWechat(spec: WechatSpec, store: SessionCursorStore, key: string):
+@@ -134,6 +134,7 @@ function buildWechat(spec: WechatSpec, store: SessionCursorStore, key: string):
+   const transport: WechatTransport = spec.transport ?? createWechatTransport();
+   const scope = cursorScope(spec.instance_id);
+   const retry = spec.retry_ms ?? 1000;
++  const pollTimeout = spec.poll_timeout_ms ?? (spec.transport === undefined ? 40_000 : 35_000);
+   let learned = spec.account_id ?? '';
+   const seen = new Set<string>();
+   const adapter = {
+@@ -162,7 +163,8 @@ function buildWechat(spec: WechatSpec, store: SessionCursorStore, key: string):
        while (!signal.aborted) {
          let response;
          try {
 -          response = await post('ilink/bot/getupdates', { get_updates_buf: buf, base_info: BASE_INFO }, signal);
-+          response = await withRequestDeadline(signal, spec.poll_timeout_ms ?? 35_000, (requestSignal) =>
++          response = await withRequestDeadline(signal, pollTimeout, (requestSignal) =>
 +            post('ilink/bot/getupdates', { get_updates_buf: buf, base_info: BASE_INFO }, requestSignal));
          } catch (error) {
            if (signal.aborted || isAbort(error)) break;
@@ -246,6 +357,153 @@ diff --git a/test/session-feishu.test.ts b/test/session-feishu.test.ts
 +    http.post = originalPost;
 +  }
 +});
+diff --git a/test/session-onebot.test.ts b/test/session-onebot.test.ts
+--- a/test/session-onebot.test.ts
++++ b/test/session-onebot.test.ts
+@@ -3,7 +3,7 @@ import http from 'node:http';
+ import https from 'node:https';
+ import assert from 'node:assert/strict';
+ import { mock, test } from 'node:test';
+-import { WebSocket } from 'ws';
++import { WebSocket, WebSocketServer } from 'ws';
+ import { createOneBotSessionAdapter, createOneBotWsTransport } from '../src/index.ts';
+ import type { OneBotLink, OneBotTransport, SessionCursorStore, SessionInbound } from '../src/index.ts';
+ import { abortError } from '../src/session/contract.ts';
+@@ -13,6 +13,20 @@ function memory(): SessionCursorStore & { values: Map<string, string> } {
+   const values = new Map<string, string>();
+   return { values, async load(scope) { return values.get(scope); }, async save(scope, cursor) { values.set(scope, cursor); } };
+ }
++async function until(read: () => boolean, label: string): Promise<void> {
++  const started = Date.now();
++  while (!read()) {
++    if (Date.now() - started > 2_000) throw new Error(label);
++    await new Promise((resolve) => setTimeout(resolve, 5));
++  }
++}
++async function opened(socket: WebSocket): Promise<void> {
++  if (socket.readyState === WebSocket.OPEN) return;
++  await new Promise<void>((resolve, reject) => {
++    socket.once('open', resolve);
++    socket.once('error', reject);
++  });
++}
+ function link(role: OneBotLink['role'] = 'universal') {
+   const sent: unknown[] = [];
+   let onFrame: ((frame: unknown) => void) | undefined;
+@@ -347,3 +361,113 @@ test('OneBot preserves caption when single media is unavailable and emits ordere
+   });
+   await adapter.stop();
+ });
++
++test('OneBot real forward WS stays healthy while silent and reconnects a half-open socket once', async () => {
++  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
++  const peers = new Set<WebSocket>();
++  let connections = 0;
++  let pings = 0;
++  let responsive = true;
++  server.on('connection', (socket) => {
++    connections += 1;
++    if (connections > 1) responsive = true;
++    const originalPong = socket.pong;
++    socket.pong = (...args) => { if (responsive) originalPong.apply(socket, args); };
++    socket.on('ping', () => { pings += 1; });
++    peers.add(socket);
++    socket.on('close', () => { peers.delete(socket); });
++  });
++  await new Promise<void>((resolve) => server.once('listening', resolve));
++  const address = server.address();
++  if (address === null || typeof address === 'string') throw new Error('fixture_port_missing');
++  const transport = createOneBotWsTransport({ pingIntervalMs: 30, pongTimeoutMs: 25 });
++  const adapter = createOneBotSessionAdapter({
++    platform: 'qq_onebot_v11', mode: 'forward', endpoint: `ws://127.0.0.1:${address.port}/api`,
++    instance_id: 'qq.real-forward-recovery', transport, retry_ms: 5,
++  }, memory());
++  try {
++    await adapter.start({ async admit() { return { decision: 'accepted' }; } });
++    assert.equal(adapter.state, 'running');
++    assert.equal(connections, 1);
++    await new Promise((resolve) => setTimeout(resolve, 100));
++    assert.ok(pings >= 2);
++    assert.equal(connections, 1);
++    assert.equal(adapter.state, 'running');
++    responsive = false;
++    await until(() => connections >= 2 && adapter.state === 'running', 'forward half-open socket did not recover');
++    assert.equal(connections, 2);
++    await adapter.stop();
++    const stopped = connections;
++    await new Promise((resolve) => setTimeout(resolve, 80));
++    assert.equal(connections, stopped);
++    assert.equal(adapter.state, 'stopped');
++  } finally {
++    await adapter.stop().catch(() => undefined);
++    for (const peer of peers) peer.terminate();
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});
++
++test('OneBot reverse WS drops only the half-open role and keeps listening for its replacement', async () => {
++  const inner = createOneBotWsTransport({ pingIntervalMs: 30, pongTimeoutMs: 25 });
++  const accepted: OneBotLink['role'][] = [];
++  const closed: OneBotLink['role'][] = [];
++  let port = 0;
++  const transport: OneBotTransport = {
++    connect: (input) => inner.connect(input),
++    download: inner.download?.bind(inner),
++    async listen(input) {
++      const listened = await inner.listen({
++        ...input,
++        accept(link) {
++          accepted.push(link.role);
++          link.onClose(() => { closed.push(link.role); });
++          input.accept(link);
++        },
++      });
++      port = listened.port;
++      return listened;
++    },
++  };
++  const adapter = createOneBotSessionAdapter({
++    platform: 'qq_onebot_v11', mode: 'reverse', endpoint: 'ws://127.0.0.1:9/', listen_port: 0,
++    access_token: TOKEN, instance_id: 'qq.real-reverse-recovery', transport, retry_ms: 0,
++  }, memory());
++  const clients: WebSocket[] = [];
++  const connect = (role: 'api' | 'event'): WebSocket => {
++    const client = new WebSocket(`ws://127.0.0.1:${port}/${role}`, {
++      headers: { Authorization: `Bearer ${TOKEN}`, 'X-Client-Role': role },
++    });
++    clients.push(client);
++    return client;
++  };
++  try {
++    await adapter.start({ async admit() { return { decision: 'accepted' }; } });
++    assert.ok(port > 0);
++    const api = connect('api');
++    const event = connect('event');
++    let apiResponsive = true;
++    const originalPong = api.pong;
++    api.pong = (...args) => { if (apiResponsive) originalPong.apply(api, args); };
++    await Promise.all([opened(api), opened(event)]);
++    await new Promise((resolve) => setTimeout(resolve, 100));
++    assert.deepEqual(closed, []);
++    assert.equal(adapter.state, 'running');
++    apiResponsive = false;
++    await until(() => closed.includes('api'), 'reverse api socket did not fail its pong watchdog');
++    assert.deepEqual(closed, ['api']);
++    assert.equal(event.readyState, WebSocket.OPEN);
++    assert.equal(adapter.state, 'running');
++    const replacement = connect('api');
++    await opened(replacement);
++    await until(() => accepted.filter((role) => role === 'api').length === 2, 'reverse listener did not accept replacement');
++    assert.equal(event.readyState, WebSocket.OPEN);
++    assert.equal(replacement.readyState, WebSocket.OPEN);
++    assert.equal(adapter.state, 'running');
++    await adapter.stop();
++    assert.equal(adapter.state, 'stopped');
++  } finally {
++    for (const client of clients) client.terminate();
++    await adapter.stop().catch(() => undefined);
++  }
++});
 diff --git a/test/session-telegram.test.ts b/test/session-telegram.test.ts
 --- a/test/session-telegram.test.ts
 +++ b/test/session-telegram.test.ts
@@ -340,14 +598,16 @@ diff --git a/test/session-telegram.test.ts b/test/session-telegram.test.ts
 diff --git a/test/session-wechat.test.ts b/test/session-wechat.test.ts
 --- a/test/session-wechat.test.ts
 +++ b/test/session-wechat.test.ts
-@@ -1,5 +1,6 @@
+@@ -1,6 +1,7 @@
  import { createCipheriv, randomBytes } from 'node:crypto';
  import assert from 'node:assert/strict';
+-import { test } from 'node:test';
 +import { createServer } from 'node:http';
- import { test } from 'node:test';
++import { mock, test } from 'node:test';
  import { createWechatTransport } from '../src/session/wechat-http.ts';
  import { createWechatSessionAdapter, parseWeixinApiJson } from '../src/session/wechat.ts';
-@@ -332,3 +333,69 @@ test('WeChat group destinations never fall through to direct text or media sends
+ import type { SessionCursorStore, SessionInbound, WechatTransport } from '../src/index.ts';
+@@ -332,3 +333,115 @@ test('WeChat group destinations never fall through to direct text or media sends
    assert.equal(calls, 1);
    await adapter.stop();
  });
@@ -415,5 +675,51 @@ diff --git a/test/session-wechat.test.ts b/test/session-wechat.test.ts
 +  } finally {
 +    await adapter.stop().catch(() => undefined);
 +    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});
++
++test('WeChat default transport settles a silent 35 second poll without entering backoff', async () => {
++  const originalFetch = globalThis.fetch;
++  let polls = 0;
++  let silentTimeouts = 0;
++  let entered = (): void => undefined;
++  const pollEntered = new Promise<void>((resolve) => { entered = resolve; });
++  globalThis.fetch = (async (input, init) => {
++    if (!String(input).endsWith('getupdates')) {
++      return new Response('{"ret":0}', { status: 200, headers: { 'content-type': 'application/json' } });
++    }
++    polls += 1;
++    entered();
++    return await new Promise<Response>((_resolve, reject) => {
++      const signal = init?.signal;
++      const abort = (): void => {
++        silentTimeouts += 1;
++        reject(new DOMException('Aborted', 'AbortError'));
++      };
++      if (signal?.aborted) { abort(); return; }
++      signal?.addEventListener('abort', abort, { once: true });
++    });
++  }) as typeof fetch;
++  mock.timers.enable({ apis: ['setTimeout'] });
++  const adapter = createWechatSessionAdapter({
++    platform: 'personal_wechat', instance_id: 'wx.default-silence', token: 'offline-default-transport',
++    account_id: 'bot', retry_ms: 60_000,
++  }, memory());
++  try {
++    const started = adapter.start({ async admit() { return { decision: 'accepted' }; } });
++    await pollEntered;
++    mock.timers.tick(35_000);
++    for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
++    assert.equal(adapter.state, 'running');
++    assert.equal(adapter.connection_detail, undefined);
++    assert.equal(silentTimeouts, 1);
++    assert.equal(polls, 1);
++    await started;
++    await adapter.stop();
++    assert.equal(adapter.state, 'stopped');
++  } finally {
++    await adapter.stop().catch(() => undefined);
++    globalThis.fetch = originalFetch;
++    mock.timers.reset();
 +  }
 +});
