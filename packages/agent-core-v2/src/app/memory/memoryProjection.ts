@@ -98,7 +98,7 @@ function memoryToolUnits(message: ContextMessage, name: string | undefined): unk
   if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.isError === true) return [];
   let output: unknown;
   try { output = JSON.parse(message.content[0]?.type === 'text' ? message.content[0].text : 'null'); } catch { return []; }
-  return Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : record(output['entry']) ? [{ ...output['entry'], scope: output['owner_scope'] }] : [] : [];
+  return Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : record(output['entry']) ? [{ ...output['entry'], applicability: output['entry']['applicability'] ?? output['applicability'], scope: output['owner_scope'] }] : [] : [];
 }
 function unitReference(unit: unknown): MemoryObservedReference | undefined {
   if (!record(unit) || typeof unit['id'] !== 'string' || typeof unit['revision'] !== 'string' || !record(unit['scope'])) return undefined;
@@ -138,16 +138,76 @@ export function memorySnapshotDelivery(messages: readonly ContextMessage[], view
   const text = renderMemoryWorkingSetText(generation, complete, workset.uses).replace('</memory-workset>', `Reused complete units from earlier history, selected for this workset; the latest Memory authority update governs validity:\n${reused.map((reference) => `- ${reference}`).join('\n')}\n</memory-workset>`);
   return { text, references };
 }
+function serializeAuthorityState(input: {
+  readonly scope: MemoryScope;
+  readonly id: string;
+  readonly revision?: string;
+  readonly status: string;
+  readonly applicability?: string;
+  readonly superseded_by?: string;
+  readonly read?: { readonly id: string; readonly scope: MemoryScope['kind'] };
+}): string {
+  return JSON.stringify({ scope: input.scope, id: input.id, revision: input.revision, status: input.status,
+    applicability: input.applicability, superseded_by: input.superseded_by, read: input.read });
+}
+function snapshotApplicabilities(message: ContextMessage): ReadonlyMap<string, string> {
+  const memory = range(message);
+  if (memory === undefined || message.content[0]?.type !== 'text') return new Map();
+  const text = message.content[0].text.slice(memory.start, memory.start + memory.length);
+  return new Map([...text.matchAll(/^\[(m_[a-zA-Z0-9_]+)\] (global|workspace|persona|persona_workspace) · [^\n]* \[full; revision=([^;\]]+); applicability=(expired|recheck|unrecorded)/gm)]
+    .map((match) => [`${match[2]}:${match[1]}:${match[3]}`, match[4]!] as const));
+}
+function disclosedAuthorityStates(messages: readonly ContextMessage[], calls: ReadonlyMap<string, string>, previous?: Readonly<Record<string, string>>): ReadonlyMap<string, string> {
+  const disclosed = new Map<string, string>(Object.entries(previous ?? {}));
+  for (const message of messages) {
+    if (message.origin?.kind === 'injection' && message.origin.variant === 'memory_authority') {
+      const states = (message.origin.disclosure as { states?: Readonly<Record<string, string>> } | undefined)?.states;
+      for (const [key, state] of Object.entries(states ?? {})) disclosed.set(key, state);
+      continue;
+    }
+    const references = snapshotReferences(message);
+    if (references !== undefined) {
+      const applicabilities = snapshotApplicabilities(message);
+      for (const reference of references) {
+        const key = referenceKey(reference);
+        if (disclosed.has(key)) continue;
+        const applicability = applicabilities.get(`${reference.scope.kind}:${reference.id}:${reference.observed_revision}`);
+        disclosed.set(key, serializeAuthorityState({ scope: reference.scope, id: reference.id, revision: reference.observed_revision,
+          status: 'active', applicability: applicability ?? 'unrecorded', read: { id: reference.id, scope: reference.scope.kind } }));
+      }
+    }
+    for (const unit of memoryToolUnits(message, calls.get(message.toolCallId ?? ''))) {
+      const reference = unitReference(unit);
+      if (reference === undefined || !record(unit)) continue;
+      const key = referenceKey(reference);
+      if (disclosed.has(key)) continue;
+      const status = typeof unit['status'] === 'string' ? unit['status'] : 'active';
+      const validity = record(unit['validity']) ? { check: typeof unit['validity']['check'] === 'string' ? unit['validity']['check'] : '',
+        until: typeof unit['validity']['until'] === 'string' ? unit['validity']['until'] : undefined } : undefined;
+      const observedAt = typeof unit['updated'] === 'string' ? Date.parse(unit['updated'])
+        : typeof unit['created'] === 'string' ? Date.parse(unit['created']) : Number.NaN;
+      const applicability = typeof unit['applicability'] === 'string' ? unit['applicability']
+        : validity === undefined ? 'unrecorded'
+        : validity.until === undefined ? 'recheck'
+        : Number.isFinite(observedAt) ? memoryApplicability({ validity }, observedAt) : 'recheck';
+      const superseded_by = typeof unit['superseded_by'] === 'string' ? unit['superseded_by'] : undefined;
+      disclosed.set(key, serializeAuthorityState({ scope: reference.scope, id: reference.id, revision: reference.observed_revision,
+        status, applicability, superseded_by, read: { id: reference.id, scope: reference.scope.kind } }));
+    }
+  }
+  return disclosed;
+}
 export function memoryAuthorityUpdate(messages: readonly ContextMessage[], view: MemoryProjectionView, previous?: Readonly<Record<string, string>>) {
   const calls = new Map(messages.flatMap((message) => message.toolCalls.map((call) => [call.id, call.name] as const)));
   const references = new Map(messages.flatMap((message) => [...snapshotReferences(message) ?? [], ...observedReferences(message, calls.get(message.toolCallId ?? ''))]).map((reference) => [referenceKey(reference), reference]));
   const states = Object.fromEntries([...references].map(([key, reference]) => {
     const current = availableEntry(reference, view);
-    return [key, JSON.stringify({ scope: reference.scope, id: reference.id, revision: current?.revision, status: current?.status ?? 'unavailable',
+    return [key, serializeAuthorityState({ scope: reference.scope, id: reference.id, revision: current?.revision, status: current?.status ?? 'unavailable',
       applicability: current === undefined ? undefined : memoryApplicability(current), superseded_by: current?.superseded_by,
       read: current === undefined ? undefined : { id: current.id, scope: current.scope.kind } })];
   }));
-  const changed = Object.entries(states).filter(([key, value]) => previous?.[key] !== value);
+  const disclosed = disclosedAuthorityStates(messages, calls, previous);
+  const changed = Object.entries(states).filter(([key, value]) => disclosed.get(key) !== value);
   if (changed.length === 0) return undefined;
   return { content: `Memory authority update. These current states replace earlier states for the listed scope/ID pairs, including states in old snapshots and tool results. Earlier bodies and write arguments are historical observations, not current guidance. Reuse a complete body only when its revision matches the current active revision; preserve all validity checks. Archived, superseded, pending, expired, and unavailable memory is not active guidance. A changed revision requires a current workset unit or scoped MemoryRead before reuse. The latest workset still controls selection and Advisor use; this update does not promote background to authority.\n${changed.map(([, value]) => `- ${value}`).join('\n')}`,
     disclosure: { states } };

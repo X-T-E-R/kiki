@@ -5,7 +5,7 @@ import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
-import { IMemoryStore, MemoryDomainError, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
+import { IMemoryStore, MemoryDomainError, memoryApplicability, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
 import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
 import { memoryResult, memoryResultReference, memoryTextFits } from '#/app/memory/memoryContext';
@@ -179,7 +179,7 @@ Archive is a state change: provide the target and reason, not a replacement body
         return { spillExempt: true, memoryReceipt: { action: input.action, outcome, id: entry.id, revision: entry.revision, status: entry.status,
           operationId: result.operationId ?? undefined, ownerScope: scope, target: owningTarget, proposedTarget },
           output: JSON.stringify({ action: input.action, outcome, id: entry.id, title: entry.title, scope: scope.kind, owner_scope: scope, target: owningTarget,
-            status: entry.status, revision: entry.revision, operation_id: result.operationId, entry, proposed_target: proposedTarget, covered_by: entry.covered_by, warnings: result.warnings, reference_hint: hint }) };
+            status: entry.status, applicability: memoryApplicability(entry), revision: entry.revision, operation_id: result.operationId, entry, proposed_target: proposedTarget, covered_by: entry.covered_by, warnings: result.warnings, reference_hint: hint }) };
       } catch (error) {
         signal.throwIfAborted();
         if (error instanceof MemoryDomainError && error.code === 'duplicate_title') {

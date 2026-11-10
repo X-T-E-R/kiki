@@ -1145,7 +1145,9 @@ function pluginStub(
   loaded: { value: boolean } = { value: true },
 ): IPluginService {
   return {
+    onWillChange: Event.None as IPluginService['onWillChange'],
     onDidReload: Event.None as IPluginService['onDidReload'],
+    onDidMutate: Event.None as IPluginService['onDidMutate'],
     hasLoadedSnapshot: () => loaded.value,
     pluginSkillRoots: async () => [],
     enabledSessionStarts: async () => [],

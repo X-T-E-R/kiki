@@ -40,6 +40,16 @@ export interface IAgentMemorySnapshot {
 }
 export const IAgentMemorySnapshot = createDecorator<IAgentMemorySnapshot>('agentMemorySnapshot');
 
+export function normalizeMemorySnapshotText(text: string): string {
+  if (text.startsWith('<memory-workset generation=')) {
+    return text.replace(/^<memory-workset generation=[^>]*>/, '<memory-workset>');
+  }
+  if (text.startsWith('<memory>\n')) {
+    return text.replace(/(^<memory>\nenabled=\S+ approval=\S+ scopes=\S+\nstatus=\S+\n)as-of=\S+ /, '$1');
+  }
+  return text;
+}
+
 export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnapshot {
   declare readonly _serviceBrand: undefined;
   private frozen?: Promise<string>;
@@ -306,8 +316,9 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       const advice = settings.advisor?.mode === 'off' || (settings.advisor?.source === undefined && settings.advisor?.selector === undefined) ? undefined : this.advice;
       const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice);
       const previous = this.projectionView;
-      const semanticText = (text: string) => text.replace(/^<memory-workset generation=[^>]*>/, '<memory-workset>');
-      const unchanged = JSON.stringify(previous?.scopes) === JSON.stringify(scopes) && semanticText(this.lastKnown) === semanticText(snapshot.text);
+      const unchanged = (previous === undefined || JSON.stringify(previous.scopes) === JSON.stringify(scopes))
+        && this.lastKnown.length > 0
+        && normalizeMemorySnapshotText(this.lastKnown) === normalizeMemorySnapshotText(snapshot.text);
       const text = unchanged ? this.lastKnown : snapshot.text;
       this.projectionView = { ...view, scopes, workset: { text, entries: snapshot.entries, uses: snapshot.uses } };
       this.generation = snapshot.generation;
@@ -321,8 +332,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     const snapshot = await renderMemorySnapshot(settings, this.session.workspaceId, store, this.session.sessionId, this.persona);
     this.frozenRelated = snapshot.related;
     this.nextUntil = snapshot.nextUntil;
-    const projection = (text: string) => text.replace(/^as-of=\S+ /m, '');
-    if (projection(snapshot.text) === projection(this.lastKnown)) return this.lastKnown;
+    if (normalizeMemorySnapshotText(snapshot.text) === normalizeMemorySnapshotText(this.lastKnown)) return this.lastKnown;
     this.lastKnown = snapshot.text;
     return snapshot.text;
   }

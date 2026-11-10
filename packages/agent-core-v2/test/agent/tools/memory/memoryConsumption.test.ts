@@ -670,4 +670,125 @@ describe('canonical Memory actual request working sets', () => {
     expect(currentMemoryState(restored, saved.entry.id)).toMatchObject({ revision: latest.entry.revision, status: 'active' });
     expect(requestText(restored)).not.toContain(saved.entry.body);
   });
+
+  it('suppresses memory_authority and runtime_snapshot noise across idle unrelated writes, generation bumps, and restore', async () => {
+    let writer!: ISqliteMemoryStore;
+    const store = await canonicalMemory((peer) => { writer = peer; });
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Compilation policy', body: 'Compile with 17 jobs; never upload output.', source: { writer: 'user' }, reason: 'Human policy' });
+    const ctx = memoryAgent(undefined, 'main', store);
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    await prompt(ctx, 'Apply the compilation policy');
+    const countVariant = (target: TestAgentContext, variant: string) =>
+      target.get(IAgentContextMemoryService).get().filter((item) => item.origin?.kind === 'injection' && item.origin.variant === variant).length;
+    expect(countVariant(ctx, 'runtime_snapshot')).toBe(1);
+    expect(countVariant(ctx, 'memory_authority')).toBe(0);
+
+    await writer.put({ action: 'create', scope: { kind: 'workspace', workspaceId: 'wd_other_0123456789ab' }, type: 'reference', title: 'Other workspace', body: 'Unrelated workspace note.', source: { writer: 'user' }, reason: 'Other workspace' });
+    const unseen = await writer.put({ action: 'create', scope, type: 'project', title: 'Garden schedule', body: 'Water the garden every morning.', source: { writer: 'user' }, reason: 'Unrelated topic' });
+    await writer.put({ action: 'update', scope, id: unseen.entry.id, expectedRevision: unseen.entry.revision, type: unseen.entry.type, title: unseen.entry.title, body: 'Water the garden every evening.', source: { writer: 'user' }, reason: 'Updated unrelated topic' });
+    await ctx.get(IAgentProfileService).rebuildPromptContext();
+    expect(countVariant(ctx, 'runtime_snapshot')).toBe(1);
+    expect(countVariant(ctx, 'memory_authority')).toBe(0);
+
+    await prompt(ctx, 'Continue the compilation policy');
+    expect(countVariant(ctx, 'runtime_snapshot')).toBe(1);
+    expect(countVariant(ctx, 'memory_authority')).toBe(0);
+
+    const records: WireRecord[] = [];
+    for await (const record of ctx.get(IAppendLogStore).read<WireRecord>(ctx.get(IAgentScopeContext).scope(), AGENT_WIRE_RECORD_KEY)) records.push(record);
+    const restored = memoryAgent(ctx.get(IFileSystemStorageService), 'main', store);
+    restored.get(IDynamicPromptInjection);
+    await restored.restore(records);
+    expect(countVariant(restored, 'runtime_snapshot')).toBe(1);
+    expect(countVariant(restored, 'memory_authority')).toBe(0);
+
+    await prompt(restored, 'Continue the compilation policy after restore');
+    expect(countVariant(restored, 'runtime_snapshot')).toBe(1);
+    expect(countVariant(restored, 'memory_authority')).toBe(0);
+
+    const replacement = await store.put({ action: 'supersede', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: 'Compilation policy v2', body: 'Compile with 5 jobs; never upload output.', source: { writer: 'user' }, reason: 'Replaced by v2' });
+    await prompt(restored, 'Continue with the latest compilation policy');
+    expect(countVariant(restored, 'runtime_snapshot')).toBe(2);
+    expect(countVariant(restored, 'memory_authority')).toBe(1);
+    expect(currentMemoryState(restored, saved.entry.id)).toMatchObject({ status: 'superseded', superseded_by: replacement.entry.id });
+    expect(latestWorkset(restored)).toContain(replacement.entry.body);
+
+    const instructions = restored.get(ISessionInstructionsProvider) as { agentsMd: string };
+    instructions.agentsMd = 'as-of=2026-11-10T00:00:00Z Workspace instruction v1';
+    await restored.get(IAgentProfileService).rebuildPromptContext();
+    await prompt(restored, 'Continue with the workspace instructions');
+    expect(countVariant(restored, 'runtime_snapshot')).toBe(3);
+    expect(requestText(restored)).toContain('as-of=2026-11-10T00:00:00Z Workspace instruction v1');
+
+    instructions.agentsMd = 'as-of=2026-11-11T00:00:00Z Workspace instruction v1';
+    await restored.get(IAgentProfileService).rebuildPromptContext();
+    await prompt(restored, 'Continue with the updated workspace instructions');
+    expect(countVariant(restored, 'runtime_snapshot')).toBe(4);
+    expect(requestText(restored)).toContain('as-of=2026-11-11T00:00:00Z Workspace instruction v1');
+  });
+
+  it('keeps fresh MemoryWrite silent while active and emits memory_authority when a MemoryWrite entry expires', async () => {
+    const store = await canonicalMemory();
+    const ctx = memoryAgent(undefined, 'main', store);
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    const countAuthority = () =>
+      ctx.get(IAgentContextMemoryService).get().filter((item) => item.origin?.kind === 'injection' && item.origin.variant === 'memory_authority').length;
+
+    const futureUntil = new Date(Date.now() + 3_600_000).toISOString();
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'write-valid',
+      name: 'MemoryWrite',
+      arguments: JSON.stringify({
+        action: 'create',
+        scope: 'workspace',
+        type: 'project',
+        title: 'Active batch window',
+        body: 'Use 9 workers during the active window.',
+        validity: { check: 'Verify the active window clock.', until: futureUntil },
+        reason: 'Record active window',
+      }),
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Saved the active window.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Save the active batch window' }] });
+    await ctx.get(IAgentLoopService).settled();
+    expect(countAuthority()).toBe(0);
+
+    const soonUntil = new Date(Date.now() + 60_000).toISOString();
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'write-expiring',
+      name: 'MemoryWrite',
+      arguments: JSON.stringify({
+        action: 'create',
+        scope: 'workspace',
+        type: 'project',
+        title: 'Expiring batch window',
+        body: 'Use 4 workers until the short deadline.',
+        validity: { check: 'Verify the short deadline.', until: soonUntil },
+        reason: 'Record short deadline',
+      }),
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Saved the expiring window.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Save the expiring batch window' }] });
+    await ctx.get(IAgentLoopService).settled();
+    expect(countAuthority()).toBe(0);
+
+    const writeToolMessage = ctx.get(IAgentContextMemoryService).get().findLast((item) => item.role === 'tool' && item.toolCallId === 'write-expiring')!;
+    const writtenId = (JSON.parse(writeToolMessage.content[0]!.type === 'text' ? writeToolMessage.content[0]!.text : '{}') as { id: string }).id;
+    const realNow = Date.now;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 120_000);
+    try {
+      await prompt(ctx, 'Continue after the short deadline elapsed');
+      expect(countAuthority()).toBe(1);
+      expect(currentMemoryState(ctx, writtenId)).toMatchObject({ status: 'active', applicability: 'expired' });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
 });

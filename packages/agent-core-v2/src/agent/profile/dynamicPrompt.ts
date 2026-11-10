@@ -12,7 +12,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, normalizeMemorySnapshotText } from '#/app/memory/memorySnapshot';
 import { memoryAuthorityUpdate, memorySnapshotDelivery } from '#/app/memory/memoryProjection';
 import { IAgentProfileService, type SystemPromptContext } from './profile';
 
@@ -41,7 +41,18 @@ export function dynamicPromptSections(context: SystemPromptContext): Record<stri
 export function dynamicPromptContent(context: SystemPromptContext): string {
   return Object.values(dynamicPromptSections(context)).join('\n\n');
 }
-export function promptSectionHash(text: string): string { return createHash('sha256').update(text).digest('hex'); }
+const MEMORY_SECTION_PREFIX = '## Scoped memory — Saved memory / as-of projection\n';
+function normalizeMemoryPromptSection(text: string): string {
+  return text.startsWith(MEMORY_SECTION_PREFIX)
+    ? `${MEMORY_SECTION_PREFIX}${normalizeMemorySnapshotText(text.slice(MEMORY_SECTION_PREFIX.length))}`
+    : text;
+}
+export function promptSectionHash(text: string): string { return createHash('sha256').update(normalizeMemoryPromptSection(text)).digest('hex'); }
+export function dynamicPromptSnapshotHash(context: SystemPromptContext): string {
+  return promptSectionHash(Object.entries(dynamicPromptSections(context))
+    .map(([name, text]) => name === 'memory' ? normalizeMemoryPromptSection(text) : text)
+    .join('\n\n'));
+}
 
 export function stablePromptContext(context: SystemPromptContext): SystemPromptContext {
   return { ...context, space: undefined, now: 'See the versioned runtime snapshot in messages.', cwd: 'See runtime snapshot',
@@ -84,7 +95,12 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
       if (previous?.revision === snapshot.revision && !missingMemoryBodies) return undefined;
       const sections = snapshot.enabled ? dynamicPromptSections(snapshot.context) : { space: renderSpaceContext(snapshot.context.space) };
       const sectionHashes = Object.fromEntries(Object.entries(sections).map(([name, text]) => [name, promptSectionHash(text)]));
-      const changed = Object.entries(sections).filter(([name]) => previous?.sectionHashes?.[name] !== sectionHashes[name] || name === 'memory' && missingMemoryBodies)
+      const changed = Object.entries(sections).filter(([name, text]) => {
+        const previousHash = previous?.sectionHashes?.[name];
+        const unchanged = previousHash !== undefined && (previousHash === sectionHashes[name]
+          || (name === 'memory' && previousHash === createHash('sha256').update(text).digest('hex')));
+        return !unchanged || (name === 'memory' && missingMemoryBodies);
+      })
         .map(([name, text]) => [name, name === 'memory' && delivery !== undefined ? `## Scoped memory — Saved memory / as-of projection\n${delivery.text}` : text] as const);
       if (changed.length === 0) return undefined;
       const scope = previous?.sectionHashes === undefined

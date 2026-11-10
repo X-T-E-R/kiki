@@ -12,10 +12,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
-import {
-  IAgentSystemReminderService,
-  systemReminderContent,
-} from '#/agent/systemReminder/systemReminder';
+import { systemReminderContent } from '#/agent/systemReminder/systemReminder';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { EnabledPluginSessionStart, PluginMutation } from '#/app/plugin/types';
@@ -67,13 +64,13 @@ export const pluginSessionStartRefreshPendingKey = defineState<boolean>(
 export class AgentPluginService extends Service implements IAgentPluginService {
   declare readonly _serviceBrand: undefined;
   private readonly warnedMissingSessionStartSkills = new Set<string>();
+  private readonly pendingPluginChanges = new Map<string, PluginMutation['kind'][]>();
 
   private pendingMutationCatalogChanges = 0;
 
   constructor(
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentContextInjectorService private readonly injector: IAgentContextInjectorService,
-    @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IPluginService private readonly plugins: IPluginService,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
@@ -86,14 +83,6 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   ) {
     super();
     this.states.contributeState(pluginSessionStartSnapshotKey);
-    if (usage !== undefined) this._register(this.skillCatalog.onDidChange((sourceId) => {
-      if (sourceId !== PLUGIN_SKILL_SOURCE_ID || !usage.enabled()) return;
-      if (scopeContext.agentId === MAIN_AGENT_ID) this.refreshPending = true;
-      if (this.context.get().length === 0) return;
-      void this.injector.reconcileWhenIdle('runtime_snapshot').then(() => this.refreshSessionStart()).catch((error) => {
-        this.log.warn('Plugin prompt refresh failed', { error });
-      });
-    }));
     if (scopeContext.agentId !== MAIN_AGENT_ID) return;
     this.states.contributeState(pluginSessionStartRefreshPendingKey);
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
@@ -105,6 +94,9 @@ export class AgentPluginService extends Service implements IAgentPluginService {
       injector.register(SESSION_START_INJECTION_VARIANT, (injection) =>
         this.reconcileSessionStartReminder(injection),
       ),
+    );
+    this._register(
+      injector.register(PLUGIN_CHANGE_INJECTION_VARIANT, () => this.reconcilePluginChangeReminder()),
     );
     this._register(
       this.skillCatalog.onDidChange((sourceId) => {
@@ -121,12 +113,25 @@ export class AgentPluginService extends Service implements IAgentPluginService {
         if (usage?.enabled()) return;
         this.pendingMutationCatalogChanges++;
         if (this.toolSelect.enabled()) return;
-        this.reminders.appendSystemReminder(renderPluginChangeReminder(mutation), {
-          kind: 'injection',
-          variant: PLUGIN_CHANGE_INJECTION_VARIANT,
-        });
+        this.recordPendingPluginMutation(mutation);
       }),
     );
+  }
+
+  private recordPendingPluginMutation(mutation: PluginMutation): void {
+    const queue = this.pendingPluginChanges.get(mutation.id);
+    if (queue === undefined || queue.length === 0) {
+      this.pendingPluginChanges.set(mutation.id, [mutation.kind]);
+      return;
+    }
+    const last = queue.at(-1)!;
+    if (last === mutation.kind && (mutation.kind === 'enable' || mutation.kind === 'disable' || mutation.kind === 'mcp-server')) return;
+    if ((last === 'enable' && mutation.kind === 'disable') || (last === 'disable' && mutation.kind === 'enable')) {
+      queue.pop();
+      if (queue.length === 0) this.pendingPluginChanges.delete(mutation.id);
+      return;
+    }
+    queue.push(mutation.kind);
   }
 
   private get refreshPending(): boolean {
@@ -137,11 +142,23 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     this.states.set(pluginSessionStartRefreshPendingKey, value);
   }
 
+  private reconcilePluginChangeReminder(): string | undefined {
+    if (this.pendingPluginChanges.size === 0) return undefined;
+    if (this.toolSelect.enabled()) {
+      this.pendingPluginChanges.clear();
+      return undefined;
+    }
+    const reminders = [...this.pendingPluginChanges.entries()].flatMap(([id, kinds]) =>
+      kinds.map((kind) => renderPluginChangeReminder({ id, kind })),
+    );
+    this.pendingPluginChanges.clear();
+    return reminders.join('\n\n');
+  }
+
   async refreshSessionStart(): Promise<void> {
     if (this.scopeContext.agentId !== MAIN_AGENT_ID) return;
     this.refreshPending = true;
     await this.skillCatalog.ready;
-    await this.injector.reconcileWhenIdle(SESSION_START_INJECTION_VARIANT);
   }
 
   async refreshSessionStartAtSafeBoundary(): Promise<void> {
@@ -197,10 +214,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     }
     if (latest === undefined) return desired;
     const rendered = systemReminderContent(latest);
-    if (
-      !forceRefresh &&
-      (rendered === desired.trim() || rendered === `${desired}\n\n${SUPERSEDES_SUFFIX}`.trim())
-    ) {
+    if (rendered === desired.trim() || rendered === `${desired}\n\n${SUPERSEDES_SUFFIX}`.trim()) {
       return undefined;
     }
     return `${desired}\n\n${SUPERSEDES_SUFFIX}`;

@@ -188,6 +188,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     const unsupported = this.limits();
     const skipped = new Set(unsupported.map((item) => item.surface));
     const hasContext = this.context.get().length > 0;
+    const isRunning = this.loop.status().state === 'running';
     let sourceChanges: { instructionsChanged: boolean; pluginsChanged: boolean } | undefined;
     let beforeProfile: ReturnType<IAgentProfileService['data']> | undefined;
     let beforeContext = '';
@@ -228,7 +229,10 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       this.requester.invalidatePromptSnapshots();
       this.throwIfCancelled(signal);
       if (!skipped.has('plugins')) {
-        if (hasContext) await this.plugin.refreshSessionStartAtSafeBoundary();
+        if (hasContext) {
+          if (isRunning || typeof this.plugin.refreshSessionStart !== 'function') await this.plugin.refreshSessionStartAtSafeBoundary();
+          else await this.plugin.refreshSessionStart();
+        }
         completed.push('plugins');
         this.throwIfCancelled(signal);
       }
@@ -236,7 +240,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       completed.push('mcp');
       this.throwIfCancelled(signal);
       if (!skipped.has('injections')) {
-        if (hasContext) await this.injector.reconcileAllAtSafeBoundary();
+        if (hasContext && isRunning) await this.injector.reconcileAllAtSafeBoundary();
         completed.push('injections');
         this.throwIfCancelled(signal);
       }

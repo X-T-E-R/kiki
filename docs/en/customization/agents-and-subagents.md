@@ -259,7 +259,7 @@ Claude and Codex `PreCompact` hooks prepare an auditable handoff snapshot rather
 
 ### Rebuilding a session context
 
-**Auto-update context** is on by default for every agent, including saved agents with no recorded choice. After compaction, session recovery or a fresh context window, Kiki reloads the current profile and Recipe, prompt-field overrides, Agent Skills, `AGENTS.md` instructions, enabled plugins and MCP capabilities, and reconciles runtime context injections before the next request. It keeps explicit model, effort and permission choices and does not replay old tool calls. A request already in flight or saved while execution is paused keeps its original binding. Empty sessions stay empty; runtime reminders are added when the next request starts.
+**Auto-update context** is on by default for every agent, including saved agents with no recorded choice. After compaction, session recovery or a fresh context window, Kiki reloads the current profile and Recipe, prompt-field overrides, Agent Skills, `AGENTS.md` instructions, enabled plugins and MCP capabilities. Idle sessions update their **Effective prompts** sources in place without appending reminders to history (and empty sessions stay empty); runtime context injections are reconciled when the next model request starts. It keeps explicit model, effort and permission choices and does not replay old tool calls. A request already in flight or saved while execution is paused keeps its original binding.
 
 Turn off **Auto-update context** in the agent's prompt drawer to keep its sources frozen at these boundaries. The choice belongs to that agent and survives reopening; it does not change child agents. Turning it back on takes effect at the next boundary, not immediately.
 

@@ -146,10 +146,15 @@ describe('AgentContextRebuildService', () => {
     await host.restore.run({});
     expect(host.reload).toHaveBeenCalledTimes(2);
     expect(host.plugins).toHaveBeenCalledTimes(2);
-    expect(host.injector).toHaveBeenCalledTimes(2);
+    expect(host.injector).not.toHaveBeenCalled();
     expect(host.service.control()).toMatchObject({ trigger: 'restore', rebuilt: REBUILT });
     expect(host.setModel).not.toHaveBeenCalled();
     expect(host.history).toEqual([{ role: 'user', text: 'kept' }]);
+
+    const running = createHost(disposables, { loopStatus: { state: 'running' } });
+    await running.commit.run(compactionTask());
+    expect(running.plugins).toHaveBeenCalledTimes(1);
+    expect(running.injector).toHaveBeenCalledTimes(1);
   });
 
   it('does not treat a new unbound agent as a restored context', async () => {

@@ -124,7 +124,7 @@ import { IHostClock } from '#/os/interface/hostClock';
 import { IEventBus } from '#/app/event/eventBus';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { projectSpaceIdentity } from '#/app/bootstrap/spaceIdentity';
-import { dynamicPromptKey, ProfileDynamicSnapshot, dynamicPromptContent, promptSectionHash, stablePromptContext, legacyEnvironmentContext } from './dynamicPrompt';
+import { dynamicPromptKey, ProfileDynamicSnapshot, dynamicPromptContent, dynamicPromptSnapshotHash, promptSectionHash, stablePromptContext, legacyEnvironmentContext } from './dynamicPrompt';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -2373,7 +2373,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = { ...previous?.context, space };
     const content = dynamicPromptContent(context);
     await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous?.enabled ?? false,
-      revision: (previous?.revision ?? 0) + 1, context, content, hash: promptSectionHash(content) }));
+      revision: (previous?.revision ?? 0) + 1, context, content, hash: dynamicPromptSnapshotHash(context) }));
   }
 
   async reconcileMemorySnapshot(): Promise<void> {
@@ -2394,7 +2394,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.frozenSkillListing = skills;
       const context = { ...previous.context, pluginSections, skills, pluginBlocks: Object.fromEntries(this.frozenPluginBlocks ?? []) };
       const content = dynamicPromptContent(context);
-      const hash = promptSectionHash(content);
+      const hash = dynamicPromptSnapshotHash(context);
       if (!previous.enabled) {
         let systemPrompt = this.profileState.systemPrompt;
         for (const [before, after] of [[previous.context.pluginSections ?? '', pluginSections], [previous.context.skills ?? '', skills]] as const) {
@@ -2405,7 +2405,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         }
         if (systemPrompt !== this.profileState.systemPrompt) this.update({ systemPrompt });
       }
-      if (hash !== previous.hash || previous.context.pluginBlocks === undefined) {
+      if ((hash !== previous.hash && promptSectionHash(content) !== previous.hash) || previous.context.pluginBlocks === undefined) {
         await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous.enabled, revision: previous.revision + 1, context, content, hash }));
       }
     } catch (error) {
@@ -2419,8 +2419,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (previous?.enabled !== true || previous.context.memory === memory) return;
     const context = { ...previous.context, memory };
     const content = dynamicPromptContent(context);
-    const hash = promptSectionHash(content);
-    if (hash === previous.hash) return;
+    const hash = dynamicPromptSnapshotHash(context);
+    if (hash === previous.hash || promptSectionHash(content) === previous.hash) return;
     await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: true, revision: previous.revision + 1, context, content, hash }));
   }
 
@@ -4054,19 +4054,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.promptLayoutMigrationPending = false;
     const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
     const content = dynamicPromptContent(effective);
-    const hash = promptSectionHash(content);
-    if (previous?.hash !== hash || previous.enabled !== enabled) {
+    const hash = dynamicPromptSnapshotHash(effective);
+    if ((previous?.hash !== hash && previous?.hash !== promptSectionHash(content)) || previous.enabled !== enabled) {
       await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled, revision: (previous?.revision ?? 0) + 1, context: effective, content, hash }));
     }
     return enabled && (profile?.executor ?? 'native') === 'native' ? stablePromptContext(effective) : effective;
   }
 
   private async readMemoryForPersonaOverride(persona: PersonaSnapshot | null | undefined): Promise<string> {
-    if (persona === undefined) return this.memorySnapshot.get();
+    const lastKnown = this.states.get(dynamicPromptKey)?.context.memory;
+    if (persona === undefined) return this.memorySnapshot.get(lastKnown);
     const previous = this.memorySnapshot.getPersona();
     this.memorySnapshot.configurePersona(memoryPersonaContext(persona));
     try {
-      return await this.memorySnapshot.get();
+      return await this.memorySnapshot.get(lastKnown);
     } finally {
       this.memorySnapshot.configurePersona(previous);
     }

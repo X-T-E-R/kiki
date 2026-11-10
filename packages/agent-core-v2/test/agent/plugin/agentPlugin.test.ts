@@ -154,7 +154,9 @@ describe('AgentPluginService plugin session-start wiring', () => {
       { replace: true },
     );
     await plugins.refreshSessionStart();
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
 
+    await runInjectionBoundary(ctx);
     const messages = findPluginSessionStartEventMessages(ctx);
     expect(messages).toHaveLength(2);
     expect(messageText(messages.at(-1)!)).toContain(
@@ -288,10 +290,30 @@ describe('AgentPluginService plugin session-start wiring', () => {
     sinkChange.fire('plugin');
     expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
     await runInjectionBoundary(ctx);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+
+    catalog.register(
+      { ...pluginSkill(), content: 'Do the temporarily changed demo thing.' },
+      { replace: true },
+    );
+    sinkChange.fire('plugin');
+    catalog.register(pluginSkill(), { replace: true });
+    sinkChange.fire('plugin');
+    await runInjectionBoundary(ctx);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+
+    catalog.register(
+      { ...pluginSkill(), content: 'Do the refreshed demo thing.' },
+      { replace: true },
+    );
+    sinkChange.fire('plugin');
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+    await runInjectionBoundary(ctx);
 
     const messages = findPluginSessionStartEventMessages(ctx);
-    expect(messages.length).toBeGreaterThanOrEqual(2);
+    expect(messages).toHaveLength(2);
     const latest = messageText(messages.at(-1)!);
+    expect(latest).toContain('Do the refreshed demo thing.');
     expect(latest).toContain('<plugin_session_start plugin="demo" skill="demo-skill">');
     expect(latest).toContain('supersedes any earlier plugin_session_start reminder');
     sinkChange.dispose();
@@ -331,11 +353,21 @@ describe('AgentPluginService plugin session-start wiring', () => {
     await runInjectionBoundary(ctx);
     expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
 
+    catalog.register(
+      { ...pluginSkill(), content: 'Do the plugin-only refreshed demo thing.' },
+      { replace: true },
+    );
     sinkChange.fire('user');
+    await runInjectionBoundary(ctx);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+
     sinkChange.fire('plugin');
     await runInjectionBoundary(ctx);
 
     expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(2);
+    expect(messageText(findPluginSessionStartEventMessages(ctx).at(-1)!)).toContain(
+      'Do the plugin-only refreshed demo thing.',
+    );
     sinkChange.dispose();
   });
 
@@ -404,10 +436,10 @@ describe('AgentPluginService plugin-change reminder', () => {
   });
 
   function findPluginChangeMessages(context: TestAgentContext) {
-    return context.contextData().history.filter(
-      (message) =>
-        message.origin?.kind === 'injection' && message.origin.variant === 'plugin_change',
-    );
+    return context.contextData().history.flatMap((message) => {
+      const source = capabilitySourceMessage(message, 'plugin_change');
+      return source === undefined ? [] : [source];
+    });
   }
 
   it('keeps plugin mutations on the usage-managed refresh path when usage is enabled', async () => {
@@ -550,14 +582,64 @@ describe('AgentPluginService plugin-change reminder', () => {
 
     fireMutation(mutateEmitter, 'demo');
     fireMutation(mutateEmitter, 'demo');
+    catalog.register(
+      { ...pluginSkill(), content: 'Do the back-to-back refreshed demo thing.' },
+      { replace: true },
+    );
     sinkChange.fire('plugin');
     sinkChange.fire('plugin');
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(findPluginChangeMessages(ctx)).toHaveLength(0);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+    await runInjectionBoundary(ctx);
     expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(2);
+    expect(messageText(findPluginSessionStartEventMessages(ctx).at(-1)!)).toContain(
+      'Do the back-to-back refreshed demo thing.',
+    );
 
     sinkChange.dispose();
+    mutateEmitter.dispose();
+  });
+
+  it('batches idle plugin mutations and cancels reversible pairs into one capability delta at the next step', async () => {
+    const mutateEmitter = new Emitter<PluginMutationSummary>();
+    ctx = createTestAgent(
+      { autoConfigure: true },
+      appService(IPluginService, stubPluginService({ sessionStarts: [], mutateEmitter })),
+      appService(
+        IPluginUsageService,
+        { enabled: () => false, onDidChange: Event.None, onDidApply: Event.None } as unknown as IPluginUsageService,
+      ),
+      skillServices(new InMemorySkillCatalog()),
+      agentService(IAgentToolSelectService, { enabled: () => false } as unknown as IAgentToolSelectService),
+      agentService(IAgentPluginService, new SyncDescriptor(AgentPluginService)),
+    );
+    ctx.get(IAgentPluginService);
+
+    mutateEmitter.fire({ added: ['alpha'], removed: [], errors: [], mutation: { kind: 'install', id: 'alpha' } });
+    mutateEmitter.fire({ added: [], removed: ['alpha'], errors: [], mutation: { kind: 'remove', id: 'alpha' } });
+    mutateEmitter.fire({ added: [], removed: [], errors: [], mutation: { kind: 'enable', id: 'beta' } });
+    mutateEmitter.fire({ added: [], removed: [], errors: [], mutation: { kind: 'disable', id: 'beta' } });
+    mutateEmitter.fire({ added: ['gamma'], removed: [], errors: [], mutation: { kind: 'install', id: 'gamma' } });
+    mutateEmitter.fire({ added: [], removed: [], errors: [], mutation: { kind: 'enable', id: 'gamma' } });
+    mutateEmitter.fire({ added: [], removed: ['delta'], errors: [], mutation: { kind: 'remove', id: 'delta' } });
+    mutateEmitter.fire({ added: ['delta'], removed: [], errors: [], mutation: { kind: 'install', id: 'delta' } });
+    expect(findPluginChangeMessages(ctx)).toHaveLength(0);
+
+    await runInjectionBoundary(ctx);
+    expect(findPluginChangeMessages(ctx)).toHaveLength(1);
+    const reminder = messageText(findPluginChangeMessages(ctx)[0]!);
+    expect(reminder).toContain('Plugin "alpha" was installed.');
+    expect(reminder).toContain('Plugin "alpha" was removed.');
+    expect(reminder).toContain('Plugin "gamma" was installed.');
+    expect(reminder).toContain('Plugin "gamma" was enabled.');
+    expect(reminder).toContain('Plugin "delta" was removed.');
+    expect(reminder).toContain('Plugin "delta" was installed.');
+    expect(reminder).not.toContain('beta');
+
+    await runInjectionBoundary(ctx);
+    expect(findPluginChangeMessages(ctx)).toHaveLength(1);
     mutateEmitter.dispose();
   });
 });

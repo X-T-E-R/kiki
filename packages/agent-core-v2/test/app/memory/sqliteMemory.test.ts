@@ -1188,13 +1188,13 @@ describe('Memory recall and complete working units', () => {
     const view = { generation: '1', scopes: [global], entries: [{ ...entry, scope: global }] };
     const first = projectCurrentMemory(messages, view);
     expect(JSON.stringify(first[0])).toContain(entry.body);
-    const authority = memoryAuthorityUpdate(messages, view)!;
-    expect(memoryAuthorityUpdate(messages, view, authority.disclosure.states)).toBeUndefined();
+    expect(memoryAuthorityUpdate(messages, view)).toBeUndefined();
     const changed = (await update(entry, 'Use exactly 5 workers; never publish artifacts.')).entry;
-    const changedAuthority = memoryAuthorityUpdate(messages, { ...view, entries: [{ ...changed, scope: global }] }, authority.disclosure.states)!;
+    const changedAuthority = memoryAuthorityUpdate(messages, { ...view, entries: [{ ...changed, scope: global }] })!;
     expect(changedAuthority.content).toContain(changed.revision);
     expect(changedAuthority.content).toContain('Earlier bodies and write arguments are historical observations');
     expect(changedAuthority.content).not.toContain(entry.body);
+    expect(memoryAuthorityUpdate(messages, { ...view, entries: [{ ...changed, scope: global }] }, changedAuthority.disclosure.states)).toBeUndefined();
     const after = projectCurrentMemory([...messages, { ...snapshot, content: [{ type: 'text', text: memory.replace(entry.body, changed.body) }] }], { ...view, generation: '2', entries: [{ ...changed, scope: global }] });
     expect(after.slice(0, first.length)).toEqual(first);
     expect(messages).toEqual(original);

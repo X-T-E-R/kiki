@@ -208,7 +208,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.get(IAgentPermissionModeService).mode).toBe(mode);
     const afterCompaction = ctx.compactHistory();
     expect(afterCompaction.slice(0, compacted.length)).toEqual(compacted);
-    expect(afterCompaction.length).toBe(compacted.length + 1);
+    expect(afterCompaction.length).toBe(compacted.length);
     const callsBefore = ctx.llmCalls.length;
     ctx.mockNextResponse({ type: 'text', text: 'next binding' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Use the current binding.' }] });
