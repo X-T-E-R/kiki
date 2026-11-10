@@ -808,7 +808,7 @@ function extractHookBlockError(messages: readonly ContextMessage[]): ErrorPayloa
     const raw = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n').trim();
     const match = /^<hook_result\b[^>]*>\s*([\s\S]*?)\s*<\/hook_result>$/i.exec(raw);
     const reason = (match?.[1] ?? raw).trim();
-    if (reason.length > 0) return { code: ErrorCodes.REQUEST_INVALID, message: reason };
+    if (reason.length > 0) return { code: ErrorCodes.REQUEST_INVALID, message: reason, retryable: false };
   }
   return undefined;
 }

@@ -4850,6 +4850,299 @@ describe('virtualized transcript scrolling', () => {
     expect(readDraft('session_blocked_test')).toBe('check the deployment status');
   });
 
+  it('waits for bounded blocked prompt hydration before copy, edit, or send-again consumes the full body, and never writes a truncated draft on error or missing reader', { timeout: 30_000 }, async () => {
+    const { TranscriptDetailProvider, contentSegmentKey } = await import('./transcriptDetail');
+    const { applyContentSegment } = await import('@kiki/transcript');
+    const fullText = 'HEAD_MARKER:' + 'long-blocked-payload-'.repeat(160) + ':TAIL_MARKER';
+    const previewOffset = 1004;
+    const promptRef: import('@kiki/transcript').ContentRef = {
+      source: { kind: 'prompt', id: 'p-pending-blocked' },
+      path: ['content', 0, 'text'],
+      revision: 'rev-pending-blocked',
+      kind: 'text',
+      offset: previewOffset,
+      total: fullText.length,
+    };
+    const deliveryRef: import('@kiki/transcript').ContentRef = {
+      source: { kind: 'marker', id: 'message-delivery:um-pending-blocked' },
+      path: ['payload', 'text'],
+      revision: 'rev-delivery-blocked',
+      kind: 'text',
+      offset: previewOffset,
+      total: fullText.length,
+    };
+    const deliveryItem: import('@kiki/transcript').TranscriptItem = {
+      kind: 'marker',
+      markerId: 'message-delivery:um-pending-blocked',
+      marker: 'message.delivery',
+      at: '2026-01-01T00:00:01.000Z',
+      payload: { messageId: 'um-pending-blocked', text: fullText.slice(0, previewOffset), origin: { kind: 'user' } },
+      contentRefs: [deliveryRef],
+    };
+    let promptEntity: import('@kiki/transcript').TranscriptPrompt = {
+      promptId: 'p-pending-blocked',
+      userMessageId: 'um-pending-blocked',
+      status: 'blocked',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      finishedAt: '2026-01-01T00:00:02.000Z',
+      error: 'Blocked by UserPromptSubmit hook (timed out)',
+      content: [{ type: 'text', text: fullText.slice(0, previewOffset) }],
+      contentRefs: [promptRef],
+    };
+    const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
+    const snapshot = (): AgentTranscriptSnapshot => ({
+      items: [deliveryItem],
+      prompts: [promptEntity],
+      tasks: [],
+      attachments: [],
+      todos: [],
+      interactions: [],
+      meta: {},
+    });
+
+    const noReaderRoot = makeRoot();
+    const coldProjected = projectAgentTranscriptView(createViewState('session_blocked_no_reader'), 'main', snapshot(), { cold: true });
+    await renderSettled(
+      noReaderRoot.root,
+      <Transcript
+        state={coldProjected}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+        rowActions={actions}
+      />,
+    );
+    const noReaderRow = noReaderRoot.container.querySelector('[data-block-id="user-um-pending-blocked"]')!;
+    expect(noReaderRow.querySelector('[data-row-action="copy"]')).toBeNull();
+    expect(noReaderRow.querySelector('[data-row-action="edit"]')).toBeNull();
+    const noReaderRetry = noReaderRow.querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!;
+    expect(noReaderRetry.disabled).toBe(true);
+    await act(async () => { noReaderRetry.click(); });
+    expect(readDraft('session_blocked_no_reader')).toBe('');
+
+    const sessionId = 'session_blocked_hydration';
+    let failAttempt = 0;
+    let pendingGate: ReturnType<typeof pendingVoid> | undefined;
+    let loadCalls = 0;
+    let setHarnessState!: (next: {
+      loads: Record<string, import('@kiki/session-core/session').TranscriptDetailStatus>;
+      viewState: SessionViewState;
+      contentRefs: readonly import('@kiki/transcript').ContentRef[] | undefined;
+    }) => void;
+    function HydrationHarness() {
+      const [harness, setHarness] = useState(() => ({
+        loads: {} as Record<string, import('@kiki/session-core/session').TranscriptDetailStatus>,
+        viewState: projectAgentTranscriptView(createViewState(sessionId), 'main', snapshot(), { cold: true }),
+        contentRefs: promptEntity.contentRefs,
+      }));
+      setHarnessState = setHarness;
+      const loadContent = async (ref: import('@kiki/transcript').ContentRef) => {
+        loadCalls += 1;
+        const key = contentSegmentKey(ref);
+        setHarness((prev) => ({ ...prev, loads: { ...prev.loads, [key]: { status: 'loading' } } }));
+        if (failAttempt < 2) {
+          failAttempt += 1;
+          setHarness((prev) => ({
+            ...prev,
+            loads: { ...prev.loads, [key]: { status: 'error', message: `Offline ${failAttempt}` } },
+          }));
+          return false;
+        }
+        pendingGate = pendingVoid();
+        await pendingGate.promise;
+        promptEntity = applyContentSegment(promptEntity, {
+          ref: promptRef,
+          value: fullText.slice(previewOffset),
+          contentRefs: [],
+        });
+        setHarness((prev) => ({
+          loads: {},
+          viewState: projectAgentTranscriptView(prev.viewState, 'main', snapshot()),
+          contentRefs: promptEntity.contentRefs,
+        }));
+        return true;
+      };
+      return (
+        <TranscriptDetailProvider
+          load={async () => false}
+          loads={harness.loads}
+          contentRefs={harness.contentRefs}
+          loadContent={loadContent}
+        >
+          <Transcript
+            state={{ ...harness.viewState, contentRefs: harness.contentRefs }}
+            onLoadOlder={() => Promise.resolve(false)}
+            onResolveApproval={() => noopActions()}
+            onAnswerQuestion={() => noopActions()}
+            onDismissQuestion={() => noopActions()}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>
+      );
+    }
+    const { root, container } = makeRoot();
+    await renderSettled(root, <HydrationHarness />, true);
+    expect(setHarnessState).toBeDefined();
+    const row = () => container.querySelector('[data-block-id="user-um-pending-blocked"]')!;
+    expect(row().querySelector('[data-row-action="copy"]')).toBeNull();
+    expect(row().querySelector('[data-row-action="edit"]')).toBeNull();
+
+    await act(async () => {
+      row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.click();
+    });
+    expect(loadCalls).toBe(1);
+    expect(readDraft(sessionId)).toBe('');
+    expect(row().querySelector('[data-content-continuation="error"]')).not.toBeNull();
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBeNull();
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.disabled).toBe(false);
+
+    await act(async () => {
+      row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.click();
+    });
+    expect(loadCalls).toBe(2);
+    expect(readDraft(sessionId)).toBe('');
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBeNull();
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.disabled).toBe(false);
+
+    await act(async () => {
+      row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.click();
+    });
+    expect(loadCalls).toBe(3);
+    expect(readDraft(sessionId)).toBe('');
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBe('true');
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.disabled).toBe(true);
+
+    await act(async () => {
+      pendingGate!.resolve();
+      await pendingGate!.promise;
+    });
+    expect(readDraft(sessionId)).toBe(fullText);
+    expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBeNull();
+    expect(row().querySelector('[data-row-action="copy"]')).not.toBeNull();
+    const editBtn = row().querySelector<HTMLButtonElement>('[data-row-action="edit"]')!;
+    expect(editBtn).not.toBeNull();
+    await act(async () => { editBtn.click(); });
+    expect(composerInput(container.querySelector('[data-edit-editor]')!).value).toBe(fullText);
+
+    const controllerSessionId = 'session_blocked_controller_hydration';
+    const { useSyncExternalStore } = await import('react');
+    const controllerRef: import('@kiki/transcript').ContentRef = {
+      source: { kind: 'prompt', id: 'p-ctrl-blocked' },
+      path: ['content', 0, 'text'],
+      revision: 'rev-ctrl-blocked',
+      kind: 'text',
+      offset: previewOffset,
+      total: fullText.length,
+    };
+    let readGate: ReturnType<typeof pendingVoid> | undefined;
+    const read = vi.fn()
+      .mockRejectedValueOnce(new Error('Offline on initial automatic read'))
+      .mockImplementationOnce(async () => {
+        readGate = pendingVoid();
+        await readGate.promise;
+        return { ref: controllerRef, value: fullText.slice(previewOffset), contentRefs: [] };
+      });
+    const view = {
+      snapshot: async () => ({ session: { id: controllerSessionId, title: 'Blocked' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+      transcript: { content: read },
+      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+    const controller = new SessionController(
+      {} as import('@kiki/session-core/transport').SessionTransport,
+      view,
+      controllerSessionId,
+      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+    );
+    await controller.open();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      session_id: controllerSessionId,
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 1, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: {
+        items: [{
+          kind: 'marker',
+          markerId: 'message-delivery:um-ctrl-blocked',
+          marker: 'message.delivery',
+          at: '2026-01-01T00:00:01.000Z',
+          payload: { messageId: 'um-ctrl-blocked', text: fullText.slice(0, previewOffset), origin: { kind: 'user' } },
+          contentRefs: [{ ...deliveryRef, source: { kind: 'marker', id: 'message-delivery:um-ctrl-blocked' } }],
+        }],
+        prompts: [{
+          promptId: 'p-ctrl-blocked',
+          userMessageId: 'um-ctrl-blocked',
+          status: 'blocked',
+          createdAt: '2026-01-01T00:00:01.000Z',
+          finishedAt: '2026-01-01T00:00:02.000Z',
+          error: 'Blocked by UserPromptSubmit hook (timed out)',
+          content: [{ type: 'text', text: fullText.slice(0, previewOffset) }],
+          contentRefs: [controllerRef],
+        }],
+        tasks: [],
+        attachments: [],
+        interactions: [],
+        todos: [],
+        meta: {},
+      },
+    });
+    function ControllerSurface() {
+      const state = useSyncExternalStore(controller.subscribe, controller.getState);
+      return (
+        <TranscriptDetailProvider
+          controller={controller}
+          load={async () => false}
+          loads={state.detailLoads}
+          contentRefs={state.contentRefs}
+          loadContent={(ref) => controller.loadContentSegment('main', ref)}
+          sessionId={controllerSessionId}
+          agentId="main"
+        >
+          <Transcript
+            state={state}
+            onLoadOlder={async () => false}
+            onResolveApproval={noopActions}
+            onAnswerQuestion={noopActions}
+            onDismissQuestion={noopActions}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>
+      );
+    }
+    const ctrlRoot = makeRoot();
+    try {
+      await renderSettled(ctrlRoot.root, <ControllerSurface />, true);
+      await act(async () => {
+        await vi.waitFor(() => expect(controller.getState().detailLoads[contentSegmentKey(controllerRef)]?.status).toBe('error'));
+      });
+      const ctrlRow = () => ctrlRoot.container.querySelector('[data-block-id="user-um-ctrl-blocked"]')!;
+      expect(readDraft(controllerSessionId)).toBe('');
+      expect(ctrlRow().querySelector('[data-row-action="copy"]')).toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="edit"]')).toBeNull();
+
+      await act(async () => {
+        ctrlRow().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.click();
+      });
+      await act(async () => {
+        await vi.waitFor(() => expect(readGate).toBeDefined());
+      });
+      expect(readDraft(controllerSessionId)).toBe('');
+      expect(ctrlRow().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBe('true');
+
+      await act(async () => {
+        readGate!.resolve();
+        await vi.waitFor(() => expect(controller.contentRefsFor('main', { kind: 'prompt', id: 'p-ctrl-blocked' })).toEqual([]));
+      });
+      expect(readDraft(controllerSessionId)).toBe(fullText);
+      expect(ctrlRow().querySelector('[data-row-action="copy"]')).not.toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="edit"]')).not.toBeNull();
+    } finally {
+      controller.close();
+    }
+  });
+
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(transcriptState([

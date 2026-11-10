@@ -54,11 +54,13 @@ export function PromptOutcomeLine({
   outcome,
   onRetry,
   retryDisabled = false,
+  retryLoading = false,
 }: {
   outcome: PromptOutcome;
   /** Present when the message can be sent again from here. */
   onRetry?: () => void;
   retryDisabled?: boolean;
+  retryLoading?: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -110,11 +112,19 @@ export function PromptOutcomeLine({
               type="button"
               data-prompt-outcome-retry
               onClick={onRetry}
-              disabled={retryDisabled}
-              title={t('transcript.promptOutcome.retryTitle')}
-              className={LINK}
+              disabled={retryDisabled || retryLoading}
+              aria-busy={retryLoading || undefined}
+              title={t(retryLoading ? 'transcript.content.loading' : 'transcript.promptOutcome.retryTitle')}
+              className={`${LINK} ${retryLoading ? 'inline-flex items-center gap-1' : ''}`.trimEnd()}
             >
-              {t('transcript.promptOutcome.retry')}
+              {retryLoading ? (
+                <>
+                  <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
+                  {t('transcript.content.loading')}
+                </>
+              ) : (
+                t('transcript.promptOutcome.retry')
+              )}
             </button>
           </>
         ) : null}

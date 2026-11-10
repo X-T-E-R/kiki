@@ -180,6 +180,7 @@ function classifiedTextToBlocks(input: {
           kind: 'user',
           id: `user-${identity}`,
           contentSource: input.contentSource,
+          contentPending: input.contentPending,
           sourceOrigin: classified.origin,
           text: classified.text,
           presentation: classified.presentation ?? input.presentation,
@@ -2097,6 +2098,7 @@ function upsertPromptItemBlocks(
   const previous = stableIndex < 0 ? undefined : blocks[stableIndex] as UserBlock;
   const sourceOrigin = item.origin === undefined ? previous?.sourceOrigin : item.origin;
   const contentSource = contentWindow?.contentSource ?? previous?.contentSource;
+  const contentPending = contentWindow?.contentPending ?? previous?.contentPending;
   const origin = sourceOrigin === undefined ? { kind: 'user' } : originFromRecord({ origin: sourceOrigin }) ?? { kind: 'unknown' };
   const classified = classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin });
   const text = classified.text;
@@ -2106,7 +2108,7 @@ function upsertPromptItemBlocks(
     createdAt: item.created_at,
     media,
     contentSource,
-    contentPending: contentWindow?.contentPending,
+    contentPending,
     promptId: item.prompt_id,
     userMessageId: item.user_message_id,
     promptStatus: item.status,
@@ -2136,6 +2138,7 @@ function upsertPromptItemBlocks(
       transcriptValueEquals(existing.queuedContent, queuedContent) &&
       transcriptValueEquals(existing.sourceOrigin, sourceOrigin) &&
       transcriptValueEquals(existing.contentSource, contentSource) &&
+      existing.contentPending === contentPending &&
       transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
     ) {
       return blocks;
@@ -2143,7 +2146,7 @@ function upsertPromptItemBlocks(
     const next = blocks.filter((block) => !isPromptReminder(block));
     const index = next.indexOf(existing);
     next.splice(index, 1, {
-      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource,
+      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource, contentPending,
       agentMessage: incoming?.agentMessage, bridgedPeer: incoming?.bridgedPeer, peerThread: incoming?.peerThread,
     }, ...reminders);
     return next;
@@ -2377,6 +2380,15 @@ function mergeSettledPromptUserBlock(
       : projection !== undefined && projection.media.length > 0
         ? projection.media
         : user.media;
+  const nextContentSource =
+    user.contentSource ??
+    (parts.length > 0 || contentPending ? { kind: 'prompt' as const, id: prompt.promptId } : undefined);
+  const nextContentPending =
+    user.contentSource !== undefined
+      ? user.contentPending
+      : usePromptText || parts.length === 0
+        ? contentPending
+        : user.contentPending === true && contentPending;
   return {
     ...user,
     text,
@@ -2384,10 +2396,8 @@ function mergeSettledPromptUserBlock(
     media,
     promptId: user.promptId ?? prompt.promptId,
     userMessageId: user.userMessageId ?? prompt.userMessageId,
-    contentSource:
-      user.contentSource ??
-      (parts.length > 0 || contentPending ? { kind: 'prompt', id: prompt.promptId } : undefined),
-    contentPending: user.contentSource === undefined ? contentPending : user.contentPending,
+    contentSource: nextContentSource,
+    contentPending: nextContentPending,
     promptStatus: undefined,
     queuedContent: undefined,
     promptOutcome: promptOutcomeOf(prompt, context, user),
@@ -2856,6 +2866,7 @@ export function agentTranscriptToBlocks(
         const text = recordString(payload, 'text');
         const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
+          const deliveryPending = (item as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'payload') === true;
           const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
@@ -2864,6 +2875,7 @@ export function agentTranscriptToBlocks(
             createdAt: item.at ?? '',
             turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
+            contentPending: deliveryPending,
             media: mediaWithPresentation(mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
               attachmentsById,

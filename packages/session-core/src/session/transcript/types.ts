@@ -26,6 +26,7 @@ export interface UserBlock {
   readonly kind: 'user';
   readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly contentSource?: import('@kiki/transcript').ContentSource;
+  readonly contentPending?: boolean;
   readonly id: string;
   readonly text: string;
   readonly presentation?: import('@kiki/transcript').TextPresentation;

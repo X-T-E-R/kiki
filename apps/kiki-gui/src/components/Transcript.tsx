@@ -347,6 +347,21 @@ export interface SenderIdentity {
 const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds'];
 const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_MESSAGE_DETAILS_ROOTS];
 
+function isUserBlockContentIncomplete(user: UserBlock, contentRefs: readonly ContentRef[] | undefined): boolean {
+  if (user.contentPending === true) return true;
+  const source = user.contentSource;
+  if (source === undefined || contentRefs === undefined) return false;
+  return contentRefs.some(
+    (ref) =>
+      ref.source.kind === source.kind &&
+      ref.source.id === source.id &&
+      ref.source.turnId === source.turnId &&
+      ref.source.stepId === source.stepId &&
+      ref.path.length > 0 &&
+      USER_MESSAGE_ROOTS.includes(String(ref.path[0])),
+  );
+}
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued,
@@ -386,9 +401,15 @@ const UserMessage = memo(function UserMessage({
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
   const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
   const retryTextRead = useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
+  const retryDetailsRead = useAutomaticContentRead(
+    block.contentSource?.kind === 'prompt' ? block.contentSource : undefined,
+    USER_MESSAGE_DETAILS_ROOTS,
+  );
   const reader = useTranscriptController();
   const target = useTranscriptTarget();
   const textRange = continuation.pending.some((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])) &&
+    reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
+  const promptTextRange = continuation.pending.some((ref) => ref.path[0] === 'content' && ref.kind === 'text' &&
     reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
   const serverRef = textRange ? undefined : continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
   const serverRemaining = serverRef !== undefined;
@@ -396,8 +417,22 @@ const UserMessage = memo(function UserMessage({
   const automaticTextRead = reader !== undefined && target !== undefined;
   const isServerFailed = serverStatus?.status === 'error';
   const isServerLoading = !isServerFailed && serverRemaining && (automaticTextRead || serverStatus?.status === 'loading');
-  const incomplete = continuation.pending.length > 0;
+  const anyRange = continuation.pending.some((ref) => reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
+  const incomplete = block.contentPending === true || continuation.pending.length > 0;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && !incomplete;
+  const canLoadIncomplete = continuation.pending.length > 0 && continuation.canRequest === true && !anyRange;
+  const anyContinuationFailed = continuation.pending.some((ref) => continuation.statusOf(ref)?.status === 'error');
+  const errorSignature = continuation.pending
+    .map((ref) => {
+      const status = continuation.statusOf(ref);
+      return status?.status === 'error' ? `${JSON.stringify(ref.path)}:${status.message}` : '';
+    })
+    .join('|');
+  const [retryWaitingState, setRetryWaitingState] = useState<{
+    readonly blockId: string;
+    readonly dismissedErrorSignature: string;
+  } | null>(null);
+  const retryWaiting = retryWaitingState?.blockId === block.id;
 
   const handleContinue = useCallback(() => {
     if (clipped) {
@@ -466,6 +501,54 @@ const UserMessage = memo(function UserMessage({
     ...quoteItems.map((item) => buildQuotePrefix(item.quote)),
     bodyText,
   ].join('');
+  useEffect(() => {
+    if (!retryWaiting || retryWaitingState === null) return;
+    if (!incomplete) {
+      setRetryWaitingState(null);
+      if (typedText.trim() !== '') outcomeActions.onRetry?.(typedText);
+      return;
+    }
+    if (!canLoadIncomplete) {
+      setRetryWaitingState(null);
+      return;
+    }
+    if (!anyContinuationFailed && retryWaitingState.dismissedErrorSignature !== '') {
+      setRetryWaitingState({ blockId: block.id, dismissedErrorSignature: '' });
+      return;
+    }
+    if (anyContinuationFailed && errorSignature !== retryWaitingState.dismissedErrorSignature) {
+      setRetryWaitingState(null);
+    }
+  }, [retryWaiting, retryWaitingState, anyContinuationFailed, errorSignature, incomplete, canLoadIncomplete, block.id, typedText, outcomeActions]);
+  const handleOutcomeRetry = useCallback(() => {
+    if (outcomeActions.onRetry === undefined) return;
+    if (!incomplete) {
+      if (typedText.trim() !== '') outcomeActions.onRetry(typedText);
+      return;
+    }
+    if (!canLoadIncomplete) return;
+    setRetryWaitingState({ blockId: block.id, dismissedErrorSignature: anyContinuationFailed ? errorSignature : '' });
+    if (automaticTextRead) {
+      retryTextRead();
+      retryDetailsRead();
+    } else {
+      for (const ref of continuation.pending) {
+        if (continuation.statusOf(ref)?.status !== 'loading') continuation.request(ref);
+      }
+    }
+  }, [
+    outcomeActions,
+    incomplete,
+    typedText,
+    canLoadIncomplete,
+    block.id,
+    anyContinuationFailed,
+    errorSignature,
+    automaticTextRead,
+    retryTextRead,
+    retryDetailsRead,
+    continuation,
+  ]);
   // Editing rewrites the durable message, so it opens the text the message
   // actually carries: the envelope stays (only the bubble hides it) while the
   // generated spans around it are still projected out.
@@ -629,7 +712,7 @@ const UserMessage = memo(function UserMessage({
           }}
           onCancel={() => { setEditing(false); }}
         />
-      ) : textRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
+      ) : textRange || promptTextRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
           className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
@@ -735,7 +818,9 @@ const UserMessage = memo(function UserMessage({
       {textRange ? <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation}
         renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
         label={t('subagent.message')} className="mt-1 max-w-[80%]" /> : null}
-      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} label={t('subagent.message')} className="mt-1 justify-end" />
+      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} presentation={block.presentation}
+        renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
+        label={t('subagent.message')} className={`mt-1 justify-end ${promptTextRange ? 'max-w-[80%]' : ''}`.trimEnd()} />
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}
@@ -808,10 +893,11 @@ const UserMessage = memo(function UserMessage({
       {(block.promptOutcome !== undefined || block.promptStatus === 'blocked') && !editing ? (
         <PromptOutcomeLine
           outcome={block.promptOutcome ?? { status: 'blocked', delivered: false, at: block.createdAt }}
-          onRetry={outcomeActions.onRetry === undefined || typedText.trim() === ''
+          onRetry={outcomeActions.onRetry === undefined || (!incomplete && typedText.trim() === '')
             ? undefined
-            : () => { outcomeActions.onRetry?.(typedText); }}
-          retryDisabled={outcomeActions.disabled === true}
+            : handleOutcomeRetry}
+          retryLoading={retryWaiting && incomplete && !anyContinuationFailed}
+          retryDisabled={outcomeActions.disabled === true || (incomplete && !canLoadIncomplete)}
         />
       ) : null}
     </div>
@@ -4348,8 +4434,10 @@ export function Transcript({
     const user = blocks.findLast(
       (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, failedTailTurnId),
     );
-    return user === undefined || user.text.trim() === '' ? undefined : user.text;
-  }, [blocks, failedTailTurnId]);
+    return user === undefined || user.text.trim() === '' || isUserBlockContentIncomplete(user, state.contentRefs)
+      ? undefined
+      : user.text;
+  }, [blocks, failedTailTurnId, state.contentRefs]);
   // A turn that ended with nothing to read: main only, because this page owns
   // the session's own last turn. The facts come from the published state, so
   // switching sessions never shows another session's ending.
@@ -4365,8 +4453,10 @@ export function Transcript({
     const user = blocks.findLast(
       (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, replyGap.turnId),
     );
-    return user === undefined || user.text.trim() === '' ? undefined : user.text;
-  }, [blocks, replyGap]);
+    return user === undefined || user.text.trim() === '' || isUserBlockContentIncomplete(user, state.contentRefs)
+      ? undefined
+      : user.text;
+  }, [blocks, replyGap, state.contentRefs]);
   // Settled entries are NOT folded behind a counter: they stay in place at
   // their own timestamp, one quiet activity line each. One subagent is ONE
   // line, though: when its card is on the page, the card absorbs the

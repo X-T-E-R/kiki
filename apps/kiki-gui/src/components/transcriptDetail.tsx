@@ -126,6 +126,7 @@ export function contentSegmentKey(ref: ContentRef): string {
 
 export interface ContentContinuationHandle {
   readonly automatic?: boolean;
+  readonly canRequest?: boolean;
   /** Unread refs under this body's path roots, in wire order. */
   readonly pending: readonly ContentRef[];
   readonly statusOf: (ref: ContentRef) => TranscriptDetailStatus | undefined;
@@ -135,12 +136,13 @@ export interface ContentContinuationHandle {
 /** Reading and load state of one pending ref list, however it was selected. */
 function useContinuationFor(pending: readonly ContentRef[]): ContentContinuationHandle {
   const api = useContext(TranscriptDetailContext);
+  const canRequest = Boolean(api?.controller !== undefined || api?.loadContent !== undefined);
   const statusOf = useCallback(
     (ref: ContentRef) => api?.loads[contentSegmentKey(ref)],
     [api],
   );
   const request = useCallback((ref: ContentRef) => { void api?.loadContent?.(ref); }, [api]);
-  return { pending, statusOf, request };
+  return { canRequest, pending, statusOf, request };
 }
 
 /**
