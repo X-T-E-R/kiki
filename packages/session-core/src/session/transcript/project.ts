@@ -2975,8 +2975,6 @@ export function agentTranscriptToBlocks(
           const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
-            contentSource: { kind: 'marker', id: item.markerId },
-            contentPending: (item as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'payload') === true,
             createdAt: item.at ?? '',
             turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
