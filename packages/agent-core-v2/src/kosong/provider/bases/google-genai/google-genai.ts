@@ -569,6 +569,9 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
   private _blocked = false;
   private _grounded = false;
+  private _continuationToken: string | undefined;
+
+  get continuationToken(): string | undefined { return this._continuationToken; }
 
   get thinkingOnlyRecoveryBlocked(): boolean { return this._blocked || this._grounded; }
 
@@ -633,10 +636,22 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     const safetyRatings = first['safetyRatings'];
     if (Array.isArray(safetyRatings) && safetyRatings.some(rating => rating?.blocked === true)) this._blocked = true;
     const raw = first['finishReason'] ?? first['finish_reason'];
+    const normalized = normalizeGoogleGenAIFinishReason(raw);
+    if (raw === undefined || normalized.rawFinishReason === 'CONTINUATION') {
+      const continuationToken = first['continuationToken'] ?? first['continuation_token'];
+      const content = first['content'] as Record<string, unknown> | undefined;
+      const contentParts = content?.['parts'];
+      if (typeof continuationToken === 'string' && continuationToken.length > 0) {
+        this._continuationToken = continuationToken;
+      } else if (Array.isArray(contentParts) && contentParts.length > 0) {
+        this._continuationToken = undefined;
+      }
+    } else {
+      this._continuationToken = undefined;
+    }
     if (raw === undefined) {
       return;
     }
-    const normalized = normalizeGoogleGenAIFinishReason(raw);
     if (normalized.finishReason !== null || normalized.rawFinishReason !== null) {
       this._finishReason = normalized.finishReason;
       this._rawFinishReason = normalized.rawFinishReason;
@@ -767,6 +782,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
 }
 
 const NETWORK_RE = /network|connection|connect|disconnect|fetch failed/i;
+const TRUNCATED_STREAM_RE = /^Incomplete JSON segment at the end$/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
 interface GoogleRpcDetail {
@@ -846,7 +862,7 @@ export function convertGoogleGenAIError(error: unknown): ChatProviderError {
     if (TIMEOUT_RE.test(msg)) {
       return new APITimeoutError(msg);
     }
-    if (NETWORK_RE.test(msg) || (error instanceof TypeError && msg.includes('fetch'))) {
+    if (NETWORK_RE.test(msg) || TRUNCATED_STREAM_RE.test(msg) || (error instanceof TypeError && msg.includes('fetch'))) {
       return new APIConnectionError(msg);
     }
     const statusCode = (error as { code?: number }).code;
@@ -1039,6 +1055,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     const config: Record<string, unknown> = {
       ...kwargs,
       automaticContinuation: true,
+      continuationToken: options?.googleContinuationToken,
       systemInstruction: systemPrompt,
       ...(tools.length > 0 ? { tools: tools.map((t) => toolToGoogleGenAI(t)) } : {}),
     };

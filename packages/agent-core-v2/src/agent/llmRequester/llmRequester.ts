@@ -38,6 +38,7 @@ export interface AgentLLMRequestFinish {
 }
 
 export type AgentLLMRequestPartHandler = (part: StreamedMessagePart, responseInstanceId?: string) => void | Promise<void>;
+export type AgentLLMAttemptRetryMode = 'discard' | 'retain' | 'continue';
 
 export interface AgentLLMRequestOverrides {
   messages?: readonly Message[];
@@ -46,7 +47,7 @@ export interface AgentLLMRequestOverrides {
   source?: AgentLLMRequestSource;
   maxOutputSize?: number;
   retry?: 'never';
-  onAttemptRetry?: () => void;
+  onAttemptRetry?: (mode: AgentLLMAttemptRetryMode) => void;
 }
 
 export interface AgentLLMRequestTask {

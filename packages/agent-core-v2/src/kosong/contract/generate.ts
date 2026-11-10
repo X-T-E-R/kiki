@@ -37,6 +37,17 @@ export interface GenerateFailureFacts {
 const THINKING_ONLY_STOP_CODE = 'antigravity_thinking_only';
 const generateFailureFacts = new WeakMap<object, GenerateFailureFacts>();
 const generateFailureUsage = new WeakMap<object, TokenUsage>();
+const generateContinuationTokens = new WeakMap<object, string>();
+
+export function readGenerateContinuationToken(error: unknown): string | undefined {
+  let current = error;
+  while (typeof current === 'object' && current !== null) {
+    const token = generateContinuationTokens.get(current);
+    if (token !== undefined) return token;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
 
 /** Provider-reported usage retained on a failed attempt without exposing response content. */
 export function readGenerateFailureUsage(error: unknown): TokenUsage | undefined {
@@ -251,6 +262,9 @@ export async function generate(
     flushPending();
     if (stream.thinkingOnlyRecoveryBlocked === true) attachErrorDetails(error, { retry: false });
     if (typeof error === 'object' && error !== null && stream.usage !== null) generateFailureUsage.set(error, stream.usage);
+    if (typeof error === 'object' && error !== null && stream.continuationToken !== undefined && !isAbortError(error)) {
+      generateContinuationTokens.set(error, stream.continuationToken);
+    }
     recordThinkingOnlyFacts(error, message, stream);
     if (!isAbortError(error) && readGenerateFailureFacts(error) === undefined &&
       (message.toolCalls.length > 0 || message.content.some(part => !isVacuousContentPart(part)))) {

@@ -2961,7 +2961,7 @@ function createRetryingRequester(): IAgentLLMRequesterService {
     stopAnthropicResponseCapture: () => { throw new Error('response capture is unused in this fixture'); },
     async request(overrides = {}, onPart = () => {}) {
       await onPart({ type: 'text', text: 'Hello' });
-      overrides.onAttemptRetry?.();
+      overrides.onAttemptRetry?.('discard');
       await onPart({ type: 'text', text: 'World' });
       return {
         message: {

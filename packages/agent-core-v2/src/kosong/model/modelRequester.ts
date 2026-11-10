@@ -52,6 +52,7 @@ export type ModelRequestEvent =
 
 export interface ModelRequestParams {
   readonly cacheKey?: string;
+  readonly googleContinuationToken?: string;
   readonly serviceTier?: OptionalParameter<ServiceTier>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly requestParams?: RequestParams;

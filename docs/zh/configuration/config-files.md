@@ -625,7 +625,7 @@ confirm = false
 
 当供应商确认模型正常结束，且只有非空思考、没有正文、工具调用或拒绝时，Kiki 会保留思考及原始签名，每轮最多显式发送一条 `Continue.` User 消息。网关的精确 `antigravity_thinking_only` 事件也可触发续接，但 Kiki 必须实际保留了思考，并确认没有其它输出、外部信息检索（grounding）或拒绝。取消、缺少终态事件、流中断、token 上限导致的停止均不符合条件。续接算一次真实模型请求，用量单独记录。第二次仍为空或请求失败时停止本轮；这次续接即使遇到 HTTP 429 或临时服务端错误，也不重试。
 
-设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。Google `CONTINUATION` 终态仍需此 SDK 无法发送的 continuation token。
+设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。SDK 暴露完整的 continuation token 时，Google `CONTINUATION` 响应用它续接；没有可用 token 时停止本轮，并保留已有部分响应。
 
 未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，并保留在对话里。非空的 redacted 思考数据算输出。非空思考文本仍走 `thinking_only_continuation`。子 Agent 使用同一规则；开关关闭时，没有内容的子任务完成仍失败，第二次仍为空也会停止本轮。token 用量不参与判断。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
 
@@ -673,7 +673,7 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 `retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数与固定退避时间。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
-`retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前符合条件的失败仍按原有重试预算处理。网关明确标记为终态的流式错误会直接结束请求，即使还没有输出首个 token，重试设置也不会重新发送。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。重试会撤掉部分输出，工具只在完整响应后执行，且可能产生额外计费。
+`retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前符合条件的失败仍按原有重试预算处理。网关明确标记为终态的流式错误会直接结束请求，即使还没有输出首个 token，重试设置也不会重新发送。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。其它协议会撤掉部分输出。Google GenAI 保留可见文本和思考摘要、去除重放的重叠内容，并且只在后续输出尚未越过检查点时使用完整的 continuation token；否则重试原始请求快照。工具只在完整响应后执行，重试可能产生额外计费。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -705,7 +705,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功。已有部分输出时，只有符合条件的连接中断可以重试；已有输出后的 HTTP 429 或 500–599 失败及其他 provider 失败不会因本设置变得可重试。每次符合条件的重试都会撤掉失败尝试的输出，原生工具只在完整响应后执行，失败生成可能产生额外计费。该策略不会让 HTTP 400、额度耗尽或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功。已有部分输出时，只有符合条件的连接中断可以重试；已有输出后的 HTTP 429 或 500–599 失败及其他 provider 失败不会因本设置变得可重试。其它协议会撤掉失败尝试的输出；Google GenAI 按上述检查点规则保留可见输出并去重。原生工具只在完整响应后执行，失败生成可能产生额外计费。该策略不会让 HTTP 400、额度耗尽或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `session_residency`
 

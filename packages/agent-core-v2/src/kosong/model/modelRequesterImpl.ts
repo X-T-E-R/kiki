@@ -182,6 +182,7 @@ export class ModelRequesterImpl implements ModelRequester {
     const options: GenerateOptions = {
       signal,
       cacheKey: params?.cacheKey,
+      googleContinuationToken: params?.googleContinuationToken,
       serviceTier: isApiDefault(serviceTier) ? undefined : serviceTier,
       headers: params?.headers,
       requestParams: stripKikiReservedRequestParams(rawRequestParams),

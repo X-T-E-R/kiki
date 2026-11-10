@@ -2811,6 +2811,7 @@ export interface AgentStateSnapshot {
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
       readonly cacheKey?: string;
+      readonly googleContinuationToken?: string;
       readonly serviceTier?: 'default' | 'auto' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
         kind: 'api_default';
       } | 'flex' | 'priority';

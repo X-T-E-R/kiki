@@ -46,6 +46,7 @@ export interface StreamedMessage {
   readonly traceId?: string | null;
   readonly diagnostics?: StreamDiagnostics;
   readonly completionAuthority?: 'normal';
+  readonly continuationToken?: string;
   readonly thinkingOnlyRecoveryBlocked?: boolean;
   commitMessage?(message: Message): void;
   cancel?(): void | Promise<void>;
@@ -112,6 +113,7 @@ export interface GenerateOptions {
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;
   cacheKey?: string;
+  googleContinuationToken?: string;
   serviceTier?: ServiceTier;
   headers?: Readonly<Record<string, string>>;
   requestParams?: RequestParams;

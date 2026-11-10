@@ -55,7 +55,7 @@ import {
   isRetryableRequestInterruption,
 } from '#/kosong/contract/errors';
 import { isContentPart, isVacuousContentPart, isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
-import { readGenerateFailureUsage } from '#/kosong/contract/generate';
+import { readGenerateContinuationToken, readGenerateFailureUsage } from '#/kosong/contract/generate';
 import type { ResponsesTransportSelection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
 import { matchesProviderTarget } from '#/kosong/provider/providerTarget';
 import { safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
@@ -131,6 +131,7 @@ import { AnthropicResponseCapture, type AnthropicResponseCaptureInput, type Anth
 
 import {
   IAgentLLMRequesterService,
+  type AgentLLMAttemptRetryMode,
   type AgentLLMRequestFinish,
   type AgentLLMRequestLogFields,
   type AgentLLMRequestOverrides,
@@ -561,7 +562,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     onPart: AgentLLMRequestPartHandler,
     signal: AbortSignal | undefined,
     onRequestTrace: (traceId: string | undefined) => void,
-    onAttemptRetry: (() => void) | undefined,
+    onAttemptRetry: ((mode: AgentLLMAttemptRetryMode) => void) | undefined,
     retry: 'never' | undefined,
   ): Promise<AgentLLMRequestFinish> {
     const source = request.source;
@@ -696,7 +697,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             case 'attempt.discarded':
               toolCallIds.rollback();
               toolCallIds = this.toolCallIdNormalizer.beginResponse();
-              onAttemptRetry?.();
+              onAttemptRetry?.('discard');
               break;
             case 'part':
               attemptObservedOutput ||= !isContentPart(event.part) || !isVacuousContentPart(event.part);
@@ -814,8 +815,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (retry === 'never' || retryPolicy?.retry === false || hasExplicitRetryVeto(error) ||
           isAbortError(error) || signal?.aborted === true) throw error;
         if (source?.type === 'turn' && isRetryableRequestInterruption(error)) {
-          const discardedPartialOutput = attemptObservedOutput || !isRetryableGenerateError(error);
-          if (discardedPartialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
+          const partialOutput = attemptObservedOutput || !isRetryableGenerateError(error);
+          if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
           const maxAttempts = Math.min(DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           if (interruptionAttempt >= maxAttempts) {
@@ -828,14 +829,25 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             });
             throw error;
           }
-          onAttemptRetry?.();
+          if (request.model.protocol === 'google-genai') {
+            params = { ...params, googleContinuationToken: readGenerateContinuationToken(error) };
+          }
+          const retryMode: AgentLLMAttemptRetryMode = request.model.protocol !== 'google-genai'
+            ? 'discard'
+            : params.googleContinuationToken === undefined ? 'retain' : 'continue';
+          const discardedPartialOutput = partialOutput && retryMode === 'discard';
+          const retainedPartialOutput = partialOutput && retryMode !== 'discard';
+          const action = retryMode === 'discard'
+            ? 'retrying and discarding partial output'
+            : retryMode === 'continue' ? 'continuing with partial output retained' : 'retrying with partial output retained';
+          onAttemptRetry?.(retryMode);
           this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
           const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
           const fields = retryErrorFields(raw);
-          const errorMessage = `Upstream interrupted; retrying and discarding partial output. ${fields.errorMessage}`;
-          this.log.warn('upstream interrupted; retrying and discarding partial output', {
+          const errorMessage = `Upstream interrupted; ${action}. ${fields.errorMessage}`;
+          this.log.warn(`upstream interrupted; ${action}`, {
             ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
-            maxAttempts, delayMs, discardedPartialOutput, ...fields, ...responseTransportLogFields(error),
+            maxAttempts, delayMs, discardedPartialOutput, retainedPartialOutput, ...fields, ...responseTransportLogFields(error),
           });
           void this.dispatcher.dispatch(new TurnStepRetrying({
             turnId: source.turnId, step: source.step ?? 1,
@@ -847,6 +859,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           await refreshIdentityParams();
           continue;
         }
+        params = { ...params, googleContinuationToken: undefined };
         if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
@@ -857,7 +870,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           captureMediaStripPolicy,
         );
         if (nextPolicy !== undefined) {
-          onAttemptRetry?.();
+          onAttemptRetry?.('discard');
           await refreshIdentityParams();
           policy = nextPolicy;
           continue;
@@ -882,7 +895,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           ...retryErrorFields(error),
           ...responseTransportLogFields(error),
         });
-        onAttemptRetry?.();
+        onAttemptRetry?.('discard');
         await refreshIdentityParams();
         await sleepForRetry(delayMs, signal);
       }

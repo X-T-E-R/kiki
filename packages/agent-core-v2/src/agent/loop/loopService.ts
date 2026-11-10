@@ -25,7 +25,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { abortable, abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorDisplayMessage, toErrorMessage } from '#/_base/errors/errorMessage';
-import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
+import { IAgentLLMRequesterService, type AgentLLMAttemptRetryMode, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import {
@@ -1286,8 +1286,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         {
           retry: thinkingOnlyFollowup ? 'never' : undefined,
           source: { type: 'turn', turnId, step: currentStep },
-          onAttemptRetry: () => {
-            streamParts.discardAttemptParts();
+          onAttemptRetry: (mode) => {
+            streamParts.retryAttempt(mode);
           },
         },
         streamParts.handle,
@@ -1333,7 +1333,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         throw error;
       }
       this.lastRequestTraceId = request.trace.traceId;
-      this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      response = this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
       if (
         isThinkOnlyCompletion(response) &&
         this.llmRequester.supportsAssistantPrefill?.() === false
@@ -1354,7 +1354,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           delayMs: 0,
           errorName: 'GeminiThinkOnlyStop',
           errorMessage:
-            'Gemini finished with STOP and only thinking. Official continuation requires finishReason CONTINUATION plus a continuationToken, which this SDK cannot send. Retrying the original request snapshot once.',
+            'Gemini finished with STOP and only thinking. This response did not expose a usable continuationToken for another SDK hop. Retrying the original request snapshot once.',
         }));
         continuationBudget.thinkingOnlySnapshotActive = true;
         const retryTask = this.llmRequester.start(
@@ -1362,8 +1362,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             messages: snapshot,
             retry: 'never',
             source: { type: 'turn', turnId, step: currentStep },
-            onAttemptRetry: () => {
-              streamParts.discardAttemptParts();
+            onAttemptRetry: (mode) => {
+              streamParts.retryAttempt(mode);
             },
           },
           streamParts.handle,
@@ -1381,7 +1381,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           throw error;
         }
         this.lastRequestTraceId = retryTask.trace.traceId;
-        this.appendResponseContent(turnId, currentStep, stepUuid, retry, streamParts);
+        retry = this.appendResponseContent(turnId, currentStep, stepUuid, retry, streamParts);
         response = { ...retry, usage: addUsage(response.usage, retry.usage) };
         if (response.rawFinishReason === 'CONTINUATION' || !hasAnswerOrToolCall(response)) {
           this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
@@ -1518,8 +1518,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepUuid: string,
     response: AgentLLMRequestFinish,
     streamParts: StreamPartCollector,
-  ): void {
-    for (const entry of streamParts.resolveContent(response.message.content)) {
+  ): AgentLLMRequestFinish {
+    const entries = streamParts.resolveContent(response.message.content);
+    for (const entry of entries) {
       this.context.appendLoopEvent({
         type: 'content.part',
         uuid: entry.id,
@@ -1530,6 +1531,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         responseInstanceId: entry.responseInstanceId,
       });
     }
+    return { ...response, message: { ...response.message, content: entries.map(entry => entry.part) } };
   }
 
   private appendInterruptedStreamContent(
@@ -1805,10 +1807,29 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     let responseInstanceId: string | undefined;
     const emittedToolCallIds = new Set<string>();
     let forceContentPartBoundary = false;
+    let retryMode: AgentLLMAttemptRetryMode | undefined;
+    let replayContent: ContentPart[] = [];
+    let replayIndex = 0;
+    let replayOffset = 0;
+    let replaying = false;
     const beginResponseEvent = () => {
       signal.throwIfAborted();
       onResponseEvent();
       signal.throwIfAborted();
+    };
+    const clearReplay = () => {
+      replayContent = [];
+      replayIndex = 0;
+      replayOffset = 0;
+      replaying = false;
+    };
+    const discardAttemptToolCalls = () => {
+      const toolCallIds = [...emittedToolCallIds];
+      if (toolCallIds.length > 0) {
+        void this.dispatcher.dispatch(new ResponseAttemptDiscarded({ turnId, stepId, partIds: [], toolCallIds }));
+      }
+      callsByIndex.clear();
+      emittedToolCallIds.clear();
     };
     const discardAttemptParts = () => {
       const partIds = partialContent.map((entry) => entry.id);
@@ -1819,6 +1840,22 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       partialContent.length = 0;
       callsByIndex.clear();
       emittedToolCallIds.clear();
+      forceContentPartBoundary = false;
+      responseInstanceId = undefined;
+      retryMode = undefined;
+      clearReplay();
+    };
+    const retryAttempt = (mode: AgentLLMAttemptRetryMode) => {
+      if (mode === 'discard') {
+        discardAttemptParts();
+        return;
+      }
+      discardAttemptToolCalls();
+      retryMode = mode;
+      replayContent = mode === 'retain' ? partialContent.map(entry => structuredClone(entry.part)) : [];
+      replayIndex = 0;
+      replayOffset = 0;
+      replaying = mode === 'retain';
       forceContentPartBoundary = false;
       responseInstanceId = undefined;
     };
@@ -1832,40 +1869,127 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       partialContent.push(entry);
       return entry.id;
     };
+    const matchingReplayIndex = (part: ContentPart): number | undefined => {
+      for (let index = replayIndex; index < replayContent.length; index += 1) {
+        const candidate = replayContent[index]!;
+        const offset = index === replayIndex ? replayOffset : 0;
+        if (part.type === 'text' && candidate.type === 'text') {
+          const remaining = candidate.text.slice(offset);
+          if (remaining.startsWith(part.text) || part.text.startsWith(remaining)) return index;
+        } else if (part.type === 'think' && candidate.type === 'think') {
+          const remaining = candidate.think.slice(offset);
+          if (remaining.startsWith(part.think) || part.think.startsWith(remaining)) return index;
+        } else if (JSON.stringify(candidate) === JSON.stringify(part)) {
+          return index;
+        }
+      }
+      return undefined;
+    };
+    const acceptContent = <T extends ContentPart>(part: T): T | undefined => {
+      if (retryMode !== 'retain' || !replaying) return part;
+      while (replayIndex < replayContent.length) {
+        const match = matchingReplayIndex(part);
+        if (match === undefined) {
+          replaying = false;
+          forceContentPartBoundary = true;
+          return part;
+        }
+        if (match !== replayIndex) {
+          replayIndex = match;
+          replayOffset = 0;
+        }
+        const previous = replayContent[replayIndex]!;
+        if (part.type === 'text' && previous.type === 'text') {
+          const remaining = previous.text.slice(replayOffset);
+          if (remaining.length === 0) {
+            replayIndex += 1;
+            replayOffset = 0;
+            continue;
+          }
+          if (remaining.startsWith(part.text)) {
+            replayOffset += part.text.length;
+            if (replayOffset === previous.text.length) {
+              replayIndex += 1;
+              replayOffset = 0;
+            }
+            return undefined;
+          }
+          const suffix = part.text.slice(remaining.length);
+          if (replayIndex < replayContent.length - 1) forceContentPartBoundary = true;
+          replayIndex += 1;
+          replayOffset = 0;
+          replaying = false;
+          return { ...part, text: suffix };
+        }
+        if (part.type === 'think' && previous.type === 'think') {
+          const remaining = previous.think.slice(replayOffset);
+          if (remaining.length === 0) {
+            replayIndex += 1;
+            replayOffset = 0;
+            continue;
+          }
+          if (remaining.startsWith(part.think)) {
+            replayOffset += part.think.length;
+            if (replayOffset === previous.think.length) {
+              replayIndex += 1;
+              replayOffset = 0;
+            }
+            return undefined;
+          }
+          const suffix = part.think.slice(remaining.length);
+          if (replayIndex < replayContent.length - 1) forceContentPartBoundary = true;
+          replayIndex += 1;
+          replayOffset = 0;
+          replaying = false;
+          return { ...part, think: suffix };
+        }
+        replayIndex += 1;
+        replayOffset = 0;
+        return undefined;
+      }
+      replaying = false;
+      return part;
+    };
 
     return {
       handle: (part, instanceId) => {
         signal.throwIfAborted();
         if (instanceId !== responseInstanceId) {
-          discardAttemptParts();
+          if (retryMode === undefined) discardAttemptParts();
           responseInstanceId = instanceId;
         }
         switch (part.type) {
           case 'text': {
+            const accepted = acceptContent(part);
+            if (accepted === undefined) return;
             beginResponseEvent();
-            const partId = accumulate(part);
+            const partId = accumulate(accepted);
             void this.dispatcher.dispatch(
-              new AssistantDelta({ turnId, step, stepId, partId, delta: part.text }),
+              new AssistantDelta({ turnId, step, stepId, partId, delta: accepted.text }),
             );
             return;
           }
           case 'think': {
+            const accepted = acceptContent(part);
+            if (accepted === undefined) return;
             beginResponseEvent();
-            if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
-            const partId = accumulate(part);
-            if (part.hidden === true || part.think.length === 0) return;
+            if (isVacuousContentPart(accepted) && partialContent.at(-1)?.part.type === 'text') return;
+            const partId = accumulate(accepted);
+            if (accepted.hidden === true || accepted.think.length === 0) return;
             void this.dispatcher.dispatch(
-              new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think, responseInstanceId }),
+              new ThinkingDelta({ turnId, step, stepId, partId, delta: accepted.think, responseInstanceId }),
             );
             return;
           }
           case 'image_url':
           case 'audio_url':
           case 'video_url': {
+            const accepted = acceptContent(part);
+            if (accepted === undefined) return;
             beginResponseEvent();
-            const partId = accumulate(part);
+            const partId = accumulate(accepted);
             void this.dispatcher.dispatch(
-              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part }),
+              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part: accepted }),
             );
             return;
           }
@@ -1911,6 +2035,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       },
       resolveContent: (content) => {
         signal.throwIfAborted();
+        if (retryMode !== undefined) {
+          const resolved = partialContent.splice(0);
+          retryMode = undefined;
+          forceContentPartBoundary = false;
+          clearReplay();
+          signal.throwIfAborted();
+          return resolved;
+        }
         const unused = partialContent.filter((entry) => entry.responseInstanceId === responseInstanceId);
         const resolved = content.map((part) => {
           const index = unused.findIndex((entry) => entry.part.type === part.type);
@@ -1929,7 +2061,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         return resolved;
       },
       hasToolCallOutput: () => emittedToolCallIds.size > 0,
-      discardAttemptParts,
+      retryAttempt,
       drainInterruptedContent: () =>
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
@@ -1946,7 +2078,7 @@ function sealedGoogleRequestSnapshot(messages: readonly ContextMessage[]): Conte
 
 function googleContinuationUnsupported(response: AgentLLMRequestFinish): ChatProviderError {
   return new ChatProviderError(
-    'Gemini finished with CONTINUATION. Official continuation resends the same contents, system instruction, tools, and config with the latest continuationToken and does not append this partial output. This SDK cannot send a continuationToken, so the turn stopped with the partial response kept and no completed answer.',
+    'Gemini finished with CONTINUATION without a usable continuationToken for another SDK hop. Official continuation resends the same contents, system instruction, tools, and config with the latest token and does not append partial output. The turn stopped with the partial response kept and no completed answer.',
     undefined,
     { details: {
       google_stop: 'continuation_unsupported',
@@ -2131,7 +2263,7 @@ interface MaterializeAnchor {
 
 interface StreamPartCollector {
   readonly handle: (part: StreamedMessagePart, responseInstanceId?: string) => void;
-  discardAttemptParts(): void;
+  retryAttempt(mode: AgentLLMAttemptRetryMode): void;
   resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
   hasToolCallOutput(): boolean;
   drainInterruptedContent(): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
