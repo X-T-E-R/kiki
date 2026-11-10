@@ -18,7 +18,7 @@ A subagent dispatch card expands children created during that particular run. Ch
 
 File references can be previewed, opened, or revealed in their folder. Reopening a session, or loading an agent's saved history, shows each model change as a divider naming the old and new model; a thinking-effort change on its own does not add one.
 
-Click an image to open one viewer. Use the previous/next controls or `←` / `→` to browse images from that agent's loaded conversation. Long images fit the width and scroll vertically; click the image or use the size control to switch to actual size, where you can drag to pan.
+On a phone, swipe within a wide table or code block to see the rest. Select an image to open the viewer, then use the previous/next controls or `←` / `→` to browse the agent's loaded images. Scroll to read a tall image, or select the image or size control to switch to actual size and drag to pan.
 
 Choose **Annotate image** below the image to enter **Annotation mode**. The bottom toolbar offers arrows, rectangles, freehand marks, selection and undo; **Done** keeps the marks in the viewer, while **Cancel** discards the current edits. Right-click, or press `Shift-F10`, to copy or download the image; annotations can be downloaded separately as a PNG without changing the original. Link and path actions appear only when the source has them, and local open/reveal actions are available only for local files on a host that supports them. If an image fails to load, retry it or continue to another image.
 
