@@ -8910,6 +8910,186 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  it('completes a deep-link locate across a slow initial load (>4s) and slow 15s/30s history pages without error rows, and stops on unmount or hard backend failure', async () => {
+    resetTimelineLocatorsForTests();
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    try {
+      let state = transcriptState([], { sessionId: 'session_slow_deep_locate', loaded: false, hasMoreHistory: true });
+      const render = () => renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_slow_deep_locate" agentId="main">
+          {virtualTranscript(state, (signal) => controller.loadOlderMessages('main', signal))}
+        </TranscriptDetailProvider>
+      ));
+      await render();
+      expect(container.querySelector('[data-transcript-loading]')).not.toBeNull();
+
+      // 1) locateInTimeline is called while the cold session is still on the loading screen; it must attach to the visible loading surface immediately and not fail after 4s.
+      let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void locateInTimeline({ kind: 'turn', turnId: 't1' }, { sessionId: 'session_slow_deep_locate', notify: false, waitMs: 50 }).then((value) => {
+          outcome = value;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+      expect(outcome).toBeUndefined();
+
+      // Initial snapshot arrives with newest turn t3; older pages t2 and t1 take 15s and 30s (simulated via controlled promises).
+      controller.handleTranscript(resetEvent('main', {
+        ...userTurnSnapshot(),
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't3',
+            ordinal: 3,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Newest turn 3',
+            startedAt: '2026-11-10T00:00:03.000Z',
+            endedAt: '2026-11-10T00:00:04.000Z',
+            steps: [],
+          },
+        ],
+        olderCursor: 'cursor-t3',
+        hasMoreOlder: true,
+      }, 1, true));
+      state = { ...controller.getState(), sessionId: 'session_slow_deep_locate', loaded: true, hasMoreHistory: true };
+
+      let releasePage1!: () => void;
+      let releasePage2!: () => void;
+      const page1Gate = new Promise<void>((resolve) => { releasePage1 = resolve; });
+      const page2Gate = new Promise<void>((resolve) => { releasePage2 = resolve; });
+      let pageCalls = 0;
+      const pageSpy = vi.spyOn(controller['view'].transcript, 'page').mockImplementation(async () => {
+        pageCalls += 1;
+        if (pageCalls === 1) {
+          await page1Gate;
+          return {
+            session_id: 'session_slow_deep_locate',
+            agent_id: 'main',
+            has_more: true,
+            items: [
+              {
+                kind: 'turn',
+                turnId: 't2',
+                ordinal: 2,
+                state: 'completed',
+                origin: { kind: 'user' },
+                prompt: 'Middle turn 2',
+                startedAt: '2026-11-10T00:00:02.000Z',
+                endedAt: '2026-11-10T00:00:02.500Z',
+                steps: [],
+              },
+            ],
+            tasks: [],
+            interactions: [],
+            attachments: [],
+            todos: [],
+            prompts: [],
+            meta: {},
+            agents: [],
+            pending_interactions: [],
+            coverage: { kind: 'tail', hasMoreOlder: true },
+            next_cursor: 'cursor-t2',
+          };
+        }
+        await page2Gate;
+        return {
+          session_id: 'session_slow_deep_locate',
+          agent_id: 'main',
+          has_more: true,
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'Target turn 1',
+              startedAt: '2026-11-10T00:00:01.000Z',
+              endedAt: '2026-11-10T00:00:01.500Z',
+              steps: [],
+            },
+          ],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+          agents: [],
+          pending_interactions: [],
+          coverage: { kind: 'tail', hasMoreOlder: true },
+          next_cursor: 'cursor-t1',
+        };
+      });
+
+      const unsubscribe = controller.subscribe(() => {
+        state = { ...controller.getState(), sessionId: 'session_slow_deep_locate' };
+        void render();
+      });
+      await render();
+      await settleVirtualizer();
+      for (let frame = 0; frame < 10 && pageCalls === 0; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+      }
+      expect(pageCalls).toBe(1);
+      expect(controller.getState().olderError).toBeUndefined();
+
+      await act(async () => { releasePage1(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+      for (let frame = 0; frame < 10 && pageCalls < 2; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+      }
+      expect(pageCalls).toBe(2);
+      expect(controller.getState().olderError).toBeUndefined();
+
+      await act(async () => { releasePage2(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+      for (let frame = 0; frame < 150 && outcome === undefined; frame += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+      }
+      expect(outcome).toEqual({ status: 'found' });
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(container.querySelector('[data-turn-id="t1"]')?.textContent).toContain('Target turn 1');
+      const renderedTurns = [...container.querySelectorAll<HTMLElement>('[data-turn-id]')].map((el) => el.dataset['turnId']);
+      expect(renderedTurns[0]).toBe('t1');
+
+      // 2) Real backend failure exits promptly as load-failed.
+      state = { ...controller.getState(), sessionId: 'session_slow_deep_locate', hasMoreHistory: true };
+      await render();
+      pageSpy.mockRejectedValueOnce(new Error('Disk I/O failure'));
+      let errorOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        errorOutcome = await locateInTimeline({ kind: 'turn', turnId: 't0' }, { sessionId: 'session_slow_deep_locate', notify: false });
+      });
+      expect(errorOutcome).toEqual({ status: 'load-failed' });
+      expect(controller.getState().olderError).toContain('Disk I/O failure');
+
+      // 3) Unmount while a slow locate is in flight aborts the request immediately.
+      let unmountAborted = false;
+      pageSpy.mockImplementationOnce((_input, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          unmountAborted = true;
+          reject(new DOMException('Cancelled', 'AbortError'));
+        }, { once: true });
+      }));
+      let unmountOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        void locateInTimeline({ kind: 'turn', turnId: 't0' }, { sessionId: 'session_slow_deep_locate', notify: false }).then((value) => {
+          unmountOutcome = value;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+      unsubscribe();
+      await act(async () => { root.render(null); await new Promise((resolve) => setTimeout(resolve, 40)); });
+      expect(unmountAborted).toBe(true);
+      expect(unmountOutcome).toEqual({ status: 'no-timeline' });
+    } finally {
+      await act(async () => { root.render(null); });
+      controller.close();
+    }
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();

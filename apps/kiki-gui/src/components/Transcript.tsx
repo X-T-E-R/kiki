@@ -3822,7 +3822,7 @@ export const TurnTailLine = memo(function TurnTailLine({
   );
 });
 
-export function TranscriptLoading() {
+export function TranscriptLoading({ rootRef }: { rootRef?: React.Ref<HTMLDivElement> } = {}) {
   const { t } = useI18n();
   const [startedAt] = useState(Date.now);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -3833,7 +3833,7 @@ export function TranscriptLoading() {
     return () => { clearInterval(timer); };
   }, [startedAt]);
   return (
-    <div data-transcript-loading role="status" aria-live="polite" className="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-faint">
+    <div ref={rootRef} data-transcript-loading role="status" aria-live="polite" className="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-faint">
       <span aria-hidden="true" className="status-dot-busy h-1 w-1 rounded-full bg-ink-faint" />
       <span>{elapsedSeconds >= 3
         ? t('transcript.openingElapsed', { seconds: elapsedSeconds })
@@ -4428,6 +4428,7 @@ export function Transcript({
     return [...indexes].sort((left, right) => left - right);
   }, [pinnedIndexes]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
   const olderCarryPxRef = useRef(0);
@@ -4981,9 +4982,13 @@ export function Transcript({
             return !cancelled();
           })()
           : await loadOlderRef.current(signal));
-      for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
-        await nextFrame();
-        if (cancelled()) return { status: 'no-timeline' };
+      if (loadedMore) {
+        for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
+          await nextFrame();
+          if (cancelled()) return { status: 'no-timeline' };
+        }
+      } else if (cancelled()) {
+        return { status: 'no-timeline' };
       }
       if (liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
@@ -5046,9 +5051,9 @@ export function Transcript({
       // `hidden` tabpanels and display:none panels both leave the box
       // unrendered; either means the timeline is not what the reader sees.
       isVisible: () => {
-        const scroll = scrollRef.current;
-        if (!liveRef.current.visible || scroll === null || !scroll.isConnected) return false;
-        return scroll.closest('[hidden], [style*="display: none"]') === null;
+        const element = scrollRef.current ?? surfaceRef.current;
+        if (!liveRef.current.visible || element === null || !element.isConnected) return false;
+        return element.closest('[hidden], [style*="display: none"]') === null;
       },
       locate: (target, options) => locate(target, options),
       isAtTarget: isAtRecordedTarget,
@@ -5450,7 +5455,7 @@ export function Transcript({
 
   if (loadError !== undefined && (!loaded || timelineBlocks.length === 0)) {
     return (
-      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
+      <div ref={surfaceRef} role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
           <p className="text-[13px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
           <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
@@ -5468,7 +5473,7 @@ export function Transcript({
     );
   }
 
-  if (!loaded) return <TranscriptLoading />;
+  if (!loaded) return <TranscriptLoading rootRef={surfaceRef} />;
 
   const topEdgeState = olderBatchActive && !state.loadingOlder && state.olderError === undefined && state.hasMoreHistory
     ? { ...state, loadingOlder: true }
@@ -5482,7 +5487,7 @@ export function Transcript({
     (topEdgeState.historyCoverageKind !== 'unknown' || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined);
   if (timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
+      <div ref={surfaceRef} className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
         {sessionRemainderPending ? null : (
           <p className="text-[13px] text-ink-faint" title={state.historyCoverageKind === 'unknown' ? t('transcript.historyUnverifiedHint') : undefined}>

@@ -36,7 +36,13 @@ export async function restoreTimelineReading(
         if (!adapter.hasMore()) return outcome = { status: 'not-found' };
         // Deliberately try again despite a previous error; the existing paging owner resets it.
         const loaded = await adapter.loadOlder();
-        for (let frame = 0; frame < 4; frame += 1) await adapter.nextFrame();
+        if (adapter.isCancelled?.()) return outcome = { status: 'no-timeline' };
+        if (loaded) {
+          for (let frame = 0; frame < 4; frame += 1) {
+            await adapter.nextFrame();
+            if (adapter.isCancelled?.()) return outcome = { status: 'no-timeline' };
+          }
+        }
         if (adapter.hasLoadError()) return outcome;
         if (!loaded && !adapter.hasAnchor(key)) return outcome;
       }

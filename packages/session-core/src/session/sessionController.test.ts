@@ -17,7 +17,7 @@ import { resolveEffectiveModel } from '../settings/settings';
 import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@kiki/transcript';
 
-import { assertSessionWritable, OLDER_HISTORY_TIMEOUT_MS, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
+import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
@@ -2683,44 +2683,151 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
-  it('times out a hung transcript page and retries from its original cursor without accepting its late body', async () => {
+  it('waits across a single 15s and 30s pending transcript page without timing out, and shares the flight between top-edge and locate', async () => {
     vi.useFakeTimers();
     const { controller, view } = await openTranscriptController();
-    const held = deferred<AgentTranscriptResponse>();
+    const firstPage = deferred<AgentTranscriptResponse>();
+    const secondPage = deferred<AgentTranscriptResponse>();
     const pageInputs: Array<{ readonly beforeItem?: string; readonly beforeTurn?: string }> = [];
     view.transcript.page = async (input) => {
       pageInputs.push(input);
-      if (pageInputs.length === 1) return held.promise as ReturnType<SessionViewFacade['transcript']['page']>;
-      return {
+      if (pageInputs.length === 1) return firstPage.promise as ReturnType<SessionViewFacade['transcript']['page']>;
+      return secondPage.promise as ReturnType<SessionViewFacade['transcript']['page']>;
+    };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    const topEdgeLoad = controller.loadOlderHistory('main');
+    const sharedLocate = controller.locateTurn('main', 'history-0');
+    try {
+      await Promise.resolve();
+      expect(pageInputs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(controller.getState()).toMatchObject({ loadingOlder: true, hasMoreHistory: true, olderError: undefined });
+
+      firstPage.resolve({
+        agent_id: 'main',
+        items: [historyTurn(1)],
+        has_more: true,
+        next_cursor: 'cursor-1',
+        coverage: { kind: 'tail', hasMoreOlder: true },
+      });
+      await expect(topEdgeLoad).resolves.toEqual({ kind: 'advanced', changed: true });
+      await expect(sharedLocate).resolves.toEqual({ kind: 'advanced', changed: true });
+      expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
+
+      const locateSecond = controller.locateTurn('main', 'history-0');
+      await Promise.resolve();
+      expect(pageInputs).toHaveLength(2);
+      expect(pageInputs[1]).toMatchObject({ beforeItem: 'cursor-1', beforeTurn: undefined });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(controller.getState()).toMatchObject({ loadingOlder: true, hasMoreHistory: true, olderError: undefined });
+
+      secondPage.resolve({
         agent_id: 'main',
         items: [historyTurn(0)],
         has_more: false,
         coverage: { kind: 'full', hasMoreOlder: false },
-      } as unknown as Awaited<ReturnType<SessionViewFacade['transcript']['page']>>;
-    };
-    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'original-cursor' }), 1, true));
-    const loading = controller.loadOlderHistory();
-    try {
-      await Promise.resolve();
-      expect(pageInputs).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(OLDER_HISTORY_TIMEOUT_MS);
-      await expect(loading).resolves.toEqual({ kind: 'failed', changed: false });
-      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: true });
-      expect(controller.getState().olderError).toContain('timed out');
-
-      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
-      expect(pageInputs[1]).toMatchObject({ beforeItem: 'original-cursor', beforeTurn: undefined });
-      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
-      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
-
-      held.resolve({ agent_id: 'main', items: [historyTurn(99)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      });
+      await expect(locateSecond).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
       expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
     } finally {
-      held.resolve({ agent_id: 'main', items: [], has_more: false });
+      firstPage.resolve({ agent_id: 'main', items: [], has_more: false });
+      secondPage.resolve({ agent_id: 'main', items: [], has_more: false });
       controller.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('propagates an explicit reading deadline failure immediately and retries from the original cursor without accepting a late body', async () => {
+    vi.useFakeTimers();
+    const { createKlient } = await import('@kiki/klient/http');
+    const { controller, client } = await openTranscriptController();
+    let readingTimeoutMs = 2000;
+    const held = deferred<Response>();
+    const requestedCursors: Array<string | null> = [];
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      requestedCursors.push(parsed.searchParams.get('before_item'));
+      if (requestedCursors.length === 1) {
+        return new Promise<Response>((resolve, reject) => {
+          void held.promise.then(resolve);
+          init?.signal?.addEventListener('abort', () => { reject(new DOMException('Cancelled', 'AbortError')); }, { once: true });
+        });
+      }
+      return Promise.resolve(Response.json({
+        code: 0,
+        msg: 'success',
+        request_id: 'req-2',
+        data: {
+          session_id: 'session_test',
+          agent_id: 'main',
+          items: [historyTurn(0)],
+          has_more: false,
+          transcript_coverage_version: 2,
+          tasks: [],
+          meta: {},
+          agents: [],
+          pending_interactions: [],
+          coverage: { kind: 'full', hasMoreOlder: false },
+        },
+      }));
+    });
+    const klient = createKlient({
+      endpoint: 'http://example.test',
+      timeoutMs: 30_000,
+      readingTimeoutMs: () => readingTimeoutMs,
+      fetch: fetchMock as typeof fetch,
+    });
+    const view = fakeView(client, {});
+    const scoped = new SessionController(
+      client as unknown as KikiClient,
+      { ...view, transcript: klient.session('session_test').view.transcript },
+      'session_test',
+    );
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'original-cursor' }), 1, true));
+    const loading = scoped.loadOlderHistory();
+    try {
+      await Promise.resolve();
+      expect(requestedCursors).toEqual(['original-cursor']);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(loading).resolves.toEqual({ kind: 'failed', changed: false });
+      expect(scoped.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: true });
+      expect(scoped.getState().olderError).toContain('timed out after 2000ms');
+      expect(requestedCursors).toHaveLength(1);
+
+      readingTimeoutMs = 0;
+      await expect(scoped.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(requestedCursors).toEqual(['original-cursor', 'original-cursor']);
+      expect(historyTexts(scoped)).toEqual(['History 0', 'History 1']);
+      expect(scoped.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+
+      held.resolve(Response.json({
+        code: 0,
+        msg: 'success',
+        request_id: 'req-1',
+        data: {
+          session_id: 'session_test',
+          agent_id: 'main',
+          items: [historyTurn(99)],
+          has_more: false,
+          transcript_coverage_version: 2,
+          tasks: [],
+          meta: {},
+          agents: [],
+          pending_interactions: [],
+          coverage: { kind: 'full', hasMoreOlder: false },
+        },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(historyTexts(scoped)).toEqual(['History 0', 'History 1']);
+      expect(scoped.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+    } finally {
+      held.resolve(Response.json({ code: 0, msg: 'success', data: { session_id: 'session_test', agent_id: 'main', items: [], has_more: false } }));
+      scoped.close();
+      controller.close();
+      await klient.close();
       vi.useRealTimers();
     }
   });
