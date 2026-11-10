@@ -5033,3 +5033,117 @@ it('preserves subagent task effort and provenance through wire and schema projec
   const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap(fact => fact.operations).find(op => op.op === 'task.upsert');
   expect(legacy?.op === 'task.upsert' ? legacy.task.thinkingEffort : 'missing').toBeUndefined();
 });
+
+it('anchors re-emitted task.started records to ownerTurnId and preserves original startedAt and parentToolCallId', () => {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    task: (taskId) => transcript.getTask(taskId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+
+  feed({ type: 'turn.prompt', turnId: 10, promptId: 'p10', input: [{ type: 'text', text: 'turn 10' }], origin: { kind: 'user' }, time: 10_000 });
+  feed({ type: 'turn.started', turnId: 10, promptId: 'p10', prompt: 'turn 10', origin: { kind: 'user' }, time: 10_000 });
+  feed({
+    type: 'task.started',
+    time: 11_000,
+    info: {
+      taskId: 'agent-early',
+      kind: 'agent',
+      agentId: 'agent-10',
+      ownerTurnId: 10,
+      parentToolCallId: 'call_early',
+      status: 'running',
+      description: 'early worker',
+      startedAt: 11_000,
+      endedAt: null,
+    },
+  });
+  feed({ type: 'turn.ended', turnId: 10, reason: 'completed', time: 12_000 });
+  feed({ type: 'turn.prompt', turnId: 11, promptId: 'p11', input: [{ type: 'text', text: 'turn 11' }], origin: { kind: 'user' }, time: 20_000 });
+  feed({ type: 'turn.started', turnId: 11, promptId: 'p11', prompt: 'turn 11', origin: { kind: 'user' }, time: 20_000 });
+  feed({ type: 'turn.ended', turnId: 11, reason: 'completed', time: 22_000 });
+  feed({ type: 'turn.prompt', turnId: 12, promptId: 'p12', input: [{ type: 'text', text: 'turn 12' }], origin: { kind: 'user' }, time: 30_000 });
+  feed({ type: 'turn.started', turnId: 12, promptId: 'p12', prompt: 'turn 12', origin: { kind: 'user' }, time: 30_000 });
+  feed({
+    type: 'task.started',
+    time: 35_000,
+    info: {
+      taskId: 'agent-early',
+      kind: 'agent',
+      agentId: 'agent-10',
+      ownerTurnId: 10,
+      parentToolCallId: 'call_early',
+      status: 'running',
+      description: 'early worker',
+      startedAt: 11_000,
+      endedAt: null,
+    },
+  });
+
+  const snapshot = transcript.snapshot();
+  expect(snapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
+    't10',
+    'ref-agent-early',
+    't11',
+    't12',
+  ]);
+  const ref = snapshot.items.find((item) => item.kind === 'taskref' && item.refId === 'ref-agent-early');
+  expect(ref).toMatchObject({ kind: 'taskref', refId: 'ref-agent-early', at: new Date(11_000).toISOString() });
+
+  const tailTranscript = new AgentTranscript('main');
+  const tailAdapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => tailTranscript.getTurn(turnId),
+    task: (taskId) => tailTranscript.getTask(taskId),
+  });
+  const tailReducer = new TranscriptFactReducer(tailTranscript);
+  const feedTail = (record: TranscriptWireRecord) => tailReducer.apply(tailAdapter.add(record));
+  feedTail({ type: 'turn.prompt', turnId: 11, promptId: 'p11', input: [{ type: 'text', text: 'turn 11' }], origin: { kind: 'user' }, time: 20_000 });
+  feedTail({ type: 'turn.started', turnId: 11, promptId: 'p11', prompt: 'turn 11', origin: { kind: 'user' }, time: 20_000 });
+  feedTail({ type: 'turn.ended', turnId: 11, reason: 'completed', time: 22_000 });
+  feedTail({ type: 'turn.prompt', turnId: 12, promptId: 'p12', input: [{ type: 'text', text: 'turn 12' }], origin: { kind: 'user' }, time: 30_000 });
+  feedTail({ type: 'turn.started', turnId: 12, promptId: 'p12', prompt: 'turn 12', origin: { kind: 'user' }, time: 30_000 });
+  feedTail({
+    type: 'task.started',
+    time: 35_000,
+    info: {
+      taskId: 'agent-early',
+      kind: 'agent',
+      agentId: 'agent-10',
+      ownerTurnId: 10,
+      parentToolCallId: 'call_early',
+      status: 'running',
+      description: 'early worker',
+      startedAt: 11_000,
+      endedAt: null,
+    },
+  });
+  feedTail({
+    type: 'task.terminated',
+    time: 36_000,
+    info: {
+      taskId: 'agent-early',
+      kind: 'agent',
+      agentId: 'agent-10',
+      ownerTurnId: 10,
+      parentToolCallId: 'call_early',
+      status: 'completed',
+      description: 'early worker',
+      startedAt: 11_000,
+      endedAt: 36_000,
+    },
+  });
+  const tailSnapshot = tailTranscript.snapshot();
+  expect(tailSnapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
+    'ref-agent-early',
+    't11',
+    't12',
+  ]);
+  expect(tailSnapshot.tasks.find((task) => task.taskId === 'agent-early')).toMatchObject({
+    taskId: 'agent-early',
+    ownerTurnId: 10,
+    parentToolCallId: 'call_early',
+    startedAt: new Date(11_000).toISOString(),
+  });
+});

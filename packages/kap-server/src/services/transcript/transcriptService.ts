@@ -95,7 +95,7 @@ const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
-const TRANSCRIPT_CHECKPOINT_FORMAT = 19;
+const TRANSCRIPT_CHECKPOINT_FORMAT = 20;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
@@ -3743,15 +3743,23 @@ export function snapshotToOps(
   turnOps: (turn: TranscriptTurn) => TranscriptOperation[] = snapshotTurnOps,
 ): TranscriptOperation[] {
   const ops: TranscriptOperation[] = [];
+  const taskById = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
   const pending: (TranscriptMarker | TranscriptTaskRef)[] = [];
   let lastTurnOrdinal: number | undefined;
   const flushPending = (beforeTurn?: number): void => {
     for (const item of pending) {
-      ops.push(
-        item.kind === 'marker'
-          ? { op: 'marker.upsert', item, beforeTurn }
-          : { op: 'taskref.upsert', item, beforeTurn },
-      );
+      if (item.kind === 'marker') {
+        ops.push({ op: 'marker.upsert', item, beforeTurn });
+        continue;
+      }
+      const task = taskById.get(item.taskId);
+      const ownerBeforeTurn = task?.ownerTurnId !== undefined && Number.isSafeInteger(task.ownerTurnId)
+        ? task.ownerTurnId + 1
+        : undefined;
+      const effectiveBeforeTurn = ownerBeforeTurn !== undefined && (beforeTurn === undefined || ownerBeforeTurn < beforeTurn)
+        ? ownerBeforeTurn
+        : beforeTurn;
+      ops.push({ op: 'taskref.upsert', item, beforeTurn: effectiveBeforeTurn });
     }
     pending.length = 0;
   };

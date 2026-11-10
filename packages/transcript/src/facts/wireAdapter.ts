@@ -896,7 +896,7 @@ export class TranscriptWireAdapter {
         executorId: stringOf(info?.['executorId']) ?? previous?.executorId,
         executorProtocol: stringOf(info?.['executorProtocol']) ?? previous?.executorProtocol,
         sourceRef: transcriptTaskSchema.shape.sourceRef.safeParse(info?.['sourceRef']).data ?? previous?.sourceRef,
-        parentToolCallId: previous?.parentToolCallId,
+        parentToolCallId: stringOf(info?.['parentToolCallId']) ?? previous?.parentToolCallId,
         toolCallId: stringOf(info?.['toolCallId']) ?? previous?.toolCallId,
         questionCount: numberOf(info?.['questionCount']) ?? previous?.questionCount,
         exitCode,
@@ -927,9 +927,9 @@ export class TranscriptWireAdapter {
             kind: 'taskref',
             refId: `ref-${taskId}`,
             taskId,
-            at: isoOf(record.time),
+            at: task.startedAt ?? isoOf(record.time),
           },
-          beforeTurn: this.taskRefBeforeTurn(),
+          beforeTurn: this.taskRefBeforeTurn(task.ownerTurnId),
         });
       }
       if (task.kind !== 'subagent' || task.state !== 'running') {
@@ -2382,7 +2382,8 @@ export class TranscriptWireAdapter {
     return { op: 'turn.upsert', turn };
   }
 
-  private taskRefBeforeTurn(): number | undefined {
+  private taskRefBeforeTurn(ownerTurnId?: number): number | undefined {
+    if (ownerTurnId !== undefined && Number.isSafeInteger(ownerTurnId)) return ownerTurnId + 1;
     const turnId = this.#currentTurnId;
     if (turnId === undefined) return undefined;
     const turn = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);

@@ -1645,6 +1645,50 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getTask('agent-1')).toBeUndefined();
   });
 
+  it('places restored task.started taskrefs before ownerTurnId + 1 with original startedAt and parentToolCallId', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(ev({ type: 'turn.started', turnId: 22, promptId: 'p22', prompt: 'turn 22', origin: { kind: 'user' }, time: 20_000 }));
+    feed(ev({ type: 'turn.ended', turnId: 22, reason: 'completed', time: 21_000 }));
+    feed(ev({ type: 'turn.started', turnId: 23, promptId: 'p23', prompt: 'turn 23', origin: { kind: 'user' }, time: 30_000 }));
+    feed(
+      ev({
+        type: 'task.started',
+        info: {
+          taskId: 'task-restored',
+          kind: 'agent',
+          description: 'Restored background run',
+          status: 'running',
+          detached: true,
+          ownerTurnId: 21,
+          parentToolCallId: 'call_21',
+          agentId: 'agent-21',
+          startedAt: 10_000,
+          endedAt: null,
+        },
+      }),
+    );
+
+    const snapshot = tx.snapshot();
+    expect(snapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
+      'ref-task-restored',
+      't22',
+      't23',
+    ]);
+    expect(snapshot.items[0]).toMatchObject({
+      kind: 'taskref',
+      refId: 'ref-task-restored',
+      at: new Date(10_000).toISOString(),
+    });
+    expect(snapshot.tasks.find((task) => task.taskId === 'task-restored')).toMatchObject({
+      ownerTurnId: 21,
+      parentToolCallId: 'call_21',
+      startedAt: new Date(10_000).toISOString(),
+    });
+  });
+
   it('keeps the newer run of one agent running when an earlier run completes with its own task id', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

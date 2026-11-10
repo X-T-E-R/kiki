@@ -661,10 +661,13 @@ function applyItemUpsert(
   const existingIndex = state.items.findIndex((entry) => itemIdOf(entry) === id);
   if (existingIndex >= 0) {
     const existing = state.items[existingIndex];
-    if (existing === item || (existing !== undefined && transcriptValueEquals(existing, item))) {
+    const resolved = item.kind === 'taskref' && existing?.kind === 'taskref'
+      ? { ...item, at: earlierIsoAt(existing.at, item.at) }
+      : item;
+    if (existing === resolved || (existing !== undefined && transcriptValueEquals(existing, resolved))) {
       return { state, changed: false };
     }
-    return { state: { ...state, items: replaceAt(state.items, existingIndex, item) }, changed: true };
+    return { state: { ...state, items: replaceAt(state.items, existingIndex, resolved) }, changed: true };
   }
   if (beforeTurn !== undefined) {
     const items = [...state.items];
@@ -680,6 +683,16 @@ function applyItemUpsert(
     return { state: { ...state, items }, changed: true };
   }
   return { state: { ...state, items: [...state.items, item] }, changed: true };
+}
+
+function earlierIsoAt(left?: string, right?: string): string | undefined {
+  if (left === undefined || left === '') return right;
+  if (right === undefined || right === '') return left;
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (Number.isNaN(leftMs)) return right;
+  if (Number.isNaN(rightMs)) return left;
+  return leftMs <= rightMs ? left : right;
 }
 
 function itemIdOf(item: TranscriptItem): string {

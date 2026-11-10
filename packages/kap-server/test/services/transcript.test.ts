@@ -6797,3 +6797,52 @@ it('[TL-002] preserves a prepared prefix through append and cancellation retry',
     expect(starts[2]).toBe(starts[1]);
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);
+
+it('[TL-005] snapshotToOps anchors restored taskrefs before ownerTurnId + 1 and preserves cold taskref startedAt', () => {
+  const cold: AgentTranscriptSnapshot = {
+    items: [
+      { kind: 'turn', turnId: 't21', ordinal: 21, state: 'completed', origin: { kind: 'user' }, prompt: 'turn 21', startedAt: '2026-11-10T05:01:00.000Z', steps: [] },
+      { kind: 'taskref', refId: 'ref-agent-21', taskId: 'agent-21', at: '2026-11-10T05:01:53.000Z' },
+      { kind: 'turn', turnId: 't22', ordinal: 22, state: 'completed', origin: { kind: 'user' }, prompt: 'turn 22', startedAt: '2026-11-10T05:04:10.000Z', steps: [] },
+    ],
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+    hasMoreOlder: false,
+  };
+  const live: AgentTranscriptSnapshot = {
+    items: [
+      { kind: 'turn', turnId: 't22', ordinal: 22, state: 'completed', origin: { kind: 'user' }, prompt: 'turn 22', startedAt: '2026-11-10T05:04:10.000Z', steps: [] },
+      { kind: 'turn', turnId: 't23', ordinal: 23, state: 'running', origin: { kind: 'user' }, prompt: 'turn 23', startedAt: '2026-11-10T05:08:00.000Z', steps: [] },
+      { kind: 'taskref', refId: 'ref-agent-20', taskId: 'agent-20', at: '2026-11-10T05:11:10.000Z' },
+      { kind: 'taskref', refId: 'ref-agent-21', taskId: 'agent-21', at: '2026-11-10T05:11:10.000Z' },
+    ],
+    tasks: [
+      { taskId: 'agent-20', kind: 'subagent', state: 'running', detached: true, ownerTurnId: 20, agentId: 'agent-340', outputTail: '', startedAt: '2026-11-10T04:40:19.000Z' },
+      { taskId: 'agent-21', kind: 'subagent', state: 'running', detached: true, ownerTurnId: 21, agentId: 'agent-343', outputTail: '', startedAt: '2026-11-10T05:01:53.000Z' },
+    ],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+    hasMoreOlder: true,
+  };
+  const merged = new AgentTranscript('main');
+  merged.apply([{ op: 'reset', agentId: 'main', snapshot: cold }]);
+  merged.apply(snapshotToOps(live));
+  const snapshot = merged.snapshot();
+  expect(snapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
+    'ref-agent-20',
+    't21',
+    'ref-agent-21',
+    't22',
+    't23',
+  ]);
+  expect(snapshot.items.find((item) => item.kind === 'taskref' && item.refId === 'ref-agent-21')).toMatchObject({
+    at: '2026-11-10T05:01:53.000Z',
+  });
+});

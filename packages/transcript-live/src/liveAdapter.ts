@@ -1231,6 +1231,7 @@ export class AgentTranscriptLiveAdapter {
       receiptVerification?: TranscriptTask['receiptVerification'];
       agentId?: string;
       profile?: string;
+      parentToolCallId?: string;
       model?: string;
       thinkingEffort?: string;
       thinkingEffortExplicit?: boolean;
@@ -1267,6 +1268,7 @@ export class AgentTranscriptLiveAdapter {
       executorId: info.executorId ?? prev?.executorId,
       executorProtocol: info.executorProtocol ?? prev?.executorProtocol,
       sourceRef: info.sourceRef ?? prev?.sourceRef,
+      parentToolCallId: info.parentToolCallId ?? prev?.parentToolCallId,
       toolCallId: info.toolCallId ?? prev?.toolCallId,
       questionCount: info.questionCount ?? prev?.questionCount,
       exitCode: info.exitCode !== undefined ? info.exitCode : prev?.exitCode,
@@ -1290,9 +1292,15 @@ export class AgentTranscriptLiveAdapter {
       if (info.kind === 'agent' && typeof info.agentId === 'string' && info.agentId.length > 0) {
         this.subagentTaskIds.set(info.agentId, info.taskId);
       }
+      const beforeTurn = task.ownerTurnId !== undefined && Number.isSafeInteger(task.ownerTurnId)
+        ? task.ownerTurnId + 1
+        : this.currentTurn !== undefined
+          ? this.currentTurn.ordinal + 1
+          : undefined;
       ops.push({
         op: 'taskref.upsert',
-        item: { kind: 'taskref', refId: `ref-${info.taskId}`, taskId: info.taskId, at: nowIso() },
+        item: { kind: 'taskref', refId: `ref-${info.taskId}`, taskId: info.taskId, at: task.startedAt ?? nowIso() },
+        beforeTurn,
       });
     }
     return ops;
