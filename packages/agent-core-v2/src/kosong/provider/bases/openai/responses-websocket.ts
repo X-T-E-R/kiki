@@ -853,6 +853,7 @@ export class ResponsesWebSocketTransport {
       throw new ResponsesWebSocketError(
         'Responses WebSocket response.create frame exceeds the advertised limit.',
         'responses_websocket_frame_too_large',
+        { safeHttpFallback: true, execution: 'not_executed' },
       );
     }
   }

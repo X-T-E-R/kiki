@@ -893,6 +893,61 @@ describe('production Responses adapter → generate → canonical history → of
 });
 
 describe('production Responses safe HTTP recovery', () => {
+  it.each([1, 2])('sends an oversized initial v%i request once over HTTP and permits another explicit attempt', async (version) => {
+    const limited = JSON.stringify({ ...JSON.parse(version === 1 ? capabilities : capabilitiesV2) as RawObject, max_frame_bytes: 1024 });
+    const gateway = await createGateway(() => undefined, limited);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const text = '🛰'.repeat(400);
+      const history = [user(text)];
+      const tools: Tool[] = [{ name: 'synthetic_echo', description: 'Synthetic echo', parameters: { type: 'object' } }];
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await generate(provider, 'full instructions', tools, history, undefined, { responsesTransport: transport });
+        expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      }
+      expect(gateway.frames).toHaveLength(0);
+      expect(gateway.httpRequests).toHaveLength(2);
+      for (const request of gateway.httpRequests) {
+        expect(request['input']).toEqual([{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }]);
+        expect(request['instructions']).toBe('full instructions');
+        expect(request['tools']).toContainEqual(expect.objectContaining({ name: 'synthetic_echo' }));
+        expect(request).not.toHaveProperty('previous_response_id');
+      }
+    } finally { transport.dispose(); }
+  });
+
+  it.each(['oversized delta', 'oversized state-miss rebase'])('preserves the complete native history over HTTP for an %s', async (mode) => {
+    const limited = v2Capabilities({ max_frame_bytes: 1024 });
+    const output = [
+      { type: 'reasoning', id: 'rs_kept', status: 'completed', summary: [{ type: 'summary_text', text: 'thinking' }], encrypted_content: 'opaque-signature-'.repeat(100) },
+      { type: 'function_call', id: 'fc_kept', status: 'completed', call_id: 'call_kept', name: 'synthetic_echo', arguments: '{"n":9007199254740993}' },
+    ];
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 1) sendNativeOutput(socket, 'resp_kept', output);
+      else sendStateMiss(socket);
+    }, limited);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('tool question')];
+      const first = await generate(provider, 'full instructions', [], history, undefined, { responsesTransport: transport });
+      const text = mode === 'oversized delta' ? '🛰'.repeat(400) : 'tool result';
+      history.push(first.message, { role: 'tool', toolCallId: 'call_kept', content: [{ type: 'text', text }], toolCalls: [] });
+      const second = await generate(provider, 'full instructions', [], history, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.frames).toHaveLength(mode === 'oversized delta' ? 1 : 2);
+      if (mode === 'oversized state-miss rebase') expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_kept');
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpRequests[0]?.['input']).toEqual([
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...output,
+        { type: 'function_call_output', call_id: 'call_kept', output: [{ type: 'input_text', text }] },
+      ]);
+      expect(gateway.httpRequests[0]?.['instructions']).toBe('full instructions');
+      expect(gateway.httpRequests[0]).not.toHaveProperty('previous_response_id');
+    } finally { transport.dispose(); }
+  });
+
   it.each(['unsupported_upstream_format', 'unsupported_prompt_policy'])('falls back once with full input only on a trusted pre-inference %s', async (code) => {
     const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({ type: 'error', status: 400,
       error: { type: 'invalid_request_error', code, message: 'Synthetic unsupported', param: '' }, execution: 'not_executed' })));
