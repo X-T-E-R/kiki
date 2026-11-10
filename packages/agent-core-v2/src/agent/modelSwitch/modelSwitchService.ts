@@ -142,15 +142,21 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       if (active.input.mode !== 'direct' && (maxContextTokens === undefined || reservedTokens === undefined)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'This executor does not support rebuilding a model switch context window.');
       }
-      const summary = active.input.mode === 'compact' ? await this.compaction.prepareModelSwitchSummary(history, signal) : undefined;
+      let overhead = 0;
+      let budget = 0;
+      if (active.input.mode !== 'direct' && maxContextTokens !== undefined && reservedTokens !== undefined) {
+        overhead = this.tokens.requestSize({ systemPrompt: binding.config.systemPrompt ?? this.profile.getSystemPrompt(),
+          tools: this.toolSelect.shapeTools(this.tools.list()).filter((tool) => tool.deferred !== true).map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters ?? {} })), messages: [] });
+        budget = maxContextTokens - reservedTokens - overhead;
+        if (budget <= 0) throw new Error2(ErrorCodes.CONTEXT_OVERFLOW, 'The target model cannot fit its system prompt, tools and reserved output space.');
+      }
+      const summary = active.input.mode === 'compact'
+        ? await this.compaction.prepareModelSwitchSummary(history, signal, options.onSummarizing === undefined ? undefined : () => options.onSummarizing!(active.receipt))
+        : undefined;
       signal.throwIfAborted();
       let messages: readonly ContextMessage[] | undefined;
       let contextTokens: number | undefined;
       if (active.input.mode !== 'direct' && maxContextTokens !== undefined && reservedTokens !== undefined) {
-        const overhead = this.tokens.requestSize({ systemPrompt: binding.config.systemPrompt ?? this.profile.getSystemPrompt(),
-          tools: this.toolSelect.shapeTools(this.tools.list()).filter((tool) => tool.deferred !== true).map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters ?? {} })), messages: [] });
-        const budget = maxContextTokens - reservedTokens - overhead;
-        if (budget <= 0) throw new Error2(ErrorCodes.CONTEXT_OVERFLOW, 'The target model cannot fit its system prompt, tools and reserved output space.');
         const summaryText = summary === undefined ? '' : buildCompactionSummaryText(summary);
         const state = await this.readPackageState(history, oldEpoch, budget - this.tokens.estimateText(summaryText));
         const empty = history.length === 0 && !state.notes && state.todos.length === 0 && state.goal === undefined

@@ -2181,6 +2181,105 @@ it('renews the child context from its own menu, on the panel opened for fresh', 
   expect(document.body.textContent).toContain(translate('en', 'modelSwitch.dialog.titleSameModel'));
 });
 
+it('closes the child switch dialog immediately on a preparing compact receipt and keeps the dialog open on synchronous failed receipts', async () => {
+  const forest = testForest('completed', false, { model: 'fixture/kiki-pro' });
+  const blocks = [{ id: 'a1', kind: 'assistant', text: 'First pass done.' }] as unknown as ReturnType<typeof createViewState>['blocks'];
+  let switches: QueuedModelSwitch[] = [];
+  let onSwitchEvent: ((event: AgentModelSwitchEvent) => void) | undefined;
+  harness.listAgentModelSwitches.mockImplementation(async () => switches);
+  harness.subscribeAgentModelSwitches.mockImplementation((_session, _agent, listener) => {
+    onSwitchEvent = listener;
+    return { ready: Promise.resolve(), dispose: () => { onSwitchEvent = undefined; } };
+  });
+  harness.sendAgentMessage.mockResolvedValue(null);
+
+  await renderWorkspace({
+    forest,
+    controller: controllerStub({ forest, agentStates: { child: { ...createViewState('session'), loaded: true, blocks } } }),
+  });
+  await settle();
+
+  await act(async () => { dock.querySelector<HTMLButtonElement>('#composer-model-select')!.click(); });
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
+  });
+  await settle();
+  expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+  harness.switchAgentModel.mockImplementationOnce(async (_sessionId, agentId, input) => ({
+    operationId: input.operationId,
+    agentId,
+    state: 'failed',
+    fromModel: 'fixture/kiki-pro',
+    toModel: input.model,
+    mode: input.mode,
+    error: { code: 'CONTEXT_OVERFLOW', message: 'target context budget exceeded', retryable: false },
+  }));
+  await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-model-switch-mode="compact"]')?.click(); });
+  const confirmButton = () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+    .find((button) => button.textContent?.trim() === translate('en', 'modelSwitch.dialog.confirm'));
+  await act(async () => { confirmButton()?.click(); });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'modelSwitch.submitFailed', { detail: 'target context budget exceeded' }),
+  });
+  expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+  harness.pushToast.mockClear();
+  harness.switchAgentModel.mockImplementationOnce(async (_sessionId, agentId, input) => {
+    const receipt = {
+      operationId: input.operationId,
+      agentId,
+      state: 'preparing' as const,
+      fromModel: 'fixture/kiki-pro',
+      toModel: input.model,
+      mode: input.mode,
+    };
+    switches = [{
+      input,
+      receipt,
+      revision: 0,
+      originalBinding: { model: 'fixture/kiki-pro', thinking: '' },
+      queueIndex: 0,
+    }];
+    return receipt;
+  });
+  await act(async () => { confirmButton()?.click(); });
+  await settle();
+  expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  expect(dock.querySelector('[data-model-switch-pending="compact"]')?.textContent).toContain('fixture/other');
+
+  const operationId = switches[0]!.input.operationId;
+  await typeText(composerInput(dock), 'follow up after compact');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'child',
+    'follow up after compact',
+    [{ type: 'text', text: 'follow up after compact' }],
+    expect.any(String),
+    operationId,
+  );
+
+  const completedReceipt = {
+    operationId,
+    agentId: 'child',
+    state: 'completed' as const,
+    fromModel: 'fixture/kiki-pro',
+    toModel: 'fixture/other',
+    mode: 'compact' as const,
+    binding: { model: 'fixture/other', thinking: '' },
+    summaryGenerated: true,
+  };
+  switches = [{ ...switches[0]!, receipt: completedReceipt, queueIndex: -1 }];
+  await act(async () => { onSwitchEvent?.({ kind: 'status', operationId, receipt: completedReceipt }); });
+  await settle();
+  expect(dock.querySelector('[data-model-switch-pending]')).toBeNull();
+});
+
 it('keeps no child menu when the child has no conversation to renew', async () => {
   await renderWorkspace({ controller: controllerStub({ forest: testForest(), agentStates: {} }) });
   await settle();

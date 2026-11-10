@@ -52,6 +52,7 @@ export interface ModelSwitchExecuteOptions {
   readonly quiescence?: () => import('#/_base/di/lifecycle').IDisposable;
   readonly signal?: AbortSignal;
   readonly boundary?: import('#/agent/loop/loop').StepBoundary;
+  readonly onSummarizing?: (receipt: ModelSwitchReceipt) => void | Promise<void>;
 }
 
 export interface IAgentModelSwitchService {

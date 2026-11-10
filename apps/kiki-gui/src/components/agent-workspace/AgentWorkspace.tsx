@@ -1136,13 +1136,14 @@ function ChildAgentWorkspace({
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
       } else {
-        await client.switchAgentModel(sessionId, agentId, {
+        const receipt = await client.switchAgentModel(sessionId, agentId, {
           operationId: crypto.randomUUID(),
           model: choice.toModel,
           mode: choice.mode,
           selectedFromModel: choice.fromModel,
           intent: choice.mode === 'direct' ? 'setting' : undefined,
         });
+        if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
       }
       setModelSwitchDialog(undefined);
       modelSwitches.refresh();

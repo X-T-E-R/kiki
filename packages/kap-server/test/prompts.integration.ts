@@ -740,6 +740,109 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it('acknowledges slow compact switchModel and recoverModelSwitch over HTTP before summary finishes', async () => {
+    const models: string[] = [];
+    let requestCount = 0;
+    let firstSummaryEntered!: () => void;
+    let releaseFirstSummary!: () => void;
+    let retrySummaryEntered!: () => void;
+    let releaseRetrySummary!: () => void;
+    const firstSummaryArrival = new Promise<void>((resolve) => { firstSummaryEntered = resolve; });
+    const firstSummaryGate = new Promise<void>((resolve) => { releaseFirstSummary = resolve; });
+    const retrySummaryArrival = new Promise<void>((resolve) => { retrySummaryEntered = resolve; });
+    const retrySummaryGate = new Promise<void>((resolve) => { releaseRetrySummary = resolve; });
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk) => { body += String(chunk); });
+      request.on('end', () => {
+        void (async () => {
+          const index = ++requestCount;
+          models.push((JSON.parse(body) as { model: string }).model);
+          if (index === 2) {
+            firstSummaryEntered();
+            await firstSummaryGate;
+            response.writeHead(400, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ error: { message: 'summary provider down' } }));
+            return;
+          }
+          if (index === 3) {
+            retrySummaryEntered();
+            await retrySummaryGate;
+            response.writeHead(200, { 'content-type': 'text/event-stream' });
+            response.end(`data: ${JSON.stringify({ id: 'summary-ok', choices: [{ index: 0, delta: { content: 'Compact summary text.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+            return;
+          }
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(`data: ${JSON.stringify({ id: `turn-${String(index)}`, choices: [{ index: 0, delta: { content: `Reply ${String(index)}.` }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+        })();
+      });
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const klient = createHttpKlient({ endpoint: fixture.base, token: fixture.server!.localOwnerToken });
+    try {
+      const mutations = fixture.server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${String(address.port)}/v1` });
+      await mutations.updateModel('stub', { max_context_size: 100000 });
+      await mutations.updateModel('stub-alt', { max_context_size: 100000 });
+      const id = await createSession(fixture.home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
+      const agent = klient.session(id).agent('main');
+      const statuses: { readonly operationId: string; readonly state: string }[] = [];
+      let failedObserved!: () => void;
+      let completedObserved!: () => void;
+      const failedDone = new Promise<void>((resolve) => { failedObserved = resolve; });
+      const completedDone = new Promise<void>((resolve) => { completedObserved = resolve; });
+      const statusSub = agent.events.on('prompt.model_switch_status', (event) => {
+        statuses.push({ operationId: event.operationId, state: event.receipt.state });
+        if (event.operationId === 'http-compact' && event.receipt.state === 'failed') failedObserved();
+        if (event.operationId === 'http-compact' && event.receipt.state === 'completed') completedObserved();
+      });
+      let seedFinished!: () => void;
+      const seedDone = new Promise<void>((resolve) => { seedFinished = resolve; });
+      let dependentFinished!: () => void;
+      const dependentDone = new Promise<void>((resolve) => { dependentFinished = resolve; });
+      const promptSub = agent.events.on('prompt.completed', (event) => {
+        if (event.promptId === 'seed-prompt') seedFinished();
+        if (event.promptId === 'dependent-prompt') dependentFinished();
+      });
+      await Promise.all([statusSub.ready, promptSub.ready]);
+      await call('POST', `/api/sessions/${id}/prompts`, { prompt_id: 'seed-prompt', content: [{ type: 'text', text: 'Seed history.' }] });
+      await seedDone;
+      await main.accessor.get(IAgentLoopService).settled();
+      const submitted = await agent.switchModel({ operationId: 'http-compact', model: 'stub-alt', mode: 'compact' });
+      expect(submitted).toMatchObject({ operationId: 'http-compact', state: 'preparing', mode: 'compact', toModel: 'stub-alt' });
+      await firstSummaryArrival;
+      const dependent = await klient.session(id).commands.submit({ prompt_id: 'dependent-prompt', after_model_switch: 'http-compact', content: [{ type: 'text', text: 'Continue after compact.' }] });
+      expect(dependent).toMatchObject({ prompt_id: 'dependent-prompt', status: 'queued' });
+      releaseFirstSummary();
+      await failedDone;
+      expect(await agent.getModelSwitch('http-compact')).toMatchObject({ state: 'failed' });
+      const retried = await agent.recoverModelSwitch('http-compact', 'retry');
+      expect(retried).toMatchObject({ operationId: 'http-compact', state: 'preparing', mode: 'compact' });
+      await retrySummaryArrival;
+      releaseRetrySummary();
+      await Promise.all([completedDone, dependentDone]);
+      await main.accessor.get(IAgentLoopService).settled();
+      promptSub.dispose();
+      statusSub.dispose();
+      expect(await agent.getModelSwitch('http-compact')).toMatchObject({ state: 'completed', binding: { model: 'stub-alt' }, summaryGenerated: true });
+      expect(models).toEqual(['stub', 'stub', 'stub', 'stub-alt']);
+      expect(statuses).toEqual([
+        { operationId: 'http-compact', state: 'failed' },
+        { operationId: 'http-compact', state: 'completed' },
+      ]);
+    } finally {
+      releaseFirstSummary();
+      releaseRetrySummary();
+      await klient.close();
+      await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('projects a queued send-now message once at its step boundary live and after cold reopening', async () => {
     const provider = createHttpServer((request, response) => {
       request.resume();

@@ -41,7 +41,7 @@ const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueue
   abort: vi.fn(),
   getExecutorModels: vi.fn(),
   switchAgentModel: vi.fn(),
-  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined, switches: [] as import('../lib/client').QueuedModelSwitch[], beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn() },
+  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined, switches: [] as import('../lib/client').QueuedModelSwitch[], switchListeners: new Set<(event: import('../lib/client').AgentModelSwitchEvent) => void>(), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn() },
 }));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -58,7 +58,10 @@ vi.mock('../state/connection', () => {
     cancelAgentModelSwitch: async (_sessionId: string, _agentId: string, operationId: string) => {
       fixture.switches = fixture.switches.map(entry => entry.input.operationId === operationId ? { ...entry, queueIndex: -1, receipt: { ...entry.receipt, state: 'cancelled' } } : entry);
     },
-    subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
+    subscribeAgentModelSwitches: (_sessionId: string, _agentId: string, listener: (event: import('../lib/client').AgentModelSwitchEvent) => void) => {
+      fixture.switchListeners.add(listener);
+      return { ready: Promise.resolve(), dispose: () => { fixture.switchListeners.delete(listener); } };
+    },
     klient: {
       session: () => ({
         agent: () => ({
@@ -304,6 +307,7 @@ beforeEach(() => {
   fixture.releaseRead.mockClear();
   fixture.retryRead.mockClear();
   fixture.switches = [];
+  fixture.switchListeners.clear();
   switchAgentModel.mockReset().mockImplementation(async (_sessionId: string, _agentId: string, input: import('../lib/client').ModelSwitchInput) => {
     const receipt = { operationId: input.operationId, agentId: 'main', state: 'pending' as const,
       fromModel: fixture.model ?? '', toModel: input.model, mode: input.mode };
@@ -794,6 +798,60 @@ describe('standalone model switches and dependent messages', () => {
     expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].execution).toBeUndefined();
+  });
+
+  it('closes the dialog immediately on a preparing compact receipt and tracks live completion', async () => {
+    fixture.busy = false;
+    switchAgentModel.mockImplementationOnce(async (_sessionId: string, _agentId: string, input: import('../lib/client').ModelSwitchInput) => {
+      const receipt = {
+        operationId: input.operationId,
+        agentId: 'main',
+        state: 'preparing' as const,
+        fromModel: fixture.model ?? '',
+        toModel: input.model,
+        mode: input.mode,
+      };
+      const entry = {
+        input,
+        receipt,
+        revision: 0,
+        originalBinding: { model: fixture.model ?? '', thinking: 'medium' },
+        queueIndex: 0,
+      };
+      fixture.switches = [entry];
+      return receipt;
+    });
+    const { container } = await mount();
+    await pickModel(container);
+    await click(container.querySelector('[data-model-switch-mode="compact"]'));
+    await click(dialogButton(container, 'Switch model'));
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(getToasts()).toEqual([]);
+    expect((await waitForElement(container, '[data-model-switch-pending="compact"]')).textContent).toContain('Other');
+    const operationId = fixture.switches[0]!.input.operationId;
+    await type('question during background compaction', container);
+    await click(container.querySelector('[aria-label="Send message"]'));
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: operationId });
+    const completedReceipt = {
+      operationId,
+      agentId: 'main',
+      state: 'completed' as const,
+      fromModel: 'fixture/live-model',
+      toModel: 'fixture/other-model',
+      mode: 'compact' as const,
+      binding: { model: 'fixture/other-model', thinking: 'medium' },
+      summaryGenerated: true,
+    };
+    fixture.switches = [{ ...fixture.switches[0]!, receipt: completedReceipt, queueIndex: -1 }];
+    await act(async () => {
+      for (const listener of fixture.switchListeners) {
+        listener({ kind: 'status', operationId, receipt: completedReceipt });
+      }
+    });
+    await settle();
+    expect(container.querySelector('[data-model-switch-pending]')).toBeNull();
   });
 });
 

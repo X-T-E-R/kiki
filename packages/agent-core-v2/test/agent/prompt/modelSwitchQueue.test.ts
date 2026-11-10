@@ -1542,8 +1542,9 @@ describe('model switch control queue with real engine', () => {
     summary.mockRestore();
     ctx.mockNextResponse({ type: 'text', text: 'Portable summary.' });
     ctx.mockNextResponse({ type: 'text', text: 'Dependent result.' });
-    expect(await svc.recoverModelSwitch('failed', 'retry')).toMatchObject({ state: 'completed' });
+    expect(await svc.recoverModelSwitch('failed', 'retry')).toMatchObject({ state: 'preparing' });
     await dependent.completion;
+    expect(svc.getModelSwitch('failed')).toMatchObject({ state: 'completed' });
     expect(ctx.get(IAgentProfileService).getModel()).toBe(NEW);
     expect(ctx.llmCalls).toHaveLength(3);
   });
@@ -1736,6 +1737,73 @@ describe('model switch recovery actions', () => {
     expect(dependent.revision).toBe(0);
     expect(dependent.userMessageId).toBe('retain-old');
     expect((await records(ctx)).filter((record) => record.type === 'agent.model_switch')).toHaveLength(0);
+  });
+
+  it('returns preparing immediately on slow compact switch and retry while sequencing dependent messages', async () => {
+    const scripted = createScriptedGenerate();
+    const summaryEntered = deferred<void>();
+    const releaseSummary = deferred<void>();
+    const retryEntered = deferred<void>();
+    const releaseRetry = deferred<void>();
+    let generateCalls = 0;
+    let summaryCalls = 0;
+    const ctx = await host(async (...args) => {
+      const current = ++generateCalls;
+      if (current === 2) {
+        summaryCalls++;
+        summaryEntered.resolve();
+        await releaseSummary.promise;
+        throw new Error('upstream summary failed');
+      }
+      if (current === 3) {
+        summaryCalls++;
+        retryEntered.resolve();
+        await releaseRetry.promise;
+      }
+      return scripted.generate(...args);
+    });
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'Initial assistant output.' });
+    await (await svc.enqueue({ id: 'seed-turn', message: { role: 'user', content: [{ type: 'text', text: 'Start conversation.' }], toolCalls: [] } })).completion;
+    expect(await svc.switchModel({ operationId: 'invalid-compact', model: 'missing/model', mode: 'compact' }))
+      .toMatchObject({ state: 'failed' });
+    expect(summaryCalls).toBe(0);
+    const input = { operationId: 'slow-compact', model: NEW, mode: 'compact' as const };
+    try {
+      const submitted = await svc.switchModel(input);
+      expect(submitted).toMatchObject({ operationId: 'slow-compact', state: 'preparing', fromModel: OLD, toModel: NEW, mode: 'compact' });
+      await summaryEntered.promise;
+      expect(await svc.switchModel(input)).toMatchObject({ operationId: 'slow-compact', state: 'preparing' });
+      expect(await svc.recoverModelSwitch('slow-compact', 'retry')).toMatchObject({ operationId: 'slow-compact', state: 'preparing' });
+      expect(summaryCalls).toBe(1);
+      const dependent = await svc.enqueue({ id: 'after-slow-compact', message: { role: 'user', content: [{ type: 'text', text: 'Run after compact finishes.' }], toolCalls: [] }, execution: { afterModelSwitch: 'slow-compact' } });
+      expect(dependent.state).toBe('pending');
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+      releaseSummary.resolve();
+      await vi.waitFor(() => expect(svc.getModelSwitch('slow-compact')).toMatchObject({ state: 'failed', error: { message: expect.stringContaining('upstream summary failed') } }));
+      expect(dependent.state).toBe('pending');
+      scripted.mockNextResponse({ type: 'text', text: 'Compacted handoff summary.' });
+      scripted.mockNextResponse({ type: 'text', text: 'Answered on the target model.' });
+      const retried = await svc.recoverModelSwitch('slow-compact', 'retry');
+      expect(retried).toMatchObject({ operationId: 'slow-compact', state: 'preparing', mode: 'compact' });
+      await retryEntered.promise;
+      expect(dependent.state).toBe('pending');
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+      releaseRetry.resolve();
+      expect((await dependent.completion).state).toBe('completed');
+      expect(svc.getModelSwitch('slow-compact')).toMatchObject({ state: 'completed', binding: { model: NEW }, summaryGenerated: true });
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(NEW);
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([
+        { modelAlias: OLD }, { modelAlias: OLD }, { modelAlias: OLD }, { modelAlias: NEW },
+      ]);
+      expect(JSON.stringify(scripted.calls.at(-1))).toContain('Compacted handoff summary.');
+      expect(JSON.stringify(scripted.calls.at(-1))).toContain('Run after compact finishes.');
+    } finally {
+      releaseSummary.resolve();
+      releaseRetry.resolve();
+    }
   });
 
   it('reports unsupported external execution honestly without mutating a shadow context', async () => {

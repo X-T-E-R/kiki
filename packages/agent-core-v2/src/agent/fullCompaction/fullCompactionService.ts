@@ -902,7 +902,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     } }, undefined, signal);
   }
 
-  async prepareModelSwitchSummary(history: readonly ContextMessage[], signal: AbortSignal): Promise<string | undefined> {
+  async prepareModelSwitchSummary(history: readonly ContextMessage[], signal: AbortSignal, onSummarizing?: () => void | Promise<void>): Promise<string | undefined> {
     if (!history.some((message) => message.role === 'assistant' || message.role === 'tool' || message.origin?.kind === 'compaction_summary')) return undefined;
     const model = this.profile.resolveModelContext();
     const instruction = renderPrompt(compactionInstructionTemplate, { custom_instruction_block: '' }).trimEnd();
@@ -914,6 +914,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
       this.readLinkedBoardCards(),
     ]);
+    await onSummarizing?.();
     const relayInput: RelayInput = {
       threshold: this.getAutoCompact().tokens,
       history, compactCount: history.length, agentId: this.scope.agentId,
