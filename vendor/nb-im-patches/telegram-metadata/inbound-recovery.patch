@@ -1,0 +1,419 @@
+diff --git a/src/session/contract.ts b/src/session/contract.ts
+--- a/src/session/contract.ts
++++ b/src/session/contract.ts
+@@ -169,6 +169,8 @@ export interface FeishuHandlers {
+   onMessage(event: unknown): Promise<unknown>;
+   onCardAction(event: unknown): Promise<unknown>;
+   onDisconnect(): void;
++  onReconnecting?(): void;
++  onReconnected?(): void;
+   onBotIdentity?(botOpenId: string): void;
+ }
+ export interface FeishuConnection {
+@@ -231,6 +233,7 @@ export interface RealtimeConnection {
+ interface SessionSpecBase {
+   instance_id: string;
+   retry_ms?: number;
++  poll_timeout_ms?: number;
+ }
+ export type SessionSpec = SessionSpecBase & (
+   | { platform: 'telegram'; token: string; transport?: TelegramBotTransport }
+@@ -324,6 +327,28 @@ export function abortError(): Error {
+ export function isAbort(error: unknown): boolean {
+   return error instanceof Error && error.name === 'AbortError';
+ }
++export async function withRequestDeadline<T>(parent: AbortSignal, timeoutMs: number,
++  work: (signal: AbortSignal) => Promise<T>): Promise<T> {
++  if (parent.aborted) throw abortError();
++  const controller = new AbortController();
++  let rejectDeadline: (error: Error) => void = () => undefined;
++  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
++  const onAbort = (): void => {
++    rejectDeadline(abortError());
++    controller.abort();
++  };
++  const timer = setTimeout(() => {
++    rejectDeadline(new Error('request_timeout'));
++    controller.abort();
++  }, Math.max(1, timeoutMs));
++  parent.addEventListener('abort', onAbort, { once: true });
++  try {
++    return await Promise.race([Promise.resolve().then(() => work(controller.signal)), deadline]);
++  } finally {
++    clearTimeout(timer);
++    parent.removeEventListener('abort', onAbort);
++  }
++}
+ export function delay(ms: number, signal: AbortSignal): Promise<void> {
+   if (signal.aborted) return Promise.resolve();
+   return new Promise((resolve) => {
+diff --git a/src/session/feishu-sdk.ts b/src/session/feishu-sdk.ts
+--- a/src/session/feishu-sdk.ts
++++ b/src/session/feishu-sdk.ts
+@@ -109,7 +109,13 @@ async function fetchBotOpenId(client: lark.Client, signal: AbortSignal): Promi
+ }
+
+ /** Enterprise self-built Feishu long connection. SDK errors are classified and not rethrown. */
+-export function createFeishuSdkConnection(input: { appId: string; appSecret: string }): FeishuConnection {
++export function createFeishuSdkConnection(input: {
++  appId: string;
++  appSecret: string;
++  connectionHost?: string;
++  handshakeTimeoutMs?: number;
++  pingTimeout?: number;
++}): FeishuConnection {
+   const silent = (): void => undefined;
+   const silentLogger: lark.Logger = { error: silent, warn: silent, info: silent, debug: silent, trace: silent };
+   const logger = quietLogger();
+@@ -139,13 +145,18 @@ async function fetchBotOpenId(client: lark.Client, signal: AbortSignal): Promi
+         }
+         const ws = new lark.WSClient({
+           appId: input.appId, appSecret: input.appSecret, domain: lark.Domain.Feishu,
+-          logger, loggerLevel: lark.LoggerLevel.error, autoReconnect: false,
++          logger, loggerLevel: lark.LoggerLevel.error, autoReconnect: true,
++          ...(input.connectionHost === undefined ? {} : { connectionHost: input.connectionHost }),
++          handshakeTimeoutMs: input.handshakeTimeoutMs ?? 15_000,
++          wsConfig: { pingTimeout: input.pingTimeout ?? 15 },
+           onReady: () => {
+             finish({ ok: true });
+             void fetchBotOpenId(botInfoClient, signal).then((botOpenId) => {
+               if (botOpenId && !signal.aborted) handlers.onBotIdentity?.(botOpenId);
+             });
+           },
++          onReconnecting: () => { if (!signal.aborted) handlers.onReconnecting?.(); },
++          onReconnected: () => { if (!signal.aborted) handlers.onReconnected?.(); },
+           onError: (error) => {
+             if (ready || settled) handlers.onDisconnect();
+             else finish({ ok: false, reason: classify(error) });
+diff --git a/src/session/feishu.ts b/src/session/feishu.ts
+--- a/src/session/feishu.ts
++++ b/src/session/feishu.ts
+@@ -239,6 +239,8 @@ function buildFeishu(spec: FeishuSpec, store: SessionCursorStore, key: string):
+           onMessage: (event) => onMessage(event, sink),
+           onCardAction: (event) => onCard(event, sink),
+           onDisconnect: () => resolveDrop(),
++          onReconnecting: () => { if (!signal.aborted) run.state = 'reconnecting'; },
++          onReconnected: () => { if (!signal.aborted) run.state = 'running'; },
+           onBotIdentity: (nextId) => {
+             if (typeof nextId === 'string' && safeId(nextId)) botOpenId = nextId;
+           },
+diff --git a/src/session/telegram.ts b/src/session/telegram.ts
+--- a/src/session/telegram.ts
++++ b/src/session/telegram.ts
+@@ -3,7 +3,7 @@ import type { SessionAccount, SessionAdapter, SessionAdmit, SessionButton, Sessi
+   SessionSpec, TelegramBotTransport, TelegramCall } from './contract.ts';
+ import { TELEGRAM_CALLBACK_DATA_BYTES, TELEGRAM_CAPTION_CHARACTERS, TELEGRAM_DOWNLOAD_BYTES,
+   TELEGRAM_FILE_BYTES, TELEGRAM_IMAGE_BYTES, TELEGRAM_TEXT_CHARACTERS, TELEGRAM_VOICE_BYTES,
+-  accepted, cursorScope, delay, failed, isAbort, unknownReceipt } from './contract.ts';
++  accepted, cursorScope, delay, failed, isAbort, unknownReceipt, withRequestDeadline } from './contract.ts';
+ import { loadOffset, offsetCursor } from './cursor.ts';
+ import { createSessionRun } from './loop.ts';
+ import { sessionFingerprint, shareSession } from './registry.ts';
+@@ -206,10 +206,10 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+     while (!signal.aborted) {
+       let page: TelegramSuccess | TelegramFailure;
+       try {
+-        page = await call({ method: 'getUpdates', json: {
++        page = await withRequestDeadline(signal, spec.poll_timeout_ms ?? 35_000, (requestSignal) => call({ method: 'getUpdates', json: {
+           ...(offset > 0 ? { offset } : {}), timeout: 25, limit: 100,
+           allowed_updates: ['message', 'edited_message', 'callback_query'],
+-        } }, signal);
++        } }, requestSignal));
+       } catch (error) {
+         if (signal.aborted || isAbort(error)) return;
+         await run.reconnect({ code: 'transport_error' }, signal);
+diff --git a/src/session/wechat.ts b/src/session/wechat.ts
+--- a/src/session/wechat.ts
++++ b/src/session/wechat.ts
+@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
+ import type { SessionAccount, SessionAdapter, SessionCursorStore, SessionIdentity, SessionInbound,
+   SessionLimits, SessionMedia, SessionOutbound, SessionReceipt, SessionSink, SessionSpec,
+   WechatTransport } from './contract.ts';
+-import { accepted, cursorScope, delay, failed, isAbort, unknownReceipt } from './contract.ts';
++import { accepted, cursorScope, delay, failed, isAbort, unknownReceipt, withRequestDeadline } from './contract.ts';
+ import { bufCursor, loadBuf } from './cursor.ts';
+ import { createSessionRun } from './loop.ts';
+ import { sessionFingerprint, shareSession } from './registry.ts';
+@@ -162,7 +162,8 @@ function buildWechat(spec: WechatSpec, store: SessionCursorStore, key: string):
+       while (!signal.aborted) {
+         let response;
+         try {
+-          response = await post('ilink/bot/getupdates', { get_updates_buf: buf, base_info: BASE_INFO }, signal);
++          response = await withRequestDeadline(signal, spec.poll_timeout_ms ?? 35_000, (requestSignal) =>
++            post('ilink/bot/getupdates', { get_updates_buf: buf, base_info: BASE_INFO }, requestSignal));
+         } catch (error) {
+           if (signal.aborted || isAbort(error)) break;
+           await run.reconnect({ code: 'transport_error' }, signal);
+diff --git a/test/session-feishu.test.ts b/test/session-feishu.test.ts
+--- a/test/session-feishu.test.ts
++++ b/test/session-feishu.test.ts
+@@ -1,6 +1,8 @@
+ import assert from 'node:assert/strict';
++import { createServer } from 'node:http';
+ import { test } from 'node:test';
+ import * as lark from '@larksuiteoapi/node-sdk';
++import { WebSocketServer } from 'ws';
+ import { createFeishuSdkConnection, createFeishuSessionAdapter, splitFeishuText } from '../src/index.ts';
+ import type { FeishuConnection, FeishuHandlers, FeishuRequest, SessionCursorStore, SessionInbound } from '../src/index.ts';
+
+@@ -737,3 +739,89 @@ test('Feishu post rich-text messages extract ordered text and images, locale wra
+     await adapter.stop();
+   }
+ });
++
++test('Feishu SDK keeps quiet healthy sockets open and automatically recovers half-open and closed local sockets', async () => {
++  const appId = 'cli_0011223344556677';
++  const http = lark.defaultHttpInstance;
++  const originalRequest = http.request;
++  const originalPost = http.post;
++  let mode: 'responsive' | 'half-open' = 'responsive';
++  let connections = 0;
++  let frames = 0;
++  const server = createServer((request, response) => {
++    request.resume();
++    response.setHeader('content-type', 'application/json');
++    if (request.url?.startsWith('/callback/ws/endpoint')) {
++      response.end(JSON.stringify({ code: 0, data: {
++        URL: 'ws://fixture.invalid/socket?device_id=fixture&service_id=1',
++        ClientConfig: { PingInterval: 0.1, ReconnectCount: 5, ReconnectInterval: 0.02, ReconnectNonce: 0 },
++      } }));
++      return;
++    }
++    response.end(JSON.stringify({ code: 0, bot: { open_id: 'ou_fixture' }, data: {} }));
++  });
++  const sockets = new WebSocketServer({ server });
++  sockets.on('connection', (socket) => {
++    connections += 1;
++    socket.on('message', (data) => {
++      frames += 1;
++      if (mode === 'responsive') socket.send(data);
++    });
++  });
++  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
++  const address = server.address();
++  if (address === null || typeof address === 'string') throw new Error('fixture_port_missing');
++  const port = address.port;
++  const observed = new Set<string>();
++  const until = async (read: () => boolean, label: string): Promise<void> => {
++    for (let attempt = 0; attempt < 400; attempt += 1) {
++      observed.add(adapter.state);
++      if (read()) return;
++      await new Promise((resolve) => setTimeout(resolve, 5));
++    }
++    throw new Error(`${label}: state=${adapter.state} connections=${connections} frames=${frames} observed=${[...observed].join(',')}`);
++  };
++  http.post = (() => Promise.resolve({ code: 0, tenant_access_token: 'offline-token', expire: 7200 })) as typeof http.post;
++  http.request = (async (config: { method?: string; url?: string; data?: unknown }) => {
++    const url = new URL(config.url ?? '/callback/ws/endpoint', 'https://fixture.invalid');
++    const response = await fetch(`http://127.0.0.1:${port}${url.pathname}${url.search}`, {
++      method: config.method ?? 'POST', headers: { 'content-type': 'application/json' },
++      body: config.data === undefined ? undefined : JSON.stringify(config.data), signal: AbortSignal.timeout(1000),
++    });
++    return await response.json();
++  }) as typeof http.request;
++  const connection = createFeishuSdkConnection({
++    appId, appSecret: 'offline-fixture-secret', connectionHost: `127.0.0.1:${port}`,
++    handshakeTimeoutMs: 500, pingTimeout: 0.05,
++  });
++  const adapter = createFeishuSessionAdapter({
++    platform: 'feishu_app', instance_id: 'fs.local-recovery', app_id: appId,
++    app_secret: 'offline-fixture-secret', connection, retry_ms: 0,
++  }, memory());
++  try {
++    await adapter.start({ async admit() { return { decision: 'accepted' }; } });
++    assert.equal(adapter.state, 'running');
++    await new Promise((resolve) => setTimeout(resolve, 180));
++    assert.equal(connections, 1);
++    assert.ok(frames >= 2);
++    mode = 'half-open';
++    await until(() => adapter.state === 'reconnecting', 'half-open socket did not enter reconnecting');
++    mode = 'responsive';
++    await until(() => connections >= 2 && adapter.state === 'running', 'half-open socket did not recover');
++    assert.equal(connections, 2);
++    for (const socket of sockets.clients) socket.close();
++    await until(() => connections >= 3 && adapter.state === 'running', 'closed socket did not recover');
++    assert.equal(connections, 3);
++    await adapter.stop();
++    const stopped = connections;
++    await new Promise((resolve) => setTimeout(resolve, 100));
++    assert.equal(connections, stopped);
++  } finally {
++    await adapter.stop().catch(() => undefined);
++    for (const socket of sockets.clients) socket.terminate();
++    await new Promise<void>((resolve) => sockets.close(() => resolve()));
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++    http.request = originalRequest;
++    http.post = originalPost;
++  }
++});
+diff --git a/test/session-telegram.test.ts b/test/session-telegram.test.ts
+--- a/test/session-telegram.test.ts
++++ b/test/session-telegram.test.ts
+@@ -1,5 +1,6 @@
+ import assert from 'node:assert/strict';
+ import { readFileSync } from 'node:fs';
++import { createServer } from 'node:http';
+ import { test } from 'node:test';
+ import { createTelegramSessionAdapter } from '../src/session/telegram.ts';
+ import { splitSessionText, TELEGRAM_TEXT_CHARACTERS, abortError } from '../src/session/contract.ts';
+@@ -382,3 +383,80 @@ test('Telegram preserves caption on failed or oversized media download', async (
+   assert.equal(store.values.get('nb-im-session:tg.caption-fail'), '{"v":1,"offset":12}');
+   await adapter.stop();
+ });
++
++test('Telegram local HTTP recovers a hung poll and consecutive 429 responses before accepting and advancing once', async () => {
++  let polls = 0;
++  let hungPollsClosed = 0;
++  let rateLimited = 0;
++  const server = createServer((request, response) => {
++    request.resume();
++    const method = request.url?.slice(1);
++    if (method === 'getMe') {
++      response.setHeader('content-type', 'application/json');
++      response.end(JSON.stringify({ ok: true, result: { id: 42 } }));
++      return;
++    }
++    if (method === 'getWebhookInfo') {
++      response.setHeader('content-type', 'application/json');
++      response.end(JSON.stringify({ ok: true, result: { url: '' } }));
++      return;
++    }
++    if (method !== 'getUpdates') {
++      response.statusCode = 404;
++      response.end();
++      return;
++    }
++    polls += 1;
++    if (polls === 1 || polls >= 5) {
++      response.on('close', () => { if (!response.writableEnded) hungPollsClosed += 1; });
++      return;
++    }
++    response.setHeader('content-type', 'application/json');
++    if (polls === 2 || polls === 3) {
++      rateLimited += 1;
++      response.statusCode = 429;
++      response.end(JSON.stringify({ ok: false, error_code: 429, description: 'rate limited' }));
++      return;
++    }
++    response.end(JSON.stringify({ ok: true, result: [update(7, { message: {
++      message_id: 1, text: 'recovered', chat: { id: 9, type: 'private' }, from: { id: 8 },
++    } })] }));
++  });
++  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
++  const address = server.address();
++  if (address === null || typeof address === 'string') throw new Error('fixture_port_missing');
++  const base = `http://127.0.0.1:${address.port}`;
++  const transport: TelegramBotTransport = {
++    async call(request, signal) {
++      const response = await fetch(`${base}/${request.method}`, {
++        method: 'POST', headers: { 'content-type': 'application/json' },
++        body: JSON.stringify(request.json ?? {}), signal,
++      });
++      return { http_status: response.status, body: await response.json() as unknown };
++    },
++    async download() { return { ok: false }; },
++  };
++  const store = memory();
++  const events: SessionInbound[] = [];
++  const adapter = createTelegramSessionAdapter({
++    platform: 'telegram', instance_id: 'tg.local-recovery', token: SECRET,
++    transport, retry_ms: 5, poll_timeout_ms: 30,
++  }, store);
++  try {
++    await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++    for (let attempt = 0; attempt < 200 && events.length === 0; attempt += 1) {
++      await new Promise((resolve) => setTimeout(resolve, 5));
++    }
++    assert.equal(events.length, 1);
++    assert.equal(events[0]?.payload.type === 'text' && events[0].payload.text, 'recovered');
++    assert.equal(rateLimited, 2);
++    assert.equal(store.values.get('nb-im-session:tg.local-recovery'), '{"v":1,"offset":8}');
++    assert.equal(adapter.state, 'running');
++    await adapter.stop();
++    assert.equal(adapter.state, 'stopped');
++    assert.ok(hungPollsClosed >= 1);
++  } finally {
++    await adapter.stop().catch(() => undefined);
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});
+diff --git a/test/session-wechat.test.ts b/test/session-wechat.test.ts
+--- a/test/session-wechat.test.ts
++++ b/test/session-wechat.test.ts
+@@ -1,5 +1,6 @@
+ import { createCipheriv, randomBytes } from 'node:crypto';
+ import assert from 'node:assert/strict';
++import { createServer } from 'node:http';
+ import { test } from 'node:test';
+ import { createWechatTransport } from '../src/session/wechat-http.ts';
+ import { createWechatSessionAdapter, parseWeixinApiJson } from '../src/session/wechat.ts';
+@@ -332,3 +333,69 @@ test('WeChat group destinations never fall through to direct text or media sends
+   assert.equal(calls, 1);
+   await adapter.stop();
+ });
++
++test('WeChat local HTTP bounds hung polls and retries consecutive 429 responses without advancing early', async () => {
++  let polls = 0;
++  let hungPollsClosed = 0;
++  let rateLimited = 0;
++  const server = createServer((request, response) => {
++    request.resume();
++    if (!request.url?.endsWith('getupdates')) {
++      response.setHeader('content-type', 'application/json');
++      response.end('{"ret":0}');
++      return;
++    }
++    polls += 1;
++    if (polls === 1 || polls >= 5) {
++      response.on('close', () => { if (!response.writableEnded) hungPollsClosed += 1; });
++      return;
++    }
++    response.setHeader('content-type', 'application/json');
++    if (polls === 2 || polls === 3) {
++      rateLimited += 1;
++      response.statusCode = 429;
++      response.end('{"ret":-2}');
++      return;
++    }
++    response.end(JSON.stringify({ ret: 0, get_updates_buf: 'recovered-buf', msgs: [{
++      message_id: 'recovered-message', from_user_id: 'friend', to_user_id: 'bot', message_type: 1,
++      message_state: 2, item_list: [{ type: 1, text_item: { text: 'recovered' } }],
++    }] }));
++  });
++  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
++  const address = server.address();
++  if (address === null || typeof address === 'string') throw new Error('fixture_port_missing');
++  const base = `http://127.0.0.1:${address.port}`;
++  const transport: WechatTransport = {
++    async post(url, _headers, body, signal) {
++      const path = new URL(url).pathname;
++      const response = await fetch(`${base}${path}`, { method: 'POST', body, signal });
++      return { status: response.status, body: await response.text() };
++    },
++    async postBytes() { throw new Error('unexpected upload'); },
++    async getBytes() { throw new Error('unexpected download'); },
++  };
++  const store = memory();
++  const events: SessionInbound[] = [];
++  const adapter = createWechatSessionAdapter({
++    platform: 'personal_wechat', instance_id: 'wx.local-recovery', token: 'offline-local-fixture',
++    account_id: 'bot', transport, retry_ms: 5, poll_timeout_ms: 30,
++  }, store);
++  try {
++    await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++    for (let attempt = 0; attempt < 200 && events.length === 0; attempt += 1) {
++      await new Promise((resolve) => setTimeout(resolve, 5));
++    }
++    assert.equal(events.length, 1);
++    assert.equal(events[0]?.payload.type === 'text' && events[0].payload.text, 'recovered');
++    assert.equal(rateLimited, 2);
++    assert.equal(store.values.get('nb-im-session:wx.local-recovery'), '{"v":1,"buf":"recovered-buf"}');
++    assert.equal(adapter.state, 'running');
++    await adapter.stop();
++    assert.equal(adapter.state, 'stopped');
++    assert.ok(hungPollsClosed >= 1);
++  } finally {
++    await adapter.stop().catch(() => undefined);
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});

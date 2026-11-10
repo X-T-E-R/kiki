@@ -77,8 +77,8 @@ function storedState(openReply: boolean): string {
   });
 }
 
-function harness(adapter: PendingAdapter, openReply: boolean) {
-  let saved = storedState(openReply);
+function harness(adapter: PendingAdapter, openReply: boolean, initialState = storedState(openReply)) {
+  let saved = initialState;
   const submitted: string[] = [];
   let reads = 0;
   const logs: string[] = [];
@@ -245,6 +245,32 @@ describe('im session startup reconnect', () => {
     expect(held.submitted).toEqual([]);
     adapter.phase = 'reconnecting';
     expect(connectionOf((await held.bridge.snapshot()).instances[0] ?? {})).toBe('reconnecting');
+    expect(adapter.started).toBe(1);
+  });
+
+  it('cold-restores one real instance from duplicate ids without losing listening intent, bindings or cursor', async () => {
+    const stored = JSON.parse(storedState(false));
+    stored.instances = [
+      { ...stored.instances[0], virtual: false, label: 'Real' },
+      { ...stored.instances[0], listening: false, label: 'Virtual' },
+    ];
+    stored.bindings.push({ ...stored.bindings[0], id: 'b-second', sessionId: 'sess-next' });
+    stored.cursors = { inst: 7 };
+    const adapter = new PendingAdapter('telegram', '42');
+    const held = harness(adapter, false, JSON.stringify(stored));
+    open.push(held.bridge);
+    await held.bridge.whenReady();
+    await held.bridge.setPolicy({ allowed: true, default_enabled: true });
+    adapter.release();
+    await until(async () => (await held.bridge.snapshot()).instances[0]?.adapter === 'running', 'restored listener did not publish');
+    const snapshot = imSessionSnapshotSchema.parse(await held.bridge.snapshot());
+    expect(snapshot.instances).toHaveLength(1);
+    expect(snapshot.instances[0]).toMatchObject({ id: 'inst', listening: true, adapter: 'running', label: 'Real' });
+    expect(snapshot.bindings.map((item) => item.id)).toEqual(['b-kept', 'b-second']);
+    const saved = JSON.parse(held.saved());
+    expect(saved.instances).toHaveLength(1);
+    expect(saved.instances[0]).toMatchObject({ listening: true, virtual: false });
+    expect(saved.cursors).toEqual({ inst: 7 });
     expect(adapter.started).toBe(1);
   });
 

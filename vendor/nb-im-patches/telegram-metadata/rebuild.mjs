@@ -13,7 +13,7 @@ const archive = join(scratch, 'nb-im-core-0.3.0-kiki-im-metadata.tgz');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' });
 const local = (path) => relative(root, path).replaceAll('\\', '/');
 run('tar', ['-xf', 'vendor/nb-im-core-0.3.0.tgz', '-C', local(scratch)]);
-for (const patch of ['source.patch', 'wechat-send.patch', 'wechat-quote.patch', 'node24-lookup.patch', 'feishu-video.patch', 'inbound-rich-message.patch']) {
+for (const patch of ['source.patch', 'wechat-send.patch', 'wechat-quote.patch', 'node24-lookup.patch', 'feishu-video.patch', 'inbound-rich-message.patch', 'inbound-recovery.patch']) {
   run('git', ['apply', '--unidiff-zero', `--directory=${relative(root, join(scratch, 'package')).replaceAll('\\', '/')}`, join(patchDir, patch)]);
 }
 await symlink(nbPeerNodeModules, join(scratch, 'node_modules'), 'junction');
@@ -62,7 +62,7 @@ run(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', join
 for (const module of ['session/contract', 'session/telegram', 'session/telegram-http', 'session/wechat', 'session/feishu', 'session/feishu-sdk', 'session/onebot', 'session/realtime', 'providers']) {
   for (const extension of ['js', 'd.ts']) await copyFile(join(scratch, `generated/${module}.${extension}`), join(scratch, `package/dist/${module}.${extension}`));
 }
-run(process.execPath, ['--test', '--experimental-strip-types', 'test/session-telegram.test.ts', 'test/session-wechat.test.ts', 'test/session-feishu.test.ts', 'test/session-onebot.test.ts', 'test/session-realtime.test.ts', 'test/session-extended-media.test.ts'], join(scratch, 'package'));
+run(process.execPath, ['--test', '--experimental-strip-types', 'test/session-telegram.test.ts', 'test/session-wechat.test.ts', 'test/session-feishu.test.ts', 'test/session-onebot.test.ts', 'test/session-realtime.test.ts', 'test/session-extended-media.test.ts', 'test/session-loop.test.ts'], join(scratch, 'package'));
 run(process.execPath, [join(patchDir, 'pinned-ipv4.test.mjs'), join(scratch, 'package')]);
 run('tar', ['-czf', local(archive), '-C', local(scratch), 'package']);
 process.stdout.write(`${archive}\n`);
