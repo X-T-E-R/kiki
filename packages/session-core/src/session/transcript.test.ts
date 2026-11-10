@@ -25,6 +25,7 @@ import type { AgentTranscriptResponse } from '../transport';
 import { translate } from '../i18n';
 import { selectionCarryoverPresentation } from '../composer/selectionQuote';
 import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
+import { patchTranscriptContent } from './transcript/content';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
@@ -5883,6 +5884,88 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(users[1]).toMatchObject({
       text: 'blocked an hour ago',
       promptStatus: undefined,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        error: 'Blocked by UserPromptSubmit hook (timed out)',
+      },
+    });
+  });
+
+  it('merges bounded prompt contentSource onto a matched delivery marker UserBlock so continuation hydrates the full long blocked prompt', () => {
+    const longText = 'BLOCKED-LONG-MESSAGE-'.repeat(200);
+    const markerId = 'wire:v2:delivery:d-long';
+    const markerRef: ContentRef = {
+      source: { kind: 'marker', id: markerId },
+      path: ['payload', 'text'],
+      kind: 'text',
+      offset: 1024,
+      total: longText.length,
+      revision: 'marker-v1',
+    };
+    const promptRef: ContentRef = {
+      source: { kind: 'prompt', id: 'p-long' },
+      path: ['content', 0, 'text'],
+      kind: 'text',
+      offset: 2048,
+      total: longText.length,
+      revision: 'prompt-v1',
+    };
+    const bounded = emptySnapshot({
+      items: [
+        {
+          kind: 'marker',
+          markerId,
+          marker: 'message.delivery',
+          at: '2026-01-02T00:02:00.000Z',
+          payload: {
+            deliveryId: 'd-long',
+            messageId: 'm-long',
+            origin: { kind: 'user' },
+            text: longText.slice(0, markerRef.offset),
+          },
+          contentRefs: [markerRef],
+        },
+      ],
+      prompts: [
+        {
+          promptId: 'p-long',
+          userMessageId: 'm-long',
+          status: 'blocked',
+          createdAt: '2026-01-02T00:02:00.000Z',
+          finishedAt: '2026-01-02T00:02:05.000Z',
+          error: 'Blocked by UserPromptSubmit hook (timed out)',
+          content: [{ type: 'text', text: longText.slice(0, promptRef.offset) }],
+          contentRefs: [promptRef],
+        },
+      ],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', bounded, { cold: true });
+    const userBefore = projected.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(userBefore).toMatchObject({
+      userMessageId: 'm-long',
+      text: longText.slice(0, promptRef.offset),
+      contentSource: { kind: 'prompt', id: 'p-long' },
+      contentPending: true,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        error: 'Blocked by UserPromptSubmit hook (timed out)',
+      },
+    });
+    expect(userBefore!.text.length).toBe(promptRef.offset);
+    const hydratedSnapshot = patchTranscriptContent(bounded, {
+      ref: promptRef,
+      value: longText.slice(promptRef.offset),
+      contentRefs: [],
+    });
+    const hydrated = projectAgentTranscriptView(projected, 'main', hydratedSnapshot);
+    const userAfter = hydrated.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(userAfter).toMatchObject({
+      userMessageId: 'm-long',
+      text: longText,
+      contentSource: { kind: 'prompt', id: 'p-long' },
+      contentPending: false,
       promptOutcome: {
         status: 'blocked',
         delivered: false,

@@ -2299,11 +2299,8 @@ export class AgentPromptService implements IAgentPromptService {
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry || this.loop.status().activeTurnId !== targetTurnId) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       if (blocked) {
         const blockError = extractHookBlockError(hookMessages);
-        for (let index = 0; index < selected.length; index++) {
-          const item = selected[index]!;
+        for (const item of selected) {
           this.pending.splice(this.pending.indexOf(item), 1);
-          const materialized = batch[index]!;
-          if (!item.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
           item.state = 'blocked';
           item.error = blockError;
           item.launchedDeferred.resolve(undefined);

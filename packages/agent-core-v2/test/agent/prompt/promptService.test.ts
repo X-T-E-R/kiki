@@ -3090,12 +3090,14 @@ describe('AgentPromptService', () => {
     });
   });
 
-  it('keeps blocked Send now feedback out of the in-flight context until the owned boundary', async () => {
+  it('keeps blocked Send now feedback out of the in-flight context until the owned boundary and never appends the blocked steer message to context', async () => {
     const { prompt, context, loop } = harness({ manualTurnResult: true });
     const active = await prompt.enqueue({ message: message('active') });
     await active.launched;
+    loop.drainNextBatch(context);
     const queued = await prompt.enqueue({ message: message('blocked correction') });
-    const feedback = { ...message('Blocked feedback'), origin: { kind: 'hook_result' as const, event: 'UserPromptSubmit' as const, blocked: true } };
+    const later = await prompt.enqueue({ message: message('later queued') });
+    const feedback = { ...message('Blocked feedback'), role: 'assistant' as const, origin: { kind: 'hook_result' as const, event: 'UserPromptSubmit' as const, blocked: true } };
     prompt.hooks.onBeforeSubmitPrompt.register('block-steer', async (ctx, next) => { if (ctx.isSteer) { ctx.block = true; ctx.appendMessage!(feedback); } await next(); });
     let boundary: (() => Promise<void>) | undefined;
     vi.spyOn(loop, 'atStepBoundary').mockImplementation((run) => { boundary = () => run(undefined); return Promise.resolve(); });
@@ -3107,7 +3109,13 @@ describe('AgentPromptService', () => {
     await boundary!();
     await steering;
     expect((await queued.completion).state).toBe('blocked');
+    expect(queued.error).toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID,
+      message: 'Blocked feedback',
+    });
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([later.id]);
     expect(context.get()).toContainEqual(feedback);
+    expect(context.get().some((entry) => entry.content.some((part) => part.type === 'text' && part.text === 'blocked correction'))).toBe(false);
   });
 
   it('drops collected Send now output when cancelled before materialization', async () => {

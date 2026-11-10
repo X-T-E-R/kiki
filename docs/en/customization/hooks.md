@@ -246,7 +246,7 @@ Without a continuation request, the original failure ends the turn normally. The
 
 | Event | Matcher matches | Supports blocking? | Description |
 | --- | --- | --- | --- |
-| `UserPromptSubmit` | The text submitted by the user | ✓ | Triggered when the user sends a message; includes `prompt`, `prompt_text`, `prompt_id`, `user_message_id`, `origin`, `channel`, and `is_steer`; returned text is appended to context, and if blocked the model is not called for this turn |
+| `UserPromptSubmit` | The text submitted by the user | ✓ | Triggered when the user sends a message; includes `prompt`, `prompt_text`, `prompt_id`, `user_message_id`, `origin`, `channel`, and `is_steer`; returned text is appended to context, and if blocked the model is not called for this turn while the message stays in place on the timeline with the block reason and **Send again** to restore it to the input box |
 | `UserPromptQueued` | The queued prompt text | — | Triggered when a message is queued while a turn is still running; includes `prompt_id`, `user_message_id`, `origin`, `channel`, `prompt`, `prompt_text`, and `queue_length` (observation only) |
 | `PreToolUse` | Tool name | ✓ | Triggered before a tool call (before permission checks); the tool will not execute if blocked |
 | `Stop` | Empty string | ✓ | Triggered when the model is about to end the current turn; if blocked, a message can be appended to let the model continue |

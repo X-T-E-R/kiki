@@ -168,6 +168,7 @@ export class TranscriptWireAdapter {
   readonly #queuedModelSwitchIds = new Set<string>();
   readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
+  readonly #openBlockedBatchIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
   readonly #frameRecords = new Map<string, FrameRecord>();
@@ -334,6 +335,7 @@ export class TranscriptWireAdapter {
     replaceSet(this.#bindingSettingIds, checkpoint.bindingSettingIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
+    this.#openBlockedBatchIds.clear();
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
     replaceMap(this.#deliveryUndoRecords, checkpoint.messageProjection?.deliveries ?? []);
     replaceMap(this.#frameRecords, checkpoint.messageProjection?.frames ?? []);
@@ -501,14 +503,23 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'external.activity') return this.externalActivity(record);
     if (record.type === 'external.text') return this.externalText(record);
-    if (record.type === 'turn.prompt') return this.turnPrompt(record, ordinal);
-    if (record.type === 'turn.steer') return this.turnSteer(record, ordinal);
+    if (record.type === 'turn.prompt') {
+      this.#openBlockedBatchIds.clear();
+      return this.turnPrompt(record, ordinal);
+    }
+    if (record.type === 'turn.steer') {
+      this.#openBlockedBatchIds.clear();
+      return this.turnSteer(record, ordinal);
+    }
     if (record.type === 'context.append_message') return this.legacyMessage(record, ordinal);
     if (record.type === 'context.append_loop_event') {
       const event = objectOf(record['event']);
       return event === undefined ? [] : this.loopEvent(event, ordinal, record.time);
     }
-    if (record.type === 'turn.ended') return this.turnEnded(record);
+    if (record.type === 'turn.ended') {
+      this.#openBlockedBatchIds.clear();
+      return this.turnEnded(record);
+    }
     if (record.type === 'context.undo') {
       const operations = this.undo(numberOf(record['count']) ?? 1);
       const prompt = objectOf(record['replacementPrompt']);
@@ -602,6 +613,7 @@ export class TranscriptWireAdapter {
       return operations;
     }
     if (record.type === 'prompt.launch_committed') {
+      this.#openBlockedBatchIds.clear();
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
@@ -615,6 +627,7 @@ export class TranscriptWireAdapter {
       const terminal = objectOf(record['terminal']);
       const terminalPromptId = stringOf(terminal?.['promptId']);
       if (terminalPromptId === undefined) return [];
+      this.#openBlockedBatchIds.delete(terminalPromptId);
       const state = stringOf(terminal?.['state']);
       const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
         : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
@@ -638,17 +651,25 @@ export class TranscriptWireAdapter {
       const status: TranscriptPrompt['status'] =
         reason === 'failed' || reason === 'blocked' ? reason : 'completed';
       const projectedError = projectTurnError(record['error']);
+      const nextError = projectedError.error ?? previous?.error;
+      if (status === 'blocked') {
+        if (nextError === undefined) this.#openBlockedBatchIds.add(promptId);
+        else this.#openBlockedBatchIds.clear();
+      } else {
+        this.#openBlockedBatchIds.clear();
+      }
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
           status,
           finishedAt: promptRecordTime(record, ['finishedAt']) ?? previous?.finishedAt,
-          error: projectedError.error ?? previous?.error,
+          error: nextError,
           errorDetails: projectedError.errorDetails ?? previous?.errorDetails,
         }),
       ];
     }
     if (record.type === 'prompt.aborted') {
+      this.#openBlockedBatchIds.clear();
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
@@ -1650,15 +1671,14 @@ export class TranscriptWireAdapter {
         const match = /^<hook_result\b[^>]*>\s*([\s\S]*?)\s*<\/hook_result>$/i.exec(raw);
         const hookReason = (match?.[1] ?? raw).trim();
         const operations: TranscriptOperation[] = [];
-        if (origin['blocked'] === true && hookReason.length > 0) {
-          const candidates = [...this.#prompts.values()];
-          for (let index = candidates.length - 1; index >= 0; index -= 1) {
-            const candidate = candidates[index]!;
-            if (candidate.status === 'blocked' && candidate.error === undefined) {
+        if (origin['blocked'] === true && hookReason.length > 0 && this.#openBlockedBatchIds.size > 0) {
+          for (const promptId of this.#openBlockedBatchIds) {
+            const candidate = this.lookups?.prompt?.(promptId) ?? this.#prompts.get(promptId);
+            if (candidate?.status === 'blocked' && candidate.error === undefined) {
               operations.push(this.storePrompt({ ...candidate, error: hookReason }));
-              break;
             }
           }
+          this.#openBlockedBatchIds.clear();
         }
         const activeTurn = this.#currentTurnId === undefined
           ? undefined

@@ -246,7 +246,7 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 
 | 事件 | Matcher 匹配的是 | 会触发阻断？ | 说明 |
 | --- | --- | --- | --- |
-| `UserPromptSubmit` | 用户提交的文本内容 | ✓ | 用户发送消息时触发；附带 `prompt`、`prompt_text`、`prompt_id`、`user_message_id`、`origin`、`channel` 和 `is_steer`；返回文本会附加到上下文，若阻断则本轮不调用模型 |
+| `UserPromptSubmit` | 用户提交的文本内容 | ✓ | 用户发送消息时触发；附带 `prompt`、`prompt_text`、`prompt_id`、`user_message_id`、`origin`、`channel` 和 `is_steer`；返回文本会附加到上下文，若阻断则本轮不调用模型，原消息留在时间线原位置并显示阻断原因，可通过**重新发送**放回输入框 |
 | `UserPromptQueued` | 排队消息的文本内容 | — | 上一回合仍在运行、消息进入队列时触发；payload 含 `prompt_id`、`user_message_id`、`origin`、`channel`、`prompt`、`prompt_text` 和 `queue_length`（观察用） |
 | `PreToolUse` | 工具名 | ✓ | 工具调用前触发（权限检查前）；阻断后工具不会执行 |
 | `Stop` | 空字符串 | ✓ | 模型准备结束本轮时触发；阻断后可追加一条消息让模型继续 |

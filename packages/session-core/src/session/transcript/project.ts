@@ -2342,6 +2342,58 @@ function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, 
  * page that is not loaded yet, so it joins the one "earlier" row instead of
  * becoming an orphan divider at the top of the window.
  */
+function mergeSettledPromptUserBlock(
+  user: UserBlock,
+  prompt: TerminalPrompt,
+  context: PromptOutcomeContext,
+): UserBlock {
+  const parts = promptContentParts(prompt.content);
+  const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
+  const projection = parts.length > 0 ? projectMessageContent(parts) : undefined;
+  const classified =
+    projection === undefined
+      ? undefined
+      : classifyTranscriptText({
+          text: projection.text,
+          presentation: projection.presentation,
+          role: 'user',
+          origin: user.sourceOrigin !== undefined
+            ? (originFromRecord({ origin: user.sourceOrigin }) ?? { kind: 'user' })
+            : (originFromRecord(prompt) ?? { kind: 'user' }),
+        });
+  const usePromptText =
+    classified !== undefined &&
+    (user.turnId === undefined
+      ? classified.text.length >= user.text.length
+      : classified.text.length > user.text.length && user.contentSource === undefined);
+  const text = usePromptText ? classified.text : user.text;
+  const presentation =
+    usePromptText
+      ? classified.presentation ?? user.presentation
+      : user.presentation ?? classified?.presentation;
+  const media =
+    user.media !== undefined && user.media.length > 0
+      ? user.media
+      : projection !== undefined && projection.media.length > 0
+        ? projection.media
+        : user.media;
+  return {
+    ...user,
+    text,
+    presentation,
+    media,
+    promptId: user.promptId ?? prompt.promptId,
+    userMessageId: user.userMessageId ?? prompt.userMessageId,
+    contentSource:
+      user.contentSource ??
+      (parts.length > 0 || contentPending ? { kind: 'prompt', id: prompt.promptId } : undefined),
+    contentPending: user.contentSource === undefined ? contentPending : user.contentPending,
+    promptStatus: undefined,
+    queuedContent: undefined,
+    promptOutcome: promptOutcomeOf(prompt, context, user),
+  };
+}
+
 function placePromptOutcome(
   blocks: Block[],
   prompt: TerminalPrompt,
@@ -2352,7 +2404,7 @@ function placePromptOutcome(
   if (index >= 0) {
     const user = blocks[index] as UserBlock;
     const next = [...blocks];
-    next[index] = { ...user, promptStatus: undefined, queuedContent: undefined, promptOutcome: promptOutcomeOf(prompt, context, user) };
+    next[index] = mergeSettledPromptUserBlock(user, prompt, context);
     return next;
   }
   const previousUser = previous.find(
@@ -2361,12 +2413,7 @@ function placePromptOutcome(
   // A local / queued echo never owned a turn: it stays where the reader saw it.
   if (previousUser !== undefined && previousUser.turnId === undefined) {
     const next = [...blocks];
-    const settled: UserBlock = {
-      ...previousUser,
-      promptStatus: undefined,
-      queuedContent: undefined,
-      promptOutcome: promptOutcomeOf(prompt, context, previousUser),
-    };
+    const settled = mergeSettledPromptUserBlock(previousUser, prompt, context);
     if (!insertAtPreviousPosition(next, settled, previous)) insertByTimeline(next, settled);
     return next;
   }

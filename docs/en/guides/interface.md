@@ -6,7 +6,7 @@ The desktop app and the browser UI are the same interface, and a session in eith
 
 This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices.
 
-If a turn ends without a reply, its footer says whether background work is still running, no work is executing, or the activity is unknown. If **Send again** is available, it restores the original message text to the input box without sending it.
+If a turn ends without a reply, its footer says whether background work is still running, no work is executing, or the activity is unknown. A user message that failed, was stopped, or was blocked by a `UserPromptSubmit` hook stays at its place in the timeline with the status and reason below the bubble; **Send again** restores the original message text to the input box without sending it.
 
 Messages from another agent or conversation show the source title above the body, falling back to its task name or short ID when no title is available. Hover over the label to see its full identity; select it to open the source agent or a conversation available in the current connection. Copying or quoting uses the body without repeating the label; editing keeps the original source prefix. A source label you type yourself stays literal. Context injected after a user message stays after that message when you reopen or continue loading the conversation.
 

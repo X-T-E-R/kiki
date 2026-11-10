@@ -892,6 +892,114 @@ describe('TranscriptWireAdapter', () => {
     expect(windowed.promptRefs).toContainEqual({ kind: 'prompt', promptId: 'p-blocked' });
   });
 
+  it('attributes legacy hook_result block reasons only to the adjacent settlement batch without backfilling earlier reasonless blocked prompts', () => {
+    const cold = replay([
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p-early',
+        userMessageId: 'm-early',
+        createdAt: '1970-01-01T00:00:01.000Z',
+        message: { id: 'm-early', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'early reasonless' }] },
+        time: 1_000,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p-early',
+        reason: 'blocked',
+        finishedAt: '1970-01-01T00:00:01.010Z',
+        time: 1_010,
+      },
+      {
+        type: 'prompt.outcome_committed',
+        terminal: { promptId: 'p-early', state: 'blocked' },
+        time: 1_020,
+      },
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p-batch-1',
+        userMessageId: 'm-batch-1',
+        createdAt: '1970-01-01T00:00:02.000Z',
+        message: { id: 'm-batch-1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'batch 1' }] },
+        time: 2_000,
+      },
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p-batch-2',
+        userMessageId: 'm-batch-2',
+        createdAt: '1970-01-01T00:00:02.005Z',
+        message: { id: 'm-batch-2', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'batch 2' }] },
+        time: 2_005,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p-batch-1',
+        reason: 'blocked',
+        finishedAt: '1970-01-01T00:00:02.010Z',
+        time: 2_010,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p-batch-2',
+        reason: 'blocked',
+        finishedAt: '1970-01-01T00:00:02.015Z',
+        time: 2_015,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+          content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nbatch: blocked by preflight\n</hook_result>' }],
+        },
+        time: 2_020,
+      },
+      {
+        type: 'prompt.outcome_committed',
+        terminal: { promptId: 'p-batch-1', state: 'blocked' },
+        time: 2_025,
+      },
+      {
+        type: 'prompt.outcome_committed',
+        terminal: { promptId: 'p-batch-2', state: 'blocked' },
+        time: 2_030,
+      },
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p-explicit',
+        userMessageId: 'm-explicit',
+        createdAt: '1970-01-01T00:00:03.000Z',
+        message: { id: 'm-explicit', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'explicit error' }] },
+        time: 3_000,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p-explicit',
+        reason: 'blocked',
+        finishedAt: '1970-01-01T00:00:03.010Z',
+        error: { code: 'request.invalid', message: 'explicit prompt error wins' },
+        time: 3_010,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+          content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nlate hook output\n</hook_result>' }],
+        },
+        time: 3_020,
+      },
+      {
+        type: 'prompt.outcome_committed',
+        terminal: { promptId: 'p-explicit', state: 'blocked', error: { code: 'request.invalid', message: 'explicit prompt error wins' } },
+        time: 3_030,
+      },
+    ]);
+    expect(cold.getPrompt('p-early')?.error).toBeUndefined();
+    expect(cold.getPrompt('p-batch-1')?.error).toBe('batch: blocked by preflight');
+    expect(cold.getPrompt('p-batch-2')?.error).toBe('batch: blocked by preflight');
+    expect(cold.getPrompt('p-explicit')?.error).toBe('explicit prompt error wins');
+  });
+
   it('commits an outcome from the canonical prompt instead of its stale wire cache', () => {
     const transcript = new AgentTranscript('main');
     const adapter = new TranscriptWireAdapter('main', { prompt: id => transcript.getPrompt(id) });
