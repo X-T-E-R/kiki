@@ -48,54 +48,69 @@ it('uses only the selected plugin account and saved proxy through HTTP-to-harnes
   const leases = new Map<string, string>();
   const endpoints = new Map<string, number>();
   let nextLease = 0;
-  const origin = (account: string) => createServer(async (req, res) => {
-    const raw = await buffer(req);
-    const body = raw.length === 0 ? {} : JSON.parse(raw.toString());
-    const keyMatches = req.headers['x-goog-api-key'] === `fixture-capability-${account}`
-      || req.headers.authorization === `Bearer fixture-capability-${account}`;
-    observations.push({ account, path: req.url, keyMatches, body });
-    if (!keyMatches || body.text === 'deny fixture') {
-      res.writeHead(429); res.end(`Fixture source rejected the request: fixture-capability-${account}`); return;
-    }
-    if (req.url === '/v1/responses') {
-      const message = { id: 'msg_fixture', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: 'Codex fixture reply', annotations: [] }] };
-      const response = { id: 'resp_fixture', object: 'response', created_at: 1, status: 'completed', model: body.model, output: [message],
-        usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 0 }, output_tokens: 2, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 5 } };
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end([
-        { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
-        { type: 'response.output_item.added', output_index: 0, item: { ...message, content: [] } },
-        { type: 'response.output_text.delta', output_index: 0, content_index: 0, item_id: message.id, delta: 'Codex fixture reply' },
-        { type: 'response.output_item.done', output_index: 0, item: message },
-        { type: 'response.completed', response },
-      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
-      return;
-    }
-    res.end(`${account} fixture reply`);
+  let workStopped: Promise<void> | undefined;
+  const origin = (account: string) => createServer((req, res) => {
+    void (async () => {
+      const raw = await buffer(req);
+      const body = raw.length === 0 ? {} : JSON.parse(raw.toString());
+      const keyMatches = req.headers['x-goog-api-key'] === `fixture-capability-${account}`
+        || req.headers.authorization === `Bearer fixture-capability-${account}`;
+      observations.push({ account, path: req.url, keyMatches, body });
+      if (!keyMatches || body.text === 'deny fixture') {
+        res.writeHead(429); res.end(`Fixture source rejected the request: fixture-capability-${account}`); return;
+      }
+      if (account === 'work' && body.text === 'lease failover fixture') {
+        workStopped = new Promise<void>((resolve) => { work.close(() => { resolve(); }); });
+        work.closeAllConnections();
+        return;
+      }
+      if (req.url === '/v1/responses') {
+        const message = { id: 'msg_fixture', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: 'Codex fixture reply', annotations: [] }] };
+        const response = { id: 'resp_fixture', object: 'response', created_at: 1, status: 'completed', model: body.model, output: [message],
+          usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 0 }, output_tokens: 2, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 5 } };
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end([
+          { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
+          { type: 'response.output_item.added', output_index: 0, item: { ...message, content: [] } },
+          { type: 'response.output_text.delta', output_index: 0, content_index: 0, item_id: message.id, delta: 'Codex fixture reply' },
+          { type: 'response.output_item.done', output_index: 0, item: message },
+          { type: 'response.completed', response },
+        ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+        return;
+      }
+      res.end(`${account} fixture reply`);
+    })().catch(() => { req.socket.destroy(); });
   });
   const work = origin('work');
   const personal = origin('personal');
-  const control = createServer(async (req, res) => {
-    const input = JSON.parse((await buffer(req)).toString());
-    res.setHeader('content-type', 'application/json');
-    if (req.url === '/list') { leaseEvents.push({ action: 'list' }); res.end(JSON.stringify(accounts)); return; }
-    if (req.url === '/release') {
-      leaseEvents.push({ action: 'release', accountId: leases.get(input.leaseId) }); leases.delete(input.leaseId);
-      res.end('{}'); return;
-    }
-    const { accountId, instanceId, proxy, engineId } = input;
-    leaseEvents.push({ action: 'prepare', accountId, instanceId, proxy });
-    if (!endpoints.has(accountId) || engineId === 'agy-cli' && proxy.url !== expectedProxy.get(accountId)) {
-      res.writeHead(403); res.end('{}'); return;
-    }
-    const leaseId = `fixture-lease-${++nextLease}`;
-    leases.set(leaseId, accountId);
-    const codex = engineId === 'codex-app-server';
-    res.end(JSON.stringify({ leaseId, connection: {
-      protocol: codex ? 'openai-responses' : 'gemini-v1beta',
-      baseUrl: `http://127.0.0.1:${endpoints.get(accountId)}${codex ? '/v1' : ''}`,
-      apiKey: `fixture-capability-${accountId}`, modelIds: [codex ? 'gpt-5.4' : `${accountId}-fixture-model`],
-    } }));
+  const control = createServer((req, res) => {
+    void (async () => {
+      const input = JSON.parse((await buffer(req)).toString());
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/list') { leaseEvents.push({ action: 'list' }); res.end(JSON.stringify(accounts)); return; }
+      if (req.url === '/release') {
+        leaseEvents.push({ action: 'release', accountId: leases.get(input.leaseId) }); leases.delete(input.leaseId);
+        res.end('{}'); return;
+      }
+      const { accountId, instanceId, proxy, engineId } = input;
+      leaseEvents.push({ action: 'prepare', accountId, instanceId, proxy });
+      if (!endpoints.has(accountId) || engineId === 'agy-cli' && proxy.url !== expectedProxy.get(accountId)) {
+        res.writeHead(403); res.end('{}'); return;
+      }
+      if (accountId === 'work' && workStopped !== undefined) {
+        await workStopped;
+        workStopped = undefined;
+        endpoints.set('work', await listen(work));
+      }
+      const leaseId = `fixture-lease-${++nextLease}`;
+      leases.set(leaseId, accountId);
+      const codex = engineId === 'codex-app-server';
+      res.end(JSON.stringify({ leaseId, connection: {
+        protocol: codex ? 'openai-responses' : 'gemini-v1beta',
+        baseUrl: `http://127.0.0.1:${endpoints.get(accountId)}${codex ? '/v1' : ''}`,
+        apiKey: `fixture-capability-${accountId}`, modelIds: [codex ? 'gpt-5.4' : `${accountId}-fixture-model`],
+      } }));
+    })().catch(() => { req.socket.destroy(); });
   });
   let server: RunningServer | undefined;
   try {
@@ -111,6 +126,7 @@ it('uses only the selected plugin account and saved proxy through HTTP-to-harnes
       '[search]', 'enabled = false', '[agent_executors.agy-cli]', 'label = "AGY CLI"', 'protocol = "acp-v1"',
       'model_binding = "argv"', 'model_args = ["--model", "{model}"]', 'model_config_category = "model"',
       'permission = { via = "config_option", config_id = "permission-mode", manual = "manual", auto = "auto", yolo = "yolo" }',
+      `env = { AGY_BRIDGE_AUDIT_DIR = ${JSON.stringify(audit)} }`,
       'stdin_close_grace_ms = 2000', `sources = [{ id = "fixture", kind = "node-script", path = ${JSON.stringify(agyFixture)} }]`,
       ...(codexPath === undefined ? [] : ['[agent_executor_overrides.codex-app-server]', `bin_path = ${JSON.stringify(codexPath)}`]),
     ].join('\n'));
@@ -267,8 +283,36 @@ it('uses only the selected plugin account and saved proxy through HTTP-to-harnes
       accountId: 'work', instanceId: 'instance-work', proxy: { mode: 'custom', url: newBinding },
     });
     expect(observations.at(-1)).toMatchObject({ account: 'work', body: { text: 'new proxy' } });
+    const failoverEventStart = leaseEvents.length;
+    const failoverObservationStart = observations.length;
+    const failoverPort = endpoints.get('work');
+    const failover = await create('instance-work');
+    expect((await send(failover, 'lease failover fixture')).code).toBe(0);
+    const failoverObservations = observations.slice(failoverObservationStart);
+    expect(failoverObservations).toHaveLength(2);
+    expect(failoverObservations.every(({ keyMatches }) => keyMatches)).toBe(true);
+    expect(failoverObservations[0]!.body['text']).toBe('lease failover fixture');
+    expect(failoverObservations[1]!.body['text']).toContain('automatic continuation 1');
+    expect(failoverObservations[1]!.body['text']).not.toBe('lease failover fixture');
+    expect(failoverObservations[1]!.body['conversation_id']).toBe(failoverObservations[0]!.body['conversation_id']);
+    expect(endpoints.get('work')).not.toBe(failoverPort);
+    const failoverPrepares = leaseEvents.slice(failoverEventStart).filter(({ action }) => action === 'prepare');
+    expect(failoverPrepares).toHaveLength(2);
+    for (const attempt of failoverPrepares) expect(attempt).toEqual({
+      action: 'prepare', accountId: 'work', instanceId: 'instance-work', proxy: { mode: 'custom', url: newBinding },
+    });
+    expect(await readFile(join(workspace, 'native-executions.txt'), 'utf8')).toBe('lease-tool\n');
     const config = await ok('/config');
     const auditContent = await Promise.all((await readdir(audit)).filter((name) => name.endsWith('.ndjson')).map((name) => readFile(join(audit, name), 'utf8')));
+    const failoverConversation = failoverObservations[0]!.body['conversation_id'] as string;
+    const auditRecords = auditContent.flatMap((content) => content.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>));
+    const recoveries = auditRecords.filter((record) => record['type'] === 'network_recovery_sent' && record['conversationId'] === failoverConversation);
+    expect(recoveries, JSON.stringify({ failoverConversation, events: auditRecords.map((record) => [record['type'], record['conversationId'], record['toolCallId']]) })).toHaveLength(1);
+    expect(recoveries[0]).toMatchObject({ relaunched: true });
+    expect(auditRecords.filter((record) => record['type'] === 'tool_state' && record['toolCallId'] === `agy-${failoverConversation}-11` && record['state'] === 'DONE')).toHaveLength(1);
+    expect(auditRecords.some((record) => record['type'] === 'network_recovery_exhausted' && record['conversationId'] === failoverConversation)).toBe(false);
+    await manager().close(failover);
+    await vi.waitFor(() => { expect(leaseEvents.slice(failoverEventStart).filter(({ action }) => action === 'release')).toHaveLength(2); });
     expect(JSON.stringify([listed, config, await list(), denied, ...auditContent])).not.toMatch(/fixture-capability|fixture-lease|fixture-oauth|fixture-proxy/);
     expect(executors().get('agy-cli')!.revision).toBe(defaultRevision);
     await plugins().setPluginEnabled({ id: 'fixture-account-source', enabled: false });

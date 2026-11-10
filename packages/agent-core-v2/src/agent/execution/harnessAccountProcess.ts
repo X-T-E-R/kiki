@@ -7,6 +7,8 @@ import { redactExecutorOutput } from '#/app/agentExecutor/executorOverrides';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { Error2, ErrorCodes } from '#/errors';
 
+import { openHarnessAccountBroker, type HarnessAccountBroker } from './harnessAccountBroker';
+
 export const CODEX_ACCOUNT_MODEL_PROVIDER = 'kiki_harness_account';
 export const AGY_ACCOUNT_SWITCH = '--kiki-harness-account';
 
@@ -47,30 +49,46 @@ export function harnessAccountProcess(processes: HostProcessServiceLike, context
       const mode = proxy.kind === 'inherit' ? 'system' : proxy.kind === 'direct' ? 'direct' : 'custom';
       if (mode === 'custom' && proxyUrl === undefined) throw fail('The configured proxy is unavailable.');
       const hosts = context.agent.accessor.get(IPluginHostService);
-      const lease = await hosts.prepareHarnessAccount(account.source, {
+      const input = {
         engineId, accountId: account.account_id, instanceId: descriptor.id,
         proxy: { mode, url: mode === 'custom' ? proxyUrl : undefined },
-      }, signal).catch(() => {
+      } as const;
+      const prepare = (prepareSignal: AbortSignal) => hosts.prepareHarnessAccount(account.source, input, prepareSignal);
+      const lease = await prepare(signal).catch(() => {
         signal.throwIfAborted();
         throw fail('Could not connect to the selected account. Check the instance or sign in again in the source plugin.');
       });
       const log = context.agent.accessor.get(ILogService);
-      const release = () => lease.release().catch(() => {
+      let broker: HarnessAccountBroker | undefined;
+      const release = () => (broker?.close() ?? lease.release()).catch(() => {
         log.warn('Harness account connection cleanup failed', { executorId: descriptor.id, source: account.source });
       });
       try {
         signal.throwIfAborted();
-        const { connection } = lease;
+        let connection = lease.connection;
         sensitive = [connection.apiKey, connection.baseUrl];
-        const models = [...new Set(connection.modelIds)];
-        if (connection.protocol !== (gemini ? 'gemini-v1beta' : 'openai-responses') || models.length === 0
-          || models.some((id) => id === 'engine-default' || /\s/u.test(id))) {
-          throw fail('The source did not provide a compatible connection and model list.');
-        }
         const selected = context.binding.modelAlias;
-        if (selected !== undefined && !models.includes(selected)) throw fail('The bound model is not available for the selected account.');
-        const endpoint = new URL(connection.baseUrl);
-        if (endpoint.search || endpoint.hash || endpoint.username || endpoint.password) throw fail('The source returned an invalid connection endpoint.');
+        const validate = (candidate: typeof connection) => {
+          const candidateModels = [...new Set(candidate.modelIds)];
+          if (candidate.protocol !== (gemini ? 'gemini-v1beta' : 'openai-responses') || candidateModels.length === 0
+            || candidateModels.some((id) => id === 'engine-default' || /\s/u.test(id))) {
+            throw fail('The source did not provide a compatible connection and model list.');
+          }
+          if (selected !== undefined && !candidateModels.includes(selected)) throw fail('The bound model is not available for the selected account.');
+          const candidateEndpoint = new URL(candidate.baseUrl);
+          if (candidateEndpoint.search || candidateEndpoint.hash || candidateEndpoint.username || candidateEndpoint.password) {
+            throw fail('The source returned an invalid connection endpoint.');
+          }
+          return candidateModels;
+        };
+        const models = validate(connection);
+        broker = await openHarnessAccountBroker(lease, prepare, validate, () => {
+          log.warn('Harness account connection cleanup failed', { executorId: descriptor.id, source: account.source });
+        });
+        if (broker !== undefined) {
+          connection = broker.connection;
+          sensitive = [...sensitive, connection.baseUrl];
+        }
         const launchEnv: Record<string, string> = gemini ? {
           GEMINI_API_KEY: connection.apiKey,
           GOOGLE_GEMINI_BASE_URL: connection.baseUrl,

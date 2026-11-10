@@ -1,4 +1,6 @@
+import { createServer, type Server } from 'node:http';
 import { PassThrough } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostProcessLike, HostProcessServiceLike } from '@kiki/acp-client';
 import type { HarnessAccountConnection } from '@kiki/protocol';
@@ -8,6 +10,7 @@ import { IAgentExecutorRegistry, type AgentExecutorContext, type AgentExecutorDe
 import { materializeExecutorInstance } from '#/app/agentExecutor/executorInstances';
 import { executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { openHarnessAccountBroker } from '#/agent/execution/harnessAccountBroker';
 import { harnessAccountProcess } from '#/agent/execution/harnessAccountProcess';
 
 function setup(engineId = 'agy-cli') {
@@ -89,5 +92,118 @@ describe('plugin account process ownership', () => {
     expect(String(error)).toContain(f.source);
     expect(String(error)).not.toContain(f.connection.apiKey);
     expect(f.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('loopback account lease continuation', () => {
+  const listen = async (server: Server) => {
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Fixture requires a loopback port');
+    return address.port;
+  };
+  const close = async (server: Server) => {
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
+  };
+
+  it('replaces a dead lease only for later requests and shares one replacement flight', async () => {
+    const firstBodies: Array<{ text: string; key: string | undefined }> = [];
+    const secondBodies: Array<{ text: string; key: string | undefined }> = [];
+    const first = createServer((req) => {
+      void (async () => {
+        firstBodies.push({ text: (await buffer(req)).toString(), key: req.headers['x-goog-api-key'] as string | undefined });
+        req.socket.destroy();
+      })().catch(() => { req.socket.destroy(); });
+    });
+    const second = createServer((req, res) => {
+      void (async () => {
+        secondBodies.push({ text: (await buffer(req)).toString(), key: req.headers['x-goog-api-key'] as string | undefined });
+        res.end('new-lease-result');
+      })().catch(() => { req.socket.destroy(); });
+    });
+    let broker: Awaited<ReturnType<typeof openHarnessAccountBroker>>;
+    const firstRelease = vi.fn(async () => {});
+    const secondRelease = vi.fn(async () => {});
+    let prepareSignal: AbortSignal | undefined;
+    const prepare = vi.fn(async (signal: AbortSignal) => {
+      prepareSignal = signal;
+      await new Promise((resolve) => { setTimeout(resolve, 20); });
+      return { connection: secondConnection, release: secondRelease };
+    });
+    const validate = vi.fn();
+    const releaseError = vi.fn();
+    const [firstPort, secondPort] = await Promise.all([listen(first), listen(second)]);
+    const firstConnection: HarnessAccountConnection = { protocol: 'gemini-v1beta', baseUrl: `http://127.0.0.1:${firstPort}`, apiKey: 'first-scoped-key', modelIds: ['fixture-model'] };
+    const secondConnection: HarnessAccountConnection = { ...firstConnection, baseUrl: `http://127.0.0.1:${secondPort}`, apiKey: 'second-scoped-key' };
+    try {
+      broker = await openHarnessAccountBroker({ connection: firstConnection, release: firstRelease }, prepare, validate, releaseError);
+      expect(broker).toBeDefined();
+      const stableUrl = broker!.connection.baseUrl;
+      const post = (text: string, key = 'first-scoped-key') => fetch(stableUrl, {
+        method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'text/plain' }, body: text, signal: AbortSignal.timeout(5000),
+      });
+      expect((await post('foreign-request', 'wrong-key')).status).toBe(401);
+      expect(firstBodies).toHaveLength(0);
+      await expect(post('original-request')).rejects.toThrow();
+      expect(prepare).not.toHaveBeenCalled();
+      const [continued, concurrent] = await Promise.all([post('continuation-a'), post('continuation-b')]);
+      expect(await continued.text()).toBe('new-lease-result');
+      expect(await concurrent.text()).toBe('new-lease-result');
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(prepareSignal?.aborted).toBe(false);
+      expect(validate).toHaveBeenCalledWith(secondConnection);
+      expect(firstBodies).toEqual([{ text: 'original-request', key: 'first-scoped-key' }]);
+      expect(secondBodies).toHaveLength(2);
+      expect(secondBodies.map(({ text }) => text).toSorted()).toEqual(['continuation-a', 'continuation-b']);
+      expect(secondBodies.every(({ key }) => key === 'second-scoped-key')).toBe(true);
+      expect(broker!.connection.baseUrl).toBe(stableUrl);
+      await broker!.close();
+      await expect(post('after-close')).rejects.toThrow();
+      expect(prepare).toHaveBeenCalledOnce();
+    } finally {
+      await broker?.close();
+      await Promise.all([close(first), close(second)]);
+    }
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
+    expect(releaseError).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a failed request or fall back when replacement is revoked', async () => {
+    const bodies: string[] = [];
+    const origin = createServer((req) => {
+      void (async () => {
+        bodies.push((await buffer(req)).toString());
+        req.socket.destroy();
+      })().catch(() => { req.socket.destroy(); });
+    });
+    const release = vi.fn(async () => {});
+    const prepare = vi.fn(async () => { throw new Error('revoked synthetic-secret'); });
+    let broker: Awaited<ReturnType<typeof openHarnessAccountBroker>>;
+    try {
+      const port = await listen(origin);
+      const connection: HarnessAccountConnection = { protocol: 'gemini-v1beta', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'selected-key', modelIds: ['fixture-model'] };
+      broker = await openHarnessAccountBroker({ connection, release }, prepare, () => {}, vi.fn());
+      const post = (text: string) => fetch(broker!.connection.baseUrl, { method: 'POST', headers: { 'x-goog-api-key': 'selected-key' }, body: text, signal: AbortSignal.timeout(5000) });
+      await expect(post('delivered-once')).rejects.toThrow();
+      const failure = await post('new-request-after-revocation').catch((error: unknown) => error);
+      expect(String(failure)).not.toContain('synthetic-secret');
+      expect(bodies).toEqual(['delivered-once']);
+      expect(prepare).toHaveBeenCalledOnce();
+    } finally {
+      await broker?.close();
+      await close(origin);
+    }
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('leaves remote account connections on their existing direct path', async () => {
+    const connection: HarnessAccountConnection = { protocol: 'openai-responses', baseUrl: 'https://account.example.test/v1', apiKey: 'selected-key', modelIds: ['fixture-model'] };
+    const release = vi.fn(async () => {});
+    const prepare = vi.fn();
+    expect(await openHarnessAccountBroker({ connection, release }, prepare, () => {}, vi.fn())).toBeUndefined();
+    expect(prepare).not.toHaveBeenCalled();
+    await release();
   });
 });
