@@ -253,4 +253,36 @@ describe('ContextMeter with a compaction point', () => {
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-compact-save="profile"]')!.click(); });
     expect(container.querySelector('[data-compact-note="error"]')?.textContent).toContain('Built-in profiles can’t be changed');
   });
+
+  it('keeps ContextMeter open across pointerdown -> pointerup -> click on CompactSourceMenu items and Escape inside it', async () => {
+    const onSave = vi.fn(async () => ({
+      result: result(status(400_000, 'model'), status(400_000, 'model'), { overrideCleared: true, savedAs: 400_000 }),
+    }));
+    const { container } = await render({ used: 100_000, autoCompact: wiring({ status: status(400_000, 'session'), onSave }) });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-compact-source-trigger]')!;
+    await act(async () => { trigger.click(); });
+    expect(document.querySelector('[data-compact-source-menu]')).not.toBeNull();
+
+    // Escape closes CompactSourceMenu first, leaving ContextMeter open
+    await act(async () => {
+      document.querySelector('[data-compact-source-menu]')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector('[data-compact-source-menu]')).toBeNull();
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+
+    await act(async () => { trigger.click(); });
+    const saveModel = document.querySelector<HTMLButtonElement>('[data-compact-save="model"]')!;
+    await act(async () => {
+      saveModel.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+    });
+    expect(saveModel.isConnected).toBe(true);
+    await act(async () => {
+      saveModel.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
+      saveModel.click();
+    });
+    expect(onSave).toHaveBeenCalledWith('model', 400_000);
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+  });
 });

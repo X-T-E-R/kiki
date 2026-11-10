@@ -29,7 +29,30 @@ class ReferenceWidget extends WidgetType {
   override ignoreEvent(): boolean { return false; }
 }
 
+export interface ComposerSkillSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly skillName: string;
+}
+
 const refreshReferences = StateEffect.define<null>();
+const refreshSkillTokens = StateEffect.define<null>();
+
+function skillTokenDecorations(state: EditorState, spans: readonly ComposerSkillSpan[]): DecorationSet {
+  if (spans.length === 0) return Decoration.none;
+  const docLength = state.doc.length;
+  const sorted = spans
+    .filter((span) => span.start >= 0 && span.end > span.start && span.end <= docLength)
+    .toSorted((a, b) => a.start - b.start || a.end - b.end);
+  return Decoration.set(
+    sorted.map((span) =>
+      Decoration.mark({
+        class: 'composer-skill-token',
+        attributes: { 'data-composer-skill-token': span.skillName },
+      }).range(span.start, span.end),
+    ),
+  );
+}
 
 /** Adapt CodeMirror's replace-decoration/atomicRanges pattern; raw links remain in the document. */
 function referenceDecorations(state: EditorState, labels: readonly ComposerReferenceLabel[]): DecorationSet {
@@ -51,6 +74,7 @@ interface ComposerInputProps {
   readonly inputRef: RefObject<ComposerInputHandle | null>;
   readonly value: string;
   readonly references: readonly ComposerReferenceLabel[];
+  readonly skillSpans?: readonly ComposerSkillSpan[];
   readonly disabled: boolean;
   readonly label: string;
   readonly placeholder: string;
@@ -87,6 +111,8 @@ export function ComposerInput(props: ComposerInputProps) {
   const externalChange = useRef(false);
   const labelsRef = useRef(props.references);
   labelsRef.current = props.references;
+  const skillSpansRef = useRef(props.skillSpans ?? []);
+  skillSpansRef.current = props.skillSpans ?? [];
   const configuration = () => {
     const current = propsRef.current;
     return [
@@ -123,6 +149,12 @@ export function ComposerInput(props: ComposerInputProps) {
         EditorView.atomicRanges.of((view) => view.state.field(field)),
       ],
     });
+    const skillTokens = StateField.define<DecorationSet>({
+      create: (state) => skillTokenDecorations(state, skillSpansRef.current),
+      update: (decorations, transaction) => transaction.docChanged || transaction.effects.some((effect) => effect.is(refreshSkillTokens))
+        ? skillTokenDecorations(transaction.state, skillSpansRef.current) : decorations,
+      provide: (field) => EditorView.decorations.from(field),
+    });
     let composing = false;
     let compositionKey = false;
     const view = new EditorView({
@@ -130,7 +162,7 @@ export function ComposerInput(props: ComposerInputProps) {
       state: EditorState.create({
         doc: propsRef.current.value,
         extensions: [
-          inputTheme, EditorView.lineWrapping, references,
+          inputTheme, EditorView.lineWrapping, references, skillTokens,
           config.current.of(configuration()),
           EditorView.domEventHandlers({
             keydown: (event) => {
@@ -236,6 +268,11 @@ export function ComposerInput(props: ComposerInputProps) {
     const view = viewRef.current;
     if (view !== null && !view.composing) view.dispatch({ effects: refreshReferences.of(null) });
   }, [props.references]);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (view !== null && !view.composing) view.dispatch({ effects: refreshSkillTokens.of(null) });
+  }, [props.skillSpans]);
 
   return <div ref={containerRef} className="composer-input text-[14.5px] pointer-coarse:text-[16px]" />;
 }

@@ -663,6 +663,22 @@ describe('parseSessionCreateHandoff', () => {
     });
     expect(resolveSessionCreateSubmission({})).toBeUndefined();
   });
+
+  it('preserves initialSkills for inline/multi-skill /new prompts and ignores malformed initialSkills', () => {
+    const parsed = parseSessionCreateHandoff({
+      initialPrompt: 'Please check config with /kiki-ops and /review',
+      initialSkills: [{ name: 'kiki-ops' }, { name: 'review' }],
+    });
+    expect(parsed.initialSkills).toEqual([{ name: 'kiki-ops' }, { name: 'review' }]);
+    expect(resolveSessionCreateSubmission(parsed)).toEqual({
+      kind: 'prompt',
+      text: 'Please check config with /kiki-ops and /review',
+      attachments: [],
+      skills: [{ name: 'kiki-ops' }, { name: 'review' }],
+      goalObjective: undefined,
+    });
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', initialSkills: [{ name: '' }] }).initialSkills).toBeUndefined();
+  });
 });
 
 describe('fileMentionFromPathMedia', () => {

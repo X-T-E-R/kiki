@@ -11,7 +11,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
+import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
@@ -1071,6 +1071,7 @@ interface SessionCreateHandoff {
   readonly initialPresentation?: import('@kiki/transcript').TextPresentation;
   readonly initialAttachments?: readonly ComposerAttachment[];
   readonly initialSkill?: DraftSkillHandoff;
+  readonly initialSkills?: readonly PromptSkillActivation[];
   readonly model?: string;
   readonly thinking?: string;
   readonly permissionMode?: PermissionMode;
@@ -1087,6 +1088,7 @@ export type SessionCreateSubmission =
       readonly text: string;
       readonly presentation?: import('@kiki/transcript').TextPresentation;
       readonly attachments: readonly ComposerAttachment[];
+      readonly skills?: readonly PromptSkillActivation[];
       readonly goalObjective?: string;
       readonly personaGreetingReply?: boolean;
     }
@@ -1098,6 +1100,19 @@ export type SessionCreateSubmission =
       readonly userInput?: string;
       readonly goalObjective?: string;
     };
+
+function isPromptSkillActivationList(value: unknown): value is readonly PromptSkillActivation[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as { name?: unknown }).name === 'string' &&
+        (entry as { name: string }).name !== '',
+    )
+  );
+}
 
 function isDraftSkillHandoff(value: unknown): value is DraftSkillHandoff {
   if (typeof value !== 'object' || value === null) return false;
@@ -1120,6 +1135,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
     initialPresentation: readTextPresentation(raw.initialPresentation),
     initialAttachments: Array.isArray(raw.initialAttachments) ? raw.initialAttachments : undefined,
     initialSkill: isDraftSkillHandoff(raw.initialSkill) ? raw.initialSkill : undefined,
+    initialSkills: isPromptSkillActivationList(raw.initialSkills) ? raw.initialSkills : undefined,
     model: raw.model,
     thinking: raw.thinking,
     permissionMode: raw.permissionMode,
@@ -1150,6 +1166,7 @@ export function resolveSessionCreateSubmission(
     text: handoff.initialPrompt,
     presentation: handoff.initialPresentation,
     attachments: handoff.initialAttachments ?? [],
+    skills: handoff.initialSkills,
     goalObjective: handoff.goalObjective,
     ...(handoff.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
   };
@@ -3207,7 +3224,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation; readonly firstMessage?: FirstSessionMessageRecord }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation; readonly skills?: readonly PromptSkillActivation[]; readonly firstMessage?: FirstSessionMessageRecord }) => {
         // The context block is generated for the model, never restored into the
         // user's editor. Its presentation span is the lossless way back to the draft.
         const submittedDraft = projectPresentedText(text, options?.presentation);
@@ -3291,6 +3308,7 @@ export function SessionView({
               permissionMode: profileSwitch.permissionMode,
               planMode,
               planGate,
+              skills: options?.skills,
               onPreservation: (persisted) => {
                 if (persisted) releaseComposition();
                 else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
@@ -3383,7 +3401,9 @@ export function SessionView({
           goalObjective: firstMessage === undefined ? promptGoalObjective(options) : frozen?.goalObjective,
           appendTiming: frozen?.appendTiming ?? options?.appendTiming ?? liveSettings.defaultAppendTiming,
           personaGreetingReply: options?.personaGreetingReply,
-          skills: frozen?.initialSkill === undefined ? undefined : [{ name: frozen.initialSkill.name, args: frozen.initialSkill.args === '' ? undefined : frozen.initialSkill.args }],
+          skills: frozen?.initialSkill !== undefined
+            ? [{ name: frozen.initialSkill.name, args: frozen.initialSkill.args === '' ? undefined : frozen.initialSkill.args }]
+            : frozen?.initialSkills ?? options?.skills,
         };
         const submissionKey = JSON.stringify(submissionBody);
         const retryablePending = pendingSubmissionRef.current;
@@ -3487,7 +3507,8 @@ export function SessionView({
               thinking: submission.thinking, permission_mode: submission.permissionMode,
               plan_mode: submission.planMode, plan_gate: submission.planGate,
               goal_objective: submission.goalObjective, append_timing: submission.appendTiming,
-              persona_greeting_reply: submission.personaGreetingReply, skills: submission.skills,
+              persona_greeting_reply: submission.personaGreetingReply,
+              skills: submission.skills === undefined ? undefined : [...submission.skills],
             })
             : firstRecord === undefined ? send(submission) : submitFirstSessionMessage({
               record: firstRecord, save: saveFirstRecord, submit: send, retryMissing: !first,
@@ -4581,6 +4602,7 @@ boundExecution,
       goalObjective: submission.goalObjective,
       personaGreetingReply: record.message.personaGreetingReply,
       presentation: submission.kind === 'prompt' ? submission.presentation : undefined,
+      skills: submission.kind === 'prompt' ? submission.skills : undefined,
     });
   }, [controller, actions, scopeId, sessionId, location.pathname, navigate, updateDraft, updateAttachments]);
 
@@ -4668,6 +4690,7 @@ boundExecution,
         readonly goalObjective?: string;
         readonly appendTiming?: DeferredAppendTiming;
         readonly presentation?: import('@kiki/transcript').TextPresentation;
+        readonly skills?: readonly PromptSkillActivation[];
       },
     ) => actions?.send(text, composerAttachments, options),
     [actions],
@@ -4677,7 +4700,8 @@ boundExecution,
       text: string,
       composerAttachments: readonly ComposerAttachment[],
       presentation?: import('@kiki/transcript').TextPresentation,
-    ) => actions?.send(text, composerAttachments, { now: true, presentation }),
+      skills?: readonly PromptSkillActivation[],
+    ) => actions?.send(text, composerAttachments, { now: true, presentation, skills }),
     [actions],
   );
   const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);

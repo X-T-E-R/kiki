@@ -8,59 +8,15 @@
  * the regular slash-command path and is skipped here by default.
  */
 
+import {
+  findInlineSkillTokens,
+  type FindInlineSkillTokensOptions,
+  type InlineSkillToken,
+} from '@kiki/session-core/commands/slashCommands';
+
 import type { InlineSkillActivation } from '../types';
 
-export interface InlineSkillToken {
-  readonly commandName: string;
-  readonly start: number;
-  readonly end: number;
-}
-
-export interface FindInlineSkillTokensOptions {
-  /** Decide whether a syntactically valid token names a known skill. */
-  readonly isKnownSkill: (commandName: string) => boolean;
-  /** Include tokens with an empty command name (a bare trailing `/`). */
-  readonly allowEmpty?: boolean;
-  /** Also treat a `/` at the very start of the input as a token. */
-  readonly includeLeading?: boolean;
-}
-
-const WHITESPACE = /\s/;
-
-export function findInlineSkillTokens(
-  text: string,
-  options: FindInlineSkillTokensOptions,
-): InlineSkillToken[] {
-  const tokens: InlineSkillToken[] = [];
-
-  let searchStart = 0;
-  if (text.startsWith('/') && options.includeLeading !== true) {
-    const firstWhitespace = text.search(WHITESPACE);
-    searchStart = firstWhitespace === -1 ? text.length : firstWhitespace + 1;
-  }
-
-  for (let i = searchStart; i < text.length; i++) {
-    if (text[i] !== '/') continue;
-
-    const isLeadingSlash = i === 0 && options.includeLeading === true;
-    const charBefore = i > 0 ? text[i - 1] : undefined;
-    if (!isLeadingSlash && (charBefore === undefined || !WHITESPACE.test(charBefore))) continue;
-
-    let end = i + 1;
-    while (end < text.length && !WHITESPACE.test(text[end] ?? '')) {
-      end++;
-    }
-
-    const commandName = text.slice(i + 1, end);
-    if (commandName.includes('/')) continue;
-    if (commandName.length === 0 && options.allowEmpty !== true) continue;
-    if (!options.isKnownSkill(commandName)) continue;
-
-    tokens.push({ commandName, start: i, end });
-  }
-
-  return tokens;
-}
+export { findInlineSkillTokens, type FindInlineSkillTokensOptions, type InlineSkillToken };
 
 export interface ExtractInlineSkillActivationsOptions {
   /** Also treat a `/` at the very start of the input as a skill token. */

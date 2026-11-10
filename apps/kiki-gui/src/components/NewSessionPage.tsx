@@ -21,6 +21,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
+import { usePopoverDismiss } from './ComposerControls';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { Icon } from './icons';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -87,11 +88,24 @@ function useTypingEcho(draft: string): number {
 function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const onPanelKeyDown = usePopoverDismiss(open, (refocus) => {
+    setOpen(false);
+    if (refocus === true) triggerRef.current?.focus();
+  }, rootRef, 'hero-workspace');
   const label = workspaceChipLabel(state);
 
   return (
-    <div className="relative" data-hero-workspace>
+    <div
+      ref={rootRef}
+      className="relative"
+      data-hero-workspace
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape closes the workspace popover and returns focus to its trigger
+      onKeyDown={onPanelKeyDown}
+    >
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => { setOpen((value) => !value); }}
         aria-label={t('hero.workspaceAria')}

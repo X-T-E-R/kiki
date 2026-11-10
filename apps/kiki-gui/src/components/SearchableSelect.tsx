@@ -15,12 +15,22 @@
  * active option, which is also scrolled into view while arrowing.
  */
 
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { floatingSurfaceZIndex, MODAL_BASE_Z_INDEX, owningModalId } from '../lib/uiBusy';
+import {
+  containsOrOwnsFloatingTarget,
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
+  MODAL_BASE_Z_INDEX,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+} from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
 
@@ -226,6 +236,8 @@ export function SearchableSelect({
   readonly density?: 'comfortable' | 'compact';
 }) {
   const { t } = useI18n();
+  const selectUid = useId().replace(/:/g, '');
+  const surfaceOwnerId = `select:${id ?? selectUid}`;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -247,11 +259,8 @@ export function SearchableSelect({
    * accepts this surface and only this one — a picker under a lower dialog, or
    * on the page behind one, is not exempt while another dialog is on top.
    */
-  const [ownerId, setOwnerId] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    if (!open) { setOwnerId(undefined); return; }
-    setOwnerId(owningModalId(triggerRef.current));
-  }, [open]);
+  const ownerId = open && ownsPanel ? owningModalId(triggerRef.current) : undefined;
+  const floatingOwners = open && ownsPanel ? resolveFloatingOwners(triggerRef.current) : undefined;
   const openSignalRef = useRef(openSignal);
   useEffect(() => {
     if (openSignal === undefined || openSignal === openSignalRef.current) return;
@@ -319,15 +328,35 @@ export function SearchableSelect({
   // an option is a commit, not a dismissal.
   useEffect(() => {
     if (!open) return;
+    const release = registerOverlay(surfaceOwnerId);
     const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (rootRef.current?.contains(target) === true) return;
-      if (panelRef.current?.contains(target) === true) return;
+      if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return;
+      if (containsOrOwnsFloatingTarget(panelRef.current, event.target, surfaceOwnerId)) return;
       close();
     };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (
+        (event.target instanceof Node && rootRef.current?.contains(event.target) === true) ||
+        containsOrOwnsFloatingTarget(panelRef.current, event.target, surfaceOwnerId) ||
+        hasOpenOwnedFloatingPortal(surfaceOwnerId)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      close();
+      triggerRef.current?.focus();
+    };
     document.addEventListener('pointerdown', onPointerDown);
-    return () => { document.removeEventListener('pointerdown', onPointerDown); };
-  }, [open]);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      release();
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, surfaceOwnerId]);
 
   // Keep the active row visible while arrowing through a long list.
   useEffect(() => {
@@ -367,7 +396,9 @@ export function SearchableSelect({
       commitRow(activeIndex);
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close();
+      triggerRef.current?.focus();
     }
   };
 
@@ -603,12 +634,13 @@ export function SearchableSelect({
             <div
               ref={panelRef}
               data-select-panel
-              // Names the dialog this surface belongs to (its `overlayId`, or
-              // absent outside a dialog), so that dialog's focus trap can tell
-              // its own picker from one belonging to another dialog.
-              {...(ownerId === undefined ? {} : { [MODAL_ESCAPE_ATTRIBUTE]: ownerId })}
+              {...{
+                [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
+              }}
               onKeyDown={(event) => {
-                if (event.key !== 'Escape') return;
+                if (event.key !== 'Escape' || event.defaultPrevented) return;
                 event.preventDefault();
                 // Keep the global Escape handler (turn abort) and the dialog's
                 // own close-out of a panel dismissal.

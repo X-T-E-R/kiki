@@ -6,10 +6,14 @@ import {
   buildSlashItems,
   classifySlashSubmission,
   completeSlashTrigger,
+  extractSlashSkillTokens,
   filterSlashItems,
+  findInlineSkillTokens,
+  hasInlineSlashCandidate,
   isSkillActivatable,
   parseSlashDraft,
   parseSlashTrigger,
+  removeSkillToken,
   resolveSlashCommand,
 } from './slashCommands';
 
@@ -229,5 +233,77 @@ describe('classifySlashSubmission', () => {
     expect(classifySlashSubmission(items, 'look /review')).toBeNull();
     expect(classifySlashSubmission(items, '/')).toBeNull();
     expect(classifySlashSubmission(items, '')).toBeNull();
+  });
+});
+
+describe('findInlineSkillTokens / extractSlashSkillTokens / removeSkillToken', () => {
+  const items = buildSlashItems(
+    [
+      skill('nb-writing'),
+      skill('reader-first-writing'),
+      skill('plan'),
+      skill('glossary', { type: 'reference' }),
+    ],
+    { hasSession: true },
+  );
+
+  it('extracts single, multiple, multiline, and case-insensitive inline skills in first-occurrence order', () => {
+    const result = extractSlashSkillTokens(
+      items,
+      '帮我用 /NB-WRITING 润色这段话\n再结合 /reader-first-writing 和 /nb-writing 检查',
+      { includeLeading: true },
+    );
+    expect(result.activations.map((entry) => entry.skillName)).toEqual([
+      'nb-writing',
+      'reader-first-writing',
+    ]);
+    expect(result.occurrences.map((entry) => entry.commandName)).toEqual([
+      'NB-WRITING',
+      'reader-first-writing',
+      'nb-writing',
+    ]);
+  });
+
+  it('supports skill: fallback for inline reserved names while keeping leading shortcuts intact', () => {
+    const leadingShortcut = extractSlashSkillTokens(items, '/plan inspect this', { includeLeading: true });
+    expect(leadingShortcut.activations).toEqual([]);
+
+    const inlineFallback = extractSlashSkillTokens(items, 'please /plan and /skill:plan this', { includeLeading: true });
+    expect(inlineFallback.activations.map((entry) => entry.skillName)).toEqual(['plan']);
+    expect(inlineFallback.occurrences).toHaveLength(2);
+  });
+
+  it('excludes reference skills, GUI route links, paths, URLs, and fractions', () => {
+    const text = 'check /s/session_0f8e2a4c-1b3d /etc/hosts https://example.test/review 1/2 and /glossary';
+    expect(hasInlineSlashCandidate('check /s/session_0f8e2a4c-1b3d /etc/hosts https://example.test/review 1/2')).toBe(false);
+    expect(hasInlineSlashCandidate('check /reader-first-writing now')).toBe(true);
+    expect(extractSlashSkillTokens(items, text, { includeLeading: true }).activations).toEqual([]);
+    expect(
+      findInlineSkillTokens(text, { isKnownSkill: () => true }).map((token) => token.commandName),
+    ).toEqual(['glossary']);
+  });
+
+  it('omits tokens still under the active caret when activeCursor is supplied', () => {
+    const text = 'please /nb-writing and /reader-first-writing';
+    const whileTypingSecond = extractSlashSkillTokens(items, text, {
+      includeLeading: true,
+      activeCursor: text.length,
+    });
+    expect(whileTypingSecond.activations.map((entry) => entry.skillName)).toEqual(['nb-writing']);
+  });
+
+  it('removes leading, middle, and trailing skill tokens with clean spacing', () => {
+    expect(removeSkillToken('/nb-writing check this', { start: 0, end: 11 })).toEqual({
+      text: 'check this',
+      cursor: 0,
+    });
+    expect(removeSkillToken('please /nb-writing check this', { start: 7, end: 18 })).toEqual({
+      text: 'please check this',
+      cursor: 7,
+    });
+    expect(removeSkillToken('check this /nb-writing', { start: 11, end: 22 })).toEqual({
+      text: 'check this',
+      cursor: 10,
+    });
   });
 });

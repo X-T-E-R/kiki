@@ -3351,6 +3351,110 @@ describe('Composer slash skill catalog', () => {
     });
     expect(onSend).toHaveBeenCalledWith('/review --fix', []);
   });
+
+  it('activates inline, multiline, and mixed leading+inline /skills via onSend.skills, chips them in the tray, and ignores route links/paths/URLs/fractions', async () => {
+    listWorkspaceSkills.mockResolvedValue({
+      skills: [
+        workspaceSkill,
+        { ...workspaceSkill, name: 'nb-writing', description: 'Distill prose' },
+        { ...workspaceSkill, name: 'ref-only', description: 'Model-only ref', type: 'reference' },
+      ],
+    });
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const onChange = vi.fn();
+    const { container, rerender } = await renderComposer({
+      value: 'Please use /nb-writing on 1/2 of /etc/hosts https://example.com/nb-writing and /ref-only\nThen run /review',
+      onChange,
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    for (let index = 0; index < 6; index += 1) await settle();
+
+    // Tray chips & editor token highlights appear for both completed inline skills, excluding reference/paths/URLs/fractions
+    expect(container.querySelector('[data-context-tray] [data-skill-chip="nb-writing"]')).not.toBeNull();
+    expect(container.querySelector('[data-context-tray] [data-skill-chip="review"]')).not.toBeNull();
+    expect(container.querySelector('[data-context-tray] [data-skill-chip="ref-only"]')).toBeNull();
+    expect(container.querySelector('[data-composer-skill-token="nb-writing"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-skill-token="review"]')).not.toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onActivateSkill).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledExactlyOnceWith(
+      'Please use /nb-writing on 1/2 of /etc/hosts https://example.com/nb-writing and /ref-only\nThen run /review',
+      [],
+      { skills: [{ name: 'nb-writing' }, { name: 'review' }] },
+    );
+
+    // Removing an inline skill chip strips only that token
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Remove skill nb-writing"]')!);
+    expect(onChange).toHaveBeenLastCalledWith(
+      'Please use on 1/2 of /etc/hosts https://example.com/nb-writing and /ref-only\nThen run /review',
+    );
+
+    // Leading /review + inline /nb-writing sends both skills via onSend instead of dropping the second skill
+    onSend.mockClear();
+    onActivateSkill.mockClear();
+    await rerender({
+      value: '/review combine with /nb-writing please',
+      onChange,
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    for (let index = 0; index < 4; index += 1) await settle();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onActivateSkill).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledExactlyOnceWith(
+      '/review combine with /nb-writing please',
+      [],
+      { skills: [{ name: 'review' }, { name: 'nb-writing' }] },
+    );
+  });
+
+  it('waits for a cold skills catalog when the draft contains an inline /skill candidate, but not for /s/ route links or file paths', async () => {
+    const catalog = deferred<{ skills: typeof workspaceSkill[] }>();
+    listWorkspaceSkills.mockReturnValue(catalog.promise);
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: 'Please apply /reader-first-writing to this note',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    await click(sendButton);
+    expect(sendButton.disabled).toBe(true);
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => {
+      catalog.resolve({ skills: [{ ...workspaceSkill, name: 'reader-first-writing' }] });
+    });
+    await settle();
+    expect(onSend).toHaveBeenCalledExactlyOnceWith(
+      'Please apply /reader-first-writing to this note',
+      [],
+      { skills: [{ name: 'reader-first-writing' }] },
+    );
+
+    // Non-candidate inline slashes (GUI session link + file path + fraction) do NOT block on a cold catalog
+    listSessionSkills.mockReturnValue(new Promise(() => {}));
+    const directSend = vi.fn();
+    const nonCandidate = await renderComposer({
+      value: 'Compare 1/2 of /etc/hosts with /s/session_abc',
+      sessionId: 'session_cold_non_skill',
+      onActivateSkill,
+      onSend: directSend,
+    });
+    await click(nonCandidate.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(directSend).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('Compare 1/2 of /etc/hosts with /s/session_abc'),
+      [],
+      expect.anything(),
+    );
+  });
 });
 
 // ---- C-1/C-2/C-3: history recall, undo/redo, skill preview ----

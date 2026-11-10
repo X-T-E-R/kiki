@@ -20,6 +20,7 @@ import {
 } from './NewSessionDraft';
 import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingOptionalChoice, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
 import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, flushDrafts } from '@kiki/session-core/composer';
+import { readFirstSessionMessage } from '../lib/newSessionCreation';
 import { configureSpaceStorage } from '../lib/spaceStorage';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 
@@ -955,6 +956,26 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({
       state: expect.objectContaining({ createdSession: { id: 'session-new', scopeId: scope.id }, initialPrompt: 'Start work' }),
     }), expect.any(Function));
+  });
+
+  it('persists and navigates with initialSkills when sending inline/multi-skill prompts from /new', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      await state.send('Help me inspect config with /kiki-ops', [], {
+        skills: [{ name: 'kiki-ops' }],
+      });
+    });
+    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({
+      state: expect.objectContaining({
+        initialPrompt: 'Help me inspect config with /kiki-ops',
+        initialSkills: [{ name: 'kiki-ops' }],
+      }),
+    }), expect.any(Function));
+    expect(readFirstSessionMessage(scope.id, 'session-new')?.message.initialSkills).toEqual([
+      { name: 'kiki-ops' },
+    ]);
   });
 
   it('uses workspace Git metadata and refreshes it with the workspace list', async () => {

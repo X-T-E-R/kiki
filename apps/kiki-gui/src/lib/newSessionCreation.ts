@@ -1,5 +1,5 @@
 import type { ComposerAttachment, ExecutionChoice } from '@kiki/session-core/composer';
-import type { PermissionMode } from '@kiki/protocol';
+import type { PermissionMode, PromptSkillActivation } from '@kiki/protocol';
 import { readSettings } from '@kiki/session-core/settings';
 import { spaceStorage, type SpaceStorage } from './spaceStorage';
 
@@ -9,6 +9,7 @@ export interface FirstSessionMessage {
   readonly initialPresentation?: import('@kiki/transcript').TextPresentation;
   readonly initialAttachments?: readonly ComposerAttachment[];
   readonly initialSkill?: { readonly name: string; readonly args: string; readonly attachments: readonly ComposerAttachment[]; readonly userInput?: string };
+  readonly initialSkills?: readonly PromptSkillActivation[];
   readonly model?: string;
   readonly thinking?: string;
   readonly permissionMode?: PermissionMode;

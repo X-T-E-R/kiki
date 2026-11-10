@@ -5,9 +5,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useRef } from 'react';
 import { I18nProvider } from '../../i18n';
 import { anyOverlayOpen } from '../../lib/uiBusy';
+import { usePopoverDismiss } from '../ComposerControls';
 import { Dialog } from '../Dialog';
+import { SearchableSelect } from '../SearchableSelect';
 import { placeAnchored } from './anchoredPosition';
 import { AnchoredPopover, usePopover } from './AnchoredPopover';
 import { DetailSplit } from './DetailSplit';
@@ -112,6 +115,67 @@ describe('AnchoredPopover', () => {
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => { key(document.activeElement!, 'Escape'); });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an outer usePopoverDismiss surface open while clicking or pressing Escape inside a nested portaled SearchableSelect', async () => {
+    const onChange = vi.fn();
+    function NestedSelectHarness() {
+      const [open, setOpen] = useState(true);
+      const outerRef = useRef<HTMLDivElement>(null);
+      const outerTriggerRef = useRef<HTMLButtonElement>(null);
+      const onPanelKeyDown = usePopoverDismiss(open, (refocus) => {
+        setOpen(false);
+        if (refocus === true) outerTriggerRef.current?.focus();
+      }, outerRef, 'outer-popover');
+      return (
+        <I18nProvider>
+          <div ref={outerRef} onKeyDown={onPanelKeyDown}>
+            <button ref={outerTriggerRef} type="button" data-outer-trigger onClick={() => setOpen((v) => !v)}>
+              Workspace
+            </button>
+            {open ? (
+              <div data-outer-panel>
+                <SearchableSelect
+                  id="nested-ws"
+                  ariaLabel="Workspace"
+                  value="a"
+                  options={[
+                    { value: 'a', label: 'Alpha' },
+                    { value: 'b', label: 'Beta' },
+                  ]}
+                  onChange={onChange}
+                />
+              </div>
+            ) : null}
+          </div>
+        </I18nProvider>
+      );
+    }
+
+    act(() => { root.render(<NestedSelectHarness />); });
+    const selectTrigger = container.querySelector<HTMLButtonElement>('#nested-ws')!;
+    await act(async () => { selectTrigger.click(); });
+    expect(document.body.querySelector('[data-select-panel]')).not.toBeNull();
+
+    // First Escape closes only the portaled SearchableSelect, keeping outer-panel open
+    await act(async () => { key(document.activeElement!, 'Escape'); });
+    expect(document.body.querySelector('[data-select-panel]')).toBeNull();
+    expect(container.querySelector('[data-outer-panel]')).not.toBeNull();
+
+    // Reopen and dispatch real pointerdown -> pointerup -> click on Beta option
+    await act(async () => { selectTrigger.click(); });
+    const betaOption = document.body.querySelector<HTMLButtonElement>('[data-option-value="b"]')!;
+    await act(async () => {
+      betaOption.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+    });
+    expect(betaOption.isConnected).toBe(true);
+    expect(container.querySelector('[data-outer-panel]')).not.toBeNull();
+    await act(async () => {
+      betaOption.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
+      betaOption.click();
+    });
+    expect(onChange).toHaveBeenCalledWith('b');
+    expect(container.querySelector('[data-outer-panel]')).not.toBeNull();
   });
 });
 

@@ -30,15 +30,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { useNavigate } from 'react-router-dom';
 
-import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, PromptSkillActivation, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
   classifySlashSubmission,
   completeSlashTrigger,
+  extractSlashSkillTokens,
   filterSlashItems,
+  hasInlineSlashCandidate,
   parseSlashDraft,
   parseSlashTrigger,
+  removeSkillToken,
   type SlashActionId,
   type SlashItem,
 } from '@kiki/session-core/commands';
@@ -595,7 +598,12 @@ export function Composer({
   onSend: (
     text: string,
     attachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation },
+    options?: {
+      readonly goalObjective?: string;
+      readonly appendTiming?: DeferredAppendTiming;
+      readonly presentation?: import('@kiki/transcript').TextPresentation;
+      readonly skills?: readonly PromptSkillActivation[];
+    },
   ) => void | Promise<unknown>;
   /**
    * Send into the running turn instead of queueing behind it (⌘/Ctrl+Enter
@@ -603,7 +611,12 @@ export function Composer({
    * to join; the key then falls back to a normal send. `presentation` carries
    * spans in the raw text sent with this prompt.
    */
-  onSendNow?: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<unknown>;
+  onSendNow?: (
+    text: string,
+    attachments: readonly ComposerAttachment[],
+    presentation?: import('@kiki/transcript').TextPresentation,
+    skills?: readonly PromptSkillActivation[],
+  ) => void | Promise<unknown>;
   /**
    * The session's configured default queue timing. When set, hovering the
    * send button of a BUSY composer floats a menu that sends once with the
@@ -1316,17 +1329,55 @@ export function Composer({
   // The chips band (quote/annotations/goal-mode/attachments/errors/typo
   // guard) only exists with content; it gates the wrapper's top padding above
   // the input.
-  // The draft's leading skill token, chipped in the tray (typed or via ＋).
-  const draftSkill = useMemo(() => {
-    const draft = parseSlashDraft(text);
-    // Only a completed token (followed by whitespace) — not one still being typed.
-    if (draft === null || !/\s/.test(text)) return undefined;
-    return skillMenuItems.find((item) => item.name === draft.query);
-  }, [text, skillMenuItems]);
-  const removeDraftSkill = () => {
+  // The draft's resolved skill tokens (leading or inline), chipped in the tray
+  // and tinted in the editor once completed. While the slash menu is open on a
+  // token or a lone leading `/name` has no trailing whitespace yet, that token
+  // stays unchipped until completed.
+  const skillActivationEnabled = !externalExecution && onActivateSkill !== undefined;
+  const resolvedDraftSkills = useMemo(() => {
+    if (!skillActivationEnabled) return { occurrences: [], activations: [] };
+    const activeSlashEnd = menu?.kind === 'slash' ? menu.end : undefined;
+    const raw = extractSlashSkillTokens(slashItems, text, {
+      includeLeading: true,
+      activeCursor: activeSlashEnd,
+    });
+    const occurrences = raw.occurrences.filter(
+      (match) => !(match.start === 0 && match.end === text.length),
+    );
+    if (occurrences.length === 0) return { occurrences: [], activations: [] };
+    const seen = new Set<string>();
+    const activations = occurrences.filter((match) => {
+      const key = match.skillName.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { occurrences, activations };
+  }, [skillActivationEnabled, slashItems, text, menu]);
+  const draftSkills = resolvedDraftSkills.activations;
+  const skillSpans = useMemo(
+    () => resolvedDraftSkills.occurrences.map((match) => ({
+      start: match.start,
+      end: match.end,
+      skillName: match.skillName,
+    })),
+    [resolvedDraftSkills.occurrences],
+  );
+  const removeDraftSkill = (skillName: string) => {
+    const matches = resolvedDraftSkills.occurrences
+      .filter((match) => match.skillName.toLowerCase() === skillName.toLowerCase())
+      .toSorted((a, b) => b.start - a.start);
+    if (matches.length === 0) return;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-    onChange(text.replace(/^\/\S*\s*/, ''));
-    textareaRef.current?.focus();
+    historyIndexRef.current = null;
+    let nextText = text;
+    let nextCursor = lastCursorRef.current;
+    for (const match of matches) {
+      const removed = removeSkillToken(nextText, match);
+      nextText = removed.text;
+      nextCursor = removed.cursor;
+    }
+    applyTextChange(nextText, nextCursor);
   };
   // Conversation links in the draft — threads and rooms alike: one tray chip
   // each, a tinted token in the text, and whole-link deletion.
@@ -1398,7 +1449,7 @@ export function Composer({
   };
   const hasTray =
     conversationRefs.length > 0 ||
-    draftSkill !== undefined ||
+    draftSkills.length > 0 ||
     (quoteItems.length > 0) ||
     (annotations !== undefined && annotations.length > 0) ||
     attachments.length > 0;
@@ -1967,7 +2018,14 @@ export function Composer({
   }, [host]);
 
   const submitWithSlashItems = (items: readonly SlashItem[], catalogAvailable: boolean) => {
-    const classified = classifySlashSubmission(items, text.trim());
+    const trimmed = text.trim();
+    const classified = classifySlashSubmission(items, trimmed);
+    const inlineMatches = skillActivationEnabled
+      ? extractSlashSkillTokens(items, trimmed, { includeLeading: false }).activations
+      : [];
+    const allMatches = skillActivationEnabled
+      ? extractSlashSkillTokens(items, trimmed, { includeLeading: true }).activations
+      : [];
     if (classified !== null) {
       if (classified.kind === 'unknown' || classified.kind === 'disabled') {
         if (catalogAvailable || classified.kind === 'disabled') {
@@ -1977,21 +2035,38 @@ export function Composer({
           });
           return;
         }
-        const builtin = parseSlashDraft(text.trim());
+        const builtin = parseSlashDraft(trimmed);
         if (!skillCatalogReady && builtin?.query.toLowerCase() === 'kiki-ops' && onActivateSkill !== undefined) {
           activateSkill('kiki-ops', builtin.args);
           return;
         }
       } else {
-        if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-          activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
+        if (classified.item.kind === 'skill' && skillActivationEnabled) {
+          if (inlineMatches.length === 0) {
+            activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
+            return;
+          }
+          const skillsPayload: PromptSkillActivation[] = allMatches.map((match) => ({ name: match.skillName }));
+          sendPrompt(
+            trimmed,
+            runMode === 'goal'
+              ? { goalObjective: goalObjective !== '' ? goalObjective : trimmed, skills: skillsPayload }
+              : { skills: skillsPayload },
+          );
+          setLocalGoalArmed(false);
           return;
         }
         if (classified.item.kind === 'action' && classified.item.action !== undefined) {
           // `/goal <text>` sends immediately with the args as `goal_objective`.
           // A bare `/goal` arms the next message when goal mode is available.
           if (classified.item.action === 'goal' && classified.args !== '') {
-            sendPrompt(classified.args, { goalObjective: classified.args });
+            const goalSkills = skillActivationEnabled
+              ? extractSlashSkillTokens(items, classified.args, { includeLeading: true }).activations.map((match) => ({ name: match.skillName }))
+              : [];
+            sendPrompt(classified.args, {
+              goalObjective: classified.args,
+              skills: goalSkills.length > 0 ? goalSkills : undefined,
+            });
             return;
           }
           // `/btw <question>` goes to a side agent; the main turn never sees it.
@@ -2011,13 +2086,18 @@ export function Composer({
         }
       }
     }
+    const inlineSkills: PromptSkillActivation[] | undefined = inlineMatches.length > 0
+      ? inlineMatches.map((match) => ({ name: match.skillName }))
+      : undefined;
     // Goal mode: the message itself becomes the objective unless the draft
     // carries an explicit one.
     sendPrompt(
-      text.trim(),
+      trimmed,
       runMode === 'goal'
-        ? { goalObjective: goalObjective !== '' ? goalObjective : text.trim() }
-        : undefined,
+        ? { goalObjective: goalObjective !== '' ? goalObjective : trimmed, skills: inlineSkills }
+        : inlineSkills !== undefined
+          ? { skills: inlineSkills }
+          : undefined,
     );
     setLocalGoalArmed(false);
   };
@@ -2051,8 +2131,13 @@ export function Composer({
       return;
     }
     setMenu(null);
-    const localSlash = classifySlashSubmission(slashItems, text.trim());
-    if (localSlash !== null && localSlash.kind !== 'resolved' && skillCatalogReady && !skillsQuery.isSuccess) {
+    const trimmed = text.trim();
+    const localSlash = classifySlashSubmission(slashItems, trimmed);
+    const needsColdCatalog = (
+      (localSlash !== null && localSlash.kind !== 'resolved') ||
+      (skillActivationEnabled && hasInlineSlashCandidate(trimmed))
+    ) && skillCatalogReady && !skillsQuery.isSuccess;
+    if (needsColdCatalog) {
       const owner = sendOwnerKey(sessionId);
       const generation = slashGenerationRef.current + 1;
       slashGenerationRef.current = generation;
@@ -2114,7 +2199,10 @@ export function Composer({
       });
   };
 
-  const sendPrompt = (content: string, options?: { readonly goalObjective?: string }) => {
+  const sendPrompt = (
+    content: string,
+    options?: { readonly goalObjective?: string; readonly skills?: readonly PromptSkillActivation[] },
+  ) => {
     // Keep the two-argument call shape for plain sends: existing callers and
     // test spies assert on exactly (text, attachments).
     const now = sendNowRef.current;
@@ -2141,7 +2229,10 @@ export function Composer({
       : attachments;
     const deliver = (raw: string) => {
       const prepared = withContext(raw);
-      if (now && options === undefined && onSendNow !== undefined) {
+      if (now && options?.goalObjective === undefined && onSendNow !== undefined) {
+        if (options?.skills !== undefined) {
+          return onSendNow(prepared.text, sentAttachments, prepared.presentation, options.skills);
+        }
         return prepared.presentation === undefined ? onSendNow(prepared.text, sentAttachments)
           : onSendNow(prepared.text, sentAttachments, prepared.presentation);
       }
@@ -3033,9 +3124,14 @@ export function Composer({
                   />
                 ),
               )}
-              {draftSkill !== undefined ? (
-                <SkillChip name={draftSkill.name} description={draftSkill.description} onRemove={removeDraftSkill} />
-              ) : null}
+              {draftSkills.map((match) => (
+                <SkillChip
+                  key={`skill-${match.skillName}`}
+                  name={match.item.name}
+                  description={match.item.description}
+                  onRemove={() => { removeDraftSkill(match.skillName); }}
+                />
+              ))}
               {quoteItems.map((item) => (
                 <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
               ))}
@@ -3238,6 +3334,7 @@ export function Composer({
               inputRef={textareaRef}
               value={text}
               references={overlayTokens}
+              skillSpans={skillSpans}
               label={t('composer.inputAria')}
               enterKeyHint={coarsePointer ? 'enter' : undefined}
               onCompositionStart={() => {

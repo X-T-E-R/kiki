@@ -209,3 +209,186 @@ export function resolveSlashCommand(
     ? { item: classified.item, args: classified.args }
     : null;
 }
+
+export interface InlineSkillToken {
+  readonly commandName: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface FindInlineSkillTokensOptions {
+  /** Decide whether a syntactically valid token names a known skill. */
+  readonly isKnownSkill: (commandName: string) => boolean;
+  /** Include tokens with an empty command name (a bare trailing `/`). */
+  readonly allowEmpty?: boolean;
+  /** Also treat a `/` at the very start of the input as a token. */
+  readonly includeLeading?: boolean;
+}
+
+const INLINE_WHITESPACE = /\s/;
+
+/**
+ * Scan whitespace-delimited `/token` spans in `text` (with no internal `/` and
+ * excluding GUI route links like `/s/…`). The leading slash-command area at
+ * offset 0 is skipped unless `includeLeading` is true.
+ */
+export function findInlineSkillTokens(
+  text: string,
+  options: FindInlineSkillTokensOptions,
+): InlineSkillToken[] {
+  const tokens: InlineSkillToken[] = [];
+
+  let searchStart = 0;
+  if (text.startsWith('/') && options.includeLeading !== true) {
+    const firstWhitespace = text.search(INLINE_WHITESPACE);
+    searchStart = firstWhitespace === -1 ? text.length : firstWhitespace + 1;
+  }
+
+  for (let i = searchStart; i < text.length; i++) {
+    if (text[i] !== '/') continue;
+
+    const isLeadingSlash = i === 0 && options.includeLeading === true;
+    const charBefore = i > 0 ? text[i - 1] : undefined;
+    if (!isLeadingSlash && (charBefore === undefined || !INLINE_WHITESPACE.test(charBefore))) continue;
+
+    let end = i + 1;
+    while (end < text.length && !INLINE_WHITESPACE.test(text[end] ?? '')) {
+      end++;
+    }
+
+    const commandName = text.slice(i + 1, end);
+    if (commandName.includes('/')) continue;
+    if (commandName.length === 0 && options.allowEmpty !== true) continue;
+    if (commandName.length > 0 && isAppRouteLink(`/${commandName}`)) continue;
+    if (!options.isKnownSkill(commandName)) continue;
+
+    tokens.push({ commandName, start: i, end });
+  }
+
+  return tokens;
+}
+
+/**
+ * True when `text` contains at least one syntactically valid inline `/token`
+ * candidate away from offset 0 (used to hold submission while the skill catalog
+ * is still loading on a cold start).
+ */
+export function hasInlineSlashCandidate(text: string): boolean {
+  return findInlineSkillTokens(text, { isKnownSkill: () => true }).length > 0;
+}
+
+export interface InlineSkillActivationMatch {
+  readonly item: SlashItem;
+  readonly skillName: string;
+  readonly commandName: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface ExtractSlashSkillActivationsOptions {
+  readonly includeLeading?: boolean;
+  /** Exclude a token still actively being typed at `activeCursor`. */
+  readonly activeCursor?: number;
+}
+
+function buildActivatableSkillLookup(items: readonly SlashItem[]): Map<string, SlashItem> {
+  const map = new Map<string, SlashItem>();
+  for (const item of items) {
+    if (item.kind !== 'skill' || item.disabled === true) continue;
+    const key = item.name.toLowerCase();
+    if (!map.has(key)) map.set(key, item);
+    if (item.skill !== undefined) {
+      const rawKey = item.skill.name.toLowerCase();
+      if (!map.has(`skill:${rawKey}`)) map.set(`skill:${rawKey}`, item);
+    }
+  }
+  return map;
+}
+
+function resolveInlineSlashSkillItem(
+  lookup: ReadonlyMap<string, SlashItem>,
+  commandName: string,
+  isLeading: boolean,
+): SlashItem | undefined {
+  const lower = commandName.toLowerCase();
+  const direct = lookup.get(lower);
+  if (direct !== undefined) return direct;
+  // At offset 0, bare reserved action names (`/plan`, `/new`) belong to client
+  // shortcuts unless prefixed with `/skill:`. Inline tokens have no client
+  // shortcut ambiguity, so `/plan` inline can fall back to `skill:plan`.
+  return isLeading ? undefined : lookup.get(`skill:${lower}`);
+}
+
+/**
+ * Resolve every activatable skill `/token` in `text` against `buildSlashItems`
+ * entries. Returns all matched token occurrences in document order alongside
+ * deduplicated activations in first-occurrence order.
+ */
+export function extractSlashSkillTokens(
+  items: readonly SlashItem[],
+  text: string,
+  options?: ExtractSlashSkillActivationsOptions,
+): {
+  readonly occurrences: readonly InlineSkillActivationMatch[];
+  readonly activations: readonly InlineSkillActivationMatch[];
+} {
+  const lookup = buildActivatableSkillLookup(items);
+  if (lookup.size === 0) return { occurrences: [], activations: [] };
+  const rawTokens = findInlineSkillTokens(text, {
+    includeLeading: options?.includeLeading,
+    isKnownSkill: (commandName) => {
+      const lower = commandName.toLowerCase();
+      return lookup.has(lower) || lookup.has(`skill:${lower}`);
+    },
+  });
+  const occurrences: InlineSkillActivationMatch[] = [];
+  const activations: InlineSkillActivationMatch[] = [];
+  const seen = new Set<string>();
+  for (const token of rawTokens) {
+    if (
+      options?.activeCursor !== undefined &&
+      options.activeCursor >= token.start &&
+      options.activeCursor <= token.end
+    ) {
+      continue;
+    }
+    const item = resolveInlineSlashSkillItem(lookup, token.commandName, token.start === 0);
+    if (item === undefined) continue;
+    const skillName = item.skill?.name ?? item.name;
+    const match: InlineSkillActivationMatch = {
+      item,
+      skillName,
+      commandName: token.commandName,
+      start: token.start,
+      end: token.end,
+    };
+    occurrences.push(match);
+    const dedupeKey = skillName.toLowerCase();
+    if (!seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      activations.push(match);
+    }
+  }
+  return { occurrences, activations };
+}
+
+/** Remove one `/skill` token span from `text`, collapsing one adjacent space cleanly. */
+export function removeSkillToken(
+  text: string,
+  token: { readonly start: number; readonly end: number },
+): { text: string; cursor: number } {
+  const before = text.slice(0, token.start);
+  const after = text.slice(token.end);
+  if (before === '') {
+    const trimmedAfter = after.replace(/^[ \t]+/, '');
+    return { text: trimmedAfter, cursor: 0 };
+  }
+  if (/[ \t]$/.test(before) && /^[ \t]/.test(after)) {
+    return { text: before + after.replace(/^[ \t]+/, ''), cursor: before.length };
+  }
+  if (after === '' && /[ \t]$/.test(before)) {
+    const trimmedBefore = before.replace(/[ \t]+$/, '');
+    return { text: trimmedBefore, cursor: trimmedBefore.length };
+  }
+  return { text: before + after, cursor: before.length };
+}

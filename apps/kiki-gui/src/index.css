@@ -1451,6 +1451,13 @@ button.context-image:hover {
   border-radius: 3px;
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
+.composer-skill-token {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  color: var(--color-accent-ink);
+  font-weight: 500;
+}
 /* The ＋ menu's search field: its rounded well carries the focus ring. */
 input[data-add-search]:focus-visible {
   outline: none;

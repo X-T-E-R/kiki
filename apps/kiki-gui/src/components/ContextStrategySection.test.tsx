@@ -170,4 +170,84 @@ describe('ContextStrategySection', () => {
     expect(onCompact).not.toHaveBeenCalled();
     expect(getToasts().at(-1)?.text).toBe('Manual compaction requested.');
   });
+
+  it('keeps the outer ContextMeter card mounted across pointerdown -> pointerup -> click on portaled menu buttons, and closes inner popovers first on Escape', async () => {
+    const pointerClick = async (element: Element | null) => {
+      const target = element as HTMLElement;
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+      });
+      // Must still be mounted after pointerdown!
+      expect(target.isConnected).toBe(true);
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
+        target.click();
+      });
+    };
+
+    const onCompact = vi.fn();
+    const strategy = handle(st('auto', 'session'));
+    const container = await render(strategy, onCompact);
+
+    // 1. CompactActions portaled menu ("Summarise" and "Start fresh")
+    const compactWithTrigger = container.querySelector<HTMLButtonElement>('[data-context-compact-with]')!;
+    await click(compactWithTrigger);
+    expect(document.querySelector('[data-context-compact-menu]')).not.toBeNull();
+
+    // First Escape closes only the inner portaled menu, keeping ContextMeter open
+    compactWithTrigger.focus();
+    await act(async () => {
+      document.querySelector('[data-context-compact-menu]')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector('[data-context-compact-menu]')).toBeNull();
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+    expect(document.activeElement).toBe(compactWithTrigger);
+
+    // Reopen and real pointerdown -> pointerup -> click on "Summarise"
+    await click(compactWithTrigger);
+    await pointerClick(document.querySelector('[data-context-compact-option="summarize"]'));
+    expect(strategy.compact).toHaveBeenCalledWith('summarize');
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+
+    // Reopen ContextMeter and real pointerdown -> pointerup -> click on "Start fresh"
+    await click(container.querySelector('[data-context-meter]'));
+    await click(container.querySelector('[data-context-compact-with]'));
+    await pointerClick(document.querySelector('[data-context-compact-option="fresh"]'));
+    expect(strategy.compact).toHaveBeenCalledWith('fresh');
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+
+    // 2. StrategySourceMenu portaled menu ("Save as global default" and "Reset")
+    await click(container.querySelector('[data-context-meter]'));
+    const sourceTrigger = container.querySelector<HTMLButtonElement>('[data-strategy-source-trigger]')!;
+    await click(sourceTrigger);
+    expect(document.querySelector('[data-strategy-source-menu]')).not.toBeNull();
+
+    // Document-level Escape (when focus moved back to the trigger) still closes only the inner menu
+    sourceTrigger.focus();
+    await act(async () => {
+      sourceTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('[data-strategy-source-menu]')).toBeNull();
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+
+    await click(sourceTrigger);
+    await pointerClick(document.querySelector('[data-strategy-save-global]'));
+    expect(strategy.saveGlobal).toHaveBeenCalledWith('auto');
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+
+    await click(sourceTrigger);
+    await pointerClick(document.querySelector('[data-strategy-reset]'));
+    expect(strategy.write).toHaveBeenCalledWith(null);
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+
+    // Second Escape (with no inner portal open) closes the outer ContextMeter card
+    await act(async () => {
+      container.querySelector('[data-context-details]')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+    });
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+  });
 });

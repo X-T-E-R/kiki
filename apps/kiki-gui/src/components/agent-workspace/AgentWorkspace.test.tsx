@@ -964,6 +964,42 @@ it('activates a child skill with its target, payload, switch dependency, and sta
   expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
 });
 
+it('forwards inline skills on a native child prompt and skips skill activation on an external child', async () => {
+  harness.listSessionSkills.mockResolvedValue({
+    skills: [{ name: 'review', description: 'Review the current diff', path: '/skills/review/SKILL.md', source: 'project' }],
+  });
+  harness.sendAgentMessage.mockResolvedValue(null);
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'native' }) });
+  for (let index = 0; index < 4; index += 1) await settle();
+  await sendFromComposer('Check the diff with /review please');
+  expect(harness.activateSkill).not.toHaveBeenCalled();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'child',
+    'Check the diff with /review please',
+    [{ type: 'text', text: 'Check the diff with /review please' }],
+    expect.any(String),
+    undefined,
+    undefined,
+    [{ name: 'review' }],
+  );
+
+  // External child sends plain text without activating Kiki skills
+  harness.sendAgentMessage.mockClear();
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'example-acp', model: 'vendor/model' }) });
+  for (let index = 0; index < 4; index += 1) await settle();
+  await sendFromComposer('Check the diff with /review please');
+  expect(harness.activateSkill).not.toHaveBeenCalled();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'child',
+    'Check the diff with /review please',
+    [{ type: 'text', text: 'Check the diff with /review please' }],
+    expect.any(String),
+    undefined,
+  );
+});
+
 async function clickComposerSend() {
   await act(async () => {
     dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]')?.click();

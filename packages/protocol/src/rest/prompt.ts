@@ -102,6 +102,7 @@ export const promptSubmissionSchema = z.object({
   skills: z.array(z.object({ name: z.string().min(1), args: z.string().optional() })).min(1).optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
+export type PromptSkillActivation = NonNullable<PromptSubmission['skills']>[number];
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   execution: true,

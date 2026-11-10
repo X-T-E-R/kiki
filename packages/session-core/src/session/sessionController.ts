@@ -3650,7 +3650,7 @@ export class SessionController {
     afterModelSwitch?: string;
     modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     promptId?: string;
-    skills?: import('@kiki/protocol').PromptSubmission['skills'];
+    skills?: readonly import('@kiki/protocol').PromptSkillActivation[];
     personaGreetingReply?: boolean;
     onPreservation?: (persisted: boolean) => void;
     onAcknowledged?: () => void;
@@ -3682,7 +3682,7 @@ export class SessionController {
       after_model_switch: input.afterModelSwitch,
       model_switch_mode: input.modelSwitchMode,
       prompt_id: promptId,
-      skills: input.skills,
+      skills: input.skills === undefined ? undefined : [...input.skills],
       persona_greeting_reply: input.personaGreetingReply,
     });
     const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
@@ -4143,6 +4143,7 @@ export class SessionController {
     readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
     readonly planGate?: PromptPlanGate;
+    readonly skills?: readonly import('@kiki/protocol').PromptSkillActivation[];
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
   }): Promise<{ readonly promptId: string; readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
@@ -4179,6 +4180,7 @@ export class SessionController {
         permission_mode: input.permissionMode,
         plan_mode: input.planMode,
         plan_gate: input.planGate,
+        skills: input.skills === undefined ? undefined : [...input.skills],
       });
     } catch (error) {
       if (isUnconfirmedTransportError(error)) {

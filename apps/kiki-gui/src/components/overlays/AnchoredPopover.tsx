@@ -27,7 +27,16 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
-import { floatingSurfaceZIndex, owningModalId, registerOverlay } from '../../lib/uiBusy';
+import {
+  containsOrOwnsFloatingTarget,
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { placeAnchored } from './anchoredPosition';
@@ -72,6 +81,8 @@ export function AnchoredPopover({
   // Read during render, not after: the owning dialog's focus trap checks this
   // attribute the moment focus moves in, and a late value lets it pull focus back.
   const owner = open ? owningModalId(anchorRef.current) : undefined;
+  const floatingOwners = open ? resolveFloatingOwners(anchorRef.current) : undefined;
+  const surfaceOwnerId = `popover:${id}`;
   const zIndex = open ? floatingSurfaceZIndex(anchorRef.current) : undefined;
 
   useLayoutEffect(() => {
@@ -121,7 +132,9 @@ export function AnchoredPopover({
       ?? surface?.querySelector<HTMLElement>(FOCUSABLE) ?? surface;
     first?.focus();
     const onPointerDown = (event: PointerEvent) => {
-      const inside = pointerInside.current || anchorRef.current?.contains(event.target as Node) === true;
+      const inside = pointerInside.current
+        || anchorRef.current?.contains(event.target as Node) === true
+        || containsOrOwnsFloatingTarget(surfaceRef.current, event.target, surfaceOwnerId);
       pointerInside.current = false;
       if (!inside) close(false);
     };
@@ -129,9 +142,10 @@ export function AnchoredPopover({
     // Escape must still close the popover, before the page's own layers.
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (surfaceRef.current?.contains(event.target as Node) === true) return;
+      if (containsOrOwnsFloatingTarget(surfaceRef.current, event.target, surfaceOwnerId) || hasOpenOwnedFloatingPortal(surfaceOwnerId)) return;
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       if (role === 'menu') { closeRef.current(); restoreTriggerFocus(); }
       else close(true);
     };
@@ -147,9 +161,14 @@ export function AnchoredPopover({
         else anchorRef.current?.focus();
       }
     };
-  }, [open, id, anchorRef, close, initialFocusSelector, role, restoreTriggerFocus]);
+  }, [open, id, surfaceOwnerId, anchorRef, close, initialFocusSelector, role, restoreTriggerFocus]);
 
   if (!open) return null;
+  const portalAttributes: Record<string, string | undefined> = {
+    [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+    [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+    [MODAL_ESCAPE_ATTRIBUTE]: owner,
+  };
   return createPortal(
     <div
       ref={surfaceRef}
@@ -159,7 +178,7 @@ export function AnchoredPopover({
       tabIndex={-1}
       data-anchored-popover=""
       {...data}
-      {...(owner === undefined ? {} : { [MODAL_ESCAPE_ATTRIBUTE]: owner })}
+      {...portalAttributes}
       onPointerDownCapture={() => { pointerInside.current = true; }}
       onFocusCapture={() => { focusInside.current = true; }}
       onBlurCapture={() => {
@@ -167,7 +186,14 @@ export function AnchoredPopover({
         setTimeout(() => {
           if (focusInside.current || !open) return;
           const active = document.activeElement;
-          if (active !== null && active !== document.body && anchorRef.current?.contains(active) !== true) close(false);
+          if (
+            active !== null &&
+            active !== document.body &&
+            anchorRef.current?.contains(active) !== true &&
+            !containsOrOwnsFloatingTarget(surfaceRef.current, active, surfaceOwnerId)
+          ) {
+            close(false);
+          }
         }, 0);
       }}
       onKeyDown={(event) => {

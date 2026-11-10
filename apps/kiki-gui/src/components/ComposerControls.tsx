@@ -28,7 +28,12 @@ import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
-import { registerOverlay } from '../lib/uiBusy';
+import {
+  containsOrOwnsFloatingTarget,
+  FLOATING_OWNER_ATTRIBUTE,
+  hasOpenOwnedFloatingPortal,
+  registerOverlay,
+} from '../lib/uiBusy';
 import { OptionalCapabilityRows } from './capabilities/optionalCapabilityUi';
 import type { OverrideSource } from './capabilities/pluginUsage';
 import { QUIET_BUTTON, StatusDot } from './capabilities/primitives';
@@ -203,20 +208,37 @@ export function usePopoverDismiss(
 ) {
   const closeRef = useRef(close);
   closeRef.current = close;
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (root === null) return;
+    root.setAttribute(FLOATING_OWNER_ATTRIBUTE, overlayId);
+    return () => {
+      if (root.getAttribute(FLOATING_OWNER_ATTRIBUTE) === overlayId) {
+        root.removeAttribute(FLOATING_OWNER_ATTRIBUTE);
+      }
+    };
+  }, [overlayId, rootRef]);
   useEffect(() => {
     if (!open) return;
     const release = registerOverlay(overlayId);
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
+      if (rootRef.current !== null && !containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId)) {
         closeRef.current();
       }
     };
     // Focus outside the root (e.g. the panel opened by pointer and focus
     // went back to the page): the document still hears Escape. In-panel
-    // Escape is handled (and stopped) by the root's own key handler first.
+    // Escape is handled (and stopped) by the root's own key handler first,
+    // and any open nested portal (AnchoredPopover / SearchableSelect) owns
+    // Escape before this outer surface does.
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (rootRef.current?.contains(event.target as Node) === true) return;
+      if (
+        containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId) ||
+        hasOpenOwnedFloatingPortal(overlayId)
+      ) {
+        return;
+      }
       event.preventDefault();
       closeRef.current();
     };
@@ -229,7 +251,13 @@ export function usePopoverDismiss(
     };
   }, [open, overlayId, rootRef]);
   return (event: KeyboardEvent<HTMLElement>) => {
-    if (!open || event.key !== 'Escape') return;
+    if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
+    if (
+      (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) ||
+      hasOpenOwnedFloatingPortal(overlayId)
+    ) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     closeRef.current(true);
@@ -243,16 +271,12 @@ export function usePopover(
   rootRef: RefObject<HTMLDivElement | null>,
   overlayId: string,
 ) {
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  usePopoverDismiss(open, close, rootRef, overlayId);
+  const onDismissKeyDown = usePopoverDismiss(open, close, rootRef, overlayId);
 
   return (event: KeyboardEvent<HTMLDivElement>) => {
     if (!open) return;
     if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      closeRef.current(true);
+      onDismissKeyDown(event);
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

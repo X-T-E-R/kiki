@@ -20,6 +20,7 @@ import {
   type NamedAgentProfile,
   type PermissionMode,
   type PersonaSnapshot,
+  type PromptSkillActivation,
   type SessionCreate,
   type WorkspaceCatalogEntry,
 } from '@kiki/protocol';
@@ -982,6 +983,7 @@ export function useNewSessionDraft({
     initialPresentation?: import('@kiki/transcript').TextPresentation;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
+    initialSkills?: readonly PromptSkillActivation[];
     /**
      * Hosts preselected on /new. They are session resources, not message
      * content, so they ride the create request (joined before the first
@@ -1286,7 +1288,11 @@ export function useNewSessionDraft({
   const send = useCallback((
     text: string,
     composerAttachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string; readonly presentation?: import('@kiki/transcript').TextPresentation },
+    options?: {
+      readonly goalObjective?: string;
+      readonly presentation?: import('@kiki/transcript').TextPresentation;
+      readonly skills?: readonly PromptSkillActivation[];
+    },
   ) => {
     if (buildPromptContent(text, composerAttachments, options?.presentation) === null) return;
     if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
@@ -1294,6 +1300,7 @@ export function useNewSessionDraft({
       initialPrompt: text,
       initialPresentation: options?.presentation,
       initialAttachments: withoutSsh(composerAttachments),
+      initialSkills: options?.skills,
       sshHosts: sshOf(composerAttachments),
       goalObjectiveOverride: options?.goalObjective,
     });

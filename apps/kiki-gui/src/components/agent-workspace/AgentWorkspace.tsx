@@ -20,7 +20,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
-import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
+import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem, PromptSkillActivation } from '@kiki/protocol';
 import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import {
   agentPath,
@@ -689,6 +689,7 @@ function ChildAgentWorkspace({
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
     appendTiming?: DeferredAppendTiming;
+    skills?: readonly PromptSkillActivation[];
   } | null>(null);
   // "Send now" receipts still open to a late durable read: prompt id → the
   // reason already reported (null = only the generic queued notice went out).
@@ -903,14 +904,15 @@ function ChildAgentWorkspace({
     const content = buildPromptContent(text, composerAttachments, options?.presentation);
     if (content === null) return;
     const appendTiming = externalExecutor ? undefined : (options?.appendTiming ?? liveSettings.defaultAppendTiming);
+    const skills = externalExecutor ? undefined : options?.skills;
     // Timing stays on the stored submission, outside this identity: a plain
     // retry after an unknown result must replay the original one-shot choice.
-    const payload = JSON.stringify([text, content, useSwitchDependency]);
+    const payload = JSON.stringify([text, content, useSwitchDependency, skills]);
     const previous = pendingSendRef.current;
     // A lost acceptance retries the original execution payload, even if the queue advances.
     const submission = previous?.scope === sendScope && previous.payload === payload
       ? previous
-      : { scope: sendScope, payload, key: crypto.randomUUID(), appendTiming,
+      : { scope: sendScope, payload, key: crypto.randomUUID(), appendTiming, skills,
         afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined };
     pendingSendRef.current = submission;
     const hasNonTextAttachment = content.some((part) => part.type !== 'text');
@@ -922,10 +924,13 @@ function ChildAgentWorkspace({
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
       // The server already defaults to agent_idle; keep the ordinary six-arg
-      // child send shape and add the seventh arg only for a real timing choice.
-      receipt = submission.appendTiming === undefined || submission.appendTiming === 'agent_idle'
-        ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch)
-        : await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, submission.appendTiming);
+      // child send shape and add the seventh/eighth args only when needed.
+      const effectiveTiming = submission.appendTiming === 'agent_idle' ? undefined : submission.appendTiming;
+      receipt = submission.skills !== undefined
+        ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, effectiveTiming, submission.skills)
+        : effectiveTiming === undefined
+          ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch)
+          : await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, effectiveTiming);
     } catch (error) {
       if (isDefinitivePromptRejection(error)) {
         clearSendEcho(submission.key);
@@ -1018,6 +1023,7 @@ function ChildAgentWorkspace({
     text: string,
     composerAttachments: readonly ComposerAttachment[],
     presentation?: import('@kiki/transcript').TextPresentation,
+    skills?: readonly PromptSkillActivation[],
   ) => {
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments, presentation);
@@ -1028,7 +1034,12 @@ function ChildAgentWorkspace({
     setDraft('');
     setAttachments([]);
     try {
-      const result = await controller.sendPromptNow({ agentId, text, content });
+      const result = await controller.sendPromptNow({
+        agentId,
+        text,
+        content,
+        skills: externalExecutor ? undefined : skills,
+      });
       const notice = sendNowNotice(result.outcome, result.reason);
       if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
       // A queued acknowledgement already carries its final reason; only
@@ -1536,7 +1547,7 @@ function ChildAgentWorkspace({
           onChangePlanMode={handlePlanChange}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
           onSend={handleComposerSend}
-          onActivateSkill={handleActivateSkill}
+          onActivateSkill={externalExecutor ? undefined : handleActivateSkill}
           onSendNow={controller === null ? undefined : handleComposerSendNow}
           sendTimingDefault={externalExecutor ? undefined : liveSettings.defaultAppendTiming}
           working={composerWorkingInfo}

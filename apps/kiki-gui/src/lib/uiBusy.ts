@@ -97,3 +97,59 @@ export function anyOverlayOpen(except: readonly string[] = []): boolean {
   }
   return false;
 }
+
+/**
+ * Marks a dismissible popover/card root with a stable owner id, and marks any
+ * floating surface portaled out of it (`AnchoredPopover`, `SearchableSelect`, …)
+ * with the space-separated ancestor owner chain so outside-pointerdown and
+ * document Escape handlers treat nested portals as inside their owning root.
+ */
+export const FLOATING_OWNER_ATTRIBUTE = 'data-floating-owner';
+export const FLOATING_PORTAL_OWNERS_ATTRIBUTE = 'data-floating-owners';
+
+/** Space-separated ancestor floating-owner chain for a trigger/anchor element. */
+export function resolveFloatingOwners(anchor: Element | null): string | undefined {
+  const seen: string[] = [];
+  const collect = (start: Element | null) => {
+    for (let node: Element | null = start; node !== null; node = node.parentElement) {
+      const inherited = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
+      if (inherited !== null && inherited !== '') {
+        for (const id of inherited.split(/\s+/)) {
+          if (id !== '' && !seen.includes(id)) seen.push(id);
+        }
+      }
+      const own = node.getAttribute(FLOATING_OWNER_ATTRIBUTE);
+      if (own !== null && own !== '' && !seen.includes(own)) seen.push(own);
+    }
+  };
+  collect(anchor);
+  return seen.length > 0 ? seen.join(' ') : undefined;
+}
+
+/** True when `target` sits inside `root` or inside a portaled surface owned by `ownerId`. */
+export function containsOrOwnsFloatingTarget(
+  root: HTMLElement | null,
+  target: EventTarget | null,
+  ownerId?: string,
+): boolean {
+  if (root === null || !(target instanceof Node)) return false;
+  if (root.contains(target)) return true;
+  const effectiveOwnerId = ownerId ?? root.getAttribute(FLOATING_OWNER_ATTRIBUTE) ?? undefined;
+  if (effectiveOwnerId === undefined || effectiveOwnerId === '') return false;
+  const element = target instanceof Element ? target : target.parentElement;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const owners = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
+    if (owners !== null && owners.split(/\s+/).includes(effectiveOwnerId)) return true;
+  }
+  return false;
+}
+
+/** True when any portaled floating surface owned by `ownerId` is currently mounted in the DOM. */
+export function hasOpenOwnedFloatingPortal(ownerId: string | undefined): boolean {
+  if (ownerId === undefined || ownerId === '' || typeof document === 'undefined') return false;
+  for (const node of document.querySelectorAll(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}]`)) {
+    const owners = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
+    if (owners !== null && owners.split(/\s+/).includes(ownerId)) return true;
+  }
+  return false;
+}

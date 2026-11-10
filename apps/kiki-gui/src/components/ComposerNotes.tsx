@@ -13,7 +13,12 @@ import { useEffect, useId, useRef, useState } from 'react';
 
 import type { SelectionAnnotation } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
-import { registerOverlay } from '../lib/uiBusy';
+import {
+  containsOrOwnsFloatingTarget,
+  FLOATING_OWNER_ATTRIBUTE,
+  hasOpenOwnedFloatingPortal,
+  registerOverlay,
+} from '../lib/uiBusy';
 import { Icon } from './icons';
 
 /** Hover intent: open after a short dwell, close a beat after leaving. */
@@ -61,13 +66,14 @@ export function ComposerNotes({
     const unregister = registerOverlay('composer-notes');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (hasOpenOwnedFloatingPortal('composer-notes')) return;
       event.preventDefault();
       setEditingId(null);
       setOpen(null);
       triggerRef.current?.focus();
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return;
+      if (containsOrOwnsFloatingTarget(rootRef.current, event.target, 'composer-notes')) return;
       setEditingId(null);
       setOpen(null);
     };
@@ -105,6 +111,7 @@ export function ComposerNotes({
     <div
       ref={rootRef}
       data-composer-notes
+      {...{ [FLOATING_OWNER_ATTRIBUTE]: 'composer-notes' }}
       className="relative"
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
