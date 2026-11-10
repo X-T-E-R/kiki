@@ -4814,6 +4814,42 @@ describe('virtualized transcript scrolling', () => {
       .toEqual(['failed', 'failed', 'aborted']);
   });
 
+  it('hangs a blocked prompt on its bubble as a neutral outcome line with block details and manual retry', async () => {
+    const container = await renderTranscript(
+      [
+        userBlock({
+          id: 'user-blocked',
+          text: 'check the deployment status',
+          userMessageId: 'um-blocked',
+          promptOutcome: {
+            status: 'blocked',
+            delivered: false,
+            error: 'Blocked by UserPromptSubmit hook (timed out)',
+            at: '2026-01-01T00:00:05.000Z',
+          },
+        }),
+      ],
+      undefined,
+      { sessionId: 'session_blocked_test' },
+    );
+    const line = container.querySelector('[data-prompt-outcome="blocked"]');
+    expect(line).not.toBeNull();
+    expect(line?.textContent).toContain('Blocked');
+    expect(line?.querySelector('[data-prompt-outcome-summary]')?.textContent).toContain(
+      'Blocked by UserPromptSubmit hook (timed out)',
+    );
+    expect(line?.querySelector('.text-danger')).toBeNull();
+    expect(container.querySelector('.text-danger')).toBeNull();
+    const details = [...line!.querySelectorAll('button')].find((button) => button.textContent?.includes('Details'))!;
+    await act(async () => { details.click(); });
+    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toContain(
+      'Blocked by UserPromptSubmit hook (timed out)',
+    );
+    const retry = line!.querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!;
+    await act(async () => { retry.click(); });
+    expect(readDraft('session_blocked_test')).toBe('check the deployment status');
+  });
+
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(transcriptState([

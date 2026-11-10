@@ -3072,9 +3072,22 @@ describe('AgentPromptService', () => {
 
   it('settles blocked prompts', async () => {
     const { prompt } = harness();
-    prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
+    prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => {
+      ctx.block = true;
+      ctx.appendMessage!({
+        role: 'assistant',
+        content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (timed out)\n</hook_result>' }],
+        toolCalls: [],
+        origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+      });
+      await next();
+    });
     const handle = await prompt.enqueue({ message: message('blocked') });
     await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
+    expect(handle.error).toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID,
+      message: 'Blocked by UserPromptSubmit hook (timed out)',
+    });
   });
 
   it('keeps blocked Send now feedback out of the in-flight context until the owned boundary', async () => {

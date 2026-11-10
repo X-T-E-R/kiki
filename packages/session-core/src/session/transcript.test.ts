@@ -2101,7 +2101,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       promptId: 'p-preview', userMessageId: 'um-preview', status, content, createdAt: FIXED_AT,
     }] }));
     const block = view.blocks.find((block): block is UserBlock => block.kind === 'user')!;
-    expect(block).toMatchObject({ promptStatus: status, contentSource: { kind: 'prompt', id: 'p-preview' } });
+    expect(block).toMatchObject(
+      status === 'queued'
+        ? { promptStatus: 'queued', contentSource: { kind: 'prompt', id: 'p-preview' } }
+        : { promptStatus: undefined, promptOutcome: { status: 'blocked', delivered: false }, contentSource: { kind: 'prompt', id: 'p-preview' } },
+    );
     const preview = status === 'queued' ? queuedPromptPreviews(view)[0]! : block;
     expect(preview).toMatchObject({ promptId: 'p-preview', userMessageId: 'um-preview', presentation: selection.presentation,
       media: [{ kind: 'file', fileId: 'file-report', name: 'report.txt', mime: 'text/plain', size: 12 }] });
@@ -5796,6 +5800,95 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const inWindow = { ...snapshot, prompts: snapshot.prompts.filter((prompt) => !['p17', 'p18', 'p19'].includes(prompt.promptId)) };
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', inWindow);
     expect(projected.blocks.some((block) => block.kind === 'notice')).toBe(false);
+  });
+
+  it('keeps an in-window blocked prompt at its historical position instead of sinking to the bottom, and folds out-of-window blocked prompts into earlier outcomes', () => {
+    const snapshot = emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p1', userMessageId: 'p1' } },
+          prompt: 'first turn',
+          startedAt: '2026-01-02T00:01:00.000Z',
+          endedAt: '2026-01-02T00:01:30.000Z',
+          steps: [],
+        },
+        {
+          kind: 'marker',
+          markerId: 'wire:v2:delivery:d-blocked-1',
+          marker: 'message.delivery',
+          at: '2026-01-02T00:02:00.000Z',
+          payload: {
+            deliveryId: 'd-blocked-1',
+            messageId: 'm-blocked-1',
+            origin: { kind: 'user' },
+            text: 'blocked an hour ago',
+          },
+        },
+        {
+          kind: 'turn',
+          turnId: 't2',
+          ordinal: 2,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p2', userMessageId: 'p2' } },
+          prompt: 'latest turn',
+          startedAt: '2026-01-02T01:00:00.000Z',
+          endedAt: '2026-01-02T01:00:30.000Z',
+          steps: [],
+        },
+      ],
+      hasMoreOlder: true,
+      prompts: [
+        {
+          promptId: 'p-old-blocked',
+          userMessageId: 'm-old-blocked',
+          status: 'blocked',
+          createdAt: '2026-01-01T00:10:00.000Z',
+          finishedAt: '2026-01-01T00:10:05.000Z',
+          error: 'Blocked by UserPromptSubmit hook (timed out)',
+          content: [{ type: 'text', text: 'older blocked message' }],
+        },
+        {
+          promptId: 'p-blocked-1',
+          userMessageId: 'm-blocked-1',
+          status: 'blocked',
+          createdAt: '2026-01-02T00:02:00.000Z',
+          finishedAt: '2026-01-02T00:02:05.000Z',
+          error: 'Blocked by UserPromptSubmit hook (timed out)',
+          content: [{ type: 'text', text: 'blocked an hour ago' }],
+        },
+        {
+          promptId: 'p2',
+          userMessageId: 'p2',
+          status: 'completed',
+          createdAt: '2026-01-02T01:00:00.000Z',
+          finishedAt: '2026-01-02T01:00:30.000Z',
+          content: [{ type: 'text', text: 'latest turn' }],
+        },
+      ],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
+    expect(earlier).toMatchObject({
+      kind: 'notice',
+      earlierPromptOutcomes: [
+        { promptId: 'p-old-blocked', userMessageId: 'm-old-blocked', status: 'blocked', text: 'older blocked message' },
+      ],
+    });
+    const users = projected.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users.map((block) => block.text)).toEqual(['first turn', 'blocked an hour ago', 'latest turn']);
+    expect(users[1]).toMatchObject({
+      text: 'blocked an hour ago',
+      promptStatus: undefined,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        error: 'Blocked by UserPromptSubmit hook (timed out)',
+      },
+    });
   });
 
   it('shows a danger taskref notice with the error for lost and timed_out background tasks', () => {

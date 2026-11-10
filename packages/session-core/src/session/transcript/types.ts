@@ -73,7 +73,7 @@ export interface UserBlock {
 }
 
 export interface PromptOutcome {
-  readonly status: 'failed' | 'aborted';
+  readonly status: 'failed' | 'aborted' | 'blocked';
   /** When the prompt settled (`finishedAt`). */
   readonly at?: string;
   /** Terminal error of the turn it opened, when one is known. */

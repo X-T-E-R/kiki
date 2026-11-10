@@ -621,6 +621,8 @@ export const transcriptPromptSchema = z.object({
   steeredAt: z.string().optional(),
   appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
   revision: z.number().int().nonnegative().optional(),
+  error: z.string().optional(),
+  errorDetails: z.string().optional(),
   detailRef: transcriptPromptDetailRefSchema.optional(),
 });
 

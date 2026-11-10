@@ -92,6 +92,18 @@ export default {
                 },
               ],
             },
+            {
+              kind: 'marker',
+              markerId: 'wire:v2:delivery:d-blocked-0',
+              marker: 'message.delivery',
+              at: '2026-01-01T11:58:10.000Z',
+              payload: {
+                deliveryId: 'd-blocked-0',
+                messageId: 'um-blocked-0',
+                origin: { kind: 'user' },
+                text: 'Run the preflight check with the user-prompt hook.',
+              },
+            },
           ],
           tasks: [
             {
@@ -116,6 +128,15 @@ export default {
               content: [{ type: 'text', text: 'Check the upstream provider worker status.' }],
               createdAt: '2026-01-01T11:55:00.000Z',
               finishedAt: '2026-01-01T11:58:05.000Z',
+            },
+            {
+              promptId: 'p-blocked-0',
+              userMessageId: 'um-blocked-0',
+              status: 'blocked',
+              error: 'Blocked by UserPromptSubmit hook (timed out)',
+              content: [{ type: 'text', text: 'Run the preflight check with the user-prompt hook.' }],
+              createdAt: '2026-01-01T11:58:10.000Z',
+              finishedAt: '2026-01-01T11:58:15.338Z',
             },
           ],
         },

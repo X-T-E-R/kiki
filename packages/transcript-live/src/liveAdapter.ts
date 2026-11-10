@@ -342,7 +342,7 @@ export class AgentTranscriptLiveAdapter {
     }
     for (const promptId of promptIds) {
       const prompt = this.prompts.get(promptId);
-      if (prompt !== undefined && prompt.status !== 'running' && prompt.status !== 'queued' && prompt.status !== 'blocked') this.prompts.set(promptId, { ...prompt, content: undefined });
+      if (prompt !== undefined && prompt.status !== 'running' && prompt.status !== 'queued') this.prompts.set(promptId, { ...prompt, content: undefined });
     }
     if (this.currentTurn !== undefined && this.releasedTurnIds.has(this.currentTurn.turnId)) this.currentTurn = { ...this.currentTurn, prompt: undefined };
   }
@@ -436,7 +436,7 @@ export class AgentTranscriptLiveAdapter {
       case 'prompt.steered':
         return this.onPromptSteered(event);
       case 'hook.result':
-        return [this.markerOp('hook', restOf(event))];
+        return this.onHookResult(event);
       case 'skill.activated':
       case 'plugin_command.activated':
         // The delivered message owns the skill's position and content.
@@ -1853,7 +1853,19 @@ export class AgentTranscriptLiveAdapter {
     return ops;
   }
 
+  private onHookResult(event: { readonly type: 'hook.result' } & HookResult): TranscriptOperation[] {
+    if (event.blocked) {
+      this.pendingHookBlockError = event.content.trim() || undefined;
+    }
+    return [this.markerOp('hook', restOf(event))];
+  }
+
+  private pendingHookBlockError: string | undefined;
+
   private onPromptCompleted(event: PromptCompletedEvent): TranscriptOperation[] {
+    const projectedError = projectTurnError(event.error);
+    const blockError = event.reason === 'blocked' ? this.pendingHookBlockError : undefined;
+    if (event.reason === 'blocked') this.pendingHookBlockError = undefined;
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
       status: event.reason ?? 'completed',
@@ -1864,6 +1876,8 @@ export class AgentTranscriptLiveAdapter {
       steeredAt: prev?.steeredAt,
       appendTiming: prev?.appendTiming,
       revision: prev?.revision,
+      error: projectedError.error ?? blockError ?? prev?.error,
+      errorDetails: projectedError.errorDetails ?? prev?.errorDetails,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1872,6 +1886,13 @@ export class AgentTranscriptLiveAdapter {
     const terminal = event.terminal;
     const status: TranscriptPrompt['status'] = terminal.state === 'cancelled' ? 'aborted' : terminal.state;
     const finishedAt = epochMsToIso(event.time ?? Date.now());
+    const resultError =
+      terminal.result?.type === 'failed'
+        ? terminal.result.error
+        : terminal.result?.type === 'cancelled'
+          ? terminal.result.reason
+          : undefined;
+    const projectedError = projectTurnError(resultError);
     const prompt = this.upsertPrompt(terminal.promptId, (prev) => ({
       promptId: terminal.promptId,
       status,
@@ -1883,6 +1904,8 @@ export class AgentTranscriptLiveAdapter {
       steeredAt: prev?.steeredAt,
       appendTiming: prev?.appendTiming,
       revision: prev?.revision,
+      error: projectedError.error ?? prev?.error,
+      errorDetails: projectedError.errorDetails ?? prev?.errorDetails,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }

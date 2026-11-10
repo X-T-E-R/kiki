@@ -1723,6 +1723,20 @@ async function scenarioErrorAbort() {
     await detailsBtn.click();
     await page.waitForSelector('[data-prompt-outcome-details]', { timeout: 5_000 });
   }
+  const blockedOutcome = page.locator('[data-prompt-outcome="blocked"]').first();
+  await blockedOutcome.waitFor({ timeout: 5_000 });
+  const blockedDetailsBtn = blockedOutcome.locator('button[aria-expanded]').first();
+  if ((await blockedDetailsBtn.count()) > 0) {
+    await blockedDetailsBtn.click();
+  }
+  const userOrder = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-block-id^="user-"]')).map((el) => el.getAttribute('data-block-id')),
+  );
+  const blockedIdx = userOrder.indexOf('user-um-blocked-0');
+  const abortedIdx = userOrder.findIndex((id, index) => index > blockedIdx && id !== 'user-um0');
+  if (blockedIdx < 0 || abortedIdx < 0 || blockedIdx > abortedIdx) {
+    throw new Error(`Expected historical blocked user bubble before later turn, saw order: ${JSON.stringify(userOrder)}`);
+  }
   const subagentCard = page.locator('[data-subagent-id="agent-sub-0"] [data-agent-open="agent-sub-0"]').first();
   if ((await subagentCard.count()) > 0) {
     await subagentCard.click();
@@ -1750,11 +1764,17 @@ async function scenarioErrorAbort() {
   }
   await page.waitForTimeout(400);
   await shot('error-abort');
+  await blockedOutcome.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('error-abort-blocked');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
   await page.locator('[data-agent-turn-outcome-details]').first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('error-abort-narrow');
+  await blockedOutcome.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('error-abort-blocked-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
 }

@@ -277,7 +277,7 @@ export class TranscriptWireAdapter {
       if (released.has(record.operation.turnId)) this.#frameRecords.set(key, { ...record, operation: { ...record.operation, frame: releaseFramePayload(record.operation.frame) } });
     }
     for (const [promptId, prompt] of this.#prompts) {
-      if (prompts.has(promptId) && prompt.status !== 'running' && prompt.status !== 'queued' && prompt.status !== 'blocked') this.#prompts.set(promptId, { ...prompt, content: undefined });
+      if (prompts.has(promptId) && prompt.status !== 'running' && prompt.status !== 'queued') this.#prompts.set(promptId, { ...prompt, content: undefined });
     }
   }
 
@@ -619,6 +619,8 @@ export class TranscriptWireAdapter {
       const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
         : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
       const prior = this.lookups?.prompt?.(terminalPromptId) ?? this.#prompts.get(terminalPromptId);
+      const result = objectOf(terminal?.['result']);
+      const projectedError = projectTurnError(result?.['error'] ?? result?.['reason'] ?? record['error']);
       return [
         this.storePrompt({
           ...promptOrMinimal(prior, terminalPromptId, record),
@@ -626,6 +628,8 @@ export class TranscriptWireAdapter {
           finishedAt: isoOf(record.time) ?? prior?.finishedAt,
           queuePosition: undefined,
           abortedBeforeStart: status === 'aborted' ? prior?.abortedBeforeStart : undefined,
+          error: projectedError.error ?? prior?.error,
+          errorDetails: projectedError.errorDetails ?? prior?.errorDetails,
         }),
       ];
     }
@@ -633,11 +637,14 @@ export class TranscriptWireAdapter {
       const reason = stringOf(record['reason']);
       const status: TranscriptPrompt['status'] =
         reason === 'failed' || reason === 'blocked' ? reason : 'completed';
+      const projectedError = projectTurnError(record['error']);
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
           status,
           finishedAt: promptRecordTime(record, ['finishedAt']) ?? previous?.finishedAt,
+          error: projectedError.error ?? previous?.error,
+          errorDetails: projectedError.errorDetails ?? previous?.errorDetails,
         }),
       ];
     }
@@ -1637,7 +1644,32 @@ export class TranscriptWireAdapter {
       operations.push({ op: 'turn.upsert', turn });
       return operations;
     }
-    if (role === 'assistant') return this.legacyAssistant(message, ordinal, record.time);
+    if (role === 'assistant') {
+      if (origin?.['kind'] === 'hook_result') {
+        const raw = content.map(textOfPart).join('').trim();
+        const match = /^<hook_result\b[^>]*>\s*([\s\S]*?)\s*<\/hook_result>$/i.exec(raw);
+        const hookReason = (match?.[1] ?? raw).trim();
+        const operations: TranscriptOperation[] = [];
+        if (origin['blocked'] === true && hookReason.length > 0) {
+          const candidates = [...this.#prompts.values()];
+          for (let index = candidates.length - 1; index >= 0; index -= 1) {
+            const candidate = candidates[index]!;
+            if (candidate.status === 'blocked' && candidate.error === undefined) {
+              operations.push(this.storePrompt({ ...candidate, error: hookReason }));
+              break;
+            }
+          }
+        }
+        const activeTurn = this.#currentTurnId === undefined
+          ? undefined
+          : this.#turnHeaders.get(this.#currentTurnId) ?? this.lookups?.turn?.(this.#currentTurnId);
+        if (activeTurn?.state === 'running' && origin['blocked'] !== true) {
+          operations.push(...this.legacyAssistant(message, ordinal, record.time));
+        }
+        return operations;
+      }
+      return this.legacyAssistant(message, ordinal, record.time);
+    }
     if (role === 'tool') {
       const toolCallId = stringOf(message['toolCallId']);
       if (toolCallId === undefined) return [];

@@ -802,6 +802,17 @@ function extractMarkedCompressionCaptions(
   };
 }
 
+function extractHookBlockError(messages: readonly ContextMessage[]): ErrorPayload | undefined {
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.origin?.kind !== 'hook_result' || message.origin.blocked !== true) continue;
+    const raw = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n').trim();
+    const match = /^<hook_result\b[^>]*>\s*([\s\S]*?)\s*<\/hook_result>$/i.exec(raw);
+    const reason = (match?.[1] ?? raw).trim();
+    if (reason.length > 0) return { code: ErrorCodes.REQUEST_INVALID, message: reason };
+  }
+  return undefined;
+}
+
 export const promptLaunchingKey = defineState<boolean>('prompt.launching', () => false);
 
 export class AgentPromptService implements IAgentPromptService {
@@ -2287,9 +2298,15 @@ export class AgentPromptService implements IAgentPromptService {
       const blocked = await this.blockedByHook(rerouted, true, message => hookMessages.push(message), batch.map(item => item.message), selected[0]?.id, selected[0]?.userMessageId);
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry || this.loop.status().activeTurnId !== targetTurnId) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       if (blocked) {
-        for (const item of selected) {
+        const blockError = extractHookBlockError(hookMessages);
+        for (let index = 0; index < selected.length; index++) {
+          const item = selected[index]!;
           this.pending.splice(this.pending.indexOf(item), 1);
-          item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
+          const materialized = batch[index]!;
+          if (!item.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
+          item.state = 'blocked';
+          item.error = blockError;
+          item.launchedDeferred.resolve(undefined);
           item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
           this.publishCompleted(item, 'blocked');
         }
@@ -2793,12 +2810,15 @@ export class AgentPromptService implements IAgentPromptService {
         return;
       }
       if (blocked) {
+        const blockError = extractHookBlockError(hookMessages);
         for (let index = 0; index < selected.length; index++) {
           const candidate = selected[index]!;
           if (candidate !== item) this.pending.splice(this.pending.indexOf(candidate), 1);
           const materialized = batch[index]!;
           if (!materialized.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
-          candidate.state = 'blocked'; candidate.launchedDeferred.resolve(undefined);
+          candidate.state = 'blocked';
+          candidate.error = blockError;
+          candidate.launchedDeferred.resolve(undefined);
           candidate.completionDeferred.resolve({ promptId: candidate.id, result: undefined, state: 'blocked' });
           this.publishCompleted(candidate, 'blocked');
         }

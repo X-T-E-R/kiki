@@ -30,6 +30,7 @@ import {
 } from '#/features/externalHooks/configSection';
 import { IAgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooks';
 import { AgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooksService';
+import { renderUserPromptHookBlockResult } from '#/features/externalHooks/internal/userPrompt';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type AfterStepContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
@@ -1996,5 +1997,18 @@ describe('IExternalHooksRunnerService integration', () => {
       await ix?.dispose();
       await disposables.dispose();
     }
+  });
+
+  it('includes timeout and exit-code details when a UserPromptSubmit hook blocks without stderr', () => {
+    expect(renderUserPromptHookBlockResult([{ action: 'block', timedOut: true }])).toEqual({
+      event: 'UserPromptSubmit',
+      message: 'Blocked by UserPromptSubmit hook (timed out)',
+      text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (timed out)\n</hook_result>',
+    });
+    expect(renderUserPromptHookBlockResult([{ action: 'block', exitCode: 2 }])).toEqual({
+      event: 'UserPromptSubmit',
+      message: 'Blocked by UserPromptSubmit hook (exit code 2)',
+      text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (exit code 2)\n</hook_result>',
+    });
   });
 });

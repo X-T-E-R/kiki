@@ -26,6 +26,7 @@ const LINK = 'min-h-6 rounded-sm px-1 font-medium text-ink-soft underline-offset
 
 function outcomeLabelKey(outcome: PromptOutcome) {
   if (outcome.status === 'aborted') return 'transcript.promptOutcome.aborted' as const;
+  if (outcome.status === 'blocked') return 'transcript.promptOutcome.blocked' as const;
   return outcome.delivered ? 'transcript.promptOutcome.replyFailed' as const : 'transcript.promptOutcome.failed' as const;
 }
 
@@ -63,8 +64,11 @@ export function PromptOutcomeLine({
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const failed = outcome.status === 'failed';
-  const summary = failed ? plainFailure(outcome.error) : undefined;
+  const blocked = outcome.status === 'blocked';
+  const hasDiagnostics = failed || blocked;
+  const summary = hasDiagnostics ? plainFailure(outcome.error) : undefined;
   const detailsText = outcome.errorDetails ?? outcome.error;
+  const showDetailsButton = failed || (blocked && detailsText !== undefined);
   return (
     <div data-prompt-outcome={outcome.status} className="mt-1 mr-1 flex max-w-[80%] flex-col items-end">
       <span className="flex flex-wrap items-center justify-end gap-x-1 text-[12px] text-ink-faint">
@@ -84,7 +88,7 @@ export function PromptOutcomeLine({
             <RelativeTime at={outcome.at} />
           </>
         ) : null}
-        {failed ? (
+        {showDetailsButton ? (
           <>
             <span aria-hidden>·</span>
             <button
@@ -115,14 +119,14 @@ export function PromptOutcomeLine({
           </>
         ) : null}
       </span>
-      {failed && open ? (
+      {showDetailsButton && open ? (
         <div className="mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1 text-ink-soft">
           <p
             id={detailsId}
             data-prompt-outcome-details
             className={`min-w-0 flex-1 ${detailsText?.includes('\n') ? 'text-left' : 'text-right'} font-mono text-[12px] break-words whitespace-pre-wrap`}
           >
-            {detailsText ?? t('transcript.promptOutcome.noDetails')}
+            {detailsText ?? t(blocked ? 'transcript.promptOutcome.noBlockedDetails' : 'transcript.promptOutcome.noDetails')}
           </p>
           {detailsText !== undefined ? (
             <CopyButton text={detailsText} label={t('transcript.promptOutcome.details')} />
@@ -163,7 +167,13 @@ export function EarlierPromptOutcomesRow({ block }: { block: NoticeBlock }) {
           {outcomes.map((outcome) => (
             <li key={outcome.promptId} data-prompt-failed-entry={outcome.status} className="flex min-h-6 items-baseline gap-2 text-[12px]">
               <span className="w-12 shrink-0 text-ink-faint">
-                {t(outcome.status === 'aborted' ? 'transcript.promptOutcome.aborted' : 'transcript.promptOutcome.failed')}
+                {t(
+                  outcome.status === 'aborted'
+                    ? 'transcript.promptOutcome.aborted'
+                    : outcome.status === 'blocked'
+                      ? 'transcript.promptOutcome.blocked'
+                      : 'transcript.promptOutcome.failed',
+                )}
               </span>
               <span className="min-w-0 flex-1 truncate text-ink-soft" title={outcome.text}>{outcome.text ?? '—'}</span>
               {outcome.at !== undefined ? (

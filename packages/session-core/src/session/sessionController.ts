@@ -2085,7 +2085,7 @@ export class SessionController {
     // windowed reset that dropped their content must not hide them.
     for (const prompt of snapshot.prompts) {
       if (prompt.detailRef === undefined || prompt.content !== undefined) continue;
-      if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') continue;
+      if (prompt.status !== 'queued' && prompt.status !== 'running') continue;
       void this.loadTranscriptDetail(agentId, 'prompt', prompt.promptId);
     }
   }

@@ -415,6 +415,15 @@ function windowGlobals(
   const promptIds = new Set<PromptId>();
   for (const item of items) {
     if (item.kind === 'taskref') taskIds.add(item.taskId);
+    if (item.kind === 'marker' && item.marker === 'message.delivery') {
+      const payload = item.payload as { readonly messageId?: unknown } | undefined;
+      if (typeof payload?.messageId === 'string') {
+        promptIds.add(payload.messageId);
+        for (const [promptId, prompt] of state.prompts) {
+          if (prompt.userMessageId === payload.messageId) promptIds.add(promptId);
+        }
+      }
+    }
     if (item.kind !== 'turn') continue;
     if (item.promptId !== undefined) promptIds.add(item.promptId);
     for (const attachmentId of item.attachmentIds ?? []) attachmentIds.add(attachmentId);
@@ -437,7 +446,7 @@ function windowGlobals(
   const promptSelection = selectWindow(
     state.prompts,
     promptIds,
-    (prompt) => prompt.status === 'running' || prompt.status === 'queued' || prompt.status === 'blocked',
+    (prompt) => prompt.status === 'running' || prompt.status === 'queued',
     limits.promptLimit,
   );
   const tasks = [...state.tasks.entries()]

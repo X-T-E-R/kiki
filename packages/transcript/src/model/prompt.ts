@@ -62,5 +62,7 @@ export interface TranscriptPrompt extends ContentWindow {
   readonly appendTiming?: TranscriptPromptAppendTiming;
   /** Scheduling revision; absent on older projections. */
   readonly revision?: number;
+  readonly error?: string;
+  readonly errorDetails?: string;
   readonly detailRef?: TranscriptPromptDetailRef;
 }

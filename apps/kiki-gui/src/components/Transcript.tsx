@@ -805,14 +805,9 @@ const UserMessage = memo(function UserMessage({
           <span>{t('transcript.queued')}</span>
         </span>
       ) : null}
-      {block.promptStatus === 'blocked' ? (
-        <span className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] font-medium text-danger">
-          {t('transcript.blocked')}
-        </span>
-      ) : null}
-      {block.promptOutcome !== undefined && !editing ? (
+      {(block.promptOutcome !== undefined || block.promptStatus === 'blocked') && !editing ? (
         <PromptOutcomeLine
-          outcome={block.promptOutcome}
+          outcome={block.promptOutcome ?? { status: 'blocked', delivered: false, at: block.createdAt }}
           onRetry={outcomeActions.onRetry === undefined || typedText.trim() === ''
             ? undefined
             : () => { outcomeActions.onRetry?.(typedText); }}

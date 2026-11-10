@@ -789,6 +789,109 @@ describe('TranscriptWireAdapter', () => {
     expect(cold.getPrompt('p-outcome')).toMatchObject({ status: 'blocked', finishedAt: new Date(1_200).toISOString(), userMessageId: 'm-outcome' });
   });
 
+  it('extracts blocked hook reason onto the prompt without polluting the previous completed turn, and drops older blocked prompts from windowed resets', () => {
+    const records: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'p0',
+        origin: { kind: 'user', promptId: 'p0', userMessageId: 'p0' },
+        input: [{ type: 'text', text: 'first turn' }],
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 's0' },
+        time: 1_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'content.part', turnId: 0, stepUuid: 's0', uuid: 'f0', part: { type: 'text', text: 'first reply' } },
+        time: 1_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 's0' },
+        time: 1_300,
+      },
+      {
+        type: 'turn.ended',
+        turnId: 0,
+        reason: 'completed',
+        time: 1_400,
+      },
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p-blocked',
+        userMessageId: 'm-blocked',
+        createdAt: '1970-01-01T00:00:02.000Z',
+        message: { id: 'm-blocked', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'blocked message' }] },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_message',
+        message: { id: 'm-blocked', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'blocked message' }] },
+        delivery: { deliveryId: 'd-blocked', messageId: 'm-blocked', deliveredAt: '1970-01-01T00:00:02.000Z', origin: { kind: 'user' } },
+        time: 2_010,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p-blocked',
+        reason: 'blocked',
+        finishedAt: '1970-01-01T00:00:02.020Z',
+        time: 2_020,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+          content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (timed out)\n</hook_result>' }],
+        },
+        time: 2_030,
+      },
+      {
+        type: 'prompt.outcome_committed',
+        terminal: { promptId: 'p-blocked', state: 'blocked' },
+        time: 2_040,
+      },
+      {
+        type: 'prompt.enqueued',
+        promptId: 'p1',
+        userMessageId: 'p1',
+        createdAt: '1970-01-01T00:00:03.000Z',
+        message: { id: 'p1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'later turn' }] },
+        time: 3_000,
+      },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        promptId: 'p1',
+        origin: { kind: 'user', promptId: 'p1', userMessageId: 'p1' },
+        input: [{ type: 'text', text: 'later turn' }],
+        time: 3_100,
+      },
+      {
+        type: 'turn.ended',
+        turnId: 1,
+        reason: 'completed',
+        time: 3_200,
+      },
+    ];
+    const cold = replay(records);
+    expect(cold.getTurn('t0')?.steps.flatMap((step) => step.frames)).toEqual([
+      expect.objectContaining({ kind: 'text', role: 'assistant', text: 'first reply' }),
+    ]);
+    expect(cold.getPrompt('p-blocked')).toMatchObject({
+      status: 'blocked',
+      userMessageId: 'm-blocked',
+      error: 'Blocked by UserPromptSubmit hook (timed out)',
+    });
+    const windowed = cold.snapshot({ tailTurns: 1, globalWindow: { promptLimit: 1 } });
+    expect(windowed.prompts.map((prompt) => prompt.promptId)).toEqual(['p1']);
+    expect(windowed.promptRefs).toContainEqual({ kind: 'prompt', promptId: 'p-blocked' });
+  });
+
   it('commits an outcome from the canonical prompt instead of its stale wire cache', () => {
     const transcript = new AgentTranscript('main');
     const adapter = new TranscriptWireAdapter('main', { prompt: id => transcript.getPrompt(id) });

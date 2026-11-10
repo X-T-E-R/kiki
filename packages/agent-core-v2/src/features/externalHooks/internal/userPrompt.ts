@@ -41,14 +41,22 @@ export function renderUserPromptHookBlockResult(
       text: renderHookResult('UserPromptSubmit', message),
     };
   }
-  const reason = block.reason?.trim();
-  const result =
-    reason === undefined || reason.length === 0 ? 'Blocked by UserPromptSubmit hook' : reason;
+  const result = userPromptBlockFallback(block);
   return {
     event: 'UserPromptSubmit',
     message: result,
     text: renderHookResult('UserPromptSubmit', result),
   };
+}
+
+function userPromptBlockFallback(block: HookResult): string {
+  const reason = block.reason?.trim();
+  if (reason !== undefined && reason.length > 0) return reason;
+  if (block.timedOut === true) return 'Blocked by UserPromptSubmit hook (timed out)';
+  if (block.exitCode !== undefined && block.exitCode !== 0) {
+    return `Blocked by UserPromptSubmit hook (exit code ${block.exitCode})`;
+  }
+  return 'Blocked by UserPromptSubmit hook';
 }
 
 function userPromptHookMessage(result: HookResult): string | undefined {
