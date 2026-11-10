@@ -46,6 +46,10 @@ export class OlderLoadCoordinator {
     });
   }
 
+  hasActive(): boolean {
+    return this.flights.size > 0;
+  }
+
   cancel(agentId: string): void {
     const flight = this.flights.get(agentId);
     this.flights.delete(agentId);

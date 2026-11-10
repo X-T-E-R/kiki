@@ -1399,6 +1399,7 @@ function TurnStepsContinuation({ turnId, state, autoRead }: { turnId: string; st
   const retry = useAutomaticContentRead(automatic ? source : undefined, TURN_STEP_ROOTS);
   if (!partial && continuation.pending.length === 0) return null;
   const status = state.detailLoads[`structure:${turnId}`];
+  if (!autoRead && requestedTurn !== turnId && status?.status !== 'error') return null;
   const loading = status?.status === 'loading' || (automatic && status?.status !== 'error');
   return (
     <div data-transcript-lane="agent" className={AGENT_LANE}>
@@ -4486,12 +4487,14 @@ export function Transcript({
     }
     return loaded;
   }, []);
+  const [olderBatchActive, setOlderBatchActive] = useState(false);
   const requestOlderAtReadingAnchor = useCallback(async () => {
     if (olderInflightRef.current) return false;
     olderIntentRef.current = false;
     const carryPx = olderCarryPxRef.current;
     olderCarryPxRef.current = 0;
     olderInflightRef.current = true;
+    setOlderBatchActive(true);
     const request = new AbortController();
     olderRequestRef.current = request;
     const intent = readingIntentRef.current;
@@ -4526,7 +4529,6 @@ export function Transcript({
           loaded = await loadOlderAtReadingAnchor(request.signal);
           if (stateRef.current.blocks === previousBlocks) break;
         }
-        return loaded;
       }
       const scroll = scrollRef.current;
       const current = stateRef.current;
@@ -4541,6 +4543,7 @@ export function Transcript({
       if (olderRequestRef.current === request) {
         olderRequestRef.current = null;
         olderInflightRef.current = false;
+        setOlderBatchActive(false);
       }
     }
   }, [loadOlderAtReadingAnchor]);
@@ -4957,8 +4960,10 @@ export function Transcript({
       if (structure === undefined && !liveRef.current.hasMore) {
         return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
       }
-      const loadedMore = structure ?? await loadOlderRef.current(signal);
-      for (let frame = 0; frame < 4; frame += 1) {
+      const loadedMore = structure ?? (target.kind === 'turn' && controller !== undefined
+        ? (await controller.locateTurn(agentId, normalizeTurnId(target.turnId), signal)).changed
+        : await loadOlderRef.current(signal));
+      for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
         await nextFrame();
         if (cancelled()) return { status: 'no-timeline' };
       }
@@ -5016,7 +5021,7 @@ export function Transcript({
     flashed.classList.add('settings-card-flash');
     window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
     return { status: 'found' };
-  }, [virtualizer, readSeekStructure]);
+  }, [virtualizer, readSeekStructure, controller, agentId]);
   useEffect(() => {
     if (sessionIdForLocate === undefined) return undefined;
     return registerTimelineLocator(sessionIdForLocate, agentId, {
@@ -5439,13 +5444,16 @@ export function Transcript({
 
   if (!loaded) return <TranscriptLoading />;
 
+  const topEdgeState = olderBatchActive && !state.loadingOlder && state.olderError === undefined && state.hasMoreHistory
+    ? { ...state, loadingOlder: true }
+    : state;
   // An unknown cold read and a failed anchor restore keep their existing
   // Retry action in the blank shell. Known tail coverage, an in-flight older
   // read, and an older-page failure otherwise let TopEdge own the state.
   const showTopEdgeForEmptyHistory =
     readingRestoreFailed === null &&
-    (state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) &&
-    (state.historyCoverageKind !== 'unknown' || state.loadingOlder || state.olderError !== undefined);
+    (topEdgeState.hasMoreHistory || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined) &&
+    (topEdgeState.historyCoverageKind !== 'unknown' || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined);
   if (timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
@@ -5484,9 +5492,9 @@ export function Transcript({
         {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
       </div> : null}
       <div className="relative min-h-0 flex-1">
-      {state.loadingOlder || state.olderError !== undefined ? (
+      {topEdgeState.loadingOlder || topEdgeState.olderError !== undefined ? (
         <div data-history-feedback className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-xl border border-hairline bg-paper px-4 py-2 shadow-sm">
-          <TopEdge state={state} onLoadOlder={requestOlderAtReadingAnchor} />
+          <TopEdge state={topEdgeState} onLoadOlder={requestOlderAtReadingAnchor} />
         </div>
       ) : null}
       {readingRestoreFailed ? (
@@ -5535,7 +5543,7 @@ export function Transcript({
                 onDetach={captureRekeyedFold}
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first ? <TopEdge state={state} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
+                  {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
                   {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>

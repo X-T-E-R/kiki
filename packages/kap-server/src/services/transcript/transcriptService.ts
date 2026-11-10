@@ -180,6 +180,7 @@ interface LiveEntry {
   ready: Promise<void>;
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly agentHistory: Map<string, AgentHistoryState>;
+  readonly dirtyLiveAgents: Set<string>;
   readonly tailFirstAgents: Set<string>;
   readonly tailBackfills: Map<string, Promise<void>>;
   readonly agentWires: Map<string, IWireService>;
@@ -196,6 +197,7 @@ interface AgentHistoryState {
   status: 'pending' | 'complete' | 'unverified' | 'failed';
   failureSignature?: string;
   retryable?: boolean;
+  initOnlyProven?: boolean;
 }
 
 interface ColdSnapshotStats {
@@ -475,6 +477,27 @@ interface TurnStartIndex {
   readonly starts: Map<string, number>;
 }
 
+function isWireInitOnlyRecord(record: ContextRecord, index: number): boolean {
+  if (index === 0) {
+    return record.type === 'metadata' &&
+      typeof record['protocol_version'] === 'string' &&
+      record['protocol_version'].length > 0 &&
+      typeof record['created_at'] === 'number' &&
+      Number.isFinite(record['created_at']);
+  }
+  return record.type === 'runtime.set_binding' &&
+    typeof record['workspaceId'] === 'string' &&
+    typeof record['runtimeId'] === 'string';
+}
+
+function isNonHistoryMetaOnlyOp(op: TranscriptOperation): boolean {
+  if (op.op !== 'meta.merge') return false;
+  if (op.meta.goal !== undefined || op.meta.modes !== undefined || op.meta.promptQueueHold !== undefined) return false;
+  if (op.meta.activity !== undefined && op.meta.activity !== 'idle') return false;
+  const phase = op.meta.agent?.phase;
+  return phase === undefined || phase.kind === 'idle';
+}
+
 interface AnchorOpeningSeek {
   fingerprint: string;
   from: number;
@@ -539,6 +562,7 @@ export class TranscriptService {
   private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
   private readonly completeColdReplays = new WeakSet<AgentTranscriptSnapshot>();
+  private readonly initOnlyProvenSnapshots = new WeakSet<AgentTranscriptSnapshot>();
   private readonly coldRosterCache = new Map<string, { readonly revision: string; readonly roster: readonly AgentDescriptor[] }>();
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: ReadonlyMap<string, TranscriptTurn>; bytes: number }>();
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
@@ -646,6 +670,7 @@ export class TranscriptService {
       ready: Promise.resolve(),
       agentBackfills: new Map(),
       agentHistory: new Map(),
+      dirtyLiveAgents: new Set(),
       tailFirstAgents: new Set(options.tailFirst === true ? [MAIN_AGENT_ID] : []),
       tailBackfills: new Map(),
       agentWires,
@@ -683,6 +708,7 @@ export class TranscriptService {
     entry.agentWires.delete(agentId);
     entry.agentBackfills.delete(agentId);
     entry.agentHistory.delete(agentId);
+    entry.dirtyLiveAgents.delete(agentId);
     entry.tailFirstAgents.delete(agentId);
     entry.tailBackfills.delete(agentId);
     const journal = entry.opsJournals.get(agentId);
@@ -767,9 +793,50 @@ export class TranscriptService {
     );
   }
 
+  private invalidateInitOnlyLiveProof(entry: LiveEntry, agentId: string): void {
+    entry.dirtyLiveAgents.add(agentId);
+    const history = entry.agentHistory.get(agentId);
+    if (history?.initOnlyProven === true) history.initOnlyProven = false;
+  }
+
+  private hasOnlyNonHistoryResidentFacts(snapshot: AgentTranscriptSnapshot): boolean {
+    if (
+      snapshot.items.length > 0 ||
+      snapshot.tasks.length > 0 ||
+      snapshot.prompts.length > 0 ||
+      snapshot.interactions.length > 0 ||
+      snapshot.attachments.length > 0 ||
+      snapshot.todos.length > 0
+    ) {
+      return false;
+    }
+    if (
+      snapshot.meta.goal !== undefined ||
+      snapshot.meta.modes !== undefined ||
+      snapshot.meta.promptQueueHold !== undefined
+    ) {
+      return false;
+    }
+    if (snapshot.meta.activity !== undefined && snapshot.meta.activity !== 'idle') return false;
+    const phase = snapshot.meta.agent?.phase;
+    return phase === undefined || phase.kind === 'idle';
+  }
+
+  private isVerifiedInitOnlyLiveTranscript(entry: LiveEntry, agentId: string): boolean {
+    if (entry.unavailableAgents.has(agentId) || entry.dirtyLiveAgents.has(agentId)) return false;
+    const history = entry.agentHistory.get(agentId);
+    return history?.status === 'complete' && history.initOnlyProven === true;
+  }
+
   isTranscriptLiveCoverageVerified(sessionId: string, agentId: string): boolean {
-    const wire = this.live.get(sessionId)?.agentWires.get(agentId);
-    return wire?.verifyTranscriptLiveEpoch === undefined || wire.isTranscriptLiveEpochVerified?.() === true;
+    const entry = this.live.get(sessionId);
+    const wire = entry?.agentWires.get(agentId);
+    if (wire?.verifyTranscriptLiveEpoch === undefined || wire.isTranscriptLiveEpochVerified?.() === true) return true;
+    if (entry !== undefined && this.isVerifiedInitOnlyLiveTranscript(entry, agentId)) {
+      void this.hasVerifiedLiveEpoch(sessionId, agentId).catch(() => {});
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -777,8 +844,10 @@ export class TranscriptService {
    * a short bound reports unverified while the shared verification continues.
    */
   async verifyTranscriptLiveCoverage(sessionId: string, agentId: string): Promise<boolean> {
-    const wire = this.live.get(sessionId)?.agentWires.get(agentId);
-    return wire?.verifyTranscriptLiveEpoch === undefined || await this.hasVerifiedLiveEpoch(sessionId, agentId);
+    const entry = this.live.get(sessionId);
+    const wire = entry?.agentWires.get(agentId);
+    if (wire?.verifyTranscriptLiveEpoch === undefined || await this.hasVerifiedLiveEpoch(sessionId, agentId)) return true;
+    return entry !== undefined && this.isVerifiedInitOnlyLiveTranscript(entry, agentId);
   }
 
   /**
@@ -881,10 +950,19 @@ export class TranscriptService {
     if (snapshot === undefined || replayState === undefined || this.live.get(sessionId) !== entry) return;
     const transcript = entry.store.ensureAgent(agentId);
     const result = transcript.apply(snapshotToOps(this.reconcileLiveInteractionSnapshot(sessionId, transcript, snapshot)));
-    transcript.noteOlderHistory();
+    const countKnown = snapshotToolCallCountKnown(snapshot) && snapshot.hasMoreOlder !== true;
+    if (!countKnown) transcript.noteOlderHistory();
     if (result.accepted.length > 0) this.dispatchOps(sessionId, { agentId, ops: result.accepted });
     entry.tailFirstAgents.add(agentId);
-    entry.agentHistory.set(agentId, { status: 'unverified' });
+    const materialized = transcript.snapshot();
+    const initOnlyProven =
+      countKnown &&
+      this.initOnlyProvenSnapshots.has(snapshot) &&
+      !entry.dirtyLiveAgents.has(agentId) &&
+      this.hasOnlyNonHistoryResidentFacts(materialized);
+    entry.agentHistory.set(agentId, { status: countKnown ? 'complete' : 'unverified', initOnlyProven });
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot({ ...materialized, toolCallCountKnown: countKnown }));
+    if (countKnown) this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
     entry.binding.finishReplay(agentId, replayState);
     entry.binding.seedRunningTasks(agentId);
     entry.binding.seedPendingInteractions(agentId);
@@ -909,12 +987,15 @@ export class TranscriptService {
     if (snapshot.active !== undefined) owned.add(snapshot.active.id);
     if (snapshot.launching !== undefined) owned.add(snapshot.launching.id);
     for (const pending of snapshot.pending) owned.add(pending.id);
+    const entry = this.live.get(sessionId);
+    if (owned.size > 0 && entry?.store === store) this.invalidateInitOnlyLiveProof(entry, agentId);
     const ops: TranscriptOperation[] = [];
     for (const prompt of transcript.snapshot().prompts) {
       if (prompt.status !== 'queued' || owned.has(prompt.promptId)) continue;
       ops.push({ op: 'prompt.upsert', prompt: { ...prompt, status: 'aborted', abortedBeforeStart: true } });
     }
     if (ops.length === 0) return;
+    if (entry?.store === store) this.invalidateInitOnlyLiveProof(entry, agentId);
     const result = transcript.apply(ops);
     if (result.accepted.length > 0) this.dispatchOps(sessionId, { agentId, ops: result.accepted });
   }
@@ -1082,7 +1163,13 @@ export class TranscriptService {
       entry.agentHistory.set(agentId, { status: 'failed', failureSignature, retryable });
       this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     } else {
-      entry.agentHistory.set(agentId, { status: countKnown ? 'complete' : 'unverified' });
+      const initOnlyProven =
+        countKnown &&
+        snapshot !== undefined &&
+        this.initOnlyProvenSnapshots.has(snapshot) &&
+        !entry.dirtyLiveAgents.has(agentId) &&
+        this.hasOnlyNonHistoryResidentFacts(materialized);
+      entry.agentHistory.set(agentId, { status: countKnown ? 'complete' : 'unverified', initOnlyProven });
       this.dispatchToolCallCount(sessionId, transcript, countKnown ? countToolCallFrames(materialized.items) : undefined, true);
     }
     entry.binding.finishReplay(agentId, failed ? undefined : replayState);
@@ -1347,6 +1434,9 @@ export class TranscriptService {
     if (entry === undefined) {
       this.dispatchOps(sessionId, event);
       return;
+    }
+    if (event.ops.some((operation) => !isNonHistoryMetaOnlyOp(operation))) {
+      this.invalidateInitOnlyLiveProof(entry, event.agentId);
     }
     if (event.ops.some((operation) => operation.op === 'turn.upsert' && operation.turn.state !== 'running')) this.scheduleResidencyMaintenance(sessionId, event.agentId, entry);
     const transcript = entry.store.getAgent(event.agentId);
@@ -2871,6 +2961,18 @@ export class TranscriptService {
     }
     let complete: boolean;
     let readResult: WireRecordsStreamResult | undefined;
+    const initState = { onlyInit: checkpoint === undefined && !bounded, sawMetadata: false };
+    const onColdRecord: NonNullable<WireRecordsStreamOptions['onRecord']> = (record, span) => {
+      if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
+      if (initState.onlyInit) {
+        if (isWireInitOnlyRecord(record, span.ordinal)) {
+          if (span.ordinal === 0) initState.sawMetadata = true;
+        } else {
+          initState.onlyInit = false;
+        }
+      }
+      return reducer.apply(adapter.add(record));
+    };
     const readLimits = limits ?? this.coldReadLimits;
     const startedAt = Date.now();
     try {
@@ -2888,10 +2990,7 @@ export class TranscriptService {
           maxRecords: oversizedRecord ? 1 : readLimits.maxRecords,
           maxLineBytes: oversizedRecord ? undefined : readLimits.maxLineBytes,
           signal,
-          onRecord: (record) => {
-            if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
-            return reducer.apply(adapter.add(record));
-          },
+          onRecord: onColdRecord,
         });
         bytesRead += read.bytesRead;
         recordCount += read.recordCount;
@@ -2933,7 +3032,9 @@ export class TranscriptService {
         signal.throwIfAborted();
         if (metadata?.agents !== undefined && Object.keys(metadata.agents).length === 0) {
           captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
-          return { ...knownSnapshot(transcript.snapshot(), 0), hasMoreOlder: false };
+          const empty = { ...knownSnapshot(transcript.snapshot(), 0), hasMoreOlder: false };
+          this.initOnlyProvenSnapshots.add(empty);
+          return empty;
         }
         return unknownSnapshot();
       }
@@ -2979,13 +3080,19 @@ export class TranscriptService {
       const stillVerified = verified && (sealed
         ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
         : await this.hasVerifiedLiveEpoch(sessionId, agentId));
-      const after = stillVerified ? await stat(wirePath).catch(() => undefined) : undefined;
+      const initOnlyReplay = complete && !bounded && checkpoint === undefined &&
+        info !== undefined && info.size > 0 && readResult !== undefined &&
+        readResult.recordCount > 0 && readResult.nextByteOffset === info.size &&
+        initState.onlyInit && initState.sawMetadata &&
+        this.hasOnlyNonHistoryResidentFacts(snapshot);
+      const after = (stillVerified || initOnlyReplay) ? await stat(wirePath).catch(() => undefined) : undefined;
       const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
-      const proven = complete && stillVerified && unchanged;
+      const proven = complete && (stillVerified || initOnlyReplay) && unchanged;
       const result = proven
-        ? knownSnapshot(snapshot, countToolCallFrames(snapshot.items))
+        ? { ...knownSnapshot(snapshot, countToolCallFrames(snapshot.items)), hasMoreOlder: false }
         : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
       if (complete) this.completeColdReplays.add(result);
+      if (initOnlyReplay && unchanged) this.initOnlyProvenSnapshots.add(result);
       if (proven && preserveOpenTurnIds === undefined && cacheFingerprint !== undefined && !signal.aborted) {
         try { this.admitColdSnapshotCache(wirePath, cacheFingerprint, result); }
         catch { this.deleteColdSnapshotCache(wirePath); }

@@ -394,7 +394,7 @@ async function readSessionViewTranscriptPageRaw(
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;
-      const skipFullMerge = loaded.preparing || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true);
+      const skipFullMerge = loaded.preparing || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowBoundary === 'function');
       const cold = skipFullMerge ? loaded.snapshot : await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
         (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), query.beforeTurn, loaded.snapshot);
       if (cold === undefined) return undefined;
@@ -894,21 +894,69 @@ async function readColdTranscriptPage(
   if (anchored && !located.missing && !located.page.hasMore && snapshot.hasMoreOlder === true &&
       typeof transcriptService.coldWindowReachedStart === 'function') {
     if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };
-    else if (located.page.items.length > 0 && source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined &&
-        boundedTranscriptSnapshot({ ...snapshot, items: located.page.items }, input.agentId, 'tail', 64 * 1024).items.length === located.page.items.length) {
-      const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot);
-      if (next?.progressed) {
+    else if (located.page.items.length > 0 && source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined) {
+      const multiPage = input.beforeItem !== undefined && query.pageSize > 20;
+      const extendBudgetBytes = multiPage ? HISTORY_PAGE_BYTES : 64 * 1024;
+      const maxExtendAttempts = multiPage ? 3 : 1;
+      for (let attempt = 0; attempt < maxExtendAttempts && !located.page.hasMore && snapshot.hasMoreOlder === true &&
+          located.page.items.length < query.pageSize &&
+          boundedTranscriptSnapshot({ ...snapshot, items: located.page.items }, input.agentId, 'tail', extendBudgetBytes).items.length === located.page.items.length &&
+          (attempt === 0 || performance.now() - startedAt < 200); attempt += 1) {
+        const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, multiPage ? 2 << 20 : undefined);
+        if (!next?.progressed) break;
         const extended = next.snapshot;
         const page = locateColdPage(extended.items, query);
         if (!page.missing && page.page.items.length > 0 &&
             located.page.items.every(item => page.page.items.some(candidate => itemKey(candidate) === itemKey(item)))) {
           snapshot = extended;
           located = page;
-          if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };
-        } else if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
-          located = { ...located, page: { ...located.page, items: withRecoveredOpenings(located.page.items, extended.items) } };
-          snapshot = { ...snapshot, attachments: [...snapshot.attachments, ...extended.attachments.filter(attachment =>
-            !snapshot.attachments.some(existing => existing.attachmentId === attachment.attachmentId))], hasMoreOlder: false };
+          if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
+            snapshot = { ...snapshot, hasMoreOlder: false };
+            break;
+          }
+        } else {
+          if (multiPage && isOrphanTurn(located.page.items[0]!)) {
+            const recovered = withRecoveredOpenings(located.page.items, extended.items);
+            if (recovered[0] !== located.page.items[0]) {
+              located = { ...located, page: { ...located.page, items: recovered } };
+              const knownAttachmentIds = new Set(snapshot.attachments.map(existing => existing.attachmentId));
+              snapshot = {
+                ...snapshot,
+                attachments: [...snapshot.attachments, ...extended.attachments.filter(attachment => !knownAttachmentIds.has(attachment.attachmentId))],
+                hasMoreOlder: !(await transcriptService.coldWindowReachedStart(sessionId, input.agentId)),
+              };
+              break;
+            }
+          }
+          if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
+            located = { ...located, page: { ...located.page, items: withRecoveredOpenings(located.page.items, extended.items) } };
+            const knownAttachmentIds = new Set(snapshot.attachments.map(existing => existing.attachmentId));
+            snapshot = { ...snapshot, attachments: [...snapshot.attachments, ...extended.attachments.filter(attachment =>
+              !knownAttachmentIds.has(attachment.attachmentId))], hasMoreOlder: false };
+          }
+          break;
+        }
+      }
+      if (multiPage && !located.page.hasMore && snapshot.hasMoreOlder === true &&
+          located.page.items.length > 0 && isOrphanTurn(located.page.items[0]!) && performance.now() - startedAt < 250) {
+        const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, 2 << 20);
+        if (next?.progressed) {
+          const extended = next.snapshot;
+          const recovered = withRecoveredOpenings(located.page.items, extended.items);
+          if (recovered[0] !== located.page.items[0]) {
+            const page = locateColdPage(extended.items, query);
+            if (!page.missing && page.page.items.length > 0 &&
+                located.page.items.every(item => page.page.items.some(candidate => itemKey(candidate) === itemKey(item)))) {
+              snapshot = extended;
+              located = page;
+            } else {
+              located = { ...located, page: { ...located.page, items: recovered } };
+              const knownAttachmentIds = new Set(snapshot.attachments.map(existing => existing.attachmentId));
+              snapshot = { ...snapshot, attachments: [...snapshot.attachments, ...extended.attachments.filter(attachment =>
+                !knownAttachmentIds.has(attachment.attachmentId))] };
+            }
+            if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };
+          }
         }
       }
     }

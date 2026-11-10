@@ -8531,6 +8531,7 @@ describe('settled history folds and the unified locate entry', () => {
       await render();
       expect(leases.get('t3')).toHaveLength(1);
       expect(leases.has('t1')).toBe(false);
+      expect(container.querySelector('[data-turn-structure="idle"]')).toBeNull();
       expect(container.querySelector('[data-turn-structure="loading"]')).not.toBeNull();
       await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
       expect(leases.get('t1')?.length).toBeGreaterThan(0);

@@ -1053,13 +1053,13 @@ export class SessionController {
   }
 
   private queueAutomaticRosterRead(): void {
-    if (this.closed || this.isSuspended || !this.state.loaded || this.state.resyncing || this.rosterReadQueued || this.rosterReadInFlight) return;
+    if (this.closed || this.isSuspended || !this.state.loaded || this.state.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
     const ref = this.latestSnapshot?.contentRefs?.find((entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents');
     if (ref === undefined || this.view.transcript.content === undefined || this.state.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
     this.rosterReadQueued = true;
     queueMicrotask(() => {
       this.rosterReadQueued = false;
-      if (this.closed || this.isSuspended || this.state.resyncing) return;
+      if (this.closed || this.isSuspended || this.state.resyncing || this.olderLoads.hasActive()) return;
       this.rosterReadInFlight = true;
       void this.loadContentSegment(MAIN_AGENT_ID, ref).then((advanced) => {
         this.rosterReadInFlight = false;
@@ -1750,6 +1750,8 @@ export class SessionController {
           if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
           return start();
         });
+      }).finally(() => {
+        this.queueAutomaticRosterRead();
       });
     };
     if (!this.resyncInFlight) return start();
@@ -1760,7 +1762,30 @@ export class SessionController {
     });
   }
 
-  private async loadOlderWithDeadline(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
+  locateTurn(agentId: string = MAIN_AGENT_ID, turnId: string, signal?: AbortSignal): Promise<OlderLoadResult> {
+    if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
+    const start = (): Promise<OlderLoadResult> => {
+      const resyncGeneration = this.resyncGeneration;
+      return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderWithDeadline(agentId, sharedSignal, turnId), signal).then((result) => {
+        if (result.kind !== 'cancelled' || signal?.aborted || this.closed || this.isSuspended || resyncGeneration === this.resyncGeneration) return result;
+        return this.waitForResyncIdle(signal).then((resyncStatus) => {
+          if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+          if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+          return start();
+        });
+      }).finally(() => {
+        this.queueAutomaticRosterRead();
+      });
+    };
+    if (!this.resyncInFlight) return start();
+    return this.waitForResyncIdle(signal).then((resyncStatus) => {
+      if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+      return start();
+    });
+  }
+
+  private async loadOlderWithDeadline(agentId: string, signal: AbortSignal, targetTurnId?: string): Promise<OlderLoadResult> {
     const deadline = new AbortController();
     const owned = AbortSignal.any([signal, deadline.signal]);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1782,11 +1807,11 @@ export class SessionController {
       resolveExpired = resolve;
       armDeadline();
     });
-    try { return await Promise.race([this.loadOlderTranscript(agentId, owned, armDeadline), expired]); }
+    try { return await Promise.race([this.loadOlderTranscript(agentId, owned, armDeadline, targetTurnId), expired]); }
     finally { clearTimeout(timer); }
   }
 
-  private async loadOlderTranscript(agentId: string, signal: AbortSignal, onProgress?: () => void): Promise<OlderLoadResult> {
+  private async loadOlderTranscript(agentId: string, signal: AbortSignal, onProgress?: () => void, targetTurnId?: string): Promise<OlderLoadResult> {
     if (this.resyncInFlight) {
       const resyncStatus = await this.waitForResyncIdle(signal);
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
@@ -1798,10 +1823,21 @@ export class SessionController {
     const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
       (this.historyGeneration.get(agentId) ?? 0) !== generation;
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
-    const currentSnapshot = this.composeAgentSnapshot(agentId);
+    let currentSnapshot = this.composeAgentSnapshot(agentId);
+    const hasCompleteTargetTurn = (snapshot: AgentTranscriptSnapshot): boolean => {
+      if (targetTurnId === undefined) return false;
+      const found = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === targetTurnId);
+      if (found === undefined) return false;
+      const missingOpening = found.origin.kind === 'other' && found.message === undefined && found.promptId === undefined && found.startedAt === undefined;
+      return !missingOpening || !snapshot.hasMoreOlder;
+    };
+    if (hasCompleteTargetTurn(currentSnapshot)) {
+      this.publishProjectedAgent(agentId, store);
+      return { kind: 'advanced', changed: true };
+    }
     const firstTurn = currentSnapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn');
     const olderStructure = (() => {
-      if (firstTurn === undefined || firstTurn.stepsPartial === true) return undefined;
+      if (targetTurnId !== undefined || firstTurn === undefined || firstTurn.stepsPartial === true) return undefined;
       const refs = (firstTurn.contentRefs ?? []).filter((ref) => ref.direction === 'backward');
       const firstStep = firstTurn.steps[0]?.ordinal;
       const firstFrames = refs.find((ref) => ref.path.length === 3 && ref.path[1] === firstStep);
@@ -1851,6 +1887,20 @@ export class SessionController {
         beforeTurn = undefined;
         this.olderPageCursors.set(agentId, nextCursor);
         this.olderPageTurns.delete(agentId);
+      };
+      let batchChanged = false;
+      const nextCursorOrphan = (cursor: string | undefined): string | undefined => {
+        if (cursor === undefined || cursor.startsWith('~') || cursor.includes(':')) return undefined;
+        try {
+          const bytes = typeof atob === 'function'
+            ? Uint8Array.from(atob(cursor.replaceAll('-', '+').replaceAll('_', '/')), char => char.codePointAt(0) ?? 0)
+            : undefined;
+          const json = bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+          const parsed = json === undefined ? undefined : JSON.parse(json) as { v?: unknown; orphanTurn?: unknown };
+          return parsed?.v === 2 && typeof parsed.orphanTurn === 'string' && /^t\d+$/.test(parsed.orphanTurn) ? parsed.orphanTurn : undefined;
+        } catch {
+          return undefined;
+        }
       };
       for (;;) {
         const read = () => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: OLDER_PAGE_TURNS }, { signal });
@@ -1946,17 +1996,27 @@ export class SessionController {
         if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
         else this.olderPageTurns.delete(agentId);
         this.forestDirtyAgents.add(agentId);
-        if (recoveredOpening && !addedItems && page.has_more && page.next_cursor !== undefined && page.next_cursor !== beforeItem) {
+        if (older.items.length > 0 || page.next_cursor !== beforeItem) batchChanged = true;
+        currentSnapshot = this.composeAgentSnapshot(agentId);
+        const pendingOrphan = targetTurnId === undefined ? nextCursorOrphan(page.next_cursor) : undefined;
+        const shouldContinueBatch = page.has_more && page.next_cursor !== undefined && page.next_cursor !== beforeItem && (
+          (recoveredOpening && !addedItems) ||
+          (targetTurnId !== undefined && !hasCompleteTargetTurn(currentSnapshot)) ||
+          (pendingOrphan !== undefined && page.items.length === 1 && page.items[0]?.kind === 'turn' && page.items[0].turnId === pendingOrphan)
+        );
+        if (shouldContinueBatch) {
           onProgress?.();
           beforeItem = page.next_cursor;
           beforeTurn = undefined;
-          this.publishProjectedAgent(agentId, store, {
-            loadingOlder: true,
-            fetchedOlder: true,
-            olderError: undefined,
-            historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown' : undefined,
-          });
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          if (targetTurnId === undefined) {
+            this.publishProjectedAgent(agentId, store, {
+              loadingOlder: true,
+              fetchedOlder: true,
+              olderError: undefined,
+              historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown' : undefined,
+            });
+          }
+          await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
           if (obsolete()) return { kind: 'cancelled', changed: false };
           continue;
         }
@@ -1967,7 +2027,7 @@ export class SessionController {
           historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
             : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
         });
-        const changed = older.items.length > 0 || page.next_cursor !== beforeItem;
+        const changed = batchChanged || older.items.length > 0 || page.next_cursor !== beforeItem;
         if (!page.has_more) return { kind: 'exhausted', changed };
         return { kind: 'advanced', changed: true };
       }

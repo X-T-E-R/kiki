@@ -548,10 +548,11 @@ describe('TranscriptService projection', () => {
       const snapshot = await service.readColdSnapshot('s1', 'main');
       expect(snapshot).toBeDefined();
 
-      expect(snapshot!.tasks).toEqual([
+      expect(snapshot!.tasks).toMatchObject([
         {
           taskId: 'task_1',
           kind: 'shell',
+          taskKind: 'process',
           state: 'completed',
           detached: true,
           description: 'pnpm test',
@@ -2836,7 +2837,7 @@ describe('TranscriptService live integration', () => {
       if (source === 'live') {
         service.forSessionLive('s1', { tailFirst: true });
         await service.whenReady('s1');
-        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCountKnown: false, hasMoreOlder: false });
+        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
         expect(verify).not.toHaveBeenCalled();
       }
       expect(await service.readColdSnapshot('s1', 'main')).toMatchObject({ items: [], toolCallCountKnown: true });
@@ -2844,6 +2845,135 @@ describe('TranscriptService live integration', () => {
       expect(baseline).toMatchObject({ snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
     } finally {
       service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('converges initialization-only wires without a receipt across cold reopen and live attach while keeping missing, truncated, cleared-after-use, or mutated wires unknown', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-init-only-reopen-'));
+    try {
+      const writeScenario = async (sessionId: string, content?: string, sealed = false) => {
+        const sessionDir = join(home, 'sessions', 'ws', sessionId);
+        await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+        await writeFixtureFile(join(sessionDir, 'state.json'), JSON.stringify({
+          title: 'Android reconnect proof',
+          agents: { main: { type: 'main', createdAt: 1794270502541 } },
+        }));
+        if (content !== undefined) {
+          const wirePath = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+          await writeFixtureFile(wirePath, content);
+          if (sealed) await sealFixtureWire(wirePath);
+        }
+      };
+
+      const initLines =
+        `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1794270502541 })}\n` +
+        `${JSON.stringify({ type: 'runtime.set_binding', workspaceId: 'ws', runtimeId: 'local', time: 1794270502715 })}\n`;
+      const clearedLines =
+        initLines +
+        `${JSON.stringify({ type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'hi' }], origin: { kind: 'user' } })}\n` +
+        `${JSON.stringify({ type: 'context.undo', targetTurnId: 0 })}\n`;
+      await writeScenario('s-init', initLines);
+      await writeScenario('s-metadata-only', `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1794270502541 })}\n`);
+      await writeScenario('s-missing', undefined);
+      await writeScenario('s-empty', '');
+      await writeScenario('s-truncated', `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1 })}\n{"type":"runtime.set_binding"`);
+      await writeScenario(
+        's-with-turn',
+        initLines + `${JSON.stringify({ type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'hi' }], origin: { kind: 'user' } })}\n`,
+      );
+      await writeScenario('s-cleared-no-receipt', clearedLines);
+      await writeScenario('s-cleared-after-use', clearedLines, true);
+
+      const initAgents = new FakeAgents();
+      const clearedAgents = new FakeAgents();
+      const verify = vi.fn(async () => false);
+      const initMain = initAgents.add('main', {
+        wire: {
+          ...stubAgentWire(),
+          verifyTranscriptLiveEpoch: verify,
+          isTranscriptLiveEpochVerified: () => false,
+        },
+      });
+      clearedAgents.add('main', {
+        wire: {
+          ...stubAgentWire(),
+          verifyTranscriptLiveEpoch: verify,
+          isTranscriptLiveEpochVerified: () => false,
+        },
+      });
+      const liveSessions = new Map<string, ISessionScopeHandle>([
+        ['s-init', fakeSession(new SessionInteractionService(new TestSessionStateService()), initAgents)],
+        ['s-cleared-after-use', fakeSession(new SessionInteractionService(new TestSessionStateService()), clearedAgents)],
+      ]);
+      const base = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), initAgents);
+      const core = {
+        accessor: {
+          get: (token: unknown) =>
+            token === ISessionManager
+              ? { get: (id: string) => liveSessions.get(id), list: () => [...liveSessions.values()] }
+              : base.accessor.get(token as never),
+        },
+      } as unknown as Scope;
+      const service = new TranscriptService({ homeDir: home, core });
+      try {
+        const coldInit = await readColdSessionViewBaseline(service, 's-init', 'main', 'delta', new AbortController().signal);
+        expect(coldInit).toMatchObject({
+          snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false, olderCursor: undefined },
+          coverage: { kind: 'full', hasMoreOlder: false },
+          read: { readiness: 'ready' },
+        });
+
+        const coldMetadataOnly = await readColdSessionViewBaseline(service, 's-metadata-only', 'main', 'delta', new AbortController().signal);
+        expect(coldMetadataOnly).toMatchObject({
+          snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false, olderCursor: undefined },
+          coverage: { kind: 'full', hasMoreOlder: false },
+        });
+
+        const storeInit = service.forSessionLive('s-init', { tailFirst: true });
+        await service.whenReady('s-init');
+        expect(storeInit).toBeDefined();
+        expect(service.isTranscriptLiveCoverageVerified('s-init', 'main')).toBe(true);
+        expect(await service.verifyTranscriptLiveCoverage('s-init', 'main')).toBe(true);
+        const livePage = await readSessionViewTranscriptPage(service, 's-init', { agentId: 'main' });
+        expect(livePage).toMatchObject({
+          items: [],
+          has_more: false,
+          coverage: { kind: 'full', hasMoreOlder: false },
+          read: { readiness: 'ready' },
+        });
+
+        initMain.bus.emit(ev({
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: 'p-live',
+          input: [{ type: 'text', text: 'live turn' }],
+          origin: { kind: 'user' },
+          time: 1_000,
+        }));
+        initMain.bus.emit(ev({ type: 'context.undo', targetTurnId: 0 }));
+        expect(storeInit?.getAgent('main')?.getItems()).toEqual([]);
+        expect(service.isTranscriptLiveCoverageVerified('s-init', 'main')).toBe(false);
+        expect(await service.verifyTranscriptLiveCoverage('s-init', 'main')).toBe(false);
+        const mutatedLivePage = await readSessionViewTranscriptPage(service, 's-init', { agentId: 'main' });
+        expect(mutatedLivePage?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+
+        const storeCleared = service.forSessionLive('s-cleared-after-use', { tailFirst: true });
+        await service.whenReady('s-cleared-after-use');
+        expect(storeCleared?.getAgent('main')?.getItems()).toEqual([]);
+        expect(service.isTranscriptLiveCoverageVerified('s-cleared-after-use', 'main')).toBe(false);
+        expect(await service.verifyTranscriptLiveCoverage('s-cleared-after-use', 'main')).toBe(false);
+        const clearedLivePage = await readSessionViewTranscriptPage(service, 's-cleared-after-use', { agentId: 'main' });
+        expect(clearedLivePage?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+
+        for (const sessionId of ['s-missing', 's-empty', 's-truncated', 's-with-turn', 's-cleared-no-receipt']) {
+          const cold = await readColdSessionViewBaseline(service, sessionId, 'main', 'delta', new AbortController().signal);
+          expect(cold?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+        }
+      } finally {
+        service.dispose();
+      }
+    } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -5798,7 +5928,7 @@ it.each([{ turnId: 0, prepared: false, warmed: false }, { turnId: 7, prepared: t
       expect(page?.has_more).toBe(true);
       expect(page?.next_cursor).toBeDefined();
       expect(service.memoryReport().coldReads.bytes - readsBefore.bytes).toBeLessThan(3 << 20);
-      expect(service.memoryReport().coldReads.completed - readsBefore.completed).toBe(turnId === 0 ? 2 : 1);
+      expect(service.memoryReport().coldReads.completed - readsBefore.completed).toBe((turnId === 0 ? 2 : 1) - (warmed ? 1 : 0));
       expect(navigation.canonicalReadReport().projectionBytes).toBe(projectionBefore);
       expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(1024);
       if (turnId === 7 && !prepared) {

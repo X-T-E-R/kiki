@@ -2404,6 +2404,91 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it('locates an earlier turn in a single older-load flight while deferring automatic subagent roster reads', async () => {
+    const subagentRef: ContentRef = {
+      source: { kind: 'snapshot', id: 'session_test' },
+      path: ['subagents'],
+      kind: 'array',
+      offset: 0,
+      total: 4,
+      revision: 'roster-rev',
+    };
+    const { controller, deliver, view } = harness({
+      epoch: 'epoch-1',
+      as_of_seq: 1,
+      session: {
+        id: 'session_test',
+        title: 'Locate test',
+        workspace_id: 'ws',
+        created_at: FIXED_AT,
+        updated_at: FIXED_AT,
+        last_seq: 1,
+      },
+      subagents: [],
+      contentRefs: [subagentRef],
+    } as never);
+    const makeTurn = (ordinal: number): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${ordinal}`,
+      ordinal,
+      state: 'completed',
+      origin: { kind: 'user' },
+      promptId: `p-${ordinal}`,
+      prompt: `TURN-BODY-${ordinal}`,
+      startedAt: FIXED_AT,
+      steps: [],
+    });
+    const events: string[] = [];
+    view.transcript.content = vi.fn(async () => {
+      events.push('roster');
+      return {
+        ref: subagentRef,
+        kind: 'array' as const,
+        value: [],
+        contentRefs: [],
+        offset: 0,
+        end: 4,
+        total: 4,
+        complete: true,
+      };
+    });
+    vi.mocked(view.transcript.page).mockImplementation(async (input) => {
+      events.push(`page:${input.beforeItem ?? input.beforeTurn}`);
+      if (input.beforeTurn === 't10') {
+        return {
+          session_id: 'session_test',
+          agent_id: 'main',
+          items: [makeTurn(8), makeTurn(9)],
+          has_more: true,
+          next_cursor: 'turn:t8',
+          tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+          coverage: { kind: 'tail', hasMoreOlder: true },
+        };
+      }
+      return {
+        session_id: 'session_test',
+        agent_id: 'main',
+        items: [makeTurn(6), makeTurn(7)],
+        has_more: true,
+        next_cursor: 'turn:t6',
+        tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+        coverage: { kind: 'tail', hasMoreOlder: true },
+      };
+    });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [makeTurn(10)] }), 1, true));
+    events.length = 0;
+    try {
+      const result = await controller.locateTurn('main', 't6');
+      expect(result).toEqual({ kind: 'advanced', changed: true });
+      expect(blockText(controller, 'TURN-BODY-6')).toBe(true);
+      expect(blockText(controller, 'TURN-BODY-8')).toBe(true);
+      expect(events.slice(0, 2)).toEqual(['page:t10', 'page:turn:t8']);
+    } finally {
+      controller.close();
+    }
+  });
+
   async function staleOpeningFixture(agentId: string) {
     const source = { kind: 'turn' as const, id: 't1' };
     const structure: ContentRef = { source, path: ['steps'], kind: 'array', offset: 1, total: 2, revision: 'loaded-structure' };
