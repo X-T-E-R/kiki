@@ -609,7 +609,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options']);
+const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options', 'tool_arg_matches', 'toolArgMatches']);
 
 function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
   if (Array.isArray(obj)) {

@@ -42,7 +42,11 @@ Declarative rules support `inject`, `observe`, and `compact`. `inject` works on 
 
 Rules combine from your user configuration, a trusted project's `.kiki/hooks.toml`, and enabled plugin manifests, and each gets a qualified id such as `user/evidence-check` or `workspace/check`. Lower `priority` runs first, with the qualified id breaking ties. A duplicate id inside one namespace is an error; the same short id in different namespaces is fine. Rules from an untrusted project stay visible but inactive, text-only ones included.
 
-`match.models`, `profiles`, `routes`, `executors` and `agent_roles` take exact values: every field you write must match, several values in one field are alternatives, and an omitted field is unrestricted. Model aliases resolve at load time, so a typo shows up before the first request. Tool names go in `match.tools` and outcomes in `match.statuses` (`success`, `error`, `cancelled`, `denied`). `prompt.submit` defaults to `source = user`, including human input delivered with **Send now**; name `task` or `mailbox` in `match.sources` for those producers. A task-completion notification triggers `prompt.submit` when it is safely consumed, including a previously undelivered notification recovered from disk. Its task guidance follows the receipt before the next model request; it is not a human submit event, and an already consumed notification does not trigger it again. `sources = ["steering"]` matches the Send now delivery path regardless of producer; it does not turn a mailbox message into user input. An external executor without native step or tool interception is reported as unsupported rather than approximated from tool counts.
+`match.models`, `profiles`, `routes`, `executors`, `agent_roles`, `channels` and `origin_kinds` take exact values: every field you write must match, several values in one field are alternatives, and an omitted field is unrestricted. Model aliases resolve at load time, so a typo shows up before the first request. `channels` filters inbound channels such as `direct` (desktop or CLI chat), `telegram`, `feishu`, `wechat`, `room`, or `peer_thread`; `origin_kinds` matches the message `origin.kind` (such as `user`, `cron_job`, or `task`) and relaxes `prompt.submit`'s default `source = user` filter when `sources` is omitted.
+
+On `prompt.submit`, `prompt_regex` / `prompt_matches` match regular expressions (a pattern syntax for matching text) against the user's message text, and `prompt_not_matches` excludes messages matching any listed pattern. System-injected `<system-reminder>` blocks, `<skill-loaded>` expansions, and image-compression markers are stripped before matching so internal text never triggers a rule. On `tool.before` and `tool.after`, `tools` and `statuses` (`success`, `error`, `cancelled`, `denied`) take exact values, `tool_input_regex` / `tool_input_matches` and `tool_input_not_matches` test canonical serialized `tool_input`, and `[hooks.rules.match.tool_arg_matches]` matches individual argument keys or dot paths (for example `run_in_background = "^true$"` or `"options.env" = ["staging", "ci"]`) while keeping your exact parameter names intact. Using prompt matchers outside `prompt.submit` or tool-input matchers outside `tool.before` / `tool.after` fails schema validation instead of silently doing nothing.
+
+`prompt.submit` defaults to `source = user`, including human input delivered with **Send now**; name `task` or `mailbox` in `match.sources` for those producers. A task-completion notification triggers `prompt.submit` when it is safely consumed, including a previously undelivered notification recovered from disk. Its task guidance follows the receipt before the next model request; it is not a human submit event, and an already consumed notification does not trigger it again. `sources = ["steering"]` matches the Send now delivery path regardless of producer; it does not turn a mailbox message into user input. An external executor without native step or tool interception is reported as unsupported rather than approximated from tool counts.
 
 Long guidance can point at a file with `text_file = "reminders/check.md"` instead of `text` — the two are mutually exclusive — and `[hooks] files = ["hooks.toml"]` pulls in other v2 documents. Paths are relative to the declaring file and must stay inside its source scope once resolved. Includes cannot be URLs, repeat, or form a cycle. A missing file, empty text, unsupported action, invalid cadence or an injection over 8 KiB is a load-time diagnostic. Injected guidance is labelled conversation context: it does not replace the system prompt and cannot override higher-priority instructions.
 
@@ -140,19 +144,34 @@ The working directory for hook commands is the current session's project directo
 
 ### Event data format
 
-Each time a hook triggers, the CLI passes this base information to the script on stdin:
+Each time a hook triggers, the CLI passes the session, workspace, and active agent binding to the script on stdin:
 
 ```json
 {
   "hook_event_name": "PreToolUse",
   "session_id": "session_abc",
   "session_title": "Fix the login page",
+  "workspace_id": "wd_example_000000000000",
+  "execution_target": "local",
+  "cwd": "/path/to/project",
   "client_type": "kimi_code_cli",
-  "cwd": "/path/to/project"
+  "agent_id": "main",
+  "agent_role": "root",
+  "profile_id": "default",
+  "profile_name": "default",
+  "model_alias": "example-model",
+  "model_id": "kimi-for-coding",
+  "provider_id": "kimi",
+  "provider_type": "kimi",
+  "thinking_effort": "high",
+  "executor_id": "native",
+  "permission_mode": "auto",
+  "turn_id": 1,
+  "step": 2
 }
 ```
 
-Individual events add their own fields (tool name, command text, and so on); see the event reference below. All field names are snake_case.
+Subagents additionally include `parent_agent_id`, and file-backed profiles or named routes include `profile_path` and `route_id`. Session-scope events (`SessionStart`, `SessionEnd`, `SessionHeartbeat`, `SubagentStart`, `SubagentStop`) include the session and workspace fields (`SessionStart` also includes the default `model_alias`, `model_id`, `provider_id`, `provider_type`, and `profile_name`). Individual events add their own fields (tool name, command text, full `origin`, `channel`, and so on); see the event reference below. All field names are snake_case.
 
 ## Return values
 
@@ -227,11 +246,11 @@ Without a continuation request, the original failure ends the turn normally. The
 
 | Event | Matcher matches | Supports blocking? | Description |
 | --- | --- | --- | --- |
-| `UserPromptSubmit` | The text submitted by the user | ✓ | Triggered when the user sends a message; returned text is appended to context; if blocked, the model is not called for this turn |
-| `UserPromptQueued` | The queued prompt text | — | Triggered when a message is queued while a turn is still running; the payload includes `prompt_id`, `prompt`, and `queue_length` (observation only) |
+| `UserPromptSubmit` | The text submitted by the user | ✓ | Triggered when the user sends a message; includes `prompt`, `prompt_text`, `prompt_id`, `user_message_id`, `origin`, `channel`, and `is_steer`; returned text is appended to context, and if blocked the model is not called for this turn |
+| `UserPromptQueued` | The queued prompt text | — | Triggered when a message is queued while a turn is still running; includes `prompt_id`, `user_message_id`, `origin`, `channel`, `prompt`, `prompt_text`, and `queue_length` (observation only) |
 | `PreToolUse` | Tool name | ✓ | Triggered before a tool call (before permission checks); the tool will not execute if blocked |
 | `Stop` | Empty string | ✓ | Triggered when the model is about to end the current turn; if blocked, a message can be appended to let the model continue |
-| `TurnStarted` | Turn origin kind (e.g. `user`, `task`, `system_trigger`) | — | Triggered when a new turn begins; the payload includes `turn_id`, `origin_kind`, `origin_name`, and `prompt` (observation only) |
+| `TurnStarted` | Turn origin kind (e.g. `user`, `task`, `system_trigger`) | — | Triggered when a new turn begins; includes `turn_id`, `prompt_id`, `origin`, `origin_kind`, `origin_name`, `channel`, and `prompt` (observation only) |
 | `PostToolUse` | Tool name | — | Triggered after a tool executes successfully (observation only) |
 | `PostToolUseFailure` | Tool name | — | Triggered after a tool fails or is blocked (observation only) |
 | `PermissionRequest` | Tool name | — | Triggered just before waiting for user approval (observation only) |

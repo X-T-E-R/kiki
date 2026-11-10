@@ -42,7 +42,11 @@ text = "继续前核对目标、已有证据和下一步。"
 
 规则来自用户配置、已信任项目的 `.kiki/hooks.toml` 和已启用插件的 manifest，并各自带上 `user/evidence-check`、`workspace/check` 这样的全限定 id。`priority` 小的先执行，同优先级按全限定 id 排序。同一命名空间内 id 重复是错误，不同命名空间用相同短 id 没问题。未信任项目的规则仍可见但不激活，纯文本规则同样如此。
 
-`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。工具名写在 `match.tools`，工具结果写在 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认只匹配 `source = user`，包括通过「立即发送」投递的人类输入；任务或邮箱来源需在 `match.sources` 中写 `task` 或 `mailbox`。任务完成通知在安全消费时触发 `prompt.submit`，包括从磁盘恢复的未消费通知；指导文本跟在回执之后、进入下一次模型请求，不触发人类提交事件，已消费通知不重复触发。`sources = ["steering"]` 匹配「立即发送」投递路径，不限原生产者，也不会把邮箱消息变成用户输入。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
+`match.models`、`profiles`、`routes`、`executors`、`agent_roles`、`channels` 和 `origin_kinds` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。`channels` 用于过滤消息渠道，例如 `direct`（桌面或终端直聊）、`telegram`、`feishu`、`wechat`、`room`、`peer_thread`；`origin_kinds` 匹配消息的 `origin.kind`（如 `user`、`cron_job`、`task`），显式指定且未写 `sources` 时不再强制附加 `prompt.submit` 默认的 `source = user` 限制。
+
+在 `prompt.submit` 上，`prompt_regex` / `prompt_matches` 用正则表达式（一种按规则匹配文本的语法）匹配用户消息纯文本，`prompt_not_matches` 在任意正则命中时排除该条消息。匹配前会自动剥离系统注入的 `<system-reminder>`、`<skill-loaded>` 技能展开文本和图片压缩标记，确保内部上下文不会误触发规则。在 `tool.before` 和 `tool.after` 上，`tools` 与 `statuses`（`success`、`error`、`cancelled`、`denied`）取精确值，`tool_input_regex` / `tool_input_matches` 与 `tool_input_not_matches` 匹配规范化序列化后的 `tool_input`，`[hooks.rules.match.tool_arg_matches]` 则按参数键名或点路径做正则匹配（例如 `run_in_background = "^true$"` 或 `"options.env" = ["staging", "ci"]`），并原样保留你写的参数名。在非 `prompt.submit` 事件上配置提示词匹配器，或在非 `tool.before` / `tool.after` 事件上配置工具入参匹配器，都会在加载时报错而不是静默失效。
+
+`prompt.submit` 默认只匹配 `source = user`，包括通过「立即发送」投递的人类输入；任务或邮箱来源需在 `match.sources` 中写 `task` 或 `mailbox`。任务完成通知在安全消费时触发 `prompt.submit`，包括从磁盘恢复的未消费通知；指导文本跟在回执之后、进入下一次模型请求，不触发人类提交事件，已消费通知不重复触发。`sources = ["steering"]` 匹配「立即发送」投递路径，不限原生产者，也不会把邮箱消息变成用户输入。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
 
 长文本可以用 `text_file = "reminders/check.md"` 代替 `text`（二者互斥），`[hooks] files = ["hooks.toml"]` 可以引入其他 v2 文档。路径相对于声明文件，解析后必须仍在其来源作用域内；include 不能是 URL、不能重复或形成循环。缺文件、空文本、不支持的动作、无效节拍以及超过 8 KiB 的注入都是加载期错误。注入的指导文本是带来源标记的对话上下文，不替换系统提示词，也无法覆盖更高优先级的指令。
 
@@ -140,19 +144,34 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 
 ### 事件数据格式
 
-每次触发时，CLI 都会把以下基础信息通过 stdin 传给脚本：
+每次触发时，CLI 都会把会话、工作区与当前 Agent 绑定上下文通过 stdin 传给脚本：
 
 ```json
 {
   "hook_event_name": "PreToolUse",
   "session_id": "session_abc",
   "session_title": "修复登录页",
+  "workspace_id": "wd_example_000000000000",
+  "execution_target": "local",
+  "cwd": "/path/to/project",
   "client_type": "kimi_code_cli",
-  "cwd": "/path/to/project"
+  "agent_id": "main",
+  "agent_role": "root",
+  "profile_id": "default",
+  "profile_name": "default",
+  "model_alias": "example-model",
+  "model_id": "kimi-for-coding",
+  "provider_id": "kimi",
+  "provider_type": "kimi",
+  "thinking_effort": "high",
+  "executor_id": "native",
+  "permission_mode": "auto",
+  "turn_id": 1,
+  "step": 2
 }
 ```
 
-具体事件会附带各自的字段（工具名、命令内容等），见下方事件一览。所有字段名使用下划线命名（snake_case）。
+subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或命名路由还会附带 `profile_path` 与 `route_id`。会话级事件（`SessionStart`、`SessionEnd`、`SessionHeartbeat`、`SubagentStart`、`SubagentStop`）包含会话与工作区字段（其中 `SessionStart` 还会附带默认的 `model_alias`、`model_id`、`provider_id`、`provider_type` 和 `profile_name`）。具体事件会附带各自的字段（工具名、命令内容、完整 `origin`、`channel` 等），见下方事件一览。所有字段名使用下划线命名（snake_case）。
 
 ## 返回值
 
@@ -227,11 +246,11 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 
 | 事件 | Matcher 匹配的是 | 会触发阻断？ | 说明 |
 | --- | --- | --- | --- |
-| `UserPromptSubmit` | 用户提交的文本内容 | ✓ | 用户发送消息时触发；返回文本会附加到上下文；若阻断，本轮不调用模型 |
-| `UserPromptQueued` | 排队消息的文本内容 | — | 上一回合仍在运行、消息进入队列时触发；payload 含 `prompt_id`、`prompt` 和 `queue_length`（观察用） |
+| `UserPromptSubmit` | 用户提交的文本内容 | ✓ | 用户发送消息时触发；附带 `prompt`、`prompt_text`、`prompt_id`、`user_message_id`、`origin`、`channel` 和 `is_steer`；返回文本会附加到上下文，若阻断则本轮不调用模型 |
+| `UserPromptQueued` | 排队消息的文本内容 | — | 上一回合仍在运行、消息进入队列时触发；payload 含 `prompt_id`、`user_message_id`、`origin`、`channel`、`prompt`、`prompt_text` 和 `queue_length`（观察用） |
 | `PreToolUse` | 工具名 | ✓ | 工具调用前触发（权限检查前）；阻断后工具不会执行 |
 | `Stop` | 空字符串 | ✓ | 模型准备结束本轮时触发；阻断后可追加一条消息让模型继续 |
-| `TurnStarted` | 回合来源类型（如 `user`、`task`、`system_trigger`） | — | 新回合开始时触发；payload 含 `turn_id`、`origin_kind`、`origin_name` 和 `prompt`（观察用） |
+| `TurnStarted` | 回合来源类型（如 `user`、`task`、`system_trigger`） | — | 新回合开始时触发；payload 含 `turn_id`、`prompt_id`、`origin`、`origin_kind`、`origin_name`、`channel` 和 `prompt`（观察用） |
 | `PostToolUse` | 工具名 | — | 工具成功执行后触发（观察用） |
 | `PostToolUseFailure` | 工具名 | — | 工具失败或被阻断后触发（观察用） |
 | `PermissionRequest` | 工具名 | — | 即将等待用户审批前触发（观察用） |

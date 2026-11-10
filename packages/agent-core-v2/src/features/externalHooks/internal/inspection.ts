@@ -2,6 +2,7 @@ import type { AgentHooksInspect } from '@kiki/protocol';
 import type { DeepReadonly } from '#/state/state';
 import { ContextAppendLoopEvent, ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
+import { PermissionSetMode, permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import { ConfigUpdate, ProfileBind, profileKey } from '#/agent/profile/profileOps';
 import { event2FromRecord, type Event2Class } from '#/app/event/event2';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -18,8 +19,18 @@ const clockClasses: ReadonlyMap<string, Event2Class> = new Map([HookRulesConfigu
 export async function readPersistedHookInspection(appendLog: IAppendLogStore, scope: string, metadata: AgentMeta | undefined, signal?: AbortSignal): Promise<{ binding: HookBinding; clock: DeepReadonly<HooksState> }> {
   let profile = structuredClone(profileKey.initial());
   let clock = hookStateKey.initial();
+  let permissionMode: string | undefined;
   let profileSeen = false;
   for await (const record of appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
+    if (record.type === PermissionSetMode.type) {
+      const event = event2FromRecord(PermissionSetMode, record);
+      if (event !== undefined) {
+        const fold = permissionModeKey.replayable.folds.get(PermissionSetMode);
+        const next = fold?.((permissionMode ?? permissionModeKey.initial()) as never, event as never, replayContext);
+        if (next !== undefined) permissionMode = next;
+      }
+      continue;
+    }
     const profileClass = profileClasses.get(record.type);
     if (profileClass !== undefined) {
       const event = event2FromRecord(profileClass, record);
@@ -43,9 +54,13 @@ export async function readPersistedHookInspection(appendLog: IAppendLogStore, sc
   signal?.throwIfAborted();
   return { clock, binding: {
     modelAlias: profileSeen ? profile.modelAlias : metadata?.model,
+    thinkingEffort: profileSeen ? (profile.thinkingLevel === '' ? undefined : profile.thinkingLevel) : metadata?.thinkingEffort,
     profileId: profileSeen ? profile.profileDefinitionId ?? profile.profileName : subagentProfileName(metadata),
+    profileName: profileSeen ? profile.profileName : subagentProfileName(metadata),
+    profilePath: profileSeen ? profile.boundProfile?.sourcePath : undefined,
     routeId: profileSeen ? profile.routeId : undefined,
     executorId: (profileSeen ? profile.executorId : metadata?.executor) ?? 'native',
+    permissionMode,
     agentRole: metadata?.parentAgentId === undefined ? 'root' : 'subagent',
   } };
 }

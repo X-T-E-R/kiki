@@ -5,8 +5,8 @@ import { parseHooksConfigJson } from '@kiki/session-core/settings';
 
 import {
   addDeclarativeRule, addLegacyRule, canFlattenToLegacy, convertToV2, draftFromHooks, draftToHooks,
-  flattenToLegacy, formatSelectorLines, hooksDraftJson, hooksDraftPatch, newDeclarativeRule, newLegacyRule,
-  parseHooksDraftJson, parseSelectorLines, removeDeclarativeRule, removeLegacyRule, setV2Disabled,
+  flattenToLegacy, formatSelectorLines, formatToolArgMatchesLines, hooksDraftJson, hooksDraftPatch, newDeclarativeRule, newLegacyRule,
+  parseHooksDraftJson, parseSelectorLines, parseToolArgMatchesLines, removeDeclarativeRule, removeLegacyRule, setV2Disabled,
   setV2Enabled, setV2Files, updateDeclarativeRule, updateLegacyRule, validateHooksDraft, type HooksDraft,
 } from './hooksDraft';
 
@@ -23,9 +23,14 @@ const mixed: HooksV2Config = hooksV2ConfigSchema.parse({
         agentRoles: ['root', 'subagent'], tools: ['Read', 'Write'], statuses: ['success', 'error', 'cancelled', 'denied'],
         sources: ['user', 'task', 'mailbox', 'steering'], outcomes: ['completed', 'cancelled', 'failed', 'blocked'] },
       cadence: { everyCompletedSteps: 3, counterScope: 'turn', partitionBy: 'model' }, action: { type: 'inject', text: 'Example guidance' } },
-    { id: 'from-file', event: 'prompt.submit', priority: 200, enabled: true, match: {}, action: { type: 'inject', textFile: 'guidance/example.txt' } },
+    { id: 'from-file', event: 'prompt.submit', priority: 200, enabled: true,
+      match: { channels: ['direct', 'telegram'], originKinds: ['user'], promptMatches: ['调研'], promptNotMatches: ['跳过'] },
+      action: { type: 'inject', textFile: 'guidance/example.txt' } },
     { id: 'audit', event: 'step.after', priority: 150, enabled: true, match: {},
       cadence: { everyCompletedSteps: 2, counterScope: 'agent', partitionBy: 'model' }, action: { type: 'observe' } },
+    { id: 'tool-watch', event: 'tool.before', priority: 120, enabled: true,
+      match: { tools: ['Bash'], toolInputMatches: ['vitest'], toolArgMatches: { run_in_background: 'true', 'opts.target_env': ['ci', 'local'] } },
+      action: { type: 'observe' } },
   ],
 });
 
@@ -247,5 +252,16 @@ describe('hook selector lines', () => {
     expect(formatSelectorLines(selectors)).toBe('model-b\nmodel-a\nmodel-c');
     expect(parseSelectorLines(formatSelectorLines(selectors))).toEqual(selectors);
     expect(formatSelectorLines([])).toBe('');
+  });
+
+  it('parses and formats tool argument regex lines while preserving snake_case keys', () => {
+    const parsed = parseToolArgMatchesLines(' run_in_background = ^true$ \n opts.target_env = ci \n opts.target_env = local \n\n ');
+    expect(parsed).toEqual({
+      run_in_background: '^true$',
+      'opts.target_env': ['ci', 'local'],
+    });
+    expect(formatToolArgMatchesLines(parsed)).toBe('run_in_background = ^true$\nopts.target_env = ci\nopts.target_env = local');
+    expect(parseToolArgMatchesLines(formatToolArgMatchesLines(parsed))).toEqual(parsed);
+    expect(parseToolArgMatchesLines('   \n  ')).toBeUndefined();
   });
 });

@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import { canonicalTelemetryArgs, isPlainRecord } from '#/_base/utils/canonical-args';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import { removeMarkedCompressionText } from '#/agent/prompt/promptMetadataText';
+import { systemReminderContent } from '#/agent/systemReminder/systemReminder';
+import type { ContentPart } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import { compileHookMatcher } from './types';
 
 export const RULE_EVENTS = ['prompt.submit', 'step.before', 'step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after'] as const;
 export const HOOK_INJECTION_MAX_BYTES = 8 * 1024;
@@ -9,6 +14,20 @@ const READ_TOOL_NAMES = new Set(['Read', 'ReadFile']);
 const WRITE_TOOL_NAMES = new Set(['Write', 'WriteFile', 'Edit', 'StrReplaceFile', 'MultiEdit', 'Bash', 'Shell']);
 
 const selectors = z.array(z.string().min(1)).min(1);
+const regexSchema = z.string().min(1).refine((value) => {
+  try {
+    compileHookMatcher(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'must be a valid regular expression');
+const regexSelectors = z.array(regexSchema).min(1);
+const toolArgMatchesSchema = z.record(
+  z.string().min(1),
+  z.union([regexSchema, regexSelectors]),
+).refine((record) => Object.keys(record).length > 0, 'tool_arg_matches must not be empty');
+
 export const HookMatchSchema = z.object({
   models: selectors.optional(),
   profiles: selectors.optional(),
@@ -19,6 +38,15 @@ export const HookMatchSchema = z.object({
   statuses: z.array(z.enum(['success', 'error', 'cancelled', 'denied'])).min(1).optional(),
   sources: z.array(z.enum(['user', 'task', 'mailbox', 'steering'])).min(1).optional(),
   outcomes: z.array(z.enum(['completed', 'cancelled', 'failed', 'blocked'])).min(1).optional(),
+  channels: selectors.optional(),
+  originKinds: selectors.optional(),
+  promptRegex: regexSchema.optional(),
+  promptMatches: regexSelectors.optional(),
+  promptNotMatches: regexSelectors.optional(),
+  toolInputRegex: regexSchema.optional(),
+  toolInputMatches: regexSelectors.optional(),
+  toolInputNotMatches: regexSelectors.optional(),
+  toolArgMatches: toolArgMatchesSchema.optional(),
 }).strict();
 
 const injection = z.object({
@@ -64,6 +92,16 @@ export const HookRuleSchema = z.object({
   if (rule.action.type === 'compact' && rule.event !== 'step.before' && rule.event !== 'step.after') {
     ctx.addIssue({ code: 'custom', message: `compact is not supported on ${rule.event}; use step.before or step.after`, path: ['action'] });
   }
+  for (const field of ['promptRegex', 'promptMatches', 'promptNotMatches'] as const) {
+    if (rule.match[field] !== undefined && rule.event !== 'prompt.submit') {
+      ctx.addIssue({ code: 'custom', message: `${field} is supported only on prompt.submit`, path: ['match', field] });
+    }
+  }
+  for (const field of ['toolInputRegex', 'toolInputMatches', 'toolInputNotMatches', 'toolArgMatches'] as const) {
+    if (rule.match[field] !== undefined && rule.event !== 'tool.before' && rule.event !== 'tool.after') {
+      ctx.addIssue({ code: 'custom', message: `${field} is supported only on tool.before and tool.after`, path: ['match', field] });
+    }
+  }
 });
 
 export type HookRule = z.infer<typeof HookRuleSchema>;
@@ -72,9 +110,16 @@ export type HookEventName = typeof RULE_EVENTS[number];
 export interface HookBinding {
   readonly modelAlias?: string;
   readonly modelId?: string;
+  readonly remoteModelId?: string;
+  readonly providerId?: string;
+  readonly providerType?: string;
+  readonly thinkingEffort?: string;
   readonly profileId?: string;
+  readonly profileName?: string;
+  readonly profilePath?: string;
   readonly routeId?: string;
   readonly executorId?: string;
+  readonly permissionMode?: string;
   readonly agentRole?: 'root' | 'subagent';
 }
 
@@ -84,10 +129,12 @@ export interface HookEvent extends HookBinding {
   readonly eventId: string;
   readonly occurredAt: string;
   readonly sessionId: string;
+  readonly sessionTitle?: string;
   readonly agentId?: string;
   readonly parentAgentId?: string;
   readonly turnId?: number;
   readonly promptId?: string;
+  readonly userMessageId?: string;
   readonly stepId?: string;
   readonly engineStep?: number;
   readonly stepInTurn?: number;
@@ -103,8 +150,12 @@ export interface HookEvent extends HookBinding {
   readonly allowedActions: readonly ('inject' | 'observe' | 'compact')[];
   readonly tool?: string;
   readonly toolCallId?: string;
+  readonly toolInput?: Record<string, unknown>;
   readonly status?: string;
   readonly source?: string;
+  readonly origin?: PromptOrigin;
+  readonly channel?: string;
+  readonly prompt?: string;
   readonly delivery?: 'steering';
   readonly outcome?: string;
   readonly reason?: string;
@@ -159,22 +210,164 @@ export function hookHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+export function extractOriginChannel(origin: PromptOrigin | undefined): string | undefined {
+  if (origin === undefined) return undefined;
+  if (origin.kind === 'merged') {
+    for (const item of origin.origins) {
+      const resolved = extractOriginChannel(item);
+      if (resolved !== undefined) return resolved;
+    }
+    return undefined;
+  }
+  if (origin.kind === 'user') return origin.im?.provider_kind ?? 'direct';
+  if (origin.kind === 'plugin_command') return 'direct';
+  if (origin.kind === 'skill_activation') return origin.trigger === 'user-slash' ? 'direct' : undefined;
+  if (origin.kind === 'room_message') return 'room';
+  if (origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || origin.kind === 'agent_message' || origin.kind === 'external_thread' || origin.kind === 'external_client') {
+    return origin.kind;
+  }
+  return undefined;
+}
+
+export function extractHookPromptText(message: ContextMessage): string {
+  const origin = message.origin;
+  if (origin?.kind === 'injection' || systemReminderContent(message) !== undefined) return '';
+  if (origin?.kind === 'skill_activation') {
+    return origin.trigger === 'user-slash' ? (origin.userInput ?? origin.skillArgs ?? '').trim() : '';
+  }
+  if (origin?.kind === 'plugin_command') {
+    const args = origin.commandArgs?.trim() ?? '';
+    return args.length === 0 ? `/${origin.commandName}` : `/${origin.commandName} ${args}`;
+  }
+  const countBundled = (source: PromptOrigin | undefined): number =>
+    source?.kind === 'merged'
+      ? source.origins.reduce((sum, item) => sum + countBundled(item), 0)
+      : source?.kind === 'user'
+        ? source.skillActivations?.length ?? 0
+        : 0;
+  const parts = message.content.slice(countBundled(origin));
+  return extractHookTextParts(parts);
+}
+
+export function extractHookTextParts(parts: readonly ContentPart[]): string {
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (part.type !== 'text') continue;
+    const stripped = removeMarkedCompressionText(part.text, part.presentation)
+      .replaceAll(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replaceAll(/<skill-loaded\b[^>]*>[\s\S]*?<\/skill-loaded>/g, '')
+      .trim();
+    if (stripped.length > 0) texts.push(stripped);
+  }
+  return texts.join('\n').trim();
+}
+
+function testAnyRegex(patterns: readonly string[], candidate: string): boolean {
+  return patterns.some((pattern) => {
+    try {
+      return compileHookMatcher(pattern).test(candidate);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function resolveToolArgCandidate(toolInput: Record<string, unknown>, path: string): string | undefined {
+  if (Object.hasOwn(toolInput, path)) {
+    return formatToolArgValue(toolInput[path]);
+  }
+  const segments = path.split('.');
+  let current: unknown = toolInput;
+  for (const segment of segments) {
+    if (!isPlainRecord(current) || !Object.hasOwn(current, segment)) return undefined;
+    current = current[segment];
+  }
+  return formatToolArgValue(current);
+}
+
+function formatToolArgValue(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return String(value);
+  return canonicalTelemetryArgs(value);
+}
+
+function matchesToolArgs(
+  toolArgMatches: Record<string, string | string[]> | undefined,
+  toolInput: Record<string, unknown> | undefined,
+): boolean {
+  if (toolArgMatches === undefined) return true;
+  if (toolInput === undefined) return false;
+  for (const [key, rawPatterns] of Object.entries(toolArgMatches)) {
+    const candidate = resolveToolArgCandidate(toolInput, key);
+    if (candidate === undefined) return false;
+    const patterns = Array.isArray(rawPatterns) ? rawPatterns : [rawPatterns];
+    if (!testAnyRegex(patterns, candidate)) return false;
+  }
+  return true;
+}
+
 export function matchesHook(rule: EffectiveHookRule, event: HookBinding & {
   readonly event: HookEventName;
   readonly tool?: string;
+  readonly toolInput?: Record<string, unknown>;
   readonly status?: string;
   readonly source?: string;
+  readonly origin?: PromptOrigin;
+  readonly channel?: string;
+  readonly prompt?: string;
   readonly delivery?: 'steering';
   readonly outcome?: string;
 }): boolean {
   const match = rule.rule.match;
   const contains = (values: readonly string[] | undefined, value: string | undefined): boolean => values === undefined || (value !== undefined && values.includes(value));
-  return rule.active && rule.rule.event === event.event &&
-    contains(rule.models, event.modelId) && contains(match.profiles, event.profileId) &&
-    contains(match.routes, event.routeId) && contains(match.executors, event.executorId) &&
-    contains(match.agentRoles, event.agentRole) && contains(match.tools, event.tool) &&
-    contains(match.statuses, event.status) && contains(match.outcomes, event.outcome) &&
-    (contains(match.sources ?? (event.event === 'prompt.submit' ? ['user'] : undefined), event.source) || (match.sources?.includes('steering') === true && event.delivery === 'steering'));
+  const originKind = event.origin?.kind;
+  const channel = event.channel ?? extractOriginChannel(event.origin);
+  const defaultSources = event.event === 'prompt.submit' && match.originKinds === undefined ? ['user'] : undefined;
+  const sourceMatched =
+    contains(match.sources ?? defaultSources, event.source) ||
+    (match.sources?.includes('steering') === true && event.delivery === 'steering');
+  if (
+    !rule.active ||
+    rule.rule.event !== event.event ||
+    !contains(rule.models, event.modelId) ||
+    !(contains(match.profiles, event.profileId) || contains(match.profiles, event.profileName)) ||
+    !contains(match.routes, event.routeId) ||
+    !contains(match.executors, event.executorId) ||
+    !contains(match.agentRoles, event.agentRole) ||
+    !contains(match.tools, event.tool) ||
+    !contains(match.statuses, event.status) ||
+    !contains(match.outcomes, event.outcome) ||
+    !contains(match.channels, channel) ||
+    !contains(match.originKinds, originKind) ||
+    !sourceMatched
+  ) {
+    return false;
+  }
+  const promptPositive = [
+    ...(match.promptRegex === undefined ? [] : [match.promptRegex]),
+    ...(match.promptMatches ?? []),
+  ];
+  if (promptPositive.length > 0 && (event.prompt === undefined || event.prompt.length === 0 || !testAnyRegex(promptPositive, event.prompt))) {
+    return false;
+  }
+  if (match.promptNotMatches !== undefined && event.prompt !== undefined && event.prompt.length > 0 && testAnyRegex(match.promptNotMatches, event.prompt)) {
+    return false;
+  }
+  const toolInputPositive = [
+    ...(match.toolInputRegex === undefined ? [] : [match.toolInputRegex]),
+    ...(match.toolInputMatches ?? []),
+  ];
+  if (toolInputPositive.length > 0 || match.toolInputNotMatches !== undefined) {
+    const serialized = event.toolInput === undefined ? undefined : canonicalTelemetryArgs(event.toolInput);
+    if (toolInputPositive.length > 0 && (serialized === undefined || !testAnyRegex(toolInputPositive, serialized))) {
+      return false;
+    }
+    if (match.toolInputNotMatches !== undefined && serialized !== undefined && testAnyRegex(match.toolInputNotMatches, serialized)) {
+      return false;
+    }
+  }
+  return matchesToolArgs(match.toolArgMatches, event.toolInput);
 }
 
 export function hookOrder(a: EffectiveHookRule, b: EffectiveHookRule): number {

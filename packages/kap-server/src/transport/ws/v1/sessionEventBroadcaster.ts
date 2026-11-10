@@ -1563,8 +1563,18 @@ export class SessionEventBroadcaster {
       event.type === 'prompt.replaced' ||
       event.type === 'prompt.submitted'
     ) {
-      const content = (event as unknown as { content: Parameters<typeof projectPromptContentParts>[0] }).content;
-      wireEvent = Object.assign({}, event, {
+      const { origin: _origin, ...withoutOrigin } = event as typeof event & { origin?: unknown };
+      const wireFields =
+        event.type === 'prompt.queued'
+          ? (() => {
+              const { userMessageId: _userMessageId, ...rest } = withoutOrigin as typeof withoutOrigin & {
+                userMessageId?: unknown;
+              };
+              return rest;
+            })()
+          : withoutOrigin;
+      const content = (wireFields as unknown as { content: Parameters<typeof projectPromptContentParts>[0] }).content;
+      wireEvent = Object.assign({}, wireFields, {
         content: projectPromptContentParts(content),
         agentId,
         sessionId,

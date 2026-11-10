@@ -1,5 +1,5 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { defineState } from '#/state/state';
@@ -15,13 +15,15 @@ import {
 import type { CompactionResult } from '#/agent/fullCompaction/types';
 import { IAgentLoopService, type AfterStepContext, type LoopErrorContext } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
-import { TurnStarted } from '#/agent/loop/turnEvents';
+import { TurnStarted, TurnStepStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import {
   IAgentPromptService,
   type PromptSubmitContext,
 } from '#/agent/prompt/prompt';
 import { PromptQueued } from '#/agent/prompt/promptService';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { TaskNotified, TaskStarted } from '#/agent/task/taskOps';
 import {
   PermissionApprovalRequested,
@@ -29,6 +31,8 @@ import {
 } from '#/agent/toolApproval/toolApprovalService';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event2 } from '#/app/event/event2';
+import { IModelService } from '#/kosong/model/model';
+import { IProviderService } from '#/kosong/provider/provider';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ResolvedToolExecutionHookContext, ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
@@ -44,8 +48,11 @@ import {
   IExternalHooksRunnerService,
   triggerBlockingResults,
 } from '../app/externalHooksRunner';
+import { resolveHookBinding } from '../internal/bindingContext';
+import { extractHookPromptText, extractHookTextParts, extractOriginChannel } from '../internal/rules';
 import type { HookMatcherValue } from '../internal/types';
 import { failureHookInput, permitsFailureContinuation, MAX_FAILURE_RECOVERIES_PER_STREAK } from '../internal/failureRecovery';
+import { ISessionHookWorkspace } from '../session/hookRules';
 import {
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
@@ -81,6 +88,11 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @ref(IAgentScopeContext) private readonly agentRef: LiveRef<IAgentScopeContext>,
+    @ref(IModelService) private readonly modelRef: LiveRef<IModelService>,
+    @ref(IProviderService) private readonly providerRef: LiveRef<IProviderService>,
+    @ref(IAgentPermissionModeService) private readonly permissionModeRef: LiveRef<IAgentPermissionModeService>,
+    @ref(ISessionHookWorkspace) private readonly workspaceRef: LiveRef<ISessionHookWorkspace>,
     @IAgentProfileService private readonly profile?: IAgentProfileService,
   ) {
     super();
@@ -106,12 +118,44 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private sessionTitle: string | undefined;
+  private activeTurnId: number | undefined;
+  private activeStep: number | undefined;
   private failureTurnId: number | undefined;
   private failureRecoveries = 0;
   private observedFailureTurnId: number | undefined;
 
   private withSessionFacts(inputData: Record<string, unknown>): Record<string, unknown> {
-    return { sessionTitle: this.sessionTitle, ...inputData };
+    const binding = resolveHookBinding({
+      profile: this.profile,
+      agent: this.agentRef.current,
+      models: this.modelRef.current,
+      providers: this.providerRef.current,
+      permissionMode: this.permissionModeRef.current,
+    });
+    const agent = this.agentRef.current;
+    const workspace = this.workspaceRef.current;
+    return {
+      sessionTitle: this.sessionTitle,
+      workspaceId: workspace?.runtime.identity.workspaceId ?? this.sessionContext.workspaceId,
+      executionTarget: workspace?.runtime.identity.runtimeId,
+      agentId: agent?.agentId,
+      parentAgentId: agent?.parentAgentId,
+      agentRole: binding.agentRole,
+      profileId: binding.profileId,
+      profileName: binding.profileName,
+      profilePath: binding.profilePath,
+      routeId: binding.routeId,
+      modelAlias: binding.modelAlias,
+      modelId: binding.remoteModelId,
+      providerId: binding.providerId,
+      providerType: binding.providerType,
+      thinkingEffort: binding.thinkingEffort,
+      executorId: binding.executorId,
+      permissionMode: binding.permissionMode,
+      turnId: this.activeTurnId,
+      step: this.activeStep,
+      ...inputData,
+    };
   }
 
   private get stopHookContinuationUsed(): boolean {
@@ -132,6 +176,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       void this.runner.fireAndForgetTrigger(event, {
         matcherValue,
         signal,
+        cwd: this.sessionContext.cwd,
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
         inputData: this.withSessionFacts(inputData),
@@ -209,9 +254,18 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     );
     this._register(
       this.eventBus.subscribe(PromptQueued, (e) => {
+        const origin = e.origin ?? USER_PROMPT_ORIGIN;
         this.fireAndForget(
           'UserPromptQueued',
-          { promptId: e.promptId, prompt: e.content, queueLength: e.queueLength },
+          {
+            promptId: e.promptId,
+            userMessageId: e.userMessageId,
+            origin,
+            channel: extractOriginChannel(origin),
+            prompt: e.content,
+            promptText: extractHookTextParts(e.content),
+            queueLength: e.queueLength,
+          },
           e.content,
         );
       }),
@@ -223,11 +277,19 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       this.eventBus.subscribe(TurnStarted, (e) => this.notifyTurnStarted(e)),
     );
     this._register(
+      this.eventBus.subscribe(TurnStepStarted, (e) => {
+        this.activeTurnId = e.turnId;
+        this.activeStep = e.step;
+      }),
+    );
+    this._register(
       this.eventBus.subscribe(TurnEnded, (e) => this.notifyTurnEnded(e)),
     );
   }
 
   private notifyTurnStarted(event: TurnStarted): void {
+    this.activeTurnId = event.turnId;
+    this.activeStep = undefined;
     this.failureTurnId = event.turnId;
     this.failureRecoveries = 0;
     this.observedFailureTurnId = undefined;
@@ -235,8 +297,11 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       'TurnStarted',
       {
         turnId: event.turnId,
+        promptId: event.promptId,
+        origin: event.origin,
         originKind: event.origin.kind,
         originName: 'name' in event.origin ? event.origin.name : undefined,
+        channel: extractOriginChannel(event.origin),
         prompt: event.prompt,
       },
       event.origin.kind,
@@ -329,9 +394,11 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     const block = await this.runner.triggerBlock('PreToolUse', {
       matcherValue: ctx.toolCall.name,
       signal: ctx.signal,
+      cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({
+        turnId: ctx.turnId ?? this.activeTurnId,
         toolName: ctx.toolCall.name,
         toolInput,
         toolCallId: ctx.toolCall.id,
@@ -347,6 +414,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     this.fireAndForget(
       isError ? 'PostToolUseFailure' : 'PostToolUse',
       {
+        turnId: ctx.turnId ?? this.activeTurnId,
         toolName: ctx.toolCall.name,
         toolInput: isPlainRecord(ctx.args) ? ctx.args : {},
         toolCallId: ctx.toolCall.id,
@@ -361,17 +429,30 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   private async runPromptSubmitHook(
     ctx: PromptSubmitContext,
   ): Promise<boolean> {
-    if ((ctx.promptMessage.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return false;
+    const origin = ctx.promptMessage.origin ?? USER_PROMPT_ORIGIN;
+    if (origin.kind !== 'user') return false;
 
     const signal = new AbortController().signal;
     const input = ctx.promptMessage.content;
+    const promptId = ctx.promptId ?? ctx.promptMessage.id;
+    const userMessageId = ctx.userMessageId ?? ctx.promptMessage.id;
+    const promptText = extractHookPromptText(ctx.promptMessage);
     signal.throwIfAborted();
     const results = await triggerBlockingResults(this.runner, 'UserPromptSubmit', {
       matcherValue: input,
       signal,
+      cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
-      inputData: this.withSessionFacts({ prompt: input, isSteer: ctx.isSteer }),
+      inputData: this.withSessionFacts({
+        promptId,
+        userMessageId,
+        origin,
+        channel: extractOriginChannel(origin),
+        prompt: input,
+        promptText: promptText.length > 0 ? promptText : undefined,
+        isSteer: ctx.isSteer,
+      }),
     });
     signal.throwIfAborted();
 
@@ -407,11 +488,12 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
   private notifyTurnEnded(event: TurnEnded): void {
     this.stopHookContinuationUsed = false;
+    this.activeStep = undefined;
     if (event.reason === 'failed' && event.error !== undefined && this.observedFailureTurnId !== event.turnId) {
       const payload = toKimiErrorPayload(event.error);
       this.fireAndForget('StopFailure', {
         ...failureHookInput(payload),
-        modelAlias: this.profile?.data().modelAlias,
+        modelAlias: this.profile?.data?.()?.modelAlias,
         turnId: event.turnId,
         recoverable: false,
       }, payload.name);
@@ -419,6 +501,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     if (event.reason === 'cancelled') {
       this.fireAndForget('Interrupt', { turnId: event.turnId, reason: 'cancelled' });
     }
+    this.activeTurnId = undefined;
     this.failureTurnId = undefined;
     this.failureRecoveries = 0;
     this.observedFailureTurnId = undefined;
@@ -440,11 +523,12 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       results = await this.runner.trigger('StopFailure', {
         matcherValue: payload.name,
         signal,
+        cwd: this.sessionContext.cwd,
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
         inputData: this.withSessionFacts({
           ...failureHookInput(payload),
-          modelAlias: this.profile?.data().modelAlias,
+          modelAlias: this.profile?.data?.()?.modelAlias,
           turnId: ctx.turnId,
           step: ctx.step,
           recoverable,
@@ -479,9 +563,14 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
     const block = await this.runner.triggerBlock('Stop', {
       signal: ctx.signal,
+      cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
-      inputData: this.withSessionFacts({ stopHookActive: false }),
+      inputData: this.withSessionFacts({
+        turnId: ctx.turnId,
+        step: ctx.step,
+        stopHookActive: false,
+      }),
     });
     ctx.signal.throwIfAborted();
     return block?.reason;
@@ -493,6 +582,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     await this.runner.trigger('PreCompact', {
       matcherValue: ctx.trigger,
       signal,
+      cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({

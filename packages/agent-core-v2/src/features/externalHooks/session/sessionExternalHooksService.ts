@@ -1,10 +1,12 @@
 import { Service } from '#/_base/di/service';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
-import { IHookRulesSession } from './hookRules';
+import { IHookRulesSession, ISessionHookWorkspace } from './hookRules';
 import { matchesHook } from '../internal/rules';
 import { IntervalTimer } from '#/_base/utils/timer';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IModelService } from '#/kosong/model/model';
+import { effectiveModelConfig, resolveModelProviderId } from '#/kosong/model/modelAuth';
+import { IProviderService } from '#/kosong/provider/provider';
 import {
   ISessionAgentProfileCatalog,
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -45,6 +47,8 @@ export class SessionExternalHooksService
     @IModelService private readonly models: IModelService,
     @IExternalHooksRunnerService private readonly runner: IExternalHooksRunnerService,
     @ref(IHookRulesSession) private readonly hookRules: LiveRef<IHookRulesSession>,
+    @ref(ISessionHookWorkspace) private readonly workspaceRef: LiveRef<ISessionHookWorkspace>,
+    @ref(IProviderService) private readonly providerRef: LiveRef<IProviderService>,
   ) {
     super();
     void this.metadata
@@ -110,19 +114,53 @@ export class SessionExternalHooksService
     } catch {}
   }
 
+  private sessionFacts(): Record<string, unknown> {
+    const workspace = this.workspaceRef.current;
+    return {
+      sessionTitle: this.sessionTitle,
+      workspaceId: workspace?.runtime.identity.workspaceId ?? this.context.workspaceId,
+      executionTarget: workspace?.runtime.identity.runtimeId,
+    };
+  }
+
+  private defaultModelFacts(alias: string | undefined): {
+    canonicalModelId?: string;
+    remoteModelId?: string;
+    providerId?: string;
+    providerType?: string;
+  } {
+    if (alias === undefined) return {};
+    const canonicalModelId = this.models.resolveId?.(alias) ?? alias;
+    const record = this.models.get?.(canonicalModelId) ?? this.models.get?.(alias);
+    const providerId = record === undefined ? undefined : resolveModelProviderId(record, this.providerRef.current?.getDefaultProvider?.());
+    const providerType = (providerId === undefined ? undefined : this.providerRef.current?.get?.(providerId)?.type) ?? record?.protocol;
+    const effective = record === undefined ? undefined : effectiveModelConfig(record, providerType);
+    const remoteModelId = effective === undefined ? canonicalModelId : (effective.name ?? effective.model ?? canonicalModelId);
+    return { canonicalModelId, remoteModelId, providerId, providerType };
+  }
+
   private async triggerSessionStart(source: SessionStartHookSource): Promise<void> {
+    const alias = this.models.getDefaultModel();
+    const modelFacts = this.defaultModelFacts(alias);
+    const profileName = await this.defaultProfileName();
+    const workspace = this.workspaceRef.current;
     const rules = this.hookRules.current;
     if (rules !== undefined) {
       await rules.ready;
       const snapshot = rules.snapshot();
-      const alias = this.models.getDefaultModel();
       const event = {
         schemaVersion: 2 as const, event: 'session.start' as const,
         eventId: `${this.context.sessionId}/start/${source}`, occurredAt: new Date().toISOString(),
-        sessionId: this.context.sessionId, cwd: this.context.cwd, modelAlias: alias,
+        sessionId: this.context.sessionId, sessionTitle: this.sessionTitle, cwd: this.context.cwd,
+        workspaceId: workspace?.runtime.identity.workspaceId ?? this.context.workspaceId,
+        executionTarget: workspace?.runtime.identity.runtimeId,
+        modelAlias: alias,
         reason: source === 'resume' ? 'resume' : 'new',
-        modelId: alias === undefined ? undefined : this.models.resolveId(alias),
-        profileId: await this.defaultProfileName(), configRevision: snapshot.revision,
+        modelId: modelFacts.canonicalModelId,
+        remoteModelId: modelFacts.remoteModelId,
+        providerId: modelFacts.providerId,
+        providerType: modelFacts.providerType,
+        profileId: profileName, profileName, configRevision: snapshot.revision,
         hookDepth: 0 as const, isReplay: false as const, allowedActions: ['observe'] as const,
       };
       for (const rule of snapshot.rules) {
@@ -134,10 +172,16 @@ export class SessionExternalHooksService
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
       inputData: {
+        ...this.sessionFacts(),
         source,
-        sessionTitle: this.sessionTitle,
-        model: this.models.getDefaultModel(),
-        profile: await this.defaultProfileName(),
+        model: alias,
+        modelAlias: alias,
+        modelId: modelFacts.remoteModelId,
+        providerId: modelFacts.providerId,
+        providerType: modelFacts.providerType,
+        profile: profileName,
+        profileId: profileName,
+        profileName,
       },
     });
   }
@@ -156,7 +200,7 @@ export class SessionExternalHooksService
       matcherValue: reason,
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
-      inputData: { reason, sessionTitle: this.sessionTitle },
+      inputData: { ...this.sessionFacts(), reason },
     });
   }
 
@@ -167,7 +211,7 @@ export class SessionExternalHooksService
         cwd: this.context.cwd,
         sessionId: this.context.sessionId,
         inputData: {
-          sessionTitle: this.sessionTitle,
+          ...this.sessionFacts(),
           uptimeMs: Date.now() - this.createdAt,
         },
       });
@@ -182,9 +226,9 @@ export class SessionExternalHooksService
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
       inputData: {
+        ...this.sessionFacts(),
         agentName: ctx.agentName,
         prompt: ctx.prompt,
-        sessionTitle: this.sessionTitle,
       },
     });
     ctx.signal.throwIfAborted();
@@ -196,9 +240,9 @@ export class SessionExternalHooksService
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
       inputData: {
+        ...this.sessionFacts(),
         agentName: ctx.agentName,
         response: ctx.response,
-        sessionTitle: this.sessionTitle,
       },
     });
   }

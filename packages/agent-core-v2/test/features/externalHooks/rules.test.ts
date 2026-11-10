@@ -921,4 +921,293 @@ describe('hooks v2 completed-step engine contract', () => {
     expect(budgetCompaction.isCompacting()).toBe(false);
     expect(budgetHooks).toEqual(['plugin/argon-error-recovery/early-read-summarize']);
   });
+
+  it('validates event-scoped prompt/tool matchers and preserves user arg keys through TOML round-trip', async () => {
+    expect(() => rule({ event: 'step.before', match: { promptMatches: ['调研'] } })).toThrow(/prompt\.submit/);
+    expect(() => rule({ event: 'prompt.submit', cadence: undefined, match: { toolInputMatches: ['rm -rf'] } })).toThrow(/tool\.before and tool\.after/);
+    expect(() => rule({ event: 'prompt.submit', cadence: undefined, match: { promptRegex: '[' } })).toThrow(/valid regular expression/);
+    expect(() => rule({ event: 'tool.before', cadence: undefined, action: { type: 'observe' }, match: { toolArgMatches: { command: '(' } } })).toThrow(/valid regular expression/);
+
+    const rawToml = {
+      schema_version: 2,
+      rules: [
+        {
+          id: 'research-prompt',
+          event: 'prompt.submit',
+          match: {
+            channels: ['direct', 'telegram'],
+            origin_kinds: ['user'],
+            prompt_regex: '调研|research',
+            prompt_matches: ['调研', 'deep\\s+dive'],
+            prompt_not_matches: ['无需调研', 'skip-research'],
+          },
+          action: { type: 'inject', text: 'Follow research evidence protocol.' },
+        },
+        {
+          id: 'bg-bash-audit',
+          event: 'tool.before',
+          match: {
+            tools: ['Bash'],
+            tool_input_regex: 'pnpm',
+            tool_input_matches: ['vitest|test'],
+            tool_input_not_matches: ['--watch'],
+            tool_arg_matches: {
+              run_in_background: 'true',
+              'nested_opt.snake_flag': ['alpha', 'beta'],
+            },
+          },
+          action: { type: 'observe' },
+        },
+      ],
+    };
+
+    const parsed = HooksConfigSchema.parse(hooksFromToml(rawToml));
+    expect(Array.isArray(parsed)).toBe(false);
+    if (Array.isArray(parsed)) throw new Error('expected v2');
+    expect(parsed.rules[1]?.match.toolArgMatches).toEqual({
+      run_in_background: 'true',
+      'nested_opt.snake_flag': ['alpha', 'beta'],
+    });
+
+    const roundTrippedToml = hooksToToml(parsed, undefined) as {
+      rules: Array<{ match: Record<string, unknown> }>;
+    };
+    expect(roundTrippedToml.rules[0]?.match).toMatchObject({
+      channels: ['direct', 'telegram'],
+      origin_kinds: ['user'],
+      prompt_regex: '调研|research',
+      prompt_matches: ['调研', 'deep\\s+dive'],
+      prompt_not_matches: ['无需调研', 'skip-research'],
+    });
+    expect(roundTrippedToml.rules[1]?.match['tool_arg_matches']).toEqual({
+      run_in_background: 'true',
+      'nested_opt.snake_flag': ['alpha', 'beta'],
+    });
+    expect(HooksConfigSchema.parse(hooksFromToml(roundTrippedToml))).toEqual(parsed);
+
+    const entry = await source(roundTrippedToml);
+    const loaded = await loadHookRules([entry], fs, path, () => undefined);
+    expect(loaded.diagnostics).toEqual([]);
+    expect(loaded.rules).toHaveLength(2);
+  });
+
+  it('matches prompt.submit regex/exclusion without system-reminder or skill-loaded contamination and filters channels/origins', async () => {
+    const promptRules = [
+      rule({
+        id: 'research-cue',
+        event: 'prompt.submit',
+        cadence: undefined,
+        match: {
+          channels: ['direct'],
+          promptMatches: ['调研', 'benchmark'],
+          promptNotMatches: ['跳过调研'],
+        },
+        action: { type: 'inject', text: 'Verify primary sources first.' },
+      }),
+      rule({
+        id: 'telegram-only',
+        event: 'prompt.submit',
+        cadence: undefined,
+        match: {
+          channels: ['telegram'],
+          promptRegex: '调研',
+        },
+        action: { type: 'inject', text: 'Keep reply concise for Telegram.' },
+      }),
+      rule({
+        id: 'cron-observe',
+        event: 'prompt.submit',
+        cadence: undefined,
+        match: {
+          originKinds: ['cron_job'],
+          promptMatches: ['巡检'],
+        },
+        action: { type: 'observe' },
+      }),
+    ];
+    const observed: Array<{ id: string; event: HookEvent }> = [];
+    const ctx = agentWithRules(() => snapshot(promptRules), (event, id) => {
+      observed.push({ id, event });
+    });
+    const prompt = ctx.get(IAgentPromptService);
+
+    await prompt.hooks.onBeforeSubmitPrompt.run({
+      promptId: 'p-contaminated',
+      userMessageId: 'u-contaminated',
+      promptMessage: {
+        id: 'p-contaminated',
+        role: 'user',
+        content: [
+          { type: 'text', text: '<system-reminder>内部包含调研关键词但不应命中</system-reminder>' },
+          { type: 'text', text: '<skill-loaded name="demo">需要调研的技能说明</skill-loaded>\n只改一行拼写错误' },
+        ],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      isSteer: false,
+      block: false,
+    });
+    expect(injections(ctx)).toHaveLength(0);
+
+    await prompt.hooks.onBeforeSubmitPrompt.run({
+      promptId: 'p-excluded',
+      userMessageId: 'u-excluded',
+      promptMessage: {
+        id: 'p-excluded',
+        role: 'user',
+        content: [{ type: 'text', text: '调研一下这个模块，但今天跳过调研直接看日志' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      isSteer: false,
+      block: false,
+    });
+    expect(injections(ctx)).toHaveLength(0);
+
+    await prompt.hooks.onBeforeSubmitPrompt.run({
+      promptId: 'p-direct-hit',
+      userMessageId: 'u-direct-hit',
+      promptMessage: {
+        id: 'p-direct-hit',
+        role: 'user',
+        content: [{ type: 'text', text: '请深入调研 Hook 上下文设计' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      isSteer: false,
+      block: false,
+    });
+    expect(injections(ctx)).toHaveLength(1);
+    expect(JSON.stringify(injections(ctx)[0]?.content)).toContain('Verify primary sources first.');
+
+    await prompt.hooks.onBeforeSubmitPrompt.run({
+      promptId: 'p-tg-hit',
+      userMessageId: 'u-tg-hit',
+      promptMessage: {
+        id: 'p-tg-hit',
+        role: 'user',
+        content: [{ type: 'text', text: '帮我调研一下线上状态' }],
+        toolCalls: [],
+        origin: {
+          kind: 'user',
+          im: { provider_kind: 'telegram', instance_id: 'tg-bot', chat_id: '100', sender_id: '200' },
+        },
+      },
+      isSteer: false,
+      block: false,
+    });
+    expect(injections(ctx)).toHaveLength(2);
+    expect(JSON.stringify(injections(ctx)[1]?.content)).toContain('Keep reply concise for Telegram.');
+
+    await prompt.hooks.onBeforeSubmitPrompt.run({
+      promptId: 'p-cron',
+      promptMessage: {
+        id: 'p-cron',
+        role: 'user',
+        content: [{ type: 'text', text: '每小时巡检构建状态' }],
+        toolCalls: [],
+        origin: { kind: 'cron_job', taskId: 'cron-1', taskName: 'hourly-check' },
+      },
+      isSteer: false,
+      block: false,
+    });
+    expect(observed.map((item) => item.id)).toEqual(['user/cron-observe']);
+    expect(observed[0]?.event).toMatchObject({
+      promptId: 'p-cron',
+      origin: { kind: 'cron_job', taskId: 'cron-1', taskName: 'hourly-check' },
+      prompt: '每小时巡检构建状态',
+    });
+  });
+
+  it('matches tool.before and tool.after rules against toolInput regexes, exclusions, and snake_case toolArgMatches', async () => {
+    const toolRules = [
+      rule({
+        id: 'before-bg-test',
+        event: 'tool.before',
+        cadence: undefined,
+        match: {
+          tools: ['BashFixture'],
+          toolInputMatches: ['vitest'],
+          toolInputNotMatches: ['--watch'],
+          toolArgMatches: {
+            run_in_background: '^true$',
+            'options.target_env': ['staging', 'ci'],
+          },
+        },
+        action: { type: 'observe' },
+      }),
+      rule({
+        id: 'after-rm-check',
+        event: 'tool.after',
+        cadence: undefined,
+        match: {
+          tools: ['BashFixture'],
+          statuses: ['success'],
+          toolArgMatches: {
+            command: 'pnpm\\s+test',
+          },
+        },
+        action: { type: 'observe' },
+      }),
+    ];
+    const observed: Array<{ id: string; event: HookEvent }> = [];
+    const ctx = agentWithRules(() => snapshot(toolRules), (event, id) => {
+      observed.push({ id, event });
+    });
+    ctx.get(IAgentProfileService).update({ activeToolNames: ['BashFixture'] });
+    ctx.get(IAgentToolRegistryService).register({
+      name: 'BashFixture',
+      description: 'Runs command fixture',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        approvalRule: 'BashFixture',
+        execute: async () => ({ output: 'ok' }),
+      }),
+    });
+
+    ctx.mockNextResponse(
+      {
+        type: 'function',
+        id: 'call-1',
+        name: 'BashFixture',
+        arguments: JSON.stringify({
+          command: 'pnpm vitest run',
+          run_in_background: true,
+          options: { target_env: 'ci' },
+        }),
+      },
+      {
+        type: 'function',
+        id: 'call-2',
+        name: 'BashFixture',
+        arguments: JSON.stringify({
+          command: 'pnpm vitest --watch',
+          run_in_background: true,
+          options: { target_env: 'ci' },
+        }),
+      },
+      {
+        type: 'function',
+        id: 'call-3',
+        name: 'BashFixture',
+        arguments: JSON.stringify({
+          command: 'pnpm test',
+          run_in_background: false,
+        }),
+      },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'All tool calls settled' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Run checks' }] });
+    await ctx.untilTurnEnd();
+
+    expect(observed.map((entry) => `${entry.id}:${entry.event.toolCallId}`)).toEqual([
+      'user/before-bg-test:call-1',
+      'user/after-rm-check:call-3',
+    ]);
+    expect(observed[0]?.event.toolInput).toEqual({
+      command: 'pnpm vitest run',
+      run_in_background: true,
+      options: { target_env: 'ci' },
+    });
+  });
 });

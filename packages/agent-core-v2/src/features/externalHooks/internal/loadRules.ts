@@ -74,7 +74,7 @@ export async function loadHookRules(
       const effective: EffectiveHookRule = {
         rule, id, namespace: source.namespace, path: source.path, mutable: source.mutable,
         contentHash: hookHash({ rule, text }),
-        semanticHash: hookHash({ event: rule.event, match: Object.fromEntries(Object.entries({ ...rule.match, models }).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, values]) => [key, values?.toSorted()])), cadence: rule.cadence, action: rule.action.type === 'compact' ? rule.action : rule.action.type }),
+        semanticHash: hookHash({ event: rule.event, match: normalizeSemanticMatch({ ...rule.match, models }), cadence: rule.cadence, action: rule.action.type === 'compact' ? rule.action : rule.action.type }),
         models, text, active: reason === undefined, reason,
       };
       if (rule.action.type === 'inject' && Buffer.byteLength(wrapSystemReminder(renderHookInjection(effective)), 'utf8') > HOOK_INJECTION_MAX_BYTES) {
@@ -118,4 +118,23 @@ export async function loadHookRules(
   return { sources: [...sourceStates.values()], revision: hookHash(effective.map((rule) => [rule.id, rule.contentHash, rule.reason])), rules: effective, diagnostics, watchPaths: [...watchPaths],
     disabled: disabled.filter(({ source }) => source.namespace === 'user').flatMap(({ ids }) => ids),
   };
+}
+
+function normalizeSemanticMatch(match: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(match).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      out[key] = value.toSorted();
+    } else if (typeof value === 'object' && value !== null) {
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([argKey, argVal]) => [argKey, Array.isArray(argVal) ? argVal.toSorted() : argVal]),
+      );
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
 }

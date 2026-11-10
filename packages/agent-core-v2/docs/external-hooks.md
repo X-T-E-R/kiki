@@ -1,6 +1,6 @@
 # External hooks: declarative v2
 
-The `externalHooks` Feature owns both configuration shapes. Arrays retain the legacy shell runner, regex matching, seconds-based timeout, command deduplication, parallel execution, and legacy output consumption. Version 2 is explicitly selected with `schema_version = 2`; it currently supports only `inject` and `observe`. Command, gate, block, and continue rules fail schema validation rather than reaching the legacy runner.
+The `externalHooks` Feature owns both configuration shapes. Arrays retain the legacy shell runner, regex matching, seconds-based timeout, command deduplication, parallel execution, and legacy output consumption. Version 2 is explicitly selected with `schema_version = 2`; it supports `inject`, `observe`, and `compact`. Command, gate, block, and continue rules fail schema validation rather than reaching the legacy runner.
 
 User-facing configuration and examples live in [Hooks](../../../docs/en/customization/hooks.md#declarative-rules-v2) and its [Chinese view](../../../docs/zh/customization/hooks.md#声明式规则v2). These v2 contracts are Kiki-only additions; the legacy runner is inherited and unchanged. This is declarative slice A, not script-automation slice B.
 
@@ -24,7 +24,7 @@ externalHooks
    └─ inspect() + hooks-inspect contributed command → hook.result
 ```
 
-`internal/rules.ts` owns the typed matcher and A action schema. `internal/loadRules.ts` owns source-qualified IDs, bounded file resolution and load diagnostics. Fields combine with AND; values within a field combine with OR. Model selectors compile to model configuration identities, not provider model names. Evaluation sorts by ascending priority and qualified ID. Text-only project rules still require workspace trust. Includes inherit their source namespace and enable/trust ceiling; project/plugin disables cannot target another namespace.
+`internal/rules.ts` owns the typed matcher (exact selectors plus event-scoped `prompt.submit` text regexes/exclusions, `tool.before`/`tool.after` input and per-argument regexes, and `channels`/`origin_kinds`) and A action schema; `configSection.ts` maps schema keys explicitly so user parameter keys inside `tool_arg_matches` are preserved verbatim, and `internal/bindingContext.ts` resolves live agent, profile, model, provider, executor, and permission bindings shared by `HookEvent` and script hook payloads. `internal/loadRules.ts` owns source-qualified IDs, bounded file resolution and load diagnostics. Fields combine with AND; values within a field combine with OR. Model selectors compile to model configuration identities, not provider model names. Evaluation sorts by ascending priority and qualified ID. Text-only project rules still require workspace trust. Includes inherit their source namespace and enable/trust ceiling; project/plugin disables cannot target another namespace.
 
 Sources reload on config/model/plugin changes and declared-file watch events. A current event evaluates one snapshot. Missing or invalid declarations are diagnosed before cadence evaluation. File watches are limited to actual declaration/include/text paths, including missing references; session disposal releases them while the retained Program generation keeps runtime resources alive.
 

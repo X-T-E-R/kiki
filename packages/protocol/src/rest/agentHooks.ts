@@ -3,8 +3,11 @@ import { z } from 'zod';
 export const agentHooksInspectSchema = z.object({
   revision: z.string(),
   binding: z.object({
-    executorId: z.string(), modelId: z.string().optional(), modelAlias: z.string().optional(),
-    profileId: z.string().optional(), routeId: z.string().optional(), agentRole: z.enum(['root', 'subagent']).optional(),
+    executorId: z.string(), modelId: z.string().optional(), remoteModelId: z.string().optional(),
+    modelAlias: z.string().optional(), providerId: z.string().optional(), providerType: z.string().optional(),
+    thinkingEffort: z.string().optional(), profileId: z.string().optional(), profileName: z.string().optional(),
+    profilePath: z.string().optional(), routeId: z.string().optional(), permissionMode: z.string().optional(),
+    agentRole: z.enum(['root', 'subagent']).optional(),
   }),
   sources: z.array(z.object({ namespace: z.string(), path: z.string(), status: z.enum(['loaded', 'absent', 'invalid', 'unavailable']) })),
   diagnostics: z.array(z.object({ path: z.string(), hookId: z.string().optional(), message: z.string() })),

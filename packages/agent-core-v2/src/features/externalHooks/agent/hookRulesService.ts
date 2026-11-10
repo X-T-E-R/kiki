@@ -6,9 +6,11 @@ import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
+import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { TurnEnded } from '#/agent/loop/turnOps';
@@ -21,10 +23,13 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IEventBus } from '#/app/event/eventBus';
 import { IModelService } from '#/kosong/model/model';
+import { IProviderService } from '#/kosong/provider/provider';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IHookRulesSession, ISessionHookWorkspace } from '../session/hookRules';
-import { evaluateCompactWindow, hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
+import { resolveHookBinding } from '../internal/bindingContext';
+import { evaluateCompactWindow, extractHookPromptText, extractOriginChannel, hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
 import { hookPartition, hookStateKey, HookRulesConfigured, HookStepPrepared, HookObserved, semanticRevision, type HookReceipt } from './hookState';
 import { projectHookInspection } from '../internal/inspection';
 import { IAgentHookRules } from './hookRules';
@@ -37,6 +42,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   private readonly fullCompaction: IAgentFullCompactionService;
   private readonly pendingCompactReceipts = new WeakMap<AbortController, () => void>();
   private providerRevision = '';
+  private sessionTitle?: string;
   private stepEvent?: HookEvent;
   private stepInjectionActive = false;
 
@@ -56,9 +62,20 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     @IInstantiationService instantiation: IInstantiationService,
     @IAgentExternalHooksService _externalHooks: IAgentExternalHooksService,
     @ref(ISessionHookWorkspace) private readonly workspace: LiveRef<ISessionHookWorkspace>,
+    @ref(IProviderService) private readonly providerRef: LiveRef<IProviderService>,
+    @ref(IAgentPermissionModeService) private readonly permissionModeRef: LiveRef<IAgentPermissionModeService>,
+    @ref(ISessionMetadata) private readonly sessionMetadataRef: LiveRef<ISessionMetadata>,
   ) {
     super();
     this.states.contributeState(hookStateKey);
+    const metadata = this.sessionMetadataRef.current;
+    if (metadata !== undefined) {
+      void metadata.read().then((meta) => { this.sessionTitle = meta.title; }).catch(() => undefined);
+      this._register(metadata.onDidChangeMetadata((event) => {
+        if (!event.changed.includes('title')) return;
+        void metadata.read().then((meta) => { this.sessionTitle = meta.title; }).catch(() => undefined);
+      }));
+    }
     this.context = instantiation.invokeFunction((accessor) => accessor.get(IAgentContextMemoryService));
     this.fullCompaction = instantiation.invokeFunction((accessor) => accessor.get(IAgentFullCompactionService));
     this._register(loop.hooks.onWillBeginStep.register('hook-rules', async (ctx, next) => {
@@ -118,13 +135,21 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     this._register(prompt.hooks.onBeforeSubmitPrompt.register('hook-rules', async (ctx, next) => {
       await next();
       if (ctx.block) return;
-      for (const message of ctx.messages ?? [ctx.promptMessage]) {
+      const batch = ctx.messages ?? [ctx.promptMessage];
+      for (const [index, message] of batch.entries()) {
         const origin = message.origin;
         const human = origin?.kind === 'user' || origin?.kind === 'plugin_command' || (origin?.kind === 'skill_activation' && origin.trigger === 'user-slash');
         const mailbox = origin?.kind === 'agent_message' || origin?.kind === 'peer_thread' || origin?.kind === 'bridged_peer' || origin?.kind === 'room_message';
-        const promptId = message.id ?? randomUUID();
+        const promptId = message.id ?? (index === 0 ? ctx.promptId : undefined) ?? randomUUID();
+        const userMessageId = index === 0 ? (ctx.userMessageId ?? message.id) : message.id;
+        const promptText = extractHookPromptText(message);
         const { event, snapshot } = await this.event('prompt.submit', `prompt/${promptId}`, {
-          promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
+          promptId,
+          userMessageId,
+          origin,
+          channel: extractOriginChannel(origin),
+          prompt: promptText.length > 0 ? promptText : undefined,
+          source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
           delivery: ctx.isSteer ? 'steering' : undefined,
         });
         this.applyInputRules(event, snapshot, promptId, ctx.appendMessage);
@@ -133,19 +158,25 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     const tasks = instantiation.invokeFunction((accessor) => accessor.get(IAgentTaskService));
     this._register(tasks.hooks.onWillConsumeNotification.register('hook-rules', async ({ origin, signal }, next) => {
       signal?.throwIfAborted();
-      const { event, snapshot } = await this.event('prompt.submit', `task/${origin.notificationId}`, { source: 'task' });
+      const { event, snapshot } = await this.event('prompt.submit', `task/${origin.notificationId}`, {
+        origin,
+        channel: extractOriginChannel(origin),
+        source: 'task',
+      });
       signal?.throwIfAborted();
       this.applyInputRules(event, snapshot);
       await next();
     }));
     const tools = instantiation.invokeFunction((accessor) => accessor.get(IAgentToolExecutorService));
     this._register(tools.onBeforeExecuteTool(async (ctx) => {
-      const { event, snapshot } = await this.event('tool.before', `tool/${ctx.toolCall.id}/before`, { turnId: ctx.turnId, tool: ctx.toolCall.name, toolCallId: ctx.toolCall.id });
+      const toolInput = isPlainRecord(ctx.args) ? ctx.args : {};
+      const { event, snapshot } = await this.event('tool.before', `tool/${ctx.toolCall.id}/before`, { turnId: ctx.turnId, tool: ctx.toolCall.name, toolCallId: ctx.toolCall.id, toolInput });
       this.observe(event, snapshot);
     }));
     this._register(tools.hooks.onDidExecuteTool.register('hook-rules', async (ctx, next) => {
       const status = ctx.outcome === 'vetoed' ? 'denied' : ctx.outcome === 'aborted' ? 'cancelled' : ctx.result.isError ? 'error' : 'success';
-      const { event, snapshot } = await this.event('tool.after', `tool/${ctx.toolCall.id}/after`, { turnId: ctx.turnId, tool: ctx.toolCall.name, toolCallId: ctx.toolCall.id, status });
+      const toolInput = isPlainRecord(ctx.args) ? ctx.args : {};
+      const { event, snapshot } = await this.event('tool.after', `tool/${ctx.toolCall.id}/after`, { turnId: ctx.turnId, tool: ctx.toolCall.name, toolCallId: ctx.toolCall.id, toolInput, status });
       this.observe(event, snapshot);
       await next();
     }));
@@ -169,12 +200,13 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   }
 
   private binding(): HookBinding {
-    const data = this.profile.data();
-    return {
-      modelAlias: data.modelAlias, modelId: data.modelAlias === undefined ? undefined : this.models.resolveId(data.modelAlias),
-      profileId: data.profileDefinitionId ?? data.profileName, routeId: data.routeId,
-      executorId: data.executorId ?? 'native', agentRole: this.agent.parentAgentId === undefined ? 'root' : 'subagent',
-    };
+    return resolveHookBinding({
+      profile: this.profile,
+      agent: this.agent,
+      models: this.models,
+      providers: this.providerRef.current,
+      permissionMode: this.permissionModeRef.current,
+    });
   }
 
   private async event(name: HookEventName, eventId: string, fields: Partial<HookEvent> = {}): Promise<{ event: HookEvent; snapshot: HookRulesSnapshot }> {
@@ -183,12 +215,25 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     const live = this.binding();
     const step = this.stepEvent;
     const binding: HookBinding = step !== undefined && (name === 'tool.before' || name === 'tool.after') ? {
-      modelAlias: step.modelAlias, modelId: step.modelId, profileId: step.profileId, routeId: step.routeId, executorId: step.executorId, agentRole: step.agentRole,
+      modelAlias: step.modelAlias,
+      modelId: step.modelId,
+      remoteModelId: step.remoteModelId,
+      providerId: step.providerId,
+      providerType: step.providerType,
+      thinkingEffort: step.thinkingEffort,
+      profileId: step.profileId,
+      profileName: step.profileName,
+      profilePath: step.profilePath,
+      routeId: step.routeId,
+      executorId: step.executorId,
+      permissionMode: step.permissionMode,
+      agentRole: step.agentRole,
     } : live;
     const event: HookEvent = {
       schemaVersion: 2, event: name, eventId, occurredAt: new Date().toISOString(),
-      sessionId: this.session.sessionId, agentId: this.agent.agentId, parentAgentId: this.agent.parentAgentId,
-      cwd: this.session.cwd, workspaceId: this.workspace.current?.runtime.identity.workspaceId,
+      sessionId: this.session.sessionId, sessionTitle: this.sessionTitle,
+      agentId: this.agent.agentId, parentAgentId: this.agent.parentAgentId,
+      cwd: this.session.cwd, workspaceId: this.workspace.current?.runtime.identity.workspaceId ?? this.session.workspaceId,
       executionTarget: this.workspace.current?.runtime.identity.runtimeId,
       configRevision: snapshot.revision, bindingRevision: hookHash(binding),
       ...binding, hookDepth: 0, isReplay: false,

@@ -39,8 +39,9 @@ type SchemaIssue = NonNullable<ReturnType<typeof hookRuleConfigSchema.safeParse>
 
 function draftIssues(issues: readonly SchemaIssue[], prefix: readonly (string | number)[], ref: RuleRef | null, actionType?: string): DraftIssue[] {
   return issues.flatMap((issue) => {
-    if (issue.code === 'invalid_union' && issue.path[0] === 'action' && (actionType === 'inject' || actionType === 'observe')) {
-      return draftIssues(issue.errors[actionType === 'inject' ? 0 : 1] ?? [], [...prefix, 'action'], ref);
+    if (issue.code === 'invalid_union' && issue.path[0] === 'action' && (actionType === 'inject' || actionType === 'observe' || actionType === 'compact')) {
+      const branchIndex = actionType === 'inject' ? 0 : actionType === 'observe' ? 1 : 2;
+      return draftIssues(issue.errors[branchIndex] ?? [], [...prefix, 'action'], ref);
     }
     const paths = issue.code === 'unrecognized_keys'
       ? issue.keys.map((key) => [...issue.path, key]) : [issue.path];
@@ -171,4 +172,37 @@ export function formatSelectorLines(selectors: readonly string[]): string {
 
 export function parseSelectorLines(text: string): readonly string[] {
   return [...new Set(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== ''))];
+}
+
+export function formatToolArgMatchesLines(record: Record<string, string | string[]> | undefined): string {
+  if (record === undefined) return '';
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    const patterns = Array.isArray(value) ? value : [value];
+    for (const pattern of patterns) {
+      lines.push(`${key} = ${pattern}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+export function parseToolArgMatchesLines(text: string): Record<string, string | string[]> | undefined {
+  const grouped = new Map<string, string[]>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '') continue;
+    const eqIndex = line.indexOf('=');
+    const key = (eqIndex < 0 ? line : line.slice(0, eqIndex)).trim();
+    const pattern = eqIndex < 0 ? '' : line.slice(eqIndex + 1).trim();
+    if (key === '') continue;
+    const existing = grouped.get(key) ?? [];
+    if (!existing.includes(pattern)) existing.push(pattern);
+    grouped.set(key, existing);
+  }
+  if (grouped.size === 0) return undefined;
+  const out: Record<string, string | string[]> = {};
+  for (const [key, patterns] of grouped.entries()) {
+    out[key] = patterns.length === 1 ? patterns[0]! : patterns;
+  }
+  return out;
 }

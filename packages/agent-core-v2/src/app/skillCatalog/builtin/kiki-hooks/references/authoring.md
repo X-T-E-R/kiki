@@ -51,8 +51,8 @@ type = "observe"
 
 这两个示例是独立文件；合并时只保留一个 `[hooks]`，追加各自的规则。
 
-- `inject` 只用于 `step.before` 或 `prompt.submit`；`observe` 支持这两个事件，以及 `step.after`、`tool.before`、`tool.after`、`turn.stopping`、`turn.after`、`session.start`。节拍只用于 step 事件。
-- `prompt.submit` 默认仅匹配用户来源；确实需要任务、邮件或插话来源时才添加 `match.sources`。其他匹配字段使用精确值，字段之间同时满足，同一字段内任一值命中即可。限制模型、profile 或 route 时先确认本机实际绑定，模型别名不得凭空编造。
+- `inject` 只用于 `step.before` 或 `prompt.submit`；`observe` 支持这两个事件，以及 `step.after`、`tool.before`、`tool.after`、`turn.stopping`、`turn.after`、`session.start`；`compact` 用于 `step.before` 或 `step.after`。节拍只用于 step 事件。
+- `prompt.submit` 默认仅匹配用户来源；确实需要任务、邮件或插话来源时才添加 `match.sources`，或用 `match.origin_kinds`（如 `["cron_job"]`）与 `match.channels`（如 `["direct"]`、`["telegram"]`）按来源和渠道过滤。在 `prompt.submit` 上可用 `prompt_regex` / `prompt_matches` 与 `prompt_not_matches` 对用户消息纯文本做正则匹配与反向排除（系统注入的 `<system-reminder>` 与 `<skill-loaded>` 会自动剥离）；在 `tool.before` / `tool.after` 上可用 `tool_input_regex` / `tool_input_matches`、`tool_input_not_matches` 或 `[hooks.rules.match.tool_arg_matches]`（如 `run_in_background = "^true$"`）按工具入参匹配。其他匹配字段使用精确值，字段之间同时满足，同一字段内任一值命中即可。限制模型、profile 或 route 时先确认本机实际绑定，模型别名不得凭空编造。
 - 用户、项目、插件的规则叠加执行；同一来源不要重复 ID。小的 priority 先执行，没有「模型规则覆盖 profile 规则」的替换关系。
 - `text_file` 与 `text` 二选一；`files` 可包含其他 v2 文件。当前 loader 只收相对路径，以声明文件为起点，真实路径仍须留在来源范围内；绝对路径、目录外共享文件或符号链接逃逸不能加载。这是当前版本限制，已规划的自由路径支持尚未落地，不绕过检查。
 - 注入文本连同包装后的 UTF-8 总大小须在 8 KiB 内，指导不替换系统提示。超限或空文本按诊断缩短，不拆成大量规则绕开限额。

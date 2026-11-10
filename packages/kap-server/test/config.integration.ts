@@ -33,7 +33,8 @@ describe('hooks config schema parity', () => {
       { schemaVersion: 2 },
       { schemaVersion: 2, enabled: false, disabled: [''], files: [' '], rules: [rule], legacy: [legacy] },
       { schemaVersion: 2, rules: [{ ...rule, action: { type: 'inject', textFile: 'guidance/example.txt' }, cadence: { everyCompletedSteps: 3 } }] },
-      { schemaVersion: 2, rules: [{ ...rule, event: 'prompt.submit' }] },
+      { schemaVersion: 2, rules: [{ ...rule, event: 'prompt.submit', match: { channels: ['direct'], originKinds: ['user'], promptRegex: '调研', promptMatches: ['调研', 'research'], promptNotMatches: ['skip'] } }] },
+      { schemaVersion: 2, rules: [{ id: 'tool-check', event: 'tool.before', match: { tools: ['Bash'], toolInputRegex: 'vitest', toolInputMatches: ['test'], toolInputNotMatches: ['--watch'], toolArgMatches: { run_in_background: 'true', 'opts.target_env': ['ci', 'local'] } }, action: { type: 'observe' } }] },
       ...['prompt.submit', 'step.before', 'step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after'].map((event) => ({ schemaVersion: 2, rules: [{ ...rule, event, action: { type: 'observe' } }] })),
     ];
     const invalidRules = [
@@ -41,6 +42,10 @@ describe('hooks config schema parity', () => {
       { ...rule, extra: true }, { ...rule, match: { unknown: [] } }, { ...rule, match: { models: [] } },
       { ...rule, match: { profiles: [''] } }, { ...rule, match: { agentRoles: ['child'] } },
       { ...rule, match: { statuses: ['unknown'] } }, { ...rule, match: { sources: ['unknown'] } }, { ...rule, match: { outcomes: ['unknown'] } },
+      { ...rule, match: { promptMatches: ['调研'] } }, { ...rule, event: 'prompt.submit', match: { promptRegex: '[' } },
+      { ...rule, event: 'prompt.submit', match: { toolInputMatches: ['rm -rf'] } },
+      { id: 'bad-arg', event: 'tool.before', match: { toolArgMatches: {} }, action: { type: 'observe' } },
+      { id: 'bad-arg-re', event: 'tool.before', match: { toolArgMatches: { run_in_background: '[' } }, action: { type: 'observe' } },
       { ...rule, cadence: { everyCompletedSteps: 0 } }, { ...rule, cadence: { everyCompletedSteps: 1.5 } },
       { ...rule, cadence: { everyCompletedSteps: 1, counterScope: 'session' } }, { ...rule, cadence: { everyCompletedSteps: 1, partitionBy: 'profile' } },
       { ...rule, event: 'prompt.submit', cadence: { everyCompletedSteps: 1 } },
@@ -397,9 +402,23 @@ type = "observe"
 [[hooks.rules]]
 id = "greeting"
 event = "prompt.submit"
+[hooks.rules.match]
+channels = ["direct", "telegram"]
+prompt_matches = ["调研"]
+prompt_not_matches = ["跳过"]
 [hooks.rules.action]
 type = "inject"
 text = "Example guidance"
+[[hooks.rules]]
+id = "bg-bash"
+event = "tool.before"
+[hooks.rules.match]
+tools = ["Bash"]
+tool_input_matches = ["vitest"]
+[hooks.rules.match.tool_arg_matches]
+run_in_background = "true"
+[hooks.rules.action]
+type = "observe"
 [[hooks.legacy]]
 event = "SessionStart"
 command = ${JSON.stringify(command)}
@@ -414,7 +433,8 @@ timeout = 600
           match: { models: ['example/model'], profiles: ['example'], routes: ['native'], executors: ['native'], agentRoles: ['root'], tools: ['Read'], statuses: ['success'], sources: ['user'], outcomes: ['completed'] },
           cadence: { everyCompletedSteps: 3, counterScope: 'turn', partitionBy: 'model' }, action: { type: 'inject', textFile: 'guidance/example.txt' } },
         { id: 'audit', event: 'turn.after', priority: 200, enabled: false, match: {}, action: { type: 'observe' } },
-        { id: 'greeting', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Example guidance' } },
+        { id: 'greeting', event: 'prompt.submit', priority: 100, enabled: true, match: { channels: ['direct', 'telegram'], promptMatches: ['调研'], promptNotMatches: ['跳过'] }, action: { type: 'inject', text: 'Example guidance' } },
+        { id: 'bg-bash', event: 'tool.before', priority: 100, enabled: true, match: { tools: ['Bash'], toolInputMatches: ['vitest'], toolArgMatches: { run_in_background: 'true' } }, action: { type: 'observe' } },
       ],
     };
     const before = await readFile(join(home as string, 'config.toml'), 'utf8');
@@ -428,6 +448,8 @@ timeout = 600
     expect(stored).toContain('text_file');
     expect(stored).toContain('every_completed_steps');
     expect(stored).toContain('agent_roles');
+    expect(stored).toContain('prompt_matches');
+    expect(stored).toContain('run_in_background');
     await server!.close();
     server = undefined;
     await boot();

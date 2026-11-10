@@ -415,6 +415,79 @@ describe('hooks settings (dual shape)', () => {
     expect(eventTrigger().textContent).toContain('On prompt submit');
     expect(editor('declarative').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Remember the goal');
   });
+
+  it('edits prompt regex/exclusion and tool argument matchers in the declarative rule form without losing fields', async () => {
+    await mount();
+    await click('Add rule');
+    const decl = editor('declarative');
+    await change(decl.querySelector<HTMLTextAreaElement>('textarea')!, 'Check primary sources first.');
+    const matchToggle = decl.querySelector<HTMLButtonElement>('[data-hook-field="match"] > button')!;
+    await act(async () => { matchToggle.click(); });
+    await flush();
+
+    const fieldTextarea = (scope: Element, labelText: string) => {
+      const label = [...scope.querySelectorAll('label')].find((item) => item.textContent === labelText);
+      expect(label, labelText).toBeTruthy();
+      const target = document.getElementById(label!.htmlFor) as HTMLTextAreaElement | null;
+      expect(target, labelText).toBeTruthy();
+      return target!;
+    };
+
+    await change(fieldTextarea(decl, 'Prompt matches (regex)'), '调研\nresearch');
+    await change(fieldTextarea(decl, 'Prompt excludes (regex)'), '跳过调研');
+    await change(fieldTextarea(decl, 'Channels'), 'direct\ntelegram');
+    await saveActions();
+
+    expect(config.hooks).toEqual({
+      schemaVersion: 2,
+      enabled: true,
+      disabled: [],
+      files: [],
+      rules: [
+        {
+          id: 'rule-1',
+          event: 'prompt.submit',
+          priority: 100,
+          enabled: true,
+          match: {
+            promptMatches: ['调研', 'research'],
+            promptNotMatches: ['跳过调研'],
+            channels: ['direct', 'telegram'],
+          },
+          action: { type: 'inject', text: 'Check primary sources first.' },
+        },
+      ],
+      legacy: [],
+    });
+
+    await click('Add rule');
+    const toolDecl = editor('declarative');
+    await act(async () => { toolDecl.querySelector<HTMLButtonElement>('[data-hook-action="observe"]')!.click(); });
+    await flush();
+    const eventTrigger = toolDecl.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!;
+    await pickOption(eventTrigger, 'Before a tool runs');
+    const toolMatchToggle = toolDecl.querySelector<HTMLButtonElement>('[data-hook-field="match"] > button')!;
+    await act(async () => { toolMatchToggle.click(); });
+    await flush();
+
+    await change(fieldTextarea(toolDecl, 'Tools'), 'Bash');
+    await change(fieldTextarea(toolDecl, 'Tool input matches (regex)'), 'vitest');
+    await change(fieldTextarea(toolDecl, 'Tool argument matches (key = regex)'), 'run_in_background = ^true$');
+    await saveActions();
+
+    expect((config.hooks as { rules: unknown[] }).rules[1]).toEqual({
+      id: 'rule-2',
+      event: 'tool.before',
+      priority: 100,
+      enabled: true,
+      match: {
+        tools: ['Bash'],
+        toolInputMatches: ['vitest'],
+        toolArgMatches: { run_in_background: '^true$' },
+      },
+      action: { type: 'observe' },
+    });
+  });
 });
 
 describe('handing a new hook rule to Kiki', () => {

@@ -47,19 +47,62 @@ export function legacyHooks(value: HooksConfig | undefined): readonly HookDefCon
 
 export const hooksFromToml = (rawSnake: unknown): unknown => {
   if (Array.isArray(rawSnake)) return rawSnake.map((hook) => isPlainObject(hook) ? transformPlainObject(hook) : hook);
-  return mapKeys(rawSnake, false);
+  return mapHooksV2Keys(rawSnake, false);
 };
 
 export const hooksToToml = (value: unknown, _rawSnake: unknown): unknown => {
   if (Array.isArray(value)) return value.map((hook) => isPlainObject(hook) ? plainObjectToToml(hook, undefined) : hook);
-  return mapKeys(value, true);
+  return mapHooksV2Keys(value, true);
 };
 
-function mapKeys(value: unknown, toToml: boolean): unknown {
-  if (Array.isArray(value)) return value.map((entry) => mapKeys(entry, toToml));
+function convertRecordKeys(value: Record<string, unknown>, toToml: boolean): Record<string, unknown> {
+  return toToml ? plainObjectToToml(value, undefined) : transformPlainObject(value);
+}
+
+function mapHookMatchKeys(value: unknown, toToml: boolean): unknown {
   if (!isPlainObject(value)) return value;
-  const converted = toToml ? plainObjectToToml(value, undefined) : transformPlainObject(value);
-  return Object.fromEntries(Object.entries(converted).map(([key, entry]) => [key, mapKeys(entry, toToml)]));
+  const converted = convertRecordKeys(value, toToml);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(converted)) {
+    if ((key === 'toolArgMatches' || key === 'tool_arg_matches') && isPlainObject(entry)) {
+      out[key] = structuredClone(entry);
+    } else {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+function mapHookRuleKeys(value: unknown, toToml: boolean): unknown {
+  if (!isPlainObject(value)) return value;
+  const converted = convertRecordKeys(value, toToml);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(converted)) {
+    if (key === 'match') {
+      out[key] = mapHookMatchKeys(entry, toToml);
+    } else if ((key === 'cadence' || key === 'action') && isPlainObject(entry)) {
+      out[key] = convertRecordKeys(entry, toToml);
+    } else {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+function mapHooksV2Keys(value: unknown, toToml: boolean): unknown {
+  if (!isPlainObject(value)) return value;
+  const converted = convertRecordKeys(value, toToml);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(converted)) {
+    if (key === 'rules' && Array.isArray(entry)) {
+      out[key] = entry.map((rule) => mapHookRuleKeys(rule, toToml));
+    } else if (key === 'legacy' && Array.isArray(entry)) {
+      out[key] = entry.map((hook) => isPlainObject(hook) ? convertRecordKeys(hook, toToml) : hook);
+    } else {
+      out[key] = entry;
+    }
+  }
+  return out;
 }
 
 registerConfigSection(HOOKS_SECTION, HooksConfigSchema, {

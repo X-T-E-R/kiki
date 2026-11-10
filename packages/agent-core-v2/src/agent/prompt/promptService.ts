@@ -202,6 +202,8 @@ const appendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']
 
 export interface PromptQueuedPayload {
   readonly promptId: string;
+  readonly userMessageId?: string;
+  readonly origin?: PromptOrigin;
   readonly content: ContentPart[];
   readonly queueLength: number;
   readonly appendTiming?: DeferredAppendTiming;
@@ -2282,7 +2284,7 @@ export class AgentPromptService implements IAgentPromptService {
         content: this.repairKnownTruncatedImages(item.id, item.message.content) }));
       const rerouted = mergeSteerMessages(batch);
       const hookMessages: ContextMessage[] = [];
-      const blocked = await this.blockedByHook(rerouted, true, message => hookMessages.push(message), batch.map(item => item.message));
+      const blocked = await this.blockedByHook(rerouted, true, message => hookMessages.push(message), batch.map(item => item.message), selected[0]?.id, selected[0]?.userMessageId);
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry || this.loop.status().activeTurnId !== targetTurnId) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       if (blocked) {
         for (const item of selected) {
@@ -2784,7 +2786,7 @@ export class AgentPromptService implements IAgentPromptService {
       controller.signal.throwIfAborted();
       const hookMessages: ContextMessage[] = [];
       const blocked = await this.timePhase(item.id, 'prompt_launch_hooks', () =>
-        this.blockedByHook(message, false, message => hookMessages.push(message), batch.map(item => item.message)));
+        this.blockedByHook(message, false, message => hookMessages.push(message), batch.map(item => item.message), item.id, item.userMessageId));
       controller.signal.throwIfAborted();
       if (selected.slice(1).some(candidate => !this.pending.includes(candidate))) {
         this.pending.splice(Math.min(candidateIndex, this.pending.length), 0, item);
@@ -3111,8 +3113,8 @@ export class AgentPromptService implements IAgentPromptService {
     await materializePromptDaemonRefs(message.content, { files, mediaStore });
   }
 
-  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean, appendMessage?: (message: ContextMessage) => void, messages?: readonly ContextMessage[]): Promise<boolean> {
-    const ctx = { promptMessage, messages, isSteer, appendMessage, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
+  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean, appendMessage?: (message: ContextMessage) => void, messages?: readonly ContextMessage[], promptId?: string, userMessageId?: string): Promise<boolean> {
+    const ctx = { promptId, userMessageId, promptMessage, messages, isSteer, appendMessage, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
   }
   private get fullCompaction(): IAgentFullCompactionService {
     if (this.fullCompactionService === undefined) {
@@ -3169,6 +3171,8 @@ export class AgentPromptService implements IAgentPromptService {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptQueued({
       promptId: record.id,
+      userMessageId: record.userMessageId,
+      origin: record.message.origin,
       content: stripBundledSkillBlocks(record.message),
       queueLength: this.pending.length,
       appendTiming: record.appendTiming,

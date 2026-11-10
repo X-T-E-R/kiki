@@ -84,6 +84,11 @@ import {
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IModelService } from '#/kosong/model/model';
+import { IProviderService } from '#/kosong/provider/provider';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionHookWorkspace } from '#/features/externalHooks/session/hookRules';
+import { TurnStepStarted } from '#/agent/loop/turnEvents';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
@@ -427,7 +432,16 @@ describe('IExternalHooksRunnerService integration', () => {
       const second = makeAfterStep(signal);
       await loop.hooks.onDidFinishStep.run(second);
       expect(loop.hasPendingRequests()).toBe(false);
-      expect(stopInputs).toEqual([{ stopHookActive: false }]);
+      expect(stopInputs).toEqual([
+        expect.objectContaining({
+          workspaceId: 'workspace-1',
+          agentId: 'test-agent',
+          agentRole: 'root',
+          turnId: 0,
+          step: 1,
+          stopHookActive: false,
+        }),
+      ]);
 
       eventBus.publish(
         new TurnEnded({
@@ -453,7 +467,24 @@ describe('IExternalHooksRunnerService integration', () => {
         { kind: 'system_trigger', name: 'stop_hook' },
         { kind: 'system_trigger', name: 'stop_hook' },
       ]);
-      expect(stopInputs).toEqual([{ stopHookActive: false }, { stopHookActive: false }]);
+      expect(stopInputs).toEqual([
+        expect.objectContaining({
+          workspaceId: 'workspace-1',
+          agentId: 'test-agent',
+          agentRole: 'root',
+          turnId: 0,
+          step: 1,
+          stopHookActive: false,
+        }),
+        expect.objectContaining({
+          workspaceId: 'workspace-1',
+          agentId: 'test-agent',
+          agentRole: 'root',
+          turnId: 0,
+          step: 1,
+          stopHookActive: false,
+        }),
+      ]);
     } finally {
       await ix?.dispose();
       await disposables.dispose();
@@ -538,16 +569,22 @@ describe('IExternalHooksRunnerService integration', () => {
         {
           event: 'PermissionRequest',
           matcherValue: 'Bash',
-          inputData: requestContext,
+          inputData: expect.objectContaining({
+            ...requestContext,
+            workspaceId: 'workspace-1',
+            agentRole: 'root',
+          }),
         },
         {
           event: 'PermissionResult',
           matcherValue: 'Bash',
-          inputData: {
+          inputData: expect.objectContaining({
             ...requestContext,
+            workspaceId: 'workspace-1',
+            agentRole: 'root',
             decision: 'approved',
             selectedLabel: 'Approve once',
-          },
+          }),
         },
       ]);
     } finally {
@@ -646,7 +683,11 @@ describe('IExternalHooksRunnerService integration', () => {
         {
           event: 'SubagentStart',
           matcherValue: 'coder',
-          inputData: { agentName: 'coder', prompt: 'Fix the bug' },
+          inputData: expect.objectContaining({
+            workspaceId: 'workspace-1',
+            agentName: 'coder',
+            prompt: 'Fix the bug',
+          }),
           signal: expect.any(AbortSignal),
         },
       ]);
@@ -657,7 +698,11 @@ describe('IExternalHooksRunnerService integration', () => {
         {
           event: 'SubagentStop',
           matcherValue: 'coder',
-          inputData: { agentName: 'coder', response: 'Bug fixed' },
+          inputData: expect.objectContaining({
+            workspaceId: 'workspace-1',
+            agentName: 'coder',
+            response: 'Bug fixed',
+          }),
         },
       ]);
     } finally {
@@ -1417,36 +1462,51 @@ describe('IExternalHooksRunnerService integration', () => {
         {
           event: 'TurnStarted',
           matcherValue: 'system_trigger',
-          inputData: {
+          inputData: expect.objectContaining({
             sessionTitle: 'My Session',
+            workspaceId: 'workspace-1',
+            agentId: 'test-agent',
+            agentRole: 'root',
             turnId: 3,
+            origin: { kind: 'system_trigger', name: 'goal' },
             originKind: 'system_trigger',
             originName: 'goal',
             prompt: undefined,
-          },
+          }),
         },
         {
           event: 'UserPromptQueued',
           matcherValue: queuedContent,
-          inputData: {
+          inputData: expect.objectContaining({
             sessionTitle: 'My Session',
+            workspaceId: 'workspace-1',
+            agentId: 'test-agent',
+            agentRole: 'root',
+            turnId: 3,
             promptId: 'p1',
+            origin: { kind: 'user' },
+            channel: 'direct',
             prompt: queuedContent,
+            promptText: 'later',
             queueLength: 2,
-          },
+          }),
         },
         {
           event: 'TaskStarted',
           matcherValue: 'process',
-          inputData: {
+          inputData: expect.objectContaining({
             sessionTitle: 'My Session',
+            workspaceId: 'workspace-1',
+            agentId: 'test-agent',
+            agentRole: 'root',
+            turnId: 3,
             taskId: 'task-1',
             kind: 'process',
             description: 'npm test',
             status: 'running',
             detached: undefined,
             startedAt: 123,
-          },
+          }),
         },
       ]);
     } finally {
@@ -1657,6 +1717,277 @@ describe('IExternalHooksRunnerService integration', () => {
         event: 'UserPromptSubmit',
       });
       expect(context.observableMessages).toEqual([context.messages[0]]);
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+    }
+  });
+
+  it('delivers rich agent, model, workspace, turn, and origin context to script hooks on stdin JSON', async () => {
+    const disposables = new DisposableStore();
+    let ix: TestInstantiationService | undefined;
+    const logPath = hookLogPath();
+    const recordCommand = stdinScript([
+      'const fs = require("node:fs");',
+      `fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(parsed) + "\\n");`,
+    ].join('\n'));
+    try {
+      const context = stubContextMemory();
+      const loop = stubLoopWithHooks();
+      const promptHooks = createHooks<
+        { onBeforeSubmitPrompt: PromptSubmitContext },
+        'onBeforeSubmitPrompt'
+      >(['onBeforeSubmitPrompt']);
+      const sessionCtx = {
+        ...stubSessionContext(),
+        cwd: process.cwd(),
+      };
+      const engine = makeHookRunner([
+        { event: 'UserPromptSubmit', command: recordCommand, timeout: 5 },
+        { event: 'UserPromptQueued', command: recordCommand, timeout: 5 },
+        { event: 'TurnStarted', command: recordCommand, timeout: 5 },
+        { event: 'PreToolUse', command: recordCommand, timeout: 5 },
+        { event: 'PostToolUse', command: recordCommand, timeout: 5 },
+        { event: 'Stop', command: recordCommand, timeout: 5 },
+      ]);
+
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/rich-context-hooks');
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.defineInstance(ISessionContext, sessionCtx);
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata('Deep Research Session'));
+          reg.defineInstance(
+            IAgentScopeContext,
+            makeAgentScopeContext({
+              agentId: 'agent-sub-7',
+              agentScope: 'agents/agent-sub-7',
+              parentAgentId: 'main',
+            }),
+          );
+          reg.defineInstance(ISessionHookWorkspace, {
+            _serviceBrand: undefined,
+            root: process.cwd(),
+            trust: {} as ISessionHookWorkspace['trust'],
+            runtime: {
+              identity: { workspaceId: 'ws-research', runtimeId: 'local', generation: '1' },
+            } as ISessionHookWorkspace['runtime'],
+          });
+          reg.definePartialInstance(IModelService, {
+            resolveId: (alias: string) => (alias === 'research-alias' ? 'canonical/research-model' : alias),
+            get: (id: string) =>
+              id === 'canonical/research-model'
+                ? ({ provider: 'example-provider', model: 'vendor-wire-v2', maxContextSize: 200_000 } as ReturnType<IModelService['get']>)
+                : undefined,
+          });
+          reg.definePartialInstance(IProviderService, {
+            getDefaultProvider: () => 'example-provider',
+            get: (id: string) =>
+              id === 'example-provider'
+                ? ({ type: 'openai_responses' } as ReturnType<IProviderService['get']>)
+                : undefined,
+          });
+          reg.definePartialInstance(IAgentPermissionModeService, {
+            mode: 'auto',
+          });
+          reg.definePartialInstance(IAgentProfileService, {
+            data: () => ({
+              modelAlias: 'research-alias',
+              profileName: 'researcher',
+              profileDefinitionId: 'builtin/researcher',
+              routeId: 'deep-route',
+              thinkingLevel: 'high',
+              effectiveThinkingLevel: 'high',
+              executorId: 'native',
+              boundProfile: { sourcePath: '/profiles/researcher.md' },
+            } as ReturnType<IAgentProfileService['data']>),
+            getEffectiveThinkingLevel: () => 'high',
+            getRecipeScriptHooks: async () => [],
+          });
+          reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
+          reg.defineInstance(IAgentContextMemoryService, context);
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, {
+            truncateForModel: async (input) => input.result,
+          });
+          reg.defineInstance(IAgentLoopService, loop);
+          reg.define(IEventBus, EventBusService);
+          reg.definePartialInstance(IAgentPromptService, { hooks: promptHooks });
+          reg.definePartialInstance(IAgentPermissionGate, {});
+          reg.definePartialInstance(IAgentFullCompactionService, {
+            hooks: createHooks(['onWillCompact']),
+          });
+          reg.definePartialInstance(IAgentTaskService, {});
+        },
+      });
+      ix.set(IExternalHooksRunnerService, engine);
+      ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+      ix.get(IAgentExternalHooksService);
+      await flushMicrotasks();
+
+      const eventBus = ix.get(IEventBus);
+      const executor = ix.get(IAgentToolExecutorService);
+      ix.get(IAgentToolRegistryService).register({
+        name: 'ReadFixture',
+        description: 'Reads fixture',
+        parameters: { type: 'object' },
+        resolveExecution: () => ({
+          approvalRule: 'ReadFixture',
+          accesses: ToolAccesses.none(),
+          execute: async () => ({ output: 'fixture content' }),
+        }),
+      });
+
+      const imOrigin: ContextMessage['origin'] = {
+        kind: 'user',
+        im: {
+          provider_kind: 'telegram',
+          instance_id: 'tg-1',
+          chat_id: 'chat-42',
+          sender_id: 'user-9',
+        },
+      };
+      const promptMessage: ContextMessage = {
+        id: 'msg-submit-1',
+        role: 'user',
+        content: [
+          { type: 'text', text: '<system-reminder>internal context</system-reminder>' },
+          { type: 'text', text: '请帮我调研 Hook 参数' },
+        ],
+        toolCalls: [],
+        origin: imOrigin,
+      };
+      await promptHooks.onBeforeSubmitPrompt.run({
+        promptId: 'prompt-submit-1',
+        userMessageId: 'user-msg-1',
+        promptMessage,
+        isSteer: false,
+        block: false,
+      });
+
+      eventBus.publish(
+        new TurnStarted({
+          turnId: 12,
+          promptId: 'prompt-submit-1',
+          origin: imOrigin,
+          prompt: '请帮我调研 Hook 参数',
+        }),
+      );
+      eventBus.publish(
+        new TurnStepStarted({
+          turnId: 12,
+          step: 3,
+          stepId: 'step-12-3',
+        }),
+      );
+      eventBus.publish(
+        new PromptQueued({
+          promptId: 'prompt-queued-2',
+          userMessageId: 'user-msg-2',
+          origin: imOrigin,
+          content: [{ type: 'text', text: '补充调研范围' }],
+          queueLength: 1,
+        }),
+      );
+
+      const signal = new AbortController().signal;
+      for await (const _item of executor.execute(
+        [{ id: 'call-read-1', name: 'ReadFixture', type: 'function', arguments: '{"path":"README.md"}' }],
+        { turnId: 12, signal },
+      )) {
+        void _item;
+      }
+
+      await loop.hooks.onDidFinishStep.run({
+        ...makeAfterStep(signal),
+        turnId: 12,
+        step: 3,
+      });
+
+      for (let attempt = 0; attempt < 40 && readHookLog(logPath).length < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const entries = readHookLog(logPath);
+      expect(entries).toHaveLength(6);
+      const byEvent = new Map(entries.map((entry) => [entry['hook_event_name'], entry]));
+
+      const expectedCommon = {
+        session_id: 'session-1',
+        session_title: 'Deep Research Session',
+        workspace_id: 'ws-research',
+        execution_target: 'local',
+        cwd: process.cwd(),
+        agent_id: 'agent-sub-7',
+        parent_agent_id: 'main',
+        agent_role: 'subagent',
+        profile_id: 'builtin/researcher',
+        profile_name: 'researcher',
+        profile_path: '/profiles/researcher.md',
+        route_id: 'deep-route',
+        model_alias: 'research-alias',
+        model_id: 'vendor-wire-v2',
+        provider_id: 'example-provider',
+        provider_type: 'openai_responses',
+        thinking_effort: 'high',
+        executor_id: 'native',
+        permission_mode: 'auto',
+      };
+
+      expect(byEvent.get('UserPromptSubmit')).toMatchObject({
+        ...expectedCommon,
+        prompt_id: 'prompt-submit-1',
+        user_message_id: 'user-msg-1',
+        origin: imOrigin,
+        channel: 'telegram',
+        prompt_text: '请帮我调研 Hook 参数',
+        is_steer: false,
+      });
+      expect(byEvent.get('TurnStarted')).toMatchObject({
+        ...expectedCommon,
+        turn_id: 12,
+        prompt_id: 'prompt-submit-1',
+        origin: imOrigin,
+        origin_kind: 'user',
+        channel: 'telegram',
+      });
+      expect(byEvent.get('UserPromptQueued')).toMatchObject({
+        ...expectedCommon,
+        turn_id: 12,
+        step: 3,
+        prompt_id: 'prompt-queued-2',
+        user_message_id: 'user-msg-2',
+        origin: imOrigin,
+        channel: 'telegram',
+        prompt_text: '补充调研范围',
+      });
+      expect(byEvent.get('PreToolUse')).toMatchObject({
+        ...expectedCommon,
+        turn_id: 12,
+        step: 3,
+        tool_name: 'ReadFixture',
+        tool_call_id: 'call-read-1',
+        tool_input: { path: 'README.md' },
+      });
+      expect(byEvent.get('PostToolUse')).toMatchObject({
+        ...expectedCommon,
+        turn_id: 12,
+        step: 3,
+        tool_name: 'ReadFixture',
+        tool_call_id: 'call-read-1',
+        tool_input: { path: 'README.md' },
+        tool_output: 'fixture content',
+      });
+      expect(byEvent.get('Stop')).toMatchObject({
+        ...expectedCommon,
+        turn_id: 12,
+        step: 3,
+        stop_hook_active: false,
+      });
     } finally {
       await ix?.dispose();
       await disposables.dispose();

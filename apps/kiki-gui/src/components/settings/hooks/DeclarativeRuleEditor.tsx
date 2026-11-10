@@ -11,15 +11,24 @@ import { SearchableSelect } from '../../SearchableSelect';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
 import { SettingField, SettingsBox } from '../fields';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
-import { formatSelectorLines, parseSelectorLines, type DraftIssue } from './hooksDraft';
+import {
+  formatSelectorLines,
+  formatToolArgMatchesLines,
+  parseSelectorLines,
+  parseToolArgMatchesLines,
+  type DraftIssue,
+} from './hooksDraft';
 
 type DeclarativeHookEvent = (typeof DECLARATIVE_HOOK_EVENTS)[number];
 type HookMatchConfig = HookRuleConfig['match'];
 
 const STEP_EVENTS: ReadonlySet<DeclarativeHookEvent> = new Set(['step.before', 'step.after']);
 const INJECT_EVENTS: ReadonlySet<DeclarativeHookEvent> = new Set(['prompt.submit', 'step.before']);
+const TOOL_EVENTS: ReadonlySet<DeclarativeHookEvent> = new Set(['tool.before', 'tool.after']);
 
-const TEXT_MATCH_FIELDS = ['models', 'profiles', 'routes', 'executors', 'tools'] as const;
+const COMMON_TEXT_MATCH_FIELDS = ['models', 'profiles', 'routes', 'executors', 'tools', 'channels', 'originKinds'] as const;
+const PROMPT_TEXT_MATCH_FIELDS = ['promptMatches', 'promptNotMatches'] as const;
+const TOOL_TEXT_MATCH_FIELDS = ['toolInputMatches', 'toolInputNotMatches'] as const;
 const ENUM_MATCH_FIELDS = {
   agentRoles: ['root', 'subagent'],
   statuses: ['success', 'error', 'cancelled', 'denied'],
@@ -27,8 +36,30 @@ const ENUM_MATCH_FIELDS = {
   outcomes: ['completed', 'cancelled', 'failed', 'blocked'],
 } as const;
 
-type TextMatchField = (typeof TEXT_MATCH_FIELDS)[number];
+type ArrayMatchField =
+  | (typeof COMMON_TEXT_MATCH_FIELDS)[number]
+  | (typeof PROMPT_TEXT_MATCH_FIELDS)[number]
+  | (typeof TOOL_TEXT_MATCH_FIELDS)[number];
 type EnumMatchField = keyof typeof ENUM_MATCH_FIELDS;
+
+function visibleCommonTextFields(event: DeclarativeHookEvent, match: HookMatchConfig, issues: readonly DraftIssue[]): readonly (typeof COMMON_TEXT_MATCH_FIELDS)[number][] {
+  return COMMON_TEXT_MATCH_FIELDS.filter((field) => {
+    if ((match[field]?.length ?? 0) > 0 || issues.some((issue) => issue.field === field)) return true;
+    if (field === 'tools') return TOOL_EVENTS.has(event);
+    if (field === 'channels' || field === 'originKinds') return event === 'prompt.submit';
+    return true;
+  });
+}
+
+function visibleEnumFields(event: DeclarativeHookEvent, match: HookMatchConfig, issues: readonly DraftIssue[]): readonly EnumMatchField[] {
+  return (Object.keys(ENUM_MATCH_FIELDS) as EnumMatchField[]).filter((field) => {
+    if ((match[field]?.length ?? 0) > 0 || issues.some((issue) => issue.field === field)) return true;
+    if (field === 'statuses') return event === 'tool.after';
+    if (field === 'sources') return event === 'prompt.submit';
+    if (field === 'outcomes') return event === 'step.after' || event === 'turn.after';
+    return true;
+  });
+}
 
 function fieldIssue(issues: readonly DraftIssue[], field: string): string | null {
   return issues.find((issue) => issue.field === field)?.message ?? null;
@@ -69,8 +100,30 @@ function MatchChips<T extends string>({ values, options, onChange, ariaLabel }: 
   );
 }
 
+function hasPromptMatchers(match: HookMatchConfig): boolean {
+  return (
+    (match.promptRegex !== undefined && match.promptRegex !== '') ||
+    (match.promptMatches?.length ?? 0) > 0 ||
+    (match.promptNotMatches?.length ?? 0) > 0
+  );
+}
+
+function hasToolMatchers(match: HookMatchConfig): boolean {
+  return (
+    (match.toolInputRegex !== undefined && match.toolInputRegex !== '') ||
+    (match.toolInputMatches?.length ?? 0) > 0 ||
+    (match.toolInputNotMatches?.length ?? 0) > 0 ||
+    (match.toolArgMatches !== undefined && Object.keys(match.toolArgMatches).length > 0)
+  );
+}
+
 function hasConditions(match: HookMatchConfig): boolean {
-  return Object.values(match).some((value) => Array.isArray(value) && value.length > 0);
+  return Object.values(match).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return value.length > 0;
+    if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;
+    return false;
+  });
 }
 
 /**
@@ -94,19 +147,39 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
   const { t } = useI18n();
   const idPrefix = useId();
   const inject = rule.action.type === 'inject' ? rule.action : null;
+  const compact = rule.action.type === 'compact' ? rule.action : null;
   const [lastText, setLastText] = useState(inject?.text ?? '');
   const [lastFile, setLastFile] = useState(inject?.textFile ?? '');
+  const [toolArgsDraft, setToolArgsDraft] = useState(() => formatToolArgMatchesLines(rule.match.toolArgMatches));
   const [matchOpen, setMatchOpen] = useState(() => hasConditions(rule.match));
 
   const cadenceAllowed = STEP_EVENTS.has(rule.event);
+  const promptMatchActive = hasPromptMatchers(rule.match);
+  const toolMatchActive = hasToolMatchers(rule.match);
+
   const eventOptions = DECLARATIVE_HOOK_EVENTS.map((event) => {
     const injectBlock = inject !== null && !INJECT_EVENTS.has(event);
+    const compactBlock = compact !== null && !STEP_EVENTS.has(event);
     const cadenceBlock = rule.cadence !== undefined && !STEP_EVENTS.has(event);
+    const promptMatchBlock = promptMatchActive && event !== 'prompt.submit';
+    const toolMatchBlock = toolMatchActive && !TOOL_EVENTS.has(event);
+    const disabled = injectBlock || compactBlock || cadenceBlock || promptMatchBlock || toolMatchBlock;
+    const hint = injectBlock
+      ? t('st.hooks.eventInjectOnly')
+      : compactBlock
+        ? t('st.hooks.eventCompactOnly')
+        : cadenceBlock
+          ? t('st.hooks.eventCadenceOnly')
+          : promptMatchBlock
+            ? t('st.hooks.eventPromptMatchOnly')
+            : toolMatchBlock
+              ? t('st.hooks.eventToolMatchOnly')
+              : undefined;
     return {
       value: event as string,
       label: t(`st.hooks.v2event.${event}`),
-      disabled: injectBlock || cadenceBlock,
-      hint: injectBlock ? t('st.hooks.eventInjectOnly') : cadenceBlock ? t('st.hooks.eventCadenceOnly') : undefined,
+      disabled,
+      hint,
     };
   });
 
@@ -119,8 +192,6 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
     const action = lastFile !== '' && lastText === ''
       ? { type: 'inject' as const, textFile: lastFile }
       : { type: 'inject' as const, text: lastText };
-    // Inject only exists on prompt.submit and step.before — move the event
-    // with the action instead of leaving an unsavable combination.
     onChange(INJECT_EVENTS.has(rule.event) ? { action } : { action, event: 'prompt.submit' });
   };
 
@@ -139,17 +210,69 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
     }
   };
 
-  const setMatch = (field: TextMatchField | EnumMatchField, next: readonly string[]) => {
+  const setMatch = (field: ArrayMatchField | EnumMatchField, next: readonly string[]) => {
     const match: Record<string, unknown> = { ...rule.match };
     if (next.length === 0) delete match[field];
     else match[field] = [...next];
     onChange({ match: match as HookMatchConfig });
   };
 
-  const MATCH_FIELDS: readonly (TextMatchField | EnumMatchField)[] = [...TEXT_MATCH_FIELDS, ...(Object.keys(ENUM_MATCH_FIELDS) as EnumMatchField[])];
-  const activeConditions = MATCH_FIELDS
-    .filter((field) => (rule.match[field]?.length ?? 0) > 0)
-    .map((field) => t(`st.hooks.match.${field}`));
+  const setStringMatch = (field: 'promptRegex' | 'toolInputRegex', value: string) => {
+    const match: Record<string, unknown> = { ...rule.match };
+    const trimmed = value.trim();
+    if (trimmed === '') delete match[field];
+    else match[field] = trimmed;
+    onChange({ match: match as HookMatchConfig });
+  };
+
+  const setToolArgMatches = (text: string) => {
+    setToolArgsDraft(text);
+    const match: Record<string, unknown> = { ...rule.match };
+    const parsed = parseToolArgMatchesLines(text);
+    if (parsed === undefined) delete match['toolArgMatches'];
+    else match['toolArgMatches'] = parsed;
+    onChange({ match: match as HookMatchConfig });
+  };
+
+  const showPromptFields =
+    rule.event === 'prompt.submit' ||
+    promptMatchActive ||
+    issues.some((issue) => issue.field === 'promptRegex' || issue.field === 'promptMatches' || issue.field === 'promptNotMatches');
+
+  const showToolFields =
+    TOOL_EVENTS.has(rule.event) ||
+    toolMatchActive ||
+    issues.some((issue) => issue.field === 'toolInputRegex' || issue.field === 'toolInputMatches' || issue.field === 'toolInputNotMatches' || issue.field === 'toolArgMatches');
+
+  const activeConditions: string[] = [];
+  if (rule.match.promptRegex) activeConditions.push(t('st.hooks.match.promptRegex'));
+  for (const field of PROMPT_TEXT_MATCH_FIELDS) {
+    if ((rule.match[field]?.length ?? 0) > 0) activeConditions.push(t(`st.hooks.match.${field}`));
+  }
+  if (rule.match.toolInputRegex) activeConditions.push(t('st.hooks.match.toolInputRegex'));
+  for (const field of TOOL_TEXT_MATCH_FIELDS) {
+    if ((rule.match[field]?.length ?? 0) > 0) activeConditions.push(t(`st.hooks.match.${field}`));
+  }
+  if (rule.match.toolArgMatches && Object.keys(rule.match.toolArgMatches).length > 0) {
+    activeConditions.push(t('st.hooks.match.toolArgMatches'));
+  }
+  for (const field of COMMON_TEXT_MATCH_FIELDS) {
+    if ((rule.match[field]?.length ?? 0) > 0) activeConditions.push(t(`st.hooks.match.${field}`));
+  }
+  for (const field of Object.keys(ENUM_MATCH_FIELDS) as EnumMatchField[]) {
+    if ((rule.match[field]?.length ?? 0) > 0) activeConditions.push(t(`st.hooks.match.${field}`));
+  }
+
+  const actionSegmentChoices = compact !== null
+    ? [
+        { value: 'inject' as const, label: t('st.hooks.action.inject') },
+        { value: 'observe' as const, label: t('st.hooks.action.observe') },
+        { value: 'compact' as const, label: t('st.hooks.action.compact') },
+      ]
+    : [
+        { value: 'inject' as const, label: t('st.hooks.action.inject') },
+        { value: 'observe' as const, label: t('st.hooks.action.observe') },
+      ];
 
   return (
     <div className="space-y-4" data-hook-editor="declarative">
@@ -198,17 +321,14 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
 
         <SettingField label={t('st.hooks.action')} layout="stack">
           <div className="space-y-2">
-            <SettingsSegmented<'inject' | 'observe'>
+            <SettingsSegmented<'inject' | 'observe' | 'compact'>
               ariaLabel={t('st.hooks.action')}
               dataAttr="data-hook-action"
               value={rule.action.type}
-              onChange={(next) => setAction(next)}
-              choices={[
-                { value: 'inject', label: t('st.hooks.action.inject') },
-                { value: 'observe', label: t('st.hooks.action.observe') },
-              ]}
+              onChange={(next) => { if (next !== 'compact') setAction(next); }}
+              choices={actionSegmentChoices}
             />
-            {rule.action.type === 'observe' ? <Hint>{t('st.hooks.observeHint')}</Hint> : (
+            {rule.action.type === 'observe' ? <Hint>{t('st.hooks.observeHint')}</Hint> : rule.action.type === 'compact' ? <Hint>{t('st.hooks.compactHint')}</Hint> : (
               <div className="space-y-2 pt-1">
                 <SettingsSegmented<'text' | 'file'>
                   ariaLabel={t('st.hooks.injectText')}
@@ -323,12 +443,93 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
         {matchOpen ? (
           <div className="space-y-3 pt-2">
             <Hint>{t('st.hooks.matchLine')}</Hint>
-            {TEXT_MATCH_FIELDS.map((field) => (
+            {showPromptFields ? (
+              <>
+                {rule.match.promptRegex !== undefined || fieldIssue(issues, 'promptRegex') !== null ? (
+                  <div className="grid gap-1">
+                    <label htmlFor={`${idPrefix}-match-promptRegex`} className={FORM_LABEL}>{t('st.hooks.match.promptRegex')}</label>
+                    <input
+                      id={`${idPrefix}-match-promptRegex`}
+                      className={`${INPUT} font-mono`}
+                      value={rule.match.promptRegex ?? ''}
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-invalid={fieldIssue(issues, 'promptRegex') !== null}
+                      onChange={(event) => setStringMatch('promptRegex', event.target.value)}
+                    />
+                    <IssueLine field="promptRegex" issues={issues} />
+                  </div>
+                ) : null}
+                {PROMPT_TEXT_MATCH_FIELDS.map((field) => (
+                  <div key={field} className="grid gap-1">
+                    <label htmlFor={`${idPrefix}-match-${field}`} className={FORM_LABEL}>{t(`st.hooks.match.${field}`)}</label>
+                    <textarea
+                      id={`${idPrefix}-match-${field}`}
+                      rows={2}
+                      className={`${INPUT} font-mono`}
+                      value={formatSelectorLines(rule.match[field] ?? [])}
+                      aria-invalid={fieldIssue(issues, field) !== null}
+                      onChange={(event) => setMatch(field, parseSelectorLines(event.target.value))}
+                    />
+                    <IssueLine field={field} issues={issues} />
+                  </div>
+                ))}
+              </>
+            ) : null}
+            {showToolFields ? (
+              <>
+                {rule.match.toolInputRegex !== undefined || fieldIssue(issues, 'toolInputRegex') !== null ? (
+                  <div className="grid gap-1">
+                    <label htmlFor={`${idPrefix}-match-toolInputRegex`} className={FORM_LABEL}>{t('st.hooks.match.toolInputRegex')}</label>
+                    <input
+                      id={`${idPrefix}-match-toolInputRegex`}
+                      className={`${INPUT} font-mono`}
+                      value={rule.match.toolInputRegex ?? ''}
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-invalid={fieldIssue(issues, 'toolInputRegex') !== null}
+                      onChange={(event) => setStringMatch('toolInputRegex', event.target.value)}
+                    />
+                    <IssueLine field="toolInputRegex" issues={issues} />
+                  </div>
+                ) : null}
+                {TOOL_TEXT_MATCH_FIELDS.map((field) => (
+                  <div key={field} className="grid gap-1">
+                    <label htmlFor={`${idPrefix}-match-${field}`} className={FORM_LABEL}>{t(`st.hooks.match.${field}`)}</label>
+                    <textarea
+                      id={`${idPrefix}-match-${field}`}
+                      rows={2}
+                      className={`${INPUT} font-mono`}
+                      value={formatSelectorLines(rule.match[field] ?? [])}
+                      aria-invalid={fieldIssue(issues, field) !== null}
+                      onChange={(event) => setMatch(field, parseSelectorLines(event.target.value))}
+                    />
+                    <IssueLine field={field} issues={issues} />
+                  </div>
+                ))}
+                <div className="grid gap-1">
+                  <label htmlFor={`${idPrefix}-match-toolArgMatches`} className={FORM_LABEL}>{t('st.hooks.match.toolArgMatches')}</label>
+                  <textarea
+                    id={`${idPrefix}-match-toolArgMatches`}
+                    rows={2}
+                    className={`${INPUT} font-mono`}
+                    value={toolArgsDraft}
+                    placeholder="run_in_background = true"
+                    aria-invalid={fieldIssue(issues, 'toolArgMatches') !== null}
+                    onChange={(event) => setToolArgMatches(event.target.value)}
+                    onBlur={() => setToolArgsDraft(formatToolArgMatchesLines(rule.match.toolArgMatches))}
+                  />
+                  <IssueLine field="toolArgMatches" issues={issues} />
+                </div>
+              </>
+            ) : null}
+            {visibleCommonTextFields(rule.event, rule.match, issues).map((field) => (
               <div key={field} className="grid gap-1">
                 <label htmlFor={`${idPrefix}-match-${field}`} className={FORM_LABEL}>{t(`st.hooks.match.${field}`)}</label>
                 <textarea
                   id={`${idPrefix}-match-${field}`}
-                  className={`${INPUT} min-h-8 font-mono`}
+                  rows={2}
+                  className={`${INPUT} font-mono`}
                   value={formatSelectorLines(rule.match[field] ?? [])}
                   aria-invalid={fieldIssue(issues, field) !== null}
                   onChange={(event) => setMatch(field, parseSelectorLines(event.target.value))}
@@ -336,7 +537,7 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
                 <IssueLine field={field} issues={issues} />
               </div>
             ))}
-            {(Object.keys(ENUM_MATCH_FIELDS) as EnumMatchField[]).map((field) => (
+            {visibleEnumFields(rule.event, rule.match, issues).map((field) => (
               <div key={field} className="grid gap-1">
                 <span className={FORM_LABEL}>{t(`st.hooks.match.${field}`)}</span>
                 <MatchChips

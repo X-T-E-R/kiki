@@ -32,7 +32,11 @@ export default {
           event: 'prompt.submit',
           priority: 120,
           enabled: true,
-          match: {},
+          match: {
+            channels: ['direct', 'telegram'],
+            promptMatches: ['commit', '调研'],
+            promptNotMatches: ['skip-hooks'],
+          },
           action: { type: 'inject', textFile: 'hooks/commit-style.md' },
         },
         {
@@ -40,7 +44,11 @@ export default {
           event: 'tool.after',
           priority: 100,
           enabled: false,
-          match: { statuses: ['error'] },
+          match: {
+            tools: ['Bash'],
+            statuses: ['error'],
+            toolArgMatches: { run_in_background: '^true$' },
+          },
           action: { type: 'observe' },
         },
       ],

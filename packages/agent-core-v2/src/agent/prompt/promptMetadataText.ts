@@ -41,7 +41,7 @@ function imageCompressionRanges(text: string, presentation: unknown): MetadataTe
   return merged;
 }
 
-function removeMarkedCompressionText(text: string, presentation: unknown): string {
+export function removeMarkedCompressionText(text: string, presentation: unknown): string {
   const ranges = imageCompressionRanges(text, presentation);
   if (ranges.length === 0) return text;
   let cursor = 0;
