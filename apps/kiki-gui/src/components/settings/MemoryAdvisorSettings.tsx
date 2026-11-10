@@ -26,6 +26,7 @@ type WriteSlot = 'switch' | 'remove';
 
 /** Quiet text action, the same weight as the summary row's 更改. */
 const LINK = 'text-[12px] font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:text-ink-faint disabled:no-underline';
+const SUBTLE_DESTRUCTIVE = 'text-[12px] text-ink-faint transition-colors hover:text-danger hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 disabled:no-underline';
 
 /**
  * Memory Advisor: what it is for in one line, the on switch, and which
@@ -60,17 +61,22 @@ export function MemoryAdvisorSettingsCard() {
   const probe = useMutation({
     mutationFn: (destination: string) => client.probeMemoryAdvisor(destination),
   });
-  useEffect(() => { probe.reset(); }, [status?.destination]); // eslint-disable-line react-hooks/exhaustive-deps
+  const activeModel = status?.source_status?.model ?? status?.model;
+  const activeProtocol = status?.source_status?.protocol ?? status?.protocol ?? config?.selector?.protocol;
+  useEffect(() => { probe.reset(); }, [status?.destination, activeModel, activeProtocol, config?.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const destination = status?.destination;
-  const memoryOff = status?.state === 'disabled' || data?.effective_enabled === false;
+  const budgetZero = data?.effective_enabled !== false && data?.budget === 0;
+  const memoryOff = !budgetZero && (status?.state === 'disabled' || data?.effective_enabled === false);
+  const statusLabel = budgetZero && view.kind === 'problem' && status?.state === 'disabled'
+    ? t('memory.advisor.state.budgetZero')
+    : t(view.stateKey);
   const reasonKey = memoryAdvisorReasonKey(status?.reason);
   const feedback: Feedback = advisor.query.isError
     ? { tone: 'error', text: t('memory.advisor.loadFailed', { detail: errorText(locale, advisor.query.error) }) }
     : advisor.save.isError
       ? { tone: 'error', text: t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) }) }
       : null;
-  const headerModel = status?.source_status?.model ?? status?.model;
   const dot = view.tone === 'ok' ? 'ok' : view.tone === 'danger' ? 'error' : view.tone === 'caution' ? 'waiting' : 'off';
 
   return (
@@ -86,47 +92,45 @@ export function MemoryAdvisorSettingsCard() {
         <div className="space-y-1">
           <p data-memory-advisor-status={view.kind} role="status" className="flex items-center gap-2 text-[13px] text-ink">
             {dot === 'off' ? null : <span aria-hidden className="inline-flex"><StatusDot state={dot} label="" /></span>}
-            <span>{t(view.stateKey)}</span>
-            {headerModel !== undefined && view.on ? <span className="truncate font-mono text-[12px] text-ink-faint">{headerModel}</span> : null}
+            <span>{statusLabel}</span>
           </p>
           {memoryOff ? <p data-memory-advisor-memory-off className="max-w-[62ch] text-[12px] leading-snug text-amber-ink">{t('memory.advisor.memoryOff')}</p>
-            : view.kind === 'problem' && reasonKey !== undefined ? <p data-memory-advisor-reason className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(reasonKey)}</p>
-              : <Hint>{t('memory.advisor.switchHint')}</Hint>}
+            : budgetZero ? <p data-memory-advisor-budget-zero className="max-w-[62ch] text-[12px] leading-snug text-amber-ink">{t('memory.advisor.budgetZero')}</p>
+              : view.kind === 'problem' && reasonKey !== undefined ? <p data-memory-advisor-reason className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(reasonKey)}</p>
+                : <Hint>{t('memory.advisor.switchHint')}</Hint>}
         </div>
 
         <SettingsGroup title={t('memory.advisor.selectorGroup')}>
-          <DecisionSourceSummary consumer="memory" source={config?.source} status={status?.source_status}
-            legacy={config?.source === undefined && config?.selector !== undefined
-              ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined} />
-          {/* Secondary actions stay quiet, one line under the source they act
-              on: the test link, and removal as plain danger text that asks
-              in place instead of opening a dialog. */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            {destination !== undefined ? (
-              <button type="button" data-memory-advisor-test className={LINK} disabled={probe.isPending}
-                onClick={() => { probe.mutate(destination); }}>
-                {probe.isPending ? t('memory.advisor.testing') : t('memory.advisor.test')}
-              </button>
+          <div className="space-y-2">
+            <DecisionSourceSummary consumer="memory" source={config?.source} status={status?.source_status}
+              legacy={config?.source === undefined && config?.selector !== undefined
+                ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined} />
+            {destination !== undefined || config !== undefined ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                {destination !== undefined ? (
+                  <button type="button" data-memory-advisor-test className={LINK} disabled={probe.isPending}
+                    onClick={() => { probe.mutate(destination); }}>
+                    {probe.isPending ? t('memory.advisor.testing') : t('memory.advisor.test')}
+                  </button>
+                ) : null}
+                {config !== undefined ? (
+                  <button type="button" data-memory-advisor-remove className={SUBTLE_DESTRUCTIVE} disabled={busy}
+                    onClick={() => {
+                      const before = config;
+                      void write('remove', { advisor: null }).then((ok) => {
+                        if (!ok) return;
+                        pushUndoToast({
+                          text: t('memory.advisor.removedUndo'),
+                          undoFailedText: t('toast.undoFailed'),
+                          undo: async () => { await advisor.save.mutateAsync({ advisor: before }); },
+                        });
+                      });
+                    }}>{t('memory.advisor.remove')}</button>
+                ) : null}
+              </div>
             ) : null}
-            {config !== undefined ? (
-              <button type="button" data-memory-advisor-remove className={`${LINK} text-danger`} disabled={busy}
-                onClick={() => {
-                  // Removal writes only the advisor block, which is in hand, so
-                  // the toast's Undo writes the captured config back.
-                  const before = config;
-                  void write('remove', { advisor: null }).then((ok) => {
-                    if (!ok) return;
-                    pushUndoToast({
-                      text: t('memory.advisor.removedUndo'),
-                      undoFailedText: t('toast.undoFailed'),
-                      undo: async () => { await advisor.save.mutateAsync({ advisor: before }); },
-                    });
-                  });
-                }}>{t('memory.advisor.remove')}</button>
-            ) : null}
+            <ProbeFeedback result={probe.data} error={probe.error} pending={probe.isPending} />
           </div>
-          <ProbeFeedback result={probe.data} error={probe.error} pending={probe.isPending} />
-
         </SettingsGroup>
 
         <AdvancedDetails summary={t('memory.advisor.advanced')} data-memory-advisor-advanced>

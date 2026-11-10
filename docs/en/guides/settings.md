@@ -97,7 +97,7 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 Above the tabs, the **New sessions use** bar and the star on a model row set the global model for new sessions. The titles, fast model, and subagents listed beside it open **Defaults**, where you change them.
 
-In **Providers & accounts → Decision services**, add Jev, a compatible System One service or a reranker using the existing connection credentials. These services need a remote model name, not a chat-model entry. In **Defaults → Who decides**, choose a decision connection or existing chat model independently for permission review and Memory Advisor. A connection keeps its protocol, endpoint and key; each job can override its remote model name. Pair-score services are offered only for memory ranking. See [decision connections](../configuration/providers.md#decision-connections).
+In **Providers & accounts → Decision models**, choose a decision connection or existing chat model independently for permission review and Memory Advisor, and add Jev, a compatible System One service or a reranker under **Services** using the existing connection credentials. Decision services need a remote model name, not a chat-model entry. A connection keeps its protocol, endpoint and key; each job can override its remote model name. Pair-score services are offered only for memory ranking. See [decision connections](../configuration/providers.md#decision-connections).
 
 In the model editor, change request settings and prompt text, then **Save** once. The identity selector keeps **Shared**, **Main agent**, and **Delegated agent** drafts separate; saving includes edits made in all three. Advanced fields edit the same model rather than a second form. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. **Remove model** is at the bottom of the editor and asks for confirmation.
 
@@ -126,7 +126,7 @@ The dialog's three choices are saved rather than repeated each time: **Remind me
 
 ## Memory
 
-**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Defaults → Who decides** to change it. Choose a source and enable the advisor to start using it, or test the saved source with sample data. **Advanced** contains selection and request budgets and diagnostics. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the configuration and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup.
+**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Providers & accounts → Decision models** to change it. Choose a source and enable the advisor to start using it, or test the saved source with sample data. **Advanced** contains selection and request budgets and diagnostics. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the configuration and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup.
 
 ## Agents
 

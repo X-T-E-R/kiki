@@ -1733,6 +1733,8 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
     expect(resolveSettingsRoute('advanced', '#st-card-session-residency'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-residency', tab: 'runtime' });
+    expect(resolveSettingsRoute('developer', '#st-card-memory-advisor-tuning'))
+      .toEqual({ status: 'ok', section: 'memory', cardId: 'st-card-memory-advisor', tab: undefined });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
         .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });

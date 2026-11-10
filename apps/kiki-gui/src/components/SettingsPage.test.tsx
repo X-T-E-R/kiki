@@ -851,6 +851,25 @@ describe('SettingsPage memory advisor', () => {
     expect(runtime().querySelector('[data-memory-advisor-runtime-result]')?.getAttribute('data-memory-advisor-runtime-result')).toBe('none');
     expect(runtime().textContent).toContain('No running status yet.');
   });
+
+  it('renders a single save error when Advanced is open and retries session list errors in runtime diagnostics', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    client.listSessions.mockRejectedValueOnce(new Error('sessions offline'));
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    const fold = container.querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    fold.open = true;
+    await flush();
+    expect(fold.querySelector('[data-memory-advisor-runtime-sessions-error]')?.textContent).toContain('sessions offline');
+    expect(fold.querySelector('[data-memory-advisor-runtime-empty]')).toBeNull();
+    await click(fold.querySelector('[data-memory-advisor-runtime-sessions-retry]')!);
+    await flush();
+    expect(fold.querySelector('[data-memory-advisor-runtime-session]')).not.toBeNull();
+
+    client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
+    await click(container.querySelector('#memory-advisor-enabled')!);
+    await flush();
+    expect(card(container).querySelectorAll('[role="alert"]').length).toBe(1);
+  });
 });
 
 describe('SettingsPage batch-3 leaves', () => {

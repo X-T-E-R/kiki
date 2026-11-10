@@ -2620,9 +2620,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'sessions', tab: 'runtime', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
   { section: 'sessions', tab: 'runtime', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles', 'st.agentIdentity.skipBuiltin'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
-  // Alias for the retired developer tuning card: its numbers are the advisor
-  // card's 高级 fold now, and the id stays mounted on the advisor card.
-  { section: 'memory', cardId: 'st-card-memory-advisor-tuning', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'developer', cardId: 'st-card-labs', titleKey: 'st.labs.indexTitle', keywordKeys: ['st.exp.tag'], synonyms: ['experimental features', '实验特性', '实验功能', 'flags', 'beta', 'labs'] },
   ...EXPERIMENTAL_SEARCH_ENTRIES,
   { section: 'developer', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'], synonyms: ['json', 'config', '配置文件', 'loop_control', 'background'] },
@@ -2631,7 +2628,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'agents', tab: 'profiles', cardId: 'st-card-main-agents', titleKey: 'st.agentManager.title', keywordKeys: ['st.agentManager.subagent', 'st.agentManager.new', 'st.agentManager.instructions', 'st.namedAgents.modelPin'], synonyms: ['主 agent', '子 agent', '子智能体', 'profiles', 'profile'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
   { section: 'memory', cardId: 'st-card-memory', titleKey: 'st.memory.title', keywordKeys: ['st.memory.hint', 'memory.toggle', 'st.memory.approval', 'st.memory.budget', 'st.memory.open'], synonyms: ['memory', '记忆', 'remember', '长期记忆', 'memory approval', '记忆审批'] },
-  { section: 'memory', cardId: 'st-card-memory-advisor', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.switchHint', 'memory.advisor.model', 'memory.advisor.protocol', 'memory.advisor.test', 'memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor', '记忆顾问', 'advisor', '顾问', 'selector', '记忆推荐', 'proactive memory', '主动记忆', '记忆顾问调优', 'advisor budget', '顾问参数'] },
+  { section: 'memory', cardId: 'st-card-memory-advisor', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.switchHint', 'memory.advisor.model', 'memory.advisor.protocol', 'memory.advisor.test', 'memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor', '记忆顾问', 'advisor', '顾问', 'selector', '记忆推荐', 'proactive memory', '主动记忆', 'memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'memory', cardId: 'st-card-memory-workspaces', titleKey: 'st.memory.workspaces', keywordKeys: ['memory.ws.label', 'memory.ws.follow', 'memory.ws.off'], synonyms: ['memory workspace', '工作区记忆', '记忆覆盖'] },
   { section: 'notifications', cardId: 'st-card-notify-rules', titleKey: 'st.notify.rulesTitle', keywordKeys: ['st.notify.enabled', 'st.notify.quiet', 'st.notify.viewing', 'st.notify.minWork'], synonyms: ['notification', '通知', 'do not disturb', '免打扰', 'quiet hours', 'nb-im', 'nb_im'] },
   { section: 'notifications', cardId: 'st-card-notify-scenes', titleKey: 'st.notify.matrixTitle', keywordKeys: ['st.notify.scene.work_complete', 'st.notify.scene.question_pending', 'st.notify.scenes'], synonyms: ['scene', '场景', '何时提醒', 'when to notify', 'question pending', '等待回答', 'work complete', '工作完成'] },
@@ -2792,6 +2789,8 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-models': { section: 'ai', cardId: 'st-card-providers' },
   // Who decides joined the decision services: one card holds the choice and the keys.
   'st-card-decision-judges': { section: 'ai', cardId: 'st-card-decision-connections' },
+  // Engine tuning sits in the advisor card's Advanced fold on the Memory page.
+  'st-card-memory-advisor-tuning': { section: 'memory', cardId: 'st-card-memory-advisor' },
   'st-card-sidecar': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-timeout': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-profiles': { section: 'agents', cardId: 'st-card-main-agents' },

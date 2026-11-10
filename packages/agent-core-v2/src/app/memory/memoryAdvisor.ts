@@ -318,7 +318,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
   }
   status(): MemoryAdvisorStatus {
     const configured = this.memoryConfig.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(configured, this.session.workspaceId)) return advisorStatus('disabled');
+    if (!memoryEnabled(configured, this.session.workspaceId) || configured.budget === 0) return advisorStatus('disabled');
     if (configured.advisor?.mode === 'off') return advisorStatus('off');
     if (configured.advisor === undefined || (configured.advisor.source === undefined && configured.advisor.selector === undefined))
       return advisorStatus('unconfigured', { reason: 'unconfigured' });

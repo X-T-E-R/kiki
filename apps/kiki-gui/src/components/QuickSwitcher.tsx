@@ -18,7 +18,7 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   buildSettingsSearchIndex,
-  memoryAdvisorSettingsRoute,
+  DECISION_JUDGES_ROUTE,
   searchSettings,
   settingsSectionLabels,
 } from '@kiki/session-core/settings';
@@ -49,7 +49,7 @@ export function QuickSwitcher({
   const { t, time, locale } = useI18n();
   const navigate = useGuardedNavigate();
   // The advisor switch is a command, not a page: it saves the mode and
-  // stays here. While it still needs a model it opens the settings card.
+  // stays here. While it still needs a source it opens Decision models.
   const advisor = useMemoryAdvisor();
   const advisorNeedsSetup = advisor.view.on && advisor.view.kind === 'unconfigured';
   const advisorTitle = advisor.data === undefined ? undefined
@@ -106,7 +106,7 @@ export function QuickSwitcher({
           { actionId: 'usage', title: usageActionTitle, route: '/usage' },
           { actionId: 'cron', title: t('nav.cron'), route: '/cron' },
           { actionId: 'memory', title: t('nav.memory'), route: '/memory' },
-          ...(advisorTitle === undefined ? [] : [{ actionId: ADVISOR_ACTION, title: advisorTitle, route: memoryAdvisorSettingsRoute() }]),
+          ...(advisorTitle === undefined ? [] : [{ actionId: ADVISOR_ACTION, title: advisorTitle, route: DECISION_JUDGES_ROUTE }]),
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
         ],
         settings: settingsMatches,

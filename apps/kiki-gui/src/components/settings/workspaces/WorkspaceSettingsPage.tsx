@@ -54,6 +54,7 @@ import {
 } from '../../capabilities/pluginUsage';
 import { FeedbackLine, InlineError, SavedTick, Toggle, type Feedback } from '../../controls';
 import { Icon, Spinner } from '../../icons';
+import { MEMORY_SETTINGS_PREFIX } from '../../memory/useMemoryAdvisor';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
@@ -599,7 +600,12 @@ function useMemoryOverride(workspaceId: string) {
   });
   const write = useMutation({
     mutationFn: (enabled: boolean | null) => client.patchWorkspaceMemorySettings(workspaceId, enabled),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: MEMORY_QUERY_KEY(workspaceId) }); },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: MEMORY_QUERY_KEY(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_PREFIX }),
+      ]);
+    },
   });
   return { read, write };
 }

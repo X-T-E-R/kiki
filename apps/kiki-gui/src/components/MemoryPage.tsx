@@ -229,12 +229,13 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     // The settings page's workspace card holds this workspace's own computed
     // read, and this page is the other entry that writes that field. Only this
     // workspace moved, so only this workspace's read is re-read; the global
-    // settings still are, because their `workspaces` map is what this page and
-    // the header render from.
+    // settings and advisor reads still are, because their `workspaces` map and
+    // effective status are what this page and the header render from.
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, scope!] }),
+        invalidateMemoryAdvisorReads(queryClient),
       ]);
     },
     onError: (error: unknown) => {

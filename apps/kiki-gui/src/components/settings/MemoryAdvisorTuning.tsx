@@ -8,7 +8,7 @@
 import { useState } from 'react';
 
 import type { MemorySettingsPatch } from '@kiki/protocol';
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   MEMORY_ADVISOR_DEFAULTS,
   MEMORY_ADVISOR_NUMBER_FIELDS,
@@ -31,7 +31,7 @@ const FIELD_UNIT: Readonly<Record<MemoryAdvisorNumberField, 'ms' | 'tokens' | 'c
 };
 
 import { useI18n } from '../../i18n';
-import { FeedbackLine, SaveStatus, Toggle, type Feedback } from '../controls';
+import { SaveStatus, Toggle } from '../controls';
 import type { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { MemoryAdvisorRuntime } from './MemoryAdvisorRuntime';
 import { SettingField } from './fields';
@@ -44,7 +44,7 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
   readonly workspaceId?: string;
   readonly advisor: ReturnType<typeof useMemoryAdvisor>;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [saved, ping] = useSavedTick();
   const [slot, setSlot] = useState<WriteSlot | undefined>();
 
@@ -59,11 +59,6 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
   const statusFor = (key: WriteSlot) => (slot === key ? <SaveStatus saving={advisor.save.isPending} saved={saved && !advisor.save.isError} /> : null);
   const busy = advisor.query.isPending || advisor.save.isPending;
   const pairScore = (status?.source_status?.protocol ?? config?.selector?.protocol) === 'pair_score';
-  const feedback: Feedback = advisor.query.isError
-    ? { tone: 'error', text: t('memory.advisor.loadFailed', { detail: errorText(locale, advisor.query.error) }) }
-    : advisor.save.isError
-      ? { tone: 'error', text: t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) }) }
-      : null;
 
   return (
     <div className="min-w-0 space-y-1 text-[13px] text-ink" data-memory-advisor-tuning>
@@ -121,7 +116,6 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
         </dl>
       ) : null}
       <MemoryAdvisorRuntime workspaceId={workspaceId} config={config} />
-      <FeedbackLine feedback={feedback} />
     </div>
   );
 }

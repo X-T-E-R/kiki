@@ -37,6 +37,10 @@ export function MemoryAdvisorSwitch({
   const busy = advisor.query.isPending || advisor.save.isPending;
   const readFailed = advisor.query.isError;
   const needsSetup = view.on && view.kind === 'unconfigured';
+  const budgetZero = advisor.data?.effective_enabled !== false && advisor.data?.budget === 0;
+  const stateLabel = budgetZero && view.kind === 'problem' && advisor.data?.advisor_status?.state === 'disabled'
+    ? t('memory.advisor.state.budgetZero')
+    : t(view.stateKey);
   const toggle = (on: boolean) => {
     void advisor.setOn(on).catch((error: unknown) => {
       pushToast({
@@ -79,7 +83,7 @@ export function MemoryAdvisorSwitch({
         </button>
       ) : (
         <span data-memory-advisor-state role="status" className={`truncate text-[12px] ${TONE_TEXT[view.tone]}`}>
-          {t(view.stateKey)}
+          {stateLabel}
         </span>
       )}
     </span>

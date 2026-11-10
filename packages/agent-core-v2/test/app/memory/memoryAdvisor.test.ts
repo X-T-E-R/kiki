@@ -386,6 +386,9 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     f.configure({ advisor: { ...f.settings().advisor, mode: 'off' } });
     expect(signal.aborted).toBe(true);
     expect(f.advisor.status().state).toBe('off');
+    f.configure({ budget: 0, advisor: { ...f.settings().advisor, mode: 'rank' } });
+    expect(f.advisor.status().state).toBe('disabled');
+    f.configure({ budget: 4_000, advisor: { ...f.settings().advisor, mode: 'off' } });
     gate.resolve([{ handle: 'c0', use: 'read' }]);
     await flush();
     await f.step(1, false);

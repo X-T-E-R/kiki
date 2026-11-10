@@ -9,7 +9,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -89,6 +89,11 @@ const hit = {
   score: 1,
 };
 
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-test-location>{`${location.pathname}${location.search}${location.hash}`}</span>;
+}
+
 async function mount(): Promise<void> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -100,6 +105,7 @@ async function mount(): Promise<void> {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <I18nProvider>
+            <LocationProbe />
             <QuickSwitcher sessions={sessions} onClose={() => {}} />
           </I18nProvider>
         </MemoryRouter>
@@ -212,12 +218,13 @@ describe('quick switcher memory advisor command', () => {
     expect(client.patchMemoryAdvisorSettings).toHaveBeenCalledWith({ advisor: { mode: 'off' } }, undefined);
   });
 
-  it('opens the advisor settings instead of switching when no model is chosen', async () => {
+  it('opens Decision models instead of switching when no source is chosen', async () => {
     client.getMemoryAdvisorSettings.mockResolvedValue(settings('rank'));
     await mount();
     await waitFor(() => row('Set up Memory Advisor') !== undefined, 'advisor setup command');
     await act(async () => { row('Set up Memory Advisor')!.click(); });
     await settle();
     expect(client.patchMemoryAdvisorSettings).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers#st-card-decision-connections');
   });
 });

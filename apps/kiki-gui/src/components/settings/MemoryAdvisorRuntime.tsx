@@ -60,7 +60,16 @@ export function MemoryAdvisorRuntime({ workspaceId, config }: {
     <div data-memory-advisor-runtime className="space-y-1 pt-3">
       <p className="text-[13px] font-medium text-ink">{t('memory.advisor.runtime')}</p>
       <Hint>{t('memory.advisor.runtimeHint')}</Hint>
-      {sessions.length === 0 && !sessionsQuery.isPending ? (
+      {sessionsQuery.isError && sessions.length === 0 ? (
+        <p data-memory-advisor-runtime-sessions-error className="flex flex-wrap items-center gap-x-2 py-1 text-[12px] text-danger">
+          <span>{errorText(locale, sessionsQuery.error)}</span>
+          <button type="button" data-memory-advisor-runtime-sessions-retry
+            className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            onClick={() => { void sessionsQuery.refetch(); }}>
+            {t('common.retry')}
+          </button>
+        </p>
+      ) : sessions.length === 0 && !sessionsQuery.isPending ? (
         <p data-memory-advisor-runtime-empty className="py-1 text-[12px] text-ink-faint">{t('memory.advisor.runtimeNoSessions')}</p>
       ) : sessionId !== undefined ? (
         <>

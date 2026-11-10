@@ -350,6 +350,28 @@ describe('MemoryPage advisor switch', () => {
     expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-decision-connections');
   });
 
+  it('re-reads the advisor when workspace memory is switched off or back on here', async () => {
+    let wsEnabled: boolean | null = null;
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_global' })], 'workspace:wd_current:': [] });
+    vi.mocked(client.getMemorySettings).mockImplementation(async () => ({ ...enabledSettings, workspaces: wsEnabled === null ? ({} as Record<string, boolean>) : { wd_current: wsEnabled } }));
+    vi.spyOn(client, 'patchWorkspaceMemorySettings').mockImplementation(async (_id, enabled) => {
+      wsEnabled = enabled;
+      return { workspace_id: workspace.id, enabled, effective_enabled: enabled !== false };
+    });
+    vi.spyOn(client, 'getMemoryAdvisorSettings').mockImplementation(async (workspaceId) => {
+      const read = advisorRead('rank');
+      return workspaceId === workspace.id && wsEnabled === false
+        ? { ...read, effective_enabled: false, advisor_status: { ...read.advisor_status, state: 'disabled' as const } }
+        : read;
+    });
+    const container = await renderPage('/memory?workspace=wd_current', [workspace]);
+    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+    await click(container, '[data-memory-ws-option="false"]');
+    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Paused while memory is off');
+    await click(container, '[data-memory-ws-option="true"]');
+    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+  });
+
   it('shows a failed switch as a retryable toast and keeps the saved state', async () => {
     seedMemories({ 'global::': [] });
     vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue(advisorRead('rank'));

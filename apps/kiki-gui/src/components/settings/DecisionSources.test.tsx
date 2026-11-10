@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { DecisionConnectionsCard } from './DecisionConnections';
-import { DecisionJudgeRows } from './DecisionSources';
+import { DecisionJudgeRows, DecisionSourceSummary } from './DecisionSources';
 import { optionLabels, pickOption } from './testControls';
 
 const { client, navigate } = vi.hoisted(() => ({
@@ -193,13 +193,21 @@ describe('Who decides', () => {
     expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#decision-connection-add');
   });
 
-  it('points a missing key at its connection', async () => {
+  it('points a missing key at its connection on both Who decides and consumer summaries', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'connection', connection: 'typesafe' }, source_status: { state: 'auth', connection: 'typesafe', credential_source: 'none' } } } });
     await render(<DecisionJudgeRows />);
     const row = container.querySelector('[data-decision-judge="reviewer"]')!;
     expect(row.getAttribute('data-decision-problem')).toBe('auth');
     await act(async () => row.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=typesafe#st-card-decision-connections');
+    navigate.mockClear();
+    await render(<DecisionSourceSummary consumer="memory" source={{ kind: 'connection', connection: 'typesafe' }}
+      status={{ state: 'auth', connection: 'typesafe', credential_source: 'none' }} />);
+    const summary = container.querySelector('[data-decision-summary="memory"]')!;
+    expect(summary.getAttribute('data-decision-problem')).toBe('auth');
+    expect(summary.textContent).not.toContain('below');
+    await act(async () => summary.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());
     expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=typesafe#st-card-decision-connections');
   });
 });

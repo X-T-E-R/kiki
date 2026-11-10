@@ -108,12 +108,12 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     let status = value.advisor === undefined || (value.advisor.source === undefined && value.advisor.selector === undefined)
       ? advisorStatus(value.advisor?.mode === 'off' ? 'off' : 'unconfigured', { reason: value.advisor?.mode === 'off' ? undefined : 'unconfigured' })
       : core.accessor.get(IMemorySelector).describe(value.advisor, workspaceId);
-    if (memoryEnabled(value, workspaceId) && value.advisor !== undefined && (value.advisor.source !== undefined || value.advisor.selector !== undefined) && value.advisor.mode !== 'off') {
+    if (memoryEnabled(value, workspaceId) && value.budget > 0 && value.advisor !== undefined && (value.advisor.source !== undefined || value.advisor.selector !== undefined) && value.advisor.mode !== 'off') {
       const memory = store();
       await memory.prepare?.();
       if (memory.snapshot === undefined) status = { ...status, state: 'unsupported_store', reason: 'unsupported_store' };
     }
-    if (!memoryEnabled(value, workspaceId)) status = { ...status, state: 'disabled' };
+    if (!memoryEnabled(value, workspaceId) || value.budget === 0) status = { ...status, state: 'disabled' };
     return { ...value, effective_enabled: memoryEnabled(value, workspaceId), advisor_status: status };
   };
   const settingsQuery = z.object({ workspace_id: z.string().optional() });

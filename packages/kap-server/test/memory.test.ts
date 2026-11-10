@@ -59,6 +59,9 @@ describe('memory REST', () => {
     expect(api.prepare).toHaveBeenCalledOnce(); expect(enabled.data.advisor_status).toMatchObject({ state: 'ready', consent_required: false });
     expect(enabled.data.advisor.egress_ack).toEqual([]);
     expect((await api.request('get', '/memory/settings')).data.advisor_status.state).toBe('ready');
+    const zeroBudget = await api.request('patch', '/memory/settings', { body: { budget: 0 } });
+    expect(zeroBudget.data.effective_enabled).toBe(true);
+    expect(zeroBudget.data.advisor_status.state).toBe('disabled');
   });
   it('patches advisor preferences sparsely, preserves the selector when toggled off, and supports explicit removal', async () => {
     const api = setup();

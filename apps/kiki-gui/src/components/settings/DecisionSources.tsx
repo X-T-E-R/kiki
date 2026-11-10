@@ -252,11 +252,7 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
     }
   };
   const pickerId = `st-decision-${consumer}`;
-  const fix = problem === 'missing_connection' || problem === 'not_decision' || problem === 'pair_score_reviewer'
-    ? { label: t('st.decision.fix.addService'), route: DECISION_CONNECTION_ADD_ROUTE }
-    : (problem === 'auth' || problem === 'protocol' || problem === 'missing_model' || problem === 'unconfigured') && connection !== undefined
-      ? { label: t('st.decision.fix.openConnection'), route: decisionConnectionRoute(connection.connection) }
-      : undefined;
+  const fix = decisionProblemFix(problem, source, t);
   return (
     <div data-decision-judge={consumer} data-decision-problem={problem ?? undefined}
       className="grid gap-x-6 gap-y-1.5 py-3 first:pt-0 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] sm:items-start">
@@ -339,6 +335,7 @@ export function DecisionSourceSummary({ consumer, source, status, legacy }: {
   const providersQuery = useQuery(providersQueryOptions(client));
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const problem = decisionSourceProblem(consumer, source, status, providersQuery.data?.items);
+  const fix = decisionProblemFix(problem, source, t);
   const chatLabel = (id: string) => modelsQuery.data?.items.find((item) => item.id === id)?.display_name;
   return (
     <div data-decision-summary={consumer} data-decision-problem={problem ?? undefined} className="space-y-1">
@@ -353,11 +350,30 @@ export function DecisionSourceSummary({ consumer, source, status, legacy }: {
           {t('st.decision.change')}
         </button>
       </div>
-      {problem !== null ? <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(DECISION_SOURCE_PROBLEM_KEYS[problem])}</p> : null}
+      {problem !== null ? (
+        <div role="alert" className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+          <p className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(DECISION_SOURCE_PROBLEM_KEYS[problem])}</p>
+          {fix !== undefined ? (
+            <button type="button" data-decision-fix className={LINK} onClick={() => { void navigate(fix.route); }}>{fix.label}</button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
-/** A Jev key from the environment needs no move: a Jev connection reads the same variable. */
+function decisionProblemFix(
+  problem: DecisionSourceProblem | null,
+  source: DecisionSource | undefined,
+  t: ReturnType<typeof useI18n>['t'],
+): { readonly label: string; readonly route: string } | undefined {
+  if (problem === 'missing_connection' || problem === 'not_decision' || problem === 'pair_score_reviewer') {
+    return { label: t('st.decision.fix.addService'), route: DECISION_CONNECTION_ADD_ROUTE };
+  }
+  if ((problem === 'auth' || problem === 'protocol' || problem === 'missing_model' || problem === 'unconfigured') && source?.kind === 'connection') {
+    return { label: t('st.decision.fix.openConnection'), route: decisionConnectionRoute(source.connection) };
+  }
+  return undefined;
+}
 function LegacyJevEnv({ keyEnv }: { readonly keyEnv?: string }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
