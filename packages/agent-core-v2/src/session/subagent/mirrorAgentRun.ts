@@ -242,6 +242,7 @@ export async function mirrorAgentRun(
     }
     const result = await run.completion;
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
+    const parentSteering = agentLifecycle?.get(run.agentId)?.accessor.get(IAgentProfileService)?.getParentSteering?.();
     const taskId = await options.resolveTaskId?.();
     await recordAgentOutcome(requester, run.agentId, taskId, {
       status: 'completed',
@@ -250,6 +251,7 @@ export async function mirrorAgentRun(
       usage: result.usage,
       contextTokens,
       error: undefined,
+      parentSteering: parentSteering ?? null,
     });
     await dispatcher?.dispatch(
       new SubagentCompleted({
@@ -295,7 +297,7 @@ async function recordAgentOutcome(
   requester: IAgentScopeHandle,
   agentId: string,
   taskId: string | undefined,
-  outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'error'>,
+  outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'error' | 'parentSteering'>,
 ): Promise<void> {
   try {
     const metadata = requester.accessor.get(ISessionMetadata);

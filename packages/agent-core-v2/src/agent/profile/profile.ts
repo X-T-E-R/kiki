@@ -356,6 +356,7 @@ export interface IAgentProfileService {
   preparePromptConfiguration(): Promise<boolean>;
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;
   getCognitionSnapshot(): import('#/agent/cognition/cognitionConfig').CognitionBinding | undefined;
+  getParentSteering(): string | undefined;
   getRecipeModelSettings(alias?: string): Record<string, unknown> | undefined;
   getRecipeScriptHooks(): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]>;
   getPromptDiagnostics(options?: { readonly checkAllPromptFiles?: boolean }): Promise<import('@kiki/protocol').AgentPromptDiagnostics>;

@@ -118,13 +118,33 @@ export function promptConfigurationChannels(input: {
 function recipePromptChannels(recipe: NonNullable<import('#/agent/cognition/cognitionConfig').CognitionBinding['recipe']>, position: DelegationPosition): AgentPromptChannel[] {
   const result: AgentPromptChannel[] = [];
   const layers = recipe.resolved.layers ?? [{ surface: 'model' as const, installation_id: recipe.installation_id, resolved: recipe.resolved }];
-  for (const [index, layer] of layers.entries()) for (const slot of ['system', 'steering', 'anchor'] as const) {
+  for (const [index, layer] of layers.entries()) for (const slot of ['system', 'steering', 'parent_steering', 'anchor'] as const) {
     const branch = layer.resolved.branches[position];
     const origins = layer.resolved.origins.filter((origin) => origin.position === position && origin.slot === slot);
     const shadowed = layers.slice(index + 1).some((next) => next.resolved.branches[position][slot] !== undefined);
-    result.push({ id: `recipe.${layer.surface}.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state: branch[slot] === undefined ? 'inactive' : shadowed ? 'shadowed' : 'effective',
-      reason: shadowed ? 'A higher-priority Recipe supplies this slot.' : slot === 'anchor' ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.' : undefined,
-      recipe: { installation_id: layer.installation_id, revision: layer.resolved.revision, name: layer.resolved.name, slot, content: slot === 'anchor' ? branch.anchor?.content : branch[slot], origins: origins.map((origin) => ({ ...origin })) },
+    const rawContent = slot === 'anchor' ? branch.anchor?.content : branch[slot];
+    const nonEmpty = rawContent !== undefined && rawContent.trim().length > 0;
+    const state = branch[slot] === undefined
+      ? 'inactive'
+      : slot === 'parent_steering' && (position !== 'sub' || !nonEmpty)
+        ? 'inactive'
+        : shadowed
+          ? 'shadowed'
+          : 'effective';
+    const reason = shadowed && state === 'shadowed'
+      ? 'A higher-priority Recipe supplies this slot.'
+      : slot === 'parent_steering' && branch.parent_steering !== undefined
+        ? position !== 'sub'
+          ? 'Only subagent bindings send parent_steering when returning or messaging their parent.'
+          : !nonEmpty
+            ? 'All sources in this slot were filtered out by option gates.'
+            : 'Sent as a model-only reminder to the parent agent when this subagent returns or sends an upward message.'
+        : slot === 'anchor'
+          ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.'
+          : undefined;
+    result.push({ id: `recipe.${layer.surface}.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state,
+      reason,
+      recipe: { installation_id: layer.installation_id, revision: layer.resolved.revision, name: layer.resolved.name, slot, content: rawContent, origins: origins.map((origin) => ({ ...origin })) },
       sources: origins.length === 0 ? [{ surface: 'recipe', kind: 'inline', path: `${layer.surface}:${layer.installation_id}@${layer.resolved.revision}` }] : origins.map((origin) => ({ surface: 'recipe', kind: origin.file === undefined ? 'inline' as const : 'file' as const, path: origin.file ?? origin.source })),
       anchor_steps: slot === 'anchor' ? branch.anchor?.steps : undefined, anchor_scope: slot === 'anchor' ? branch.anchor?.scope : undefined });
   }

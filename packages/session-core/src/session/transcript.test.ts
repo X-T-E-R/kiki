@@ -6322,6 +6322,42 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.some((block) => block.kind === 'system' && block.text === '')).toBe(false);
   });
 
+  it('keeps subagent_parent_steering reminders out of SubagentBlock summaries, ending receipts, and human message bubbles', () => {
+    const internalSteer = 'Subagent parent steering from reviewer (agent-review, profile: reviewer) on return:\n\nTreat this Sol review verdict as independent evidence.';
+    const snapshot = replayAgentWire('main', [
+      { type: 'turn.prompt', turnId: '1', promptId: 'p1', origin: { kind: 'user', promptId: 'p1', userMessageId: 'u1' }, input: [{ type: 'text', text: 'Review the patch.' }], time: 1000 },
+      { type: 'context.append_message', message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'Review the patch.' }], toolCalls: [], origin: { kind: 'user', promptId: 'p1', userMessageId: 'u1' } }, time: 1000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 }, time: 1100 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', uuid: 'part-tc-review', stepUuid: 's1', turnId: '1', step: 1, toolCallId: 'tc-review', name: 'AgentRun', args: { profile: 'reviewer', description: 'Review patch', prompt: 'Inspect diff' } }, time: 1150 },
+      { type: 'subagent.spawned', subagentId: 'agent-review', subagentName: 'reviewer', name: 'reviewer', parentToolCallId: 'tc-review', parentAgentId: 'main', callerAgentId: 'main', description: 'Review patch', userLabel: 'Review patch', runInBackground: false, taskId: 'agent-task-1', time: 1200 },
+      { type: 'subagent.started', subagentId: 'agent-review', taskId: 'agent-task-1', time: 1210 },
+      { type: 'subagent.completed', subagentId: 'agent-review', taskId: 'agent-task-1', resultSummary: 'No blocking defects found.', time: 1500 },
+      { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: `<system-reminder>\n${internalSteer}\n</system-reminder>` }], toolCalls: [], origin: { kind: 'injection', variant: 'subagent_parent_steering' } }, time: 1510 },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', stepUuid: 's1', turnId: '1', step: 1, toolCallId: 'tc-review', result: { output: 'status: completed\nresult:\nNo blocking defects found.', isError: false } }, time: 1520 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 's1', turnId: '1', step: 1, finishReason: 'tool_calls' }, time: 1530 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 's2', turnId: '1', step: 2 }, time: 1600 },
+      { type: 'context.append_message', message: { id: 'msg-upward', role: 'user', content: [{ type: 'text', text: 'Message from agent "reviewer" (agent-review):\n\nRecheck finished cleanly.' }], toolCalls: [], origin: { kind: 'agent_message', messageId: 'msg-upward', senderAgentId: 'agent-review', senderTaskName: 'reviewer' } }, time: 1610 },
+      { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: `<system-reminder>\n${internalSteer}\n</system-reminder>` }], toolCalls: [], origin: { kind: 'injection', variant: 'subagent_parent_steering' } }, time: 1615 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', uuid: 'a1-part', stepUuid: 's2', turnId: '1', step: 2, part: { type: 'text', text: 'All checks passed.' } }, time: 1700 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 's2', turnId: '1', step: 2, finishReason: 'end_turn' }, time: 1710 },
+      { type: 'turn.ended', turnId: '1', result: { type: 'completed', steps: 2 }, time: 1720 },
+    ]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const subagents = projected.blocks.filter((b): b is SubagentBlock => b.kind === 'subagent');
+    expect(subagents).toHaveLength(1);
+    expect(subagents[0]?.summary).toBe('No blocking defects found.');
+    expect(subagents[0]?.summary).not.toContain('Treat this Sol review verdict');
+    for (const block of projected.blocks) {
+      if (block.kind === 'user' || block.kind === 'assistant' || block.kind === 'message') {
+        expect(block.text).not.toContain('Treat this Sol review verdict');
+        expect(block.text).not.toContain('Subagent parent steering');
+      }
+    }
+    const grouped = groupBlocks(projected.blocks);
+    const folded = foldHistory(grouped, undefined);
+    expect(JSON.stringify(folded.filter((item) => item.kind !== 'system-reminder'))).not.toContain('Treat this Sol review verdict');
+  });
+
   it('reads a reminder category only from a known disclosure kind', () => {
     for (const kind of ['directive', 'renew', 'rebuild', 'history', 'progress'] as const) {
       expect(reminderCategory({ kind, triggers: ['T2'], epoch: 3, userTurn: 't4' })).toEqual({ kind, triggers: ['T2'], epoch: 3, userTurn: 't4' });

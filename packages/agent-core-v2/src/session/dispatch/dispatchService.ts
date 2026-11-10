@@ -780,12 +780,14 @@ export class SessionDispatchService implements ISessionDispatchService {
           resolveTaskId: () => runTask,
           cancel: (reason) => { controller.abort(reason); },
         });
+        const childProfileService = run.child.agent.accessor.get(IAgentProfileService);
         const handle: SubagentHandle = {
           agentId: run.child.agentId,
           profileName: run.child.profileName,
           name: run.child.name,
           model: run.child.modelAlias,
           thinkingEffort: run.child.thinkingEffort,
+          parentSteering: childProfileService.getParentSteering?.(),
           completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
         };
         let taskId: string | undefined;
@@ -798,6 +800,7 @@ export class SessionDispatchService implements ISessionDispatchService {
               run.child.name === undefined
                 ? undefined
                 : { taskName: run.child.name, agentType: run.child.profileName },
+              () => childProfileService.getParentSteering?.(),
             ),
             { timeoutMs: resolveSubagentTimeoutMs(this.config) },
           );

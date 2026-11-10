@@ -393,6 +393,7 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     model: record.model,
     thinkingEffort: record.thinkingEffort,
     thinkingEffortExplicit: record.thinkingEffortExplicit,
+    parentSteering: optionalNonEmptyString(record.parentSteering),
     executorId: record.executorId,
     executorProtocol: record.executorProtocol,
     collaborationTaskName: record.collaborationTaskName,

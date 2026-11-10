@@ -17,7 +17,7 @@ Recipe 将可复用的提示词、模型设置和可选脚本 Hook 打包在一�
 
 每个选项有 id、名称、可选说明和布尔默认值。选项可以控制正文是否出现、向提示槽插入文字，或修改指定的 Markdown 标题节。完整的[选项与 patch 语法](./prompt-fields.md#选项插入与章节修改)在包的 manifest 中声明。
 
-在使用包的模型或 profile 上选择选项。省略的选择采用包的默认值；两个模型可以使用同一个安装包，同时保留不同选择。更新删掉某个已选 id 时，会忽略它并报告诊断；再次保存前应核对绑定的选项。
+在使用包的模型或 profile 上选择选项；agent 文件中的 `model_profiles[].recipe_options` 还可以在所选模型匹配该条目时覆盖对应层的选项。省略的选择采用包的默认值；两个模型或两个角色可以使用同一个安装包，同时保留不同选择。更新删掉某个已选 id 时，会忽略它并报告诊断；再次保存前应核对绑定的选项。
 
 要查看某个选择而不保存，用 `klient.global.recipes.get(id, values)`，或 `GET /api/recipes/{id}?recipe_options=<URL 编码的 JSON 布尔映射>`。响应中的 `resolved.option_values` 是生效选项，`resolved.branches` 是展开后的提示词正文。
 

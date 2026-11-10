@@ -20,6 +20,11 @@ import {
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import {
+  formatSubagentParentSteering,
+  SUBAGENT_PARENT_STEERING_VARIANT,
+} from '#/agent/cognition/parentSteering';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { isAgentNotifyAvailable } from '#/agent/tools/agent-notify/agent-notify';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -141,6 +146,7 @@ export class SubagentTool implements ISubagentTool {
     @ILogService private readonly log: ILogService,
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly models: IModelService,
+    @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
@@ -551,7 +557,8 @@ export class SubagentTool implements ISubagentTool {
         controller.abort(reason);
       },
     });
-    const childProfile = run.child.agent.accessor.get(IAgentProfileService).data();
+    const childProfileService = run.child.agent.accessor.get(IAgentProfileService);
+    const childProfile = childProfileService.data();
     const parentNotify = isAgentNotifyAvailable({
       hasParent: true,
       allowParentNotify: childProfile.allowParentNotify,
@@ -573,6 +580,7 @@ export class SubagentTool implements ISubagentTool {
       modelSelection: run.child.modelSelection,
       thinkingEffort: run.child.thinkingEffort,
       thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
+      parentSteering: childProfileService.getParentSteering?.(),
       executorId: childProfile.executorId,
       executorProtocol: childProfile.executorProtocol,
       thinkingEffortSource: run.child.thinkingEffortSource,
@@ -714,6 +722,7 @@ export class SubagentTool implements ISubagentTool {
             handle.name === undefined
               ? undefined
               : { taskName: handle.name, agentType: handle.profileName },
+            () => this.lifecycle.get(handle.agentId)?.accessor.get(IAgentProfileService).getParentSteering?.(),
           ),
           registerOptions,
         );
@@ -823,6 +832,19 @@ export class SubagentTool implements ISubagentTool {
       const snapshot = await this.tasks.getOutputSnapshot(taskId, 32 * 1024);
       const large = snapshot.outputSizeBytes > 1024 * 1024;
       const result = large ? snapshot.preview : await this.tasks.readOutput(taskId);
+      const parentSteering = (info.kind === 'agent' ? info.parentSteering : undefined) ?? handle.parentSteering;
+      if (parentSteering !== undefined && parentSteering.trim().length > 0) {
+        this.reminders.appendSystemReminder(
+          formatSubagentParentSteering({
+            agentId: handle.agentId,
+            label: handle.name ?? handle.profileName,
+            profile: handle.profileName,
+            delivery: 'return',
+            content: parentSteering,
+          }),
+          { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+        );
+      }
       return {
         output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(taskId, handle, result,
           large ? snapshot : undefined)),

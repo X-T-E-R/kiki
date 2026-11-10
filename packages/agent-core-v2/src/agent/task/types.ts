@@ -68,6 +68,7 @@ export interface SubagentTaskInfo extends AgentTaskInfoBase {
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
+  readonly parentSteering?: string;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly collaborationTaskName?: string;

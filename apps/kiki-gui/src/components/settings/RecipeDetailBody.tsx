@@ -26,6 +26,7 @@ import { SettingsSegmented } from './SettingsPrimitives';
 const SLOTS = [
   { id: 'system', key: 'st.recipe.slot.system' },
   { id: 'steering', key: 'st.recipe.slot.steering' },
+  { id: 'parent_steering', key: 'st.recipe.slot.parent_steering' },
 ] as const;
 
 export function RecipeDetailBody({ detail, initialPosition = 'main' }: {

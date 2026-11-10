@@ -891,12 +891,13 @@ function validateModelProfileUpdates(value: unknown, issues: ValidationIssue[]):
     if (seen.has(entry['alias'])) issues.push({ path, message: `duplicate model profile ${entry['alias']}` });
     seen.add(entry['alias']);
     for (const key of Object.keys(entry)) {
-      if (!['alias', 'when', 'thinkingEffort', 'promptMode', 'prompt', 'main', 'independent', 'promptOverrides', 'contextBudget', 'autoCompact', 'contextStrategy', 'maxCompletionTokens', 'serviceTier', 'requestParams', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts'].includes(key)) {
+      if (!['alias', 'when', 'thinkingEffort', 'promptMode', 'prompt', 'main', 'independent', 'promptOverrides', 'recipeOptions', 'contextBudget', 'autoCompact', 'contextStrategy', 'maxCompletionTokens', 'serviceTier', 'requestParams', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts'].includes(key)) {
         issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
       }
     }
     validateOptionalString(entry['when'], `${path}.when`, issues);
     validateOptionalString(entry['thinkingEffort'], `${path}.thinkingEffort`, issues);
+    validateRecipeOptions(entry['recipeOptions'], `${path}.recipeOptions`, issues);
     const parsed = updateNamedAgentModelProfileEntrySchema.safeParse(modelProfilePatchToWire(entry as unknown as import('./agentProfileWriter').AgentProfileModelProfileUpdate));
     if (!parsed.success) for (const issue of parsed.error.issues) issues.push({ path: `${path}.${issue.path.join('.')}`, message: issue.message });
   });

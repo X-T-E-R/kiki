@@ -156,6 +156,7 @@ import {
   resolveModelProfileEntry,
   resolveProfileThinkingDefault,
   mergeModelParameters,
+  mergeRecipeOptions,
   modelPromptLayers,
 } from '#/app/agentProfileCatalog/modelProfileOverlay';
 import {
@@ -1235,9 +1236,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.restoreCommittedPromptProjections();
     const binding = this.data();
     const executor = binding.executorId ?? 'native';
+    const parentSteering = this.getParentSteering() ?? null;
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
       ...current, execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
-      thinkingEffortExplicit: binding.thinkingEffortExplicit,
+      thinkingEffortExplicit: binding.thinkingEffortExplicit, parentSteering,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
       executorAuth: current.executorAuth?.binding_fingerprint === agentExecutorBindingFingerprint(binding) ? current.executorAuth : undefined,
@@ -2705,7 +2707,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile(), reportFailure = true): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
-    const references = [{ surface: 'model' as const, id: model?.recipe, options: model?.recipeOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profile?.recipeOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
+    const resolveId = (profile?.executor ?? 'native') === 'native' ? (id: string) => this.models.resolveId(id) : (id: string) => id;
+    const matchedRecipeOptions = profile === undefined
+      ? undefined
+      : mergeRecipeOptions(...modelPromptLayers(profile).map((layer) => resolveModelProfileEntry(layer.entries, alias, resolveId)?.recipeOptions));
+    const modelOptions = mergeRecipeOptions(model?.recipeOptions, profile?.recipe === undefined ? profile?.recipeOptions : undefined, matchedRecipeOptions);
+    const profileOptions = mergeRecipeOptions(profile?.recipeOptions, matchedRecipeOptions);
+    const references = [{ surface: 'model' as const, id: model?.recipe, options: modelOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profileOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
     const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
@@ -2985,6 +2993,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.cognitionBinding;
   }
 
+  getParentSteering(): string | undefined {
+    if (this.delegationPosition !== 'sub') return undefined;
+    const raw = this.cognitionBinding?.slots?.parentSteering ?? this.profileState.boundProfile?.promptBase?.inputs?.cognition.slots?.parentSteering;
+    if (raw === undefined) return undefined;
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
   getRecipeModelSettings(alias = this.modelAlias): Record<string, unknown> | undefined {
     const binding = this.cognitionBinding ?? this.profileState.boundProfile?.promptBase?.inputs?.cognition;
     return binding !== undefined && binding.modelAlias === alias ? binding.modelSettings ?? binding.recipe?.resolved.model : undefined;
@@ -3020,7 +3036,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       steeringIntervalSteps: branch.steering_interval_steps ?? manual?.steeringIntervalSteps };
     try {
       const nativeSlots = await loadCognitionSlots(this.hostFs, this.bootstrap.homeDir, config, this.hostEnv.pathClass);
-      const slots = { ...nativeSlots, steering: branch?.steering ?? nativeSlots.steering, anchor: branch?.anchor?.content ?? nativeSlots.anchor };
+      const parentSteering = this.delegationPosition === 'sub' && branch?.parent_steering !== undefined && branch.parent_steering.trim().length > 0
+        ? branch.parent_steering
+        : undefined;
+      const slots = { ...nativeSlots, steering: branch?.steering ?? nativeSlots.steering, parentSteering, anchor: branch?.anchor?.content ?? nativeSlots.anchor };
       const steeringSources = await loadSteeringSources(this.hostFs, this.bootstrap.homeDir, config, branch, this.hostEnv.pathClass);
       const modelSettings = recipe === undefined ? undefined : snapshotRecipeModelSettings(this.models.get(modelAlias)!, recipe.model);
       this.cognitionBinding = {
@@ -3333,6 +3352,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const assembled = await this.assembleBoundSystemPrompt(profile, context, this.modelAlias ?? '', this.profileState.boundProfile.promptBase, this.currentPersona, this.profileState.roomPrompt);
       await this.dispatcher.dispatch(new ConfigUpdate({ systemPrompt: assembled.text, environmentDisclosure: assembled.environment, promptBase: assembled.promptBase, agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text) }));
       this.seedAgentsMdReminder(assembled.text, context);
+      await this.syncBindingMetadata();
       return true;
     }
     if (this.profileState.boundProfile !== undefined) {

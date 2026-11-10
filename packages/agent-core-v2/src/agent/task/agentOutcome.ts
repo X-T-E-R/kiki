@@ -8,6 +8,7 @@ export interface CommittedAgentRunOutcome {
   readonly status: 'completed' | 'failed' | 'killed';
   readonly stopReason?: string;
   readonly finalOutput?: string;
+  readonly parentSteering?: string;
   readonly endedAt?: number;
 }
 
@@ -45,11 +46,15 @@ function outcomeFromAgent(agentId: string, meta: AgentMeta): CommittedAgentRunOu
   if (meta.status === 'completed') {
     const summary = meta.resultSummary ?? '';
     if (summary.trim().length > 0) {
+      const parentSteering = typeof meta.parentSteering === 'string' && meta.parentSteering.trim().length > 0
+        ? meta.parentSteering.trim()
+        : undefined;
       return {
         taskId: meta.taskId,
         subagentId: agentId,
         status: 'completed',
         finalOutput: summary,
+        parentSteering,
         endedAt,
       };
     }

@@ -292,7 +292,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     return value.parts === undefined ? { text: value.text } : value.parts.map((part) => ({ text: part.text, when: part.when, unless: part.unless }));
   }
   private declarationManifest(branch: import('./recipeParser').RecipeContent): Record<string, unknown> {
-    return { system: this.textManifest(branch.system), steering: this.textManifest(branch.steering),
+    return { system: this.textManifest(branch.system), steering: this.textManifest(branch.steering), parent_steering: this.textManifest(branch.parent_steering),
       anchor: typeof branch.anchor === 'object' ? { ...branch.anchor, content: this.textManifest(branch.anchor.content) } : branch.anchor,
       fields: Object.fromEntries(Object.entries(branch.fields ?? {}).map(([id, value]) => [id, value.value])),
       steering_on_turn: branch.steering_on_turn, steering_on_input: branch.steering_on_input, steering_interval_steps: branch.steering_interval_steps,
@@ -315,6 +315,7 @@ export class RecipeService extends Disposable implements IRecipeService {
   }
   private branchManifest(branch: ResolvedRecipe['branches']['main']): Record<string, unknown> {
     return { system: branch.system === undefined ? 'off' : { text: branch.system }, steering: branch.steering === undefined ? 'off' : { text: branch.steering },
+      parent_steering: branch.parent_steering === undefined ? undefined : { text: branch.parent_steering },
       anchor: branch.anchor === undefined ? 'off' : { content: { text: branch.anchor.content }, steps: branch.anchor.steps, scope: branch.anchor.scope }, fields: branch.fields,
       steering_on_turn: branch.steering_on_turn, steering_on_input: branch.steering_on_input, steering_interval_steps: branch.steering_interval_steps,
       steering_sources: branch.steering_sources === undefined ? undefined : Object.fromEntries(Object.entries(branch.steering_sources).map(([source, setting]) => [source, { ...setting, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === undefined ? 'off' : { text: setting.custom.steering } } }])) };

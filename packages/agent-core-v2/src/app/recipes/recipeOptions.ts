@@ -8,14 +8,14 @@ export interface RecipeOptionDeclaration extends Omit<RecipeOption, 'id'> { patc
 export function recipeOptionEntries(declaration: Pick<RecipeDeclaration, 'options' | 'optionOrder'>): [string, RecipeOptionDeclaration][] {
   return (declaration.optionOrder ?? Object.keys(declaration.options ?? {})).map((id) => [id, declaration.options![id]!]);
 }
-export const recipePatchSlotPattern = new RegExp(`^(common|main|independent)\\.(system|steering|anchor|steering_sources\\.(${modelSteeringSourceIds.join('|')}))$`, 'u');
+export const recipePatchSlotPattern = new RegExp(`^(common|main|independent)\\.(system|steering|parent_steering|anchor|steering_sources\\.(${modelSteeringSourceIds.join('|')}))$`, 'u');
 
 export function recipeTextParts(value: TextValue): RecipeTextPart[] { return value.parts ?? [{ text: value.text, origins: value.origins }]; }
 export function recipeTextValue(parts: RecipeTextPart[]): TextValue { return { text: parts.map((part) => part.text).join('\n\n'), origins: parts.flatMap((part) => part.origins), parts }; }
 
 function textSlots(content: RecipeContent): Map<string, { get(): TextValue | 'off' | undefined; set(value: TextValue): void }> {
   const slots = new Map<string, { get(): TextValue | 'off' | undefined; set(value: TextValue): void }>();
-  for (const key of ['system', 'steering'] as const) slots.set(key, { get: () => content[key], set: (value) => { content[key] = value; } });
+  for (const key of ['system', 'steering', 'parent_steering'] as const) slots.set(key, { get: () => content[key], set: (value) => { content[key] = value; } });
   slots.set('anchor', { get: () => content.anchor === 'off' ? 'off' : content.anchor?.content, set: (value) => { if (typeof content.anchor === 'object') content.anchor.content = value; } });
   for (const [source, setting] of Object.entries(content.steering_sources ?? {})) slots.set(`steering_sources.${source}`, {
     get: () => setting.custom?.steering,

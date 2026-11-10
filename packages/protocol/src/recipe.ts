@@ -21,7 +21,7 @@ export const recipeValueOriginSchema = z.object({
 });
 export type RecipeValueOrigin = z.infer<typeof recipeValueOriginSchema>;
 export const recipeBranchSchema = z.object({
-  system: z.string().optional(), steering: z.string().optional(),
+  system: z.string().optional(), steering: z.string().optional(), parent_steering: z.string().optional(),
   ...modelSteeringCadenceSchema.shape,
   steering_sources: modelSteeringSourcesSchema(z.string()).optional(),
   anchor: z.object({ content: z.string(), steps: z.number().int().positive(), scope: z.enum(['session', 'turn']) }).optional(),

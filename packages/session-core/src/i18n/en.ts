@@ -12318,6 +12318,7 @@ export const en = {
   'st.recipe.updateForNewBinding': 'A newer version is available.',
   'st.recipe.slot.system': 'Prompt words',
   'st.recipe.slot.steering': 'Reminders',
+  'st.recipe.slot.parent_steering': 'Parent return reminder',
   'st.recipe.slot.anchor': 'Anchored prompt',
   'st.recipe.slotFields': 'Prompt fields',
   'st.recipe.scope.session': 'session',

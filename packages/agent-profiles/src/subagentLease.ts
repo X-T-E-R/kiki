@@ -1,4 +1,5 @@
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
+import { recipeOptionValuesSchema } from '@kiki/protocol';
 import { MODEL_CONSTRAINT_KEYS, parseModelConstraintFields } from './modelConstraintFields';
 import { parsePromptOverrides } from './promptOverrides';
 import type {
@@ -131,6 +132,7 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'context_budget',
   'max_completion_tokens',
   'prompt_overrides',
+  'recipe_options',
 ]);
 
 export function parseSubagentList(
@@ -440,6 +442,7 @@ function parseModelProfiles(
       promptMode,
       prompt,
       promptOverrides,
+      recipeOptions: parseLeaseRecipeOptions(item['recipe_options'], `${prefix}.recipe_options`, filePath),
       ...parseModelConstraintFields(item, filePath, `${prefix}.`),
       serviceTier: parseServiceTier(item['service_tier'], `${prefix}.service_tier`, filePath) ?? undefined,
       requestParams: parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) ?? undefined,
@@ -448,6 +451,21 @@ function parseModelProfiles(
     });
   }
   return out;
+}
+
+function parseLeaseRecipeOptions(
+  value: unknown,
+  field: string,
+  filePath: string,
+): Readonly<Record<string, boolean>> | undefined {
+  if (value === undefined) return undefined;
+  const parsed = recipeOptionValuesSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new SubagentLeaseParseError(
+      `Frontmatter field "${field}" in ${filePath} must be a mapping of recipe ids to booleans`,
+    );
+  }
+  return parsed.data;
 }
 
 function parseTokenBudget(value: unknown, field: string, filePath: string): number | undefined {

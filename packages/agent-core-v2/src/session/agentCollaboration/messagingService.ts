@@ -14,6 +14,11 @@ import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/exe
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import {
+  formatSubagentParentSteering,
+  SUBAGENT_PARENT_STEERING_VARIANT,
+} from '#/agent/cognition/parentSteering';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { TaskNotified } from '#/agent/task/taskOps';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -501,8 +506,36 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const execution = handle.accessor.get(IAgentExecutionService);
     const steer = execution.steer?.bind(execution);
     if (execution.status().state !== 'running' || steer === undefined) return 'done';
-    return this.deliver(handle, async (message) => {
-      const outcome = await steer(message);
+    const external = this.isExternalExecutor(handle);
+    return this.deliver(handle, async (message, upwardSteering) => {
+      if (external && upwardSteering !== undefined) {
+        const steeredMessage: ContextMessage = {
+          ...message,
+          content: [
+            ...message.content,
+            { type: 'text', text: wrapSystemReminder(upwardSteering) },
+          ],
+        };
+        const outcome = await steer(steeredMessage);
+        if (outcome === 'unknown') return 'unknown';
+        if (outcome === true) {
+          handle.accessor.get(IAgentSystemReminderService).appendSystemReminder(
+            upwardSteering,
+            { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+          );
+          return true;
+        }
+        return false;
+      }
+      const trailingMessages: readonly ContextMessage[] | undefined = upwardSteering === undefined
+        ? undefined
+        : [{
+            role: 'user',
+            content: [{ type: 'text', text: wrapSystemReminder(upwardSteering) }],
+            toolCalls: [],
+            origin: { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+          }];
+      const outcome = await steer(message, trailingMessages);
       if (outcome === 'unknown') return 'unknown';
       return outcome === true;
     });
@@ -884,9 +917,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         continue;
       }
       const contextMessage = toContextMessage(message);
+      const upwardSteering = await this.resolveUpwardParentSteering(handle.id, message);
       return {
         messageId: message.messageId,
-        request: withExternalMailboxMessage(request, contextMessage),
+        request: withExternalMailboxMessage(request, contextMessage, upwardSteering),
       };
     }
   }
@@ -904,6 +938,13 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       handle.accessor.get(IAgentContextMemoryService).appendObservable(
         toContextMessage(pending.queued.message),
       );
+      const upwardSteering = await this.resolveUpwardParentSteering(handle.id, pending.queued.message);
+      if (upwardSteering !== undefined) {
+        handle.accessor.get(IAgentSystemReminderService).appendSystemReminder(
+          upwardSteering,
+          { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+        );
+      }
     }
     const completed = await this.completeClaim(handle, pending);
     if (completed && this.externalPrepared.get(handle.id) === messageId) this.externalPrepared.delete(handle.id);
@@ -913,8 +954,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private deliverBeforeRun(handle: IAgentScopeHandle, signal?: AbortSignal): Promise<void> {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     return this.recoverMailboxDelivery(handle.id, async () => {
-      await this.deliver(handle, async (message) => {
+      await this.deliver(handle, async (message, upwardSteering) => {
         memory.appendObservable(message);
+        if (upwardSteering !== undefined) {
+          handle.accessor.get(IAgentSystemReminderService).appendSystemReminder(
+            upwardSteering,
+            { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+          );
+        }
         return true;
       }, signal);
     }, signal);
@@ -950,7 +997,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private async deliver(
     handle: IAgentScopeHandle,
-    apply: (message: ContextMessage) => Promise<boolean | 'unknown'>,
+    apply: (message: ContextMessage, upwardSteering: string | undefined) => Promise<boolean | 'unknown'>,
     signal?: AbortSignal,
   ): Promise<'done' | 'stopped' | 'unknown'> {
     for (;;) {
@@ -961,7 +1008,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       const message = pending.queued.message;
       if (!this.hasAppliedMessage(handle, pending)) {
         if (this.externalPrepared.get(handle.id) === message.messageId) return 'stopped';
-        const applied = await apply(toContextMessage(message));
+        const upwardSteering = await this.resolveUpwardParentSteering(handle.id, message);
+        signal?.throwIfAborted();
+        const applied = await apply(toContextMessage(message), upwardSteering);
         if (applied === 'unknown') {
           this.withheld.add(message.messageId);
           return 'unknown';
@@ -971,6 +1020,33 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       if (!await this.completeClaim(handle, pending)) return 'stopped';
       this.withheld.delete(message.messageId);
     }
+  }
+
+  private async resolveUpwardParentSteering(
+    targetAgentId: string,
+    message: {
+      readonly sourceAgentId: string;
+      readonly sourceTaskName: string;
+      readonly senderKind?: 'user';
+    },
+  ): Promise<string | undefined> {
+    if (message.senderKind === 'user') return undefined;
+    const meta = (await this.metadata.read()).agents?.[message.sourceAgentId];
+    if (meta === undefined) return undefined;
+    const parentId = meta.parentAgentId ?? (meta.delegator?.kind === 'agent' ? meta.delegator.agentId : undefined);
+    if (parentId !== targetAgentId) return undefined;
+    const liveChild = this.lifecycle.get(message.sourceAgentId);
+    const liveProfile = liveChild?.accessor.get(IAgentProfileService);
+    const raw = liveProfile?.getParentSteering?.() ?? (typeof meta.parentSteering === 'string' ? meta.parentSteering : undefined);
+    if (raw === undefined || raw.trim().length === 0) return undefined;
+    const profileName = liveProfile?.data().profileName ?? meta.labels?.['profileName'] ?? meta.displayName;
+    return formatSubagentParentSteering({
+      agentId: message.sourceAgentId,
+      label: message.sourceTaskName,
+      profile: profileName,
+      delivery: 'message',
+      content: raw,
+    });
   }
 
   private serializeDelivery<T>(agentId: string, task: () => Promise<T>): Promise<T> {
@@ -1000,13 +1076,17 @@ function serializeForAgent<T>(
 function withExternalMailboxMessage(
   request: AgentRunRequest,
   message: ContextMessage,
+  upwardSteering?: string,
 ): AgentRunRequest {
   if (request.kind === 'retry') return request;
-  const prompt = message.content
+  const basePrompt = message.content
     .filter((part): part is Extract<ContextMessage['content'][number], { type: 'text' }> =>
       part.type === 'text')
     .map((part) => part.text)
     .join('');
+  const prompt = upwardSteering === undefined
+    ? basePrompt
+    : `${basePrompt}\n\n${wrapSystemReminder(upwardSteering)}`;
   if (request.kind === 'mailbox') {
     const requestOrigin = request.message.origin;
     const messageOrigin = message.origin;
@@ -1014,7 +1094,7 @@ function withExternalMailboxMessage(
       requestOrigin?.kind === 'agent_message' &&
       messageOrigin?.kind === 'agent_message' &&
       requestOrigin.messageId === messageOrigin.messageId
-    ) return request;
+    ) return upwardSteering === undefined ? request : { ...request, prompt };
     if (requestOrigin?.kind === 'user' && messageOrigin?.kind === 'user' &&
       request.message.id === message.id) return request;
     return { kind: 'mailbox', prompt, message };

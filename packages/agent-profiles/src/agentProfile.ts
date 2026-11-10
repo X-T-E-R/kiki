@@ -65,6 +65,7 @@ export interface AgentModelProfile extends AgentModelParameters, AgentModelConst
   readonly promptMode?: AgentModelProfilePromptMode;
   readonly prompt?: string;
   readonly promptOverrides?: PromptOverrides;
+  readonly recipeOptions?: Readonly<Record<string, boolean>>;
   readonly main?: import('./promptOverrides').PromptIdentityBranch<AgentModelPromptContent>;
   readonly independent?: import('./promptOverrides').PromptIdentityBranch<AgentModelPromptContent>;
 }

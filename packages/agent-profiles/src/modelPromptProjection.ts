@@ -1,7 +1,7 @@
 import type { AgentModelProfile } from './agentProfile';
 import type { NamedAgentModelProfile, UpdateNamedAgentModelProfileEntry } from '@kiki/protocol';
 
-export interface AgentModelProfilePatch extends Omit<AgentModelProfile, 'when' | 'thinkingEffort' | 'contextStrategy' | 'promptMode' | 'prompt' | 'main' | 'independent' | 'promptOverrides'> {
+export interface AgentModelProfilePatch extends Omit<AgentModelProfile, 'when' | 'thinkingEffort' | 'contextStrategy' | 'promptMode' | 'prompt' | 'main' | 'independent' | 'promptOverrides' | 'recipeOptions'> {
   readonly when?: string | null;
   readonly thinkingEffort?: string | null;
   readonly contextStrategy?: AgentModelProfile['contextStrategy'] | null;
@@ -10,6 +10,7 @@ export interface AgentModelProfilePatch extends Omit<AgentModelProfile, 'when' |
   readonly main?: AgentModelProfile['main'] | null;
   readonly independent?: AgentModelProfile['independent'] | null;
   readonly promptOverrides?: AgentModelProfile['promptOverrides'] | null;
+  readonly recipeOptions?: AgentModelProfile['recipeOptions'] | null;
 }
 
 export function modelPromptBranchToWire(branch: AgentModelProfile['main']): NamedAgentModelProfile['main'] {
@@ -35,6 +36,7 @@ export function modelProfilePatchToWire(entry: AgentModelProfilePatch): UpdateNa
     main: entry.main === null ? null : modelPromptBranchToWire(entry.main),
     independent: entry.independent === null ? null : modelPromptBranchToWire(entry.independent),
     prompt_overrides: entry.promptOverrides as UpdateNamedAgentModelProfileEntry['prompt_overrides'],
+    recipe_options: entry.recipeOptions === null ? null : entry.recipeOptions === undefined ? undefined : { ...entry.recipeOptions },
   };
 }
 
@@ -53,6 +55,7 @@ export function modelProfileUpdateFromWire(entry: UpdateNamedAgentModelProfileEn
     main: entry.main === null ? null : modelPromptBranchFromWire(entry.main),
     independent: entry.independent === null ? null : modelPromptBranchFromWire(entry.independent),
     promptOverrides: entry.prompt_overrides,
+    recipeOptions: entry.recipe_options === null ? null : entry.recipe_options === undefined ? undefined : { ...entry.recipe_options },
   };
 }
 

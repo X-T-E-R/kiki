@@ -47,7 +47,12 @@ import {
 } from './types';
 import { renderNotificationXml } from './notificationXml';
 
+import {
+  formatSubagentParentSteering,
+  SUBAGENT_PARENT_STEERING_VARIANT,
+} from '#/agent/cognition/parentSteering';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IConfigService } from '#/app/config/config';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
@@ -344,6 +349,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     @ILogService private readonly log: ILogService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
+    @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
   ) {
     super();
     this.states.contributeState(taskKey);
@@ -1084,11 +1090,19 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const origins = tasks.map(({ taskId, status }): TaskNotificationOrigin => ({
       taskId, status, notificationId: taskNotificationId(taskId, status),
     }));
+    const newlyConsumedKeys = new Set(
+      origins.map(notificationKey).filter((key) => !this.deliveredNotificationKeys.has(key) && !this.hasDeliveredNotification(key)),
+    );
     await this.dispatcher.dispatch(new TaskWaitDelivered({ keys: origins.map(notificationKey) }));
     await this.dispatcher.flush();
     for (const origin of origins) {
-      this.pendingNotificationRequests.get(notificationKey(origin))?.abort();
+      const key = notificationKey(origin);
+      this.pendingNotificationRequests.get(key)?.abort();
       this.markDeliveredNotification(origin);
+      if (newlyConsumedKeys.has(key)) {
+        const info = this.getTask(origin.taskId);
+        if (info !== undefined) this.appendSubagentReturnSteering(info);
+      }
     }
   }
 
@@ -1559,6 +1573,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
             cleanupPending: undefined,
             stopReason: known.stopReason,
+            parentSteering: known.parentSteering ?? info.parentSteering,
           };
           try {
             const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
@@ -2029,6 +2044,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.scheduledNotificationKeys.delete(key);
       this.deliveredNotificationKeys.add(key);
       this.fireWorkChange();
+      if (origin.kind === 'task') {
+        const info = this.getTask(origin.taskId);
+        if (info !== undefined) this.appendSubagentReturnSteering(info);
+      }
       request.deliverAfterCommit();
     }
   }
@@ -2080,6 +2099,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         toolCalls: [],
         origin: context.origin,
       });
+      this.appendSubagentReturnSteering(info);
       await this.hooks.onWillConsumeNotification.run({ origin: context.origin });
       await this.dispatcher.flush();
       this.markDeliveredNotification(context.origin);
@@ -2088,6 +2108,22 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.scheduledNotificationKeys.delete(notificationKey(context.origin));
       throw error;
     }
+  }
+
+  private appendSubagentReturnSteering(info: AgentTaskInfo): void {
+    if (info.kind !== 'agent' || info.status !== 'completed') return;
+    const parentSteering = info.parentSteering;
+    if (parentSteering === undefined || parentSteering.trim().length === 0) return;
+    this.reminders.appendSystemReminder(
+      formatSubagentParentSteering({
+        agentId: info.agentId ?? info.taskId,
+        label: info.collaborationTaskName ?? info.profile ?? info.description,
+        profile: info.profile,
+        delivery: 'return',
+        content: parentSteering,
+      }),
+      { kind: 'injection', variant: SUBAGENT_PARENT_STEERING_VARIANT },
+    );
   }
 
   private async buildAgentTaskNotificationContext(

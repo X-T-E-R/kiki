@@ -17,7 +17,7 @@ If installation succeeds but applying to the model fails, keep the installation 
 
 An option has an id, a name, an optional description and a boolean default. Options can include or remove text, insert text into a prompt slot, or patch a named Markdown section. The full [option and patch syntax](./prompt-fields.md#option-insertions-and-section-patches) belongs to the package manifest.
 
-Select options on the model or profile that uses the package. Omitted choices use the package defaults; two models can use the same installation with different choices. An option removed by an update produces a diagnostic and is ignored; review the binding's choices before saving again.
+Select options on the model or profile that uses the package; `model_profiles[].recipe_options` in an agent file can also override options for that binding when the selected model matches the entry. Omitted choices use the package defaults; two models or two roles can use the same installation with different choices. An option removed by an update produces a diagnostic and is ignored; review the binding's choices before saving again.
 
 To inspect a choice without saving it, use `klient.global.recipes.get(id, values)` or `GET /api/recipes/{id}?recipe_options=<URL-encoded JSON boolean map>`. The response's `resolved.option_values` contains the effective choices, and `resolved.branches` contains the expanded prompt text.
 

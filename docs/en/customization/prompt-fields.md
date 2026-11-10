@@ -79,7 +79,9 @@ steering_interval_steps = 0
 
 An `[options.<id>]` table requires `name` and boolean `default`; `description` is optional. Option ids use the same regular expression as Recipe ids: `^[a-z0-9][a-z0-9._-]*$`.
 
-A source in `system`, `steering`, `anchor.content`, or the `custom.steering` source under `steering_sources.<source>` may be one `{ text = "..." }` or `{ file = "..." }`, or an array of those sources. Each source may use either `when = "<option-id>"` or `unless = "<option-id>"`, but not both. A gate that names an undeclared option is an error, and `off` cannot be gated. Filtering every source leaves the declared slot empty; an `extends` child does not fall back to the parent for that slot.
+A source in `system`, `steering`, `parent_steering`, `anchor.content`, or the `custom.steering` source under `steering_sources.<source>` may be one `{ text = "..." }` or `{ file = "..." }`, or an array of those sources. Each source may use either `when = "<option-id>"` or `unless = "<option-id>"`, but not both. A gate that names an undeclared option is an error, and `off` cannot be gated. Filtering every source leaves the declared slot empty; an `extends` child does not fall back to the parent for that slot.
+
+`parent_steering` belongs to the subagent branch: whenever that subagent returns a completed result to its parent (foreground `AgentRun`, background completion notification, `TaskWait`, or an autonomous continuation receipt) or sends an upward message to its parent (`AgentNotify` or `AgentSend` to its parent), Kiki appends this guidance to the parent agent's context as a model-only system reminder without adding it to user-facing timeline summaries, notification bodies, or message bubbles.
 
 `prompts.fields` accepts every registered, writable prompt field and uses its normal variable and empty-value validation. Options affect prompt text only; they do not affect model settings, hooks, permissions or fields. `model` uses the existing [per-model configuration](../configuration/config-files.md#models) syntax and validation for tuning settings, including parameters, usage budgets and behavior. It cannot change provider routing, credentials, request identity or permissions. Parameters and behavior remain shared across agent positions; existing main/independent usage budgets retain their separate meanings.
 
@@ -101,7 +103,7 @@ A model's `recipe` can also reference a local file or package directory, such as
 
 A profile can reference the same installed package, or a local Recipe file, without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. A local file or package directory also works: `recipe: ./focus/recipe.toml`, or an absolute path. A profile's relative path resolves from the profile file and is read at bind time.
 
-Select text options with `recipe_options = { research = true }` for the model's Recipe, or with `recipe_options:` in profile frontmatter for the profile's Recipe. Each layer applies its selections only to that layer's Recipe package. An omitted selection uses the option's `default`; an unknown selected id leaves text unchanged and reports a configuration diagnostic. In the GUI, the existing model editor and the existing profile editor for a profile with a declared Recipe show these options as checkboxes.
+Select text options with `recipe_options = { research = true }` for the model's Recipe, or with `recipe_options:` in profile frontmatter for the profile's Recipe; a `model_profiles` entry in an agent file can also declare `recipe_options` to override options when the bound model matches that entry (useful when an option such as a gated `parent_steering` cue should apply only to a specific role-and-model pair). An omitted selection uses the option's `default`; an unknown selected id leaves text unchanged and reports a configuration diagnostic. In the GUI, the existing model editor and the existing profile editor for a profile with a declared Recipe show these options as checkboxes.
 
 Inspect effective option values without changing a binding with `GET /api/recipes/{id}?recipe_options=<URL-encoded JSON boolean map>` in REST or `klient.global.recipes.get(id, values)` in the klient API.
 
@@ -166,7 +168,7 @@ append.main.steering = { text = "Cite sources" }
 prepend.common.system = { file = "preface.md" }
 ```
 
-`prepend` and `append` use `common`, `main` or `independent` branches. Their slots are `system`, `steering`, `anchor` (the anchor's `content`) and `steering_sources.<source>` (the custom steering body). Each insertion slot accepts one `{ text = "..." }` or `{ file = "..." }`, or an array of those sources. After inheritance is merged, each insertion expands to a source gated by `when = "<option-id>"` and is inserted before or after the actual declared slot; a single declared source is treated as an array before insertion.
+`prepend` and `append` use `common`, `main` or `independent` branches. Their slots are `system`, `steering`, `parent_steering`, `anchor` (the anchor's `content`) and `steering_sources.<source>` (the custom steering body). Each insertion slot accepts one `{ text = "..." }` or `{ file = "..." }`, or an array of those sources. After inheritance is merged, each insertion expands to a source gated by `when = "<option-id>"` and is inserted before or after the actual declared slot; a single declared source is treated as an array before insertion.
 
 For section-aware edits, add patch entries to an option:
 

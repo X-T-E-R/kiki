@@ -239,7 +239,10 @@ export interface AgentExecutorSession {
   canResumeBrokenOriginal?(): boolean;
   /** True only before any remote prompt was attempted and with no saved original session to preserve. */
   canRetryBrokenConstruction?(): boolean;
-  steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'>;
+  steer?(
+    message: import('#/agent/contextMemory/types').ContextMessage,
+    trailingMessages?: readonly import('#/agent/contextMemory/types').ContextMessage[],
+  ): Promise<boolean | 'unknown'>;
   updateBinding?(binding: ProfileBindingSnapshot): void;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;

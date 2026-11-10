@@ -49,6 +49,7 @@ export interface SegmentDeclaration {
 export interface PromptGroupDeclaration {
   system?: SlotDeclaration;
   steering?: SlotDeclaration;
+  parent_steering?: SlotDeclaration;
   anchor?: SlotDeclaration;
   fields?: Record<string, string | false>;
   steering_on_turn?: boolean;
@@ -137,7 +138,7 @@ export function readDeclaration(manifest: TomlTable): RecipeDeclarationView {
   const group = (raw: unknown): PromptGroupDeclaration | undefined => {
     if (!isTable(raw)) return undefined;
     const out: {
-      system?: SlotDeclaration; steering?: SlotDeclaration; anchor?: SlotDeclaration;
+      system?: SlotDeclaration; steering?: SlotDeclaration; parent_steering?: SlotDeclaration; anchor?: SlotDeclaration;
       fields?: Record<string, string | false>;
       steering_on_turn?: boolean; steering_on_input?: boolean; steering_interval_steps?: number;
       steering_sources?: Record<string, SteeringSourceDeclaration>;
@@ -153,6 +154,7 @@ export function readDeclaration(manifest: TomlTable): RecipeDeclarationView {
     };
     if (raw['system'] !== undefined) out.system = slot(raw['system'], 'system');
     if (raw['steering'] !== undefined) out.steering = slot(raw['steering'], 'steering');
+    if (raw['parent_steering'] !== undefined) out.parent_steering = slot(raw['parent_steering'], 'parent_steering');
     if (raw['anchor'] !== undefined) out.anchor = slot(raw['anchor'], 'anchor');
     if (isTable(raw['fields'])) {
       const fields: Record<string, string | false> = {};
@@ -222,7 +224,7 @@ export function referencedFiles(declaration: RecipeDeclarationView): string[] {
   const names = new Set<string>();
   const walk = (group: PromptGroupDeclaration | 'same' | 'off' | undefined): void => {
     if (group === undefined || group === 'same' || group === 'off') return;
-    for (const slot of [group.system, group.steering, group.anchor]) collectSlotFiles(names, slot);
+    for (const slot of [group.system, group.steering, group.parent_steering, group.anchor]) collectSlotFiles(names, slot);
     // A source's own prose is a slot like any other, so a rename that missed it
     // would leave the package pointing at a file it no longer ships.
     for (const source of Object.values(group.steering_sources ?? {})) collectSlotFiles(names, source.steering);
@@ -265,7 +267,7 @@ export function slotBufferTarget(slot: SlotDeclaration | undefined): { file: str
 export function writeSlot(
   manifest: TomlTable,
   groupKey: 'prompts' | 'main' | 'independent',
-  slotName: 'system' | 'steering' | 'anchor',
+  slotName: 'system' | 'steering' | 'parent_steering' | 'anchor',
   value: SlotDeclaration,
 ): TomlTable {
   const next = cloneManifest(manifest);
@@ -279,7 +281,7 @@ export function writeSlot(
 export function deleteSlot(
   manifest: TomlTable,
   groupKey: 'prompts' | 'main' | 'independent',
-  slotName: 'system' | 'steering' | 'anchor',
+  slotName: 'system' | 'steering' | 'parent_steering' | 'anchor',
 ): TomlTable {
   const next = cloneManifest(manifest);
   const { root, group } = promptGroups(next, groupKey);

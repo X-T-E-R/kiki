@@ -21,6 +21,7 @@ export interface AgentMeta {
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
+  readonly parentSteering?: string | null;
   readonly executor?: string;
   readonly executorProtocol?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;

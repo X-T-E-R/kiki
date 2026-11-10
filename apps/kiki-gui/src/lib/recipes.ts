@@ -51,7 +51,7 @@ export const RECIPE_POSITIONS = ['main', 'sub', 'independent'] as const;
 export type RecipePosition = (typeof RECIPE_POSITIONS)[number];
 
 /** The prompt slots a branch can carry; `anchor` is optional on every one. */
-export const RECIPE_SLOTS = ['system', 'steering', 'anchor'] as const;
+export const RECIPE_SLOTS = ['system', 'steering', 'parent_steering', 'anchor'] as const;
 export type RecipeSlot = (typeof RECIPE_SLOTS)[number];
 
 /**
@@ -108,8 +108,8 @@ export function recipeOriginFor(
  * resolves to an empty object and must not be shown as an empty document.
  */
 export function recipeBranchIsEmpty(branch: ResolvedRecipeBranch): boolean {
-  return branch.system === undefined && branch.steering === undefined && branch.anchor === undefined
-    && Object.keys(branch.fields).length === 0;
+  return branch.system === undefined && branch.steering === undefined && branch.parent_steering === undefined
+    && branch.anchor === undefined && Object.keys(branch.fields).length === 0;
 }
 
 /** The file names a Recipe package carries, TOML first, then its Markdown. */

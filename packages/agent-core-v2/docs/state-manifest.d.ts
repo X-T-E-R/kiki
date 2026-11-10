@@ -723,6 +723,7 @@ export interface SessionStateSnapshot {
       readonly model?: string;
       readonly thinkingEffort?: string;
       readonly thinkingEffortExplicit?: boolean;
+      readonly parentSteering?: string | null;
       readonly executor?: string;
       readonly executorProtocol?: string;
       readonly negotiated?: /* NegotiatedExecutorCapabilities — packages/agent-core-v2/src/app/agentExecutor/capabilities.ts */ {
@@ -3086,6 +3087,7 @@ export interface AgentStateSnapshot {
               steering_interval_steps?: number;
               system?: string;
               steering?: string;
+              parent_steering?: string;
             };
             sub: {
               fields: {
@@ -3184,6 +3186,7 @@ export interface AgentStateSnapshot {
               steering_interval_steps?: number;
               system?: string;
               steering?: string;
+              parent_steering?: string;
             };
             independent: {
               fields: {
@@ -3282,6 +3285,7 @@ export interface AgentStateSnapshot {
               steering_interval_steps?: number;
               system?: string;
               steering?: string;
+              parent_steering?: string;
             };
           };
           dependencies: readonly {
@@ -3443,6 +3447,7 @@ export interface AgentStateSnapshot {
                   steering_interval_steps?: number;
                   system?: string;
                   steering?: string;
+                  parent_steering?: string;
                 };
                 sub: {
                   fields: {
@@ -3541,6 +3546,7 @@ export interface AgentStateSnapshot {
                   steering_interval_steps?: number;
                   system?: string;
                   steering?: string;
+                  parent_steering?: string;
                 };
                 independent: {
                   fields: {
@@ -3639,6 +3645,7 @@ export interface AgentStateSnapshot {
                   steering_interval_steps?: number;
                   system?: string;
                   steering?: string;
+                  parent_steering?: string;
                 };
               };
               dependencies: readonly {
@@ -3715,6 +3722,7 @@ export interface AgentStateSnapshot {
       readonly slots?: {
         readonly overlay?: string;
         readonly steering?: string;
+        readonly parentSteering?: string;
         readonly anchor?: string;
       };
     };
@@ -4400,6 +4408,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -4465,6 +4474,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -4564,6 +4574,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -4629,6 +4640,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -4720,6 +4732,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -4819,6 +4832,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
@@ -4884,6 +4898,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
@@ -5002,6 +5017,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
@@ -5138,6 +5154,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
@@ -5203,6 +5220,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
@@ -5318,6 +5336,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
@@ -5360,6 +5379,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
@@ -5403,6 +5423,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
@@ -5613,6 +5634,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -5678,6 +5700,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -5796,6 +5819,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
@@ -6137,6 +6161,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6202,6 +6227,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6301,6 +6327,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6366,6 +6393,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6474,6 +6502,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6576,6 +6605,7 @@ export interface AgentStateSnapshot {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 };
+                readonly recipeOptions?: Readonly<Record<string, boolean>>;
                 readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
@@ -6641,6 +6671,7 @@ export interface AgentStateSnapshot {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 };
+                readonly recipeOptions?: Readonly<Record<string, boolean>>;
                 readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
@@ -6759,6 +6790,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6887,6 +6919,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -6952,6 +6985,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly recipeOptions?: Readonly<Record<string, boolean>>;
               readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
@@ -7070,6 +7104,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
@@ -7146,7 +7181,7 @@ export interface AgentStateSnapshot {
           apply_on: 'next-binding-or-context-rebuild';
           channels: readonly {
             id: string;
-            channel: 'system' | 'tool' | 'delegation' | 'model_profile' | 'cognition_overlay' | 'cognition_steering' | 'cognition_anchor';
+            channel: 'system' | 'tool' | 'delegation' | 'model_profile' | 'cognition_overlay' | 'cognition_steering' | 'cognition_parent_steering' | 'cognition_anchor';
             state: 'effective' | 'unsupported' | 'shadowed' | 'inactive';
             sources: readonly {
               surface: string;
@@ -7393,6 +7428,7 @@ export interface AgentStateSnapshot {
                     steering_interval_steps?: number;
                     system?: string;
                     steering?: string;
+                    parent_steering?: string;
                   };
                   sub: {
                     fields: {
@@ -7491,6 +7527,7 @@ export interface AgentStateSnapshot {
                     steering_interval_steps?: number;
                     system?: string;
                     steering?: string;
+                    parent_steering?: string;
                   };
                   independent: {
                     fields: {
@@ -7589,6 +7626,7 @@ export interface AgentStateSnapshot {
                     steering_interval_steps?: number;
                     system?: string;
                     steering?: string;
+                    parent_steering?: string;
                   };
                 };
                 dependencies: readonly {
@@ -7750,6 +7788,7 @@ export interface AgentStateSnapshot {
                         steering_interval_steps?: number;
                         system?: string;
                         steering?: string;
+                        parent_steering?: string;
                       };
                       sub: {
                         fields: {
@@ -7848,6 +7887,7 @@ export interface AgentStateSnapshot {
                         steering_interval_steps?: number;
                         system?: string;
                         steering?: string;
+                        parent_steering?: string;
                       };
                       independent: {
                         fields: {
@@ -7946,6 +7986,7 @@ export interface AgentStateSnapshot {
                         steering_interval_steps?: number;
                         system?: string;
                         steering?: string;
+                        parent_steering?: string;
                       };
                     };
                     dependencies: readonly {
@@ -8022,6 +8063,7 @@ export interface AgentStateSnapshot {
             readonly slots?: {
               readonly overlay?: string;
               readonly steering?: string;
+              readonly parentSteering?: string;
               readonly anchor?: string;
             };
           };
@@ -8729,6 +8771,7 @@ export interface AgentStateSnapshot {
     readonly model?: string;
     readonly thinkingEffort?: string;
     readonly thinkingEffortExplicit?: boolean;
+    readonly parentSteering?: string;
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;
@@ -8866,6 +8909,7 @@ export interface AgentStateSnapshot {
     readonly model?: string;
     readonly thinkingEffort?: string;
     readonly thinkingEffortExplicit?: boolean;
+    readonly parentSteering?: string;
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;

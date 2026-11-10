@@ -42,7 +42,10 @@ export interface IAgentExecutionService {
   /** True when external construction can be retried after no session was opened or its failed wrapper was fully released. */
   canRetryBrokenExecution(): boolean;
   attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
-  steer?(message: ContextMessage): Promise<boolean | 'unknown'>;
+  steer?(
+    message: ContextMessage,
+    trailingMessages?: readonly ContextMessage[],
+  ): Promise<boolean | 'unknown'>;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;
   shutdown(reason?: unknown): Promise<void>;

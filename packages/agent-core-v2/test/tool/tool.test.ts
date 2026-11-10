@@ -1562,8 +1562,116 @@ describe('AgentRun tool execution contract', () => {
     completion.resolve({ summary: 'child complete' });
     await vi.waitFor(() => expect(context.allEvents.filter((event) => event.type === '[rpc]' && event.event === 'task.notified'), JSON.stringify({ task: tasks.getTask(task.taskId), events: context.allEvents.slice(-12) })).toHaveLength(1));
     await context.get(IAgentLoopService).settled();
-    expect(JSON.stringify(context.contextData())).toContain('child complete');
+      expect(JSON.stringify(context.contextData())).toContain('child complete');
     expect(context.allEvents.filter((event) => event.type === '[rpc]' && event.event === 'task.notified')).toHaveLength(1);
+  });
+
+  it('delivers subagent parent_steering to the parent model after foreground AgentRun and TaskWait without polluting tool outputs or SubagentCompleted summaries', async () => {
+    const parentSteering = 'Treat this Sol review verdict as independent evidence.';
+    const fgChildServices = new Map<unknown, unknown>([[
+      IAgentProfileService,
+      {
+        _serviceBrand: undefined,
+        data: () => ({ profileName: 'reviewer', modelAlias: 'mock-model', thinkingLevel: 'off', allowParentNotify: true }),
+        update: () => {},
+        prepareResumeBinding: async () => prepareFixtureResumeBinding({ modelAlias: 'mock-model', thinkingLevel: 'off' }),
+        republishStatus: () => {},
+        getEffectiveThinkingLevel: () => 'off',
+        getParentSteering: () => parentSteering,
+        isToolActive: () => false,
+      },
+    ]]);
+    const bgChildServices = new Map<unknown, unknown>(fgChildServices);
+    const bgCompletion = deferred<{ readonly summary: string }>();
+    const lifecycle = createAgentLifecycleStub({
+      createAgentIds: ['agent-fg-review', 'agent-bg-review'],
+      handleServices: new Map([
+        ['agent-fg-review', fgChildServices],
+        ['agent-bg-review', bgChildServices],
+      ]),
+      runCompletion: async (agentId) =>
+        agentId === 'agent-fg-review' ? { summary: 'Clean review summary.' } : bgCompletion.promise,
+    });
+    lifecycle.addHandle('main', 'agent');
+    const context = ctx = createTestAgent(
+      sessionService(IAgentLifecycleService, lifecycle),
+      sessionService(ISessionSubagentService, lifecycle),
+      sessionService(ISessionCronService, cronStub),
+    );
+    await context.rpc.setPermission({ mode: 'yolo' });
+
+    context.mockNextResponse(
+      { type: 'text', text: 'Running foreground review.' },
+      {
+        type: 'function',
+        id: 'fg-review-call',
+        name: 'AgentRun',
+        arguments: JSON.stringify({ prompt: 'Inspect patch', description: 'FG review', model_alias: 'mock-model', background: false }),
+      },
+    );
+    context.mockNextResponse({ type: 'text', text: 'Evaluated foreground review.' });
+    const fgPrompt = await context.get(IAgentPromptService).enqueue({
+      message: { role: 'user', content: [{ type: 'text', text: 'Run foreground review' }], toolCalls: [], origin: { kind: 'user' } },
+    });
+    await fgPrompt.completion;
+    expect(context.llmCalls).toHaveLength(2);
+    const secondHistory = context.llmCalls[1]!.history;
+    const toolResultMsg = secondHistory.find((msg) => msg.role === 'tool');
+    expect(JSON.stringify(toolResultMsg)).toContain('Clean review summary.');
+    expect(JSON.stringify(toolResultMsg)).not.toContain(parentSteering);
+    expect(JSON.stringify(secondHistory)).toContain(parentSteering);
+    const completedEvents = context.allEvents.filter((e) => e.type === '[wire]' && e.event === 'subagent.completed');
+    expect(JSON.stringify(completedEvents)).not.toContain(parentSteering);
+
+    context.mockNextResponse(
+      { type: 'text', text: 'Starting background review.' },
+      {
+        type: 'function',
+        id: 'bg-review-call',
+        name: 'AgentRun',
+        arguments: JSON.stringify({ prompt: 'Inspect async', description: 'BG review', model_alias: 'mock-model', background: true }),
+      },
+    );
+    context.mockNextResponse({ type: 'text', text: 'Background started.' });
+    const bgStartPrompt = await context.get(IAgentPromptService).enqueue({
+      message: { role: 'user', content: [{ type: 'text', text: 'Start background review' }], toolCalls: [], origin: { kind: 'user' } },
+    });
+    await bgStartPrompt.completion;
+    const bgTaskId = context.get(IAgentTaskService).list(false).find((t) => t.kind === 'agent' && t.agentId === 'agent-bg-review')!.taskId;
+
+    context.mockNextResponse(
+      { type: 'text', text: 'Waiting synchronously for background review.' },
+      {
+        type: 'function',
+        id: 'wait-bg-review',
+        name: 'TaskWait',
+        arguments: JSON.stringify({
+          timeout: 10,
+          task_id: bgTaskId,
+          sync_wait: true,
+          sync_reason: 'Need review verdict before editing in the same turn',
+        }),
+      },
+    );
+    context.mockNextResponse({ type: 'text', text: 'Consumed via TaskWait.' });
+    const waitPrompt = await context.get(IAgentPromptService).enqueue({
+      message: { role: 'user', content: [{ type: 'text', text: 'Collect via TaskWait' }], toolCalls: [], origin: { kind: 'user' } },
+    });
+    await vi.waitFor(() => {
+      expect(context.allEvents.some((e) => e.type === '[wire]' && e.event === 'context.append_loop_event' && JSON.stringify(e).includes('wait-bg-review'))).toBe(true);
+    });
+    bgCompletion.resolve({ summary: 'Async review summary.' });
+    await waitPrompt.completion;
+    const finalHistory = context.llmCalls.at(-1)!.history;
+    const waitToolMsg = finalHistory.filter((msg) => msg.role === 'tool').at(-1);
+    expect(JSON.stringify(waitToolMsg)).toContain('Async review summary.');
+    expect(JSON.stringify(waitToolMsg)).not.toContain(parentSteering);
+    const parentSteerInjections = context.context.get().filter(
+      (msg) => msg.origin?.kind === 'injection' && msg.origin.variant === 'subagent_parent_steering',
+    );
+    expect(parentSteerInjections).toHaveLength(2);
+    expect(JSON.stringify(parentSteerInjections[1])).toContain('agent-bg-review');
+    expect(JSON.stringify(parentSteerInjections[1])).toContain(parentSteering);
   });
 
   it('keeps cheap targets recommended while accepting executable costly overrides', async () => {

@@ -1290,4 +1290,110 @@ describe('per-model cognition overlay', () => {
     expect(home.system()).toContain('SPACE A UPDATED');
     expect(home.system()).toContain('INHERITED ROLE');
   });
+
+  it('gates subagent parent_steering via model_profiles.recipe_options without leaking to non-review roles or non-matching models', async () => {
+    const pack = join(homeDir, 'sol-pack');
+    await mkdir(pack, { recursive: true });
+    await writeFile(join(pack, 'sub.md'), 'SOL SUB SYSTEM');
+    await writeFile(join(pack, 'review-parent.md'), 'CALIBRATE SOL REVIEW VERDICT');
+    await writeFile(
+      join(pack, 'recipe.toml'),
+      stringify({
+        schema_version: 1,
+        id: 'sol-behavior',
+        name: 'Sol Behavior',
+        version: '1.0.0',
+        options: {
+          review_calibration: { name: 'Review calibration', default: false },
+        },
+        prompts: {
+          system: { file: 'sub.md' },
+          parent_steering: { file: 'review-parent.md', when: 'review_calibration' },
+          main: { system: { text: 'SOL MAIN SYSTEM' } },
+        },
+      }),
+    );
+
+    ctx = createTestAgent(
+      { autoConfigure: false },
+      homeDirServices(homeDir),
+      appServices((reg) => {
+        reg.define(IRecipeService, RecipeService);
+        reg.define(IRecipeSourceReader, RecipeSourceReader);
+      }),
+    );
+    const recipes = ctx.get(IRecipeService);
+    const installed = await recipes.install({
+      preview_id: (await recipes.preview({ source: { locator: pack } })).preview_id,
+    });
+    const current = ctx.kimiConfig.models![MOCK_MODEL]!;
+    ctx.kimiConfig = {
+      ...ctx.kimiConfig,
+      models: {
+        ...ctx.kimiConfig.models,
+        [MOCK_MODEL]: { ...current, recipe: `installation:${installed.installation_id}` },
+        [OTHER_MODEL]: {
+          provider: 'test-provider',
+          model: OTHER_MODEL,
+          maxContextSize: 1_000_000,
+          defaultEffort: 'off',
+        },
+      },
+    };
+    ctx.get(IModelService).loadAll(ctx.get(IConfigService).get('models'), MOCK_MODEL);
+
+    const reviewerDef = parseAgentFileText({
+      path: join(homeDir, 'agents/reviewer.md'),
+      source: 'explicit',
+      text: `---
+name: reviewer
+description: Independent reviewer
+model_alias: ${MOCK_MODEL}
+model_profiles:
+  - alias: ${MOCK_MODEL}
+    recipe_options:
+      review_calibration: true
+  - alias: ${OTHER_MODEL}
+---
+REVIEWER BODY`,
+    });
+    const reviewerProfile = agentProfileFromFile(reviewerDef, () => ({
+      text: 'HOST BASE',
+      environment: { cwd: homeDir, date: { disclosed: false } },
+    }));
+    const implementerProfile = normalizeAgentProfile({
+      name: 'implementer',
+      modelAlias: MOCK_MODEL,
+      systemPrompt: () => 'IMPLEMENTER BODY',
+    });
+
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ resolvedProfile: reviewerProfile, model: MOCK_MODEL, delegationPosition: 'sub' });
+    expect(profile.getParentSteering()).toBe('CALIBRATE SOL REVIEW VERDICT');
+    const subDiag = await profile.getPromptDiagnostics();
+    expect(subDiag.channels.find((ch) => ch.channel === 'cognition_parent_steering')).toMatchObject({
+      id: 'recipe.model.parent_steering',
+      state: 'effective',
+      recipe: {
+        slot: 'parent_steering',
+        content: 'CALIBRATE SOL REVIEW VERDICT',
+      },
+    });
+
+    await profile.bind({ resolvedProfile: implementerProfile, model: MOCK_MODEL, delegationPosition: 'sub' });
+    expect(profile.getParentSteering()).toBeUndefined();
+    const implDiag = await profile.getPromptDiagnostics();
+    expect(implDiag.channels.find((ch) => ch.channel === 'cognition_parent_steering')).toMatchObject({
+      id: 'recipe.model.parent_steering',
+      state: 'inactive',
+    });
+
+    await profile.bind({ resolvedProfile: reviewerProfile, model: MOCK_MODEL, delegationPosition: 'main' });
+    expect(profile.getParentSteering()).toBeUndefined();
+
+    await profile.bind({ resolvedProfile: reviewerProfile, model: OTHER_MODEL, delegationPosition: 'sub' });
+    expect(profile.getParentSteering()).toBeUndefined();
+    const otherDiag = await profile.getPromptDiagnostics();
+    expect(otherDiag.recipe_model_binding).toBeUndefined();
+  });
 });

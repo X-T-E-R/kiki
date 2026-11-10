@@ -69,6 +69,7 @@ export function mergePublished(accepted: Record<string, string>, sent: Record<st
 const PROSE_SLOTS = [
   { slot: 'system', label: 'st.recipe.slot.system' },
   { slot: 'steering', label: 'st.recipe.slot.steering' },
+  { slot: 'parent_steering', label: 'st.recipe.slot.parent_steering' },
 ] as const;
 
 export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange }: {
@@ -350,7 +351,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
   const saveDisabled = writing || blocked;
 
   /** Write one slot's prose back into the manifest and into any file it owns. */
-  const setSlot = (group: 'prompts' | 'main' | 'independent', slot: 'system' | 'steering', value: SlotDeclaration) => {
+  const setSlot = (group: 'prompts' | 'main' | 'independent', slot: 'system' | 'steering' | 'parent_steering', value: SlotDeclaration) => {
     if (parseError !== undefined) return;
     const nextManifest = writeSlot(parseRecipeManifest(manifestText), group, slot, value);
     const rendered = renderManifest(nextManifest);
@@ -953,7 +954,7 @@ const RECIPE_SOURCE_MODE_LABEL = {
 } as const satisfies Readonly<Record<SteeringSourceDeclaration['mode'], I18nKey>>;
 
 function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFile }: {
-  slot: 'system' | 'steering';
+  slot: 'system' | 'steering' | 'parent_steering';
   label: string;  declaration: RecipeDeclarationView | undefined;
   files: Readonly<Record<string, string>>;
   onInline: (text: string) => void;

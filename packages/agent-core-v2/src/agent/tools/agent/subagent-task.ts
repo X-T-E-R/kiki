@@ -29,6 +29,7 @@ export type SubagentHandle = {
   readonly modelSelection?: 'auto';
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
+  readonly parentSteering?: string;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;
@@ -104,6 +105,7 @@ export class SubagentTask implements AgentTask {
     readonly description: string,
     private readonly abortController: AbortController,
     collaboration?: { readonly taskName: string; readonly agentType: string },
+    private readonly resolveParentSteering?: () => string | undefined,
   ) {
     this.agentId = handle.agentId;
     this.profile = handle.profileName;
@@ -145,6 +147,7 @@ export class SubagentTask implements AgentTask {
   }
 
   toInfo(base: AgentTaskInfoBase): SubagentTaskInfo {
+    const resolved = this.resolveParentSteering?.();
     return {
       ...base,
       kind: 'agent',
@@ -155,6 +158,7 @@ export class SubagentTask implements AgentTask {
       model: this.model,
       thinkingEffort: this.thinkingEffort,
       thinkingEffortExplicit: this.thinkingEffortExplicit,
+      parentSteering: resolved ?? this.handle.parentSteering,
       executorId: this.executorId,
       executorProtocol: this.executorProtocol,
       collaborationTaskName: this.collaborationTaskName,

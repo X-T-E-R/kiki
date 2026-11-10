@@ -38,7 +38,7 @@ const boundPromptInputsSchema = z.object({
       steeringSources: modelSteeringSourcesSchema(z.union([z.object({ text: z.string() }).strict(), z.string(), z.array(z.string())])).optional(),
     }).optional(),
     recipe: z.object({ installation_id: z.string(), resolved: z.unknown(), anchorSystem: z.string().optional() }).optional(),
-    anchor: z.string().optional(), slots: z.object({ overlay: z.string().optional(), steering: z.string().optional(), anchor: z.string().optional() }),
+    anchor: z.string().optional(), slots: z.object({ overlay: z.string().optional(), steering: z.string().optional(), parentSteering: z.string().optional(), anchor: z.string().optional() }),
     steeringSources: modelSteeringSourcesSchema(z.string()).optional(),
   }),
   variables: z.record(z.string(), z.string()), revision: z.string(),

@@ -172,6 +172,50 @@ describe('Recipe accepted revisions', () => {
     expect(selected.branches.main).toMatchObject({ steering: 'CUE\n\nCITE\n\nSOURCES', anchor: { content: 'ANCHOR\n\nCITE ANCHOR' }, steering_sources: { task: { custom: { steering: 'TASK\n\nCITE TASK' } } } });
     expect(selected.origins.find((origin) => origin.file === 'preface.md')?.source).toBe(child);
   });
+  it('resolves, gates, patches, inherits, copies and exports parent_steering symmetrically with text slots', async () => {
+    sources.set(parent, {
+      'recipe.toml': stringify({
+        schema_version: 1,
+        id: 'parent',
+        name: 'Parent',
+        version: '1.0.0',
+        options: {
+          review_calibration: {
+            name: 'Review calibration',
+            default: false,
+            prepend: { common: { parent_steering: { text: 'PREFACE' } } },
+            patch: [{ slot: 'common.parent_steering', section: 'Verdict', action: 'append', content: { text: 'PATCHED' } }],
+          },
+          suppress: { name: 'Suppress', default: false },
+        },
+        prompts: {
+          system: { text: 'SUB SYSTEM' },
+          parent_steering: [
+            { file: 'parent-steer.md', when: 'review_calibration' },
+            { text: 'EXTRA', unless: 'suppress' },
+          ],
+        },
+      }),
+      'parent-steer.md': '# Verdict\n\nCALIBRATE',
+    });
+    const installed = await install(parent);
+    const defaults = await service.resolve(installed.installation_id);
+    expect(defaults.branches.sub.parent_steering).toBe('EXTRA');
+    const gatedEmpty = await service.resolve(installed.installation_id, undefined, { suppress: true });
+    expect(gatedEmpty.branches.sub.parent_steering).toBe('');
+    const calibrated = await service.resolve(installed.installation_id, undefined, { review_calibration: true, suppress: true });
+    expect(calibrated.branches.sub.parent_steering).toBe('PREFACE\n\n# Verdict\n\nCALIBRATE\n\nPATCHED');
+    expect(calibrated.origins.some((origin) => origin.slot === 'parent_steering' && origin.file === 'parent-steer.md')).toBe(true);
+    sources.set(child, { 'recipe.toml': manifest('child', { parent_steering: 'off' }, parent) + stringify({ options: { review_calibration: { name: 'Review calibration', default: false } } }) });
+    const childOff = await install(child);
+    expect((await service.resolve(childOff.installation_id)).branches.sub.parent_steering).toBeUndefined();
+    const copy = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'copy', name: 'Copy' });
+    expect((await service.resolve(copy.summary.installation_id, undefined, { review_calibration: true, suppress: true })).branches.sub.parent_steering).toBe('PREFACE\n\n# Verdict\n\nCALIBRATE\n\nPATCHED');
+    const exported = await service.export(installed.installation_id);
+    sources.set(grandchild, exported.files);
+    const reimported = await install(grandchild);
+    expect((await service.resolve(reimported.installation_id, undefined, { review_calibration: true, suppress: true })).branches.sub.parent_steering).toBe('PREFACE\n\n# Verdict\n\nCALIBRATE\n\nPATCHED');
+  });
   it.each([
     ['prepend', '# Target\n\nINSERT\n\nBODY\n\n## Nested\n\nCHILD\n\n# Next\n\nEND'],
     ['append', '# Target\n\nBODY\n\n## Nested\n\nCHILD\n\nINSERT\n\n# Next\n\nEND'],

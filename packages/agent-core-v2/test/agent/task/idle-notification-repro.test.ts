@@ -626,6 +626,32 @@ describe('autonomous child receipt return', () => {
       await dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('appends subagent parent_steering to the parent model context on autonomous receipt return while keeping notification XML clean', async () => {
+    const { parent, child, dispose } = await receiptPair();
+    vi.spyOn(child.get(IAgentProfileService), 'getParentSteering').mockReturnValue('Calibrate autonomous review findings.');
+    try {
+      child.mockNextResponse({ type: 'text', text: 'Autonomous review finished.' });
+      parent.mockNextResponse({ type: 'text', text: 'Evaluated autonomous review.' });
+      const parentTurn = parent.untilTurnEnd();
+      const handle = await child.get(IAgentPromptService).enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: 'Run autonomous review.' }], toolCalls: [] },
+      });
+      await handle.completion;
+      await parentTurn;
+      await parent.get(IAgentLoopService).settled();
+      const taskNotification = parent.context.get().find((m) => m.origin?.kind === 'task');
+      expect(JSON.stringify(taskNotification)).toContain('Autonomous review finished.');
+      expect(JSON.stringify(taskNotification)).not.toContain('Calibrate autonomous review findings.');
+      const steerReminder = parent.context.get().find(
+        (m) => m.origin?.kind === 'injection' && m.origin.variant === 'subagent_parent_steering',
+      );
+      expect(JSON.stringify(steerReminder)).toContain('Calibrate autonomous review findings.');
+      expect(JSON.stringify(parent.llmCalls[0]!.history)).toContain('Calibrate autonomous review findings.');
+    } finally {
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('task notification dispatch capacity', () => {

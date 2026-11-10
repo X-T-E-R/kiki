@@ -559,6 +559,7 @@ const HOST_AUTO_INJECTION_VARIANTS = new Set<string>([
   'goal_budget_stop',
   'goal_fork_cleared',
   'model_steering',
+  'subagent_parent_steering',
   'background_task_status',
   'permission_mode',
   'todo_list_reminder',

@@ -81,7 +81,9 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   }
   const meta = await retry(() => metadata.read());
   const previous = meta.agents?.[child.id];
-  const profile = child.accessor.get(IAgentProfileService).data();
+  const profileService = child.accessor.get(IAgentProfileService);
+  const profile = profileService.data();
+  const parentSteering = profileService.getParentSteering?.() ?? (typeof previous?.parentSteering === 'string' && previous.parentSteering.trim().length > 0 ? previous.parentSteering.trim() : undefined);
   const profileName = profile.profileName ?? previous?.labels?.['profileName'] ?? 'subagent';
   const description = previous?.taskId === undefined || previous.taskId === taskId
     ? `Continue ${profileName} agent`
@@ -93,6 +95,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const contextTokens = child.accessor.get(IAgentTokenCountingService)?.statusSize();
   await retry(() => metadata.updateAgent(child.id, (current) => acknowledgeResumeOutcome({
     ...current, status: 'completed', taskId, completedAt: receipt.endedAt, resultSummary: receipt.summary, usage, contextTokens, error: undefined,
+    parentSteering: parentSteering ?? null,
     labels: { ...current.labels, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
   }, taskId, receipt.endedAt)));
   const dispatcher = requester.accessor.get(IEventDispatcher);
@@ -107,6 +110,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     agentId: child.id, profile: profileName,
     model: profile.modelAlias,
     thinkingEffort: profile.effectiveThinkingLevel,
+    parentSteering,
     executorId: profile.executorId,
     executorProtocol: profile.executorProtocol,
   };

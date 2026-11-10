@@ -394,6 +394,7 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'context_strategy',
   'max_completion_tokens',
   'prompt_overrides',
+  'recipe_options',
   'main',
   'independent',
 ]);
@@ -472,6 +473,7 @@ function parseModelProfiles(
       promptOverrides: Object.hasOwn(item, 'prompt_overrides')
         ? parsePromptOverridesField(item['prompt_overrides'], `${prefix}.prompt_overrides`, filePath)
         : undefined,
+      recipeOptions: parseRecipeOptions(item['recipe_options'], filePath, `${prefix}.recipe_options`),
     });
   }
   return out;
@@ -606,12 +608,13 @@ function parseExecutorOptions(
 function parseRecipeOptions(
   value: unknown,
   filePath: string,
+  field = 'recipe_options',
 ): AgentFileDefinition['recipeOptions'] {
   if (value === undefined) return undefined;
   const parsed = recipeOptionValuesSchema.safeParse(value);
   if (!parsed.success) {
     throw new AgentFileParseError(
-      `Frontmatter field "recipe_options" in ${filePath} must be a mapping of recipe ids to booleans`,
+      `Frontmatter field "${field}" in ${filePath} must be a mapping of recipe ids to booleans`,
     );
   }
   return parsed.data;

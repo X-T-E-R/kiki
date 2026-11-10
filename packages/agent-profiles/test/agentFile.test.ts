@@ -61,16 +61,39 @@ recipe: example
 recipe_options:
   research: true
   citations.v2: false
+model_profiles:
+  - alias: sol
+    recipe_options:
+      review_calibration: true
+allowed_subagents:
+  - name: reviewer
+    model_profiles:
+      - alias: sol
+        recipe_options:
+          review_calibration: false
 ---
 body`);
     expect(definition.recipeOptions).toEqual({ research: true, 'citations.v2': false });
-    expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).recipeOptions).toEqual({ research: true, 'citations.v2': false });
+    expect(definition.modelProfiles?.[0]?.recipeOptions).toEqual({ review_calibration: true });
+    expect(definition.subagentLeases?.['reviewer']?.modelProfiles?.[0]?.recipeOptions).toEqual({ review_calibration: false });
+    const projected = agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }));
+    expect(projected.recipeOptions).toEqual({ research: true, 'citations.v2': false });
+    expect(projected.modelProfiles?.[0]?.recipeOptions).toEqual({ review_calibration: true });
     for (const value of ['research: "true"', 'research: 1', 'Research: true', '- research']) {
       expect(() => parse(`---
 name: helper
 description: d
 recipe_options:
   ${value}
+---
+body`)).toThrow(/recipe_options.*mapping of recipe ids to booleans/);
+      expect(() => parse(`---
+name: helper
+description: d
+model_profiles:
+  - alias: sol
+    recipe_options:
+      ${value}
 ---
 body`)).toThrow(/recipe_options.*mapping of recipe ids to booleans/);
     }

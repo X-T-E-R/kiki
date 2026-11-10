@@ -20,6 +20,13 @@ export function mergeModelParameters(
   };
 }
 
+export function mergeRecipeOptions(
+  ...layers: readonly (Readonly<Record<string, boolean>> | undefined)[]
+): Record<string, boolean> | undefined {
+  const defined = layers.filter((layer): layer is Readonly<Record<string, boolean>> => layer !== undefined);
+  return defined.length === 0 ? undefined : Object.assign({}, ...defined);
+}
+
 export function resolveModelProfileEntry(
   entries: readonly AgentModelProfile[] | undefined,
   alias: string,

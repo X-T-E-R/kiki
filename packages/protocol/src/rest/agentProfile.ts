@@ -54,6 +54,7 @@ export const namedAgentModelProfileSchema = z.object({
   main: agentModelPromptBranchSchema.optional(),
   independent: agentModelPromptBranchSchema.optional(),
   prompt_overrides: modelPromptOverridesSchema.optional(),
+  recipe_options: recipeOptionValuesSchema.optional(),
 });
 export type NamedAgentModelProfile = z.infer<typeof namedAgentModelProfileSchema>;
 
@@ -495,7 +496,7 @@ export const agentPromptSourceSchema = z.object({
 });
 export const agentPromptChannelSchema = z.object({
   id: z.string(),
-  channel: z.enum(['system', 'tool', 'delegation', 'model_profile', 'cognition_overlay', 'cognition_steering', 'cognition_anchor']),
+  channel: z.enum(['system', 'tool', 'delegation', 'model_profile', 'cognition_overlay', 'cognition_steering', 'cognition_parent_steering', 'cognition_anchor']),
   state: z.enum(['effective', 'inactive', 'shadowed', 'unsupported']),
   selection: z.enum(['common', 'main', 'independent', 'off']).optional(),
   reason: z.string().optional(),
@@ -663,6 +664,7 @@ export const updateNamedAgentModelProfileEntrySchema = namedAgentModelProfileSch
   main: agentModelPromptBranchSchema.nullable().optional(),
   independent: agentModelPromptBranchSchema.nullable().optional(),
   prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
+  recipe_options: recipeOptionValuesSchema.nullable().optional(),
 }).strict().superRefine((value, ctx) => {
   if ((value.prompt === undefined) !== (value.prompt_mode === undefined) || (value.prompt === null) !== (value.prompt_mode === null)) ctx.addIssue({ code: 'custom', path: ['prompt'], message: 'Set prompt and prompt_mode together, or set both to null to remove the common prompt' });
   if (value.prompt !== undefined && value.prompt !== null && value.prompt_mode !== undefined && value.prompt_mode !== null) {

@@ -19,7 +19,7 @@ const sourceSchema = z.union([z.object({ text: z.string(), ...gate }).strict(), 
   .refine((value) => value.when === undefined || value.unless === undefined, 'when and unless are mutually exclusive');
 const slotSchema = z.union([sourceSchema, z.array(sourceSchema).min(1).max(64), z.literal('off')]);
 const insertionSlotSchema = z.union([plainSourceSchema, z.array(plainSourceSchema).min(1).max(64)]);
-const insertionContentSchema = z.object({ system: insertionSlotSchema.optional(), steering: insertionSlotSchema.optional(), anchor: insertionSlotSchema.optional(),
+const insertionContentSchema = z.object({ system: insertionSlotSchema.optional(), steering: insertionSlotSchema.optional(), parent_steering: insertionSlotSchema.optional(), anchor: insertionSlotSchema.optional(),
   steering_sources: z.partialRecord(z.enum(modelSteeringSourceIds), insertionSlotSchema).optional() }).strict();
 const insertionSchema = z.object({ common: insertionContentSchema.optional(), main: insertionContentSchema.optional(), independent: insertionContentSchema.optional() }).strict();
 const patchSchema = z.object({ slot: z.string().regex(recipePatchSlotPattern), section: z.string().min(1).optional(), action: z.enum(['prepend', 'append', 'before', 'after', 'replace', 'remove']), content: insertionSlotSchema.optional() }).strict().superRefine((value, ctx) => {
@@ -29,7 +29,7 @@ const patchSchema = z.object({ slot: z.string().regex(recipePatchSlotPattern), s
 const optionSchema = z.object({ name: z.string().min(1), description: z.string().optional(), default: z.boolean(), prepend: insertionSchema.optional(), append: insertionSchema.optional(), patch: z.array(patchSchema).max(64).optional() }).strict();
 const cadenceSchema = recipeBranchSchema.pick({ steering_on_turn: true, steering_on_input: true, steering_interval_steps: true });
 const contentSchema = cadenceSchema.extend({
-  system: slotSchema.optional(), steering: slotSchema.optional(),
+  system: slotSchema.optional(), steering: slotSchema.optional(), parent_steering: slotSchema.optional(),
   steering_sources: modelSteeringSourcesSchema(slotSchema).optional(),
   anchor: z.union([z.literal('off'), z.object({ content: slotSchema, steps: z.number().int().positive().max(1000).default(1), scope: z.enum(['session', 'turn']).default('session') }).strict()]).optional(),
   fields: z.record(z.string(), z.union([z.string(), z.literal(false)])).optional(),
@@ -47,7 +47,7 @@ export type RecipeManifest = z.infer<typeof recipeManifestSchema>;
 export type Origin = Omit<RecipeValueOrigin, 'position' | 'slot'>;
 export interface TextValue { text: string; origins: Origin[]; parts?: RecipeTextPart[] }
 export interface RecipeContent extends z.infer<typeof cadenceSchema> {
-  system?: TextValue | 'off'; steering?: TextValue | 'off';
+  system?: TextValue | 'off'; steering?: TextValue | 'off'; parent_steering?: TextValue | 'off';
   steering_sources?: ModelSteeringSources<TextValue | 'off'>;
   anchor?: { content: TextValue | 'off'; steps: number; scope: 'session' | 'turn' } | 'off';
   fields?: Record<string, { value: string | false; origin: Origin }>;
@@ -105,6 +105,7 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
     }
     return { ...cadence, steering_sources, cadenceOrigins: Object.fromEntries(Object.keys(cadence).map((key) => [key, base])),
       system: raw.system === undefined ? undefined : await text(raw.system), steering: raw.steering === undefined ? undefined : await text(raw.steering),
+      parent_steering: raw.parent_steering === undefined ? undefined : await text(raw.parent_steering),
       anchor: raw.anchor === undefined || raw.anchor === 'off' ? raw.anchor : { ...raw.anchor, content: await text(raw.anchor.content) }, fields };
   };
   const raw = manifest.prompts ?? {};
@@ -131,7 +132,7 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
     const option = manifest.options![id]!;
     const patch: RecipeTextPatch[] = [];
     for (const action of ['prepend', 'append'] as const) for (const [branch, slots] of Object.entries(option[action] ?? {})) {
-      for (const slot of ['system', 'steering', 'anchor'] as const) {
+      for (const slot of ['system', 'steering', 'parent_steering', 'anchor'] as const) {
         const source = slots[slot];
         if (source !== undefined) patch.push({ slot: `${branch}.${slot}`, action, content: await text(source) as TextValue });
       }
@@ -145,7 +146,7 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
 }
 export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration): RecipeDeclaration {
   const content = (a: RecipeContent, b: RecipeContent): RecipeContent => ({
-    system: b.system ?? a.system, steering: b.steering ?? a.steering, anchor: b.anchor ?? a.anchor, fields: { ...a.fields, ...b.fields },
+    system: b.system ?? a.system, steering: b.steering ?? a.steering, parent_steering: b.parent_steering ?? a.parent_steering, anchor: b.anchor ?? a.anchor, fields: { ...a.fields, ...b.fields },
     steering_sources: mergeModelSteeringSources(a.steering_sources, b.steering_sources),
     steering_on_turn: b.steering_on_turn ?? a.steering_on_turn, steering_on_input: b.steering_on_input ?? a.steering_on_input,
     steering_interval_steps: b.steering_interval_steps ?? a.steering_interval_steps, cadenceOrigins: { ...a.cadenceOrigins, ...b.cadenceOrigins },
@@ -180,7 +181,8 @@ export function resolveRecipe(input: RecipeDeclaration, dependencies: RecipeLock
       const setting = content.steering_sources?.[source];
       if (setting !== undefined) steering_sources![source] = { mode: setting.mode, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === 'off' ? '' : slot(`steering_sources.${source}`, setting.custom.steering) } };
     }
-    return { ...cadence, steering_sources, system: slot('system', content.system), steering: slot('steering', content.steering), anchor: anchorText === undefined || anchor === undefined || anchor === 'off' ? undefined : { content: anchorText, steps: anchor.steps, scope: anchor.scope }, fields };
+    const parent_steering = slot('parent_steering', content.parent_steering);
+    return { ...cadence, steering_sources, system: slot('system', content.system), steering: slot('steering', content.steering), parent_steering, anchor: anchorText === undefined || anchor === undefined || anchor === 'off' ? undefined : { content: anchorText, steps: anchor.steps, scope: anchor.scope }, fields };
   };
   const branches = { main: resolve('main'), sub: resolve('sub'), independent: resolve('independent') };
   const model = typeof declaration.model === 'object' ? declaration.model : {};

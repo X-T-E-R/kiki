@@ -15,7 +15,10 @@ class AgentMessageStepRequest extends MessageStepRequest {
   readonly delivered: Promise<boolean>;
   private resolveDelivered!: (delivered: boolean) => void;
 
-  constructor(message: ContextMessage) {
+  constructor(
+    message: ContextMessage,
+    private readonly trailingMessages: readonly ContextMessage[] = [],
+  ) {
     super(message, {
       kind: 'steer',
       mergeable: true,
@@ -25,6 +28,10 @@ class AgentMessageStepRequest extends MessageStepRequest {
     this.delivered = new Promise((resolve) => {
       this.resolveDelivered = resolve;
     });
+  }
+
+  override resolveContextMessages(): readonly ContextMessage[] {
+    return [...super.resolveContextMessages(), ...this.trailingMessages];
   }
 
   protected override onSettled(): void {
@@ -58,10 +65,13 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
       : { state: 'idle' as const };
   }
 
-  async steer(message: ContextMessage): Promise<boolean> {
+  async steer(
+    message: ContextMessage,
+    trailingMessages?: readonly ContextMessage[],
+  ): Promise<boolean> {
     if (this.loop.status().finalizing) await this.loop.recoverPersistence({ throwOnFailure: true });
     if (this.loop.status().state !== 'running') return false;
-    const request = new AgentMessageStepRequest(message);
+    const request = new AgentMessageStepRequest(message, trailingMessages);
     try {
       this.loop.enqueue(request);
       return await Promise.race([

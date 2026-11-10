@@ -79,7 +79,9 @@ steering_interval_steps = 0
 
 `[options.<id>]` 表必须包含 `name` 和布尔值 `default`；`description` 可选。选项 id 使用与 Recipe id 相同的正则：`^[a-z0-9][a-z0-9._-]*$`。
 
-`system`、`steering`、`anchor.content` 或 `steering_sources.<source>` 下 `custom.steering` 的正文源可以是一个 `{ text = "..." }` 或 `{ file = "..." }`，也可以是这些来源组成的数组。每个来源可以使用 `when = "<option-id>"` 或 `unless = "<option-id>"`，但不能同时使用。门控引用未声明的选项会报错，`off` 不能添加门控。过滤掉全部来源后，该 slot 仍是已声明的空 slot；`extends` 不会为它回退到父配方。
+`system`、`steering`、`parent_steering`、`anchor.content` 或 `steering_sources.<source>` 下 `custom.steering` 的正文源可以是一个 `{ text = "..." }` 或 `{ file = "..." }`，也可以是这些来源组成的数组。每个来源可以使用 `when = "<option-id>"` 或 `unless = "<option-id>"`，但不能同时使用。门控引用未声明的选项会报错，`off` 不能添加门控。过滤掉全部来源后，该 slot 仍是已声明的空 slot；`extends` 不会为它回退到父配方。
+
+`parent_steering` 声明在 subagent 分支上：当该 subagent 向父 Agent 返回最终结果（前台 `AgentRun` 返回、后台完成通知、`TaskWait` 或自主续航回执）或向父 Agent 发送上行消息（`AgentNotify` 或发给父级的 `AgentSend`）时，Kiki 会把这段指引作为仅模型可见的系统提醒附加进父 Agent 上下文，不会拼进面向用户的时间线摘要、通知正文或气泡。
 
 `prompts.fields` 接受所有已注册且可写的提示词字段，复用原有变量与空值校验。选项只影响提示词正文，不影响模型、hooks、权限或 fields。`model` 复用 [逐模型配置](../configuration/config-files.md#models) 的语法与校验，承载参数、usage 预算和 behavior 等调教设置；不能更改供应商路由、凭据、请求身份或权限。参数和 behavior 仍跨 Agent 位置共享；原有 main/independent usage 预算保留各自含义。
 
@@ -101,7 +103,7 @@ await klient.global.kosong.updateModel("example-model", {
 
 Profile 可引用同一已安装包，或一份本地 Recipe 文件，且不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。本地文件或包目录同样可用：`recipe: ./focus/recipe.toml`，或绝对路径。Profile 的相对路径按自身文件所在目录解析，并在绑定时直接读取。
 
-模型的 Recipe 可用 `recipe_options = { research = true }` 选择正文选项，profile 的 Recipe 可在 frontmatter 中用 `recipe_options:` 选择。每一层只把选择应用于自己的 Recipe 包；未写选择时使用选项的 `default`。选择了未知 id 时正文保持不变，只生成配置诊断。在 GUI 中，现有模型编辑器和声明了 Recipe 的 profile 现有编辑位置会把这些选项显示为复选框。
+模型的 Recipe 可用 `recipe_options = { research = true }` 选择正文选项，profile 的 Recipe 可在 frontmatter 中用 `recipe_options:` 选择；agent 文件的 `model_profiles` 条目也可以声明 `recipe_options`，当实际绑定的模型匹配该条目时覆盖选项（适合只在特定角色+模型组合下开启某项开关，例如为审查角色上的特定模型开启 `parent_steering` 门控）。未写选择时使用选项的 `default`。选择了未知 id 时正文保持不变，只生成配置诊断。在 GUI 中，现有模型编辑器和声明了 Recipe 的 profile 现有编辑位置会把这些选项显示为复选框。
 
 不改变绑定即可查看生效的选项值：REST 使用 `GET /api/recipes/{id}?recipe_options=<经过 URL 编码的 JSON 布尔映射>`，klient API 使用 `klient.global.recipes.get(id, values)`。
 
@@ -166,7 +168,7 @@ append.main.steering = { text = "Cite sources" }
 prepend.common.system = { file = "preface.md" }
 ```
 
-`prepend` 和 `append` 使用 `common`、`main` 或 `independent` 分支。目标 slot 可以是 `system`、`steering`、`anchor`（指 anchor 的 `content`）或 `steering_sources.<source>`（指该来源的 `custom.steering`）。每个插入 slot 接受一个 `{ text = "..." }` 或 `{ file = "..." }`，也可以接受这些来源组成的数组。完成 `extends` 合并后，每个插入项展开为带 `when = "<option-id>"` 的正文源，插在实际声明 slot 的前面或后面；单个正文源会先按数组处理。
+`prepend` 和 `append` 使用 `common`、`main` 或 `independent` 分支。目标 slot 可以是 `system`、`steering`、`parent_steering`、`anchor`（指 anchor 的 `content`）或 `steering_sources.<source>`（指该来源的 `custom.steering`）。每个插入 slot 接受一个 `{ text = "..." }` 或 `{ file = "..." }`，也可以接受这些来源组成的数组。完成 `extends` 合并后，每个插入项展开为带 `when = "<option-id>"` 的正文源，插在实际声明 slot 的前面或后面；单个正文源会先按数组处理。
 
 需要按 section 修改正文时，在选项下声明 patch：
 

@@ -1269,6 +1269,132 @@ describe('agent collaboration safe-boundary delivery', () => {
     }
   });
 
+  it('injects subagent parent_steering on upward child-to-parent messages (running steer and idle wake) without polluting agent_message content or downward messages', async () => {
+    const parentSteer = 'Calibrate upward Sol review message.';
+    let resolveFirst!: (value: AgentLLMRequestFinish) => void;
+    const first = new Promise<AgentLLMRequestFinish>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    let calls = 0;
+    const histories: unknown[] = [];
+    const reply = (text: string): AgentLLMRequestFinish => ({
+      message: { role: 'assistant', content: [{ type: 'text', text }], toolCalls: [] },
+      usage: { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
+    });
+    const requester: IAgentLLMRequesterService = {
+      _serviceBrand: undefined,
+      prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+      invalidatePromptSnapshots: () => 0,
+      armAnthropicResponseCapture: () => { throw new Error('unused'); },
+      anthropicResponseCaptureStatus: async () => null,
+      stopAnthropicResponseCapture: () => { throw new Error('unused'); },
+      request: async () => {
+        calls += 1;
+        histories.push(structuredClone(ctx.context.get()));
+        if (calls === 1) {
+          resolveEntered();
+          return first;
+        }
+        return reply(`step-${calls}`);
+      },
+      start(overrides, onPart, requestSignal) {
+        return { trace: { traceId: undefined }, result: this.request(overrides, onPart, requestSignal) };
+      },
+    };
+    const ctx = createTestAgent(agentService(IAgentLLMRequesterService, requester));
+    const childCtx = createTestAgent();
+    const main = testAgentHandle(ctx, 'main');
+    const child = testAgentHandle(childCtx, 'agent-reviewer');
+    const dispatch = dispatchHarness(async (target, request, options) => ({
+      child: target,
+      request: request as DispatchRun['request'],
+      started: target.agent.accessor.get(IAgentExecutionService).run(
+        request as DispatchRun['request'],
+        { signal: options.signal },
+      ),
+    }));
+    const metadata = metadataHarness({
+      main: {},
+      'agent-reviewer': {
+        type: 'sub',
+        parentAgentId: 'main',
+        labels: { profileName: 'reviewer' },
+        parentSteering: parentSteer,
+      },
+    });
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycleHarness([main, child]).service,
+      sessionContext(),
+      metadata,
+      dispatch,
+    );
+    try {
+      const initial = ctx.rpc.prompt({ input: [{ type: 'text', text: 'working' }] });
+      await entered;
+      await service.send({
+        sourceAgentId: 'agent-reviewer',
+        sourceTaskName: 'reviewer',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'In-flight review note.',
+        idempotencyKey: 'upward-running-steer',
+        idleWake: 'parent',
+      });
+      resolveFirst(reply('step-1'));
+      await vi.waitFor(() => expect(calls).toBe(2));
+      await initial;
+      await ctx.get(IAgentLoopService).settled();
+
+      const agentMessagesAfterSteer = ctx.context.get().filter((m) => m.origin?.kind === 'agent_message');
+      expect(agentMessagesAfterSteer).toHaveLength(1);
+      expect(JSON.stringify(agentMessagesAfterSteer[0])).toContain('In-flight review note.');
+      expect(JSON.stringify(agentMessagesAfterSteer[0])).not.toContain(parentSteer);
+      expect(JSON.stringify(histories[1])).toContain(parentSteer);
+
+      await service.send({
+        sourceAgentId: 'agent-reviewer',
+        sourceTaskName: 'reviewer',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'Idle wake review note.',
+        idempotencyKey: 'upward-idle-wake',
+        idleWake: 'parent',
+      });
+      await vi.waitFor(() => expect(calls).toBe(3));
+      await ctx.get(IAgentLoopService).settled();
+      const parentInjections = ctx.context.get().filter(
+        (m) => m.origin?.kind === 'injection' && m.origin.variant === 'subagent_parent_steering',
+      );
+      expect(parentInjections).toHaveLength(2);
+
+      childCtx.mockNextResponse({ type: 'text', text: 'child ack' });
+      await service.send({
+        sourceAgentId: 'main',
+        sourceTaskName: 'root',
+        targetAgentId: 'agent-reviewer',
+        targetTaskName: 'reviewer',
+        content: 'Downward instruction.',
+        idempotencyKey: 'downward-no-steer',
+        idleWake: 'owned-child',
+      });
+      await vi.waitFor(() => expect(childCtx.llmCalls).toHaveLength(1));
+      await childCtx.get(IAgentLoopService).settled();
+      expect(childCtx.context.get().filter(
+        (m) => m.origin?.kind === 'injection' && m.origin.variant === 'subagent_parent_steering',
+      )).toHaveLength(0);
+    } finally {
+      resolveFirst(reply('cleanup'));
+      await service.dispose();
+      await childCtx.dispose();
+      await ctx.dispose();
+    }
+  });
+
   it('does not block a completion sender while an external main is busy with its native loop idle', async () => {
     const target = agentHandle('main', { executorId: 'grok-acp' });
     target.setRunning(true);

@@ -393,6 +393,30 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+    it('restores subagent parent_steering alongside an adopted bounded outcome notification on cold reconcile', async () => {
+      await persistence.writeTask(persistedAgent());
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'inspected the tree',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_100,
+        parentSteering: 'Calibrate cold restored review findings.',
+      });
+      await reconcileWithoutReadingJournal(ctx, background);
+      expect(background.getTask('agent-track001')).toMatchObject({
+        status: 'completed',
+        parentSteering: 'Calibrate cold restored review findings.',
+      });
+      const taskMsg = ctx.context.get().find((m) => m.origin?.kind === 'task' && m.origin.taskId === 'agent-track001');
+      expect(JSON.stringify(taskMsg)).toContain('inspected the tree');
+      expect(JSON.stringify(taskMsg)).not.toContain('Calibrate cold restored review findings.');
+      const steerMsg = ctx.context.get().find(
+        (m) => m.origin?.kind === 'injection' && m.origin.variant === 'subagent_parent_steering',
+      );
+      expect(JSON.stringify(steerMsg)).toContain('Calibrate cold restored review findings.');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
     it('records an empty bounded outcome as failed without treating it as success', async () => {
       await persistence.writeTask(persistedAgent());
       await rememberOutcome(ctx, 'agent-child', {

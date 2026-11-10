@@ -10,7 +10,7 @@ type PromptEffectiveData = AgentPromptDiagnostics;
 const GROUPS = [
   { id: 'system', channels: ['system', 'delegation', 'model_profile', 'cognition_overlay'] },
   { id: 'tool', channels: ['tool'] },
-  { id: 'steering', channels: ['cognition_steering'] },
+  { id: 'steering', channels: ['cognition_steering', 'cognition_parent_steering'] },
   { id: 'anchor', channels: ['cognition_anchor'] },
 ] as const;
 
@@ -107,7 +107,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
 
 function RecipeSteeringDetails({ entry }: { entry: AgentPromptChannel }) {
   const { t } = useI18n();
-  if (entry.channel !== 'cognition_steering') return null;
+  if (entry.channel !== 'cognition_steering' && entry.channel !== 'cognition_parent_steering') return null;
   const recipe = entry.recipe;
   if (recipe === undefined && entry.state !== 'effective') return null;
   return <div className="space-y-2" data-prompt-recipe-steering>

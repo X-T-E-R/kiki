@@ -12223,6 +12223,7 @@ export const zh = {
   'st.recipe.updateForNewBinding': '有新版本可用。',
   'st.recipe.slot.system': '提示正文',
   'st.recipe.slot.steering': '追加提醒',
+  'st.recipe.slot.parent_steering': '回传父级提醒',
   'st.recipe.slot.anchor': '锚定提示',
   'st.recipe.slotFields': '提示字段',
   'st.recipe.scope.session': '会话',
