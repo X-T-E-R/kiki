@@ -6,7 +6,7 @@ export default {
     {
       name: 'hero-shell',
       path: '/new',
-      waitFor: ['[data-phase="hero"]', 'textarea:not([disabled])'],
+      waitFor: ['[data-phase="hero"]', '[data-composer-input][contenteditable="true"]:not([aria-disabled="true"])'],
       setup: [
         { waitFor: '[data-phase="hero"]' },
         { scroll: 'top' },

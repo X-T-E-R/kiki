@@ -37,6 +37,7 @@ const WORKERS = Math.max(1, Number(process.env.KIKI_SMOKE_WORKERS ?? 4));
 const SCENARIO_TIMEOUT_MS = 60_000;
 const RUN_TIMEOUT_MS = 5 * 60_000;
 const VIEWPORT = { width: 1440, height: 900 };
+const COMPOSER_READY = '[data-composer-input][contenteditable="true"]:not([aria-disabled="true"])';
 
 /** Settle finite animations, then capture. Mirrors visual-proof's `shot`. */
 async function shot(page, name) {
@@ -54,7 +55,7 @@ async function openSession(page, link, sessionId) {
   const row = page.locator(`[data-session-row="${sessionId}"]`).first();
   await row.waitFor({ timeout: 20_000 });
   await row.click();
-  await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+  await page.waitForSelector(COMPOSER_READY, { timeout: 15_000 });
 }
 
 async function threadDisplayWalk(page, link, control, locale = 'en') {
@@ -72,8 +73,8 @@ async function threadDisplayWalk(page, link, control, locale = 'en') {
   }
   const before = (await control({ action: 'session', session_id: parentId })).data.record.updated_at;
   const shots = [await shot(page, `${prefix}-before-activity`)];
-  await page.fill('textarea', 'Run the child review.');
-  await page.press('textarea', 'Control+Enter');
+  await page.fill('[data-composer-input]', 'Run the child review.');
+  await page.press('[data-composer-input]', 'Control+Enter');
   await page.waitForSelector('text=Child activity completed.', { timeout: 15_000 });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await nested.waitFor({ timeout: 20_000 });
@@ -145,7 +146,7 @@ const SCENARIOS = [
     async run(page, link) {
       await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-phase="hero"]', { timeout: 20_000 });
-      await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+      await page.waitForSelector(COMPOSER_READY, { timeout: 15_000 });
       return [await shot(page, 'hero-desktop')];
     },
   },
@@ -154,8 +155,8 @@ const SCENARIOS = [
     tags: ['smoke', 'transcript', 'approvals'],
     async run(page, link) {
       await openSession(page, link, 'session_fixture_basic');
-      await page.fill('textarea', 'Run the fixture flow.');
-      await page.press('textarea', 'Control+Enter');
+      await page.fill('[data-composer-input]', 'Run the fixture flow.');
+      await page.press('[data-composer-input]', 'Control+Enter');
       await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
       await page.waitForSelector('[data-approval-id]', { timeout: 20_000 });
       const shots = [await shot(page, 'basic-stream-approval')];
@@ -439,7 +440,7 @@ const SCENARIOS = [
       // the same three-mode panel, on a session whose conversation can be
       // renewed without a switch having to fail first.
       await page.goto(link('/s/session_fixture_switch_child/agent/agent-research'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('textarea:not([disabled])', { timeout: 25_000 });
+      await page.waitForSelector(COMPOSER_READY, { timeout: 25_000 });
       const shots = [await shot(page, 'model-switch-child-workspace')];
 
       const menu = page.locator('[data-agent-actions]');
@@ -470,8 +471,8 @@ const SCENARIOS = [
     tags: ['smoke', 'agents'],
     async run(page, link) {
       await openSession(page, link, 'session_fixture_subagents');
-      await page.fill('textarea', 'Delegate the fixture work.');
-      await page.press('textarea', 'Control+Enter');
+      await page.fill('[data-composer-input]', 'Delegate the fixture work.');
+      await page.press('[data-composer-input]', 'Control+Enter');
       // Simultaneous subagents read as one "Worked · 2 subagents" group; the
       // per-agent cards exist once the reader opens it.
       await page.locator('[data-activity-toggle]').first().click();
@@ -485,8 +486,8 @@ const SCENARIOS = [
     tags: ['smoke', 'interactions'],
     async run(page, link) {
       await openSession(page, link, 'session_fixture_question');
-      await page.fill('textarea', 'Ask me the fixture questions.');
-      await page.press('textarea', 'Control+Enter');
+      await page.fill('[data-composer-input]', 'Ask me the fixture questions.');
+      await page.press('[data-composer-input]', 'Control+Enter');
       const card = page.locator('[data-question-card]');
       await card.waitFor({ timeout: 20_000 });
       return [await shot(page, 'question-card')];
@@ -497,8 +498,8 @@ const SCENARIOS = [
     tags: ['smoke', 'connection'],
     async run(page, link, control) {
       await openSession(page, link, 'session_fixture_reconnect');
-      await page.fill('textarea', 'Start the two-segment stream.');
-      await page.press('textarea', 'Control+Enter');
+      await page.fill('[data-composer-input]', 'Start the two-segment stream.');
+      await page.press('[data-composer-input]', 'Control+Enter');
       await page.waitForSelector('text=Segment A', { timeout: 20_000 });
       await control({ action: 'drop_ws' });
       await page.locator('[data-app-banner]').waitFor({ timeout: 10_000 });
@@ -716,7 +717,7 @@ const SCENARIOS = [
     async run(page, link) {
       await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-phase="hero"]', { timeout: 20_000 });
-      await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+      await page.waitForSelector(COMPOSER_READY, { timeout: 15_000 });
       return [await shot(page, 'hero-zh')];
     },
   },
@@ -834,8 +835,8 @@ const SCENARIOS = [
  */
 async function walkRowActions(page, link, control, localeSuffix) {
   await openSession(page, link, 'session_fixture_subagents');
-  await page.fill('textarea', 'Delegate the fixture work.');
-  await page.press('textarea', 'Control+Enter');
+  await page.fill('[data-composer-input]', 'Delegate the fixture work.');
+  await page.press('[data-composer-input]', 'Control+Enter');
   await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   // The fixture flow waits for its agents, so no late receipt ever lands:
   // inject one — a subagent whose completion arrives after its dispatching
