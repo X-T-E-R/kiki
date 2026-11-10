@@ -504,7 +504,7 @@ const UserMessage = memo(function UserMessage({
   const isServerLoading = !isServerFailed && serverRemaining && (automaticTextRead || serverStatus?.status === 'loading');
   const anyRange = continuation.pending.some((ref) => reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
   const incomplete = block.contentPending === true || continuation.pending.length > 0;
-  const inConversationHistory = block.promptOutcome === undefined || block.promptOutcome.delivered;
+  const inConversationHistory = block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered);
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && inConversationHistory && !incomplete;
   const canLoadIncomplete = continuation.pending.length > 0 && continuation.canRequest === true && !anyRange;
   const anyContinuationFailed = continuation.pending.some((ref) => continuation.statusOf(ref)?.status === 'error');

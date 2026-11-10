@@ -91,6 +91,12 @@ export interface PromptOutcome {
   readonly errorDetails?: string;
   /** True when the message reached a turn; false when it never started. */
   readonly delivered: boolean;
+  /**
+   * True when the message is recorded in canonical conversation history (a
+   * turn or a `message.delivery` context anchor), even if it never opened a
+   * turn; false for prompt-only settlements that never entered model context.
+   */
+  readonly inHistory?: boolean;
 }
 
 /** A settled prompt whose message is outside the loaded window. */

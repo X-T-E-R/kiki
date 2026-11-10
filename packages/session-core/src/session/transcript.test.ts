@@ -5950,6 +5950,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       promptOutcome: {
         status: 'blocked',
         delivered: false,
+        inHistory: true,
         error: 'Blocked by UserPromptSubmit hook (timed out)',
       },
     });
@@ -5969,6 +5970,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       promptOutcome: {
         status: 'blocked',
         delivered: false,
+        inHistory: true,
         error: 'Blocked by UserPromptSubmit hook (timed out)',
       },
     });
@@ -6002,6 +6004,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       text: longSteerText.slice(0, steerRef.offset),
       contentSource: { kind: 'prompt', id: 'p-steer-only' },
       contentPending: true,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        inHistory: false,
+      },
     });
     const hydratedSteerSnapshot = patchTranscriptContent(steerSnapshot, {
       ref: steerRef,
@@ -6014,6 +6021,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       text: longSteerText,
       contentSource: { kind: 'prompt', id: 'p-steer-only' },
       contentPending: false,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        inHistory: false,
+      },
     });
 
     const longDeliveryText = 'DELIVERY_HEAD:' + 'standalone-mailbox-chunk-'.repeat(160) + ':DELIVERY_TAIL';

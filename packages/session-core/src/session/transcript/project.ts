@@ -2339,6 +2339,8 @@ interface PromptOutcomeContext {
   readonly windowStartMs: number | undefined;
   /** promptId / message id → the turn it opened. */
   readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly error?: string; readonly errorDetails?: string }>;
+  /** Message ids recorded in canonical conversation history (`message.delivery` / turn). */
+  readonly historyIds: ReadonlySet<string>;
 }
 
 function promptOutcomeContext(
@@ -2346,8 +2348,20 @@ function promptOutcomeContext(
   items: AgentTranscriptProjectionSource['items'],
 ): PromptOutcomeContext {
   const turns = new Map<string, { turnId: string; error?: string; errorDetails?: string }>();
+  const historyIds = new Set<string>();
   let windowStartMs: number | undefined;
   for (const item of items as readonly { readonly kind: string }[]) {
+    if (item.kind === 'marker') {
+      const marker = item as { readonly marker?: string; readonly markerId?: string; readonly payload?: unknown };
+      if (marker.marker === 'message.delivery') {
+        const payload = typeof marker.payload === 'object' && marker.payload !== null ? marker.payload as Record<string, unknown> : undefined;
+        const messageId =
+          (payload === undefined ? undefined : recordString(payload, 'messageId')) ??
+          (marker.markerId?.startsWith('message-delivery:') ? marker.markerId.slice('message-delivery:'.length) : undefined);
+        if (messageId !== undefined) historyIds.add(messageId);
+      }
+      continue;
+    }
     if (item.kind !== 'turn') continue;
     const turn = item as unknown as {
       readonly turnId: string;
@@ -2362,7 +2376,10 @@ function promptOutcomeContext(
     const identity = identityFromTurnOrigin(turn.origin);
     const entry = { turnId: turn.turnId, error: turn.error, errorDetails: turn.errorDetails };
     for (const key of [turn.promptId, identity.promptId, identity.userMessageId, turnMessageId(turn)]) {
-      if (key !== undefined) turns.set(key, entry);
+      if (key !== undefined) {
+        turns.set(key, entry);
+        historyIds.add(key);
+      }
     }
   }
   if (windowStartMs === undefined) {
@@ -2371,7 +2388,7 @@ function promptOutcomeContext(
       if (at !== undefined && (windowStartMs === undefined || at < windowStartMs)) windowStartMs = at;
     }
   }
-  return { windowStartMs, turns };
+  return { windowStartMs, turns, historyIds };
 }
 
 /** A newer prompt for the same message already settled it (retry, regenerate, repeat failure). */
@@ -2391,12 +2408,23 @@ function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, 
   const turn =
     context.turns.get(prompt.promptId) ??
     (prompt.userMessageId === undefined ? undefined : context.turns.get(prompt.userMessageId));
+  const delivered = turn !== undefined || user?.turnId !== undefined;
+  const inHistory =
+    delivered ||
+    user?.promptOutcome?.inHistory === true ||
+    user?.contentSource?.kind === 'marker' ||
+    user?.contentSource?.kind === 'turn' ||
+    user?.contentSource?.kind === 'frame' ||
+    context.historyIds.has(prompt.promptId) ||
+    (prompt.userMessageId !== undefined && context.historyIds.has(prompt.userMessageId)) ||
+    (user?.userMessageId !== undefined && context.historyIds.has(user.userMessageId));
   return {
     status: prompt.status,
     at: prompt.finishedAt,
     error: turn?.error ?? prompt.error,
     errorDetails: turn?.errorDetails ?? prompt.errorDetails,
-    delivered: turn !== undefined || user?.turnId !== undefined,
+    delivered,
+    inHistory,
   };
 }
 

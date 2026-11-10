@@ -5023,8 +5023,8 @@ describe('virtualized transcript scrolling', () => {
     expect(readDraft(sessionId)).toBe(fullText);
     expect(row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBeNull();
     expect(row().querySelector('[data-row-action="copy"]')).not.toBeNull();
-    expect(row().querySelector('[data-row-action="edit"]')).toBeNull();
-    expect(row().querySelector('[data-row-action="fork"]')).toBeNull();
+    expect(row().querySelector('[data-row-action="edit"]')).not.toBeNull();
+    expect(row().querySelector('[data-row-action="fork"]')).not.toBeNull();
 
     const controllerSessionId = 'session_blocked_controller_hydration';
     const { useSyncExternalStore } = await import('react');
@@ -5138,8 +5138,8 @@ describe('virtualized transcript scrolling', () => {
       });
       expect(readDraft(controllerSessionId)).toBe(fullText);
       expect(ctrlRow().querySelector('[data-row-action="copy"]')).not.toBeNull();
-      expect(ctrlRow().querySelector('[data-row-action="edit"]')).toBeNull();
-      expect(ctrlRow().querySelector('[data-row-action="fork"]')).toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="edit"]')).not.toBeNull();
+      expect(ctrlRow().querySelector('[data-row-action="fork"]')).not.toBeNull();
     } finally {
       controller.close();
     }
@@ -5275,6 +5275,133 @@ describe('virtualized transcript scrolling', () => {
     expect(deliveredFailedRow.querySelector('[data-row-action="copy"]')).not.toBeNull();
     expect(deliveredFailedRow.querySelector('[data-row-action="edit"]')).not.toBeNull();
     expect(deliveredFailedRow.querySelector('[data-row-action="fork"]')).not.toBeNull();
+
+    const { TranscriptWireAdapter, TranscriptFactReducer, AgentTranscript } = await import('@kiki/transcript');
+    const legacyStore = new AgentTranscript('main');
+    const legacyWireAdapter = new TranscriptWireAdapter('main');
+    const legacyReducer = new TranscriptFactReducer(legacyStore);
+    const legacyRecords = [
+      {
+        type: 'turn.started',
+        time: 1_767_225_600_000,
+        turnId: 0,
+      },
+      {
+        type: 'turn.prompt',
+        time: 1_767_225_600_050,
+        turnId: 0,
+        promptId: 'p-prior-turn',
+        userMessageId: 'um-prior-turn',
+        content: [{ type: 'text', text: 'initial completed turn' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_message',
+        time: 1_767_225_600_100,
+        delivery: { deliveryId: 'd-prior', turnId: 0, deliveredAt: '2026-01-01T00:00:00.100Z' },
+        message: {
+          id: 'um-prior-turn',
+          role: 'user',
+          content: [{ type: 'text', text: 'initial completed turn' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      },
+      {
+        type: 'turn.ended',
+        time: 1_767_225_600_500,
+        turnId: 0,
+        reason: 'completed',
+      },
+      {
+        type: 'prompt.enqueued',
+        time: 1_767_225_601_000,
+        promptId: 'p-legacy-blocked-delivery',
+        userMessageId: 'um-legacy-blocked-delivery',
+        content: [{ type: 'text', text: 'legacy hook-blocked message written to context before fix' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'prompt.submitted',
+        time: 1_767_225_601_100,
+        promptId: 'p-legacy-blocked-delivery',
+        userMessageId: 'um-legacy-blocked-delivery',
+        content: [{ type: 'text', text: 'legacy hook-blocked message written to context before fix' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_message',
+        time: 1_767_225_601_200,
+        message: {
+          id: 'um-legacy-blocked-delivery',
+          role: 'user',
+          content: [{ type: 'text', text: 'legacy hook-blocked message written to context before fix' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      },
+      {
+        type: 'prompt.completed',
+        time: 1_767_225_601_300,
+        promptId: 'p-legacy-blocked-delivery',
+        userMessageId: 'um-legacy-blocked-delivery',
+        reason: 'blocked',
+      },
+      {
+        type: 'context.append_message',
+        time: 1_767_225_601_400,
+        message: {
+          id: 'hook-msg-legacy',
+          role: 'assistant',
+          content: [{ type: 'text', text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (legacy)\n</hook_result>' }],
+          toolCalls: [],
+          origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+        },
+      },
+    ];
+    for (const record of legacyRecords) {
+      legacyReducer.apply(legacyWireAdapter.add(record));
+    }
+    legacyReducer.apply(legacyWireAdapter.finish());
+    const legacySnapshot = legacyStore.snapshot();
+    expect(legacySnapshot.items.some((item) => item.kind === 'marker' && item.marker === 'message.delivery' && item.markerId === 'message-delivery:um-legacy-blocked-delivery')).toBe(true);
+    const legacyState = projectAgentTranscriptView(
+      createViewState('session_r1_legacy_blocked_delivery'),
+      'main',
+      legacySnapshot,
+      { cold: true },
+    );
+    const legacyUser = legacyState.blocks.find(
+      (block) => block.kind === 'user' && block.userMessageId === 'um-legacy-blocked-delivery',
+    );
+    expect(legacyUser).toMatchObject({
+      kind: 'user',
+      userMessageId: 'um-legacy-blocked-delivery',
+      turnId: undefined,
+      promptOutcome: {
+        status: 'blocked',
+        delivered: false,
+        inHistory: true,
+        error: 'Blocked by UserPromptSubmit hook (legacy)',
+      },
+    });
+    const legacyRoot = makeRoot();
+    await renderSettled(
+      legacyRoot.root,
+      <Transcript
+        state={legacyState}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        rowActions={actions}
+      />,
+    );
+    const legacyRow = legacyRoot.container.querySelector('[data-block-id="user-um-legacy-blocked-delivery"]')!;
+    expect(legacyRow.querySelector('[data-row-action="copy"]')).not.toBeNull();
+    expect(legacyRow.querySelector('[data-row-action="edit"]')).not.toBeNull();
+    expect(legacyRow.querySelector('[data-row-action="fork"]')).not.toBeNull();
+    expect(legacyRow.querySelector('[data-prompt-outcome-retry]')).not.toBeNull();
 
     const deliveryFullText = 'MAILBOX_START:' + 'standalone-delivery-'.repeat(160) + ':MAILBOX_END';
     const canonicalDeliverySnapshot: AgentTranscriptSnapshot = {

@@ -1723,6 +1723,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
           promptOutcome: {
             status: 'blocked',
             delivered: false,
+            inHistory: false,
             error: 'Blocked by UserPromptSubmit hook (policy)',
           },
         });
