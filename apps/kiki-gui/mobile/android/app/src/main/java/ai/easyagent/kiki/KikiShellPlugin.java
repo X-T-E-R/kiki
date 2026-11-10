@@ -95,6 +95,31 @@ public class KikiShellPlugin extends Plugin {
         final boolean mutualProofVerified;
         final boolean mutualRevokedVerified;
         final boolean mutualDisabledVerified;
+        final boolean inboundEnabled;
+
+        HandshakeResult(
+            boolean ok,
+            boolean redirected,
+            int statusCode,
+            String targetHomeId,
+            String targetHostId,
+            String targetLabel,
+            boolean mutualProofVerified,
+            boolean mutualRevokedVerified,
+            boolean mutualDisabledVerified,
+            boolean inboundEnabled
+        ) {
+            this.ok = ok;
+            this.redirected = redirected;
+            this.statusCode = statusCode;
+            this.targetHomeId = targetHomeId;
+            this.targetHostId = targetHostId;
+            this.targetLabel = targetLabel;
+            this.mutualProofVerified = mutualProofVerified;
+            this.mutualRevokedVerified = mutualRevokedVerified;
+            this.mutualDisabledVerified = mutualDisabledVerified;
+            this.inboundEnabled = inboundEnabled;
+        }
 
         HandshakeResult(
             boolean ok,
@@ -107,15 +132,18 @@ public class KikiShellPlugin extends Plugin {
             boolean mutualRevokedVerified,
             boolean mutualDisabledVerified
         ) {
-            this.ok = ok;
-            this.redirected = redirected;
-            this.statusCode = statusCode;
-            this.targetHomeId = targetHomeId;
-            this.targetHostId = targetHostId;
-            this.targetLabel = targetLabel;
-            this.mutualProofVerified = mutualProofVerified;
-            this.mutualRevokedVerified = mutualRevokedVerified;
-            this.mutualDisabledVerified = mutualDisabledVerified;
+            this(
+                ok,
+                redirected,
+                statusCode,
+                targetHomeId,
+                targetHostId,
+                targetLabel,
+                mutualProofVerified,
+                mutualRevokedVerified,
+                mutualDisabledVerified,
+                true
+            );
         }
 
         HandshakeResult(
@@ -127,7 +155,7 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this(ok, redirected, statusCode, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false);
+            this(ok, redirected, statusCode, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, true);
         }
 
         HandshakeResult(
@@ -138,11 +166,11 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, true);
         }
 
         HandshakeResult(boolean ok, boolean redirected, String targetHomeId, String targetHostId, String targetLabel) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false, false, false);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false, false, false, true);
         }
     }
 
@@ -286,8 +314,25 @@ public class KikiShellPlugin extends Plugin {
                     call.resolve(result);
                     return;
                 }
+                if (pairedProbe && identityMatches && (hs.mutualDisabledVerified || !hs.inboundEnabled)) {
+                    result.put("ok", false);
+                    result.put("status", hs.statusCode);
+                    result.put("reason", "unreachable");
+                    result.put("inboundEnabled", hs.inboundEnabled);
+                    result.put("mutualProofVerified", false);
+                    result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
+                    if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
+                        result.put("targetHomeId", hs.targetHomeId);
+                    }
+                    if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
+                        result.put("targetHostId", hs.targetHostId);
+                    }
+                    call.resolve(result);
+                    return;
+                }
                 result.put("ok", true);
                 result.put("status", hs.statusCode);
+                result.put("inboundEnabled", hs.inboundEnabled);
                 result.put("mutualProofVerified", hs.mutualProofVerified);
                 result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
                 if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
@@ -305,10 +350,17 @@ public class KikiShellPlugin extends Plugin {
             if (pairedProbe && (hs.statusCode == 401 || hs.statusCode == 403)) {
                 result.put("ok", false);
                 result.put("status", hs.statusCode);
-                result.put("reason", hs.mutualRevokedVerified ? "pairing_revoked" : "unverified_handshake_proof");
+                String reason = hs.mutualRevokedVerified
+                    ? "pairing_revoked"
+                    : (hs.mutualDisabledVerified ? "unreachable" : "unverified_handshake_proof");
+                result.put("reason", reason);
                 result.put("authRejected", hs.mutualRevokedVerified);
                 result.put("mutualProofVerified", false);
                 result.put("mutualRevokedVerified", hs.mutualRevokedVerified);
+                result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
+                if (hs.mutualDisabledVerified) {
+                    result.put("inboundEnabled", false);
+                }
                 call.resolve(result);
                 return;
             }
@@ -858,12 +910,14 @@ public class KikiShellPlugin extends Plugin {
                 return "identity_mismatch";
             }
             if (hs.mutualRevokedVerified) return "pairing_revoked";
-            if (hs.mutualDisabledVerified) return "unreachable";
+            if (hs.mutualDisabledVerified || !hs.inboundEnabled) return "unreachable";
             if (!hs.mutualProofVerified) return "unverified_handshake_proof";
             return null;
         }
         if (hs.statusCode == 401 || hs.statusCode == 403) {
-            return hs.mutualRevokedVerified ? "pairing_revoked" : "unverified_handshake_proof";
+            if (hs.mutualRevokedVerified) return "pairing_revoked";
+            if (hs.mutualDisabledVerified) return "unreachable";
+            return "unverified_handshake_proof";
         }
         return "unreachable";
     }
@@ -953,10 +1007,18 @@ public class KikiShellPlugin extends Plugin {
                         }
                     }
                 }
-                if (!inboundEnabled && !mutualVerified && !mutualRevoked) {
-                    mutualDisabled = true;
-                }
-                return new HandshakeResult(true, false, code, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled);
+                return new HandshakeResult(
+                    true,
+                    false,
+                    code,
+                    homeId,
+                    hostId,
+                    label,
+                    mutualVerified,
+                    mutualRevoked,
+                    mutualDisabled,
+                    inboundEnabled
+                );
             }
             boolean mutualRevoked = false;
             boolean mutualDisabled = false;
@@ -974,7 +1036,7 @@ public class KikiShellPlugin extends Plugin {
                     );
                 }
             }
-            return new HandshakeResult(false, false, code, "", "", "", false, mutualRevoked, mutualDisabled);
+            return new HandshakeResult(false, false, code, "", "", "", false, mutualRevoked, mutualDisabled, !mutualDisabled);
         } catch (Exception ignored) {
             /* unreachable or non-JSON */
         } finally {

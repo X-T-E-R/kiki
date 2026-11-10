@@ -713,6 +713,7 @@ async function probeServer(origin, probeOptions = {}) {
         mutualProofVerified: Boolean(res?.mutualProofVerified),
         mutualRevokedVerified: Boolean(res?.mutualRevokedVerified),
         mutualDisabledVerified: Boolean(res?.mutualDisabledVerified),
+        inboundEnabled: typeof res?.inboundEnabled === 'boolean' ? res.inboundEnabled : undefined,
       };
     } catch {
       if (signal?.aborted === true) {

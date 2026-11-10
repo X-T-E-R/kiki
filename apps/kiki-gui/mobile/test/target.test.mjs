@@ -1570,6 +1570,7 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
   }
   const fields = section('    private static final SecureRandom NONCE_RANDOM', '    @Override\n    public void load()');
   const load = section('    public void load() {', '    @PluginMethod\n    public void scanQr');
+  const probeMethod = section('    @PluginMethod\n    public void probe(PluginCall call)', '    @PluginMethod\n    public void claimPair').replaceAll('    @PluginMethod\n', '');
   const openMethods = section('    @PluginMethod\n    public void open(PluginCall call)', '    @PluginMethod\n    public void forgetServer').replaceAll('    @PluginMethod\n', '');
   const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
   const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
@@ -1582,6 +1583,8 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
   const tempDir = mkdtempSync(join(tmpdir(), 'kiki-native-delivery-'));
   try {
     const javaSource = `import java.net.URI;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -1592,6 +1595,7 @@ import javax.crypto.spec.SecretKeySpec;
 public class NativeDeliveryCheck {
 ${fields}
 ${load}
+${probeMethod}
 ${openMethods}
 ${clear}
 ${deliver}
@@ -1612,7 +1616,9 @@ ${origin}
     private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
     private boolean hasStoredToken(String id, String origin) { return isOriginVerified(id, origin); }
     private void recordVerifiedOrigin(String id, String origin, String hostId, String grantId) {}
-    private boolean matchesStoredHostId(String id, String host) { return id.equals("home-a") && host.equals("host-a"); }
+    private boolean matchesStoredHostId(String id, String host) {
+        return id.equals("home-a") && (host == null || host.isEmpty() || host.equals("host-a"));
+    }
     private String readPeerToken(String id, String origin) { return "fixture-peer-a"; }
     private HandshakeResult fetchHandshake(String origin, String serverId, String grantId) {
         return fetchHandshake(origin);
@@ -1625,25 +1631,54 @@ ${origin}
             Reply r = replies.take();
             r.started.countDown();
             if (!r.release.await(5, TimeUnit.SECONDS)) throw new AssertionError("handshake release timeout");
-            return new HandshakeResult(r.ok, r.redirected, r.statusCode, r.home, r.host, "fixture", r.mutualVerified);
+            return new HandshakeResult(
+                r.ok,
+                r.redirected,
+                r.statusCode,
+                r.home,
+                r.host,
+                "fixture",
+                r.mutualVerified,
+                r.mutualRevoked,
+                r.mutualDisabled,
+                r.inboundEnabled
+            );
         } catch (InterruptedException e) { throw new RuntimeException(e); }
     }
     private static class Reply {
         final CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
-        final boolean ok, redirected, mutualVerified;
+        final boolean ok, redirected, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled;
         final int statusCode;
         final String home, host;
-        Reply(String home, String host) { this(true, false, 200, home, host, true); }
+        Reply(String home, String host) {
+            this(true, false, 200, home, host, true, false, false, true);
+        }
         Reply(String home, String host, boolean mutualVerified) {
-            this(true, false, 200, home, host, mutualVerified);
+            this(true, false, 200, home, host, mutualVerified, false, false, true);
         }
         Reply(boolean ok, boolean redirected, int statusCode, String home, String host, boolean mutualVerified) {
+            this(ok, redirected, statusCode, home, host, mutualVerified, false, false, true);
+        }
+        Reply(
+            boolean ok,
+            boolean redirected,
+            int statusCode,
+            String home,
+            String host,
+            boolean mutualVerified,
+            boolean mutualRevoked,
+            boolean mutualDisabled,
+            boolean inboundEnabled
+        ) {
             this.ok = ok;
             this.redirected = redirected;
             this.statusCode = statusCode;
             this.home = home;
             this.host = host;
             this.mutualVerified = mutualVerified;
+            this.mutualRevoked = mutualRevoked;
+            this.mutualDisabled = mutualDisabled;
+            this.inboundEnabled = inboundEnabled;
         }
     }
     private static class WebView {
@@ -1909,27 +1944,133 @@ ${origin}
             throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to #unverified_handshake_proof: " + p6.view.url);
         }
 
-        // Case 6b: Authenticated revocation vs unverified 401/403 vs inbound disabled vs real network outage (status 0 / 503)
-        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, true, false), "home-a", true))) {
+        // Case 6b: Authenticated revocation vs unverified 401/403 vs inbound disabled (401 HMAC & 200 JSON) vs real network outage (status 0 / 503)
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, true, false, true), "home-a", true))) {
             throw new AssertionError("Expected 200 handshake with mutualRevokedVerified=true to classify as pairing_revoked");
         }
-        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, true, false), "home-a", true))) {
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, true, false, true), "home-a", true))) {
             throw new AssertionError("Expected 401 handshake with mutualRevokedVerified=true to classify as pairing_revoked");
         }
-        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, false, false), "home-a", true))) {
+        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, false, false, true), "home-a", true))) {
             throw new AssertionError("Expected unverified 401 handshake (e.g. replacement server) to classify as unverified_handshake_proof");
         }
-        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 403, "", "", "", false, false, false), "home-a", true))) {
+        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 403, "", "", "", false, false, false, true), "home-a", true))) {
             throw new AssertionError("Expected unverified 403 handshake to classify as unverified_handshake_proof");
         }
-        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, false, true), "home-a", true))) {
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, false, true, false), "home-a", true))) {
+            throw new AssertionError("Expected 401 handshake with mutualDisabledVerified=true to classify as unreachable");
+        }
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, false, true, false), "home-a", true))) {
             throw new AssertionError("Expected 200 handshake with mutualDisabledVerified=true to classify as unreachable");
+        }
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, false, false, false), "home-a", true))) {
+            throw new AssertionError("Expected legacy 200 handshake with inboundEnabled=false (no HMAC proof) to classify as unreachable");
         }
         if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 503, "", "", "", false), "home-a", true))) {
             throw new AssertionError("Expected 503 handshake to classify as unreachable");
         }
         if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 0, "", "", "", false), "home-a", true))) {
             throw new AssertionError("Expected network failure (status 0) to classify as unreachable");
+        }
+
+        // Verify actual extracted probe(), open(), and deliverCommittedToken() across:
+        // (1) public Web 401 with mutualDisabledVerified=true -> unreachable (preserves pairing, mutualDisabledVerified=true)
+        // (2) legacy LAN 200 with inboundEnabled=false (no HMAC) -> unreachable (mutualDisabledVerified=false, inboundEnabled=false)
+        // (3) unverified bare 401 -> unverified_handshake_proof (authRejected=false)
+        // (4) authenticated 401 with mutualRevokedVerified=true -> pairing_revoked (authRejected=true)
+        Map<String, String> pairedProbeParams = new HashMap<>();
+        pairedProbeParams.put("origin", ORIGIN);
+        pairedProbeParams.put("serverId", "home-a");
+        pairedProbeParams.put("grantId", "grant-a");
+
+        // (1) probe + open + deliverCommittedToken on 401 with mutualDisabledVerified=true
+        Reply probeWebDisabledReply = new Reply(false, false, 401, "", "", false, false, true, false);
+        p6.replies.add(probeWebDisabledReply);
+        PluginCall probeWebDisabledCall = new PluginCall(pairedProbeParams);
+        p6.probe(probeWebDisabledCall);
+        if (!probeWebDisabledReply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("probeWebDisabled not started");
+        probeWebDisabledReply.release.countDown();
+        JSObject probeWebDisabledRes = probeWebDisabledCall.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(probeWebDisabledRes.data.get("ok")) ||
+            !"unreachable".equals(probeWebDisabledRes.data.get("reason")) ||
+            !Boolean.TRUE.equals(probeWebDisabledRes.data.get("mutualDisabledVerified")) ||
+            !Boolean.FALSE.equals(probeWebDisabledRes.data.get("inboundEnabled")) ||
+            Boolean.TRUE.equals(probeWebDisabledRes.data.get("authRejected"))) {
+            throw new AssertionError("Expected 401 mutualDisabled probe to resolve unreachable with mutualDisabledVerified=true, got: " + probeWebDisabledRes.data);
+        }
+
+        Map<String, String> openParams = new HashMap<>(pairedProbeParams);
+        openParams.put("entry", ORIGIN + "/");
+        Reply openWebDisabledReply = new Reply(false, false, 401, "", "", false, false, true, false);
+        p6.replies.add(openWebDisabledReply);
+        PluginCall openWebDisabledCall = new PluginCall(openParams);
+        p6.open(openWebDisabledCall);
+        if (!openWebDisabledReply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("openWebDisabled not started");
+        openWebDisabledReply.release.countDown();
+        JSObject openWebDisabledRes = openWebDisabledCall.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(openWebDisabledRes.data.get("ok")) || !"unreachable".equals(openWebDisabledRes.data.get("reason"))) {
+            throw new AssertionError("Expected 401 mutualDisabled open to resolve unreachable, got: " + openWebDisabledRes.data);
+        }
+
+        NativeDeliveryCheck p6WebDisabledDoc = new NativeDeliveryCheck();
+        p6WebDisabledDoc.pendingAuthEpoch = 15;
+        p6WebDisabledDoc.activeAuthOrigin = ORIGIN;
+        p6WebDisabledDoc.activeAuthServerId = "home-a";
+        Reply docWebDisabledReply = new Reply(false, false, 401, "", "", false, false, true, false);
+        p6WebDisabledDoc.replies.add(docWebDisabledReply);
+        p6WebDisabledDoc.deliverCommittedToken(p6WebDisabledDoc.view, p6WebDisabledDoc.view.url, false);
+        if (!docWebDisabledReply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("docWebDisabled not started");
+        docWebDisabledReply.release.countDown();
+        Runnable docWebDisabledFallback = p6WebDisabledDoc.view.posted.poll(5, TimeUnit.SECONDS);
+        if (docWebDisabledFallback == null) throw new AssertionError("docWebDisabled did not schedule fallback");
+        docWebDisabledFallback.run();
+        if (!"https://localhost/index.html#unreachable".equals(p6WebDisabledDoc.view.url)) {
+            throw new AssertionError("Expected 401 mutualDisabled document delivery to navigate to #unreachable, got: " + p6WebDisabledDoc.view.url);
+        }
+
+        // (2) probe on legacy LAN 200 with inboundEnabled=false and no HMAC proof: must be unreachable, mutualDisabledVerified=false
+        Reply probeLanLegacyDisabledReply = new Reply(true, false, 200, "home-a", "host-a", false, false, false, false);
+        p6.replies.add(probeLanLegacyDisabledReply);
+        PluginCall probeLanLegacyDisabledCall = new PluginCall(pairedProbeParams);
+        p6.probe(probeLanLegacyDisabledCall);
+        if (!probeLanLegacyDisabledReply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("probeLanLegacyDisabled not started");
+        probeLanLegacyDisabledReply.release.countDown();
+        JSObject probeLanLegacyDisabledRes = probeLanLegacyDisabledCall.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(probeLanLegacyDisabledRes.data.get("ok")) ||
+            !"unreachable".equals(probeLanLegacyDisabledRes.data.get("reason")) ||
+            !Boolean.FALSE.equals(probeLanLegacyDisabledRes.data.get("mutualDisabledVerified")) ||
+            !Boolean.FALSE.equals(probeLanLegacyDisabledRes.data.get("inboundEnabled"))) {
+            throw new AssertionError("Expected legacy LAN 200 inboundEnabled=false without HMAC to keep mutualDisabledVerified=false and reason=unreachable, got: " + probeLanLegacyDisabledRes.data);
+        }
+
+        // (3) probe on unverified bare 401 -> unverified_handshake_proof (authRejected=false)
+        Reply probeBare401Reply = new Reply(false, false, 401, "", "", false, false, false, true);
+        p6.replies.add(probeBare401Reply);
+        PluginCall probeBare401Call = new PluginCall(pairedProbeParams);
+        p6.probe(probeBare401Call);
+        if (!probeBare401Reply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("probeBare401 not started");
+        probeBare401Reply.release.countDown();
+        JSObject probeBare401Res = probeBare401Call.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(probeBare401Res.data.get("ok")) ||
+            !"unverified_handshake_proof".equals(probeBare401Res.data.get("reason")) ||
+            Boolean.TRUE.equals(probeBare401Res.data.get("authRejected")) ||
+            Boolean.TRUE.equals(probeBare401Res.data.get("mutualRevokedVerified"))) {
+            throw new AssertionError("Expected bare 401 probe to resolve unverified_handshake_proof, got: " + probeBare401Res.data);
+        }
+
+        // (4) probe on authenticated 401 with mutualRevokedVerified=true -> pairing_revoked (authRejected=true)
+        Reply probeRevoked401Reply = new Reply(false, false, 401, "", "", false, true, false, true);
+        p6.replies.add(probeRevoked401Reply);
+        PluginCall probeRevoked401Call = new PluginCall(pairedProbeParams);
+        p6.probe(probeRevoked401Call);
+        if (!probeRevoked401Reply.started.await(5, TimeUnit.SECONDS)) throw new AssertionError("probeRevoked401 not started");
+        probeRevoked401Reply.release.countDown();
+        JSObject probeRevoked401Res = probeRevoked401Call.resolved.get(5, TimeUnit.SECONDS);
+        if (!Boolean.FALSE.equals(probeRevoked401Res.data.get("ok")) ||
+            !"pairing_revoked".equals(probeRevoked401Res.data.get("reason")) ||
+            !Boolean.TRUE.equals(probeRevoked401Res.data.get("authRejected")) ||
+            !Boolean.TRUE.equals(probeRevoked401Res.data.get("mutualRevokedVerified"))) {
+            throw new AssertionError("Expected authenticated 401 probe to resolve pairing_revoked, got: " + probeRevoked401Res.data);
         }
         NativeDeliveryCheck p6Outage = new NativeDeliveryCheck();
         p6Outage.pendingAuthEpoch = 14;
@@ -2248,6 +2389,29 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
         );
         return;
       }
+      if (activeServer === 'A-web-disabled') {
+        const expectedReqProof = createHmac('sha256', expectedDigestA)
+          .update(`kiki-handshake-req-v1:${nonceHeader}`)
+          .digest('hex');
+        const disabledProof =
+          proofHeader === expectedReqProof
+            ? createHmac('sha256', expectedDigestA)
+                .update(`kiki-handshake-disabled-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
+                .digest('hex')
+            : '';
+        res.writeHead(401, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...(disabledProof
+            ? {
+                'x-kiki-handshake-proof': disabledProof,
+                'x-kiki-handshake-status': 'inbound_disabled',
+              }
+            : {}),
+        });
+        res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+        return;
+      }
       if (activeServer === 'A-direct-disabled') {
         const expectedReqProof = createHmac('sha256', expectedDigestA)
           .update(`kiki-handshake-req-v1:${nonceHeader}`)
@@ -2267,6 +2431,23 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
                 'x-kiki-handshake-status': 'inbound_disabled',
               }
             : {}),
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityA,
+              serverId: 'srv-web-a',
+              inboundEnabled: false,
+            },
+          }),
+        );
+        return;
+      }
+      if (activeServer === 'A-legacy-disabled-no-proof') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
         });
         res.end(
           JSON.stringify({
@@ -2541,7 +2722,50 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
     assert.equal(afterDirectRevoke.reason, 'pairing_revoked');
     assert.equal(afterDirectRevoke.tokenDelivered, false);
 
+    activeServer = 'A-web-disabled';
+    const webDisabledProbe = await probeOriginHandshake(publicOrigin, {
+      handshakeKey: keyForA,
+      grantId: 'grant-web-a',
+      targetHomeId: identityA.homeId,
+      targetHostId: identityA.hostId,
+      requireMutualProof: true,
+    });
+    assert.equal(webDisabledProbe.ok, false);
+    assert.equal(webDisabledProbe.reason, 'unreachable');
+    assert.equal(webDisabledProbe.mutualDisabledVerified, true);
+    assert.equal(webDisabledProbe.inboundEnabled, false);
+    const afterWebDisabled = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterWebDisabled.ok, false);
+    assert.equal(afterWebDisabled.reason, 'unreachable');
+    assert.equal(afterWebDisabled.tokenDelivered, false);
+
     activeServer = 'A-direct-disabled';
+    const directDisabledProbe = await probeOriginHandshake(publicOrigin, {
+      handshakeKey: keyForA,
+      grantId: 'grant-web-a',
+      targetHomeId: identityA.homeId,
+      targetHostId: identityA.hostId,
+      requireMutualProof: true,
+    });
+    assert.equal(directDisabledProbe.ok, false);
+    assert.equal(directDisabledProbe.reason, 'unreachable');
+    assert.equal(directDisabledProbe.mutualDisabledVerified, true);
+    assert.equal(directDisabledProbe.inboundEnabled, false);
     const afterDirectDisabled = await openVerifiedServerNavigation(
       page,
       storage,
@@ -2561,6 +2785,38 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
     assert.equal(afterDirectDisabled.ok, false);
     assert.equal(afterDirectDisabled.reason, 'unreachable');
     assert.equal(afterDirectDisabled.tokenDelivered, false);
+
+    activeServer = 'A-legacy-disabled-no-proof';
+    const legacyDisabledProbe = await probeOriginHandshake(publicOrigin, {
+      handshakeKey: keyForA,
+      grantId: 'grant-web-a',
+      targetHomeId: identityA.homeId,
+      targetHostId: identityA.hostId,
+      requireMutualProof: true,
+    });
+    assert.equal(legacyDisabledProbe.ok, false);
+    assert.equal(legacyDisabledProbe.reason, 'unreachable');
+    assert.equal(legacyDisabledProbe.mutualDisabledVerified, false);
+    assert.equal(legacyDisabledProbe.inboundEnabled, false);
+    const afterLegacyDisabled = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterLegacyDisabled.ok, false);
+    assert.equal(afterLegacyDisabled.reason, 'unreachable');
+    assert.equal(afterLegacyDisabled.tokenDelivered, false);
 
     activeServer = 'A-unverified-200';
     const afterUnverified200 = await openVerifiedServerNavigation(

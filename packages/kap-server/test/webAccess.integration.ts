@@ -155,6 +155,12 @@ describe('shared daemon Web access', () => {
     expect(pairedSessionRead.status).toBe(200);
     await server.admission.setEnabled(false);
     const disabledExpectedProof = createHmac('sha256', pairGrantDigest).update(`kiki-handshake-disabled-v1:${reopenNonce}:${server.admission.identity.homeId}:${server.admission.identity.hostId}`).digest('hex');
+    const webDisabledHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(webDisabledHandshake.status).toBe(401);
+    expect(webDisabledHandshake.headers.get('x-kiki-handshake-status')).toBe('inbound_disabled');
+    expect(webDisabledHandshake.headers.get('x-kiki-handshake-proof')).toBe(disabledExpectedProof);
     const directDisabledHandshake = await fetch(base + '/api/remote-connections/handshake', {
       headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
     });

@@ -1030,7 +1030,7 @@ export async function probeOriginHandshake(origin, options = {}) {
           targetHomeId,
           targetHostId,
           mutualProofVerified: false,
-          mutualDisabledVerified: true,
+          mutualDisabledVerified,
         };
       }
       if (options.requireMutualProof && challenge && !mutualProofVerified) {
@@ -1046,6 +1046,7 @@ export async function probeOriginHandshake(origin, options = {}) {
       return {
         ok: true,
         status: handshakeRes.status,
+        inboundEnabled,
         targetLabel:
           typeof data?.targetLabel === 'string' && data.targetLabel !== ''
             ? data.targetLabel
@@ -1086,6 +1087,13 @@ export async function probeOriginHandshake(origin, options = {}) {
             expectedHomeId,
             expectedHostId,
           );
+          if (!mutualDisabledVerified && expectedHostId) {
+            mutualDisabledVerified = await challenge.verifyDisabledResponse(
+              resProof,
+              expectedHomeId,
+              '',
+            );
+          }
         }
       }
       if (mutualRevokedVerified) {
