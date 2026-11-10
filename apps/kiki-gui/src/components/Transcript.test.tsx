@@ -5143,6 +5143,246 @@ describe('virtualized transcript scrolling', () => {
     }
   });
 
+  it('restores copy/edit/fork/send-again for a delivery-less terminal prompt, hydrates standalone delivery markers, and preserves surrounding short parts around a ranged prompt part', { timeout: 30_000 }, async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { boundedTranscriptSnapshot } = await import('../../../../packages/kap-server/src/transport/klient/boundedTranscript');
+    const { readContentSegment } = await import('../../../../packages/kap-server/src/transport/klient/boundedContent');
+    const { patchTranscriptContent } = await import('@kiki/session-core/session');
+    const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
+
+    const steerFullText = 'STEER_START:' + 'blocked-send-now-'.repeat(180) + ':STEER_END';
+    const canonicalSteerSnapshot: AgentTranscriptSnapshot = {
+      items: [],
+      prompts: [{
+        promptId: 'p-no-delivery',
+        userMessageId: 'um-no-delivery',
+        status: 'blocked',
+        createdAt: '2026-01-01T00:00:01.000Z',
+        finishedAt: '2026-01-01T00:00:02.000Z',
+        error: 'Blocked by UserPromptSubmit hook',
+        content: [{ type: 'text', text: steerFullText }],
+      }],
+      tasks: [],
+      attachments: [],
+      todos: [],
+      interactions: [],
+      meta: {},
+    };
+    const steerSessionId = 'session_r1_no_delivery';
+    let steerGate: ReturnType<typeof pendingVoid> | undefined;
+    function SteerHarness() {
+      const [snap, setSnap] = useState(() => boundedTranscriptSnapshot(canonicalSteerSnapshot, 'main'));
+      const [view, setView] = useState(() =>
+        projectAgentTranscriptView(createViewState(steerSessionId), 'main', boundedTranscriptSnapshot(canonicalSteerSnapshot, 'main'), { cold: true }),
+      );
+      const refs = snap.prompts[0]?.contentRefs;
+      const loadContent = async (ref: import('@kiki/transcript').ContentRef) => {
+        steerGate = pendingVoid();
+        await steerGate.promise;
+        let currentSnap = snap;
+        let currentRef: import('@kiki/transcript').ContentRef | undefined = ref;
+        while (currentRef !== undefined) {
+          const segment = readContentSegment(canonicalSteerSnapshot.prompts[0]!, currentRef, false, 'main');
+          currentSnap = patchTranscriptContent(currentSnap, segment);
+          currentRef = segment.next;
+        }
+        setSnap(currentSnap);
+        setView((prev) => projectAgentTranscriptView(prev, 'main', currentSnap));
+        return true;
+      };
+      return (
+        <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={refs} loadContent={loadContent}>
+          <Transcript
+            state={{ ...view, contentRefs: refs }}
+            onLoadOlder={async () => false}
+            onResolveApproval={noopActions}
+            onAnswerQuestion={noopActions}
+            onDismissQuestion={noopActions}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>
+      );
+    }
+    const r1 = makeRoot();
+    await renderSettled(r1.root, <SteerHarness />, true);
+    const r1Row = () => r1.container.querySelector('[data-block-id="user-um-no-delivery"]')!;
+    expect(r1Row().querySelector('[data-row-action="copy"]')).toBeNull();
+    expect(r1Row().querySelector('[data-row-action="edit"]')).toBeNull();
+    expect(r1Row().querySelector('[data-row-action="fork"]')).toBeNull();
+    await act(async () => {
+      r1Row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.click();
+    });
+    expect(readDraft(steerSessionId)).toBe('');
+    expect(r1Row().querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!.getAttribute('aria-busy')).toBe('true');
+    await act(async () => {
+      steerGate!.resolve();
+      await steerGate!.promise;
+    });
+    expect(readDraft(steerSessionId)).toBe(steerFullText);
+    expect(r1Row().querySelector('[data-row-action="copy"]')).not.toBeNull();
+    expect(r1Row().querySelector('[data-row-action="edit"]')).not.toBeNull();
+    expect(r1Row().querySelector('[data-row-action="fork"]')).not.toBeNull();
+
+    const deliveryFullText = 'MAILBOX_START:' + 'standalone-delivery-'.repeat(160) + ':MAILBOX_END';
+    const canonicalDeliverySnapshot: AgentTranscriptSnapshot = {
+      items: [{
+        kind: 'marker',
+        markerId: 'message-delivery:um-standalone-delivery',
+        marker: 'message.delivery',
+        at: '2026-01-01T00:00:05.000Z',
+        payload: {
+          messageId: 'um-standalone-delivery',
+          text: deliveryFullText,
+          origin: { kind: 'user' },
+        },
+      }],
+      prompts: [],
+      tasks: [],
+      attachments: [],
+      todos: [],
+      interactions: [],
+      meta: {},
+    };
+    const { useSyncExternalStore } = await import('react');
+    const boundedDelivery = boundedTranscriptSnapshot(canonicalDeliverySnapshot, 'main');
+    const deliveryRead = vi.fn(async ({ ref }: { agentId: string; ref: import('@kiki/transcript').ContentRef }) =>
+      readContentSegment(canonicalDeliverySnapshot.items[0]!, ref, false, 'main'),
+    );
+    const deliveryViewFacade = {
+      snapshot: async () => ({ session: { id: 'session_r2_delivery', title: 'Delivery' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+      transcript: { content: deliveryRead },
+      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+    const deliveryController = new SessionController(
+      {} as import('@kiki/session-core/transport').SessionTransport,
+      deliveryViewFacade,
+      'session_r2_delivery',
+      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+    );
+    await deliveryController.open();
+    deliveryController.handleTranscript({
+      type: 'transcript.reset',
+      session_id: 'session_r2_delivery',
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 1, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: boundedDelivery,
+    });
+    function DeliverySurface() {
+      const state = useSyncExternalStore(deliveryController.subscribe, deliveryController.getState);
+      return (
+        <TranscriptDetailProvider
+          controller={deliveryController}
+          load={async () => false}
+          loads={state.detailLoads}
+          contentRefs={state.contentRefs}
+          loadContent={(ref) => deliveryController.loadContentSegment('main', ref)}
+          sessionId="session_r2_delivery"
+          agentId="main"
+        >
+          <Transcript
+            state={state}
+            onLoadOlder={async () => false}
+            onResolveApproval={noopActions}
+            onAnswerQuestion={noopActions}
+            onDismissQuestion={noopActions}
+            rowActions={actions}
+          />
+        </TranscriptDetailProvider>
+      );
+    }
+    const r2 = makeRoot();
+    try {
+      await renderSettled(r2.root, <DeliverySurface />, true);
+      await act(async () => {
+        await vi.waitFor(() =>
+          expect(deliveryController.contentRefsFor('main', { kind: 'marker', id: 'message-delivery:um-standalone-delivery' })).toEqual([]),
+        );
+      });
+      const r2Row = r2.container.querySelector('[data-block-id="user-um-standalone-delivery"]')!;
+      expect(r2Row.textContent).toContain('MAILBOX_START:');
+      expect(r2Row.textContent).toContain(':MAILBOX_END');
+      expect(r2Row.querySelector('[data-row-action="copy"]')).not.toBeNull();
+      expect(r2Row.querySelector('[data-row-action="edit"]')).not.toBeNull();
+      expect(r2Row.querySelector('[data-row-action="fork"]')).not.toBeNull();
+    } finally {
+      deliveryController.close();
+    }
+
+    const hugeMiddle = 'MIDDLE_RANGED_CHUNK_'.repeat(30_000);
+    const multiPartSnapshot: AgentTranscriptSnapshot = {
+      items: [],
+      prompts: [{
+        promptId: 'p-multipart-range',
+        userMessageId: 'um-multipart-range',
+        status: 'blocked',
+        createdAt: '2026-01-01T00:00:10.000Z',
+        finishedAt: '2026-01-01T00:00:11.000Z',
+        error: 'Blocked by UserPromptSubmit hook',
+        content: [
+          { type: 'text', text: 'SHORT_PREFIX_SEGMENT' },
+          { type: 'text', text: hugeMiddle.slice(0, 512) },
+          { type: 'text', text: 'SHORT_SUFFIX_SEGMENT' },
+        ],
+        contentRefs: [{
+          source: { kind: 'prompt', id: 'p-multipart-range' },
+          path: ['content', 1, 'text'],
+          revision: 'rev-multipart-range',
+          kind: 'text',
+          offset: 512,
+          total: hugeMiddle.length,
+        }],
+      }],
+      tasks: [],
+      attachments: [],
+      todos: [],
+      interactions: [],
+      meta: {},
+    };
+    const multiPartState = projectAgentTranscriptView(createViewState('session_r3_multipart'), 'main', multiPartSnapshot, { cold: true });
+    const rangeRef = multiPartSnapshot.prompts[0]!.contentRefs![0]!;
+    const rangeController = {
+      contentRefsFor: () => [rangeRef],
+      isContentRange: (_agentId: string, candidate: import('@kiki/transcript').ContentRef) =>
+        candidate.path[0] === 'content' && candidate.path[1] === 1 && candidate.path[2] === 'text',
+      beginContentRead: () => ({ release() {}, retry() {} }),
+      readContentRange: async () => 'RANGED_WINDOW_SLICE',
+      historyPreviewPending: () => false,
+      retainHistoryPreview: () => () => {},
+    };
+    const r3 = makeRoot();
+    await renderSettled(
+      r3.root,
+      <TranscriptDetailProvider
+        controller={rangeController as unknown as SessionController}
+        load={async () => false}
+        loads={{}}
+        contentRefs={[rangeRef]}
+        sessionId="session_r3_multipart"
+        agentId="main"
+      >
+        <Transcript
+          state={{ ...multiPartState, contentRefs: [rangeRef] }}
+          onLoadOlder={async () => false}
+          onResolveApproval={noopActions}
+          onAnswerQuestion={noopActions}
+          onDismissQuestion={noopActions}
+          rowActions={actions}
+        />
+      </TranscriptDetailProvider>,
+    );
+    const r3Row = r3.container.querySelector('[data-block-id="user-um-multipart-range"]')!;
+    const textContent = r3Row.textContent ?? '';
+    const prefixIdx = textContent.indexOf('SHORT_PREFIX_SEGMENT');
+    const rangeElement = r3Row.querySelector('[data-content-range-text]');
+    const suffixIdx = textContent.indexOf('SHORT_SUFFIX_SEGMENT');
+    expect(prefixIdx).toBeGreaterThanOrEqual(0);
+    expect(rangeElement).not.toBeNull();
+    expect(suffixIdx).toBeGreaterThan(prefixIdx);
+    expect(r3Row.querySelectorAll('[data-content-range-text]')).toHaveLength(1);
+  });
+
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(transcriptState([

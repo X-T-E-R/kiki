@@ -203,7 +203,8 @@ import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
 import { useSessionRemainderPending } from './SessionRemainder';
-import { ContentContinuation, frameContentSource, INPUT_ROOTS, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TASK_SUMMARY_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
+import { ContentContinuation, ContentOriginalDownload, frameContentSource, INPUT_ROOTS, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TASK_SUMMARY_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
+import { ContentRangeText } from './ContentRangeText';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
@@ -344,7 +345,7 @@ export interface SenderIdentity {
   readonly model?: string;
 }
 
-const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds'];
+const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds', 'payload'];
 const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_MESSAGE_DETAILS_ROOTS];
 
 function isUserBlockContentIncomplete(user: UserBlock, contentRefs: readonly ContentRef[] | undefined): boolean {
@@ -402,15 +403,83 @@ const UserMessage = memo(function UserMessage({
   const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
   const retryTextRead = useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
   const retryDetailsRead = useAutomaticContentRead(
-    block.contentSource?.kind === 'prompt' ? block.contentSource : undefined,
+    block.contentSource?.kind === 'prompt' || block.contentSource?.kind === 'marker' ? block.contentSource : undefined,
     USER_MESSAGE_DETAILS_ROOTS,
   );
   const reader = useTranscriptController();
   const target = useTranscriptTarget();
   const textRange = continuation.pending.some((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])) &&
     reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
-  const promptTextRange = continuation.pending.some((ref) => ref.path[0] === 'content' && ref.kind === 'text' &&
-    reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
+  const detailsRangeRefs = useMemo(
+    () =>
+      reader === undefined || target === undefined
+        ? []
+        : continuation.pending.filter(
+            (ref) =>
+              ((ref.path[0] === 'content' && ref.kind === 'text') ||
+                (ref.path[0] === 'payload' && ref.path[1] === 'text' && ref.kind === 'text')) &&
+              reader.isContentRange(target.agentId, ref),
+          ),
+    [continuation.pending, reader, target],
+  );
+  const promptTextRange = detailsRangeRefs.length > 0;
+  const promptRangeMap = useMemo(() => {
+    const map = new Map<number, ContentRef>();
+    for (const ref of detailsRangeRefs) {
+      if (ref.path[0] === 'content' && typeof ref.path[1] === 'number' && ref.path[2] === 'text') {
+        map.set(ref.path[1], ref);
+      }
+    }
+    return map;
+  }, [detailsRangeRefs]);
+  const orderedPromptSegments = useMemo(() => {
+    if (!promptTextRange || promptRangeMap.size === 0 || block.promptTextParts === undefined || block.promptTextParts.length <= 1) {
+      return undefined;
+    }
+    const items: (
+      | { readonly kind: 'bubble'; readonly key: string; readonly text: string }
+      | { readonly kind: 'range'; readonly key: string; readonly ref: ContentRef; readonly presentation?: TextPresentation }
+    )[] = [];
+    let pendingTexts: string[] = [];
+    let pendingStart = 0;
+    const flushBubble = () => {
+      if (pendingTexts.length === 0) return;
+      items.push({ kind: 'bubble', key: `bubble-${pendingStart}`, text: pendingTexts.join('\n') });
+      pendingTexts = [];
+    };
+    for (const part of block.promptTextParts) {
+      const rangeRef = promptRangeMap.get(part.partIndex);
+      if (rangeRef !== undefined) {
+        flushBubble();
+        const shifted =
+          block.presentation === undefined || part.offset === 0
+            ? block.presentation
+            : shiftTextPresentation(block.presentation, -part.offset);
+        items.push({
+          kind: 'range',
+          key: JSON.stringify([rangeRef.source, rangeRef.path, rangeRef.revision]),
+          ref: rangeRef,
+          presentation: shifted,
+        });
+      } else {
+        const projected = displayUserMessageText({
+          ...block,
+          text: part.text,
+          presentation:
+            block.presentation === undefined || part.offset === 0
+              ? block.presentation
+              : shiftTextPresentation(block.presentation, -part.offset),
+        });
+        const partBody = parseSelectionCarryovers(projected.text, projected.presentation).body;
+        if (partBody.trim() !== '') {
+          if (pendingTexts.length === 0) pendingStart = part.partIndex;
+          pendingTexts.push(partBody);
+        }
+      }
+    }
+    flushBubble();
+    return items;
+  }, [promptTextRange, promptRangeMap, block]);
   const serverRef = textRange ? undefined : continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
   const serverRemaining = serverRef !== undefined;
   const serverStatus = serverRef !== undefined ? continuation.statusOf(serverRef) : undefined;
@@ -712,6 +781,36 @@ const UserMessage = memo(function UserMessage({
           }}
           onCancel={() => { setEditing(false); }}
         />
+      ) : orderedPromptSegments !== undefined ? (
+        <div className="flex w-full flex-col items-end gap-1.5">
+          {orderedPromptSegments.map((segment) =>
+            segment.kind === 'bubble' ? (
+              <div
+                key={segment.key}
+                data-steer-status={block.steerStatus}
+                className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+                  block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
+                }`}
+              >
+                {projectBody(segment.text)}
+              </div>
+            ) : (
+              <div key={segment.key} className="w-full max-w-[80%]">
+                <ContentRangeText
+                  contentRef={segment.ref}
+                  label={
+                    segment.ref.path.length === 1
+                      ? t('subagent.message')
+                      : `${t('subagent.message')} · ${segment.ref.path.slice(1).join('.')}`
+                  }
+                  presentation={segment.presentation}
+                  renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
+                />
+                <ContentOriginalDownload ref={segment.ref} label={t('subagent.message')} />
+              </div>
+            ),
+          )}
+        </div>
       ) : textRange || promptTextRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
@@ -802,7 +901,7 @@ const UserMessage = memo(function UserMessage({
           ) : null}
         </div>
       )}
-      {!editing && isOverflowing && expanded ? (
+      {!editing && orderedPromptSegments === undefined && isOverflowing && expanded ? (
         <button
           type="button"
           data-collapsible-toggle
@@ -818,9 +917,9 @@ const UserMessage = memo(function UserMessage({
       {textRange ? <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation}
         renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
         label={t('subagent.message')} className="mt-1 max-w-[80%]" /> : null}
-      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} presentation={block.presentation}
+      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} excludeRanges={orderedPromptSegments !== undefined} presentation={block.presentation}
         renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
-        label={t('subagent.message')} className={`mt-1 justify-end ${promptTextRange ? 'max-w-[80%]' : ''}`.trimEnd()} />
+        label={t('subagent.message')} className={`mt-1 justify-end ${promptTextRange && orderedPromptSegments === undefined ? 'max-w-[80%]' : ''}`.trimEnd()} />
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}

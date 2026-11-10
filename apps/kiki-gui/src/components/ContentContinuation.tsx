@@ -146,7 +146,7 @@ export function ContinuationRow({
  * from; a download that had already begun closing its sink is left alone,
  * because the host decides what closing commits.
  */
-function ContentOriginalDownload({ ref, label, callerAgentId }: { readonly ref: ContentRef; readonly label: string; readonly callerAgentId?: string }): ReactNode {
+export function ContentOriginalDownload({ ref, label, callerAgentId }: { readonly ref: ContentRef; readonly label: string; readonly callerAgentId?: string }): ReactNode {
   const { t } = useI18n();
   const host = useHost();
   const connection = useOptionalConnection();
@@ -279,6 +279,7 @@ export function ContentContinuation({
   headingPresent = false,
   autoRead = true,
   className = '',
+  excludeRanges = false,
   presentation,
   renderText,
 }: {
@@ -291,6 +292,7 @@ export function ContentContinuation({
   /** The reading area's own name, e.g. Output / Arguments / Command. */
   label: string;
   className?: string;
+  excludeRanges?: boolean;
   presentation?: TextPresentation;
   renderText?: (text: string) => ReactNode;
 }): ReactNode {
@@ -303,8 +305,9 @@ export function ContentContinuation({
   const [requested, setRequested] = useState<string>();
   const automatic = controller !== undefined && (autoRead || requested === identity);
   const retry = useAutomaticContentRead(automatic ? source : undefined, roots, callerAgentId);
-  const ranges = controller !== undefined && agentId !== undefined ? pending.filter((ref) => controller.isContentRange(agentId, ref)) : [];
-  const ref = pending.find((candidate) => !ranges.includes(candidate));
+  const allRanges = controller !== undefined && agentId !== undefined ? pending.filter((ref) => controller.isContentRange(agentId, ref)) : [];
+  const ranges = excludeRanges ? [] : allRanges;
+  const ref = pending.find((candidate) => !allRanges.includes(candidate));
   if (ref === undefined && ranges.length === 0) return null;
   const progress = ref === undefined ? '' : contentRefProgress(ref, t);
   return <>

@@ -160,6 +160,7 @@ function classifiedTextToBlocks(input: {
   classified: ReturnType<typeof classifyTranscriptText>;
   contentSource?: UserBlock['contentSource'];
   contentPending?: boolean;
+  promptTextParts?: UserBlock['promptTextParts'];
   presentation?: UserBlock['presentation'];
   createdAt: string;
   media?: readonly MediaRef[];
@@ -181,6 +182,7 @@ function classifiedTextToBlocks(input: {
           id: `user-${identity}`,
           contentSource: input.contentSource,
           contentPending: input.contentPending,
+          promptTextParts: input.promptTextParts,
           sourceOrigin: classified.origin,
           text: classified.text,
           presentation: classified.presentation ?? input.presentation,
@@ -971,6 +973,20 @@ type MessageContentPart = Parameters<typeof mediaFromContentParts>[0][number];
 function promptContentParts(content: unknown): MessageContentPart[] {
   if (!Array.isArray(content)) return [];
   return content.filter(isPromptContentPart);
+}
+
+function extractPromptTextParts(content: unknown): UserBlock['promptTextParts'] {
+  if (!Array.isArray(content)) return undefined;
+  const entries: { partIndex: number; text: string; offset: number }[] = [];
+  let offset = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    const part = content[index];
+    if (isPromptContentPart(part) && part.type === 'text') {
+      entries.push({ partIndex: index, text: part.text, offset });
+      offset += part.text.length + 1;
+    }
+  }
+  return entries.length > 1 ? entries : undefined;
 }
 
 function spawnInstructionFromToolArgs(args: unknown, agentId: string): string | undefined {
@@ -2084,7 +2100,7 @@ function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
   mediaOverride?: readonly MediaRef[],
-  contentWindow?: Pick<Parameters<typeof classifiedTextToBlocks>[0], 'contentSource' | 'contentPending'>,
+  contentWindow?: Pick<Parameters<typeof classifiedTextToBlocks>[0], 'contentSource' | 'contentPending' | 'promptTextParts'>,
 ): readonly Block[] {
   const projection = projectMessageContent(item.content);
   const media = mediaOverride ?? projection.media;
@@ -2097,8 +2113,16 @@ function upsertPromptItemBlocks(
   );
   const previous = stableIndex < 0 ? undefined : blocks[stableIndex] as UserBlock;
   const sourceOrigin = item.origin === undefined ? previous?.sourceOrigin : item.origin;
-  const contentSource = contentWindow?.contentSource ?? previous?.contentSource;
-  const contentPending = contentWindow?.contentPending ?? previous?.contentPending;
+  const preferPromptSource =
+    contentWindow?.contentSource !== undefined &&
+    (previous?.contentSource === undefined || previous.contentSource.kind === 'marker');
+  const contentSource = preferPromptSource
+    ? contentWindow.contentSource
+    : contentWindow?.contentSource ?? previous?.contentSource;
+  const contentPending = preferPromptSource
+    ? contentWindow.contentPending
+    : contentWindow?.contentPending ?? previous?.contentPending;
+  const promptTextParts = contentWindow?.promptTextParts ?? extractPromptTextParts(item.content) ?? previous?.promptTextParts;
   const origin = sourceOrigin === undefined ? { kind: 'user' } : originFromRecord({ origin: sourceOrigin }) ?? { kind: 'unknown' };
   const classified = classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin });
   const text = classified.text;
@@ -2109,6 +2133,7 @@ function upsertPromptItemBlocks(
     media,
     contentSource,
     contentPending,
+    promptTextParts,
     promptId: item.prompt_id,
     userMessageId: item.user_message_id,
     promptStatus: item.status,
@@ -2139,6 +2164,7 @@ function upsertPromptItemBlocks(
       transcriptValueEquals(existing.sourceOrigin, sourceOrigin) &&
       transcriptValueEquals(existing.contentSource, contentSource) &&
       existing.contentPending === contentPending &&
+      transcriptValueEquals(existing.promptTextParts, promptTextParts) &&
       transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
     ) {
       return blocks;
@@ -2146,7 +2172,7 @@ function upsertPromptItemBlocks(
     const next = blocks.filter((block) => !isPromptReminder(block));
     const index = next.indexOf(existing);
     next.splice(index, 1, {
-      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource, contentPending,
+      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource, contentPending, promptTextParts,
       agentMessage: incoming?.agentMessage, bridgedPeer: incoming?.bridgedPeer, peerThread: incoming?.peerThread,
     }, ...reminders);
     return next;
@@ -2352,6 +2378,7 @@ function mergeSettledPromptUserBlock(
 ): UserBlock {
   const parts = promptContentParts(prompt.content);
   const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
+  const promptTextParts = extractPromptTextParts(prompt.content);
   const projection = parts.length > 0 ? projectMessageContent(parts) : undefined;
   const classified =
     projection === undefined
@@ -2364,11 +2391,16 @@ function mergeSettledPromptUserBlock(
             ? (originFromRecord({ origin: user.sourceOrigin }) ?? { kind: 'user' })
             : (originFromRecord(prompt) ?? { kind: 'user' }),
         });
+  const canAdoptPromptSource =
+    user.contentSource === undefined ||
+    user.contentSource.kind === 'marker' ||
+    (user.contentSource.kind === 'prompt' && user.contentSource.id === prompt.promptId);
   const usePromptText =
     classified !== undefined &&
     (user.turnId === undefined
-      ? classified.text.length >= user.text.length
-      : classified.text.length > user.text.length && user.contentSource === undefined);
+      ? classified.text.length >= user.text.length ||
+        (user.contentSource?.kind === 'marker' && user.contentPending === true && !contentPending)
+      : classified.text.length > user.text.length && canAdoptPromptSource);
   const text = usePromptText ? classified.text : user.text;
   const presentation =
     usePromptText
@@ -2380,15 +2412,18 @@ function mergeSettledPromptUserBlock(
       : projection !== undefined && projection.media.length > 0
         ? projection.media
         : user.media;
-  const nextContentSource =
-    user.contentSource ??
-    (parts.length > 0 || contentPending ? { kind: 'prompt' as const, id: prompt.promptId } : undefined);
+  const promptSource =
+    parts.length > 0 || contentPending ? ({ kind: 'prompt' as const, id: prompt.promptId }) : undefined;
+  const adoptPromptSource =
+    promptSource !== undefined &&
+    canAdoptPromptSource &&
+    (usePromptText || parts.length === 0 || user.contentSource?.kind === 'prompt' || (user.contentPending === true && contentPending));
+  const nextContentSource = adoptPromptSource ? promptSource : user.contentSource;
   const nextContentPending =
-    user.contentSource !== undefined
-      ? user.contentPending
-      : usePromptText || parts.length === 0
-        ? contentPending
-        : user.contentPending === true && contentPending;
+    nextContentSource?.kind === 'prompt' && nextContentSource.id === prompt.promptId
+      ? (usePromptText || parts.length === 0 ? contentPending : user.contentPending === true && contentPending)
+      : user.contentPending;
+  const nextPromptTextParts = adoptPromptSource && usePromptText ? promptTextParts : user.promptTextParts;
   return {
     ...user,
     text,
@@ -2398,6 +2433,7 @@ function mergeSettledPromptUserBlock(
     userMessageId: user.userMessageId ?? prompt.userMessageId,
     contentSource: nextContentSource,
     contentPending: nextContentPending,
+    promptTextParts: nextPromptTextParts,
     promptStatus: undefined,
     queuedContent: undefined,
     promptOutcome: promptOutcomeOf(prompt, context, user),
@@ -2445,6 +2481,7 @@ function placePromptOutcome(
     userMessageId: prompt.userMessageId,
     contentSource: { kind: 'prompt', id: prompt.promptId },
     contentPending,
+    promptTextParts: extractPromptTextParts(prompt.content),
   });
   const next = [...blocks];
   for (const block of created) {
@@ -2546,6 +2583,7 @@ function mergeTranscriptPromptBlocks(
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined, {
       contentSource: { kind: 'prompt', id: prompt.promptId },
       contentPending,
+      promptTextParts: extractPromptTextParts(prompt.content),
     })];
     const owner = prompt.status === 'running' ? context.turns.get(prompt.promptId) : undefined;
     if (owner !== undefined) {
@@ -2862,11 +2900,14 @@ export function agentTranscriptToBlocks(
         (item as { payload?: unknown }).payload !== null
       ) {
         const payload = (item as { payload?: unknown }).payload as Record<string, unknown>;
-        const messageId = recordString(payload, 'messageId');
-        const text = recordString(payload, 'text');
+        const deliveryPending = (item as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'payload') === true;
+        const rawMessageId = recordString(payload, 'messageId');
+        const messageId =
+          rawMessageId ??
+          (item.markerId.startsWith('message-delivery:') ? item.markerId.slice('message-delivery:'.length) : undefined);
+        const text = recordString(payload, 'text') ?? (deliveryPending ? '' : undefined);
         const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
-          const deliveryPending = (item as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'payload') === true;
           const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
@@ -2875,6 +2916,7 @@ export function agentTranscriptToBlocks(
             createdAt: item.at ?? '',
             turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
+            contentSource: { kind: 'marker', id: item.markerId },
             contentPending: deliveryPending,
             media: mediaWithPresentation(mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,

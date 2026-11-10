@@ -5974,6 +5974,92 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
+  it('clears contentPending on terminal prompts without delivery markers after hydration and hydrates standalone delivery markers', () => {
+    const longSteerText = 'STEER_HEAD:' + 'blocked-steer-chunk-'.repeat(160) + ':STEER_TAIL';
+    const steerRef = {
+      source: { kind: 'prompt' as const, id: 'p-steer-only' },
+      path: ['content', 0, 'text'],
+      revision: 'rev-steer-only',
+      kind: 'text' as const,
+      offset: 1004,
+      total: longSteerText.length,
+    };
+    const steerSnapshot = emptySnapshot({
+      prompts: [{
+        promptId: 'p-steer-only',
+        userMessageId: 'm-steer-only',
+        status: 'blocked',
+        createdAt: '2026-01-02T00:02:00.000Z',
+        finishedAt: '2026-01-02T00:02:02.000Z',
+        error: 'Blocked by UserPromptSubmit hook',
+        content: [{ type: 'text', text: longSteerText.slice(0, steerRef.offset) }],
+        contentRefs: [steerRef],
+      }],
+    });
+    const initialSteer = projectAgentTranscriptView(createViewState('session_test'), 'main', steerSnapshot, { cold: true });
+    expect(initialSteer.blocks.find((block): block is UserBlock => block.kind === 'user')).toMatchObject({
+      userMessageId: 'm-steer-only',
+      text: longSteerText.slice(0, steerRef.offset),
+      contentSource: { kind: 'prompt', id: 'p-steer-only' },
+      contentPending: true,
+    });
+    const hydratedSteerSnapshot = patchTranscriptContent(steerSnapshot, {
+      ref: steerRef,
+      value: longSteerText.slice(steerRef.offset),
+      contentRefs: [],
+    });
+    const hydratedSteer = projectAgentTranscriptView(initialSteer, 'main', hydratedSteerSnapshot);
+    expect(hydratedSteer.blocks.find((block): block is UserBlock => block.kind === 'user')).toMatchObject({
+      userMessageId: 'm-steer-only',
+      text: longSteerText,
+      contentSource: { kind: 'prompt', id: 'p-steer-only' },
+      contentPending: false,
+    });
+
+    const longDeliveryText = 'DELIVERY_HEAD:' + 'standalone-mailbox-chunk-'.repeat(160) + ':DELIVERY_TAIL';
+    const deliveryRef = {
+      source: { kind: 'marker' as const, id: 'message-delivery:m-standalone' },
+      path: ['payload', 'text'],
+      revision: 'rev-standalone-delivery',
+      kind: 'text' as const,
+      offset: 1022,
+      total: longDeliveryText.length,
+    };
+    const deliverySnapshot = emptySnapshot({
+      items: [{
+        kind: 'marker',
+        markerId: 'message-delivery:m-standalone',
+        marker: 'message.delivery',
+        at: '2026-01-02T00:03:00.000Z',
+        payload: {
+          messageId: 'm-standalone',
+          text: longDeliveryText.slice(0, deliveryRef.offset),
+          origin: { kind: 'user' },
+        },
+        contentRefs: [deliveryRef],
+      }],
+    });
+    const initialDelivery = projectAgentTranscriptView(createViewState('session_test'), 'main', deliverySnapshot, { cold: true });
+    expect(initialDelivery.blocks.find((block): block is UserBlock => block.kind === 'user')).toMatchObject({
+      userMessageId: 'm-standalone',
+      text: longDeliveryText.slice(0, deliveryRef.offset),
+      contentSource: { kind: 'marker', id: 'message-delivery:m-standalone' },
+      contentPending: true,
+    });
+    const hydratedDeliverySnapshot = patchTranscriptContent(deliverySnapshot, {
+      ref: deliveryRef,
+      value: longDeliveryText.slice(deliveryRef.offset),
+      contentRefs: [],
+    });
+    const hydratedDelivery = projectAgentTranscriptView(initialDelivery, 'main', hydratedDeliverySnapshot);
+    expect(hydratedDelivery.blocks.find((block): block is UserBlock => block.kind === 'user')).toMatchObject({
+      userMessageId: 'm-standalone',
+      text: longDeliveryText,
+      contentSource: { kind: 'marker', id: 'message-delivery:m-standalone' },
+      contentPending: false,
+    });
+  });
+
   it('shows a danger taskref notice with the error for lost and timed_out background tasks', () => {
     for (const state of ['lost', 'timed_out'] as const) {
       const projected = projectAgentTranscriptView(
