@@ -1842,13 +1842,17 @@ describe('IExternalHooksRunnerService integration', () => {
         }),
       });
 
-      const imOrigin: ContextMessage['origin'] = {
+      const imOrigin: NonNullable<ContextMessage['origin']> = {
         kind: 'user',
         im: {
           provider_kind: 'telegram',
-          instance_id: 'tg-1',
-          chat_id: 'chat-42',
-          sender_id: 'user-9',
+          provider_instance_id: 'tg-1',
+          account_id: 'bot-1',
+          identity: {
+            chat_id: 'chat-42',
+            sender_id: 'user-9',
+            topic_id: '0',
+          },
         },
       };
       const promptMessage: ContextMessage = {

@@ -1090,7 +1090,12 @@ describe('hooks v2 completed-step engine contract', () => {
         toolCalls: [],
         origin: {
           kind: 'user',
-          im: { provider_kind: 'telegram', instance_id: 'tg-bot', chat_id: '100', sender_id: '200' },
+          im: {
+            provider_kind: 'telegram',
+            provider_instance_id: 'tg-bot',
+            account_id: 'bot-1',
+            identity: { chat_id: '100', sender_id: '200', topic_id: '0' },
+          },
         },
       },
       isSteer: false,
@@ -1106,7 +1111,7 @@ describe('hooks v2 completed-step engine contract', () => {
         role: 'user',
         content: [{ type: 'text', text: '每小时巡检构建状态' }],
         toolCalls: [],
-        origin: { kind: 'cron_job', taskId: 'cron-1', taskName: 'hourly-check' },
+        origin: { kind: 'cron_job', jobId: 'cron-1', cron: '0 * * * *', recurring: true, coalescedCount: 1, stale: false },
       },
       isSteer: false,
       block: false,
@@ -1114,7 +1119,7 @@ describe('hooks v2 completed-step engine contract', () => {
     expect(observed.map((item) => item.id)).toEqual(['user/cron-observe']);
     expect(observed[0]?.event).toMatchObject({
       promptId: 'p-cron',
-      origin: { kind: 'cron_job', taskId: 'cron-1', taskName: 'hourly-check' },
+      origin: { kind: 'cron_job', jobId: 'cron-1', cron: '0 * * * *', recurring: true, coalescedCount: 1, stale: false },
       prompt: '每小时巡检构建状态',
     });
   });
