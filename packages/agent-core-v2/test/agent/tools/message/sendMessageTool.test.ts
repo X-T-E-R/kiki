@@ -647,32 +647,93 @@ describe('SendMessage completion guidance', () => {
     expect(historyText(1)).toContain('Do not resend automatically');
   });
 
-  it('continues when implicit fan-out includes an unknown channel status or when an explicit multi-channel send has a non-delivered target', async () => {
-    let mode: 'implicit-unknown' | 'explicit-partial' = 'implicit-unknown';
+  it('completes end_turn under implicit fan-out when at least one channel is delivered despite a secondary unknown channel, while keeping continuation when no channel delivered or explicit targets are not all delivered', async () => {
+    let mode: 'implicit-delivered-and-unknown' | 'implicit-only-unknown' | 'explicit-partial' | 'explicit-unknown' = 'implicit-delivered-and-unknown';
     const send = vi.fn(async (input: Parameters<IUserMessageRouter['sendMessage']>[0]): Promise<SendMessageReceipt> => ({
       messageId: `send:${input.toolCallId}`,
       deliveredTo: ['user'],
       delivery: 'delivered',
-      channels: mode === 'implicit-unknown'
+      channels: mode === 'implicit-delivered-and-unknown'
         ? [
             { channelId: 'internal', status: 'delivered' },
+            { channelId: 'im:feishu', status: 'delivered', messageIds: ['fs-1'] },
             { channelId: 'im:timeout', status: 'unknown', detail: 'transport_timeout' },
           ]
-        : [
-            { channelId: 'internal', status: 'delivered' },
-            { channelId: 'im:wx', status: 'partial', unsupported: ['voice'] },
-          ],
+        : mode === 'implicit-only-unknown'
+          ? [
+              { channelId: 'im:timeout', status: 'unknown', detail: 'transport_timeout' },
+            ]
+          : mode === 'explicit-partial'
+            ? [
+                { channelId: 'internal', status: 'delivered' },
+                { channelId: 'im:wx', status: 'partial', unsupported: ['voice'] },
+              ]
+            : [
+                { channelId: 'internal', status: 'delivered' },
+                { channelId: 'im:timeout', status: 'unknown', detail: 'transport_timeout' },
+              ],
     }));
     await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
 
-    expect((await execute({ text: 'Uncertain implicit fan-out.', end_turn: true })).stopTurn).toBeUndefined();
-    ctx.mockNextResponse({ type: 'function', id: 'send-implicit-unknown', name: 'SendMessage', arguments: '{"text":"Uncertain implicit fan-out.","end_turn":true}' });
-    ctx.mockNextResponse({ type: 'text', text: 'Checked unknown channel.' });
+    expect((await execute({ text: 'Implicit fan-out with secondary unknown.', end_turn: true })).stopTurn).toBe(true);
+    ctx.mockNextResponse({ type: 'function', id: 'send-implicit-delivered-unknown', name: 'SendMessage', arguments: '{"text":"Implicit fan-out with secondary unknown.","end_turn":true}' });
+    ctx.mockNextProviderResponse({
+      parts: [],
+      error: markProviderEventError(new ChatProviderError('Upstream completed without a usable answer.'), 'antigravity_empty_response'),
+    });
     expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Reply.' }] })).state).toBe('completed');
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    mode = 'implicit-only-unknown';
+    expect((await execute({ text: 'Uncertain implicit fan-out.', end_turn: true })).stopTurn).toBeUndefined();
 
     mode = 'explicit-partial';
     expect((await execute({ text: 'Explicit channels.', channels: ['internal', 'im:wx'], end_turn: true })).stopTurn).toBeUndefined();
+
+    mode = 'explicit-unknown';
+    expect((await execute({ text: 'Explicit channels with unknown.', channels: ['internal', 'im:timeout'], end_turn: true })).stopTurn).toBeUndefined();
+  });
+
+  it('skips tool continuation when SendMessage(end_turn=true) is paired with a successful TodoList update, but continues if TodoList errors', async () => {
+    await messageAgent();
+    ctx.mockNextResponse(
+      { type: 'function', id: 'todo-1', name: 'TodoList', arguments: JSON.stringify({ todos: [{ title: 'Ship SendMessage fix', status: 'done' }] }) },
+      { type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"All wrapped up.","end_turn":true}' },
+    );
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Finish and reply.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    ctx.mockNextResponse(
+      { type: 'function', id: 'todo-bad', name: 'TodoList', arguments: JSON.stringify({ notes: { next: 'x'.repeat(2000) } }) },
+      { type: 'function', id: 'send-after-bad-todo', name: 'SendMessage', arguments: '{"text":"Attempted wrap up.","end_turn":true}' },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'Handled TodoList validation error.' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Try invalid note.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(3);
+  });
+
+  it('converges an antigravity_empty_response post-delivery continuation to completed when SendMessage omitted end_turn', async () => {
+    await messageAgent();
+    ctx.mockNextResponse({ type: 'function', id: 'send-without-flag', name: 'SendMessage', arguments: '{"text":"Delivered without end_turn."}' });
+    ctx.mockNextProviderResponse({
+      parts: [{ type: 'think', think: '', encrypted: 'sig-empty-post-delivery' }],
+      error: markProviderEventError(new ChatProviderError('Upstream completed without a usable answer.'), 'antigravity_empty_response'),
+    });
+    const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Say hello.' }] });
+    expect(outcome.state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+    await ctx.expectResumeMatches();
+  });
+
+  it('still fails antigravity_empty_response when no SendMessage user delivery was confirmed in the turn', async () => {
+    await messageAgent();
+    ctx.mockNextProviderResponse({
+      parts: [{ type: 'think', think: '', encrypted: 'sig-empty-no-delivery' }],
+      error: markProviderEventError(new ChatProviderError('Upstream completed without a usable answer.'), 'antigravity_empty_response'),
+    });
+    const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Say hello.' }] });
+    expect(outcome.state).toBe('failed');
+    expect(ctx.llmCalls).toHaveLength(1);
   });
 
   it('keeps sibling tool results available to the model even when SendMessage requests completion', async () => {

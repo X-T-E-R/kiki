@@ -112,7 +112,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 | --- | --- | --- | --- |
 | `voice_mode` | `"none" \| "append" \| "only"` | `[send_message].voice_mode`（`"none"`） | 控制单条消息或 `messages[]` 项的原生语音（TTS）合成模式：`"none"` 不发语音，`"append"` 保留文字正文并追加原生语音，`"only"` 仅发送原生语音而不发文字。工具调用中的显式值优先于 `[send_message]` 设置默认值。 |
 | `tts` | `object` | — | 单条消息或 `messages[]` 项的可选 TTS 合成参数（`mode`、`text`、`provider`、`model`、`voice`、`language`、`format`、`sample_rate_hz`、`options`）。需要朗读内容与展示正文 `text` 不同时可设置 `tts.text`。省略字段依次继承 `[send_message]` 配置（`tts_provider`、`tts_model`、`tts_voice`、`tts_language`、`tts_format`、`tts_sample_rate_hz`、`tts_options`、`ffmpeg_path`）与媒体插件已配置的默认 TTS 来源。当目标原生语音信道要求 Ogg/Opus 时会自动适配封装格式。不支持 `voice` 的信道会在回执中明确标记 `unsupported: ["voice"]`（`"only"` 不会隐式降级为文本或普通文件；`"append"` 会保留可投递正文并将该信道记为 `partial`）。 |
-| 顶层 `end_turn` | `boolean` | `false` | 仅最终答复设为 `true`，进度消息不设置。当该 step 仅调用 `SendMessage`、至少一项设为 `end_turn: true`，且每次调用都确认送达用户时（隐式绑定扇出至少一个绑定信道送达，显式 `channel` / `channels` 全部 `delivered`，且均无 `unknown` 结果），省略工具 continuation。存在 `unknown` 结果、未确认或被拒绝的调用，或同一步混有其他工具时仍保留 continuation；goal、排队/steer 输入和任务通知照常执行。 |
+| 顶层 `end_turn` | `boolean` | `false` | 仅最终答复设为 `true`，进度消息不设置。当该 step 仅调用 `SendMessage`（或仅伴随成功的 `TodoList` 更新）、至少一项设为 `end_turn: true`，且每次 `SendMessage` 调用都确认送达用户时（隐式绑定扇出至少一个绑定信道送达，即使其他扇出信道失败或返回 `unknown`；显式 `channel` / `channels` 则要求全部 `delivered`），省略工具 continuation。显式目标存在 `unknown` / `partial`、调用未确认或被拒绝，或同一步混有需模型审阅结果的其他工具时仍保留 continuation；goal、排队/steer 输入和任务通知照常执行。 |
 
 普通最终回复会完整投递为兜底内容，不要再次发送。不要把一条消息拆成多个句子，也不要把它作为普通文本重复输出。进度消息不设置 `end_turn`，以便继续执行所需工具和待处理工作。
 

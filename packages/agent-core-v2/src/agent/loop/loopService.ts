@@ -41,9 +41,9 @@ import {
   type StreamedMessagePart,
   type ToolCall,
 } from '#/kosong/contract/message';
-import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
-import { ChatProviderError, noteExecutedRequestDelivery, readProviderEventErrorCode } from '#/kosong/contract/errors';
-import { readGenerateFailureFacts } from '#/kosong/contract/generate';
+import { addUsage, emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { APIEmptyResponseError, ChatProviderError, noteExecutedRequestDelivery, readProviderEventErrorCode } from '#/kosong/contract/errors';
+import { readGenerateFailureFacts, readGenerateFailureUsage } from '#/kosong/contract/generate';
 import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
 
@@ -1026,6 +1026,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             { stepId: begun.step.uuid, logicalStepId: `${runtime.turnId}/${begun.step.batch.driver.id}`, attempt: begun.step.attempt },
             runtime,
             begun.step.batch.driver instanceof ThinkingOnlyContinuationStepRequest,
+            begun.step.batch.driver.kind === 'continuation' && begun.step.batch.merged.length === 0,
           );
           const completed = this.completeLoopStep(runtime, result);
           if (completed !== undefined) return completed;
@@ -1048,6 +1049,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       queue: job?.queue ?? this.standaloneStepQueue,
       steps: job?.restored?.completedSteps ?? 0,
       pendingStep: job?.restored?.pendingStep,
+      userDeliveryConfirmed: job?.restored?.pendingStep?.userDeliveryConfirmed ?? false,
       thinkingOnlyContinuations: 0,
       thinkingOnlySnapshotActive: false,
       attempts: new Map(),
@@ -1267,6 +1269,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
     continuationBudget: LoopRuntime,
     thinkingOnlyFollowup: boolean,
+    plainToolContinuation: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
     await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId, step: currentStep, firstStepOfTurn },
@@ -1329,6 +1332,42 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           this.enqueue(new ThinkingOnlyContinuationStepRequest());
           await this.runBoundaryRequests(turnId, signal);
           return { stopReason: 'other', hookStopTurn: false };
+        }
+        if (
+          !signal.aborted &&
+          !turnSignal.aborted &&
+          !isAbortError(error) &&
+          this.scope.parentAgentId === undefined &&
+          plainToolContinuation &&
+          continuationBudget.userDeliveryConfirmed &&
+          retained.thinkingOnly &&
+          isSilentPostDeliveryTurnEnd(error)
+        ) {
+          const usage = readGenerateFailureUsage(error);
+          markStepStarted();
+          this.context.appendLoopEvent({
+            type: 'step.end',
+            uuid: stepUuid,
+            turnId: String(turnId),
+            step: currentStep,
+            finishReason: 'end_turn',
+            usage,
+            providerFinishReason: 'completed',
+          });
+          stepEndAppended = true;
+          this.emitStepCompleted(turnId, currentStep, stepUuid, usage ?? emptyUsage(), 'end_turn');
+          const hookStopTurn = await this.runAfterStep(
+            turnId,
+            signal,
+            currentStep,
+            firstStepOfTurn,
+            usage ?? emptyUsage(),
+            'completed',
+            stepIdentity,
+            false,
+          );
+          await this.runBoundaryRequests(turnId, signal);
+          return { stopReason: 'completed', hookStopTurn };
         }
         throw error;
       }
@@ -1570,7 +1609,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ): Promise<FinishReason> {
     const finishReason = response.providerFinishReason ?? 'completed';
     if (response.message.toolCalls.length === 0) return finishReason === 'tool_calls' ? 'other' : finishReason;
-    const onlySendMessageCalls = response.message.toolCalls.every(call => call.name === 'SendMessage');
+    const eligibleForSendMessageStop = response.message.toolCalls.every(isSendMessageCompletionCompatibleTool);
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
     let stopTurn = runtime.pendingStep?.stopTurn ?? false;
     let sendMessageCompletionBlocked = runtime.pendingStep?.sendMessageCompletionBlocked ?? false;
@@ -1584,6 +1623,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         tools: pending,
         stopTurn,
         sendMessageCompletionBlocked,
+        userDeliveryConfirmed: runtime.userDeliveryConfirmed,
       };
       try { await this.pauseAtBoundary(runtime); }
       finally { runtime.pendingStep = undefined; }
@@ -1615,7 +1655,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             toolCallId: batch.call.id, name: batch.call.name, args: batch.args, extras: batch.call.extras });
           this.context.appendLoopEvent({ type: 'tool.result', parentUuid: callUuid, toolCallId: batch.call.id,
             result: { isError: true, output: batch.output } });
-          if (batch.call.name === 'SendMessage') sendMessageCompletionBlocked = true;
+          if (isSendMessageCompletionCompatibleTool(batch.call)) sendMessageCompletionBlocked = true;
           continue;
         }
         for await (const toolResult of this.toolExecutor.execute(batch.tools.map(tool => tool.call), {
@@ -1640,8 +1680,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } } });
           await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: result.isError });
           if (toolResult.toolName === 'SendMessage') {
-            if (result.isError === true || result.userDeliveryConfirmed !== true) sendMessageCompletionBlocked = true;
-            else if (result.stopTurn === true && onlySendMessageCalls) stopTurn = true;
+            if (result.isError === true || result.userDeliveryConfirmed !== true) {
+              sendMessageCompletionBlocked = true;
+            } else {
+              runtime.userDeliveryConfirmed = true;
+              if (result.stopTurn === true && eligibleForSendMessageStop) stopTurn = true;
+            }
+          } else if (result.isError === true) {
+            sendMessageCompletionBlocked = true;
           } else if (result.stopTurn === true) {
             stopTurn = true;
           }
@@ -1649,7 +1695,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       pending = [...suspended, ...pending.slice(processed)];
     }
-    if (onlySendMessageCalls && sendMessageCompletionBlocked) stopTurn = false;
+    if (eligibleForSendMessageStop && sendMessageCompletionBlocked) stopTurn = false;
     return stopTurn ? 'completed' : 'tool_calls';
   }
 
@@ -1756,7 +1802,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepId: string,
     usage: TokenUsage,
     finishReason: string,
-    response: AgentLLMRequestFinish,
+    response?: AgentLLMRequestFinish,
   ): void {
     void this.dispatcher.dispatch(
       new TurnStepCompleted({
@@ -1765,14 +1811,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         stepId,
         usage,
         finishReason,
-        llmFirstTokenLatencyMs: response.timing?.firstTokenLatencyMs,
-        llmStreamDurationMs: response.timing?.streamDurationMs,
-        llmRequestBuildMs: response.timing?.requestBuildMs,
-        llmServerFirstTokenMs: response.timing?.serverFirstTokenMs,
-        llmServerDecodeMs: response.timing?.serverDecodeMs,
-        llmClientConsumeMs: response.timing?.clientConsumeMs,
-        providerFinishReason: response.providerFinishReason,
-        rawFinishReason: response.rawFinishReason,
+        llmFirstTokenLatencyMs: response?.timing?.firstTokenLatencyMs,
+        llmStreamDurationMs: response?.timing?.streamDurationMs,
+        llmRequestBuildMs: response?.timing?.requestBuildMs,
+        llmServerFirstTokenMs: response?.timing?.serverFirstTokenMs,
+        llmServerDecodeMs: response?.timing?.serverDecodeMs,
+        llmClientConsumeMs: response?.timing?.clientConsumeMs,
+        providerFinishReason: response?.providerFinishReason,
+        rawFinishReason: response?.rawFinishReason,
       }),
     );
   }
@@ -2161,6 +2207,20 @@ function isZeroOutputContentPart(part: ContentPart): boolean {
 }
 
 const THINKING_ONLY_PROVIDER_ERROR_CODE = 'antigravity_thinking_only';
+const EMPTY_RESPONSE_PROVIDER_ERROR_CODE = 'antigravity_empty_response';
+const SEND_MESSAGE_COMPLETION_BOOKKEEPING_TOOLS = new Set(['TodoList']);
+
+function isSendMessageCompletionCompatibleTool(call: { readonly name: string }): boolean {
+  return call.name === 'SendMessage' || SEND_MESSAGE_COMPLETION_BOOKKEEPING_TOOLS.has(call.name);
+}
+
+function isSilentPostDeliveryTurnEnd(error: unknown): boolean {
+  if (readProviderEventErrorCode(error) === EMPTY_RESPONSE_PROVIDER_ERROR_CODE) return true;
+  if (error instanceof APIEmptyResponseError) {
+    return error.finishReason === 'completed' || error.finishReason === null || error.finishReason === undefined;
+  }
+  return false;
+}
 
 interface InterruptedThinkingOnly {
   readonly thinkingOnly: boolean;
@@ -2262,6 +2322,7 @@ interface LoopRuntime {
   readonly queue: StepRequestQueue;
   readonly attempts: Map<string, number>;
   pendingStep?: ExecutionPendingStep;
+  userDeliveryConfirmed: boolean;
   steps: number;
   thinkingOnlyContinuations: number;
   thinkingOnlySnapshotActive: boolean;
