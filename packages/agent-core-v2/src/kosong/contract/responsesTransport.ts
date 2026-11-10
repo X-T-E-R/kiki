@@ -12,11 +12,24 @@ export interface ResponsesOutputProjection {
   readonly incremental: boolean;
 }
 
+export type ResponsesFullInputReason =
+  | 'initial'
+  | 'non_incremental_output'
+  | 'connection_changed'
+  | 'identity_changed'
+  | 'forced_full'
+  | 'prefix_mismatch'
+  | 'state_miss';
+
 export interface ResponsesTransportDiagnostics {
   readonly transport: 'ws' | 'sse';
   readonly webSocketCapabilities: boolean | null;
   readonly webSocketCapabilityVersion: 1 | 2 | null;
   readonly webSocketConnectionAgeMs: number | null;
+  readonly webSocketFrameBytes?: number | null;
+  readonly webSocketMaxFrameBytes?: number | null;
+  readonly webSocketFullInputReason?: ResponsesFullInputReason | null;
+  readonly webSocketFallbackReason?: string | null;
 }
 
 export interface ResponsesRequestTransport {

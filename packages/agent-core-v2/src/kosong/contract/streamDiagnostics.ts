@@ -1,6 +1,6 @@
 import { attachErrorDetails } from '#/_base/errors/errors';
 import { readProviderErrorIdentifier } from './errors';
-import type { ResponsesTransportDiagnostics } from './responsesTransport';
+import type { ResponsesFullInputReason, ResponsesTransportDiagnostics } from './responsesTransport';
 
 export type StreamEndSource = 'in_progress' | 'terminal' | 'event_error' | 'sdk_error' | 'local_error' | 'cancelled' | 'eof';
 
@@ -72,6 +72,16 @@ export function safeStreamDiagnostics(value: unknown): StreamDiagnostics | undef
   };
 }
 
+const FULL_INPUT_REASONS = new Set<ResponsesFullInputReason>([
+  'initial',
+  'non_incremental_output',
+  'connection_changed',
+  'identity_changed',
+  'forced_full',
+  'prefix_mismatch',
+  'state_miss',
+]);
+
 export function safeResponsesTransportDiagnostics(value: unknown): ResponsesTransportDiagnostics | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const source = value as Record<string, unknown>;
@@ -83,7 +93,27 @@ export function safeResponsesTransportDiagnostics(value: unknown): ResponsesTran
   if (capabilities !== null && typeof capabilities !== 'boolean') return undefined;
   if (version !== null && version !== 1 && version !== 2) return undefined;
   if (age !== null && !isCount(age)) return undefined;
-  return { transport, webSocketCapabilities: capabilities, webSocketCapabilityVersion: version, webSocketConnectionAgeMs: age };
+  const result: { -readonly [K in keyof ResponsesTransportDiagnostics]: ResponsesTransportDiagnostics[K] } = {
+    transport,
+    webSocketCapabilities: capabilities,
+    webSocketCapabilityVersion: version,
+    webSocketConnectionAgeMs: age,
+  };
+  const frameBytes = source['webSocketFrameBytes'];
+  if (frameBytes === null || isCount(frameBytes)) result.webSocketFrameBytes = frameBytes;
+  const maxFrameBytes = source['webSocketMaxFrameBytes'];
+  if (maxFrameBytes === null || isCount(maxFrameBytes)) result.webSocketMaxFrameBytes = maxFrameBytes;
+  const fullReason = source['webSocketFullInputReason'];
+  if (fullReason === null || FULL_INPUT_REASONS.has(fullReason as ResponsesFullInputReason)) {
+    result.webSocketFullInputReason = fullReason as ResponsesFullInputReason | null;
+  }
+  const fallbackReason = source['webSocketFallbackReason'];
+  if (fallbackReason === null) result.webSocketFallbackReason = null;
+  else {
+    const identifier = readProviderErrorIdentifier(fallbackReason);
+    if (identifier !== null) result.webSocketFallbackReason = identifier;
+  }
+  return result;
 }
 
 /** Projects provider failure metadata for consumers such as room wake records. Input is ErrorPayload.details. */

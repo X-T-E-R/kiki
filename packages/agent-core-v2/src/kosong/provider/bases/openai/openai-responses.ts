@@ -26,7 +26,7 @@ import type {
   StreamedMessagePart,
   ToolCall,
 } from '#/kosong/contract/message';
-import { extractText, isToolDeclarationOnlyMessage } from '#/kosong/contract/message';
+import { extractText, isToolDeclarationOnlyMessage, isVacuousContentPart } from '#/kosong/contract/message';
 import type {
   ChatProvider,
   FinishReason,
@@ -707,6 +707,10 @@ function convertMessage(
       const part = message.content[i];
       if (part === undefined) break;
       if (part.type === 'think') {
+        if (isVacuousContentPart(part)) {
+          i += 1;
+          continue;
+        }
         flushPendingParts();
         const encryptedValue = part.encrypted;
         const summaries: unknown[] = [{ type: 'summary_text', text: part.think }];
@@ -715,6 +719,10 @@ function convertMessage(
           const nextPart = message.content[i];
           if (nextPart === undefined) break;
           if (nextPart.type !== 'think') break;
+          if (isVacuousContentPart(nextPart)) {
+            i += 1;
+            continue;
+          }
           if (nextPart.encrypted !== encryptedValue) break;
           summaries.push({ type: 'summary_text', text: nextPart.think });
           i += 1;
@@ -1616,6 +1624,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
 
       const transport = options?.responsesTransport;
       const webSocketConfig = options?.responsesWebSocket ?? this._responsesWebSocket;
+      let fallbackTransportDiagnostics: ResponsesTransportDiagnostics | undefined;
       if (transport !== undefined && webSocketConfig !== undefined &&
         matchesProviderTarget(`${client.baseURL.replace(/\/$/, '')}/responses`, webSocketConfig.targets)) {
         const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
@@ -1642,10 +1651,13 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             const converted = transportStatusError(error) ?? transportLocalError(error) ?? ambiguousRequestDelivery(transportClosureError(error) ?? error);
             throw withTransportRetryDenial(converted, error);
           }
+          fallbackTransportDiagnostics = { ...transportDiagnostics(), transport: 'sse' };
           if (fullInput !== undefined) createParams['input'] = fullInput;
         }
       }
-      transportDiagnostics = sseTransportDiagnostics;
+      transportDiagnostics = fallbackTransportDiagnostics === undefined
+        ? sseTransportDiagnostics
+        : () => fallbackTransportDiagnostics;
       options?.onRequestSent?.();
       const response = await withRequestCompressionDelivery(options?.signal, async () => {
         const responsePromise = (
@@ -1663,7 +1675,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             })
           : responsePromise;
       });
-      return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook), this._guardDelivery);
+      return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook, undefined, transportDiagnostics), this._guardDelivery);
     } catch (error: unknown) {
       const diagnostics: StreamDiagnostics | undefined = this._stream ? {
         ...createStreamDiagnostics(),

@@ -38,6 +38,10 @@ import {
 } from '#/kosong/provider/requestCompression';
 import type { Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
+import { project } from '#/agent/contextProjector/projection';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import {
   ResponsesWebSocketError,
   ResponsesWebSocketTransport,
@@ -71,6 +75,7 @@ type Gateway = {
   readonly connections: Connection[];
   readonly closedConnections: number[];
   readonly httpRequests: RawObject[];
+  readonly httpHeaders: Record<string, string | string[] | undefined>[];
   close(): Promise<void>;
 };
 
@@ -81,10 +86,12 @@ async function createGateway(
   capabilityHeader: string | null | (() => string) = capabilities,
 ): Promise<Gateway> {
   const httpRequests: RawObject[] = [];
+  const httpHeaders: Record<string, string | string[] | undefined>[] = [];
   const http = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => { chunks.push(chunk); });
     request.on('end', () => {
+      httpHeaders.push(request.headers);
       httpRequests.push(JSON.parse(Buffer.concat(chunks).toString()) as RawObject);
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_http', status: 'completed', output: responseOutput('HTTP fallback') } })}\n\n`);
@@ -128,6 +135,7 @@ async function createGateway(
     connections,
     closedConnections,
     httpRequests,
+    httpHeaders,
     async close(): Promise<void> {
       for (const socket of sockets) socket.terminate();
       await new Promise<void>((resolve) => { server.close(() => resolve()); });
@@ -1692,4 +1700,558 @@ describe('Responses WebSocket v2 retirement', () => {
       expect(gateway.closedConnections).toContain(0);
     } finally { transport.dispose(); vi.useRealTimers(); }
   });
+
+  it('preserves previous_response_id delta lineage within a turn after vacuous reasoning, parallel tool calls, and image tool results without retransmitting historical images', async () => {
+    const historicalImageUrl = `data:image/png;base64,${Buffer.alloc(160_000, 0x41).toString('base64')}`;
+    const newToolImageUrl = `data:image/png;base64,${Buffer.alloc(24_000, 0x42).toString('base64')}`;
+    const outputs: RawObject[][] = [
+      [
+        { type: 'reasoning', id: 'rs_vacuous', status: 'completed', summary: [] },
+        { type: 'function_call', id: 'fc_bash', status: 'completed', call_id: 'call_bash', name: 'Bash', arguments: '{"command":"ls -la"}' },
+        { type: 'function_call', id: 'fc_media', status: 'completed', call_id: 'call_media', name: 'ReadMediaFile', arguments: '{"path":"sample.png"}' },
+        { type: 'function_call', id: 'fc_grep', status: 'completed', call_id: 'call_grep', name: 'Grep', arguments: '{"pattern":"delta"}' },
+      ],
+      responseOutput('completed inspection'),
+    ];
+    const gateway = await createGateway((_body, socket) => {
+      const index = gateway.frames.length - 1;
+      sendNativeOutput(socket, `resp_step_${index}`, outputs[index]!);
+    }, v2Capabilities());
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = new OpenAIResponsesChatProvider({
+        model: 'gpt-5-codex',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: gateway.baseUrl,
+        responsesWebSocket: { targets: [gateway.baseUrl] },
+      });
+      const tools: Tool[] = [
+        { name: 'Bash', description: 'Run bash', parameters: { type: 'object' } },
+        { name: 'ReadMediaFile', description: 'Read media', parameters: { type: 'object' } },
+        { name: 'Grep', description: 'Search text', parameters: { type: 'object' } },
+      ];
+      const contextHistory: ContextMessage[] = [
+        {
+          id: 'u_hist',
+          role: 'user',
+          content: [
+            { type: 'text', text: 'inspect the historical screenshot and run checks' },
+            { type: 'image_url', imageUrl: { url: historicalImageUrl } },
+          ],
+          toolCalls: [],
+        },
+      ];
+      const step1History = project(contextHistory, undefined, { toolResultAppendix: 'host_auto_injections' });
+      const first = await generate(provider, 'system instructions', tools, step1History, undefined, { responsesTransport: transport });
+      expect(first.message.toolCalls.map((call) => call.id)).toEqual(['call_bash', 'call_media', 'call_grep']);
+      const firstFrameBytes = Buffer.byteLength(gateway.frames[0]!.wire, 'utf8');
+      expect(transport.diagnostics()).toMatchObject({
+        transport: 'ws',
+        webSocketCapabilities: true,
+        webSocketCapabilityVersion: 2,
+        webSocketFrameBytes: firstFrameBytes,
+        webSocketMaxFrameBytes: 8_388_608,
+        webSocketFullInputReason: 'initial',
+      });
+
+      const persistedStep1Content = first.message.content.filter(
+        (part) => !(part.type === 'think' && part.encrypted === undefined && part.think.trim().length === 0),
+      );
+      contextHistory.push(
+        {
+          id: 'a_step1',
+          role: 'assistant',
+          content: persistedStep1Content,
+          toolCalls: first.message.toolCalls,
+        },
+        {
+          id: 't_bash',
+          role: 'tool',
+          toolCallId: 'call_bash',
+          content: [{ type: 'text', text: 'total 4\n-rw-r--r-- 1 user 24000 sample.png' }],
+          toolCalls: [],
+        },
+        {
+          id: 't_media',
+          role: 'tool',
+          toolCallId: 'call_media',
+          content: [
+            { type: 'text', text: 'Read image file sample.png (800x600)' },
+            { type: 'image_url', imageUrl: { url: newToolImageUrl } },
+          ],
+          toolCalls: [],
+        },
+        {
+          id: 't_grep',
+          role: 'tool',
+          toolCallId: 'call_grep',
+          content: [{ type: 'text', text: 'src/index.ts:12:delta' }],
+          toolCalls: [],
+        },
+        {
+          id: 'inj_reminder',
+          role: 'user',
+          origin: { kind: 'injection', variant: 'todo_reminder' },
+          content: [{ type: 'text', text: '<system-reminder>Keep working on current step.</system-reminder>' }],
+          toolCalls: [],
+        },
+      );
+
+      const step2History = project(contextHistory, undefined, { toolResultAppendix: 'host_auto_injections' });
+      const second = await generate(provider, 'system instructions', tools, step2History, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'completed inspection' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_step_0');
+
+      const secondFrameBytes = Buffer.byteLength(gateway.frames[1]!.wire, 'utf8');
+      expect(firstFrameBytes).toBe(213_985);
+      expect(secondFrameBytes).toBe(33_078);
+      expect(gateway.frames[1]!.wire).not.toContain(historicalImageUrl);
+      expect(gateway.frames[1]!.wire).toContain(newToolImageUrl);
+      expect(transport.diagnostics()).toMatchObject({
+        transport: 'ws',
+        webSocketCapabilities: true,
+        webSocketCapabilityVersion: 2,
+        webSocketFrameBytes: secondFrameBytes,
+        webSocketMaxFrameBytes: 8_388_608,
+        webSocketFullInputReason: null,
+      });
+    } finally { transport.dispose(); }
+  });
+
+  it('reuses the socket and previous_response_id delta across turns when codex_turn_metadata_per_frame is true, including omitted stable fields or omitted frame metadata', async () => {
+    const historicalImageUrl = `data:image/png;base64,${Buffer.alloc(120_000, 0x43).toString('base64')}`;
+    const outputs: RawObject[][] = [
+      [
+        { type: 'reasoning', id: 'rs_t1', status: 'completed', summary: [{ type: 'summary_text', text: 'turn 1 thought' }], encrypted_content: 'sig-turn-1' },
+        ...responseOutput('turn 1 answer'),
+      ],
+      responseOutput('turn 2 answer'),
+      responseOutput('turn 3 answer'),
+      responseOutput('turn 4 answer'),
+    ];
+    const gateway = await createGateway((_body, socket) => {
+      const index = gateway.frames.length - 1;
+      sendNativeOutput(socket, `resp_turn_${index}`, outputs[index]!);
+    }, v2Capabilities({ codex_turn_metadata_per_frame: true }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = new OpenAIResponsesChatProvider({
+        model: 'gpt-5-codex',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: gateway.baseUrl,
+        responsesWebSocket: { targets: [gateway.baseUrl] },
+      });
+      const policy = resolveAuthoredRequestIdentity({ preset: 'codex_compatible' });
+      const turn1Identity = projectRequestIdentity({
+        policy,
+        protocol: 'openai_responses',
+        model: 'gpt-5-codex',
+        rawSessionId: 'sess-fixed-1',
+        rawAgentId: 'agent-main',
+        isKimiProvider: false,
+        snapshot: {
+          installationId: 'inst-fixed-1',
+          sharedSessionId: 'sess-shared-fixed-1',
+          threadId: 'thread-fixed-1',
+          windowId: 'thread-fixed-1:0',
+          logicalId: 'turn-uuid-1',
+          rootTurnId: 'turn-uuid-1',
+          setTurnState: () => {},
+        },
+        runtimeVersion: '0.4.2',
+        platform: 'win32',
+        arch: 'x64',
+      });
+      const turn2Identity = projectRequestIdentity({
+        policy,
+        protocol: 'openai_responses',
+        model: 'gpt-5-codex',
+        rawSessionId: 'sess-fixed-1',
+        rawAgentId: 'agent-main',
+        isKimiProvider: false,
+        snapshot: {
+          installationId: 'inst-fixed-1',
+          sharedSessionId: 'sess-shared-fixed-1',
+          threadId: 'thread-fixed-1',
+          windowId: 'thread-fixed-1:0',
+          logicalId: 'turn-uuid-2',
+          parentTurnId: 'turn-uuid-1',
+          rootTurnId: 'turn-uuid-1',
+          setTurnState: () => {},
+        },
+        runtimeVersion: '0.4.2',
+        platform: 'win32',
+        arch: 'x64',
+      });
+
+      const history: Message[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'turn 1 question with image' },
+            { type: 'image_url', imageUrl: { url: historicalImageUrl } },
+          ],
+          toolCalls: [],
+        },
+      ];
+      const first = await generate(provider, 'codex instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: turn1Identity.headers,
+        cacheKey: turn1Identity.cacheKey,
+        requestIdentity: turn1Identity.wire,
+      });
+      history.push(first.message, user('turn 2 follow-up question'));
+      const second = await generate(provider, 'codex instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: turn2Identity.headers,
+        cacheKey: turn2Identity.cacheKey,
+        requestIdentity: turn2Identity.wire,
+      });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'turn 2 answer' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_turn_0');
+      expect(gateway.frames[1]?.body['input']).toEqual([
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'turn 2 follow-up question' }] },
+      ]);
+      const turn1FrameBytes = Buffer.byteLength(gateway.frames[0]!.wire, 'utf8');
+      const turn2FrameBytes = Buffer.byteLength(gateway.frames[1]!.wire, 'utf8');
+      expect(turn1FrameBytes).toBe(160_815);
+      expect(turn2FrameBytes).toBe(841);
+      expect(gateway.frames[1]!.wire).not.toContain(historicalImageUrl);
+
+      const frame2Metadata = gateway.frames[1]?.body['client_metadata'] as RawObject;
+      expect(frame2Metadata['turn_id']).toBe('turn-uuid-2');
+      expect(JSON.parse(frame2Metadata['x-codex-turn-metadata'] as string)).toMatchObject({
+        session_id: expect.any(String),
+        thread_id: 'thread-fixed-1',
+        installation_id: 'inst-fixed-1',
+        window_id: 'thread-fixed-1:0',
+        turn_id: 'turn-uuid-2',
+        parent_turn_id: 'turn-uuid-1',
+        root_turn_id: 'turn-uuid-1',
+      });
+
+      const omittedStableTurnMetadata = JSON.stringify({ turn_id: 'turn-uuid-3', parent_turn_id: 'turn-uuid-2' });
+      const turn3Headers = { ...turn2Identity.headers, 'x-codex-turn-metadata': omittedStableTurnMetadata };
+      history.push(second.message, user('turn 3 omitting stable fields in frame JSON'));
+      const third = await generate(provider, 'codex instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: turn3Headers,
+        cacheKey: turn2Identity.cacheKey,
+        requestIdentity: {
+          responsesClientMetadata: {
+            ...turn2Identity.wire?.responsesClientMetadata,
+            turn_id: 'turn-uuid-3',
+            parent_turn_id: 'turn-uuid-2',
+            'x-codex-turn-metadata': omittedStableTurnMetadata,
+          },
+        },
+      });
+      expect(third.message.content).toEqual([{ type: 'text', text: 'turn 3 answer' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames[2]?.body['previous_response_id']).toBe('resp_turn_1');
+
+      const turn4Headers = { ...turn2Identity.headers };
+      delete turn4Headers['x-codex-turn-metadata'];
+      const turn4Metadata = { ...turn2Identity.wire?.responsesClientMetadata };
+      delete turn4Metadata['x-codex-turn-metadata'];
+      history.push(third.message, user('turn 4 omitting x-codex-turn-metadata entirely'));
+      const fourth = await generate(provider, 'codex instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: turn4Headers,
+        cacheKey: turn2Identity.cacheKey,
+        requestIdentity: { responsesClientMetadata: turn4Metadata },
+      });
+      expect(fourth.message.content).toEqual([{ type: 'text', text: 'turn 4 answer' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames[3]?.body['previous_response_id']).toBe('resp_turn_2');
+    } finally { transport.dispose(); }
+  });
+
+  it('reuses socket when frame omits x-codex-turn-metadata and header equals handshake, but reconnects with full input when header changes turn_id without frame key', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      sendCompleted(socket, `resp_${gateway.frames.length}`, `reply_${gateway.frames.length}`);
+    }, v2Capabilities({ codex_turn_metadata_per_frame: true }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const turn1Meta = JSON.stringify({
+        session_id: 's1',
+        thread_id: 't1',
+        installation_id: 'i1',
+        window_id: 'w1',
+        turn_id: 'turn_1',
+      });
+      const turn2Meta = JSON.stringify({
+        session_id: 's1',
+        thread_id: 't1',
+        installation_id: 'i1',
+        window_id: 'w1',
+        turn_id: 'turn_2',
+      });
+      const history: Message[] = [user('turn 1')];
+      const first = await generate(provider, 'instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn1Meta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': turn1Meta, turn_id: 'turn_1' } },
+      });
+
+      history.push(first.message, user('turn 1 step 2 without frame key but same header'));
+      const sameHeader = await generate(provider, 'instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn1Meta },
+        requestIdentity: { responsesClientMetadata: { turn_id: 'turn_1' } },
+      });
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_1');
+
+      history.push(sameHeader.message, user('turn 2 with new header turn_id but omitted frame key'));
+      await generate(provider, 'instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn2Meta },
+        requestIdentity: { responsesClientMetadata: { turn_id: 'turn_2' } },
+      });
+      expect(gateway.connections).toHaveLength(2);
+      expect(gateway.connections[1]?.headers['x-codex-turn-metadata']).toBe(turn2Meta);
+      expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
+      expect(transport.diagnostics().webSocketFullInputReason).toBe('connection_changed');
+    } finally { transport.dispose(); }
+  });
+
+  it('keeps legacy behavior (reconnect + full input) across turns when codex_turn_metadata_per_frame is not advertised or false', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      sendCompleted(socket, `resp_${gateway.frames.length}`, `reply_${gateway.frames.length}`);
+    }, v2Capabilities());
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const turn1Meta = JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' });
+      const turn2Meta = JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_2' });
+      const history: Message[] = [user('first')];
+      const first = await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn1Meta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': turn1Meta, turn_id: 'turn_1' } },
+      });
+      history.push(first.message, user('second'));
+      await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn2Meta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': turn2Meta, turn_id: 'turn_2' } },
+      });
+      expect(gateway.connections).toHaveLength(2);
+      expect(gateway.connections[0]?.headers['x-codex-turn-metadata']).toBe(turn1Meta);
+      expect(gateway.connections[1]?.headers['x-codex-turn-metadata']).toBe(turn2Meta);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+      expect(transport.diagnostics().webSocketFullInputReason).toBe('connection_changed');
+    } finally { transport.dispose(); }
+  });
+
+  it.each([
+    {
+      name: 'mutated session_id',
+      handshakeHeader: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' }),
+      nextFrameMeta: JSON.stringify({ session_id: 's2', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'mutated thread_id',
+      handshakeHeader: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' }),
+      nextFrameMeta: JSON.stringify({ session_id: 's1', thread_id: 't2', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'mutated installation_id',
+      handshakeHeader: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' }),
+      nextFrameMeta: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i2', window_id: 'w1', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'mutated window_id',
+      handshakeHeader: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' }),
+      nextFrameMeta: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w2', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'added window_id absent at handshake',
+      handshakeHeader: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', turn_id: 'turn_1' }),
+      nextFrameMeta: JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'added session_id when handshake had no x-codex-turn-metadata',
+      handshakeHeader: undefined,
+      nextFrameMeta: JSON.stringify({ session_id: 's1', turn_id: 'turn_2' }),
+    },
+    {
+      name: 'invalid handshake x-codex-turn-metadata JSON rejects per-frame opt-in',
+      handshakeHeader: '{not-valid-json',
+      nextFrameMeta: JSON.stringify({ turn_id: 'turn_2' }),
+    },
+  ])('opens a new WebSocket handshake and sends full input when stable identity changes or is invalid ($name)', async ({ handshakeHeader, nextFrameMeta }) => {
+    const gateway = await createGateway((_body, socket) => {
+      sendCompleted(socket, `resp_${gateway.frames.length}`, `reply_${gateway.frames.length}`);
+    }, v2Capabilities({ codex_turn_metadata_per_frame: true }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history: Message[] = [user('first')];
+      const firstHeaders: Record<string, string> = handshakeHeader === undefined ? {} : { 'x-codex-turn-metadata': handshakeHeader };
+      const firstMetadata: Record<string, string> = handshakeHeader === undefined ? { turn_id: 'turn_1' } : { 'x-codex-turn-metadata': handshakeHeader, turn_id: 'turn_1' };
+      const first = await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        headers: firstHeaders,
+        requestIdentity: { responsesClientMetadata: firstMetadata },
+      });
+      history.push(first.message, user('second'));
+      await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': nextFrameMeta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': nextFrameMeta, turn_id: 'turn_2' } },
+      });
+      expect(gateway.connections).toHaveLength(2);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+    } finally { transport.dispose(); }
+  });
+
+  it('allows dynamic-only frame metadata when handshake had no x-codex-turn-metadata and codex_turn_metadata_per_frame is true', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      sendCompleted(socket, `resp_${gateway.frames.length}`, `reply_${gateway.frames.length}`);
+    }, v2Capabilities({ codex_turn_metadata_per_frame: true }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history: Message[] = [user('first')];
+      const first = await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_1' }), turn_id: 'turn_1' } },
+      });
+      history.push(first.message, user('second'));
+      const dynamicOnly = JSON.stringify({ turn_id: 'turn_2', parent_turn_id: 'turn_1' });
+      await generate(provider, '', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': dynamicOnly },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': dynamicOnly, turn_id: 'turn_2' } },
+      });
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_1');
+    } finally { transport.dispose(); }
+  });
+
+  it('falls back to HTTP with current-turn headers and full native input on pre-inference origin_capability_mismatch without retrying on the same socket', async () => {
+    const turn1Meta = JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_1' });
+    const turn2Meta = JSON.stringify({ session_id: 's1', thread_id: 't1', installation_id: 'i1', window_id: 'w1', turn_id: 'turn_2' });
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 1) {
+        sendCompleted(socket, 'resp_1', 'first answer');
+        return;
+      }
+      socket.send(JSON.stringify({
+        type: 'error',
+        status: 503,
+        error: {
+          type: 'invalid_request_error',
+          code: 'origin_capability_mismatch',
+          message: 'Origin does not support per-frame Codex turn metadata.',
+          param: '',
+        },
+        execution: 'not_executed',
+      }));
+    }, v2Capabilities({ codex_turn_metadata_per_frame: true }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history: Message[] = [user('turn 1')];
+      const first = await generate(provider, 'instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn1Meta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': turn1Meta, turn_id: 'turn_1' } },
+      });
+      history.push(first.message, user('turn 2'));
+      const second = await generate(provider, 'instructions', [], history, undefined, {
+        responsesTransport: transport,
+        headers: { 'x-codex-turn-metadata': turn2Meta },
+        requestIdentity: { responsesClientMetadata: { 'x-codex-turn-metadata': turn2Meta, turn_id: 'turn_2' } },
+      });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpHeaders[0]?.['x-codex-turn-metadata']).toBe(turn2Meta);
+      expect((gateway.httpRequests[0]?.['client_metadata'] as RawObject)?.['x-codex-turn-metadata']).toBe(turn2Meta);
+      expect(gateway.httpRequests[0]?.['previous_response_id']).toBeUndefined();
+      expect((gateway.httpRequests[0]?.['input'] as unknown[])?.length).toBe(3);
+      expect(transport.diagnostics()).toMatchObject({
+        transport: 'ws',
+        webSocketFallbackReason: 'origin_capability_mismatch',
+      });
+    } finally { transport.dispose(); }
+  });
+
+  it.each(['http_status_500', 'sse_stream_error'] as const)(
+    'retains WebSocket frame bytes and fallback reason on the production provider error when HTTP fallback fails (%s)',
+    async (failureMode) => {
+      const http = createServer((_request, response) => {
+        if (failureMode === 'http_status_500') {
+          response.writeHead(500, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: { message: 'HTTP fallback upstream 500', type: 'server_error', code: 'internal_error' } }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({
+          type: 'error',
+          code: 'server_error',
+          message: 'SSE fallback failed mid-stream',
+          param: null,
+        })}\n\n`);
+      });
+      const server = new WebSocketServer({ server: http });
+      server.on('headers', (headers) => {
+        headers.push(`X-Responses-WebSocket-Capabilities: ${v2Capabilities({ codex_turn_metadata_per_frame: true })}`);
+      });
+      const frameWires: string[] = [];
+      server.on('connection', (socket) => {
+        socket.on('message', (data) => {
+          const bytes = Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? Buffer.from(data) : data;
+          frameWires.push(bytes.toString('utf8'));
+          socket.send(JSON.stringify({
+            type: 'error',
+            status: 503,
+            error: {
+              type: 'invalid_request_error',
+              code: 'origin_capability_mismatch',
+              message: 'Origin does not support per-frame Codex turn metadata.',
+              param: '',
+            },
+            execution: 'not_executed',
+          }));
+        });
+      });
+      await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+      const baseUrl = `http://127.0.0.1:${(http.address() as AddressInfo).port}/v1`;
+      const transport = new ResponsesWebSocketTransport();
+      try {
+        const provider = productionProvider(baseUrl);
+        const failure = await generate(provider, 'instructions', [], [user('fallback test')], undefined, {
+          responsesTransport: transport,
+        }).catch((error: unknown) => error);
+        expect(frameWires).toHaveLength(1);
+        const expectedFrameBytes = Buffer.byteLength(frameWires[0]!, 'utf8');
+        const payload = toErrorPayload(failure);
+        expect(payload.details?.['responsesTransport']).toEqual({
+          transport: 'sse',
+          webSocketCapabilities: true,
+          webSocketCapabilityVersion: 2,
+          webSocketConnectionAgeMs: expect.any(Number),
+          webSocketFrameBytes: expectedFrameBytes,
+          webSocketMaxFrameBytes: 8_388_608,
+          webSocketFullInputReason: 'initial',
+          webSocketFallbackReason: 'origin_capability_mismatch',
+        });
+      } finally {
+        transport.dispose();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        http.closeAllConnections();
+        await new Promise<void>((resolve) => http.close(() => resolve()));
+      }
+    },
+  );
 });

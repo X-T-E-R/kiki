@@ -1,7 +1,11 @@
 import OpenAI from 'openai';
 import { ResponsesWS } from 'openai/resources/responses/ws';
 import { getWebSocketEventPayload } from 'openai/resources/responses/ws-base';
-import type { ResponsesOutputProjection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
+import type {
+  ResponsesFullInputReason,
+  ResponsesOutputProjection,
+  ResponsesTransportDiagnostics,
+} from '#/kosong/contract/responsesTransport';
 
 import { createAbortError, noteExplicitUpstreamRetryDenial } from '#/kosong/contract/errors';
 
@@ -24,6 +28,10 @@ type GatewayError = {
   retirementNotExecuted: boolean;
 };
 
+type CodexTurnMetadataStableIdentity = Readonly<
+  Record<(typeof CODEX_STABLE_TURN_METADATA_FIELDS)[number], string | null>
+>;
+
 type Baseline = {
   responseId: string;
   prefix: readonly unknown[];
@@ -34,7 +42,12 @@ type Baseline = {
   incremental: boolean;
   identityKey: string;
   wireIdentityKey: string;
+  perFrameIdentityKey: string | undefined;
+  perFrameWireIdentityKey: string | undefined;
   connectionKey: string;
+  baseConnectionKey: string;
+  handshakeTurnMetadata: CodexTurnMetadataStableIdentity | null | undefined;
+  handshakeTurnMetadataRaw: string | undefined;
 };
 
 type OutputProjection = (output: readonly unknown[]) => ResponsesOutputProjection | undefined;
@@ -44,6 +57,8 @@ type PreparedCanonical = {
   inputFingerprint: readonly string[] | undefined;
   identityKey: string;
   wireIdentityKey: string;
+  perFrameIdentityKey: string | undefined;
+  perFrameWireIdentityKey: string | undefined;
   forceFull: boolean;
 };
 
@@ -60,6 +75,18 @@ type PrimedResponse = {
 };
 
 const CAPABILITIES_HEADER = 'x-responses-websocket-capabilities';
+const CODEX_TURN_METADATA_HEADER = 'x-codex-turn-metadata';
+const CODEX_STABLE_TURN_METADATA_FIELDS = [
+  'session_id',
+  'thread_id',
+  'installation_id',
+  'window_id',
+] as const;
+const CODEX_DYNAMIC_CLIENT_METADATA_FIELDS = [
+  'turn_id',
+  'parent_turn_id',
+  'root_turn_id',
+] as const;
 const READY_STATE_OPEN = 1;
 const RESPONSE_CREATE = 'response.create';
 const TERMINAL_WRITE_MARGIN_SECONDS = 15;
@@ -145,6 +172,100 @@ function connectionFingerprint(
   headers: Readonly<Record<string, string>>,
 ): string {
   return [client.baseURL, clientAuthFingerprint(client), headerFingerprint(headers)].join('\u0000');
+}
+
+function readCaseInsensitiveHeader(
+  headers: Readonly<Record<string, string>>,
+  wanted: string,
+): string | undefined {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === wanted) return value;
+  }
+  return undefined;
+}
+
+function parseCodexTurnMetadataStableIdentity(
+  value: unknown,
+): CodexTurnMetadataStableIdentity | null | undefined {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  const object = asObject(parsed);
+  if (object === undefined) return undefined;
+  const stable: Record<string, string | null> = {};
+  for (const field of CODEX_STABLE_TURN_METADATA_FIELDS) {
+    if (!Object.hasOwn(object, field)) {
+      stable[field] = null;
+      continue;
+    }
+    const fieldValue = object[field];
+    if (typeof fieldValue !== 'string' || fieldValue.trim().length === 0) return undefined;
+    stable[field] = fieldValue;
+  }
+  return stable as CodexTurnMetadataStableIdentity;
+}
+
+function baseConnectionFingerprint(
+  client: OpenAI,
+  headers: Readonly<Record<string, string>>,
+): string {
+  const withoutTurnMetadata: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === CODEX_TURN_METADATA_HEADER) continue;
+    withoutTurnMetadata[name] = value;
+  }
+  return connectionFingerprint(client, withoutTurnMetadata);
+}
+
+function canReusePerFrameCodexTurnMetadata(
+  handshakeTurnMetadata: CodexTurnMetadataStableIdentity | null | undefined,
+  handshakeTurnMetadataRaw: string | undefined,
+  headers: Readonly<Record<string, string>>,
+  params: Readonly<Record<string, unknown>>,
+): boolean {
+  if (handshakeTurnMetadata === undefined) return false;
+  const headerTurnMetadataRaw = readCaseInsensitiveHeader(headers, CODEX_TURN_METADATA_HEADER);
+  const clientMetadata = asObject(params['client_metadata']);
+  const frameTurnMetadataRaw = clientMetadata?.[CODEX_TURN_METADATA_HEADER];
+  if (frameTurnMetadataRaw === undefined) {
+    return headerTurnMetadataRaw === undefined || headerTurnMetadataRaw === handshakeTurnMetadataRaw;
+  }
+  const frameTurnMetadata = parseCodexTurnMetadataStableIdentity(frameTurnMetadataRaw);
+  if (frameTurnMetadata === undefined || frameTurnMetadata === null) return false;
+  if (headerTurnMetadataRaw !== undefined && headerTurnMetadataRaw !== frameTurnMetadataRaw) {
+    return false;
+  }
+  for (const field of CODEX_STABLE_TURN_METADATA_FIELDS) {
+    const frameValue = frameTurnMetadata[field];
+    const handshakeValue = handshakeTurnMetadata === null ? null : handshakeTurnMetadata[field];
+    if (frameValue !== null && frameValue !== handshakeValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function perFrameWireIdentity(params: Readonly<Record<string, unknown>>): string | undefined {
+  const clientMetadata = asObject(params['client_metadata']);
+  if (clientMetadata === undefined) return wireIdentity(params);
+  const frameTurnMetadata = parseCodexTurnMetadataStableIdentity(
+    clientMetadata[CODEX_TURN_METADATA_HEADER],
+  );
+  if (frameTurnMetadata === undefined) return undefined;
+  const normalizedMetadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(clientMetadata)) {
+    if ((CODEX_DYNAMIC_CLIENT_METADATA_FIELDS as readonly string[]).includes(key)) continue;
+    if (key === CODEX_TURN_METADATA_HEADER) continue;
+    normalizedMetadata[key] = value;
+  }
+  const withoutInput: Record<string, unknown> = { ...params, client_metadata: normalizedMetadata };
+  delete withoutInput['input'];
+  return exactJson(withoutInput);
 }
 
 function readHeaderValue(headers: unknown, wanted: string): string | undefined {
@@ -256,6 +377,15 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     }
   }
 
+  const codexTurnMetadataPerFrame = object['codex_turn_metadata_per_frame'];
+  if (codexTurnMetadataPerFrame !== undefined && typeof codexTurnMetadataPerFrame !== 'boolean') {
+    throw new ResponsesWebSocketError(
+      'Responses WebSocket capability codex_turn_metadata_per_frame must be a boolean.',
+      'responses_ws_capabilities_unsupported',
+      { safeHttpFallback: true },
+    );
+  }
+
   const shared = {
     ...object,
     events: Object.freeze([...events]),
@@ -278,6 +408,7 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     native_responses_upstream_required: true as const,
     state_miss: 'previous_response_not_found' as const,
     state_miss_execution: 'not_executed' as const,
+    codex_turn_metadata_per_frame: codexTurnMetadataPerFrame,
   };
 
   if (version === 1) return Object.freeze({ ...shared, version: 1 as const });
@@ -443,6 +574,7 @@ function wireIdentity(params: Readonly<Record<string, unknown>>): string {
 function canonicalIdentity(
   canonical: ResponsesWebSocketCanonical | readonly unknown[] | string | undefined,
   params: Readonly<Record<string, unknown>>,
+  wireId = wireIdentity(params),
 ): string {
   if (typeof canonical === 'string') return canonical;
   const canonicalObjectValue = canonicalObject(canonical);
@@ -460,7 +592,7 @@ function canonicalIdentity(
     }
   }
 
-  return wireIdentity(params);
+  return wireId;
 }
 
 function canonicalForceFull(
@@ -478,11 +610,18 @@ function prepareCanonical(
   const inputFingerprint = fingerprintInput(input);
   const requestFingerprint = fingerprintInput(Array.isArray(params['input']) ? params['input'] : undefined);
   const verified = inputFingerprint !== undefined && requestFingerprint !== undefined && sameFingerprint(inputFingerprint, requestFingerprint);
+  const wireIdentityKey = wireIdentity(params);
+  const perFrameWireIdentityKey = perFrameWireIdentity(params);
   return {
     input: verified ? input : undefined,
     inputFingerprint: verified ? inputFingerprint : undefined,
-    identityKey: canonicalIdentity(canonical, params),
-    wireIdentityKey: wireIdentity(params),
+    identityKey: canonicalIdentity(canonical, params, wireIdentityKey),
+    wireIdentityKey,
+    perFrameIdentityKey:
+      perFrameWireIdentityKey === undefined
+        ? undefined
+        : canonicalIdentity(canonical, params, perFrameWireIdentityKey),
+    perFrameWireIdentityKey,
     forceFull: canonicalForceFull(canonical),
   };
 }
@@ -553,6 +692,7 @@ export interface ResponsesWebSocketCapabilities {
   readonly native_responses_upstream_required: true;
   readonly state_miss: 'previous_response_not_found';
   readonly state_miss_execution: 'not_executed';
+  readonly codex_turn_metadata_per_frame?: boolean;
   readonly [key: string]: unknown;
 }
 
@@ -623,6 +763,9 @@ export class ResponsesWebSocketError extends Error {
 export class ResponsesWebSocketTransport {
   private _socket: ResponsesWS | null = null;
   private _socketKey: string | undefined;
+  private _baseSocketKey: string | undefined;
+  private _handshakeTurnMetadata: CodexTurnMetadataStableIdentity | null | undefined;
+  private _handshakeTurnMetadataRaw: string | undefined;
   private _connectedAt: bigint | undefined;
   private _capabilities: ResponsesWebSocketCapabilities | undefined;
   private _baseline: Baseline | null = null;
@@ -641,6 +784,10 @@ export class ResponsesWebSocketTransport {
   private _interruptionGeneration = 0;
   private _capabilitiesAdvertised = false;
   private _closedDiagnostics: ResponsesTransportDiagnostics | undefined;
+  private _lastFrameBytes: number | null | undefined;
+  private _lastMaxFrameBytes: number | null | undefined;
+  private _lastFullInputReason: ResponsesFullInputReason | null | undefined;
+  private _lastFallbackReason: string | null | undefined;
 
   get capabilities(): ResponsesWebSocketCapabilities | undefined {
     return this._capabilities;
@@ -648,13 +795,18 @@ export class ResponsesWebSocketTransport {
 
   diagnostics(): ResponsesTransportDiagnostics {
     if (this._socket === null && this._closedDiagnostics !== undefined) return this._closedDiagnostics;
-    return {
+    const result: { -readonly [K in keyof ResponsesTransportDiagnostics]: ResponsesTransportDiagnostics[K] } = {
       transport: 'ws',
       webSocketCapabilities: this._capabilitiesAdvertised,
       webSocketCapabilityVersion: this._capabilities?.version ?? null,
       webSocketConnectionAgeMs: this._connectedAt === undefined ? null
         : Math.min(Number.MAX_SAFE_INTEGER, Number((process.hrtime.bigint() - this._connectedAt) / 1_000_000n)),
     };
+    if (this._lastFrameBytes !== undefined) result.webSocketFrameBytes = this._lastFrameBytes;
+    if (this._lastMaxFrameBytes !== undefined) result.webSocketMaxFrameBytes = this._lastMaxFrameBytes;
+    if (this._lastFullInputReason !== undefined) result.webSocketFullInputReason = this._lastFullInputReason;
+    if (this._lastFallbackReason !== undefined) result.webSocketFallbackReason = this._lastFallbackReason;
+    return result;
   }
 
   close(): void {
@@ -746,26 +898,82 @@ export class ResponsesWebSocketTransport {
     const canonical = prepareCanonical(options.canonical, params);
     const headers = headerRecord(options.headers);
     const connectionKey = connectionFingerprint(client, headers);
+    const baseConnectionKey = baseConnectionFingerprint(client, headers);
     this._inFlight = true;
+    this._lastFrameBytes = undefined;
+    this._lastMaxFrameBytes = undefined;
+    this._lastFullInputReason = undefined;
+    this._lastFallbackReason = undefined;
 
     let abortHandler: (() => void) | undefined;
     let sendAttempted = false;
     try {
       const rebase = this._fullRebase;
-      const fullRebaseInput = rebase?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&
-        rebase.connectionKey === connectionKey && rebase.identityKey === canonical.identityKey &&
-        rebase.wireIdentityKey === canonical.wireIdentityKey && !canonical.forceFull &&
-        canonical.input !== undefined && isPrefix(rebase.canonicalFingerprint, canonical.inputFingerprint)
-        ? [...rebase.prefix, ...canonical.input.slice(rebase.canonicalPrefix!.length)] : undefined;
-      if (fullRebaseInput !== undefined) options.onFullInput?.(fullRebaseInput);
-      const connection = await this._ensureConnection(client, headers, connectionKey, options.signal);
+      const rebaseMatchesIdentity = (allowPerFrameTurnMetadata: boolean): boolean => {
+        if (rebase === null) return false;
+        if (
+          rebase.connectionKey === connectionKey &&
+          rebase.identityKey === canonical.identityKey &&
+          rebase.wireIdentityKey === canonical.wireIdentityKey
+        ) {
+          return true;
+        }
+        return (
+          allowPerFrameTurnMetadata &&
+          rebase.baseConnectionKey === baseConnectionKey &&
+          canReusePerFrameCodexTurnMetadata(
+            rebase.handshakeTurnMetadata,
+            rebase.handshakeTurnMetadataRaw,
+            headers,
+            params,
+          ) &&
+          rebase.perFrameIdentityKey !== undefined &&
+          rebase.perFrameIdentityKey === canonical.perFrameIdentityKey &&
+          rebase.perFrameWireIdentityKey !== undefined &&
+          rebase.perFrameWireIdentityKey === canonical.perFrameWireIdentityKey
+        );
+      };
+      const computeFullRebaseInput = (allowPerFrameTurnMetadata: boolean): readonly unknown[] | undefined =>
+        rebase?.canonicalFingerprint !== undefined &&
+        canonical.inputFingerprint !== undefined &&
+        rebaseMatchesIdentity(allowPerFrameTurnMetadata) &&
+        !canonical.forceFull &&
+        canonical.input !== undefined &&
+        isPrefix(rebase.canonicalFingerprint, canonical.inputFingerprint)
+          ? [...rebase.prefix, ...canonical.input.slice(rebase.canonicalPrefix!.length)]
+          : undefined;
+      const preConnectFullRebaseInput = computeFullRebaseInput(
+        this._capabilities?.codex_turn_metadata_per_frame === true,
+      );
+      if (preConnectFullRebaseInput !== undefined) options.onFullInput?.(preConnectFullRebaseInput);
+      const hadBaselineBeforeConnect = this._baseline !== null;
+      const connection = await this._ensureConnection(
+        client,
+        headers,
+        connectionKey,
+        baseConnectionKey,
+        params,
+        options.signal,
+      );
       if (this._disposed) throw createAbortError();
       if (this._retired) {
         throw new ResponsesWebSocketError('Responses WebSocket retired before sending the request.', 'responses_websocket_retired', {
           safeHttpFallback: true, execution: 'not_executed',
         });
       }
-      const useDelta = this._canUseDelta(canonical, connectionKey, params);
+      const perFrameTurnMetadataSupported = this._capabilities?.codex_turn_metadata_per_frame === true;
+      const fullRebaseInput = computeFullRebaseInput(perFrameTurnMetadataSupported);
+      const deltaDecision = this._evaluateDelta(
+        canonical,
+        connectionKey,
+        baseConnectionKey,
+        headers,
+        params,
+        perFrameTurnMetadataSupported,
+        hadBaselineBeforeConnect,
+      );
+      const useDelta = deltaDecision.useDelta;
+      this._lastFullInputReason = deltaDecision.fullInputReason;
       const baseline = this._baseline;
       if (baseline?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&
         canonical.input !== undefined && isPrefix(baseline.canonicalFingerprint, canonical.inputFingerprint)) {
@@ -798,6 +1006,7 @@ export class ResponsesWebSocketTransport {
         canonical,
         options.canonicalOutput,
         connectionKey,
+        baseConnectionKey,
         options.signal,
         abortHandler,
         primed.record,
@@ -805,6 +1014,13 @@ export class ResponsesWebSocketTransport {
         primed.retriedStateMiss,
       );
     } catch (error) {
+      if (
+        error instanceof ResponsesWebSocketError &&
+        error.safeHttpFallback &&
+        error.code !== 'responses_ws_capabilities_unsupported'
+      ) {
+        this._recordFallbackReason(error.code);
+      }
       this._inFlight = false;
       if (abortHandler !== undefined) options.signal?.removeEventListener('abort', abortHandler);
       if (sendAttempted) this._closeCurrent();
@@ -817,21 +1033,61 @@ export class ResponsesWebSocketTransport {
     }
   }
 
-  private _canUseDelta(
+  private _evaluateDelta(
     canonical: PreparedCanonical,
     connectionKey: string,
+    baseConnectionKey: string,
+    headers: Readonly<Record<string, string>>,
     params: Readonly<Record<string, unknown>>,
-  ): boolean {
+    allowPerFrameTurnMetadata: boolean,
+    hadBaselineBeforeConnect: boolean,
+  ): { useDelta: boolean; fullInputReason: ResponsesFullInputReason | null } {
     const baseline = this._baseline;
+    if (baseline === null) {
+      return {
+        useDelta: false,
+        fullInputReason: hadBaselineBeforeConnect ? 'connection_changed' : 'initial',
+      };
+    }
+    if (!baseline.incremental) {
+      return { useDelta: false, fullInputReason: 'non_incremental_output' };
+    }
+    const connectionMatches =
+      baseline.connectionKey === connectionKey ||
+      (allowPerFrameTurnMetadata &&
+        baseline.baseConnectionKey === baseConnectionKey &&
+        canReusePerFrameCodexTurnMetadata(
+          baseline.handshakeTurnMetadata,
+          baseline.handshakeTurnMetadataRaw,
+          headers,
+          params,
+        ));
+    if (!connectionMatches) {
+      return { useDelta: false, fullInputReason: 'connection_changed' };
+    }
+    const identityMatches =
+      (baseline.identityKey === canonical.identityKey &&
+        baseline.wireIdentityKey === canonical.wireIdentityKey) ||
+      (allowPerFrameTurnMetadata &&
+        canReusePerFrameCodexTurnMetadata(
+          baseline.handshakeTurnMetadata,
+          baseline.handshakeTurnMetadataRaw,
+          headers,
+          params,
+        ) &&
+        baseline.perFrameIdentityKey !== undefined &&
+        baseline.perFrameIdentityKey === canonical.perFrameIdentityKey &&
+        baseline.perFrameWireIdentityKey !== undefined &&
+        baseline.perFrameWireIdentityKey === canonical.perFrameWireIdentityKey);
+    if (!identityMatches) {
+      return { useDelta: false, fullInputReason: 'identity_changed' };
+    }
+    if (canonical.forceFull) {
+      return { useDelta: false, fullInputReason: 'forced_full' };
+    }
     const requestInput = Array.isArray(params['input']) ? params['input'] : undefined;
     const requestFingerprint = fingerprintInput(requestInput);
     if (
-      baseline === null ||
-      !baseline.incremental ||
-      baseline.connectionKey !== connectionKey ||
-      baseline.identityKey !== canonical.identityKey ||
-      baseline.wireIdentityKey !== canonical.wireIdentityKey ||
-      canonical.forceFull ||
       canonical.input === undefined ||
       canonical.inputFingerprint === undefined ||
       requestFingerprint === undefined ||
@@ -839,9 +1095,19 @@ export class ResponsesWebSocketTransport {
       !sameFingerprint(requestFingerprint, canonical.inputFingerprint) ||
       !isPrefix(baseline.canonicalFingerprint, canonical.inputFingerprint)
     ) {
-      return false;
+      return { useDelta: false, fullInputReason: 'prefix_mismatch' };
     }
-    return true;
+    return { useDelta: true, fullInputReason: null };
+  }
+
+  private _recordFallbackReason(code: string): void {
+    this._lastFallbackReason = code;
+    if (this._closedDiagnostics !== undefined) {
+      this._closedDiagnostics = {
+        ...this._closedDiagnostics,
+        webSocketFallbackReason: code,
+      };
+    }
   }
 
   private _assertFrameWithinLimit(body: RawObject): void {
@@ -849,7 +1115,10 @@ export class ResponsesWebSocketTransport {
     if (capabilities === undefined) {
       throw new ResponsesWebSocketError('Responses WebSocket capabilities are unavailable.', 'responses_ws_capabilities_unsupported', { safeHttpFallback: true });
     }
-    if (frameBytes(body) > capabilities.max_frame_bytes) {
+    const bytes = frameBytes(body);
+    this._lastFrameBytes = bytes;
+    this._lastMaxFrameBytes = capabilities.max_frame_bytes;
+    if (bytes > capabilities.max_frame_bytes) {
       throw new ResponsesWebSocketError(
         'Responses WebSocket response.create frame exceeds the advertised limit.',
         'responses_websocket_frame_too_large',
@@ -862,16 +1131,32 @@ export class ResponsesWebSocketTransport {
     client: OpenAI,
     headers: Readonly<Record<string, string>>,
     connectionKey: string,
+    baseConnectionKey: string,
+    params: Readonly<Record<string, unknown>>,
     signal: AbortSignal | undefined,
   ): Promise<ActiveConnection> {
     if (this._connectedAt !== undefined && process.hrtime.bigint() - this._connectedAt >= 55n * 60n * 1_000_000_000n) this._closeCurrent();
-    if (this._socket !== null && this._socketKey === connectionKey && socketReady(this._socket)) {
+    const canReuseSocket =
+      this._socket !== null &&
+      socketReady(this._socket) &&
+      (this._socketKey === connectionKey ||
+        (this._capabilities?.codex_turn_metadata_per_frame === true &&
+          this._baseSocketKey === baseConnectionKey &&
+          canReusePerFrameCodexTurnMetadata(
+            this._handshakeTurnMetadata,
+            this._handshakeTurnMetadataRaw,
+            headers,
+            params,
+          )));
+    if (canReuseSocket && this._socket !== null) {
       return { socket: this._socket, stream: this._socket.stream(), interruptionGeneration: this._interruptionGeneration };
     }
 
     if (this._socket !== null) this._closeCurrent();
     if (signal?.aborted) throw createAbortError();
 
+    const handshakeTurnMetadataRaw = readCaseInsensitiveHeader(headers, CODEX_TURN_METADATA_HEADER);
+    const handshakeTurnMetadata = parseCodexTurnMetadataStableIdentity(handshakeTurnMetadataRaw);
     const socket = new ResponsesWS(client, { headers, reconnect: null });
     socket.on('error', () => {
       this._erroredSockets.add(socket);
@@ -889,6 +1174,9 @@ export class ResponsesWebSocketTransport {
     });
     this._socket = socket;
     this._socketKey = connectionKey;
+    this._baseSocketKey = baseConnectionKey;
+    this._handshakeTurnMetadata = handshakeTurnMetadata;
+    this._handshakeTurnMetadataRaw = handshakeTurnMetadataRaw;
     this._capabilities = undefined;
     this._capabilitiesAdvertised = false;
     this._closedDiagnostics = undefined;
@@ -943,6 +1231,9 @@ export class ResponsesWebSocketTransport {
         const capabilities = parseCapabilities(capabilityHeader);
         this._capabilities = capabilities;
         this._socketKey = connectionKey;
+        this._baseSocketKey = baseConnectionKey;
+        this._handshakeTurnMetadata = handshakeTurnMetadata;
+        this._handshakeTurnMetadataRaw = handshakeTurnMetadataRaw;
         this._armConnectionLifetime(socket, capabilities);
         return { socket, stream, interruptionGeneration: this._interruptionGeneration };
       }
@@ -965,7 +1256,9 @@ export class ResponsesWebSocketTransport {
     const safeHttpFallback =
       allowSafeHttpFallback &&
       details.execution === 'not_executed' &&
-      (code === 'unsupported_upstream_format' || code === 'unsupported_prompt_policy' ||
+      (code === 'unsupported_upstream_format' ||
+        code === 'unsupported_prompt_policy' ||
+        code === 'origin_capability_mismatch' ||
         (code === 'connection_retiring' && details.retirementNotExecuted));
     const suffix = details.param === undefined || details.param === null || details.param.trim().length === 0 ? '' : ` (param: ${details.param})`;
     return new ResponsesWebSocketError(`${code}: ${details.message}${suffix}`, code, {
@@ -1023,6 +1316,7 @@ export class ResponsesWebSocketTransport {
         ) {
           retriedStateMiss = true;
           delta = false;
+          this._lastFullInputReason = 'state_miss';
           this._erroredSockets.delete(connection.socket);
           this._clearBaseline();
           const fullBody = buildResponseCreate(
@@ -1058,6 +1352,7 @@ export class ResponsesWebSocketTransport {
     canonical: PreparedCanonical,
     outputProjection: OutputProjection | undefined,
     connectionKey: string,
+    baseConnectionKey: string,
     signal: AbortSignal | undefined,
     abortHandler: () => void,
     initialRecord: SDKStreamRecord,
@@ -1142,7 +1437,12 @@ export class ResponsesWebSocketTransport {
                 incremental: projectedOutput.incremental,
                 identityKey: canonical.identityKey,
                 wireIdentityKey: canonical.wireIdentityKey,
+                perFrameIdentityKey: canonical.perFrameIdentityKey,
+                perFrameWireIdentityKey: canonical.perFrameWireIdentityKey,
                 connectionKey,
+                baseConnectionKey,
+                handshakeTurnMetadata: this._handshakeTurnMetadata,
+                handshakeTurnMetadataRaw: this._handshakeTurnMetadataRaw,
               };
               if (capabilities.version === 2) this._fullRebase = baseline;
               if (!peerClosed) {
@@ -1175,6 +1475,7 @@ export class ResponsesWebSocketTransport {
           ) {
             retriedStateMiss = true;
             delta = false;
+            this._lastFullInputReason = 'state_miss';
             this._erroredSockets.delete(connection.socket);
             this._clearBaseline();
             const fullBody = buildResponseCreate(
@@ -1184,6 +1485,9 @@ export class ResponsesWebSocketTransport {
             this._assertFrameWithinLimit(fullBody);
             connection.socket.send(fullBody as never);
             continue;
+          }
+          if (error.safeHttpFallback) {
+            this._recordFallbackReason(error.code);
           }
           throw error;
         }
@@ -1284,6 +1588,9 @@ export class ResponsesWebSocketTransport {
     this._closedDiagnostics = this.diagnostics();
     this._socket = null;
     this._socketKey = undefined;
+    this._baseSocketKey = undefined;
+    this._handshakeTurnMetadata = undefined;
+    this._handshakeTurnMetadataRaw = undefined;
     this._connectedAt = undefined;
     this._capabilities = undefined;
     this._lifetimeExpired = false;

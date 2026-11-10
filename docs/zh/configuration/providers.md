@@ -133,15 +133,15 @@ base_url = "https://example.com/v1"
 off = true
 ```
 
-目标必须匹配 Responses 端点的来源和路径边界。写下一个目标地址并不会跳过握手。Kiki 使用官方 OpenAI SDK，每个 Agent 各持一个连接；上次已完成响应仍匹配本地历史时，只发送新增输入。辅助请求、其他 Agent 和 fork 不共享这条历史。取消请求会关闭连接；模型、凭据、策略或上下文变化时，会重建连接或发送完整请求。删除供应商表即恢复继承；设置 `off = true` 则该供应商保持普通 HTTP。删除系统表后，所有未单独设置的供应商保持普通 HTTP。
+目标必须匹配 Responses 端点的来源和路径边界。写下一个目标地址并不会跳过握手。Kiki 使用官方 OpenAI SDK，每个 Agent 各持一个连接；上次已完成响应仍匹配本地历史时，只发送新增输入。网关同时声明 `codex_turn_metadata_per_frame: true` 且会话、线程、安装与窗口身份未变时，跨轮更新的 Codex turn metadata 也会继续复用同一连接和增量历史；这只节省 Kiki 到网关的字节，网关向上游转发时仍可能重建完整历史。辅助请求、其他 Agent 和 fork 不共享这条历史。取消请求会关闭连接；模型、凭据、策略或上下文变化时，会重建连接或发送完整请求。删除供应商表即恢复继承；设置 `off = true` 则该供应商保持普通 HTTP。删除系统表后，所有未单独设置的供应商保持普通 HTTP。
 
 网关会在连接上临时保存原生请求和响应项。与 HTTP 请求字典不同，这些状态随生成完成提交，不由字典确认推进。未知输出字段保留在内存中的附属状态里，后续发送完整请求，不用于增量请求。
 
-如果网关确认请求因连接丢失历史而未执行，Kiki 会补发一次完整历史。首次发送或补发的 WebSocket 请求超过网关声明的单帧上限时，Kiki 会改用 HTTP 发送完整请求。网关明确在执行前拒绝上游格式或提示词策略时，也可以改走 HTTP。访问被拒绝或已收到部分响应时，不走这条恢复路径。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
+如果网关确认请求因连接丢失历史而未执行，Kiki 会补发一次完整历史。首次发送或补发的 WebSocket 请求超过网关声明的单帧上限时，Kiki 会改用 HTTP 发送完整请求。网关明确在执行前拒绝上游格式、提示词策略或 `origin_capability_mismatch` 时，也可以改走 HTTP。访问被拒绝或已收到部分响应时，不走这条恢复路径。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
 
 连接中断遵循[请求重试策略](./config-files.md#retry)，包括终止事件到达前以 1000、1001、1006、1012 或无错误码关闭的情况。重试会关闭旧连接，再用新连接发送当前完整历史；`previous_response_id` 不能作为被中断响应的续传游标。`websocket_connection_limit_reached` 事件，或带有符合重试条件关闭码的结构化 `websocket_close_error`，也归为连接中断，即使它由网关通过 HTTP 流（SSE）转发。只有错误文案相似时不会因此重试。连接已使用 55 分钟时，Kiki 会在下一次请求前主动换新，不打断正在生成的响应。
 
-原生 Agent 轮次可在重发前撤掉部分文本、思考（含加密思考）和未完成的本地工具调用。安全拒绝、供应商托管工具输出、明确不可重试的错误及取消仍会阻止重发。每次重试都会显示在界面和日志中，最多尝试 5 次（含首发）；配置只能下调这项上限，不能调大。失败和重试日志会记录 Kiki 本地连接的 `transport`（`ws` 或 `sse`）、`webSocketCapabilities`（有无能力声明）、`webSocketCapabilityVersion`（能力版本）和 `webSocketConnectionAgeMs`（连接已用毫秒数）；无法获取的值记为 `null`。重试额度耗尽后，轮次和任务的最终错误会同时显示总尝试次数、配置上限和原始供应商错误。子任务保留原有上下文，可通过 `AgentRun` 的 `resume` 续跑。
+原生 Agent 轮次可在重发前撤掉部分文本、思考（含加密思考）和未完成的本地工具调用。安全拒绝、供应商托管工具输出、明确不可重试的错误及取消仍会阻止重发。每次重试都会显示在界面和日志中，最多尝试 5 次（含首发）；配置只能下调这项上限，不能调大。失败和重试日志会记录 Kiki 本地连接的 `transport`（`ws` 或 `sse`）、`webSocketCapabilities`（有无能力声明）、`webSocketCapabilityVersion`（能力版本）、`webSocketConnectionAgeMs`（连接已用毫秒数）、`webSocketFrameBytes`、`webSocketMaxFrameBytes`、`webSocketFullInputReason` 和 `webSocketFallbackReason`；无法获取或不适用的值记为 `null` 或省略。重试额度耗尽后，轮次和任务的最终错误会同时显示总尝试次数、配置上限和原始供应商错误。子任务保留原有上下文，可通过 `AgentRun` 的 `resume` 续跑。
 
 ## `/provider` — 交互式供应商管理
 
