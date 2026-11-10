@@ -426,7 +426,7 @@ function cancelInFlightOpen() {
   }
   if (activeOpId !== null && isNativeShell()) {
     try {
-      void window.Capacitor.nativePromise('KikiShell', 'cancelOpen', { opId: activeOpId });
+      void window.Capacitor.nativePromise('KikiShell', 'cancelOpen', { opId: activeOpId }).catch(() => {});
     } catch {
       /* ignore */
     }

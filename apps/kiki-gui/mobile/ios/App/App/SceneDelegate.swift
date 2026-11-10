@@ -373,13 +373,13 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     call.resolve(payload)
                     return
                 }
-                Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId)
                 DispatchQueue.main.async {
                     guard let self, self.pendingAuthEpoch == callEpoch else {
                         call.resolve(["ok": false, "reason": "aborted"])
                         return
                     }
                     self.pendingOpenCommitted = true
+                    Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId)
                     UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
                     self.pendingAuthOrigin = origin
                     self.pendingAuthServerId = serverId

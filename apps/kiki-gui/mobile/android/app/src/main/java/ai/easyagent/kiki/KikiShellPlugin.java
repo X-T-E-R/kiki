@@ -419,9 +419,12 @@ public class KikiShellPlugin extends Plugin {
         String grantId = call.getString("grantId");
         String opId = call.getString("opId");
         String cleanEntry = stripTokenFromEntry(origin, entry);
-        long callEpoch = ++pendingAuthEpoch;
-        pendingOpenOpId = (opId != null && !opId.isEmpty()) ? opId : ("open-" + callEpoch);
-        pendingOpenCommitted = false;
+        final long callEpoch;
+        synchronized (this) {
+            callEpoch = ++pendingAuthEpoch;
+            pendingOpenOpId = (opId != null && !opId.isEmpty()) ? opId : ("open-" + callEpoch);
+            pendingOpenCommitted = false;
+        }
         new Thread(() -> {
             HandshakeResult hs = fetchHandshake(origin, serverId, grantId);
             String failureReason = classifyPairedHandshakeFailure(
@@ -447,20 +450,22 @@ public class KikiShellPlugin extends Plugin {
                 call.resolve(aborted);
                 return;
             }
-            recordVerifiedOrigin(serverId, origin, hs.targetHostId, grantId);
             getBridge().getWebView().post(() -> {
-                if (callEpoch != pendingAuthEpoch) {
-                    JSObject aborted = new JSObject();
-                    aborted.put("ok", false);
-                    aborted.put("reason", "aborted");
-                    call.resolve(aborted);
-                    return;
+                synchronized (this) {
+                    if (callEpoch != pendingAuthEpoch) {
+                        JSObject aborted = new JSObject();
+                        aborted.put("ok", false);
+                        aborted.put("reason", "aborted");
+                        call.resolve(aborted);
+                        return;
+                    }
+                    pendingOpenCommitted = true;
+                    pendingAuthOrigin = origin;
+                    pendingAuthServerId = serverId;
+                    activeAuthOrigin = origin;
+                    activeAuthServerId = serverId;
                 }
-                pendingOpenCommitted = true;
-                pendingAuthOrigin = origin;
-                pendingAuthServerId = serverId;
-                activeAuthOrigin = origin;
-                activeAuthServerId = serverId;
+                recordVerifiedOrigin(serverId, origin, hs.targetHostId, grantId);
                 prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
                 ensureWebViewListenersRegistered();
                 getBridge().getWebView().loadUrl(cleanEntry);
@@ -483,12 +488,14 @@ public class KikiShellPlugin extends Plugin {
     }
 
     boolean cancelPendingOpen(String opId) {
-        if (opId == null || opId.isEmpty() || !opId.equals(pendingOpenOpId) || pendingOpenCommitted) {
-            return false;
+        synchronized (this) {
+            if (opId == null || opId.isEmpty() || !opId.equals(pendingOpenOpId) || pendingOpenCommitted) {
+                return false;
+            }
+            pendingAuthEpoch++;
+            pendingOpenOpId = null;
+            return true;
         }
-        pendingAuthEpoch++;
-        pendingOpenOpId = null;
-        return true;
     }
 
     @PluginMethod
@@ -502,14 +509,16 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private void clearPendingAuth() {
-        pendingAuthEpoch++;
-        documentNavEpoch++;
-        pendingOpenOpId = null;
-        pendingOpenCommitted = false;
-        currentDocumentNavNonce = null;
-        deliveredDocumentNavNonce = null;
-        pendingAuthOrigin = null;
-        pendingAuthServerId = null;
+        synchronized (this) {
+            pendingAuthEpoch++;
+            documentNavEpoch++;
+            pendingOpenOpId = null;
+            pendingOpenCommitted = false;
+            currentDocumentNavNonce = null;
+            deliveredDocumentNavNonce = null;
+            pendingAuthOrigin = null;
+            pendingAuthServerId = null;
+        }
     }
 
     private void clearActiveAuth() {
@@ -527,11 +536,13 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private void clearPendingAuthIfCurrent(long epoch) {
-        if (pendingAuthEpoch == epoch) {
-            pendingOpenOpId = null;
-            pendingOpenCommitted = false;
-            pendingAuthOrigin = null;
-            pendingAuthServerId = null;
+        synchronized (this) {
+            if (pendingAuthEpoch == epoch) {
+                pendingOpenOpId = null;
+                pendingOpenCommitted = false;
+                pendingAuthOrigin = null;
+                pendingAuthServerId = null;
+            }
         }
     }
 
