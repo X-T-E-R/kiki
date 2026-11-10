@@ -358,6 +358,50 @@ describe('google-genai trailing model turn', () => {
     expect(stream.usage).toMatchObject({ inputOther: 8, output: 5 });
   });
 
+  it('keeps provider-owned continuation hops for non-streaming responses', async () => {
+    const json = (payload: Record<string, unknown>) => new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const seen = installFetchSequence([
+      () => json({
+        candidates: [{
+          content: { role: 'model', parts: [{ thought: true, text: 'partial thought', thoughtSignature: THINK_SIGNATURE }] },
+          finishReason: 'CONTINUATION',
+          continuationToken: 'token-non-stream',
+        }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
+      }),
+      () => json({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'final answer' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 3 },
+      }),
+    ]);
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: false });
+    const stream = await provider.generate('system instructions', [], [user('Hi')], {
+      auth: { apiKey: KEY },
+      maxCompletionTokens: 7,
+    });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.url).toContain(':generateContent');
+    const first = JSON.parse(seen[0]!.body ?? '') as Record<string, unknown>;
+    const second = JSON.parse(seen[1]!.body ?? '') as Record<string, unknown>;
+    expect(second['continuationToken']).toBe('token-non-stream');
+    expect(second['contents']).toEqual(first['contents']);
+    expect(second['systemInstruction']).toEqual(first['systemInstruction']);
+    expect(second['generationConfig']).toEqual(first['generationConfig']);
+    expect(parts).toEqual([
+      { type: 'think', think: 'partial thought', encrypted: THINK_SIGNATURE },
+      { type: 'text', text: 'final answer' },
+    ]);
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.rawFinishReason).toBe('STOP');
+    expect(stream.usage).toMatchObject({ inputOther: 8, output: 5 });
+  });
+
   it('does not continue MAX_TOKENS or change the explicit output budget', async () => {
     const seen = installFetch(() => responseSse({
       candidates: [{

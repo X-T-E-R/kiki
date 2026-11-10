@@ -24,7 +24,7 @@ import type {
   ThinkingEffort,
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
-import type { TokenUsage } from '#/kosong/contract/usage';
+import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import {
@@ -564,6 +564,8 @@ function isGoogleOrdinaryUserContent(content: GoogleContent): boolean {
 export class GoogleGenAIStreamedMessage implements StreamedMessage {
   private _id: string | null = null;
   private _usage: TokenUsage | null = null;
+  private _completedUsage: TokenUsage | null = null;
+  private _hopUsage: TokenUsage | null = null;
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
@@ -584,6 +586,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     isStream: boolean,
     signal?: AbortSignal,
     private readonly _streamController?: AbortController,
+    private readonly _continue?: (token: string) => Promise<AsyncIterable<Record<string, unknown>> | Record<string, unknown>>,
   ) {
     if (isStream) {
       this._iter = this._convertStreamResponse(
@@ -714,13 +717,21 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
         typeof usageMetadata['cachedContentTokenCount'] === 'number'
           ? usageMetadata['cachedContentTokenCount']
           : 0;
-      this._usage = {
+      this._hopUsage = {
         inputOther: Math.max(promptTokenCount - cachedContentTokenCount, 0),
         output: (usageMetadata['candidatesTokenCount'] as number) ?? 0,
         inputCacheRead: cachedContentTokenCount,
         inputCacheCreation: 0,
       };
+      this._usage = this._completedUsage === null ? this._hopUsage : addUsage(this._completedUsage, this._hopUsage);
     }
+  }
+
+  private _completeHopUsage(): void {
+    if (this._hopUsage !== null) {
+      this._completedUsage = this._completedUsage === null ? this._hopUsage : addUsage(this._completedUsage, this._hopUsage);
+    }
+    this._hopUsage = null;
   }
 
   private _extractId(response: Record<string, unknown>): void {
@@ -739,13 +750,22 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     response: Record<string, unknown>,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamedMessagePart> {
-    this._throwIfAborted(signal);
-    this._extractUsage(response);
-    this._extractId(response);
-    this._captureFinishReason(response);
-    for (const part of this._extractChunkParts(response)) {
+    let current = response;
+    for (;;) {
       this._throwIfAborted(signal);
-      yield part;
+      this._extractUsage(current);
+      this._extractId(current);
+      this._captureFinishReason(current);
+      for (const part of this._extractChunkParts(current)) {
+        this._throwIfAborted(signal);
+        yield part;
+      }
+      const token = this._rawFinishReason === 'CONTINUATION' ? this._continuationToken : undefined;
+      if (token === undefined || this._continue === undefined) break;
+      this._completeHopUsage();
+      this._rawFinishReason = null;
+      this._finishReason = null;
+      current = await this._continue(token) as Record<string, unknown>;
     }
   }
 
@@ -754,15 +774,25 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     signal?: AbortSignal,
   ): AsyncGenerator<StreamedMessagePart> {
     try {
-      for await (const chunk of response) {
-        this._throwIfAborted(signal);
-        this._extractUsage(chunk);
-        this._extractId(chunk);
-        this._captureFinishReason(chunk);
-        for (const part of this._extractChunkParts(chunk)) {
+      let current = response;
+      for (;;) {
+        for await (const chunk of current) {
           this._throwIfAborted(signal);
-          yield part;
+          this._extractUsage(chunk);
+          this._extractId(chunk);
+          this._captureFinishReason(chunk);
+          for (const part of this._extractChunkParts(chunk)) {
+            this._throwIfAborted(signal);
+            yield part;
+          }
         }
+        this._throwIfAborted(signal);
+        const token = this._rawFinishReason === 'CONTINUATION' ? this._continuationToken : undefined;
+        if (token === undefined || this._continue === undefined) break;
+        this._completeHopUsage();
+        this._rawFinishReason = null;
+        this._finishReason = null;
+        current = await this._continue(token) as AsyncIterable<Record<string, unknown>>;
       }
       this._throwIfAborted(signal);
       if (this._rawFinishReason === null) {
@@ -1054,7 +1084,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
     const config: Record<string, unknown> = {
       ...kwargs,
-      automaticContinuation: true,
+      automaticContinuation: false,
       continuationToken: options?.googleContinuationToken,
       systemInstruction: systemPrompt,
       ...(tools.length > 0 ? { tools: tools.map((t) => toolToGoogleGenAI(t)) } : {}),
@@ -1068,7 +1098,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       const client = this._createClient(requestAuth);
       const models = client.models as unknown as {
         generateContent(params: Record<string, unknown>): Promise<unknown>;
-        generateContentStream(params: Record<string, unknown>): Promise<AsyncGenerator>;
+        generateContentStream(params: Record<string, unknown>): Promise<AsyncGenerator<Record<string, unknown>>>;
       };
 
       const params = { model, contents, config };
@@ -1078,26 +1108,31 @@ export class GoogleGenAIChatProvider implements ChatProvider {
         const signal = options?.signal === undefined
           ? streamController.signal
           : AbortSignal.any([options.signal, streamController.signal]);
-        const stream = await Promise.race([
-          models.generateContentStream({ ...params, config: { ...config, abortSignal: signal } }),
+        const openStream = async (continuationToken?: string): Promise<AsyncGenerator<Record<string, unknown>>> => await Promise.race([
+          models.generateContentStream({ ...params, config: { ...config, abortSignal: signal, continuationToken } }),
           abortPromise(signal),
         ]);
+        const stream = await openStream(options?.googleContinuationToken);
         return new GoogleGenAIStreamedMessage(
           stream as AsyncIterable<Record<string, unknown>>,
           true,
           signal,
           streamController,
+          openStream,
         );
       }
 
-      const response = await Promise.race([
-        models.generateContent(params),
+      const openResponse = async (continuationToken?: string): Promise<Record<string, unknown>> => await Promise.race([
+        models.generateContent({ ...params, config: { ...config, continuationToken } }),
         abortPromise(options?.signal),
-      ]);
+      ]) as Record<string, unknown>;
+      const response = await openResponse(options?.googleContinuationToken);
       return new GoogleGenAIStreamedMessage(
         response as Record<string, unknown>,
         false,
         options?.signal,
+        undefined,
+        openResponse,
       );
     } catch (error: unknown) {
       streamController?.abort();

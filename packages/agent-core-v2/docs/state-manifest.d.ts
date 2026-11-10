@@ -2853,6 +2853,10 @@ export interface AgentStateSnapshot {
           readonly webSocketCapabilities: boolean | null;
           readonly webSocketCapabilityVersion: 2 | 1 | null;
           readonly webSocketConnectionAgeMs: number | null;
+          readonly webSocketFrameBytes?: number | null;
+          readonly webSocketMaxFrameBytes?: number | null;
+          readonly webSocketFullInputReason?: 'initial' | 'non_incremental_output' | 'connection_changed' | 'identity_changed' | 'forced_full' | 'prefix_mismatch' | 'state_miss' | null;
+          readonly webSocketFallbackReason?: string | null;
         };
         request: (params: Record<string, unknown>, options: {
           baseUrl: string;
@@ -2875,6 +2879,10 @@ export interface AgentStateSnapshot {
             readonly webSocketCapabilities: boolean | null;
             readonly webSocketCapabilityVersion: 2 | 1 | null;
             readonly webSocketConnectionAgeMs: number | null;
+            readonly webSocketFrameBytes?: number | null;
+            readonly webSocketMaxFrameBytes?: number | null;
+            readonly webSocketFullInputReason?: 'initial' | 'non_incremental_output' | 'connection_changed' | 'identity_changed' | 'forced_full' | 'prefix_mismatch' | 'state_miss' | null;
+            readonly webSocketFallbackReason?: string | null;
           };
           request: (params: Record<string, unknown>, options: {
             baseUrl: string;
@@ -4964,6 +4972,7 @@ export interface AgentStateSnapshot {
         readonly allowKikiSubagents?: boolean;
         readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
         readonly injectKikiMcp?: boolean;
+        readonly modelSelection?: 'auto' | 'static';
         readonly modelAlias?: string;
         readonly restrictModelsToMenu?: boolean;
         readonly thinkingEffort?: string;
@@ -5283,6 +5292,7 @@ export interface AgentStateSnapshot {
       readonly allowKikiSubagents?: boolean;
       readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
       readonly injectKikiMcp?: boolean;
+      readonly modelSelection?: 'auto' | 'static';
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -5756,6 +5766,7 @@ export interface AgentStateSnapshot {
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
           readonly injectKikiMcp?: boolean;
+          readonly modelSelection?: 'auto' | 'static';
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -6718,6 +6729,7 @@ export interface AgentStateSnapshot {
             readonly allowKikiSubagents?: boolean;
             readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
             readonly injectKikiMcp?: boolean;
+            readonly modelSelection?: 'auto' | 'static';
             readonly modelAlias?: string;
             readonly restrictModelsToMenu?: boolean;
             readonly thinkingEffort?: string;
@@ -7028,6 +7040,7 @@ export interface AgentStateSnapshot {
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
           readonly injectKikiMcp?: boolean;
+          readonly modelSelection?: 'auto' | 'static';
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;

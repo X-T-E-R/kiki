@@ -47,7 +47,9 @@ describe('google model-turn continuation', () => {
         errorName: 'GeminiThinkOnlyStop',
       });
       expect(retries[0]?.errorMessage.toLowerCase().includes('prefill')).toBe(false);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([]);
+      expect(storedTextParts(local)).toEqual(['Visible answer']);
+      expect(discardEvents(local)).toHaveLength(1);
       expect(local.get(IAgentUsageService).status().currentTurn).toMatchObject({
         inputOther: 10,
         output: 5,
@@ -63,7 +65,10 @@ describe('google model-turn continuation', () => {
     let toolRuns = 0;
     const generateContentStream = scriptedStream([
       thinkChunk(),
-      toolChunk(),
+      googlePartsChunk([
+        { thought: true, text: THINKING, thoughtSignature: SIGNATURE },
+        { functionCall: { name: 'FinishWork', args: {} }, thoughtSignature: 'sig-call' },
+      ], 'STOP'),
       textChunk('Work saved.'),
     ]);
     const local = googleAgent('gemini-4-argon', generateContentStream, 'yolo');
@@ -117,7 +122,11 @@ describe('google model-turn continuation', () => {
   });
 
   it('stops a gemini-4 turn when the second response is still only thinking', async () => {
-    const generateContentStream = scriptedStream([thinkChunk(), thinkChunk(), textChunk('too late')]);
+    const generateContentStream = scriptedStream([
+      thinkChunk(),
+      googlePartsChunk([{ thought: true, text: THINKING, thoughtSignature: 'sig-second' }], 'STOP'),
+      textChunk('too late'),
+    ]);
     const local = googleAgent('gemini-4-argon', generateContentStream);
     try {
       const terminal = await (await prompt(local)).completion;
@@ -129,10 +138,7 @@ describe('google model-turn continuation', () => {
         } },
       });
       expect(generateContentStream).toHaveBeenCalledTimes(2);
-      expect(storedThink(local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
-      ]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: 'sig-second' }]);
     } finally {
       await local.dispose();
     }
@@ -153,7 +159,8 @@ describe('google model-turn continuation', () => {
       expect(terminal.state).toBe('failed');
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(promptCount(local, 'Continue.')).toBe(0);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([]);
+      expect(discardEvents(local)).toHaveLength(1);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -292,8 +299,8 @@ describe('google model-turn continuation', () => {
         { type: 'text', text: 'Visible answer.' },
       ]);
       expect(deltaValues(local, 'thinking.delta')).toEqual([THINKING]);
-      expect(deltaValues(local, 'assistant.delta')).toEqual(['Visible an', 'swer.']);
-      expect(discardEvents(local)).toEqual([]);
+      expect(deltaValues(local, 'assistant.delta')).toEqual(['Visible an', 'Visible an', 'swer.']);
+      expect(discardEvents(local)).toHaveLength(1);
       expect(contentsOf(generateContentStream.mock.calls[1]?.[0])).toEqual(
         contentsOf(generateContentStream.mock.calls[0]?.[0]),
       );
@@ -414,7 +421,8 @@ describe('google model-turn continuation', () => {
       expect(bodies[2]?.['generationConfig']).toEqual(bodies[0]?.['generationConfig']);
       expect(storedContent(fixture.local)).toEqual([
         { type: 'think', think: THINKING, encrypted: SIGNATURE },
-        { type: 'text', text: 'Before after' },
+        { type: 'text', text: 'Before' },
+        { type: 'text', text: ' after' },
       ]);
       expect(deltaValues(fixture.local, 'thinking.delta')).toEqual([THINKING]);
       expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after']);
@@ -463,8 +471,249 @@ describe('google model-turn continuation', () => {
         { type: 'text', text: 'Before after.' },
       ]);
       expect(deltaValues(fixture.local, 'thinking.delta')).toEqual([THINKING]);
-      expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after', '.']);
-      expect(discardEvents(fixture.local)).toEqual([]);
+      expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after', 'Before', ' after', '.']);
+      expect(discardEvents(fixture.local)).toHaveLength(1);
+      await fixture.local.expectResumeMatches();
+    } finally {
+      await fixture.local.dispose();
+      await fixture.close();
+    }
+  });
+
+  it('replaces a divergent snapshot attempt and replays its buffered prefix', async () => {
+    const generateContentStream = scriptedStream([
+      googlePartsChunk([{ text: 'Hello world' }]),
+      async function* () {
+        yield googleResponse([{ text: 'Hel' }]);
+        yield googleResponse([{ text: 'lo there' }], 'STOP');
+      },
+      textChunk('too late'),
+    ]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(generateContentStream).toHaveBeenCalledTimes(2);
+      expect(storedContent(local)).toEqual([{ type: 'text', text: 'Hello there' }]);
+      expect(deltaValues(local, 'assistant.delta')).toEqual(['Hello world', 'Hel', 'lo there']);
+      expect(discardEvents(local)).toHaveLength(1);
+      expect(streamedText(local)).toBe('Hello there');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('uses one canonical attempt through thought divergence and three attempts', async () => {
+    const generateContentStream = scriptedStream([
+      googlePartsChunk([{ thought: true, text: 'Plan', thoughtSignature: 'sig-old' }, { text: 'Answer' }]),
+      googlePartsChunk([{ thought: true, text: 'Plan extended', thoughtSignature: 'sig-mid' }, { text: 'Answer' }]),
+      googlePartsChunk([{ thought: true, text: 'Plan final', thoughtSignature: 'sig-final' }, { text: 'Answer' }], 'STOP'),
+      textChunk('too late'),
+    ]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(generateContentStream).toHaveBeenCalledTimes(3);
+      expect(storedContent(local)).toEqual([
+        { type: 'think', think: 'Plan final', encrypted: 'sig-final' },
+        { type: 'text', text: 'Answer' },
+      ]);
+      expect(deltaValues(local, 'thinking.delta')).toEqual(['Plan', 'Plan extended', 'Plan final']);
+      expect(deltaValues(local, 'assistant.delta')).toEqual(['Answer', 'Answer', 'Answer']);
+      expect(discardEvents(local)).toHaveLength(2);
+      expect(streamedText(local)).toBe('Plan finalAnswer');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('takes late and trailing signatures from the canonical attempt only', async () => {
+    const generateContentStream = scriptedStream([
+      googlePartsChunk([{ thought: true, text: 'Same thought' }, { text: 'Body' }]),
+      googlePartsChunk([
+        { thought: true, text: 'Same thought', thoughtSignature: 'sig-new' },
+        { thought: true, text: '', thoughtSignature: 'sig-tail' },
+        { text: 'Body' },
+      ], 'STOP'),
+    ]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(storedContent(local)).toEqual([
+        { type: 'think', think: 'Same thought', encrypted: 'sig-new' },
+        { type: 'think', think: '', encrypted: 'sig-tail' },
+        { type: 'text', text: 'Body' },
+      ]);
+      expect(deltaValues(local, 'thinking.delta')).toEqual(['Same thought']);
+      expect(deltaValues(local, 'assistant.delta')).toEqual(['Body', 'Body']);
+      expect(discardEvents(local)).toHaveLength(1);
+      expect(streamedText(local)).toBe('Same thoughtBody');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('owns normal continuation hops and executes the continued tool call once', async () => {
+    let toolRuns = 0;
+    const fixture = await googleHttpAgent('gemini-4-argon', (attempt, _body, response) => {
+      if (attempt === 1) {
+        writeGoogleSse(response, [{
+          candidates: [{
+            content: { role: 'model', parts: [
+              { thought: true, text: THINKING, thoughtSignature: SIGNATURE },
+              { text: 'Before' },
+            ] },
+            finishReason: 'CONTINUATION',
+            continuationToken: 'token-normal',
+          }],
+        }]);
+      } else if (attempt === 2) {
+        writeGoogleSse(response, [googleResponse([
+          { functionCall: { name: 'FinishWork', args: {} }, thoughtSignature: 'sig-call' },
+        ], 'STOP')]);
+      } else {
+        writeGoogleSse(response, [googleResponse([{ text: 'Work saved.' }], 'STOP')]);
+      }
+    }, 'yolo');
+    fixture.local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork',
+      description: 'Complete work.',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        approvalRule: 'FinishWork',
+        execute: async () => {
+          toolRuns += 1;
+          return { output: 'work saved' };
+        },
+      }),
+    });
+    fixture.local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    const retries: TurnStepRetrying[] = [];
+    fixture.local.get(IEventBus).subscribe(TurnStepRetrying, event => retries.push(event));
+    try {
+      const terminal = await (await prompt(fixture.local, 'Complete work.')).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed' } });
+      expect(fixture.bodies).toHaveLength(3);
+      const bodies = fixture.bodies.map(body => JSON.parse(body) as Record<string, unknown>);
+      expect(bodies[0]?.['continuationToken']).toBeUndefined();
+      expect(bodies[1]?.['continuationToken']).toBe('token-normal');
+      expect(bodies[2]?.['continuationToken']).toBeUndefined();
+      expect(contentsOf(bodies[2])).toHaveLength(3);
+      expect(contentsOf(bodies[2])[0]).toEqual(contentsOf(bodies[0])[0]);
+      expect(signaturesOf(bodies[2])).toEqual([SIGNATURE, 'sig-call']);
+      expect(toolRuns).toBe(1);
+      expect(retries).toEqual([]);
+      expect(storedContent(fixture.local)).toEqual([
+        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'text', text: 'Before' },
+        { type: 'text', text: 'Work saved.' },
+      ]);
+      await fixture.local.expectResumeMatches();
+    } finally {
+      await fixture.local.dispose();
+      await fixture.close();
+    }
+  });
+
+  it('does not let the SDK reuse an old token after post-checkpoint output truncates', async () => {
+    const fixture = await googleHttpAgent('gemini-4-argon', (attempt, body, response) => {
+      if (attempt === 1) {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          googleSseEvent({ candidates: [{
+            content: { role: 'model', parts: [
+              { thought: true, text: THINKING, thoughtSignature: SIGNATURE },
+              { text: 'Before' },
+            ] },
+            continuationToken: 'token-resume',
+          }] }) +
+          googleSseEvent(googleResponse([{ text: ' after' }])) +
+          truncatedGoogleSse('continuationToken'),
+        );
+      } else if (body['continuationToken'] !== undefined) {
+        writeGoogleSse(response, [googleResponse([{ text: ' after' }], 'STOP')]);
+      } else {
+        writeGoogleSse(response, [
+          googleResponse([{ thought: true, text: THINKING, thoughtSignature: SIGNATURE }, { text: 'Before' }]),
+          googleResponse([{ text: ' after' }]),
+          googleResponse([{ text: '.' }], 'STOP'),
+        ]);
+      }
+    });
+    try {
+      const terminal = await (await prompt(fixture.local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(fixture.bodies).toHaveLength(2);
+      const bodies = fixture.bodies.map(body => JSON.parse(body) as Record<string, unknown>);
+      expect(bodies[1]?.['continuationToken']).toBeUndefined();
+      expect(storedContent(fixture.local)).toEqual([
+        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'text', text: 'Before after.' },
+      ]);
+      expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after', 'Before', ' after', '.']);
+      expect(discardEvents(fixture.local)).toHaveLength(1);
+      expect(streamedText(fixture.local)).toBe(`${THINKING}Before after.`);
+      await fixture.local.expectResumeMatches();
+    } finally {
+      await fixture.local.dispose();
+      await fixture.close();
+    }
+  });
+
+  it('replaces an early-ended nonempty snapshot prefix', async () => {
+    const generateContentStream = scriptedStream([
+      googlePartsChunk([{ text: 'Hello world' }]),
+      googlePartsChunk([{ text: 'Hello' }], 'STOP'),
+    ]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(storedContent(local)).toEqual([{ type: 'text', text: 'Hello' }]);
+      expect(deltaValues(local, 'assistant.delta')).toEqual(['Hello world', 'Hello']);
+      expect(discardEvents(local)).toHaveLength(1);
+      expect(streamedText(local)).toBe('Hello');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('cancels a provider-owned continuation hop without another request', async () => {
+    const fixture = await googleHttpAgent('gemini-4-argon', (attempt, _body, response) => {
+      if (attempt === 1) {
+        writeGoogleSse(response, [{
+          candidates: [{
+            content: { role: 'model', parts: [
+              { thought: true, text: THINKING, thoughtSignature: SIGNATURE },
+              { text: 'Before' },
+            ] },
+            finishReason: 'CONTINUATION',
+            continuationToken: 'token-cancel',
+          }],
+        }]);
+      } else {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(googleSseEvent(googleResponse([{ text: ' after' }])));
+      }
+    });
+    try {
+      const handle = await prompt(fixture.local);
+      await vi.waitFor(() => expect(fixture.bodies).toHaveLength(2));
+      await vi.waitFor(() => expect(deltaValues(fixture.local, 'assistant.delta')).toContain(' after'));
+      expect(fixture.local.get(IAgentLoopService).cancel()).toBe(true);
+      const terminal = await handle.completion;
+      expect(terminal).toMatchObject({ state: 'cancelled' });
+      expect(fixture.bodies).toHaveLength(2);
+      expect(storedContent(fixture.local)).toEqual([
+        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'text', text: 'Before after' },
+      ]);
       await fixture.local.expectResumeMatches();
     } finally {
       await fixture.local.dispose();
@@ -498,13 +747,10 @@ describe('google model-turn continuation', () => {
       expect(bodies[1]?.['contents']).toEqual(bodies[0]?.['contents']);
       expect(JSON.stringify(bodies[1])).not.toContain('sig-truncated');
       expect(JSON.stringify(bodies[1])).not.toContain('token-truncated');
-      expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING },
-        { type: 'text', text: 'BeforeRecovered' },
-      ]);
+      expect(storedContent(fixture.local)).toEqual([{ type: 'text', text: 'BeforeRecovered' }]);
       expect(toolRuns).not.toHaveBeenCalled();
       expect(wireLoopEvents(fixture.local, 'tool.call')).toHaveLength(0);
-      expect(discardEvents(fixture.local)).toEqual([]);
+      expect(discardEvents(fixture.local)).toHaveLength(1);
       await fixture.local.expectResumeMatches();
     } finally {
       await fixture.local.dispose();
@@ -684,6 +930,20 @@ function deltaValues(local: TestAgentContext, name: string): string[] {
   return local.allEvents
     .filter(entry => entry.type === '[rpc]' && entry.event === name)
     .map(entry => (entry.args as { delta: string }).delta);
+}
+
+function streamedText(local: TestAgentContext): string {
+  const blocks = new Map<string, string>();
+  for (const entry of local.allEvents) {
+    if (entry.type !== '[rpc]') continue;
+    if (entry.event === 'assistant.delta' || entry.event === 'thinking.delta') {
+      const args = entry.args as { partId: string; delta: string };
+      blocks.set(args.partId, (blocks.get(args.partId) ?? '') + args.delta);
+    } else if (entry.event === 'response.attempt.discarded') {
+      for (const id of (entry.args as { partIds: string[] }).partIds) blocks.delete(id);
+    }
+  }
+  return [...blocks.values()].join('');
 }
 
 function discardEvents(local: TestAgentContext): Array<Record<string, unknown>> {

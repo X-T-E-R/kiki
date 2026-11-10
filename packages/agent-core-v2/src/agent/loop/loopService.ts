@@ -1333,16 +1333,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         throw error;
       }
       this.lastRequestTraceId = request.trace.traceId;
-      response = this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
-      if (
-        isThinkOnlyCompletion(response) &&
-        this.llmRequester.supportsAssistantPrefill?.() === false
-      ) {
-        if (continuationBudget.thinkingOnlyContinuations >= 1) {
-          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
-          stepEndAppended = true;
-          throw googleThinkSnapshotExhausted(response);
-        }
+      const googleThinkSnapshot = isThinkOnlyCompletion(response) && this.llmRequester.supportsAssistantPrefill?.() === false;
+      if (googleThinkSnapshot && continuationBudget.thinkingOnlyContinuations >= 1) {
+        response = this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+        this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+        stepEndAppended = true;
+        throw googleThinkSnapshotExhausted(response);
+      }
+      if (googleThinkSnapshot) {
         continuationBudget.thinkingOnlyContinuations += 1;
         await this.dispatcher.dispatch(new TurnStepRetrying({
           turnId,
@@ -1354,9 +1352,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           delayMs: 0,
           errorName: 'GeminiThinkOnlyStop',
           errorMessage:
-            'Gemini finished with STOP and only thinking. This response did not expose a usable continuationToken for another SDK hop. Retrying the original request snapshot once.',
+            'Gemini finished with STOP and only thinking. This response did not expose a usable continuationToken for another provider hop. Retrying the original request snapshot once.',
         }));
         continuationBudget.thinkingOnlySnapshotActive = true;
+        streamParts.retryAttempt('retain');
         const retryTask = this.llmRequester.start(
           {
             messages: snapshot,
@@ -1390,6 +1389,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             ? googleContinuationUnsupported(response)
             : googleThinkSnapshotExhausted(response);
         }
+      } else {
+        response = this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
       }
       if (response.rawFinishReason === 'CONTINUATION') {
         this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
@@ -1802,25 +1803,32 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onResponseEvent: () => void,
     signal: AbortSignal,
   ): StreamPartCollector {
+    type Entry = { id: string; part: ContentPart; responseInstanceId?: string };
+    type Emission = { index: number; emit: () => void };
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
-    const partialContent: Array<{ id: string; part: ContentPart; responseInstanceId?: string }> = [];
+    const partialContent: Entry[] = [];
+    let currentContent: Entry[] = [];
+    let referenceContent: Entry[] = [];
+    let continuationContent: Entry[] = [];
+    let currentEmissions: Emission[] = [];
     let responseInstanceId: string | undefined;
     const emittedToolCallIds = new Set<string>();
     let forceContentPartBoundary = false;
     let retryMode: AgentLLMAttemptRetryMode | undefined;
-    let replayContent: ContentPart[] = [];
-    let replayIndex = 0;
-    let replayOffset = 0;
     let replaying = false;
     const beginResponseEvent = () => {
       signal.throwIfAborted();
       onResponseEvent();
       signal.throwIfAborted();
     };
-    const clearReplay = () => {
-      replayContent = [];
-      replayIndex = 0;
-      replayOffset = 0;
+    const cloneEntries = (entries: readonly Entry[]): Entry[] => entries.map(entry => ({
+      ...entry,
+      part: structuredClone(entry.part),
+    }));
+    const clearRecovery = () => {
+      retryMode = undefined;
+      referenceContent = [];
+      continuationContent = [];
       replaying = false;
     };
     const discardAttemptToolCalls = () => {
@@ -1832,123 +1840,113 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       emittedToolCallIds.clear();
     };
     const discardAttemptParts = () => {
-      const partIds = partialContent.map((entry) => entry.id);
+      const partIds = partialContent.map(entry => entry.id);
       const toolCallIds = [...emittedToolCallIds];
       if (partIds.length > 0 || toolCallIds.length > 0) {
         void this.dispatcher.dispatch(new ResponseAttemptDiscarded({ turnId, stepId, partIds, toolCallIds }));
       }
       partialContent.length = 0;
+      currentContent = [];
+      currentEmissions = [];
       callsByIndex.clear();
       emittedToolCallIds.clear();
       forceContentPartBoundary = false;
       responseInstanceId = undefined;
-      retryMode = undefined;
-      clearReplay();
+      clearRecovery();
+    };
+    const sameVisibleContent = (left: ContentPart, right: ContentPart): boolean => {
+      if (left.type !== right.type) return false;
+      if (left.type === 'text' && right.type === 'text') return left.text === right.text;
+      if (left.type === 'think' && right.type === 'think') return left.think === right.think && left.hidden === right.hidden;
+      return JSON.stringify(left) === JSON.stringify(right);
+    };
+    const prefixRelation = (reference: ContentPart, current: ContentPart): 'equal' | 'prefix' | 'different' => {
+      if (reference.type !== current.type) return 'different';
+      if (reference.type === 'text' && current.type === 'text') {
+        if (reference.text === current.text) return 'equal';
+        return reference.text.startsWith(current.text) ? 'prefix' : 'different';
+      }
+      if (reference.type === 'think' && current.type === 'think') {
+        if (reference.hidden !== current.hidden) return 'different';
+        if (reference.think === current.think) return 'equal';
+        return reference.think.startsWith(current.think) ? 'prefix' : 'different';
+      }
+      return sameVisibleContent(reference, current) ? 'equal' : 'different';
+    };
+    const discardVisibleFrom = (index: number) => {
+      const discarded = partialContent.splice(index);
+      if (discarded.length > 0) {
+        void this.dispatcher.dispatch(new ResponseAttemptDiscarded({
+          turnId,
+          stepId,
+          partIds: discarded.map(entry => entry.id),
+          toolCallIds: [],
+        }));
+      }
+    };
+    const rollback = (index: number) => {
+      discardVisibleFrom(index);
+      replaying = false;
+      partialContent.push(...currentContent.slice(index));
+      const emissions = currentEmissions.filter(emission => emission.index >= index);
+      if (emissions.length > 0) beginResponseEvent();
+      for (const emission of emissions) emission.emit();
+    };
+    const accumulateCurrent = (part: ContentPart): Entry => {
+      const last = currentContent.at(-1);
+      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) return last;
+      forceContentPartBoundary = false;
+      const entry = { id: randomUUID(), part: { ...part }, responseInstanceId };
+      currentContent.push(entry);
+      if (!replaying) partialContent.push(entry);
+      return entry;
+    };
+    const reconcileCurrent = (index: number) => {
+      if (!replaying) return;
+      const reference = referenceContent[index];
+      if (reference === undefined) {
+        replaying = false;
+        partialContent.push(currentContent[index]!);
+        return;
+      }
+      if (prefixRelation(reference.part, currentContent[index]!.part) === 'different') rollback(index);
+    };
+    const finishReplay = () => {
+      if (!replaying || currentContent.length === 0) return;
+      for (let index = 0; index < currentContent.length; index += 1) {
+        const reference = referenceContent[index];
+        if (reference === undefined) break;
+        if (prefixRelation(reference.part, currentContent[index]!.part) !== 'equal') {
+          rollback(index);
+          return;
+        }
+      }
+      const matched = Math.min(currentContent.length, referenceContent.length);
+      replaying = false;
+      discardVisibleFrom(matched);
     };
     const retryAttempt = (mode: AgentLLMAttemptRetryMode) => {
       if (mode === 'discard') {
         discardAttemptParts();
         return;
       }
+      finishReplay();
       discardAttemptToolCalls();
       retryMode = mode;
-      replayContent = mode === 'retain' ? partialContent.map(entry => structuredClone(entry.part)) : [];
-      replayIndex = 0;
-      replayOffset = 0;
-      replaying = mode === 'retain';
+      referenceContent = mode === 'retain' ? cloneEntries(partialContent) : [];
+      continuationContent = mode === 'continue' ? cloneEntries(partialContent) : [];
+      currentContent = [];
+      currentEmissions = [];
+      replaying = mode === 'retain' && referenceContent.length > 0;
       forceContentPartBoundary = false;
       responseInstanceId = undefined;
     };
-    const accumulate = (part: ContentPart): string => {
-      const last = partialContent.at(-1);
-      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) {
-        return last.id;
+    const recordEmission = (index: number, emit: () => void) => {
+      currentEmissions.push({ index, emit });
+      if (!replaying) {
+        beginResponseEvent();
+        emit();
       }
-      forceContentPartBoundary = false;
-      const entry = { id: randomUUID(), part: { ...part }, responseInstanceId };
-      partialContent.push(entry);
-      return entry.id;
-    };
-    const matchingReplayIndex = (part: ContentPart): number | undefined => {
-      for (let index = replayIndex; index < replayContent.length; index += 1) {
-        const candidate = replayContent[index]!;
-        const offset = index === replayIndex ? replayOffset : 0;
-        if (part.type === 'text' && candidate.type === 'text') {
-          const remaining = candidate.text.slice(offset);
-          if (remaining.startsWith(part.text) || part.text.startsWith(remaining)) return index;
-        } else if (part.type === 'think' && candidate.type === 'think') {
-          const remaining = candidate.think.slice(offset);
-          if (remaining.startsWith(part.think) || part.think.startsWith(remaining)) return index;
-        } else if (JSON.stringify(candidate) === JSON.stringify(part)) {
-          return index;
-        }
-      }
-      return undefined;
-    };
-    const acceptContent = <T extends ContentPart>(part: T): T | undefined => {
-      if (retryMode !== 'retain' || !replaying) return part;
-      while (replayIndex < replayContent.length) {
-        const match = matchingReplayIndex(part);
-        if (match === undefined) {
-          replaying = false;
-          forceContentPartBoundary = true;
-          return part;
-        }
-        if (match !== replayIndex) {
-          replayIndex = match;
-          replayOffset = 0;
-        }
-        const previous = replayContent[replayIndex]!;
-        if (part.type === 'text' && previous.type === 'text') {
-          const remaining = previous.text.slice(replayOffset);
-          if (remaining.length === 0) {
-            replayIndex += 1;
-            replayOffset = 0;
-            continue;
-          }
-          if (remaining.startsWith(part.text)) {
-            replayOffset += part.text.length;
-            if (replayOffset === previous.text.length) {
-              replayIndex += 1;
-              replayOffset = 0;
-            }
-            return undefined;
-          }
-          const suffix = part.text.slice(remaining.length);
-          if (replayIndex < replayContent.length - 1) forceContentPartBoundary = true;
-          replayIndex += 1;
-          replayOffset = 0;
-          replaying = false;
-          return { ...part, text: suffix };
-        }
-        if (part.type === 'think' && previous.type === 'think') {
-          const remaining = previous.think.slice(replayOffset);
-          if (remaining.length === 0) {
-            replayIndex += 1;
-            replayOffset = 0;
-            continue;
-          }
-          if (remaining.startsWith(part.think)) {
-            replayOffset += part.think.length;
-            if (replayOffset === previous.think.length) {
-              replayIndex += 1;
-              replayOffset = 0;
-            }
-            return undefined;
-          }
-          const suffix = part.think.slice(remaining.length);
-          if (replayIndex < replayContent.length - 1) forceContentPartBoundary = true;
-          replayIndex += 1;
-          replayOffset = 0;
-          replaying = false;
-          return { ...part, think: suffix };
-        }
-        replayIndex += 1;
-        replayOffset = 0;
-        return undefined;
-      }
-      replaying = false;
-      return part;
     };
 
     return {
@@ -1960,37 +1958,43 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         }
         switch (part.type) {
           case 'text': {
-            const accepted = acceptContent(part);
-            if (accepted === undefined) return;
-            beginResponseEvent();
-            const partId = accumulate(accepted);
-            void this.dispatcher.dispatch(
-              new AssistantDelta({ turnId, step, stepId, partId, delta: accepted.text }),
-            );
+            const entry = accumulateCurrent(part);
+            const index = currentContent.length - 1;
+            reconcileCurrent(index);
+            recordEmission(index, () => {
+              void this.dispatcher.dispatch(
+                new AssistantDelta({ turnId, step, stepId, partId: entry.id, delta: part.text }),
+              );
+            });
             return;
           }
           case 'think': {
-            const accepted = acceptContent(part);
-            if (accepted === undefined) return;
-            beginResponseEvent();
-            if (isVacuousContentPart(accepted) && partialContent.at(-1)?.part.type === 'text') return;
-            const partId = accumulate(accepted);
-            if (accepted.hidden === true || accepted.think.length === 0) return;
-            void this.dispatcher.dispatch(
-              new ThinkingDelta({ turnId, step, stepId, partId, delta: accepted.think, responseInstanceId }),
-            );
+            if (isVacuousContentPart(part) && currentContent.at(-1)?.part.type === 'text') return;
+            const entry = accumulateCurrent(part);
+            const index = currentContent.length - 1;
+            reconcileCurrent(index);
+            if (part.hidden === true || part.think.length === 0) {
+              if (!replaying) beginResponseEvent();
+              return;
+            }
+            recordEmission(index, () => {
+              void this.dispatcher.dispatch(
+                new ThinkingDelta({ turnId, step, stepId, partId: entry.id, delta: part.think, responseInstanceId: entry.responseInstanceId }),
+              );
+            });
             return;
           }
           case 'image_url':
           case 'audio_url':
           case 'video_url': {
-            const accepted = acceptContent(part);
-            if (accepted === undefined) return;
-            beginResponseEvent();
-            const partId = accumulate(accepted);
-            void this.dispatcher.dispatch(
-              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part: accepted }),
-            );
+            const entry = accumulateCurrent(part);
+            const index = currentContent.length - 1;
+            reconcileCurrent(index);
+            recordEmission(index, () => {
+              void this.dispatcher.dispatch(
+                new AssistantDelta({ turnId, step, stepId, partId: entry.id, delta: '', part }),
+              );
+            });
             return;
           }
           case 'function': {
@@ -2035,35 +2039,57 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       },
       resolveContent: (content) => {
         signal.throwIfAborted();
-        if (retryMode !== undefined) {
-          const resolved = partialContent.splice(0);
-          retryMode = undefined;
-          forceContentPartBoundary = false;
-          clearReplay();
-          signal.throwIfAborted();
-          return resolved;
+        if (retryMode === 'retain') {
+          if (currentContent.length === 0 && content.length === 0) discardVisibleFrom(0);
+          else finishReplay();
         }
-        const unused = partialContent.filter((entry) => entry.responseInstanceId === responseInstanceId);
-        const resolved = content.map((part) => {
-          const index = unused.findIndex((entry) => entry.part.type === part.type);
-          if (index === -1) {
-            const id = randomUUID();
-            if (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') {
-              void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: id, delta: '', part }));
-            }
-            return { id, part, responseInstanceId };
+        const retained = retryMode === 'continue' ? continuationContent.map(entry => entry.part) : [];
+        const unused = partialContent.slice();
+        const missing: Array<{ id: string; part: ContentPart }> = [];
+        const resolved = [...retained, ...content].map(part => {
+          const index = unused.findIndex(entry => sameVisibleContent(entry.part, part));
+          if (index >= 0) {
+            const [entry] = unused.splice(index, 1);
+            return { id: entry!.id, part, responseInstanceId };
           }
-          const [entry] = unused.splice(index, 1);
-          return { id: entry!.id, part, responseInstanceId: entry!.responseInstanceId };
+          const id = randomUUID();
+          missing.push({ id, part });
+          return { id, part, responseInstanceId };
         });
+        if (unused.length > 0) {
+          void this.dispatcher.dispatch(new ResponseAttemptDiscarded({
+            turnId,
+            stepId,
+            partIds: unused.map(entry => entry.id),
+            toolCallIds: [],
+          }));
+        }
+        for (const entry of missing) {
+          if (entry.part.type === 'text' && entry.part.text.length > 0) {
+            void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: entry.id, delta: entry.part.text }));
+          } else if (entry.part.type === 'think' && entry.part.hidden !== true && entry.part.think.length > 0) {
+            void this.dispatcher.dispatch(new ThinkingDelta({ turnId, step, stepId, partId: entry.id, delta: entry.part.think, responseInstanceId }));
+          } else if (entry.part.type === 'image_url' || entry.part.type === 'audio_url' || entry.part.type === 'video_url') {
+            void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: entry.id, delta: '', part: entry.part }));
+          }
+        }
         signal.throwIfAborted();
         partialContent.length = 0;
+        currentContent = [];
+        currentEmissions = [];
+        forceContentPartBoundary = false;
+        clearRecovery();
         return resolved;
       },
       hasToolCallOutput: () => emittedToolCallIds.size > 0,
       retryAttempt,
-      drainInterruptedContent: () =>
-        partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
+      drainInterruptedContent: () => {
+        const entries = partialContent.splice(0).filter(entry => !isVacuousContentPart(entry.part));
+        currentContent = [];
+        currentEmissions = [];
+        clearRecovery();
+        return entries;
+      },
     };
   }
 }
@@ -2078,7 +2104,7 @@ function sealedGoogleRequestSnapshot(messages: readonly ContextMessage[]): Conte
 
 function googleContinuationUnsupported(response: AgentLLMRequestFinish): ChatProviderError {
   return new ChatProviderError(
-    'Gemini finished with CONTINUATION without a usable continuationToken for another SDK hop. Official continuation resends the same contents, system instruction, tools, and config with the latest token and does not append partial output. The turn stopped with the partial response kept and no completed answer.',
+    'Gemini finished with CONTINUATION without a usable continuationToken for another provider-managed hop. Official continuation resends the same contents, system instruction, tools, and config with the latest token and does not append partial output. The turn stopped with the partial response kept and no completed answer.',
     undefined,
     { details: {
       google_stop: 'continuation_unsupported',
