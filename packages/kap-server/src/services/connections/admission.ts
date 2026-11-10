@@ -9,6 +9,7 @@ interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean;
 interface State { enabled: boolean; grants: StoredGrant[]; pairingCodes: PairingCode[] }
 export interface AdmittedPeer { id: string; revision: number; source: ConnectionIdentity }
 export interface PeerApproval { grantId: string; revision: number; peerToken: string; target: ConnectionIdentity; allowBridge: boolean }
+export interface HandshakeProofInspection { status: 'approved' | 'revoked' | 'inbound_disabled'; proof: string }
 export class AdmissionError extends Error {
   constructor(readonly status: number, readonly reason: string) { super(reason); }
 }
@@ -109,14 +110,13 @@ export class ConnectionAdmission {
     entry.lastConnectedAt = Date.now();
     return { id: entry.id, revision: entry.revision, source: entry.source };
   }
-  verifyHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): string | undefined {
+  inspectHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): HandshakeProofInspection | undefined {
     const nonce = typeof input.nonce === 'string' ? input.nonce.trim().toLowerCase() : '';
     const proof = typeof input.proof === 'string' ? input.proof.trim().toLowerCase() : '';
     if (!/^[a-f0-9]{32,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(proof)) return undefined;
-    if (this.unavailableReason !== undefined || !this.state.enabled) return undefined;
     const candidate = Buffer.from(proof, 'hex');
     const matches = (entry: StoredGrant): boolean => {
-      if (entry.status !== 'approved' || !sameIdentity(entry.target, this.identity)) return false;
+      if ((entry.status !== 'approved' && entry.status !== 'revoked') || !sameIdentity(entry.target, this.identity)) return false;
       const expected = createHmac('sha256', entry.digest).update(`kiki-handshake-req-v1:${nonce}`).digest();
       return expected.length === candidate.length && timingSafeEqual(candidate, expected);
     };
@@ -128,6 +128,14 @@ export class ConnectionAdmission {
     }
     if (matched === undefined) {
       for (const entry of this.state.grants) {
+        if (entry.id !== grantId && matches(entry) && entry.status === 'approved') {
+          matched = entry;
+          break;
+        }
+      }
+    }
+    if (matched === undefined) {
+      for (const entry of this.state.grants) {
         if (entry.id !== grantId && matches(entry)) {
           matched = entry;
           break;
@@ -135,7 +143,27 @@ export class ConnectionAdmission {
       }
     }
     if (matched === undefined) return undefined;
-    return createHmac('sha256', matched.digest).update(`kiki-handshake-res-v1:${nonce}:${this.identity.homeId}:${this.identity.hostId}`).digest('hex');
+    const targetSuffix = `${nonce}:${this.identity.homeId}:${this.identity.hostId}`;
+    if (matched.status === 'revoked') {
+      return {
+        status: 'revoked',
+        proof: createHmac('sha256', matched.digest).update(`kiki-handshake-revoked-v1:${targetSuffix}`).digest('hex'),
+      };
+    }
+    if (this.unavailableReason !== undefined || !this.state.enabled) {
+      return {
+        status: 'inbound_disabled',
+        proof: createHmac('sha256', matched.digest).update(`kiki-handshake-disabled-v1:${targetSuffix}`).digest('hex'),
+      };
+    }
+    return {
+      status: 'approved',
+      proof: createHmac('sha256', matched.digest).update(`kiki-handshake-res-v1:${targetSuffix}`).digest('hex'),
+    };
+  }
+  verifyHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): string | undefined {
+    const inspected = this.inspectHandshakeProof(input);
+    return inspected?.status === 'approved' ? inspected.proof : undefined;
   }
   createPairCode(input: { label?: string; expiresInMs?: number; allowBridge?: boolean } = {}): Promise<{ code: string; expiresAt: number; allowBridge: boolean }> {
     return this.change(async () => {

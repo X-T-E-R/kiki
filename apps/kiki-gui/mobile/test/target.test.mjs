@@ -1909,12 +1909,21 @@ ${origin}
             throw new AssertionError("Unverified mutual proof did not clear activeAuth and navigate to #unverified_handshake_proof: " + p6.view.url);
         }
 
-        // Case 6b: Explicit HTTP 401/403 vs real network outage (status 0 / 503) in classifyPairedHandshakeFailure and deliverCommittedToken
-        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false), "home-a", true))) {
-            throw new AssertionError("Expected 401 handshake to classify as pairing_revoked");
+        // Case 6b: Authenticated revocation vs unverified 401/403 vs inbound disabled vs real network outage (status 0 / 503)
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, true, false), "home-a", true))) {
+            throw new AssertionError("Expected 200 handshake with mutualRevokedVerified=true to classify as pairing_revoked");
         }
-        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 403, "", "", "", false), "home-a", true))) {
-            throw new AssertionError("Expected 403 handshake to classify as pairing_revoked");
+        if (!"pairing_revoked".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, true, false), "home-a", true))) {
+            throw new AssertionError("Expected 401 handshake with mutualRevokedVerified=true to classify as pairing_revoked");
+        }
+        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 401, "", "", "", false, false, false), "home-a", true))) {
+            throw new AssertionError("Expected unverified 401 handshake (e.g. replacement server) to classify as unverified_handshake_proof");
+        }
+        if (!"unverified_handshake_proof".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 403, "", "", "", false, false, false), "home-a", true))) {
+            throw new AssertionError("Expected unverified 403 handshake to classify as unverified_handshake_proof");
+        }
+        if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(true, false, 200, "home-a", "host-a", "", false, false, true), "home-a", true))) {
+            throw new AssertionError("Expected 200 handshake with mutualDisabledVerified=true to classify as unreachable");
         }
         if (!"unreachable".equals(classifyPairedHandshakeFailure(new HandshakeResult(false, false, 503, "", "", "", false), "home-a", true))) {
             throw new AssertionError("Expected 503 handshake to classify as unreachable");
@@ -2159,7 +2168,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
     }
     if (req.method === 'GET' && req.url === '/api/remote-connections/handshake') {
       if (activeServer === 'A') {
-        if (!grantRevoked && /^[a-f0-9]{32,128}$/.test(nonceHeader) && /^[a-f0-9]{64}$/.test(proofHeader)) {
+        if (/^[a-f0-9]{32,128}$/.test(nonceHeader) && /^[a-f0-9]{64}$/.test(proofHeader)) {
           const expectedReqProof = createHmac('sha256', expectedDigestA)
             .update(`kiki-handshake-req-v1:${nonceHeader}`)
             .digest('hex');
@@ -2167,6 +2176,19 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
             proofHeader === expectedReqProof &&
             (!grantHeader || grantHeader === 'grant-web-a' || grantHeader === 'grant-web-a-v2')
           ) {
+            if (grantRevoked) {
+              const revokedProof = createHmac('sha256', expectedDigestA)
+                .update(`kiki-handshake-revoked-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
+                .digest('hex');
+              res.writeHead(401, {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Cache-Control': 'no-store',
+                'x-kiki-handshake-proof': revokedProof,
+                'x-kiki-handshake-status': 'revoked',
+              });
+              res.end(JSON.stringify({ code: 40101, msg: 'web_session_required' }));
+              return;
+            }
             const resProof = createHmac('sha256', expectedDigestA)
               .update(`kiki-handshake-res-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
               .digest('hex');
@@ -2175,6 +2197,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
               'Content-Type': 'application/json; charset=utf-8',
               'Cache-Control': 'no-store',
               'x-kiki-handshake-proof': resProof,
+              'x-kiki-handshake-status': 'approved',
             });
             res.end(
               JSON.stringify({
@@ -2194,6 +2217,70 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
         return;
       }
       if (activeServer === 'A-direct-revoked') {
+        const expectedReqProof = createHmac('sha256', expectedDigestA)
+          .update(`kiki-handshake-req-v1:${nonceHeader}`)
+          .digest('hex');
+        const revokedProof =
+          proofHeader === expectedReqProof
+            ? createHmac('sha256', expectedDigestA)
+                .update(`kiki-handshake-revoked-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
+                .digest('hex')
+            : '';
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...(revokedProof
+            ? {
+                'x-kiki-handshake-proof': revokedProof,
+                'x-kiki-handshake-status': 'revoked',
+              }
+            : {}),
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityA,
+              serverId: 'srv-web-a',
+              inboundEnabled: true,
+            },
+          }),
+        );
+        return;
+      }
+      if (activeServer === 'A-direct-disabled') {
+        const expectedReqProof = createHmac('sha256', expectedDigestA)
+          .update(`kiki-handshake-req-v1:${nonceHeader}`)
+          .digest('hex');
+        const disabledProof =
+          proofHeader === expectedReqProof
+            ? createHmac('sha256', expectedDigestA)
+                .update(`kiki-handshake-disabled-v1:${nonceHeader}:${identityA.homeId}:${identityA.hostId}`)
+                .digest('hex')
+            : '';
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...(disabledProof
+            ? {
+                'x-kiki-handshake-proof': disabledProof,
+                'x-kiki-handshake-status': 'inbound_disabled',
+              }
+            : {}),
+        });
+        res.end(
+          JSON.stringify({
+            code: 0,
+            data: {
+              identity: identityA,
+              serverId: 'srv-web-a',
+              inboundEnabled: false,
+            },
+          }),
+        );
+        return;
+      }
+      if (activeServer === 'A-unverified-200') {
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
           'Cache-Control': 'no-store',
@@ -2337,7 +2424,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
     assert.equal(reopenSaved.ok, true);
     assert.equal(reopenSaved.tokenDelivered, true);
 
-    // 4. If the same public origin is replaced by another server B (401 on unknown proof), open refuses and leaks neither bearer token nor grant.digest
+    // 4. If the same public origin is replaced by another server B (unverified 401 on unknown proof), open refuses as unverified_handshake_proof (never falsely claiming pairing_revoked) and leaks neither bearer token nor grant.digest
     activeServer = 'B';
     requestsToB.length = 0;
     const readsBeforeB = tokenReadEvents.length;
@@ -2358,7 +2445,7 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(blockedOnB.ok, false);
-    assert.equal(blockedOnB.reason, 'pairing_revoked');
+    assert.equal(blockedOnB.reason, 'unverified_handshake_proof');
     assert.equal(blockedOnB.tokenDelivered, false);
     assert.equal(tokenReadEvents.length, readsBeforeB, 'peerToken must not be read when pre-open handshake fails');
     for (const req of requestsToB) {
@@ -2451,8 +2538,50 @@ await test('public Web listener (anonymous handshake 401) pairs via short code a
       { requireMutualProof: true },
     );
     assert.equal(afterDirectRevoke.ok, false);
-    assert.equal(afterDirectRevoke.reason, 'unverified_handshake_proof');
+    assert.equal(afterDirectRevoke.reason, 'pairing_revoked');
     assert.equal(afterDirectRevoke.tokenDelivered, false);
+
+    activeServer = 'A-direct-disabled';
+    const afterDirectDisabled = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterDirectDisabled.ok, false);
+    assert.equal(afterDirectDisabled.reason, 'unreachable');
+    assert.equal(afterDirectDisabled.tokenDelivered, false);
+
+    activeServer = 'A-unverified-200';
+    const afterUnverified200 = await openVerifiedServerNavigation(
+      page,
+      storage,
+      {
+        serverId: identityA.homeId,
+        origin: publicOrigin,
+        paired: true,
+        targetHomeId: identityA.homeId,
+        targetHostId: identityA.hostId,
+        grantId: 'grant-web-a',
+        handshakeKey: keyForA,
+        requireMutualProof: true,
+        getToken,
+      },
+      { requireMutualProof: true },
+    );
+    assert.equal(afterUnverified200.ok, false);
+    assert.equal(afterUnverified200.reason, 'unverified_handshake_proof');
+    assert.equal(afterUnverified200.tokenDelivered, false);
 
     activeServer = 'A-outage';
     const duringOutage = await openVerifiedServerNavigation(

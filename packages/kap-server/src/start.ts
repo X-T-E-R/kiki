@@ -660,15 +660,18 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       return;
     }
     if (request.method === 'GET' && path === '/api/remote-connections/handshake' && request.headers.authorization === undefined) {
-      const handshakeProof = admission.verifyHandshakeProof({
+      const handshakeInspection = admission.inspectHandshakeProof({
         grantId: typeof request.headers['x-kiki-handshake-grant'] === 'string' ? request.headers['x-kiki-handshake-grant'] : undefined,
         nonce: typeof request.headers['x-kiki-handshake-nonce'] === 'string' ? request.headers['x-kiki-handshake-nonce'] : undefined,
         proof: typeof request.headers['x-kiki-handshake-proof'] === 'string' ? request.headers['x-kiki-handshake-proof'] : undefined,
       });
-      if (handshakeProof !== undefined) {
-        reply.header('x-kiki-handshake-proof', handshakeProof);
+      if (handshakeInspection !== undefined) {
+        reply.header('x-kiki-handshake-proof', handshakeInspection.proof);
+        reply.header('x-kiki-handshake-status', handshakeInspection.status);
         reply.header('cache-control', 'no-store');
-        return;
+        if (handshakeInspection.status === 'approved' || !webRequests.has(request.raw)) {
+          return;
+        }
       }
       if (!webRequests.has(request.raw)) {
         reply.header('cache-control', 'no-store');

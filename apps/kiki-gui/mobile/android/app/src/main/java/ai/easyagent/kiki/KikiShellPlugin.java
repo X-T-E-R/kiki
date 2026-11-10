@@ -93,6 +93,30 @@ public class KikiShellPlugin extends Plugin {
         final String targetHostId;
         final String targetLabel;
         final boolean mutualProofVerified;
+        final boolean mutualRevokedVerified;
+        final boolean mutualDisabledVerified;
+
+        HandshakeResult(
+            boolean ok,
+            boolean redirected,
+            int statusCode,
+            String targetHomeId,
+            String targetHostId,
+            String targetLabel,
+            boolean mutualProofVerified,
+            boolean mutualRevokedVerified,
+            boolean mutualDisabledVerified
+        ) {
+            this.ok = ok;
+            this.redirected = redirected;
+            this.statusCode = statusCode;
+            this.targetHomeId = targetHomeId;
+            this.targetHostId = targetHostId;
+            this.targetLabel = targetLabel;
+            this.mutualProofVerified = mutualProofVerified;
+            this.mutualRevokedVerified = mutualRevokedVerified;
+            this.mutualDisabledVerified = mutualDisabledVerified;
+        }
 
         HandshakeResult(
             boolean ok,
@@ -103,13 +127,7 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this.ok = ok;
-            this.redirected = redirected;
-            this.statusCode = statusCode;
-            this.targetHomeId = targetHomeId;
-            this.targetHostId = targetHostId;
-            this.targetLabel = targetLabel;
-            this.mutualProofVerified = mutualProofVerified;
+            this(ok, redirected, statusCode, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false);
         }
 
         HandshakeResult(
@@ -120,11 +138,11 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false);
         }
 
         HandshakeResult(boolean ok, boolean redirected, String targetHomeId, String targetHostId, String targetLabel) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false, false, false);
         }
     }
 
@@ -247,9 +265,31 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
             if (hs.ok) {
+                boolean identityMatches =
+                    !pairedProbe ||
+                    (hs.targetHomeId != null &&
+                        hs.targetHomeId.equals(serverId) &&
+                        matchesStoredHostId(serverId, hs.targetHostId));
+                if (pairedProbe && identityMatches && hs.mutualRevokedVerified) {
+                    result.put("ok", false);
+                    result.put("status", hs.statusCode);
+                    result.put("reason", "pairing_revoked");
+                    result.put("authRejected", true);
+                    result.put("mutualProofVerified", false);
+                    result.put("mutualRevokedVerified", true);
+                    if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
+                        result.put("targetHomeId", hs.targetHomeId);
+                    }
+                    if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
+                        result.put("targetHostId", hs.targetHostId);
+                    }
+                    call.resolve(result);
+                    return;
+                }
                 result.put("ok", true);
                 result.put("status", hs.statusCode);
                 result.put("mutualProofVerified", hs.mutualProofVerified);
+                result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
                 if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
                     result.put("targetLabel", hs.targetLabel);
                 }
@@ -265,9 +305,10 @@ public class KikiShellPlugin extends Plugin {
             if (pairedProbe && (hs.statusCode == 401 || hs.statusCode == 403)) {
                 result.put("ok", false);
                 result.put("status", hs.statusCode);
-                result.put("reason", "pairing_revoked");
-                result.put("authRejected", true);
+                result.put("reason", hs.mutualRevokedVerified ? "pairing_revoked" : "unverified_handshake_proof");
+                result.put("authRejected", hs.mutualRevokedVerified);
                 result.put("mutualProofVerified", false);
+                result.put("mutualRevokedVerified", hs.mutualRevokedVerified);
                 call.resolve(result);
                 return;
             }
@@ -816,10 +857,14 @@ public class KikiShellPlugin extends Plugin {
             if (expectedServerId == null || !expectedServerId.equals(hs.targetHomeId) || !hostMatches) {
                 return "identity_mismatch";
             }
+            if (hs.mutualRevokedVerified) return "pairing_revoked";
+            if (hs.mutualDisabledVerified) return "unreachable";
             if (!hs.mutualProofVerified) return "unverified_handshake_proof";
             return null;
         }
-        if (hs.statusCode == 401 || hs.statusCode == 403) return "pairing_revoked";
+        if (hs.statusCode == 401 || hs.statusCode == 403) {
+            return hs.mutualRevokedVerified ? "pairing_revoked" : "unverified_handshake_proof";
+        }
         return "unreachable";
     }
 
@@ -829,6 +874,12 @@ public class KikiShellPlugin extends Plugin {
         }
         String token = readPeerToken(serverId, normalizedOrigin);
         return sha256Hex(token);
+    }
+
+    private String resolveStoredHostId(String serverId) {
+        if (serverId == null || serverId.isEmpty()) return "";
+        String stored = prefs().getString(HOST_ID_PREFIX + serverId, null);
+        return stored == null ? "" : stored;
     }
 
     private String resolveStoredGrantId(String serverId, String normalizedOrigin, String explicitGrantId) {
@@ -868,8 +919,9 @@ public class KikiShellPlugin extends Plugin {
             }
             int code = conn.getResponseCode();
             if (code >= 300 && code < 400) {
-                return new HandshakeResult(false, true, code, "", "", "", false);
+                return new HandshakeResult(false, true, code, "", "", "", false, false, false);
             }
+            String resProof = conn.getHeaderField("x-kiki-handshake-proof");
             if (code >= 200 && code < 300) {
                 JSONObject body = readJson(conn.getInputStream());
                 JSONObject data = body == null ? null : body.optJSONObject("data");
@@ -878,24 +930,57 @@ public class KikiShellPlugin extends Plugin {
                 String label = data == null ? "" : data.optString("targetLabel", "");
                 String homeId = target == null ? "" : target.optString("homeId", "");
                 String hostId = target == null ? "" : target.optString("hostId", "");
+                boolean inboundEnabled = data == null || data.optBoolean("inboundEnabled", true);
                 boolean mutualVerified = false;
+                boolean mutualRevoked = false;
+                boolean mutualDisabled = false;
                 if (handshakeKey != null && nonce != null && !homeId.isEmpty()) {
-                    String resProof = conn.getHeaderField("x-kiki-handshake-proof");
-                    String expectedRes = hmacSha256Hex(
-                        handshakeKey,
-                        "kiki-handshake-res-v1:" + nonce + ":" + homeId + ":" + hostId
+                    String suffix = nonce + ":" + homeId + ":" + hostId;
+                    mutualVerified = constantTimeEquals(
+                        resProof,
+                        hmacSha256Hex(handshakeKey, "kiki-handshake-res-v1:" + suffix)
                     );
-                    mutualVerified = constantTimeEquals(resProof, expectedRes);
+                    if (!mutualVerified) {
+                        mutualRevoked = constantTimeEquals(
+                            resProof,
+                            hmacSha256Hex(handshakeKey, "kiki-handshake-revoked-v1:" + suffix)
+                        );
+                        if (!mutualRevoked) {
+                            mutualDisabled = constantTimeEquals(
+                                resProof,
+                                hmacSha256Hex(handshakeKey, "kiki-handshake-disabled-v1:" + suffix)
+                            );
+                        }
+                    }
                 }
-                return new HandshakeResult(true, false, code, homeId, hostId, label, mutualVerified);
+                if (!inboundEnabled && !mutualVerified && !mutualRevoked) {
+                    mutualDisabled = true;
+                }
+                return new HandshakeResult(true, false, code, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled);
             }
-            return new HandshakeResult(false, false, code, "", "", "", false);
+            boolean mutualRevoked = false;
+            boolean mutualDisabled = false;
+            if ((code == 401 || code == 403) && handshakeKey != null && nonce != null && serverId != null && !serverId.isEmpty()) {
+                String storedHostId = resolveStoredHostId(serverId);
+                String suffix = nonce + ":" + serverId + ":" + storedHostId;
+                mutualRevoked = constantTimeEquals(
+                    resProof,
+                    hmacSha256Hex(handshakeKey, "kiki-handshake-revoked-v1:" + suffix)
+                );
+                if (!mutualRevoked) {
+                    mutualDisabled = constantTimeEquals(
+                        resProof,
+                        hmacSha256Hex(handshakeKey, "kiki-handshake-disabled-v1:" + suffix)
+                    );
+                }
+            }
+            return new HandshakeResult(false, false, code, "", "", "", false, mutualRevoked, mutualDisabled);
         } catch (Exception ignored) {
             /* unreachable or non-JSON */
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return new HandshakeResult(false, false, 0, "", "", "", false);
+        return new HandshakeResult(false, false, 0, "", "", "", false, false, false);
     }
 
     private static String scopedTokenId(String serverId, String origin) {

@@ -153,11 +153,29 @@ describe('shared daemon Web access', () => {
     expect(directMutualHandshake.headers.get('x-kiki-handshake-proof')).toBe(reopenExpectedResProof);
     const pairedSessionRead = await fetch(browser.origin + '/api/sessions', { headers: { authorization: `Bearer ${webPairData.peerToken}` } });
     expect(pairedSessionRead.status).toBe(200);
+    await server.admission.setEnabled(false);
+    const disabledExpectedProof = createHmac('sha256', pairGrantDigest).update(`kiki-handshake-disabled-v1:${reopenNonce}:${server.admission.identity.homeId}:${server.admission.identity.hostId}`).digest('hex');
+    const directDisabledHandshake = await fetch(base + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(directDisabledHandshake.status).toBe(200);
+    expect(directDisabledHandshake.headers.get('x-kiki-handshake-status')).toBe('inbound_disabled');
+    expect(directDisabledHandshake.headers.get('x-kiki-handshake-proof')).toBe(disabledExpectedProof);
+    await server.admission.setEnabled(true);
     await server.admission.revoke(webPairData.grantId);
+    const revokedExpectedProof = createHmac('sha256', pairGrantDigest).update(`kiki-handshake-revoked-v1:${reopenNonce}:${server.admission.identity.homeId}:${server.admission.identity.hostId}`).digest('hex');
     const revokedPairHandshake = await fetch(browser.origin + '/api/remote-connections/handshake', {
       headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
     });
     expect(revokedPairHandshake.status).toBe(401);
+    expect(revokedPairHandshake.headers.get('x-kiki-handshake-status')).toBe('revoked');
+    expect(revokedPairHandshake.headers.get('x-kiki-handshake-proof')).toBe(revokedExpectedProof);
+    const directRevokedHandshake = await fetch(base + '/api/remote-connections/handshake', {
+      headers: { 'x-kiki-handshake-grant': webPairData.grantId, 'x-kiki-handshake-nonce': reopenNonce, 'x-kiki-handshake-proof': reopenReqProof },
+    });
+    expect(directRevokedHandshake.status).toBe(200);
+    expect(directRevokedHandshake.headers.get('x-kiki-handshake-status')).toBe('revoked');
+    expect(directRevokedHandshake.headers.get('x-kiki-handshake-proof')).toBe(revokedExpectedProof);
     const headers = { authorization: `Bearer ${token}`, 'x-kiki-connection-grant': claim.grant };
     expect((await fetch(browser.origin + '/api/sessions', { headers })).status).toBe(200);
     expect((await fetch(browser.origin + '/api/web-access', { headers })).status).toBe(403);

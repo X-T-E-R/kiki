@@ -709,8 +709,7 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
   const isAuthRejected =
     handshake?.reason === 'pairing_revoked' ||
     handshake?.authRejected === true ||
-    handshake?.status === 401 ||
-    handshake?.status === 403;
+    handshake?.mutualRevokedVerified === true;
   const isUnverifiedHandshakeProof = handshake?.reason === 'unverified_handshake_proof';
 
   if (!handshake?.ok) {
@@ -737,6 +736,12 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
     return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'pairing_required', true);
   }
 
+  if (handshake?.mutualRevokedVerified === true) {
+    return { ok: false, reason: 'pairing_revoked', server: existing };
+  }
+  if (handshake?.mutualDisabledVerified === true || handshake?.inboundEnabled === false) {
+    return { ok: false, reason: 'unreachable', server: existing };
+  }
   if (handshake.requireMutualProof && !handshake.mutualProofVerified) {
     return { ok: false, reason: 'unverified_handshake_proof', server: existing };
   }
@@ -886,23 +891,32 @@ export async function createMutualHandshakeChallenge(input = {}) {
     typeof input.grantId === 'string' && input.grantId.trim() !== ''
       ? input.grantId.trim()
       : undefined;
+  const verifyDomainResponse = async (domainPrefix, responseProof, targetHomeId, targetHostId = '') => {
+    if (typeof responseProof !== 'string' || !/^[a-f0-9]{64}$/i.test(responseProof.trim())) {
+      return false;
+    }
+    if (typeof targetHomeId !== 'string' || targetHomeId.trim() === '') {
+      return false;
+    }
+    const expected = await hmacSha256Hex(
+      rawKey,
+      `${domainPrefix}:${nonce}:${targetHomeId.trim()}:${String(targetHostId ?? '').trim()}`,
+    );
+    if (!expected) return false;
+    return constantTimeHexEqual(responseProof, expected);
+  };
   return {
     nonce,
     grantId,
     requestProof,
-    async verifyResponse(responseProof, targetHomeId, targetHostId = '') {
-      if (typeof responseProof !== 'string' || !/^[a-f0-9]{64}$/i.test(responseProof.trim())) {
-        return false;
-      }
-      if (typeof targetHomeId !== 'string' || targetHomeId.trim() === '') {
-        return false;
-      }
-      const expected = await hmacSha256Hex(
-        rawKey,
-        `kiki-handshake-res-v1:${nonce}:${targetHomeId.trim()}:${String(targetHostId ?? '').trim()}`,
-      );
-      if (!expected) return false;
-      return constantTimeHexEqual(responseProof, expected);
+    verifyResponse(responseProof, targetHomeId, targetHostId = '') {
+      return verifyDomainResponse('kiki-handshake-res-v1', responseProof, targetHomeId, targetHostId);
+    },
+    verifyRevokedResponse(responseProof, targetHomeId, targetHostId = '') {
+      return verifyDomainResponse('kiki-handshake-revoked-v1', responseProof, targetHomeId, targetHostId);
+    },
+    verifyDisabledResponse(responseProof, targetHomeId, targetHostId = '') {
+      return verifyDomainResponse('kiki-handshake-disabled-v1', responseProof, targetHomeId, targetHostId);
     },
   };
 }
@@ -950,6 +964,10 @@ export async function probeOriginHandshake(origin, options = {}) {
     if (!isSameOriginResponse(handshakeRes, origin)) {
       return { ok: false };
     }
+    const readHeader = (name) =>
+      typeof handshakeRes.headers?.get === 'function'
+        ? handshakeRes.headers.get(name)
+        : handshakeRes.headers?.[name];
     if (handshakeRes.ok) {
       const payload = await handshakeRes.json().catch(() => null);
       const data = payload?.data;
@@ -965,17 +983,55 @@ export async function probeOriginHandshake(origin, options = {}) {
           : typeof data?.target?.hostId === 'string' && data.target.hostId !== ''
             ? data.target.hostId
             : undefined;
+      const inboundEnabled = data?.inboundEnabled !== false;
       let mutualProofVerified = false;
+      let mutualRevokedVerified = false;
+      let mutualDisabledVerified = false;
       if (challenge && targetHomeId) {
-        const resProof =
-          typeof handshakeRes.headers?.get === 'function'
-            ? handshakeRes.headers.get('x-kiki-handshake-proof')
-            : handshakeRes.headers?.['x-kiki-handshake-proof'];
+        const resProof = readHeader('x-kiki-handshake-proof') ?? '';
         mutualProofVerified = await challenge.verifyResponse(
-          resProof ?? '',
+          resProof,
           targetHomeId,
           targetHostId ?? '',
         );
+        if (!mutualProofVerified) {
+          mutualRevokedVerified = await challenge.verifyRevokedResponse(
+            resProof,
+            targetHomeId,
+            targetHostId ?? '',
+          );
+          if (!mutualRevokedVerified) {
+            mutualDisabledVerified = await challenge.verifyDisabledResponse(
+              resProof,
+              targetHomeId,
+              targetHostId ?? '',
+            );
+          }
+        }
+      }
+      if (mutualRevokedVerified) {
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'pairing_revoked',
+          authRejected: true,
+          targetHomeId,
+          targetHostId,
+          mutualProofVerified: false,
+          mutualRevokedVerified: true,
+        };
+      }
+      if (challenge && (mutualDisabledVerified || !inboundEnabled)) {
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'unreachable',
+          inboundEnabled: false,
+          targetHomeId,
+          targetHostId,
+          mutualProofVerified: false,
+          mutualDisabledVerified: true,
+        };
       }
       if (options.requireMutualProof && challenge && !mutualProofVerified) {
         return {
@@ -1000,11 +1056,63 @@ export async function probeOriginHandshake(origin, options = {}) {
       };
     }
     if (challenge && (handshakeRes.status === 401 || handshakeRes.status === 403)) {
+      const resProof = readHeader('x-kiki-handshake-proof') ?? '';
+      const expectedHomeId =
+        typeof options.targetHomeId === 'string' && options.targetHomeId.trim() !== ''
+          ? options.targetHomeId.trim()
+          : typeof options.serverId === 'string' && options.serverId.trim() !== ''
+            ? options.serverId.trim()
+            : '';
+      const expectedHostId =
+        typeof options.targetHostId === 'string' ? options.targetHostId.trim() : '';
+      let mutualRevokedVerified = false;
+      let mutualDisabledVerified = false;
+      if (resProof && expectedHomeId) {
+        mutualRevokedVerified = await challenge.verifyRevokedResponse(
+          resProof,
+          expectedHomeId,
+          expectedHostId,
+        );
+        if (!mutualRevokedVerified && expectedHostId) {
+          mutualRevokedVerified = await challenge.verifyRevokedResponse(
+            resProof,
+            expectedHomeId,
+            '',
+          );
+        }
+        if (!mutualRevokedVerified) {
+          mutualDisabledVerified = await challenge.verifyDisabledResponse(
+            resProof,
+            expectedHomeId,
+            expectedHostId,
+          );
+        }
+      }
+      if (mutualRevokedVerified) {
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'pairing_revoked',
+          authRejected: true,
+          mutualProofVerified: false,
+          mutualRevokedVerified: true,
+        };
+      }
+      if (mutualDisabledVerified) {
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'unreachable',
+          inboundEnabled: false,
+          mutualProofVerified: false,
+          mutualDisabledVerified: true,
+        };
+      }
       return {
         ok: false,
         status: handshakeRes.status,
-        reason: 'pairing_revoked',
-        authRejected: true,
+        reason: 'unverified_handshake_proof',
+        authRejected: false,
         mutualProofVerified: false,
       };
     }
@@ -1383,11 +1491,16 @@ export async function deliverCommittedServerCredential(target, resolved, options
           handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof,
           peerToken: probeOptions?.peerToken ?? token,
           grantId: probeOptions?.grantId ?? grantId,
+          targetHomeId: probeOptions?.targetHomeId ?? expectedHomeId,
+          targetHostId: probeOptions?.targetHostId ?? expectedHostId,
+          serverId: probeOptions?.serverId ?? resolved.serverId ?? expectedHomeId,
           requireMutualProof: Boolean(probeOptions?.requireMutualProof),
         }));
     const mustVerifyMutualProof = Boolean(options.requireMutualProof ?? resolved.requireMutualProof);
     const probe = await probeFn(expectedOrigin, {
       serverId: resolved.serverId ?? expectedHomeId,
+      targetHomeId: expectedHomeId,
+      targetHostId: expectedHostId,
       grantId,
       handshakeKey,
       handshakeProof: handshakeKey,
@@ -1409,8 +1522,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
     const probeAuthRejected =
       probe?.reason === 'pairing_revoked' ||
       probe?.authRejected === true ||
-      probe?.status === 401 ||
-      probe?.status === 403;
+      probe?.mutualRevokedVerified === true;
     if (probeAuthRejected) {
       return {
         ok: false,
@@ -1690,6 +1802,8 @@ export async function resolveVerifiedServerOpen(storage, input) {
       const requireMutualProof = Boolean(
         canProveVerifiedOrigin && (input.requireMutualProof || handshakeKey),
       );
+      const expectedHomeId = existing?.targetHomeId ?? input.targetHomeId;
+      const expectedHostId = existing?.targetHostId ?? input.targetHostId;
       const probeFn =
         input.probe ??
         ((targetOrigin, probeOptions) =>
@@ -1697,6 +1811,9 @@ export async function resolveVerifiedServerOpen(storage, input) {
             fetchImpl: input.fetchImpl,
             handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof ?? handshakeKey,
             grantId: probeOptions?.grantId ?? grantId,
+            targetHomeId: probeOptions?.targetHomeId ?? expectedHomeId,
+            targetHostId: probeOptions?.targetHostId ?? expectedHostId,
+            serverId: probeOptions?.serverId ?? targetServerId,
             requireMutualProof: Boolean(probeOptions?.requireMutualProof ?? requireMutualProof),
             signal: probeOptions?.signal ?? signal,
           }));
@@ -1705,6 +1822,8 @@ export async function resolveVerifiedServerOpen(storage, input) {
         canProveVerifiedOrigin
           ? {
               serverId: targetServerId,
+              targetHomeId: expectedHomeId,
+              targetHostId: expectedHostId,
               grantId,
               handshakeKey,
               handshakeProof: handshakeKey,

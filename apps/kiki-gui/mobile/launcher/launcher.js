@@ -711,6 +711,8 @@ async function probeServer(origin, probeOptions = {}) {
         targetHomeId: typeof res?.targetHomeId === 'string' && res.targetHomeId !== '' ? res.targetHomeId : undefined,
         targetHostId: typeof res?.targetHostId === 'string' && res.targetHostId !== '' ? res.targetHostId : undefined,
         mutualProofVerified: Boolean(res?.mutualProofVerified),
+        mutualRevokedVerified: Boolean(res?.mutualRevokedVerified),
+        mutualDisabledVerified: Boolean(res?.mutualDisabledVerified),
       };
     } catch {
       if (signal?.aborted === true) {
@@ -1360,7 +1362,12 @@ async function testServerAddress(server, rawAddress, trigger) {
   const probe = await probeServer(
     parsed.origin,
     isServerOriginVerified(server, parsed.origin)
-      ? { serverId: server.id, grantId: server.grantId }
+      ? {
+          serverId: server.id,
+          targetHomeId: server.targetHomeId,
+          targetHostId: server.targetHostId,
+          grantId: server.grantId,
+        }
       : undefined,
   );
   trigger.disabled = false;
@@ -1372,8 +1379,7 @@ async function testServerAddress(server, rawAddress, trigger) {
   if (
     probe.reason === 'pairing_revoked' ||
     probe.authRejected === true ||
-    probe.status === 401 ||
-    probe.status === 403
+    probe.mutualRevokedVerified === true
   ) {
     setAddressStatus(server.id, pairingRevokedMessageFor(parsed.origin, server.label), 'danger');
     return;
