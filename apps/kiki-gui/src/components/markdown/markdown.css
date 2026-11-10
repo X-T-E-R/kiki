@@ -1,0 +1,309 @@
+/**
+ * Responsive & touch reading rules for `.kiki-md` (shared across desktop,
+ * mobile web, and Capacitor Android). Base prose tokens and palette live in
+ * `src/index.css`; these rules keep narrow columns (320–430px) free of
+ * horizontal page overflow while preserving full content via local scroll
+ * containers, comfortable touch targets, and Lightbox media inspection.
+ */
+
+.kiki-md {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  text-autospace: normal;
+}
+
+.kiki-md > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ---- links, citations & inline code ---- */
+.kiki-md a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiki-md [data-internal-link] {
+  display: inline;
+  padding-inline: 2px;
+  margin-inline: -2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.kiki-md :not(pre) > code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.kiki-md pre,
+.kiki-md pre code {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: pre;
+}
+
+/* ---- display math & diagrams ---- */
+.kiki-md .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-block: 0.2em;
+}
+
+.kiki-md-mermaid {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---- wide tables: contained horizontal scroll + alpha edge cues ---- */
+.kiki-md .kiki-md-table-wrap {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0.8em 0;
+}
+
+.kiki-md .kiki-md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  border-radius: 4px;
+}
+
+.kiki-md .kiki-md-table-scroll:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-selected-ink) 50%, transparent);
+  outline-offset: 2px;
+}
+
+.kiki-md .kiki-md-table-wrap[data-can-scroll-right]:not([data-can-scroll-left]) .kiki-md-table-scroll {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), rgba(0, 0, 0, 0.16) 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), rgba(0, 0, 0, 0.16) 100%);
+}
+
+.kiki-md .kiki-md-table-wrap[data-can-scroll-left]:not([data-can-scroll-right]) .kiki-md-table-scroll {
+  -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.16) 0, #000 22px);
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.16) 0, #000 22px);
+}
+
+.kiki-md .kiki-md-table-wrap[data-can-scroll-left][data-can-scroll-right] .kiki-md-table-scroll {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.16) 0,
+    #000 22px,
+    #000 calc(100% - 22px),
+    rgba(0, 0, 0, 0.16) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.16) 0,
+    #000 22px,
+    #000 calc(100% - 22px),
+    rgba(0, 0, 0, 0.16) 100%
+  );
+}
+
+.kiki-md th:last-child,
+.kiki-md td:last-child {
+  padding-right: 2px;
+}
+
+.kiki-md td {
+  vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.kiki-md td :is(a, code) {
+  overflow-wrap: anywhere;
+}
+
+/* Multi-column tables scroll horizontally rather than crushing prose into
+ * 2-character vertical strips on narrow phone viewports. */
+.kiki-md table:has(th:nth-child(4)) td {
+  min-width: 7.5rem;
+}
+
+.kiki-md table:has(th:nth-child(4)) td:first-child {
+  min-width: 4.5rem;
+}
+
+/* ---- code blocks: single scroll container, collapsed fade & touch bar ---- */
+.kiki-cb {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.kiki-cb-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.kiki-cb [data-streamdown='code-block'],
+.kiki-cb [data-streamdown='code-block-body'] {
+  overflow: visible;
+  min-width: 100%;
+  width: max-content;
+}
+
+.kiki-cb-body pre {
+  overflow: visible;
+}
+
+.kiki-cb[data-collapsed='true'] .kiki-cb-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), rgba(0, 0, 0, 0.12) 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), rgba(0, 0, 0, 0.12) 100%);
+}
+
+/* On touch or narrow phone widths, lift language + copy into a quiet header
+ * strip so it never covers line 1 of code, and give controls thumb height. */
+@media (hover: none), (pointer: coarse), (max-width: 639px) {
+  .kiki-cb-tools {
+    position: static;
+    opacity: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-height: 36px;
+    padding: 2px 6px 2px 12px;
+    border-bottom: 1px solid var(--color-hairline);
+    border-radius: 0;
+    background: color-mix(in srgb, var(--color-ink) 2%, var(--color-panel));
+  }
+
+  .kiki-cb-copy {
+    margin-left: auto;
+    min-height: 32px;
+    padding-inline: 10px;
+  }
+
+  .kiki-cb-copy:active {
+    background: var(--color-paper);
+  }
+
+  .kiki-cb-toggle {
+    min-height: 40px;
+    font-size: 12.5px;
+    color: var(--color-ink-soft);
+  }
+
+  .kiki-cb-toggle:active {
+    background: color-mix(in srgb, var(--color-paper) 75%, transparent);
+  }
+}
+
+/* ---- images: proportional viewport cap without cropping ---- */
+.kiki-md .kiki-md-img-trigger {
+  max-width: 100%;
+  border-radius: 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiki-md .kiki-md-img {
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: min(68dvh, 520px);
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+.kiki-md .kiki-md-img[src] {
+  border: 1px solid var(--color-hairline);
+  background: var(--color-panel);
+}
+
+.kiki-md :not(p):not(a):not(li) > .kiki-md-img-trigger,
+.kiki-md :not(p):not(a):not(li) > .kiki-md-img {
+  display: block;
+  width: fit-content;
+  margin-block: 0.55em;
+}
+
+.kiki-md :is(p, a, li) .kiki-md-img-trigger,
+.kiki-md :is(p, a, li) .kiki-md-img {
+  display: inline-block;
+  vertical-align: middle;
+  max-height: min(56dvh, 360px);
+  border-radius: 6px;
+}
+
+/* ---- narrow phone typography & spacing ---- */
+@media (max-width: 639px) {
+  .kiki-prose .kiki-md {
+    font-size: 15px;
+    line-height: 1.68;
+  }
+
+  .kiki-md p {
+    margin: 0.6em 0;
+  }
+
+  .kiki-md ul,
+  .kiki-md ol {
+    padding-left: 1.2em;
+  }
+
+  .kiki-md :is(ul, ol) :is(ul, ol) {
+    padding-left: 1.05em;
+  }
+
+  .kiki-md blockquote {
+    padding-left: 0.75em;
+  }
+
+  .kiki-md .kiki-md-img {
+    max-height: min(60dvh, 400px);
+  }
+}
+
+@media (max-width: 480px) {
+  .kiki-cb [data-streamdown='code-block-body'] {
+    padding: 9px 12px;
+  }
+
+  .kiki-cb [data-streamdown='code-block-body'] code > span::before {
+    width: 1.25rem;
+    margin-right: 0.625rem;
+    font-size: 11.5px;
+  }
+}
+
+/* ---- coarse-pointer menu & retry targets ---- */
+@media (pointer: coarse) {
+  .kiki-md-img-retry {
+    min-height: 38px;
+    padding-inline: 12px;
+  }
+
+  [data-link-menu] [data-menu-item],
+  [data-file-link-menu] [data-menu-item],
+  [data-message-image-menu] [data-menu-item] {
+    min-height: 40px;
+    padding-block: 8px;
+    font-size: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kiki-cb-tools,
+  .kiki-md a {
+    transition: none;
+  }
+}

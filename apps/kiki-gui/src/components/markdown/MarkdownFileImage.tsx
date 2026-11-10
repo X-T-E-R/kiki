@@ -59,21 +59,21 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
           setFailedMedia(null);
           setAttempt((value) => value + 1);
         }}
-        className="text-[12px] text-ink-faint hover:text-ink hover:underline"
+        className="kiki-md-img-retry inline-flex min-h-7 items-center gap-1 rounded-lg border border-hairline bg-panel px-2.5 py-1 font-sans text-[12px] text-ink-faint transition-colors hover:border-hairline-strong hover:text-ink"
       >
         {t('preview.failed')} · {t('transcript.detail.retry')}
       </button>
     );
   }
 
-  const content = <img {...props} src={url} alt={description} decoding="async" onContextMenu={imageMenu.openMenu} onError={() => { setFailedMedia({ client, path }); }} className="max-w-full h-auto" />;
+  const content = <img {...props} data-markdown-image="" src={url} alt={description} decoding="async" onContextMenu={imageMenu.openMenu} onError={() => { setFailedMedia({ client, path }); }} className="kiki-md-img max-w-full h-auto" />;
   if (preview === null) return <>{content}{imageMenu.menuElement}</>;
   return (
     <><button
       type="button"
       title={label}
       aria-label={label}
-      className="inline-block max-w-full bg-transparent p-0 align-middle focus-visible:outline-2 focus-visible:outline-selected-ink"
+      className="kiki-md-img-trigger inline-block max-w-full bg-transparent p-0 align-middle focus-visible:outline-2 focus-visible:outline-selected-ink"
       onClick={() => {
         if (typeof url === 'string') openImage(url);
       }}

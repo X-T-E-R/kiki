@@ -509,3 +509,133 @@ describe('file citation entrances', () => {
     } finally { raf.mockRestore(); HTMLElement.prototype.scrollIntoView = originalScroll; }
   });
 });
+
+describe('mobile reading & containment', () => {
+  it('copies fenced code through execCommand fallback when navigator.clipboard is unavailable on HTTP LAN', async () => {
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: undefined,
+      configurable: true,
+    });
+    const originalExecCommand = document.execCommand;
+    const execCommand = vi.fn((command: string) => command === 'copy');
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand,
+      configurable: true,
+    });
+    try {
+      const probe = makeRoot();
+      await renderSettled(probe.root, <Markdown mode="static" text={'```ts\nconst port = 58627;\n```'} />);
+      const copyButton = probe.container.querySelector<HTMLButtonElement>('.kiki-cb-copy')!;
+      expect(copyButton).not.toBeNull();
+      await act(async () => {
+        copyButton.click();
+      });
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(probe.container.querySelector<HTMLElement>('.kiki-cb-tools')?.dataset['copied']).toBe('true');
+      expect(copyButton.textContent).toContain('copied');
+    } finally {
+      Object.defineProperty(document, 'execCommand', {
+        value: originalExecCommand,
+        configurable: true,
+      });
+    }
+  });
+
+  it('collapses long code blocks with fade state and toggles aria-expanded cleanly', async () => {
+    const lines = Array.from({ length: 16 }, (_, index) => `const line_${index + 1} = ${index + 1};`).join('\n');
+    const probe = makeRoot();
+    await renderSettled(probe.root, <Markdown mode="static" text={`\`\`\`ts\n${lines}\n\`\`\``} />);
+    const block = probe.container.querySelector<HTMLElement>('.kiki-cb')!;
+    const body = probe.container.querySelector<HTMLElement>('.kiki-cb-body')!;
+    const toggle = probe.container.querySelector<HTMLButtonElement>('.kiki-cb-toggle')!;
+
+    expect(block.dataset['collapsed']).toBe('true');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('View more (4 lines)');
+    expect(body.style.maxHeight).not.toBe('');
+
+    await act(async () => {
+      toggle.click();
+    });
+    expect(block.dataset['collapsed']).toBeUndefined();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain('Show less');
+    expect(body.style.maxHeight).toBe('');
+  });
+
+  it('tracks horizontal overflow and directional scroll edges on wide tables', async () => {
+    const probe = makeRoot();
+    const md = [
+      '| Module | Narrow 320px | Mobile 390px | Desktop | Notes |',
+      '| --- | --- | --- | --- | --- |',
+      '| Markdown | Contained | Contained | Full column | Scrollable locally |',
+    ].join('\n');
+    await renderSettled(probe.root, <Markdown mode="static" text={md} />);
+
+    const wrapper = probe.container.querySelector<HTMLElement>('[data-streamdown="table-wrapper"]')!;
+    const scroller = probe.container.querySelector<HTMLElement>('.kiki-md-table-scroll')!;
+    expect(wrapper).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    expect(wrapper.dataset['overflowX']).toBeUndefined();
+    expect(scroller.getAttribute('tabindex')).toBeNull();
+
+    let scrollLeft = 0;
+    Object.defineProperty(scroller, 'clientWidth', { get: () => 260, configurable: true });
+    Object.defineProperty(scroller, 'scrollWidth', { get: () => 620, configurable: true });
+    Object.defineProperty(scroller, 'scrollLeft', { get: () => scrollLeft, configurable: true });
+
+    await act(async () => {
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(wrapper.dataset['overflowX']).toBe('true');
+    expect(scroller.getAttribute('tabindex')).toBe('0');
+    expect(wrapper.dataset['canScrollLeft']).toBeUndefined();
+    expect(wrapper.dataset['canScrollRight']).toBe('true');
+
+    scrollLeft = 140;
+    await act(async () => {
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(wrapper.dataset['canScrollLeft']).toBe('true');
+    expect(wrapper.dataset['canScrollRight']).toBe('true');
+
+    scrollLeft = 360;
+    await act(async () => {
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(wrapper.dataset['canScrollLeft']).toBe('true');
+    expect(wrapper.dataset['canScrollRight']).toBeUndefined();
+  });
+
+  it('wraps standalone markdown images in a bounded Lightbox trigger without altering src', async () => {
+    const openImage = vi.fn();
+    const preview: MediaPreviewApi = {
+      cwd: 'C:/work',
+      sessionId: 'session_test',
+      openFile: vi.fn(),
+      openImage,
+      openAttachment: vi.fn(),
+      previewTabCount: 0,
+      previewPanelOpen: false,
+      togglePreviewPanel: vi.fn(),
+      openAgentPanel: vi.fn(),
+      openBuiltinSkill: vi.fn(),
+      activeAgentPanelId: undefined,
+    };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewContext.Provider value={preview}>
+        <Markdown mode="static" text={'![Tall mobile screenshot](https://example.test/tall-shot.png)'} />
+      </MediaPreviewContext.Provider>,
+    );
+    const trigger = probe.container.querySelector<HTMLButtonElement>('.kiki-md-img-trigger')!;
+    const img = trigger.querySelector<HTMLImageElement>('img.kiki-md-img')!;
+    expect(img.getAttribute('src')).toBe('https://example.test/tall-shot.png');
+    expect(img.getAttribute('alt')).toBe('Tall mobile screenshot');
+    await act(async () => {
+      trigger.click();
+    });
+    expect(openImage).toHaveBeenCalledOnce();
+  });
+});

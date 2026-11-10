@@ -2,8 +2,9 @@
  * Markdown renderer for assistant/user text, built on Streamdown (streaming-
  * safe incomplete-block parsing, GFM tables/strikethrough/task-lists) with
  * shiki highlighting lazy-loaded via ./streamdown-plugins (codeg's pattern).
- * Fenced code uses KikiCodeBlock chrome; complete Mermaid fences render through
- * the lazy-loaded Streamdown engine. Typography lives in `.kiki-md` (index.css).
+ * Fenced code uses KikiCodeBlock chrome, tables use KikiMarkdownTable scroll
+ * containment, and complete Mermaid fences render through the lazy-loaded
+ * Streamdown engine. Typography lives in `.kiki-md` (`index.css` + `markdown.css`).
  */
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -25,11 +26,13 @@ import {
   wrapFileLinkTarget,
 } from '@kiki/session-core/composer/media';
 import { KikiMarkdownPre } from './markdown/KikiCodeBlock';
+import { KikiMarkdownTable } from './markdown/KikiMarkdownTable';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
 import { indexMarkdownHeadings } from './markdown/headingNavigation';
 import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
+import './markdown/markdown.css';
 import { useMediaPreview } from './mediaPreviewContext';
 import { Icon, type IconName } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -98,9 +101,9 @@ function InternalLink({ to, children }: { to: string; children: ReactNode }) {
     <Link
       to={to}
       data-internal-link={route.name}
-      className="inline-flex items-baseline gap-0.5 rounded-[3px] text-ink no-underline transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+      className="inline rounded-[3px] text-ink no-underline transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
     >
-      <Icon name={route.name} size={12} className="shrink-0 translate-y-px text-ink-faint" />
+      <Icon name={route.name} size={12} className="mr-1 inline align-[-0.12em] text-ink-faint" />
       <span>{children}</span>
     </Link>
   );
@@ -458,6 +461,7 @@ const DOCUMENT_PLUGINS = [...Object.values(defaultRemarkPlugins), ...DOCUMENT_RE
 
 const components: Components = {
   pre: KikiMarkdownPre as Components['pre'],
+  table: KikiMarkdownTable as Components['table'],
   a: MarkdownAnchor as Components['a'],
   img: MarkdownFileImage as Components['img'],
 };

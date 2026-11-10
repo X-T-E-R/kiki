@@ -11,10 +11,11 @@
  * duplicated. kiki shows 12 lines before collapsing (aionui shows 3).
  */
 
-import { useEffect, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { Icon } from '../icons';
 import { useMermaidEngine } from './streamdown-plugins';
 
@@ -71,7 +72,7 @@ function KikiMermaidBlock({ children, isIncomplete }: PreProps) {
     return <KikiCodeBlock isIncomplete={isIncomplete}>{children}</KikiCodeBlock>;
   }
   return (
-    <div className="my-3 overflow-x-auto rounded-[10px] border border-hairline bg-panel p-3">
+    <div className="kiki-md-mermaid my-3 overflow-x-auto rounded-[10px] border border-hairline bg-panel p-3">
       <img src={rendered.url} alt={code} className="mx-auto h-auto max-w-full" />
     </div>
   );
@@ -86,23 +87,35 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { code, language } = extractCode(children);
   const totalLines = code === '' ? 0 : code.split('\n').length;
   const canCollapse = totalLines > PREVIEW_LINES;
+  const collapsed = canCollapse && !expanded;
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+  }, []);
 
   const copy = () => {
-    void navigator.clipboard
-      .writeText(code)
+    void copyTextToClipboard(code)
       .then(() => {
         setCopied(true);
-        setTimeout(() => { setCopied(false); }, 1500);
+        if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => {
+          copyTimerRef.current = null;
+          setCopied(false);
+        }, 1500);
       })
       .catch(() => undefined);
   };
 
   return (
-    <div className="kiki-cb my-3 overflow-hidden rounded-[10px] border border-hairline bg-panel">
-      {/* Corner tools: language + copy, revealed on hover/focus (index.css). */}
+    <div
+      data-collapsed={collapsed || undefined}
+      className="kiki-cb my-3 overflow-hidden rounded-[10px] border border-hairline bg-panel"
+    >
+      {/* Corner tools on desktop hover/focus; in-flow header strip on touch/narrow viewports (markdown.css). */}
       <div
         data-copied={copied || undefined}
         className="kiki-cb-tools select-none absolute top-1.5 right-1.5 z-[1] flex items-center gap-0.5 rounded-md bg-panel/90 pl-2"
@@ -115,7 +128,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           onClick={copy}
           title={t('cb.copyTitle')}
           aria-label={t('cb.copyTitle')}
-          className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-sans text-[12px] font-medium transition-colors ${
+          className={`kiki-cb-copy inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-sans text-[12px] font-medium transition-colors ${
             copied ? 'text-success' : 'text-ink-soft hover:bg-paper hover:text-ink'
           }`}
         >
@@ -127,11 +140,8 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       <div
         className="kiki-cb-body overflow-x-auto"
         style={{
-          maxHeight:
-            canCollapse && !expanded
-              ? `${PREVIEW_LINES * LINE_HEIGHT_PX + BODY_PADDING_PX}px`
-              : undefined,
-          overflowY: canCollapse && !expanded ? 'hidden' : undefined,
+          maxHeight: collapsed ? `${PREVIEW_LINES * LINE_HEIGHT_PX + BODY_PADDING_PX}px` : undefined,
+          overflowY: collapsed ? 'hidden' : undefined,
         }}
       >
         {hasAnnotation(children)
@@ -144,7 +154,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           type="button"
           onClick={() => { setExpanded((value) => !value); }}
           aria-expanded={expanded}
-          className="flex min-h-7 w-full items-center justify-center gap-1 border-t border-hairline font-sans text-[12px] text-ink-faint transition-colors hover:bg-paper/60 hover:text-ink"
+          className="kiki-cb-toggle flex min-h-7 w-full items-center justify-center gap-1 border-t border-hairline font-sans text-[12px] text-ink-faint transition-colors hover:bg-paper/60 hover:text-ink"
         >
           {expanded ? t('cb.showLess') : t('cb.viewMore', { count: totalLines - PREVIEW_LINES })}
           <Icon name="chevron" size={12} className={expanded ? '-rotate-90' : 'rotate-90'} />
