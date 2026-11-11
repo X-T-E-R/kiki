@@ -2060,6 +2060,7 @@ const AGENTS_TAB_BY_CARD: Readonly<Record<string, AgentsSettingsTab>> = {
   'st-card-prompt-config': 'profiles',
   'st-card-subagent-default-target': 'dispatch',
   'st-card-subagent-limits': 'dispatch',
+  'st-card-subagent-agent-list-fields': 'dispatch',
   'st-card-subagents': 'dispatch',
   'st-card-subagent-open-mode': 'dispatch',
   'st-card-subagent-tool-defaults': 'dispatch',

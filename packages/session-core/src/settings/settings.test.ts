@@ -1781,6 +1781,8 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
     expect(resolveSettingsRoute('subagents', '#st-card-subagent-timeout'))
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
+    expect(resolveSettingsRoute('agents', '#st-card-subagent-agent-list-fields'))
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-agent-list-fields', tab: 'dispatch' });
   });
 
   it('redirects the retired runtime page to sessions and keeps dissolved card links precise', () => {
