@@ -1,7 +1,7 @@
-# Locked Termux Android Bionic Node.js LTS 24.22.2-1 and shared library dependencies
+# Locked Termux Android Bionic Node.js LTS 24.22.3 and shared library dependencies
 # Format: deb <abi> <name> <version> <url> <sha256>
 
-deb x86_64 nodejs-lts 24.22.2-1 https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs-lts/nodejs-lts_24.22.2-1_x86_64.deb 7c9a48bae81d469e87b7e9c162acaf2360e70a7e0530fd9d42e47e83d892592d
+deb x86_64 nodejs-lts 24.22.3 https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs-lts/nodejs-lts_24.22.3_x86_64.deb d73ab1303aa1a8ecca188795f536279c7ef196c4e3f72b645e443501b03247e4
 deb x86_64 libc++ 30 https://packages.termux.dev/apt/termux-main/pool/main/libc/libc++/libc++_30_x86_64.deb c9bcd9a8067a19c9c0e4893a72d314a2e37d6b67ce8dd05c67b9bbacad044b4f
 deb x86_64 openssl 1:3.6.5 https://packages.termux.dev/apt/termux-main/pool/main/o/openssl/openssl_1:3.6.5_x86_64.deb 540f144592d23d35672976e175ede1b5d8cf464f153f646df5d4e6dcd8491a15
 deb x86_64 c-ares 1.34.9 https://packages.termux.dev/apt/termux-main/pool/main/c/c-ares/c-ares_1.34.9_x86_64.deb ac96c37fcc9181d1a7095f60485457fe6c3d784a83b0e8e6e7af9b3bfceda237
@@ -9,7 +9,7 @@ deb x86_64 libicu 79.1 https://packages.termux.dev/apt/termux-main/pool/main/lib
 deb x86_64 libsqlite 3.54.1-1 https://packages.termux.dev/apt/termux-main/pool/main/libs/libsqlite/libsqlite_3.54.1-1_x86_64.deb 497471806378934fec8a6f3b5db70cf52a3652828786a241e2e37eebc19112b0
 deb x86_64 zlib 1.4 https://packages.termux.dev/apt/termux-main/pool/main/z/zlib/zlib_1.4_x86_64.deb 55ab8f16e492d6ed03c2e2bf701af52cf54a313442dd7adedd3d6f3e3eba2e4f
 
-deb arm64-v8a nodejs-lts 24.22.2-1 https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs-lts/nodejs-lts_24.22.2-1_aarch64.deb 837bbc7e422ef44583d590b7735c8736916183a185fc6f8c547c42b44cabfd01
+deb arm64-v8a nodejs-lts 24.22.3 https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs-lts/nodejs-lts_24.22.3_aarch64.deb 80edcc73db025db0baa09be27e3d65a16e6f2a72ab925f1873a1b808ab857c28
 deb arm64-v8a libc++ 30 https://packages.termux.dev/apt/termux-main/pool/main/libc/libc++/libc++_30_aarch64.deb 53d0b84a7ba7459024257cb94d5b136fe13ef858567f65a8064b35950799f2ca
 deb arm64-v8a openssl 1:3.6.5 https://packages.termux.dev/apt/termux-main/pool/main/o/openssl/openssl_1:3.6.5_aarch64.deb a2fb7856875e63ef6b90442752e05974813372c3ca86d2513a78ea43c67a0f8b
 deb arm64-v8a c-ares 1.34.9 https://packages.termux.dev/apt/termux-main/pool/main/c/c-ares/c-ares_1.34.9_aarch64.deb 623d84855e176f3f2a415d24c0e1d2f529356f4b5439bb3313e6d7ff0da4585c

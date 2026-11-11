@@ -34,7 +34,7 @@ limitations under the License.
 ## 2. Node.js Bionic Runtime, Termux Packages & nodejs-mobile Architectural Inspiration
 
 - **Node.js Project**: https://nodejs.org/
-- **Termux Bionic Packages**: https://github.com/termux/termux-packages (`nodejs-lts` 24.22.2-1, `libc++` 30, `openssl` 3.6.5, `c-ares` 1.34.9, `libicu` 79.1, `libsqlite` 3.54.1-1, `zlib` 1.4 — locked with SHA-256 in `tools/kiki-runtime/node.lock`)
+- **Termux Bionic Packages**: https://github.com/termux/termux-packages (`nodejs-lts` 24.22.3, `libc++` 30, `openssl` 3.6.5, `c-ares` 1.34.9, `libicu` 79.1, `libsqlite` 3.54.1-1, `zlib` 1.4 — locked with SHA-256 in `tools/kiki-runtime/node.lock`)
 - **nodejs-mobile Reference**: https://github.com/nodejs-mobile/nodejs-mobile (Copyright (c) Janea Systems, MIT License — referenced for Android `nativeLibraryDir` SONAME packaging and local IPC bridge patterns)
 - **Licenses**:
   - **Node.js**: MIT License — Copyright Node.js contributors. All rights reserved.
