@@ -3,6 +3,9 @@ import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { applySpawnPolicy } from '@kiki/agent-profiles/applySubagentLease';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { randomUUID } from 'node:crypto';
 
@@ -130,6 +133,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     @ref(IHostProcessService) private readonly hostProcess: LiveRef<IHostProcessService>,
     @ref(IPluginHostService) private readonly pluginHost: LiveRef<IPluginHostService>,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {}
 
   private readonly capacity = new DispatchCapacity();
@@ -225,7 +229,41 @@ export class SessionDispatchService implements ISessionDispatchService {
     }
     const callerBinding = requester.accessor.get(IAgentProfileService).data();
     const auto = input.resolvedBinding === undefined && usesAutoModel(this.config, profile, input.modelAlias);
-    const staticBinding = auto ? undefined : this.resolveBinding(input, target, callerBinding);
+    const extensions = this.extensions?.current;
+    const advice = extensions?.hasSubagentDispatchAdvisors !== true ? undefined : await extensions.proposeSubagentDispatch(Object.freeze({
+      sessionId: requester.accessor.get(ISessionContext).sessionId,
+      requesterAgentId: input.requesterAgentId, targetProfileName: profile.name, routeId: selection.route?.id,
+      requestedModelAlias: input.modelAlias, requestedThinkingEffort: input.thinkingEffort,
+      requestedExecutorInstance: typeof input.executorInstance === 'object' ? input.executorInstance?.account_id : input.executorInstance,
+      allowedModels: profile.allowedModels === undefined ? undefined : Object.freeze([...profile.allowedModels]),
+      deniedModels: profile.denyModels === undefined ? undefined : Object.freeze([...profile.denyModels]),
+    }), input.signal);
+    checkLaunchPolicy(profile.executor);
+    let advisedBinding: DispatchResolvedBinding | undefined;
+    if (!auto && input.resolvedBinding === undefined && advice !== undefined) {
+      const modelAlias = input.modelAlias === undefined && target.lease?.modelAlias === undefined && selection.route?.lockedModelAlias === undefined
+        ? advice.recommendedModelAlias : undefined;
+      const thinkingEffort = input.thinkingEffort === undefined && target.lease?.thinkingEffort === undefined && selection.route?.lockedThinkingEffort === undefined
+        ? advice.recommendedThinkingEffort : undefined;
+      if (modelAlias !== undefined || thinkingEffort !== undefined) {
+        try {
+          advisedBinding = this.resolveBinding({ ...input, modelAlias: input.modelAlias ?? modelAlias,
+            thinkingEffort: input.thinkingEffort ?? thinkingEffort }, target, callerBinding);
+        } catch (error) {
+          if (!isCodedError(error)) throw error;
+          this.log.warn('Ignored inadmissible extension dispatch advice', { code: error.code, profile: profile.name });
+        }
+      }
+    }
+    const staticBinding = auto ? undefined : advisedBinding ?? this.resolveBinding(input, target, callerBinding);
+    const executor = profile.executor ?? 'native';
+    const defaultInstance = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor]?.defaults?.executor_instance;
+    const advisedInstance = executor !== 'native' && input.executorInstance === undefined && input.executorLaunch === undefined
+      && profile.executorInstance === undefined && defaultInstance === 'auto' && advice?.recommendedExecutorAccountId !== undefined
+      ? this.executors.list().find(candidate => candidate.instanceIssue === undefined
+        && candidate.instance?.source_executor === executor
+        && candidate.instance.quota_account_id === advice.recommendedExecutorAccountId)?.id
+      : undefined;
     const inheritAlias = (alias: string | undefined) => resolveInheritedModelAlias(alias, callerBinding.modelAlias);
     const resolvedProfile = isNativeTarget(profile) ? profile : selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
       ? { ...selection.baseProfile, modelAlias: inheritAlias(selection.baseProfile.modelAlias) }
@@ -282,7 +320,7 @@ export class SessionDispatchService implements ISessionDispatchService {
           resolvedRoute,
           model: binding.model,
           thinking: binding.thinking,
-          executorInstance: input.executorInstance,
+          executorInstance: input.executorInstance === undefined ? advisedInstance : input.executorInstance,
           executorLaunch: input.executorLaunch,
           bindingSelection: binding.selection,
           strictThinking:

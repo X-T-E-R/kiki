@@ -24,6 +24,7 @@ import { coveredInstructions } from '#/agent/agentsMdReminder/instructionCoverag
 import { foldLoopEvent } from '#/agent/contextMemory/loopEventFold';
 import { ContextAppendLoopEvent } from '#/agent/contextMemory/contextEvents';
 import { advanceContinuityClock, initialContinuityClock } from '#/session/todo/continuityState';
+import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
   BeforeToolExecuteEvent,
@@ -35,6 +36,9 @@ import {
   ToolResultEvent,
 } from '#/agent/toolExecutor/toolExecutorEvents';
 import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { PluginExtensionPortRegistryService } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistryService';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { classifyToolArgsJson, formatToolArgsTruncationRejection, parseToolCallArguments } from '#/tool/tool-args-parse';
 import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import { ToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncationService';
@@ -73,6 +77,7 @@ let disposables: DisposableStore;
 let ix: TestInstantiationService;
 let executor: IAgentToolExecutorService;
 let registry: IAgentToolRegistryService;
+let extensions: IPluginExtensionPortRegistryReader;
 let events: ToolExecutorEvent[];
 let protocolEvents: ProtocolEvent[];
 let telemetryEvents: TelemetryRecord[];
@@ -88,6 +93,8 @@ beforeEach(() => {
     additionalServices: (reg) => {
       registerStateServices(reg);
       registerTestAgentWireServices(reg, 'wire/tool-executor');
+      reg.definePartialInstance(IProtocolAdapterRegistry, {});
+      reg.define(IPluginExtensionPortRegistryReader, PluginExtensionPortRegistryService);
       reg.define(IAgentToolRegistryService, AgentToolRegistryService);
       reg.define(IAgentToolExecutorService, AgentToolExecutorService);
       reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
@@ -109,6 +116,7 @@ beforeEach(() => {
     },
     strict: true,
   });
+  extensions = ix.get(IPluginExtensionPortRegistryReader);
   executor = ix.get(IAgentToolExecutorService);
   registry = ix.get(IAgentToolRegistryService);
 });
@@ -815,6 +823,116 @@ describe('AgentToolExecutorService', () => {
         values: [5],
       },
     });
+  });
+
+  it('validates rewritten args before before-execute and forced approval, then runs the wrapped body once', async () => {
+    ix.stub(ISessionContext, { sessionId: 'session-extension' });
+    const expectedArgs = { count: 7, label: 'rewritten' };
+    const approvalRequests: Array<Parameters<IAgentToolApprovalService['requestToolApproval']>> = [];
+    ix.stub(IAgentToolApprovalService, {
+      requestToolApproval: async (...args: Parameters<IAgentToolApprovalService['requestToolApproval']>) => {
+        approvalRequests.push(args);
+        return { permissionDecision: 'approved' };
+      },
+    });
+    disposables.add(extensions.registerToolPreExecutePolicy('plugin-rewriter', () => ({
+      decision: 'propose_args',
+      rewrittenArgs: { count: '7', label: 'rewritten' },
+      auditReason: 'rewrite tool input',
+    })));
+    let beforeArgs: unknown;
+    disposables.add(executor.onBeforeExecuteTool((event) => {
+      beforeArgs = event.args;
+    }));
+    let wrapperArgs: unknown;
+    let wrapperCalls = 0;
+    disposables.add(extensions.registerApprovedToolExecutionWrapper('plugin-wrapper', async (context, next) => {
+      wrapperCalls += 1;
+      wrapperArgs = context.approvedArgs;
+      return next();
+    }));
+    let bodyCalls = 0;
+    const tool = new TestTool('rewrite', {
+      parameters: {
+        type: 'object',
+        properties: { count: { type: 'integer' }, label: { type: 'string' } },
+        required: ['count', 'label'],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        bodyCalls += 1;
+        return { output: 'body ran' };
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([toolCall('rewrite-call', 'rewrite', { count: 1, label: 'original' })]);
+
+    expect(results[0]?.output).toBe('body ran');
+    expect(beforeArgs).toEqual(expectedArgs);
+    expect(Object.isFrozen(beforeArgs)).toBe(true);
+    expect(approvalRequests).toHaveLength(1);
+    const [approvalContext, approvalResult, approvalOrigin] = approvalRequests[0]!;
+    expect(approvalContext.args).toBe(beforeArgs);
+    expect(approvalContext.permissionAuthority).toBe('owner');
+    expect(approvalContext.toolCall.arguments).toBe(JSON.stringify(expectedArgs));
+    expect(approvalContext.execution.sessionApprovalRule).toBeUndefined();
+    expect(approvalContext.execution.display).toEqual({
+      kind: 'generic',
+      summary: 'An extension changed the tool arguments.',
+      detail: expectedArgs,
+    });
+    expect(approvalResult).toEqual({ kind: 'ask', reason: { extension: 'An extension changed the tool arguments.' } });
+    expect(approvalOrigin).toBe('extension-tool-pre-execute');
+    expect(wrapperArgs).toEqual(expectedArgs);
+    expect(Object.isFrozen(wrapperArgs)).toBe(true);
+    expect(wrapperCalls).toBe(1);
+    expect(tool.calls).toHaveLength(1);
+    expect(tool.calls[0]?.args).toBe(beforeArgs);
+    expect(bodyCalls).toBe(1);
+  });
+
+  it('reports a forced approval denial to post-execute policies without running the tool body', async () => {
+    ix.stub(ISessionContext, { sessionId: 'session-extension' });
+    const expectedArgs = { text: 'rewritten' };
+    const approvalRequests: Array<Parameters<IAgentToolApprovalService['requestToolApproval']>> = [];
+    ix.stub(IAgentToolApprovalService, {
+      requestToolApproval: async (...args: Parameters<IAgentToolApprovalService['requestToolApproval']>) => {
+        approvalRequests.push(args);
+        return { veto: { output: 'approval denied', isError: true } };
+      },
+    });
+    disposables.add(extensions.registerToolPreExecutePolicy('plugin-rewriter', () => ({
+      decision: 'propose_args',
+      rewrittenArgs: expectedArgs,
+      auditReason: 'rewrite tool input',
+    })));
+    const postEvents: Array<{ readonly wasDenied?: boolean; readonly args: unknown; readonly result: ExecutableToolResult }> = [];
+    disposables.add(extensions.registerToolPostExecutePolicy('plugin-post', (context) => {
+      postEvents.push({ wasDenied: context.wasDenied, args: context.args, result: context.result });
+      return undefined;
+    }));
+    let bodyCalls = 0;
+    const tool = new TestTool('rewrite-denied', {
+      execute: async () => {
+        bodyCalls += 1;
+        return { output: 'body must not run' };
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([toolCall('rewrite-denied-call', 'rewrite-denied', { text: 'original' })]);
+
+    expect(results[0]).toMatchObject({ output: 'approval denied', isError: true });
+    expect(approvalRequests).toHaveLength(1);
+    expect(approvalRequests[0]?.[2]).toBe('extension-tool-pre-execute');
+    expect(approvalRequests[0]?.[0].args).toEqual(expectedArgs);
+    expect(postEvents).toHaveLength(1);
+    expect(postEvents[0]?.wasDenied).toBe(true);
+    expect(postEvents[0]?.args).toEqual(expectedArgs);
+    expect(postEvents[0]?.result).toMatchObject({ output: 'approval denied', isError: true });
+    expect(tool.calls).toEqual([]);
+    expect(bodyCalls).toBe(0);
   });
 
   it('recompiles the cached args validator when a tool advertises a different schema object', async () => {

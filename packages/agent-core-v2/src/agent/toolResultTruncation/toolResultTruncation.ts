@@ -16,6 +16,7 @@ export interface IAgentToolResultTruncationService {
     input: ToolResultTruncationInput<T>,
   ): Promise<T>;
 
+  preserveOriginal?(input: ToolResultTruncationInput): Promise<string | undefined>;
   isSpillFilePath(path: string): boolean;
 }
 

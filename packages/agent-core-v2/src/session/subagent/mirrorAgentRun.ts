@@ -241,7 +241,12 @@ export async function mirrorAgentRun(
         throw options.signal.reason ?? userCancellationReason();
       }
     }
-    const result = await run.completion;
+    const completed = await run.completion;
+    const summary = await subagents?.adviseReturn?.({
+      parentAgentId: requester.id, childAgentId: run.agentId, profileName: options.profileName,
+      summary: completed.summary, signal: options.signal,
+    }) ?? completed.summary;
+    const result = summary === completed.summary ? completed : { ...completed, summary };
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
     const toolCallCount = childToolCallCount(agentLifecycle, run.agentId);
     const parentSteering = agentLifecycle?.get(run.agentId)?.accessor.get(IAgentProfileService)?.getParentSteering?.();

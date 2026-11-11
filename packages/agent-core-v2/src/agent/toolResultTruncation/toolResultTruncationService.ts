@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -42,6 +44,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
     @IAgentScopeContext agent: IAgentScopeContext,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @ILogService private readonly log: ILogService,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {
     this.storageScope = agent.scope('tool-results');
   }
@@ -77,6 +80,17 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
         suffix,
       );
       return { ...rest, output: mergeSpillPointer(result.output, fallback), truncated: true } as T;
+    }
+
+    const customPreview = await this.extensions?.current?.formatToolResultPreview({
+      toolName: input.toolName, toolCallId: input.toolCallId, rawText: retainedText,
+      maxChars: DEFAULT_TOOL_RESULT_MAX_CHARS, spillPath: saved.outputPath,
+    });
+    if (customPreview !== undefined) {
+      const preview = sliceUtf16(customPreview, 0, DEFAULT_TOOL_RESULT_MAX_CHARS);
+      const pointer = renderAppendedSpillPointer(saved.outputPath, saved.preservedChars, totalChars, suffix,
+        Array.isArray(result.output) && result.output.some(part => part.type !== 'text' && part.type !== 'think'));
+      return { ...rest, output: mergeSpillPointer(result.output, `${preview}\n${pointer}`), truncated: true } as T;
     }
 
     let shaped: ShapedOutput;
@@ -144,6 +158,10 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
       output: mergeSpillPointer(shaped.output, pointer),
       truncated: true,
     } as T;
+  }
+
+  async preserveOriginal(input: ToolResultTruncationInput): Promise<string | undefined> {
+    return (await this.saveToolResult(input.toolName, input.toolCallId, persistableToolResultText(input.result.output)))?.outputPath;
   }
 
   isSpillFilePath(path: string): boolean {

@@ -6,6 +6,7 @@ import type {
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import type { Event } from '#/_base/event';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { CompactionSource } from '#/agent/fullCompaction/types';
 import type {
@@ -413,6 +414,21 @@ export interface IPluginExtensionPortRegistry {
     descriptor: PluginHttpRouteDescriptor,
     handler: (ctx: PluginHttpRouteHandlerContext) => Promise<PluginHttpRouteResult>,
   ): IDisposable;
+
+  resolveHttpRoute?(
+    pluginId: string,
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    subpath: string,
+  ): PluginHttpRouteDescriptor | undefined;
+  invokeHttpRoute(context: PluginHttpRouteHandlerContext): Promise<PluginHttpRouteResult | undefined>;
+  resolveWsTopic(pluginId: string, topic: string): PluginWsTopicDescriptor | undefined;
+  readonly onDidPublishWsTopicEvent: Event<{
+    readonly pluginId: string;
+    readonly topic: string;
+    readonly sessionId?: string;
+    readonly spaceId?: string;
+    readonly payload: unknown;
+  }>;
 
   registerWsTopic(descriptor: PluginWsTopicDescriptor): IDisposable;
   publishWsTopicEvent(input: {

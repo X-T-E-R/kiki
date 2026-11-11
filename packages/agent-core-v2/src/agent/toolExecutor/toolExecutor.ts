@@ -30,12 +30,14 @@ export interface ToolExecutorExecuteOptions {
   readonly deduplicationKey?: string;
   readonly trace?: LLMRequestTrace;
   readonly onToolCall?: (payload: ToolCallStartedPayload) => void;
+  readonly onToolBodyStart?: () => void;
 }
 
 export interface ToolExecutionResult {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly result: ToolResult;
+  readonly systemReminders?: readonly { readonly text: string; readonly variant: string }[];
 }
 
 export type MissingToolDescriber = (toolName: string) => string | undefined;

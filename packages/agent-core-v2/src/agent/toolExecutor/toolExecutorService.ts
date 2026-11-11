@@ -1,4 +1,10 @@
 import { toDisposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { frozenExtensionSnapshot } from '#/agent/extensionPorts/frozenSnapshot';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, type Event } from '#/_base/event';
@@ -179,6 +185,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     private readonly resultTruncation: IAgentToolResultTruncationService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ILogService private readonly log?: ILogService,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
+    @ref(IAgentToolApprovalService) private readonly approval?: LiveRef<IAgentToolApprovalService>,
+    @ref(ISessionContext) private readonly session?: LiveRef<ISessionContext>,
+    @ref(IAgentScopeContext) private readonly agent?: LiveRef<IAgentScopeContext>,
   ) {
     this.states.contributeState(toolExecutorToolCallDupTypesKey);
     this.states.contributeState(toolExecutorDupTypeTurnIdKey);
@@ -320,9 +330,30 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       return { toolCallId: call.toolCall.id, toolName: call.toolName, result: rawResult };
     }
     const finalizeStartedAt = Date.now();
+    const extensions = this.extensions?.current;
+    let shaped = rawResult;
+    let systemReminders: ToolExecutionResult['systemReminders'];
+    if (extensions?.hasToolPostExecutePolicies === true && !options.signal.aborted) {
+      try {
+        const proposal = await extensions.proposeToolPostExecute({
+          sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
+          turnId: options.turnId, toolCallId: call.toolCall.id, toolName: call.toolName,
+          args: frozenExtensionSnapshot(call.args), result: frozenExtensionSnapshot(rawResult),
+          wasDenied: timedResult.outcome === 'vetoed', signal: options.signal,
+        });
+        const auditPath = proposal.preserveOriginalInAudit ? await this.resultTruncation.preserveOriginal?.({
+          toolName: call.toolName, toolCallId: call.toolCall.id, result: rawResult,
+        }) : undefined;
+        const note = [proposal.result.note, auditPath === undefined ? undefined : `Original result: ${auditPath}`].filter(Boolean).join('\n');
+        shaped = { ...rawResult, output: proposal.result.output, note: note || undefined };
+        systemReminders = proposal.reminders;
+      } catch (error) {
+        this.log?.warn('Extension tool post-execution proposal failed', { toolName: call.toolName, toolCallId: call.toolCall.id, error });
+      }
+    }
     const finalized = await this.finalizeToolResult(
       call,
-      rawResult,
+      shaped,
       options,
       timedResult.outcome,
       prepared.resolvedAccesses,
@@ -338,6 +369,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       toolCallId: call.toolCall.id,
       toolName: call.toolName,
       result: finalized,
+      systemReminders,
     };
   }
 
@@ -433,6 +465,24 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }, undefined, options, signal) } };
     }
 
+    const extensions = this.extensions?.current;
+    const proposal = extensions?.hasToolPreExecutePolicies === true ? await extensions.proposeToolPreExecute({
+      sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
+      turnId: options.turnId, toolCallId: call.toolCall.id, toolName: call.toolName,
+      args: frozenExtensionSnapshot(call.args), signal: options.signal,
+    }) : undefined;
+    if (proposal?.veto !== undefined) return settleSynthetic(call.args, proposal.veto, 'vetoed');
+    const validation = validateExecutableToolArgs(call.tool, proposal === undefined ? call.args : proposal.args);
+    if (validation.error !== null) return settleError(call.args, `Invalid args for tool "${call.toolName}": ${validation.error}`, 'preflight-rejected');
+    call.args = proposal === undefined ? validation.args : frozenExtensionSnapshot(validation.args);
+    if (proposal?.changed === true) {
+      call.toolCall = { ...call.toolCall, arguments: JSON.stringify(call.args) };
+      allCalls = allCalls.map(candidate => candidate.id === call.toolCall.id ? call.toolCall : candidate);
+      this.log?.info('Extension proposed tool arguments; host approval required', {
+        toolCallId: call.toolCall.id, toolName: call.toolName, auditReasons: proposal.auditReasons,
+      });
+    }
+
     let execution: ToolExecution;
     const resolveStartedAt = Date.now();
     try {
@@ -486,6 +536,20 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         return settleSynthetic(call.args, decision.veto, 'vetoed', displayFields);
       }
 
+      if (proposal?.changed === true || proposal?.requireAskReason !== undefined) {
+        const approval = this.approval?.current;
+        if (approval === undefined) return settleError(call.args, 'Tool extension approval is unavailable.', 'vetoed', displayFields);
+        const reason = proposal.requireAskReason ?? 'An extension changed the tool arguments.';
+        if (decision?.permissionDecision !== 'approved') {
+          const confirmation = await awaitToolPreparation(() => approval.requestToolApproval({
+            ...beforeContext, permissionAuthority: 'owner', execution: {
+              ...beforeContext.execution, sessionApprovalRule: undefined,
+              display: { kind: 'generic', summary: reason, detail: call.args },
+            },
+          }, { kind: 'ask', reason: { extension: reason } }, 'extension-tool-pre-execute'), options.signal);
+          if (confirmation?.veto !== undefined) return settleSynthetic(call.args, confirmation.veto, 'vetoed', displayFields);
+        }
+      }
       const executionMetadata = decision?.executionMetadata;
 
       let executionVeto: ExecutableToolResult | undefined;
@@ -630,7 +694,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
     let rawResult: ExecutableToolResult;
     try {
-      const executePromise = execution.execute({
+      const execContext: import('#/tool/toolContract').ExecutableToolContext = {
         turnId: options.turnId,
         step: options.step,
         toolCallId: call.toolCall.id,
@@ -645,8 +709,21 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           if (signal.aborted) return;
           this.dispatchToolProgress(call, update, options);
         },
-      });
-      rawResult = await raceWithAbortGrace(executePromise, signal, call.toolName);
+      };
+      const terminal = (executionSignal: AbortSignal): Promise<ExecutableToolResult> => {
+        executionSignal.throwIfAborted();
+        options.onToolBodyStart?.();
+        return execution.execute({ ...execContext, signal: executionSignal });
+      };
+      const extensions = this.extensions?.current;
+      rawResult = extensions?.hasToolExecutionWrappers === true && execContext.executionWait === undefined
+        ? await extensions.executeApprovedTool({
+            sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
+            turnId: options.turnId, step: options.step, toolCallId: call.toolCall.id,
+            toolName: call.toolName, approvedArgs: frozenExtensionSnapshot(call.args),
+            execContext: { ...execContext, metadata: undefined },
+          }, terminal)
+        : await raceWithAbortGrace(terminal(signal), signal, call.toolName);
     } catch (error) {
       const aborted = isAbortError(error) || signal.aborted;
       const output = aborted
@@ -811,10 +888,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
 interface RunnableToolCall {
   readonly kind: 'runnable';
-  readonly toolCall: ToolCall;
+  toolCall: ToolCall;
   readonly toolName: string;
   readonly tool: ExecutableTool;
-  readonly args: unknown;
+  args: unknown;
 }
 
 interface RejectedToolCall {
@@ -927,17 +1004,7 @@ function preflightToolCall(
         ),
     };
   }
-  const validation = validateExecutableToolArgs(tool, parsedArgs.data);
-  if (validation.error !== null) {
-    return {
-      kind: 'rejected',
-      toolCall,
-      toolName,
-      args: parsedArgs.data,
-      output: `Invalid args for tool "${toolName}": ${validation.error}`,
-    };
-  }
-  return { kind: 'runnable', toolCall, toolName, tool, args: validation.args };
+  return { kind: 'runnable', toolCall, toolName, tool, args: parsedArgs.data };
 }
 
 function validateExecutableToolArgs(tool: ExecutableTool, args: unknown): ToolArgsValidation {

@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 
 import { join, normalize } from 'pathe';
 import type {
@@ -93,6 +95,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAtomicTomlDocumentStore private readonly documents?: IAtomicTomlDocumentStore,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {}
 
   get(id: string): AgentExecutorDescriptor | undefined {
@@ -106,7 +109,8 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         this.#registeredDescriptor(instance.source_executor, true), (name) => this.bootstrap.getEnv(name));
       return applyInstanceLaunch({ ...materialized, instance: publicExecutorInstance(instance) }, instance.launch);
     }
-    return this.#registeredDescriptor(id);
+    return this.#registeredDescriptor(id) ?? this.extensions?.current?.dynamicExecutors()
+      .find(entry => entry.descriptor.id === id && !this.providers.has(entry.protocol))?.descriptor;
   }
 
   #registeredDescriptor(id: string, programOnly = false): AgentExecutorDescriptor | undefined {
@@ -135,8 +139,10 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   list(): readonly AgentExecutorDescriptor[] {
     const configured = this.config.get<AgentExecutorsConfig | undefined>(AGENT_EXECUTORS_SECTION) ?? {};
     const instances = this.config.get<AgentExecutorInstances | undefined>(AGENT_EXECUTOR_INSTANCES_SECTION) ?? {};
-    return [...new Set(['native', ...Object.keys(BUILTIN_AGENT_EXECUTORS), ...Object.keys(configured), ...Object.keys(instances)])]
-      .map((id) => this.get(id)!)
+    const dynamicIds = this.extensions?.current?.dynamicExecutors().map(entry => entry.descriptor.id) ?? [];
+    return [...new Set(['native', ...Object.keys(BUILTIN_AGENT_EXECUTORS), ...Object.keys(configured), ...Object.keys(instances), ...dynamicIds])]
+      .map((id) => this.get(id))
+      .filter((descriptor) => descriptor !== undefined)
       .toSorted((a, b) => a.id.localeCompare(b.id));
   }
 
@@ -335,7 +341,19 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   #resolvePrepared(descriptor: AgentExecutorDescriptor, options: unknown): ResolvedAgentExecutor {
     const id = descriptor.id;
     if (descriptor.instanceIssue !== undefined) throw instanceConfigError(id, descriptor.instanceIssue);
-    const provider = this.provider(descriptor.protocol);
+    const extensions = this.extensions?.current;
+    const contribution = extensions?.dynamicExecutor(descriptor.protocol);
+    const builtin = this.providers.get(descriptor.protocol);
+    if (builtin === undefined && contribution !== undefined && (descriptor.id !== contribution.descriptor.id
+      || descriptor.revision !== contribution.descriptor.revision)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Dynamic executor "${id}" generation has been withdrawn.`);
+    }
+    const provider = builtin ?? (contribution === undefined ? undefined : {
+      ...contribution.provider,
+      validateOptions: contribution.provider.validateOptions.bind(contribution.provider),
+      validateBinding: contribution.provider.validateBinding.bind(contribution.provider),
+      create: (context) => extensions!.createDynamicExecutorSession(contribution, context),
+    } satisfies AgentExecutorProvider);
     const normalized = scalarOptions(options, id);
     if (provider === undefined) {
       if (Object.keys(normalized).length > 0) {
@@ -473,7 +491,9 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     prepared?: AgentExecutorDescriptor,
   ): Promise<ResolvedAgentExecutor> {
     const resolved = prepared === undefined ? this.resolve(id, options) : this.#resolvePrepared(prepared, options);
-    if (resolved.descriptor.id === 'native') return resolved;
+    if (resolved.descriptor.id === 'native' || (this.extensions?.current?.dynamicExecutors().some(
+      entry => entry.descriptor.id === resolved.descriptor.id && entry.descriptor.revision === resolved.descriptor.revision,
+    ) === true && !this.providers.has(resolved.descriptor.protocol))) return resolved;
     const issue = await executorInstanceIssue(resolved.descriptor, this.fs);
     if (issue !== undefined) throw instanceConfigError(id, issue);
     const descriptor = await this.#withManagedSource(resolved.descriptor);
@@ -571,7 +591,10 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   }
 
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined {
-    return this.providers.get(protocol);
+    const builtin = this.providers.get(protocol);
+    if (builtin !== undefined) return builtin;
+    const dynamic = this.extensions?.current?.dynamicExecutor(protocol);
+    return dynamic === undefined ? undefined : this.#resolvePrepared(dynamic.descriptor, {}).provider;
   }
 }
 

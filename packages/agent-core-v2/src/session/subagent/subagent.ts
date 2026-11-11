@@ -69,6 +69,13 @@ export interface ISessionSubagentService {
   trackPromptRun(agentId: string, completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
 
   notifyAgentTaskStopped(context: AgentTaskStopHookContext): void;
+  adviseReturn?(context: {
+    readonly parentAgentId: string;
+    readonly childAgentId: string;
+    readonly profileName?: string;
+    readonly summary: string;
+    readonly signal: AbortSignal;
+  }): Promise<string>;
 }
 
 export const ISessionSubagentService: ServiceIdentifier<ISessionSubagentService> =

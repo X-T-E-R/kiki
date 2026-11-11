@@ -6,7 +6,14 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ResumeStepRequest } from './stepRequest';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import type { AttemptDeliveryPhase, LoopBoundarySnapshot } from '#/app/plugin/extensionSlots';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { sleepForRetry, retryErrorFields } from '#/_base/utils/retry';
 import { ILogService } from '#/_base/log/log';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
@@ -123,6 +130,7 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
+const MAX_EXTENSION_RECOVERY_BUDGET = 2;
 const PERSISTENCE_SLOW_RECOVERY_DELAY_MS = 300_000;
 const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000, 10_000, 30_000, 60_000, PERSISTENCE_SLOW_RECOVERY_DELAY_MS] as const;
 const PERSISTENCE_CONTINUING_RECOVERY_CODES = new Set<string>([StorageErrors.codes.STORAGE_DISK_FULL, ...StorageErrors.retryable]);
@@ -317,6 +325,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @ILogService private readonly log: ILogService,
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {
     super();
     this._register(executionControl.register(scope.agentId, {
@@ -1081,7 +1090,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               throw error;
             }
             const stopped = await this.runAfterStep(runtime.turnId, runtime.turnSignal, step.step, step.step === 1,
-              step.response.usage, reason, step, hasCompletedModelResponse(step.response, reason));
+              step.response.usage, reason, step, hasCompletedModelResponse(step.response, reason), runtime);
             await this.runBoundaryRequests(runtime.turnId, runtime.turnSignal);
             runtime.lastStopReason = reason;
             if (stopped) return { type: 'completed', steps: runtime.steps, truncated: reason === 'truncated' };
@@ -1127,6 +1136,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       pendingStep: job?.restored?.pendingStep,
       userDeliveryConfirmed: job?.restored?.pendingStep?.userDeliveryConfirmed ?? false,
       thinkingOnlyContinuations: 0,
+      extensionRecoveryStreak: 0,
+      extensionBudgetUsed: 0,
+      deliveryPhase: job?.restored?.pendingStep === undefined ? 'not_sent' : 'tools_already_executed',
       thinkingOnlySnapshotActive: false,
       attempts: new Map(),
       lastStopReason: undefined,
@@ -1137,6 +1149,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private beginLoopStep(runtime: LoopRuntime): BeginStepResult {
     runtime.current = undefined;
     runtime.requestFailure = undefined;
+    runtime.deliveryPhase = 'not_sent';
     runtime.thinkingOnlySnapshotActive = false;
     runtime.turnSignal.throwIfAborted();
     if (!runtime.queue.hasPendingRequests()) {
@@ -1209,8 +1222,89 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       runtime.thinkingOnlySnapshotActive ||
       runtime.current?.batch.driver instanceof ThinkingOnlyContinuationStepRequest
     ) return this.failLoopStep(runtime, error);
-    const recovery = await this.tryRecoverLoopError(runtime, error);
-    return recovery ?? this.failLoopStep(runtime, error);
+    try {
+      const extensionRecovery = await this.tryExtensionRecovery(runtime, error);
+      if (extensionRecovery !== undefined) return extensionRecovery;
+      if (runtime.deliveryPhase === 'tools_already_executed' || error instanceof TurnPersistenceError) return this.failLoopStep(runtime, error);
+      const recovery = await this.tryRecoverLoopError(runtime, error);
+      return recovery ?? this.failLoopStep(runtime, error);
+    } catch (recoveryError) {
+      return this.handleLoopCancellation(runtime, recoveryError) ?? this.failLoopStep(runtime, recoveryError);
+    }
+  }
+
+  private async tryExtensionRecovery(runtime: LoopRuntime, error: unknown): Promise<LoopErrorDisposition | undefined> {
+    const extensions = this.extensions?.current;
+    const current = runtime.current;
+    if (extensions?.hasRecoveryPolicies !== true || current === undefined) return undefined;
+    const phase = error instanceof TurnPersistenceError ? 'persistence_only_failure' : runtime.deliveryPhase;
+    const snapshot = this.instantiation.invokeFunction(accessor => {
+      const profile = accessor.get(IAgentProfileService);
+      const modelAlias = profile.data().modelAlias ?? '';
+      const model = accessor.get(IModelCatalog).get(modelAlias, profile.getRecipeModelSettings(modelAlias));
+      return {
+        sessionId: accessor.get(ISessionContext).sessionId, agentId: this.scope.agentId,
+        turnId: runtime.turnId, step: current.number,
+        logicalStepId: `${runtime.turnId}/${current.batch.driver.id}`, attempt: current.attempt,
+        deliveryPhase: phase, errorCode: isError2(error) ? error.code : undefined,
+        providerErrorCode: readProviderEventErrorCode(error), statusCode: retryErrorFields(error).statusCode,
+        errorMessage: toErrorMessage(error), modelAlias, protocol: model.protocol, providerType: model.providerType,
+        recoveryStreakCount: runtime.extensionRecoveryStreak, maxRecoveryBudget: MAX_EXTENSION_RECOVERY_BUDGET,
+      };
+    });
+    const proposal = await extensions.proposeRecovery(Object.freeze(snapshot), current.signal);
+    current.signal.throwIfAborted();
+    if (proposal.action === 'pass') return undefined;
+    if (proposal.action === 'abort_with_diagnostic') return this.failLoopStep(runtime,
+      new Error2(ErrorCodes.PROVIDER_API_ERROR, proposal.userFacingMessage, { cause: error }));
+    if (phase === 'persistence_only_failure') return this.failLoopStep(runtime, error);
+    if (runtime.extensionBudgetUsed >= MAX_EXTENSION_RECOVERY_BUDGET) return this.failLoopStep(runtime,
+      new Error2(ErrorCodes.PROVIDER_API_ERROR, 'Extension recovery budget exhausted.', { cause: error }));
+    runtime.extensionBudgetUsed += 1;
+    runtime.extensionRecoveryStreak += 1;
+    if (proposal.action === 'retry_same_step') {
+      if (phase !== 'not_sent') return this.failLoopStep(runtime, error);
+      if (proposal.fallbackModelAlias !== undefined || proposal.rotateCredentialAccountRef !== undefined) {
+        this.log.warn('Rejected extension recovery binding change', { action: proposal.action, phase });
+        return this.failLoopStep(runtime, error);
+      }
+      await sleepForRetry(proposal.delayMs, current.signal);
+      runtime.recoveryThinking = proposal.thinkingEffortOverride;
+      runtime.queue.enqueue(current.batch.driver, 'head');
+    } else if (proposal.action === 'compact_and_retry') {
+      const compaction = this.instantiation.invokeFunction(accessor => accessor.get(IAgentFullCompactionService));
+      if (!compaction.begin({ source: 'auto', instruction: proposal.instruction }) && compaction.compacting === null) return this.failLoopStep(runtime, error);
+      await abortable(compaction.compacting!.promise, current.signal);
+      if (phase === 'not_sent') runtime.queue.enqueue(current.batch.driver, 'head');
+      else {
+        this.appendExtensionReminder('Continue from the preserved work after compaction. Do not repeat completed tool effects.', 'extension_recovery');
+        runtime.pendingStep = undefined;
+        runtime.queue.enqueue(new ContinuationStepRequest({ admission: 'activeTurnOnly' }), 'head');
+      }
+    } else {
+      await sleepForRetry(proposal.delayMs ?? 0, current.signal);
+      this.appendExtensionReminder(proposal.reminderText, proposal.variant);
+      runtime.pendingStep = undefined;
+      runtime.queue.enqueue(new ContinuationStepRequest({ admission: 'activeTurnOnly' }), 'head');
+    }
+    runtime.current = undefined;
+    return { type: 'continue' };
+  }
+
+  private appendExtensionReminder(text: string, variant: string): void {
+    this.instantiation.invokeFunction(accessor => accessor.get(IAgentSystemReminderService)
+      .appendSystemReminder(text, { kind: 'injection', variant }));
+  }
+
+  private loopExtensionSnapshot(runtime: LoopRuntime, step: number, firstStepOfTurn: boolean): LoopBoundarySnapshot {
+    return this.instantiation.invokeFunction(accessor => {
+      const profile = accessor.get(IAgentProfileService).data();
+      return {
+        sessionId: accessor.get(ISessionContext).sessionId, agentId: this.scope.agentId,
+        turnId: runtime.turnId, step, firstStepOfTurn, modelAlias: profile.modelAlias ?? '',
+        thinkingEffort: profile.thinkingLevel, continuationStreakCount: runtime.extensionBudgetUsed,
+      };
+    });
   }
 
   private thinkingOnlyContinuationEnabled(): boolean {
@@ -1348,6 +1442,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     plainToolContinuation: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
+    let thinkingEffort = continuationBudget.recoveryThinking;
+    continuationBudget.recoveryThinking = undefined;
+    const extensions = this.extensions?.current;
+    if (extensions?.hasLoopPolicies === true) {
+      const proposal = await extensions.proposePreStep(this.loopExtensionSnapshot(continuationBudget, currentStep, firstStepOfTurn), signal);
+      signal.throwIfAborted();
+      if (proposal.action === 'request_turn_stop') return { stopReason: 'completed', hookStopTurn: true };
+      if (proposal.action === 'override_step_thinking') thinkingEffort = proposal.thinkingEffort;
+      await this.pauseAtBoundary(continuationBudget);
+    }
     await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId, step: currentStep, firstStepOfTurn },
       'turn_context_ready', () => this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity }));
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
@@ -1364,7 +1468,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       const request = this.llmRequester.start(
         {
           retry: thinkingOnlyFollowup ? 'never' : undefined,
+          thinkingEffort,
           source: { type: 'turn', turnId, step: currentStep },
+          onRequestAttempt: () => { continuationBudget.deliveryPhase = 'sent_outcome_unknown'; },
           onAttemptRetry: (mode) => {
             streamParts.retryAttempt(mode);
           },
@@ -1380,7 +1486,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       } catch (error) {
         continuationBudget.requestFailure = { error };
         const retained = this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
-        if (retained.hasOutput) noteExecutedRequestDelivery(error);
+        if (retained.hasOutput) {
+          noteExecutedRequestDelivery(error);
+          continuationBudget.deliveryPhase = 'partial_output_unclosed';
+        }
         const facts = readGenerateFailureFacts(error);
         if (
           !signal.aborted &&
@@ -1441,12 +1550,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             'completed',
             stepIdentity,
             false,
+            continuationBudget,
           );
           await this.runBoundaryRequests(turnId, signal);
           return { stopReason: 'completed', hookStopTurn };
         }
         throw error;
       }
+      continuationBudget.deliveryPhase = 'partial_output_unclosed';
+      continuationBudget.extensionRecoveryStreak = 0;
       this.lastRequestTraceId = request.trace.traceId;
       const googleThinkSnapshot = isThinkOnlyCompletion(response) && this.llmRequester.supportsAssistantPrefill?.() === false;
       if (googleThinkSnapshot && continuationBudget.thinkingOnlyContinuations >= 1) {
@@ -1568,6 +1680,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         finishReason,
         stepIdentity,
         hasCompletedModelResponse(response, finishReason),
+        continuationBudget,
       );
       if (!hookStopTurn && isThinkOnlyCompletion(response)) {
         if (this.llmRequester.supportsAssistantPrefill?.() === false) {
@@ -1689,6 +1802,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
     let stopTurn = runtime.pendingStep?.stopTurn ?? false;
     let sendMessageCompletionBlocked = runtime.pendingStep?.sendMessageCompletionBlocked ?? false;
+    const systemReminders: Array<{ readonly text: string; readonly variant: string }> = [];
     while (pending.length > 0) {
       runtime.pendingStep = {
         step: currentStep,
@@ -1738,6 +1852,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           signal, taskOwnerSignal: runtime.turnSignal, executionPauseSignal: this.executionControl.pauseSignal(),
           executionWaits: Object.fromEntries(batch.tools.flatMap(tool => tool.wait === undefined ? [] : [[tool.call.id, tool.wait]])),
           steerSignal, turnId, step: currentStep, trace,
+          onToolBodyStart: () => { runtime.deliveryPhase = 'tools_already_executed'; },
           onToolCall: ({ toolCallId, name, args }) => {
             const callUuid = randomUUID();
             uuids.set(toolCallId, callUuid);
@@ -1746,6 +1861,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           },
         })) {
           const { result, toolCallId } = toolResult;
+          if (toolResult.systemReminders !== undefined) systemReminders.push(...toolResult.systemReminders);
           if (result.isError !== true && result.executionWait !== undefined) {
             suspended.push({ call: batch.tools.find(tool => tool.call.id === toolCallId)!.call,
               callUuid: uuids.get(toolCallId), wait: result.executionWait });
@@ -1771,6 +1887,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       pending = [...suspended, ...pending.slice(processed)];
     }
+    signal.throwIfAborted();
+    for (const reminder of systemReminders) this.appendExtensionReminder(reminder.text, reminder.variant);
     if (eligibleForSendMessageStop && sendMessageCompletionBlocked) stopTurn = false;
     return stopTurn ? 'completed' : 'tool_calls';
   }
@@ -1852,6 +1970,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     finishReason: FinishReason,
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
     modelResponseCompleted?: boolean,
+    runtime?: LoopRuntime,
   ): Promise<boolean> {
     const context: AfterStepContext = {
       ...stepIdentity,
@@ -1868,6 +1987,24 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       await this.hooks.onDidFinishStep.run(context);
     } catch (error) {
       if (isAbortError(error) || signal.aborted) throw error;
+    }
+    signal.throwIfAborted();
+    const extensions = this.extensions?.current;
+    if (runtime === undefined || extensions?.hasLoopPolicies !== true || finishReason === 'filtered') return context.stopTurn;
+    const proposal = await extensions.proposePostStep({
+      ...this.loopExtensionSnapshot(runtime, currentStep, firstStepOfTurn),
+      finishReason, usage: Object.freeze({ ...usage }), stopTurnRequested: context.stopTurn,
+    }, signal);
+    signal.throwIfAborted();
+    if (proposal.action === 'request_turn_stop') return true;
+    const maxSteps = this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxStepsPerTurn;
+    if (proposal.action === 'prevent_stop_and_continue' && (context.stopTurn || !runtime.queue.hasPendingRequests())
+      && runtime.extensionBudgetUsed < MAX_EXTENSION_RECOVERY_BUDGET && !this.executionControl.isHeld()
+      && (maxSteps === undefined || maxSteps === 0 || runtime.steps < maxSteps)) {
+      runtime.extensionBudgetUsed += 1;
+      this.appendExtensionReminder(proposal.reminderText, proposal.variant);
+      if (!runtime.queue.hasPendingRequests()) runtime.queue.enqueue(new ContinuationStepRequest({ admission: 'activeTurnOnly' }));
+      return false;
     }
     return context.stopTurn;
   }
@@ -2401,6 +2538,10 @@ interface LoopRuntime {
   userDeliveryConfirmed: boolean;
   steps: number;
   thinkingOnlyContinuations: number;
+  extensionRecoveryStreak: number;
+  extensionBudgetUsed: number;
+  deliveryPhase: AttemptDeliveryPhase;
+  recoveryThinking?: import('#/kosong/contract/provider').ThinkingEffort;
   thinkingOnlySnapshotActive: boolean;
   requestFailure?: { readonly error: unknown };
   lastStopReason: FinishReason | undefined;

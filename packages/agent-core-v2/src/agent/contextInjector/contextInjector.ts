@@ -10,6 +10,7 @@ export interface ContextInjectionContext<D = unknown> {
   readonly lastInjection?: ContextMessage;
   readonly lastDisclosure?: D;
   readonly isNewTurn: boolean;
+  readonly step?: Pick<import('#/agent/loop/loop').BeforeStepContext, 'turnId' | 'step' | 'signal'>;
 }
 
 export interface ContextInjectionMessage {

@@ -1,4 +1,6 @@
 import { Service } from '#/_base/di/service';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
 import { AUTONOMOUS_RECEIPT_POLICY_LABEL, observeAutonomousReceipts, type ReceiptDelivery } from './autonomousReceipt';
 import { readPendingAutonomousReceipts } from './autonomousReceiptRecovery';
@@ -109,6 +111,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     @ISessionContext private readonly session: ISessionContext,
     @IAppendLogStore private readonly logs: IAppendLogStore,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {
     super();
     this._register(states.contributeState(pendingSubagentReceiptsKey));
@@ -301,6 +304,19 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     };
     void completion.then(settle, settle);
     return trackedSignal;
+  }
+
+  async adviseReturn(context: Parameters<NonNullable<ISessionSubagentService['adviseReturn']>>[0]): Promise<string> {
+    const extensions = this.extensions?.current;
+    if (extensions?.hasSubagentReturnAdvisors !== true) return context.summary;
+    try {
+      const proposal = await extensions.proposeSubagentReturn({ ...context, sessionId: this.session.sessionId });
+      if (proposal.advisoryNote === undefined || !proposal.advisoryNote.trim()) return context.summary;
+      return `${context.summary}\n\n<subagent-advisory>\n${proposal.advisoryNote.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n</subagent-advisory>`;
+    } catch (error) {
+      this.log.warn('Extension subagent return advice failed', { error, childAgentId: context.childAgentId });
+      return context.summary;
+    }
   }
 
   notifyAgentTaskStopped(context: AgentTaskStopHookContext): void {

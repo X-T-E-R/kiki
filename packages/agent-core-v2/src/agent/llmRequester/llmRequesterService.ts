@@ -8,6 +8,9 @@ import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import type { PreBaselineRequestPatch, LLMStreamTapObserver } from '#/kosong/contract/extensionHooks';
+import { frozenExtensionSnapshot } from '#/agent/extensionPorts/frozenSnapshot';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -332,6 +335,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     @IAppendLogStore private readonly captureLogs: IAppendLogStore,
     @IEventBus private readonly eventBus: IEventBus,
     @ref(IPluginService) private readonly plugins?: LiveRef<IPluginService>,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {
     super();
     this._register(toDisposable(() => {
@@ -489,6 +493,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         },
         overrides.onAttemptRetry,
         overrides.retry,
+        overrides.onRequestAttempt,
       );
     } catch (error) {
       this.logRequestFailure(error, overrides, signal);
@@ -564,6 +569,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     onRequestTrace: (traceId: string | undefined) => void,
     onAttemptRetry: ((mode: AgentLLMAttemptRetryMode) => void) | undefined,
     retry: 'never' | undefined,
+    onRequestAttempt: (() => void) | undefined,
   ): Promise<AgentLLMRequestFinish> {
     const source = request.source;
     const purpose = source?.type === 'operation' ? source.requestKind ?? 'operation' : source?.type ?? 'system';
@@ -680,18 +686,39 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const rawResponseObserver = this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
         thinkingEffort: request.thinkingEffort, protocol: request.model.protocol,
         turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey });
+      const extensions = this.extensions?.current;
+      const extensionSignal = signal ?? new AbortController().signal;
       try {
-        for await (const event of request.requester.request(input, signal, {
+        const preBaselinePatch = extensions?.hasRequestPolicies === true
+          ? await extensions.collectPreBaselinePatch(frozenExtensionSnapshot({
+              sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId,
+              turnId: source?.turnId, step: source?.type === 'turn' ? source.step : undefined,
+              logicalRequestId: attribution.logicalRequestId, modelId: request.model.id,
+              modelName: request.model.name, protocol: request.model.protocol, providerType: request.model.providerType,
+              ...input, thinkingEffort: params.thinkingEffort,
+              maxCompletionTokens: params.maxCompletionTokens, sampling: params.sampling,
+              serviceTier: typeof params.serviceTier === 'string' ? params.serviceTier : undefined,
+            }), extensionSignal)
+          : undefined;
+        const requestParams: ModelRequestParams & {
+          readonly attribution: typeof attribution;
+          readonly preBaselinePatch?: PreBaselineRequestPatch;
+          readonly streamTaps?: readonly LLMStreamTapObserver[];
+        } = {
           ...params,
+          preBaselinePatch,
+          streamTaps: extensions?.activeStreamTaps(),
           usedContextTokensTrusted: params.usedContextTokensTrusted === true &&
             this.tokenCounting.isCurrentContextMeasured() &&
             isUnchangedModelHistory(this.context.get(), request.messages) &&
             isUnchangedModelHistory(request.messages, input.messages),
           onTraceId: setTraceId,
+          onRequestAttempt,
           rawResponseObserver,
           attribution,
           retry,
-        })) {
+        };
+        for await (const event of request.requester.request(input, signal, requestParams)) {
           signal?.throwIfAborted();
           switch (event.type) {
             case 'attempt.discarded':
@@ -769,6 +796,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         this.tokenCounting.measured(request.messages, [message], usage);
       }
       this.logResponse(request.logFields, usage ?? emptyUsage(), timing);
+      if (extensions?.hasSettledResponseObservers === true) {
+        const errors = await extensions.dispatchSettledResponse(frozenExtensionSnapshot({
+          logicalRequestId: attribution.logicalRequestId, responseId: finish.id, traceId: finish.traceId,
+          modelName: request.model.name, protocol: request.model.protocol, providerType: request.model.providerType,
+          message, usage: usage ?? emptyUsage(), finishReason: finish.providerFinishReason,
+          rawFinishReason: finish.rawFinishReason,
+        }), extensionSignal);
+        for (const failure of errors) this.log.warn('Extension settled response observer failed', { ...failure });
+      }
 
       return {
         message,
@@ -1181,6 +1217,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const promptVariables = customPromptVariables(this.profile.data().boundProfile?.promptBase?.inputs?.variables ?? promptConfig?.variables);
     const params: ModelRequestParams = {
       ...baseParams,
+      thinkingEffort: overrides.thinkingEffort ?? baseParams.thinkingEffort,
       cacheKey: identityProjection.cacheKey,
       requestParams: withIdentityParams(
         stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams)),
@@ -1192,6 +1229,16 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       headers: identityProjection.headers,
       requestIdentity: identityProjection.wire,
     };
+    const sections = await this.extensions?.current?.renderPromptSections({
+      sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId,
+      profileName: this.profile.data().profileName, modelAlias: resolved.modelAlias, workspaceRoot: this.sessionContext.cwd,
+    });
+    const systemPrompt = anchoredPrompt ?? (overrides.systemPrompt !== undefined
+      ? appendSharedPromptField(
+          injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet),
+          promptFields, promptVariables,
+        )
+      : resolvedSystemPrompt);
     const request: ResolvedLLMRequest = {
       requester,
       model: requester.model,
@@ -1199,13 +1246,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       identity,
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
-      systemPrompt: anchoredPrompt ?? (overrides.systemPrompt !== undefined
-        ? appendSharedPromptField(
-            injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet),
-            promptFields,
-            promptVariables,
-          )
-        : resolvedSystemPrompt),
+      systemPrompt: sections?.text ? `${systemPrompt}\n\n${sections.text}` : systemPrompt,
       tools: this.toolsForRequest(overrides, promptFields, promptVariables),
       messages: [...messages],
       source: overrides.source,

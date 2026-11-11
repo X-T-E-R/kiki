@@ -1,7 +1,10 @@
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { frozenExtensionSnapshot } from '#/agent/extensionPorts/frozenSnapshot';
 
 import { Service } from "#/_base/di/service";
 import { LifecycleScope } from '#/app/scopes';
@@ -189,6 +192,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @ISessionContext private readonly session: ISessionContext,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
     @IInstantiationService private readonly instantiation: IInstantiationService,
+    @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
   ) {
     super();
     this.states.contributeState(contextStrategyOverrideKey);
@@ -977,11 +981,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const compactionMaxOutputSize = resolvedModel.maxOutputSize ?? DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS;
 
       const customInstruction = data.instruction?.trim() ?? '';
-      const instruction = renderPrompt(compactionInstructionTemplate, {
-        custom_instruction_block:
-          customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
-      }).trimEnd();
-
       const requested = data.strategy ?? active.requestedStrategy;
       const choice = requested === undefined ? this.getContextStrategy() : {
         strategy: requested === 'relay' ? 'fresh' as const : 'summarize' as const,
@@ -996,6 +995,22 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (compactCount <= 0) {
         throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
       }
+      const extensions = this.extensions?.current;
+      const guidance = extensions?.hasCompactionPolicies === true ? await this.instantiation.invokeFunction(accessor => {
+        const model = accessor.get(IModelCatalog).get(resolvedModel.modelAlias, this.profile.getRecipeModelSettings(resolvedModel.modelAlias));
+        return extensions.buildCompactionGuidance({
+          modelAlias: resolvedModel.modelAlias, protocol: model.protocol, providerType: model.providerType, source: data.source,
+        }, {
+          sessionId: this.session.sessionId, agentId: this.scope.agentId, history: frozenExtensionSnapshot(originalHistory),
+          compactCount, instruction: data.instruction, signal,
+        });
+      }) : undefined;
+      signal.throwIfAborted();
+      const instruction = [renderPrompt(compactionInstructionTemplate, {
+        custom_instruction_block: customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
+      }).trimEnd(), guidance?.additionalInstructions].filter(Boolean).join('\n\n');
+      const withPreservedIndex = (summary: string): string => guidance?.preservedFileIndexMarkdown === undefined
+        ? summary : `${summary}\n\n${guidance.preservedFileIndexMarkdown}`;
       if (requested === 'relay') attemptedStrategy = 'relay';
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
@@ -1021,7 +1036,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       let renderFailed = false;
       if (choice.strategy !== 'summarize' || choice.shadow) {
         try {
-          relaySummary = renderRelay(relayInput);
+          relaySummary = withPreservedIndex(renderRelay(relayInput));
         } catch (error) {
           relayError = error;
           if (data.strategy === 'relay') throw error;
@@ -1178,7 +1193,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError)) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
         const rescueReasons = selectionReasons(requestedStrategy, selectionSource, [...reasons, 'summarize_failed_relay_rescue']);
-        const summary = renderRelay({ ...relayInput, compactCount: relayCompactCount > 0 ? relayCompactCount : compactCount });
+        const summary = withPreservedIndex(renderRelay({ ...relayInput, compactCount: relayCompactCount > 0 ? relayCompactCount : compactCount }));
         attemptedStrategy = 'relay';
         const result = await this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: relayCompactCount > 0 ? relayCompactCount : compactCount,
           tokensBefore, requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
@@ -1207,7 +1222,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const summarizedDirectives = attempt.summary.split(/^## (?:Standing directives|Pending directive review)[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
       const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
       if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
-      const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
+      const summary = withPreservedIndex(this.postProcessSummary(attempt.summary, { ...relayInput, compactCount }));
       const contextSummary = buildCompactionSummaryText(summary);
       const summarizeReasons = selectionReasons(requestedStrategy, selectionSource, reasons);
       const result = await this.commitCompaction(active, {

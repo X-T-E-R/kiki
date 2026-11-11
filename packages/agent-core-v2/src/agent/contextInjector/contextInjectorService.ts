@@ -96,10 +96,10 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     next: (context?: BeforeStepContext) => Promise<void>,
   ): Promise<void> {
     const rearmed = this.takeCompactionRearm();
-    await this.inject(ctx.firstStepOfTurn || rearmed, ctx.signal);
+    await this.inject(ctx.firstStepOfTurn || rearmed, ctx);
     await next();
     if (this.takeCompactionRearm()) {
-      await this.inject(true, ctx.signal);
+      await this.inject(true, ctx);
     }
   }
 
@@ -110,18 +110,18 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     return pending;
   }
 
-  private async inject(isNewTurn: boolean, signal?: AbortSignal): Promise<void> {
-    await this.tools.prepare(signal);
+  private async inject(isNewTurn: boolean, step?: BeforeStepContext): Promise<void> {
+    await this.tools.prepare(step?.signal);
     const parts: CapabilityDeltaPart[] = [];
     const priority = (name: string) => name === 'profile_capabilities_changed' || name === 'capabilities_rebuilt' ? -2
       : name === 'runtime_snapshot' ? -1 : name === 'agents_md' ? 1 : 0;
     const entries = [...this.entries].toSorted((a, b) => priority(a.name) - priority(b.name));
     for (const entry of entries.filter((entry) => !entry.name.startsWith('hook_rule/'))) {
-      await this.injectEntry(entry, isNewTurn, parts);
+      await this.injectEntry(entry, isNewTurn, parts, step);
     }
     this.appendCapabilities(parts);
     for (const entry of entries.filter((entry) => entry.name.startsWith('hook_rule/'))) {
-      await this.injectEntry(entry, isNewTurn, []);
+      await this.injectEntry(entry, isNewTurn, [], step);
     }
   }
 
@@ -131,14 +131,16 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       { kind: 'injection', variant: 'capability_delta', disclosure: { parts } });
   }
 
-  private async injectEntry(entry: ContextInjectionEntry, isNewTurn: boolean, parts: CapabilityDeltaPart[]): Promise<void> {
+  private async injectEntry(entry: ContextInjectionEntry, isNewTurn: boolean, parts: CapabilityDeltaPart[], step?: BeforeStepContext): Promise<void> {
     let content: Awaited<ReturnType<ContextInjectionProvider>>;
     try {
-      content = await entry.provider(this.providerContext(entry, isNewTurn));
+      content = await entry.provider(this.providerContext(entry, isNewTurn, step));
     } catch (error) {
+      step?.signal.throwIfAborted();
       this.log.error('context provider failed; skipping it', { name: entry.name, error });
       return;
     }
+    step?.signal.throwIfAborted();
     if (!this.entries.has(entry)) return;
     const result = content !== undefined && isInjectionResult(content) ? content : { content, disclosure: undefined };
     if (CAPABILITY_PROVIDERS.has(entry.name) && typeof result.content === 'string' && result.content.trim()) {
@@ -155,6 +157,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
   private providerContext(
     entry: ContextInjectionEntry,
     isNewTurn: boolean,
+    step?: BeforeStepContext,
   ): ContextInjectionContext<unknown> {
     const history = this.context.get();
     const injectedPositions = findInjections(history, entry.name);
@@ -169,6 +172,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
           ? lastInjection.origin.disclosure
           : undefined,
       isNewTurn,
+      step: step === undefined ? undefined : { turnId: step.turnId, step: step.step, signal: step.signal },
     };
   }
 

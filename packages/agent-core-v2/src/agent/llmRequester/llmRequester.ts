@@ -46,8 +46,10 @@ export interface AgentLLMRequestOverrides {
   systemPrompt?: string;
   source?: AgentLLMRequestSource;
   maxOutputSize?: number;
+  thinkingEffort?: ThinkingEffort;
   retry?: 'never';
   onAttemptRetry?: (mode: AgentLLMAttemptRetryMode) => void;
+  onRequestAttempt?: () => void;
 }
 
 export interface AgentLLMRequestTask {
