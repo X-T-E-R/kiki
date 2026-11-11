@@ -5,6 +5,7 @@ import {
   normalizeStoredExternalToolDisplay,
   projectExternalToolDisplay,
 } from '#/facts/externalToolDisplay';
+import { parsePartialJsonObject } from '#/facts/partialJson';
 import { TranscriptFactReducer } from '#/facts/reducer';
 import { TranscriptWireAdapter, type TranscriptWireRecord } from '#/facts/wireAdapter';
 import { AgentTranscript } from '#/store/agentTranscript';
@@ -26,7 +27,34 @@ function toolFrame(transcript: AgentTranscript, toolCallId: string) {
   );
 }
 
+describe('parsePartialJsonObject', () => {
+  it('returns complete objects and exposes values from unfinished strings', () => {
+    expect(parsePartialJsonObject('{"complete": true}  ')).toEqual({ value: { complete: true }, complete: true });
+    expect(parsePartialJsonObject('{"command":"say \\"ok\\"\\n\\u0061')).toEqual({
+      value: { command: 'say "ok"\na' },
+      complete: false,
+    });
+    expect(parsePartialJsonObject('{"path":"/repo/\\u00')).toEqual({ value: { path: '/repo/' }, complete: false });
+    expect(parsePartialJsonObject('{"items":["one","two')).toEqual({ value: { items: ['one', 'two'] }, complete: false });
+    expect(parsePartialJsonObject('not json')).toBeNull();
+  });
+});
+
 describe('projectExternalToolDisplay', () => {
+  it('projects command, file, search, and content previews from partial JSON strings', () => {
+    expect(projectExternalToolDisplay({
+      name: 'Bash', kind: 'other', rawInput: '{"command":"pnpm test --filter @kiki/transcript',
+    })).toEqual({ kind: 'command', command: 'pnpm test --filter @kiki/transcript' });
+    expect(projectExternalToolDisplay({
+      name: 'Read', kind: 'other', rawInput: '{"file_path":"/workspace/example/src/',
+    })).toEqual({ kind: 'file_io', operation: 'read', path: '/workspace/example/src/' });
+    expect(projectExternalToolDisplay({
+      name: 'Glob', kind: 'other', rawInput: '{"pattern":"**/*.test.ts","path":"packages/transcript',
+    })).toEqual({ kind: 'search', query: '**/*.test.ts', scope: 'packages/transcript' });
+    expect(projectExternalToolDisplay({
+      name: 'Write', kind: 'other', rawInput: '{"file_path":"src/new.ts","content":"export const value = 1;',
+    })).toEqual({ kind: 'file_io', operation: 'write', path: 'src/new.ts', content: 'export const value = 1;' });
+  });
   it('projects the AGY tool shapes that were stored as generic', () => {
     expect(projectExternalToolDisplay({
       name: 'view_file', title: 'view_file', kind: 'other', rawInput: viewInput, summary: 'view_file',
@@ -376,12 +404,57 @@ describe('cold generic external wire', () => {
         text: 'contents without recorded input', status: 'completed',
       },
     },
+    {
+      type: 'executor.tool.display', time: 15, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:partial-command',
+      name: 'Bash', state: 'running', input: '{"command":"pnpm test --filter @kiki/transcript',
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'Bash',
+        rawInput: '{"command":"pnpm test --filter @kiki/transcript', status: 'in_progress',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 16, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:partial-command',
+      name: 'Bash', state: 'running', input: '',
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'Bash', rawInput: '', status: 'in_progress',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 17, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:partial-command',
+      name: 'Bash', state: 'running', input: {},
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'Bash', rawInput: {}, status: 'in_progress',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 18, turnId: 1, stepId: 'step-1', toolCallId: 'external:agy:partial-command',
+      name: 'Bash', state: 'done', input: {},
+      output: {
+        kind: 'external_tool_output', protocol: 'acp-v1', toolKind: 'other', title: 'Bash', rawInput: {}, status: 'completed',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 19, turnId: 1, stepId: 'step-1', toolCallId: 'external:other:empty-input',
+      name: 'run_command', state: 'running', input: { command: 'echo prior' },
+      output: {
+        kind: 'external_tool_output', protocol: 'custom', toolKind: 'other', title: 'run_command',
+        rawInput: { command: 'echo prior' }, status: 'in_progress',
+      },
+    },
+    {
+      type: 'executor.tool.display', time: 20, turnId: 1, stepId: 'step-1', toolCallId: 'external:other:empty-input',
+      name: 'run_command', state: 'running', input: {},
+      output: {
+        kind: 'external_tool_output', protocol: 'custom', toolKind: 'other', title: 'run_command', rawInput: {}, status: 'in_progress',
+      },
+    },
   ];
 
   it('recovers native rows from a generic wire without rewriting the record', () => {
     const source = records[2]!;
     const before = JSON.stringify(source);
     const transcript = replay(records);
+    const duringEmptyUpdates = replay(records.filter((record) => record.time === undefined || record.time < 18));
     expect(JSON.stringify(source)).toBe(before);
     expect(toolFrame(transcript, 'external:agy:view')).toMatchObject({
       name: 'view_file', state: 'done', input: viewInput,
@@ -445,6 +518,15 @@ describe('cold generic external wire', () => {
       output: { text: 'contents without recorded input', status: 'completed' },
     });
     expect(toolFrame(transcript, 'external:agy:missing-input')?.input).toBeUndefined();
+    expect(toolFrame(duringEmptyUpdates, 'external:agy:partial-command')).toMatchObject({
+      state: 'running',
+      input: '{"command":"pnpm test --filter @kiki/transcript',
+      display: { kind: 'command', command: 'pnpm test --filter @kiki/transcript' },
+    });
+    expect(toolFrame(transcript, 'external:agy:partial-command')).toMatchObject({
+      state: 'done', input: {}, display: { kind: 'generic', summary: 'Bash' },
+    });
+    expect(toolFrame(transcript, 'external:other:empty-input')).toMatchObject({ state: 'running', input: {} });
     expect(replay(records).snapshot()).toEqual(transcript.snapshot());
   });
 });

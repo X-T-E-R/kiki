@@ -1,10 +1,12 @@
 import { redactMemorySecrets } from '#/app/memory/memorySafety';
 import { Error2, ErrorCodes, isCodedError } from '#/errors';
+import { parseClaudeUsageWindows, type ClaudeUsageWindow } from './claudeUsageWindowParser';
 
 export interface ExternalUsageLimitContext {
   readonly executorId?: string;
   readonly stderrTail?: string;
   readonly observedResetAt?: string;
+  readonly observedWindows?: readonly ClaudeUsageWindow[];
   readonly accountLabel?: string;
   readonly accountSource?: string;
   readonly nowMs?: number;
@@ -19,6 +21,7 @@ export interface ParsedExternalUsageLimit {
   readonly resetAtMs?: number;
   readonly retryAfterMs?: number;
   readonly stderrTail?: string;
+  readonly windows?: readonly ClaudeUsageWindow[];
 }
 
 const XAI_RATE_LIMITED_RPC_CODE = -32003;
@@ -109,7 +112,22 @@ export function parseExternalUsageLimit(
     (normalizedCode !== undefined && SHARING_LIMIT_CODE_SET.has(normalizedCode)) ||
     /has\s+reached\s+their\s+Subscription\s+Sharing\s+usage\s+limit/i.test(combined);
 
-  const timing = extractResetTiming(nodes, texts, sharingLimit ? undefined : context.observedResetAt, nowMs);
+  const errorWindows = [...new Map(nodes.flatMap(parseClaudeUsageWindows).map((window) => [window.id, window])).values()];
+  const windowsById = new Map((context.observedWindows ?? []).map((window) => [window.id, window]));
+  for (const window of errorWindows) windowsById.set(window.id, window);
+  const windows = [...windowsById.values()];
+  const errorWindowsResetAt = exhaustedWindowsResetAt(errorWindows);
+  const observedWindowsResetAt = sharingLimit ? undefined : exhaustedWindowsResetAt(windows);
+  const directTiming = errorWindowsResetAt === undefined
+    ? extractResetTiming(nodes, texts, undefined, nowMs)
+    : undefined;
+  const timing = errorWindowsResetAt !== undefined
+    ? finalizeResetIso(errorWindowsResetAt, nowMs)
+    : directTiming?.resetAt !== undefined || directTiming?.retryAfterMs !== undefined
+      ? directTiming
+      : observedWindowsResetAt !== undefined
+        ? finalizeResetIso(observedWindowsResetAt, nowMs)
+        : extractResetTiming(nodes, texts, sharingLimit ? undefined : context.observedResetAt, nowMs);
   const baseMessage = selectReadableMessage(nodes, texts, upstreamErrorCode);
 
   return {
@@ -121,7 +139,13 @@ export function parseExternalUsageLimit(
     resetAtMs: timing.resetAtMs,
     retryAfterMs: timing.retryAfterMs,
     stderrTail: stderrText && stderrText.length > 0 ? stderrText.slice(-4096) : undefined,
+    windows: windows.length === 0 ? undefined : windows,
   };
+}
+
+function exhaustedWindowsResetAt(windows: readonly ClaudeUsageWindow[]): string | undefined {
+  return windows.flatMap((window) => window.usedPercent === 100 && window.resetsAt !== undefined
+    ? [window.resetsAt] : []).sort().at(-1);
 }
 
 /**
@@ -151,6 +175,7 @@ export function normalizeExternalExecutorError(
     resetAtMs: parsed.resetAtMs ?? existingDetails?.['resetAtMs'],
     retryAfterMs: parsed.retryAfterMs ?? existingDetails?.['retryAfterMs'],
     stderrTail: parsed.stderrTail ?? existingDetails?.['stderrTail'],
+    windows: parsed.windows ?? existingDetails?.['windows'],
   };
   for (const key of Object.keys(details)) {
     if (details[key] === undefined) delete details[key];
@@ -166,7 +191,8 @@ export function normalizeExternalExecutorError(
     error.code === ErrorCodes.PROVIDER_RATE_LIMIT &&
     error.message === finalMessage &&
     error.details?.['resetAt'] === details['resetAt'] &&
-    error.details?.['statusCode'] === details['statusCode']
+    error.details?.['statusCode'] === details['statusCode'] &&
+    (parsed.windows === undefined || JSON.stringify(error.details?.['windows']) === JSON.stringify(parsed.windows))
   ) {
     return error;
   }
@@ -184,6 +210,8 @@ export function normalizeExternalExecutorError(
 export function extractStreamingRateLimitResetAt(meta: unknown, nowMs = Date.now()): string | undefined {
   const rec = objectOf(meta);
   if (rec === undefined) return undefined;
+  const claudeReset = exhaustedWindowsResetAt(parseClaudeUsageWindows(rec));
+  if (claudeReset !== undefined) return claudeReset;
   const direct = parseIsoOrEpoch(rec['resetAt'] ?? rec['resetsAt'] ?? rec['reset_at'] ?? rec['resets_at']);
   if (direct !== undefined) return direct;
   const rateLimitInfo = objectOf(rec['rate_limit_info'] ?? rec['rateLimitInfo']);

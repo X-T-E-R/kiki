@@ -36,7 +36,7 @@
 //   context.append_message                 agentCollaboration.materializedMessages.v2, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, plugin.states.conversation, subagent.autonomousReceipts, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction               contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, plugin.states.conversation, task.notificationDelivery, todo, turn                                                                                       src/agent/contextMemory/contextEvents.ts
 //   context.clear                          contextMemory, contextMemory.revision, modelSwitch.continuity, plan, plugin.states.conversation, task.notificationDelivery, todo, turn                                                                                                           src/agent/contextMemory/contextEvents.ts
-//   context.undo                           contextMemory, contextMemory.revision, modelSwitch.continuity, plan, plugin.states.conversation, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                                       src/agent/contextMemory/contextEvents.ts
+//   context.undo                           contextMemory, contextMemory.revision, externalExecutor, modelSwitch.continuity, plan, plugin.states.conversation, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                     src/agent/contextMemory/contextEvents.ts
 //   executor.auth.observed                 externalExecutor                                                                                                                                                                                                                                 src/agent/execution/externalExecutorOps.ts
 //   executor.plan.remove                   externalExecutor                                                                                                                                                                                                                                 src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update                   externalExecutor                                                                                                                                                                                                                                 src/agent/execution/externalExecutorOps.ts
@@ -335,7 +335,7 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, plugin.states.conversation, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, prompt.queue, promptRetryReceipt
+ * states: contextMemory, contextMemory.revision, externalExecutor, modelSwitch.continuity, plan, plugin.states.conversation, prompt.identity, prompt.queue, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, prompt.queue, promptRetryReceipt
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {

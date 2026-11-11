@@ -96,6 +96,8 @@ describe('externalUsageLimitParser across harnesses', () => {
       new Error('{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"User has reached their Subscription Sharing usage limit"}}'),
       {
         observedResetAt: codexWindowReset,
+        observedWindows: [{ id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+          usedPercent: 100, remainingPercent: 0, resetsAt: codexWindowReset }],
         nowMs: FIXED_NOW_MS,
       },
     );
@@ -137,6 +139,84 @@ describe('externalUsageLimitParser across harnesses', () => {
       retryAfterMs: (3600 + 1800 + 15) * 1000,
       resetAt: new Date(FIXED_NOW_MS + (3600 + 1800 + 15) * 1000).toISOString(),
     });
+  });
+
+  it('retains Claude 5h, 7d, overage and precise spend windows in the serialized error', () => {
+    const session = '2026-11-12T13:00:00.000Z';
+    const weekly = '2026-11-16T10:30:00.000Z';
+    const overage = '2026-11-18T12:00:00.000Z';
+    const source = {
+      message: 'HTTP 429: Claude quota exceeded',
+      data: { rate_limits: {
+        five_hour: { utilization: 100, resets_at: session },
+        seven_day: { utilization: 42.5, resets_at: weekly },
+        spend: { enabled: true,
+          used: { amount_minor: 17, currency: 'USD', exponent: 2 },
+          limit: { amount_minor: 200, currency: 'USD', exponent: 2 } },
+        extra_usage: { is_enabled: true, utilization: 9 },
+      } },
+      cause: { rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day_overage_included',
+        utilization: 0.25, resetsAt: Date.parse(overage) / 1000 } },
+    };
+    const context = { nowMs: FIXED_NOW_MS, executorId: 'claude-acp' };
+    const parsed = parseExternalUsageLimit(source, context);
+    expect(parsed?.windows).toHaveLength(4);
+    expect(parsed?.windows).toEqual(expect.arrayContaining([
+      { id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+        usedPercent: 100, remainingPercent: 0, resetsAt: session },
+      { id: 'seven_day', kind: 'weekly', label: 'Weekly', windowDurationMins: 10080,
+        usedPercent: 42.5, remainingPercent: 57.5, resetsAt: weekly },
+      { id: 'monthly_spend', kind: 'monthly', label: 'Monthly spend', usedPercent: 8.5, remainingPercent: 91.5 },
+      { id: 'seven_day_overage_included', kind: 'weekly', label: 'Weekly · Overage included',
+        windowDurationMins: 10080, usedPercent: 25, remainingPercent: 75, resetsAt: overage },
+    ]));
+    expect(toKimiErrorPayload(normalizeExternalExecutorError(source, context))).toMatchObject({
+      code: ErrorCodes.PROVIDER_RATE_LIMIT, details: { windows: parsed?.windows, resetAt: session, retryAfterMs: 3600_000 },
+    });
+  });
+
+  it('merges observed Claude windows with error windows, preferring the error for matching ids', () => {
+    const observedReset = '2026-11-12T13:00:00.000Z';
+    const weeklyReset = '2026-11-16T10:30:00.000Z';
+    const directReset = '2026-11-12T12:30:00.000Z';
+    const parsed = parseExternalUsageLimit({
+      statusCode: 429,
+      message: 'HTTP 429: Claude quota exceeded',
+      data: { rate_limits: {
+        five_hour: { utilization: 40, resets_at: directReset },
+      } },
+    }, {
+      nowMs: FIXED_NOW_MS,
+      observedWindows: [
+        { id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+          usedPercent: 100, remainingPercent: 0, resetsAt: observedReset },
+        { id: 'seven_day', kind: 'weekly', label: 'Weekly', windowDurationMins: 10080,
+          usedPercent: 100, remainingPercent: 0, resetsAt: weeklyReset },
+      ],
+    });
+    expect(parsed?.windows).toEqual([
+      { id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+        usedPercent: 40, remainingPercent: 60, resetsAt: directReset },
+      { id: 'seven_day', kind: 'weekly', label: 'Weekly', windowDurationMins: 10080,
+        usedPercent: 100, remainingPercent: 0, resetsAt: weeklyReset },
+    ]);
+    expect(parsed?.resetAt).toBe(weeklyReset);
+  });
+
+  it('does not classify ordinary errors from un-rejected observed Claude windows', () => {
+    expect(parseExternalUsageLimit(new Error('Unexpected transport failure'), {
+      observedWindows: [{ id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+        usedPercent: 100, remainingPercent: 0, resetsAt: '2026-11-12T13:00:00.000Z' }],
+    })).toBeUndefined();
+  });
+
+  it('uses Claude extra usage credits when a spend budget has incompatible currency units', () => {
+    const parsed = parseExternalUsageLimit({ statusCode: 429, details: { rate_limits: {
+      spend: { enabled: true, used: { amount_minor: 100, currency: 'EUR', exponent: 2 },
+        limit: { amount_minor: 200, currency: 'USD', exponent: 2 } },
+      extra_usage: { is_enabled: true, used_credits: 3, monthly_limit: 8 },
+    } } });
+    expect(parsed?.windows).toMatchObject([{ id: 'monthly_spend', usedPercent: 37.5, remainingPercent: 62.5 }]);
   });
 
   it('extracts Grok -32003 RPC rate limits, Cursor ConnectError resource_exhausted, OpenCode 429 headers, and Kiro/Antigravity quota resets', () => {
@@ -304,6 +384,39 @@ describe('ExternalTurnRecorder streaming coalescing and rate-limit capture', () 
         resetAt: expectedIso,
       }),
     });
+  });
+
+  it('persists accumulated Claude session.info windows and reset timing on an ordinary 429', async () => {
+    const { recorder, dispatched } = createTestRecorder();
+    await recorder.begin('hello', { kind: 'user' });
+    const sessionReset = '2026-11-12T13:00:00.000Z';
+    const weeklyReset = '2026-11-16T10:30:00.000Z';
+
+    await recorder.record({
+      type: 'session.info',
+      meta: { rate_limits: { five_hour: { utilization: 100, resets_at: sessionReset } }, api_key: 'not-for-error-details' },
+    });
+    await recorder.record({
+      type: 'session.info',
+      meta: { rate_limits: { seven_day: { utilization: 100, resets_at: weeklyReset } } },
+    });
+    await recorder.fail({ statusCode: 429, message: 'Too many requests' });
+
+    const ended = dispatched.find((event): event is TurnEnded => event instanceof TurnEnded);
+    expect(ended?.error).toMatchObject({
+      code: ErrorCodes.PROVIDER_RATE_LIMIT,
+      details: {
+        statusCode: 429,
+        resetAt: weeklyReset,
+        windows: expect.arrayContaining([
+          { id: 'five_hour', kind: 'session', label: 'Session', windowDurationMins: 300,
+            usedPercent: 100, remainingPercent: 0, resetsAt: sessionReset },
+          { id: 'seven_day', kind: 'weekly', label: 'Weekly', windowDurationMins: 10080,
+            usedPercent: 100, remainingPercent: 0, resetsAt: weeklyReset },
+        ]),
+      },
+    });
+    expect(JSON.stringify(ended?.error)).not.toContain('not-for-error-details');
   });
 
   it('extracts Grok byte-array tool output text and OpenCode data-URL image attachments in acpToolOutput', () => {

@@ -1,3 +1,5 @@
+import { parseAcpToolInput } from './acpToolDisplay';
+
 /**
  * Project a foreign tool call onto the native tool display from its recorded
  * name, kind, and structured arguments.
@@ -133,7 +135,7 @@ export function projectExternalToolDisplay(facts: ExternalToolDisplayFacts): Pro
   const generic = (detail?: unknown): ProjectedToolDisplay => detail === undefined
     ? { kind: 'generic', summary }
     : { kind: 'generic', summary, detail };
-  const input = objectOf(facts.rawInput);
+  const input = objectOf(parseAcpToolInput(facts.rawInput));
   if (input?.['truncated'] === true) return generic();
   const token = toolToken(facts, input);
   if (conflictingKind(token, facts.kind)) return generic();
@@ -357,7 +359,7 @@ function projectFileCollection(raw: unknown, input: Readonly<Record<string, unkn
 }
 
 function projectPatchPayload(raw: unknown, input: Readonly<Record<string, unknown>> | undefined): ProjectedToolDisplay | undefined {
-  const patchText = typeof raw === 'string' ? raw : firstString(input, PATCH_TEXT_KEYS);
+  const patchText = firstString(input, PATCH_TEXT_KEYS) ?? (typeof raw === 'string' ? raw : undefined);
   if (patchText === undefined) return undefined;
   const diffs = parsePatchDiffs(patchText);
   if (diffs.length > 1) {

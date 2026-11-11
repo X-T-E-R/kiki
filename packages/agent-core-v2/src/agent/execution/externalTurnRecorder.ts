@@ -49,6 +49,7 @@ import {
   extractStreamingRateLimitResetAt,
   normalizeExternalExecutorError,
 } from './externalUsageLimitParser';
+import { parseClaudeUsageWindows, type ClaudeUsageWindow } from './claudeUsageWindowParser';
 
 import {
   ExecutorToolDisplay,
@@ -163,6 +164,7 @@ export class ExternalTurnRecorder {
   #ended = false;
   #lastAssistantText = '';
   #observedResetAt: string | undefined;
+  readonly #observedWindows = new Map<string, ClaudeUsageWindow>();
   readonly #settledWaiters = new Set<(settled: boolean) => void>();
 
   constructor(
@@ -327,6 +329,9 @@ export class ExternalTurnRecorder {
       case 'session.info': {
         const resetAt = extractStreamingRateLimitResetAt(event.meta);
         if (resetAt !== undefined) this.#observedResetAt = resetAt;
+        for (const window of parseClaudeUsageWindows(event.meta)) {
+          this.#observedWindows.set(window.id, window);
+        }
         if (this.agent.id === 'main' && event.title?.trim()) {
           await this.agent.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(sliceUtf16(event.title.trim(), 0, 100));
         }
@@ -367,6 +372,7 @@ export class ExternalTurnRecorder {
     const normalized = normalizeExternalExecutorError(error, {
       executorId: this.metadata.executorId,
       observedResetAt: this.#observedResetAt,
+      observedWindows: [...this.#observedWindows.values()],
     });
     await this.#end('failed', 'error', normalized);
   }

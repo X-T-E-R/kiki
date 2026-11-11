@@ -4,6 +4,7 @@ import { executorAuthObservationSchema, type ExecutorAuthObservation } from '@ki
 
 import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
+import { ContextUndo } from '#/agent/contextMemory/contextEvents';
 
 export const EXECUTOR_LOSS_CODES = [
   'acp_no_step_boundaries',
@@ -230,6 +231,14 @@ export const externalExecutorKey = defineState(
       state.auth.binding_fingerprint === event.bindingFingerprint && state.auth.execution_generation === event.executionGeneration
       ? state.auth : undefined,
   }))
+  .on(ContextUndo, (state, event) => {
+    const sessionRef = state.sessionRef;
+    if (typeof sessionRef?.ref['threadId'] !== 'string') return;
+    const pending = sessionRef.ref['kikiPendingUndoCount'];
+    return { ...state, sessionRef: { ...sessionRef, ref: { ...sessionRef.ref,
+      kikiPendingUndoCount: (typeof pending === 'number' ? pending : 0) + event.count,
+    } } };
+  })
   .on(ExecutorAuthObserved, (state, event) => ({ ...state, auth: executorAuthObservationSchema.parse(event) }))
   .on(ExecutorTurnMetadata, () => {})
   .on(ExecutorHintDelivery, () => {})

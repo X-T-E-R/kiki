@@ -2173,7 +2173,11 @@ export class TranscriptWireAdapter {
     const output = objectOf(record['output']);
     const text = stringOf(output?.['text']);
     const name = stringOf(record['name']) ?? stringOf(output?.['title']) ?? stringOf(output?.['name']) ?? previous?.name;
-    const rawInput = record['input'] ?? output?.['rawInput'] ?? previous?.input;
+    const incomingInput = record['input'] ?? output?.['rawInput'];
+    const incomingObject = objectOf(incomingInput);
+    const emptyAcpUpdate = output?.['protocol'] === 'acp-v1' && state === 'running' &&
+      (incomingInput === '' || incomingObject !== undefined && Object.keys(incomingObject).length === 0);
+    const rawInput = emptyAcpUpdate ? previous?.input ?? incomingInput : incomingInput ?? previous?.input;
     const frame: ToolCallFrame = {
       ...previous,
       kind: 'tool', frameId: previous?.frameId ?? `${stepId}.${toolCallId}`,

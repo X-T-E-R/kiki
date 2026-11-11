@@ -2660,7 +2660,7 @@ export interface AgentStateSnapshot {
     readonly preference: boolean | null;
   };
   // src/agent/execution/externalExecutorOps.ts
-  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorAuthObserved, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
+  // replayable · durable — folds: ExecutorSessionUpdated, ContextUndo, ExecutorAuthObserved, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
     readonly auth?: {
       status: 'unknown' | 'logged_in' | 'logged_out' | 'required';

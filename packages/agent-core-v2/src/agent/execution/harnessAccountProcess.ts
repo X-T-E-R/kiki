@@ -2,11 +2,17 @@ import type { HostProcessServiceLike } from '@kiki/acp-client';
 import { stringify } from 'smol-toml';
 
 import { ILogService } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { executorSourceId, IAgentExecutorRegistry, type AgentExecutorContext, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
 import { redactExecutorOutput } from '#/app/agentExecutor/executorOverrides';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { Error2, ErrorCodes } from '#/errors';
 
+import {
+  prepareCodexShadowHome,
+  resolvePluginAccountShadowHome,
+  resolveSharedCodexHome,
+} from './codexHomeOverlay';
 import { openHarnessAccountBroker, type HarnessAccountBroker } from './harnessAccountBroker';
 
 export const CODEX_ACCOUNT_MODEL_PROVIDER = 'kiki_harness_account';
@@ -94,6 +100,25 @@ export function harnessAccountProcess(processes: HostProcessServiceLike, context
           GOOGLE_GEMINI_BASE_URL: connection.baseUrl,
           KIKI_AGY_ACCOUNT_MODELS: JSON.stringify(models),
         } : { [CODEX_KEY]: connection.apiKey };
+        if (!gemini) {
+          const bootstrap = context.agent.accessor.get(IBootstrapService);
+          const explicitHome = options?.env?.['CODEX_HOME']?.trim() || descriptor.homeDir?.trim();
+          const shadowHomePath = explicitHome
+            ?? resolvePluginAccountShadowHome(bootstrap.cacheDir, descriptor.id, account.account_id);
+          const sharedHomePath = resolveSharedCodexHome(
+            bootstrap.osHomeDir,
+            bootstrap.getEnv('CODEX_HOME'),
+            shadowHomePath,
+          );
+          const prepared = await prepareCodexShadowHome({
+            shadowHomePath,
+            sharedHomePath,
+            privateConfig: true,
+            platform: bootstrap.platform,
+            onWarn: (message, details) => log.warn(message, { executorId: descriptor.id, ...details }),
+          });
+          launchEnv['CODEX_HOME'] = prepared.shadowHomePath;
+        }
         const launchArgs = gemini ? [AGY_ACCOUNT_SWITCH] : [
           '-c', codexConfig('model_provider', CODEX_ACCOUNT_MODEL_PROVIDER),
           '-c', codexConfig('model', selected ?? models[0]!),

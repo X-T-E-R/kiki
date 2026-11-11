@@ -45,6 +45,7 @@ export interface CodexProcessDescriptor {
   readonly requestTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly stderrMaxBytes?: number;
+  readonly maxLineBytes?: number;
   readonly redactDiagnostic?: (text: string) => string;
   readonly clientName?: string;
   readonly clientVersion?: string;
@@ -195,6 +196,38 @@ export interface CodexThreadResult {
   readonly cwd?: string;
 }
 
+/** Adapted from Paseo's Apache-2.0 app-server transport for Kiki's typed RPC client. */
+export interface CodexThreadForkParams {
+  readonly threadId: string;
+  readonly beforeTurnId?: string | null;
+  readonly path?: string | null;
+  readonly model?: string | null;
+  readonly modelProvider?: string | null;
+  readonly serviceTier?: string | null;
+  readonly cwd?: string | null;
+  readonly runtimeWorkspaceRoots?: readonly string[] | null;
+  readonly approvalPolicy?: unknown;
+  readonly approvalsReviewer?: unknown;
+  readonly sandbox?: unknown;
+  readonly permissions?: string | null;
+  readonly config?: Readonly<Record<string, unknown>> | null;
+  readonly baseInstructions?: string | null;
+  readonly developerInstructions?: string | null;
+  readonly ephemeral?: boolean;
+  readonly threadSource?: unknown;
+  readonly excludeTurns?: boolean;
+  readonly persistExtendedHistory?: boolean;
+}
+
+export interface CodexThreadRollbackParams {
+  readonly threadId: string;
+  readonly numTurns: number;
+}
+
+export interface CodexThreadRollbackResult {
+  readonly thread: Readonly<Record<string, unknown>> & { readonly id: string };
+}
+
 export interface CodexTurnStartedResult {
   readonly turn: Readonly<Record<string, unknown>> & { readonly id: string };
 }
@@ -216,6 +249,7 @@ export interface CodexTurnCompletion {
 }
 
 export interface CodexTurnHandle {
+  readonly turnId: string;
   readonly completion: Promise<CodexTurnCompletion>;
   cancel(reason?: unknown): Promise<boolean>;
 }

@@ -21,10 +21,13 @@ import type {
   CodexRequestId,
   CodexServerRequest,
   CodexServerRequestResponder,
+  CodexThreadForkParams,
   CodexThreadHistoryMode,
   CodexThreadHistoryPage,
   CodexThreadHistoryPageParams,
   CodexThreadResult,
+  CodexThreadRollbackParams,
+  CodexThreadRollbackResult,
   CodexTurnCompletion,
   CodexTurnHandle,
   CodexWireFrame,
@@ -34,10 +37,17 @@ import type {
 
 type JsonObject = Record<string, unknown>;
 
+/** Adapts Paseo's Apache-2.0 transport limit to backpressured JSONL response isolation. */
+export const CODEX_PROVIDER_LINE_BYTES = 128 * 1024 * 1024;
+const OVERSIZED_LINE_HEAD_CHARS = 128;
+const OVERSIZED_RESPONSE_HEAD = /^\s*\{\s*"id"\s*:\s*("(?:\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[^"\\\u0000-\u001F])*"|\d+)\s*,\s*"(?:result|error)"\s*:/;
+const OVERSIZED_RESPONSE_VALUE_FIRST = /^\s*\{\s*"(?:result|error)"\s*:/;
+const OVERSIZED_RESPONSE_TAIL_ID = /,\s*"id"\s*:\s*("(?:\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[^"\\\u0000-\u001F])*"|\d+)\s*\}\s*$/;
 const CODEX_HISTORY_PAGE_SIZE = 100;
 const LEGACY_CURSOR_PREFIX = 'legacy:';
 
 interface PendingRequest {
+  readonly method: string;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -142,7 +152,7 @@ export class CodexAppServerClient {
           title: 'Kiki',
           version: this.descriptor.clientVersion ?? '0.1.0',
         },
-        capabilities: { experimentalApi: false, requestAttestation: false },
+        capabilities: { experimentalApi: true, requestAttestation: false },
       }, this.descriptor.startupTimeoutMs ?? 30_000, signal);
       const userAgent = initialized !== null && typeof initialized === 'object'
         ? (initialized as Record<string, unknown>)['userAgent'] : undefined;
@@ -319,6 +329,17 @@ export class CodexAppServerClient {
     return threadResult(await this.request('thread/resume', params, signal), 'thread/resume');
   }
 
+  async forkThread(params: CodexThreadForkParams, signal?: AbortSignal): Promise<CodexThreadResult> {
+    return threadResult(await this.request('thread/fork', params, signal), 'thread/fork');
+  }
+
+  async rollbackThread(params: CodexThreadRollbackParams, signal?: AbortSignal): Promise<CodexThreadRollbackResult> {
+    const result = object(await this.request('thread/rollback', params, signal), 'thread/rollback result');
+    const thread = object(result['thread'], 'thread/rollback result.thread');
+    const id = requiredString(thread['id'], 'thread/rollback result.thread.id');
+    return { thread: { ...thread, id } };
+  }
+
   /**
    * Attaches the ordered event consumer before requesting the turn. The consumer
    * may run before the start ACK and is awaited to backpressure stdout; it must
@@ -371,7 +392,7 @@ export class CodexAppServerClient {
         this.#setState('turning');
         if (active.terminal !== undefined) this.#finishActiveTurn(active.terminal);
         else if (signal.aborted) void this.#interrupt(active).catch(() => undefined);
-        return { completion, cancel: async () => this.#interrupt(active) };
+        return { turnId, completion, cancel: async () => this.#interrupt(active) };
       } catch (error) {
         this.#finishActiveTurn(undefined, error);
         throw error;
@@ -487,7 +508,7 @@ export class CodexAppServerClient {
     if (signal?.aborted) throw aborted(method, signal.reason);
     const id = `kiki-${++this.#requestSequence}`;
     const response = new Promise<unknown>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      this.#pending.set(id, { method, resolve, reject });
     });
     void response.catch(() => undefined);
     try {
@@ -527,6 +548,11 @@ export class CodexAppServerClient {
 
   async #readStdout(process: HostProcessLike): Promise<void> {
     const fragments: string[] = [];
+    let lineBytes = 0;
+    let lineHead = '';
+    let lineTail = '';
+    let skippingOversizedLine = false;
+    const limitBytes = this.descriptor.maxLineBytes ?? CODEX_PROVIDER_LINE_BYTES;
     const abort = this.#transportEnded.signal;
     // Paused reads keep stdout's high-water mark in force. `for await` can
     // drain the stream into an unbounded iterator queue while the event sink
@@ -535,22 +561,83 @@ export class CodexAppServerClient {
       const text = await readPausedChunk(process.stdout, abort);
       if (text === undefined) break;
       let start = 0;
-      for (let index = text.indexOf('\n'); index >= 0; index = text.indexOf('\n', start)) {
-        fragments.push(text.slice(start, index));
+      while (start < text.length && !abort.aborted) {
+        const newline = text.indexOf('\n', start);
+        const end = newline === -1 ? text.length : newline;
+        const slice = text.slice(start, end);
+        if (skippingOversizedLine) {
+          lineTail = appendBoundedTail(lineTail, slice, OVERSIZED_LINE_HEAD_CHARS);
+          if (newline === -1) break;
+          this.#handleOversizedLine(lineHead, lineTail, limitBytes);
+          lineHead = '';
+          lineTail = '';
+          skippingOversizedLine = false;
+          start = newline + 1;
+          continue;
+        }
+        const sliceBytes = slice.length > limitBytes - lineBytes
+          ? limitBytes - lineBytes + 1
+          : Buffer.byteLength(slice, 'utf8');
+        if (sliceBytes > limitBytes - lineBytes) {
+          lineHead += slice.slice(0, Math.max(0, OVERSIZED_LINE_HEAD_CHARS - lineHead.length));
+          lineTail = appendBoundedTail(lineTail, slice, OVERSIZED_LINE_HEAD_CHARS);
+          fragments.length = 0;
+          lineBytes = 0;
+          skippingOversizedLine = newline === -1;
+          if (newline === -1) break;
+          this.#handleOversizedLine(lineHead, lineTail, limitBytes);
+          lineHead = '';
+          lineTail = '';
+          start = newline + 1;
+          continue;
+        }
+        if (slice.length > 0) {
+          fragments.push(slice);
+          lineBytes += sliceBytes;
+          lineTail = appendBoundedTail(lineTail, slice, OVERSIZED_LINE_HEAD_CHARS);
+          if (lineHead.length < OVERSIZED_LINE_HEAD_CHARS) {
+            lineHead += slice.slice(0, OVERSIZED_LINE_HEAD_CHARS - lineHead.length);
+          }
+        }
+        if (newline === -1) break;
         const raw = fragments.join('').replace(/\r$/, '');
         fragments.length = 0;
+        lineBytes = 0;
+        lineHead = '';
+        lineTail = '';
         await this.#consumeLine(raw);
         if (abort.aborted) return;
-        start = index + 1;
+        start = newline + 1;
       }
-      if (start < text.length) fragments.push(text.slice(start));
     }
     if (abort.aborted) return;
-    if (fragments.length > 0) await this.#consumeLine(fragments.join('').replace(/\r$/, ''));
+    if (skippingOversizedLine) {
+      this.#handleOversizedLine(lineHead, lineTail, limitBytes);
+    } else if (fragments.length > 0) {
+      await this.#consumeLine(fragments.join('').replace(/\r$/, ''));
+    }
     if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
       await this.#break(new CodexClientError('closed', process.exitCode === null
         ? 'Unexpected Codex app-server stdout EOF' : `Codex app-server exited with code ${process.exitCode}`));
     }
+  }
+
+  #handleOversizedLine(lineHead: string, lineTail: string, limitBytes: number): void {
+    const redact = this.processService.redactDiagnostic;
+    this.#observe('server-to-client', 'malformed', redact?.(lineHead) ?? lineHead);
+    const rawId = OVERSIZED_RESPONSE_HEAD.exec(lineHead)?.[1] ?? (
+      OVERSIZED_RESPONSE_VALUE_FIRST.test(lineHead)
+        ? OVERSIZED_RESPONSE_TAIL_ID.exec(lineTail)?.[1]
+        : undefined
+    );
+    if (rawId === undefined) return;
+    const responseId = rawId.startsWith('"') ? JSON.parse(rawId) as string : rawId;
+    const pending = this.#takePending(responseId);
+    pending?.reject(new CodexClientError(
+      'response_too_large',
+      `Codex app-server response to ${pending.method} exceeds ${limitBytes} bytes`,
+      { method: pending.method, limitBytes },
+    ));
   }
 
   async #consumeLine(raw: string): Promise<void> {
@@ -862,6 +949,11 @@ export class CodexAppServerClient {
       } catch {}
     }
   }
+}
+
+function appendBoundedTail(tail: string, fragment: string, maxChars: number): string {
+  if (fragment.length >= maxChars) return fragment.slice(-maxChars);
+  return `${tail}${fragment}`.slice(-maxChars);
 }
 
 /**

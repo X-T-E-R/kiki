@@ -3,6 +3,7 @@ export type CodexClientErrorCode =
   | 'closed'
   | 'protocol'
   | 'remote'
+  | 'response_too_large'
   | 'spawn'
   | 'stdio'
   | 'timeout';

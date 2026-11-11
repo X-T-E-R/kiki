@@ -143,6 +143,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'todo.continuity_decision',
   'tools.policy_refreshed',
   'executor.tool.display',
+  'plugin.fact_recorded',
 ]);
 
 describe('v1 wire vocabulary', () => {

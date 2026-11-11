@@ -1,4 +1,8 @@
 import { PassThrough, Writable } from 'node:stream';
+import { mkdtemp, mkdir, writeFile, readFile, lstat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ILogService } from '#/_base/log/log';
 import { DispatchCapacity } from '#/session/dispatch/capacity';
 import {
   CodexAppServerClient,
@@ -20,6 +24,9 @@ import { attachExternalMailboxHarness } from './mailboxHarness';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { ContextUndo, ContextApplyCompaction } from '#/agent/contextMemory/contextEvents';
+import { isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
+import { IAgentConversationUndoParticipantRegistry, type AgentConversationUndoParticipant } from '#/agent/contextMemory/conversationUndoParticipants';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -132,8 +139,9 @@ function createHarness(options: HarnessOptions = {}) {
   const resumes: Readonly<Record<string, unknown>>[] = [];
   const prompts: Readonly<Record<string, unknown>>[] = [];
   const serverResults: unknown[] = [];
+  const undoParticipants = new Set<AgentConversationUndoParticipant>();
   const stateValues = new Map<unknown, unknown>([
-    [turnKey, { nextTurnId: 2, cancelledTurnIds: [] }],
+    [turnKey, { ...turnKey.initial(), nextTurnId: 2 }],
     [agentMessageMaterializationsKey, agentMessageMaterializationsKey.initial()],
     [externalExecutorKey, options.priorThreadId === undefined ? {} : {
       executorId: 'codex-app-server',
@@ -162,7 +170,21 @@ function createHarness(options: HarnessOptions = {}) {
     dispatch: async (event: Event2) => {
       events.push(event);
       if (event instanceof TurnPrompt) {
-        stateValues.set(turnKey, { nextTurnId: event.turnId! + 1, cancelledTurnIds: [] });
+        const prior = states.get(turnKey);
+        stateValues.set(turnKey, { ...prior, nextTurnId: event.turnId! + 1,
+          anchorTurnIds: isUndoAnchorOrigin(event.origin) ? [...prior.anchorTurnIds, event.turnId!] : prior.anchorTurnIds });
+      }
+      if (event instanceof ContextUndo) {
+        const prior = states.get(turnKey);
+        stateValues.set(turnKey, { ...prior, anchorTurnIds: prior.anchorTurnIds.slice(0, -event.count), lastEnded: undefined });
+        const state = states.get(externalExecutorKey);
+        const next = externalExecutorKey.replayable.folds.get(ContextUndo)!(state as never, event, {
+          silent: false, checkpoint() {}, clearCheckpoints() {}, undoToCheckpoint() {}, emit() {},
+        });
+        if (next !== undefined) stateValues.set(externalExecutorKey, next);
+      }
+      if (event instanceof ContextApplyCompaction) {
+        stateValues.set(turnKey, { ...states.get(turnKey), anchorTurnIds: [] });
       }
       if (event instanceof ExecutorSessionUpdated) {
         stateValues.set(externalExecutorKey, {
@@ -230,6 +252,7 @@ function createHarness(options: HarnessOptions = {}) {
   const wire = {
     _serviceBrand: undefined,
     flush: async () => {},
+    readJournal: async function* () { for (const event of events) yield event.serialize(); },
   } as unknown as IWireService;
   const usageRecords: Parameters<IAgentUsageService['record']>[] = [];
   const usage = {
@@ -252,6 +275,13 @@ function createHarness(options: HarnessOptions = {}) {
   const negotiatedRegistry = vi.fn();
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
+    [IAgentConversationUndoParticipantRegistry, {
+      register: (participant: AgentConversationUndoParticipant) => {
+        undoParticipants.add(participant);
+        return { dispose: () => { undoParticipants.delete(participant); } };
+      },
+      list: () => [...undoParticipants],
+    }],
     [IAgentScopeContext, { parentAgentId: undefined }],
     [IAgentPermissionModeService, Object.assign(options.permissionMode ?? { mode: 'manual' }, { setMode: vi.fn() })],
     [IAgentPermissionRulesService, { rules: options.permissionRules ?? [] }],
@@ -331,6 +361,10 @@ function createHarness(options: HarnessOptions = {}) {
       : { state: 'turning' as const, threadId: 'thread-new', turnId: 'turn-1', agentVersion: options.agentVersion },
     request: vi.fn(async (_method: string, _params: unknown) => options.steerResponse ?? { turnId: 'turn-1' }),
     connect: async () => {},
+    readThreadHistory: async function* () {},
+    readThreadHistoryMode: async () => 'legacy' as const,
+    forkThread: async () => { throw new Error('Unexpected thread/fork'); },
+    rollbackThread: async () => { throw new Error('Unexpected thread/rollback'); },
     listModels: vi.fn(async () => {
       if (options.modelListBehavior === 'hang') return new Promise<never>(() => {});
       if (options.modelListBehavior === 'fail') throw new Error('model catalog unavailable');
@@ -426,7 +460,7 @@ function createHarness(options: HarnessOptions = {}) {
           content: { type: 'text', text: 'done' },
         },
       ]) await onEvent(event);
-      return { completion, cancel: turnCancel };
+      return { turnId: completed.turnId, completion, cancel: turnCancel };
     },
     shutdown: vi.fn(async () => {}),
   };
@@ -462,6 +496,7 @@ function createHarness(options: HarnessOptions = {}) {
     createSession,
     context,
     states,
+    undoParticipants,
     client,
     events,
     starts,
@@ -502,6 +537,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   ix.stub(ISessionDispatchService, { reserveExecution: (id) => capacity.reserve('main', {
     maxDirectChildren: 1, maxTotalSubagents: 1,
   }, id) });
+  ix.set(IAgentConversationUndoParticipantRegistry, harness.context.agent.accessor.get(IAgentConversationUndoParticipantRegistry));
   ix.set(IAgentContextMemoryService, harness.memory);
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}) });
@@ -1644,10 +1680,13 @@ describe('Codex native MCP elicitation', () => {
   });
 });
 
-function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack') {
+function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack', historyMode?: 'paginated' | 'legacy', version = '0.155.0', initialTurns = 0) {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const methods: string[] = [];
+  const requests: { method?: string; params?: Record<string, unknown> }[] = [];
+  let activeThreadId = 'thread-1';
+  let threadCount = 0;
   let exitCode: number | null = null;
   let resolveExit!: (code: number) => void;
   const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
@@ -1655,25 +1694,61 @@ function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack') 
   const disposal = new Promise<void>((resolve) => { releaseDispose = resolve; });
   const dispose = vi.fn(async () => { await disposal; });
   const kill = vi.fn(async () => {});
-  let turnIndex = 0;
+  let turnIndex = initialTurns;
+  const threads = new Map<string, string[]>([['thread-1', Array.from({ length: initialTurns }, (_, i) => `turn-${i + 1}`)]]);
+  let experimentalApi = false;
   const stdin = new Writable({
     write(chunk, _encoding, callback) {
       for (const line of String(chunk).trim().split('\n')) {
-        const frame = JSON.parse(line) as { id?: string; method?: string };
+        const frame = JSON.parse(line) as { id?: string; method?: string; params?: Record<string, unknown> };
         if (frame.method !== undefined) methods.push(frame.method);
+        requests.push(frame);
         if (frame.id === undefined) continue;
         let result: unknown = {};
+        if (frame.method === 'initialize') {
+          experimentalApi = (frame.params?.['capabilities'] as { experimentalApi?: boolean })?.experimentalApi === true;
+          result = { userAgent: `codex/${version}` };
+        }
         if (frame.method === 'model/list') result = { data: [{ id: 'gpt-test' }], nextCursor: null };
+        const threadId = String(frame.params?.['threadId']);
+        const history = threads.get(threadId) ?? [];
+        const turns = history.map((id) => ({ id, items: [{ type: 'userMessage',
+          content: [{ type: 'text', text: `prompt-${Number(id.slice(5)) - 1}` }] }] }));
+        if (frame.method === 'thread/read') result = { thread: { id: threadId, historyMode, turns } };
+        if (frame.method === 'thread/items/list') result = { data: turns.flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item }))), nextCursor: null };
+        if (frame.method === 'thread/start') { activeThreadId = `thread-${++threadCount}`; threads.set(activeThreadId, []); }
+        if (frame.method === 'thread/resume' || frame.method === 'turn/start') activeThreadId = threadId;
         if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = {
-          thread: { id: 'thread-1' }, approvalPolicy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX,
+          thread: { id: activeThreadId }, model: 'gpt-test', modelProvider: 'fixture-provider',
+          approvalPolicy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX,
         };
+        if (frame.method === 'thread/fork') {
+          if (frame.params?.['beforeTurnId'] !== undefined && !experimentalApi) {
+            stdout.write(`${JSON.stringify({ id: frame.id, error: { code: -32600, message: 'thread/fork.beforeTurnId requires experimentalApi' } })}\n`);
+            continue;
+          }
+          const cutoff = frame.params?.['beforeTurnId'];
+          threads.set('thread-fork', typeof cutoff === 'string' ? history.slice(0, history.indexOf(cutoff)) : [...history]);
+          result = { thread: { id: 'thread-fork' }, model: 'gpt-test', modelProvider: 'fixture-provider',
+            approvalPolicy: 'untrusted', sandbox: DEFAULT_VENDOR_SANDBOX };
+        }
+        if (frame.method === 'thread/rollback') {
+          if (version === '0.156.0') {
+            stdout.write(`${JSON.stringify({ id: frame.id, error: { code: -32601, message: 'Method not found' } })}\n`);
+            continue;
+          }
+          threads.set(threadId, history.slice(0, -Number(frame.params?.['numTurns'])));
+          result = { thread: { id: threadId } };
+        }
         if (frame.method === 'turn/start') {
           if (startOutcome === 'no-ack') continue;
           if (startOutcome === 'reject') {
             stdout.write(`${JSON.stringify({ id: frame.id, error: { code: -32000, message: 'Vendor rejected the prompt' } })}\n`);
             continue;
           }
-          result = { turn: { id: `turn-${++turnIndex}` } };
+          const turnId = `turn-${++turnIndex}`;
+          threads.get(activeThreadId)?.push(turnId);
+          result = { turn: { id: turnId } };
         }
         stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
       }
@@ -1685,18 +1760,164 @@ function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack') 
     wait: () => exited, kill, dispose,
   };
   return {
-    process, stdout, methods, dispose, kill, releaseDispose,
+    process, stdout, methods, requests, threads, dispose, kill, releaseDispose,
     exit: () => { exitCode = 0; resolveExit(0); },
     complete: (status = 'completed', error?: Readonly<Record<string, unknown>>) => {
       stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
-        threadId: 'thread-1', turnId: `turn-${turnIndex}`, itemId: 'message-1', delta: 'done',
+        threadId: activeThreadId, turnId: `turn-${turnIndex}`, itemId: 'message-1', delta: 'done',
       } })}\n`);
       stdout.write(`${JSON.stringify({ method: 'turn/completed', params: {
-        threadId: 'thread-1', turn: { id: `turn-${turnIndex}`, status, error },
+        threadId: activeThreadId, turn: { id: `turn-${turnIndex}`, status, error },
       } })}\n`);
     },
   };
 }
+
+describe('Codex custom home launch', () => {
+  it.each(['local', 'ssh-fixture'])('prepares shared assets only on the %s host', async (runtimeId) => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-custom-home-'));
+    const sharedHome = join(root, '.codex');
+    const customHome = join(root, 'private');
+    await mkdir(join(sharedHome, 'skills'), { recursive: true });
+    await writeFile(join(sharedHome, 'skills', 'example.md'), 'shared skill');
+    await writeFile(join(sharedHome, 'auth.json'), 'shared auth');
+    const harness = createHarness();
+    harness.runtimeLease.runtime.identity.runtimeId = runtimeId;
+    const context = harness.context;
+    const session = harness.createSession({ ...context,
+      descriptor: { ...context.descriptor, homeDir: customHome, homeEnv: 'CODEX_HOME' },
+      agent: { ...context.agent, accessor: { get: (id) => {
+        if (id === IBootstrapService) return { platform: process.platform, osHomeDir: root, getEnv: () => undefined } as never;
+        if (id === ILogService) return { warn: vi.fn() } as never;
+        return context.agent.accessor.get(id);
+      } } },
+    });
+    try {
+      await (await session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).completion;
+      if (runtimeId === 'local') {
+        expect((await lstat(join(customHome, 'skills'))).isSymbolicLink()).toBe(true);
+        expect(await readFile(join(customHome, 'skills', 'example.md'), 'utf8')).toBe('shared skill');
+        await expect(lstat(join(customHome, 'auth.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      } else await expect(lstat(customHome)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await session.shutdown(); await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('Codex conversation undo', () => {
+  it.each(['paginated', 'legacy'] as const)('forks the %s thread and clears the binding after undoing to zero', async (historyMode) => {
+    const fixture = realProtocolProcess('ack', historyMode);
+    const harness = createHarness({ clientFactory: () => new CodexAppServerClient(
+      { spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture', shutdownGraceMs: 5 },
+    ) });
+    const session = harness.session;
+    const run = async (prompt: string) => {
+      const handle = await session.run({ kind: 'prompt', prompt, origin: { kind: 'user' } }, { signal: new AbortController().signal });
+      fixture.complete();
+      await handle.completion;
+      await session.settled();
+    };
+    try {
+      await run('first');
+      await run('second');
+      await harness.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+      await [...harness.undoParticipants][0]!.reconcileAfterUndo();
+      const fork = fixture.requests.find((request) => request.method === 'thread/fork');
+      expect(fork?.params).toMatchObject({ threadId: 'thread-1', excludeTurns: true, persistExtendedHistory: true });
+      expect(fork?.params?.['beforeTurnId']).toBe(historyMode === 'paginated' ? 'turn-2' : undefined);
+      expect(fixture.requests.filter((request) => request.method === 'thread/rollback').map((request) => request.params))
+        .toEqual(historyMode === 'paginated' ? [] : [{ threadId: 'thread-fork', numTurns: 1 }]);
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref).toMatchObject({
+        threadId: 'thread-fork', kikiTurnHistory: [{ kikiTurnId: 2, codexTurnId: 'turn-1', isAnchor: true }],
+      });
+      await run('replacement');
+      expect(fixture.requests.filter((request) => request.method === 'turn/start').at(-1)?.params?.['threadId']).toBe('thread-fork');
+      const rpcCount = fixture.requests.length;
+      await harness.dispatcher.dispatch(new ContextUndo({ count: 2 }));
+      await [...harness.undoParticipants][0]!.reconcileAfterUndo();
+      expect(fixture.requests).toHaveLength(rpcCount);
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref).toMatchObject({ threadId: undefined, kikiTurnHistory: [] });
+      await run('fresh');
+      expect(fixture.requests.filter((request) => request.method === 'turn/start').at(-1)?.params?.['threadId']).toBe('thread-2');
+    } finally {
+      fixture.releaseDispose();
+      fixture.exit();
+      await session.shutdown();
+    }
+    expect(harness.undoParticipants.size).toBe(0);
+  });
+
+  it('keeps the compacted thread and only removes post-compaction turns on undo', async () => {
+    const fixture = realProtocolProcess('ack', 'paginated');
+    const harness = createHarness({ clientFactory: () => new CodexAppServerClient(
+      { spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture', shutdownGraceMs: 5 },
+    ) });
+    const run = async (prompt: string) => {
+      const handle = await harness.session.run({ kind: 'prompt', prompt, origin: { kind: 'user' } }, { signal: new AbortController().signal });
+      fixture.complete(); await handle.completion; await harness.session.settled();
+    };
+    try {
+      await run('before compaction');
+      await harness.dispatcher.dispatch(new ContextApplyCompaction({ summary: 'compacted history', compactedCount: 1 }));
+      await run('after compaction');
+      expect(fixture.requests.filter((request) => request.method === 'thread/start')).toHaveLength(1);
+      expect(fixture.requests.some((request) => request.method === 'thread/fork')).toBe(false);
+      await harness.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+      await [...harness.undoParticipants][0]!.reconcileAfterUndo();
+      expect(fixture.threads.get('thread-fork')).toEqual(['turn-1']);
+      expect(fixture.threads.get('thread-1')).toEqual(['turn-1', 'turn-2']);
+    } finally { fixture.releaseDispose(); fixture.exit(); await harness.session.shutdown(); }
+  });
+
+  it.each(['0.155.0', '0.156.0'])('reconciles a cold pre-upgrade legacy thread on server %s without losing its provider', async (version) => {
+    const fixture = realProtocolProcess('ack', 'legacy', version, 2);
+    const harness = createHarness({ priorThreadId: 'thread-1', unpinModel: true, clientFactory: () => new CodexAppServerClient(
+      { spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture', shutdownGraceMs: 5 },
+    ) });
+    for (let id = 0; id < 2; id += 1) {
+      harness.events.push(new TurnPrompt({ turnId: id, input: [{ type: 'text', text: `prompt-${id}` }], origin: { kind: 'user' } }));
+      harness.events.push(new ExecutorSessionUpdated({ executorId: 'codex-app-server', descriptorRevision: 'r1',
+        sessionRef: harness.states.get(externalExecutorKey).sessionRef!, sessionEpoch: 1, profileDeliveredSessionId: 'thread-1' }));
+    }
+    try {
+      await harness.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+      expect(harness.undoParticipants.size).toBe(0);
+      const handle = await harness.session.run({ kind: 'prompt', prompt: 'replacement', origin: { kind: 'user' } }, { signal: new AbortController().signal });
+      fixture.complete(); await handle.completion; await harness.session.settled();
+      const fork = fixture.requests.find((request) => request.method === 'thread/fork');
+      expect(fork?.params).toMatchObject({ threadId: 'thread-1', model: 'gpt-test', modelProvider: 'fixture-provider',
+        config: { model_provider: 'fixture-provider' } });
+      expect(fork?.params?.['beforeTurnId']).toBe(version === '0.156.0' ? 'turn-2' : undefined);
+      expect(fixture.threads.get('thread-1')).toEqual(['turn-1', 'turn-2']);
+      expect(fixture.threads.get('thread-fork')).toEqual(['turn-1', 'turn-3']);
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref).toMatchObject({ threadId: 'thread-fork',
+        kikiThreadModelProvider: 'fixture-provider', kikiThreadBaseTurns: 0 });
+    } finally { fixture.releaseDispose(); fixture.exit(); await harness.session.shutdown(); }
+  });
+
+  it('reconstructs pre-upgrade user boundaries across cron turns from the durable Kiki journal', async () => {
+    const fixture = realProtocolProcess('ack', 'legacy', '0.156.0', 4);
+    const harness = createHarness({ priorThreadId: 'thread-1', clientFactory: () => new CodexAppServerClient(
+      { spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture', shutdownGraceMs: 5 },
+    ) });
+    const state = harness.states.get(externalExecutorKey);
+    for (let id = 0; id < 4; id += 1) {
+      harness.events.push(new TurnPrompt({ turnId: id, input: [{ type: 'text', text: `prompt-${id}` }],
+        origin: id % 2 === 0 ? { kind: 'user' } : { kind: 'cron_job', jobId: 'fixture-cron',
+          cron: '* * * * *', recurring: true, coalescedCount: 1, stale: false } }));
+      harness.events.push(new ExecutorSessionUpdated({ executorId: 'codex-app-server', descriptorRevision: 'r1',
+        sessionRef: state.sessionRef!, sessionEpoch: 1, profileDeliveredSessionId: 'thread-1' }));
+    }
+    harness.states.set(turnKey, { ...turnKey.initial(), nextTurnId: 4, anchorTurnIds: [0, 2] });
+    try {
+      await harness.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+      const handle = await harness.session.run({ kind: 'prompt', prompt: 'replacement', origin: { kind: 'user' } }, { signal: new AbortController().signal });
+      fixture.complete(); await handle.completion; await harness.session.settled();
+      expect(fixture.requests.find((request) => request.method === 'thread/fork')?.params?.['beforeTurnId']).toBe('turn-3');
+      expect(fixture.threads.get('thread-1')).toEqual(['turn-1', 'turn-2', 'turn-3', 'turn-4']);
+      expect(fixture.threads.get('thread-fork')).toEqual(['turn-1', 'turn-2', 'turn-5']);
+    } finally { fixture.releaseDispose(); fixture.exit(); await harness.session.shutdown(); }
+  });
+});
 
 describe('real Codex client through execution settlement and capacity', () => {
   it.each(['no-ack', 'reject'] as const)('classifies a written turn/start with %s before releasing the execution', async startOutcome => {

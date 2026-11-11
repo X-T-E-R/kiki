@@ -3,8 +3,8 @@ import { PassThrough, Writable } from 'node:stream';
 import type { NormalizedExecutorEvent } from '@kiki/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import { CodexAppServerClient } from '../src/client';
-import { CodexRemoteError } from '../src/errors';
+import { CODEX_PROVIDER_LINE_BYTES, CodexAppServerClient } from '../src/client';
+import { CodexClientError, CodexRemoteError } from '../src/errors';
 import type { CodexProcessDescriptor, HostProcessLike, HostProcessServiceLike } from '../src/types';
 
 type ScriptedFrame = { id?: string; method?: string; params?: unknown };
@@ -1079,6 +1079,156 @@ describe('Codex thread history pagination and rate limit tracking', () => {
       resetAtMs: 1_850_000_000 * 1000,
     });
     expect(client.rateLimits()?.primary?.resetsAt).toBe(1_850_000_000);
+    await client.shutdown();
+  });
+
+  it.each([
+    ['newline', true],
+    ['EOF', false],
+  ] as const)('rejects a multi-chunk error-first oversized RPC response at %s and preserves other pending RPCs', async (_ending, newlineTerminated) => {
+    const fixture = scriptedProcess(undefined, undefined, false, { highWaterMark: 1024 });
+    const client = turnClient(fixture, { maxLineBytes: 1024 });
+    await client.connect();
+
+    const oversized = client.request('thread/items/list', { threadId: 'thread-huge' }).catch((error: unknown) => error);
+    const concurrent = client.request('vendor/concurrent', { limit: 1 });
+    const oversizedFrame = await waitForFrame(fixture, 'thread/items/list');
+    const concurrentFrame = await waitForFrame(fixture, 'vendor/concurrent');
+    const oversizedResponse = JSON.stringify({
+      error: { code: -32000, message: 'Codex response exceeded the line limit', data: { detail: 'x'.repeat(16 * 1024) } },
+      id: oversizedFrame.id,
+    });
+    const concurrentResponse = JSON.stringify({ id: concurrentFrame.id, result: { ok: true } });
+    const wire = newlineTerminated
+      ? `${oversizedResponse}\n${concurrentResponse}\n`
+      : `${concurrentResponse}\n${oversizedResponse}`;
+    const encoded = Buffer.from(wire, 'utf8');
+    for (let offset = 0; offset < encoded.length; offset += 257) {
+      if (!fixture.stdout.write(encoded.subarray(offset, Math.min(offset + 257, encoded.length)))) {
+        await new Promise<void>((resolve) => fixture.stdout.once('drain', resolve));
+      }
+    }
+    if (!newlineTerminated) fixture.stdout.end();
+
+    await expect(oversized).resolves.toMatchObject({
+      code: 'response_too_large',
+      data: { method: 'thread/items/list', limitBytes: 1024 },
+    });
+    await expect(concurrent).resolves.toEqual({ ok: true });
+    if (newlineTerminated) {
+      expect(client.status().state).toBe('ready');
+      expect(fixture.kill).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(client.status().state).toBe('broken'));
+    }
+    await client.shutdown();
+  });
+
+  it('rejects only the oversized RPC response past the 128 MiB line cap while keeping the session and subprocess alive', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture);
+    await client.connect();
+
+    const oversized = client.request('thread/items/list', { threadId: 'thread-huge' }).catch((error: unknown) => error);
+    const concurrent = client.request('vendor/concurrent', { limit: 1 });
+    const oversizedFrame = await waitForFrame(fixture, 'thread/items/list');
+    const concurrentFrame = await waitForFrame(fixture, 'vendor/concurrent');
+
+    const chunk = Buffer.alloc(1024 * 1024, 'x');
+    fixture.stdout.write(`{"id":${JSON.stringify(oversizedFrame.id)},"result":"`);
+    for (let index = 0; index < 129; index += 1) {
+      if (!fixture.stdout.write(chunk)) {
+        await new Promise<void>((resolve) => fixture.stdout.once('drain', resolve));
+      }
+    }
+    fixture.stdout.write(`"}\n${JSON.stringify({ id: concurrentFrame.id, result: { data: [{ id: 'model-ok' }], nextCursor: null } })}\n`);
+
+    const failure = await oversized;
+    expect(failure).toBeInstanceOf(CodexClientError);
+    expect(failure).toMatchObject({
+      code: 'response_too_large',
+      data: {
+        method: 'thread/items/list',
+        limitBytes: CODEX_PROVIDER_LINE_BYTES,
+      },
+    });
+    await expect(concurrent).resolves.toEqual({ data: [{ id: 'model-ok' }], nextCursor: null });
+    expect(client.status().state).toBe('ready');
+    expect(fixture.kill).not.toHaveBeenCalled();
+    expect(fixture.dispose).not.toHaveBeenCalled();
+
+    const followUp = client.request('vendor/alive', {});
+    const followUpFrame = await waitForFrame(fixture, 'vendor/alive');
+    respondToFrame(fixture, followUpFrame, { alive: true });
+    await expect(followUp).resolves.toEqual({ alive: true });
+    await client.shutdown();
+  });
+
+  it('drains oversized notifications and requests without rejecting unrelated RPCs', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture, { maxLineBytes: 1024 });
+    await client.connect();
+
+    const pending = client.request('vendor/pending', {});
+    const { id } = await waitForFrame(fixture, 'vendor/pending');
+    fixture.stdout.write(`{"method":"item/completed","params":"${'é'.repeat(550)}"}\n`);
+    fixture.stdout.write(`{"method":"vendor/ask","params":"${'y'.repeat(1200)}","id":${JSON.stringify(id)}}\n`);
+    fixture.stdout.write(`${JSON.stringify({ id, result: 'ok' })}\n`);
+
+    await expect(pending).resolves.toBe('ok');
+    expect(client.status().state).toBe('ready');
+    expect(fixture.kill).not.toHaveBeenCalled();
+    await client.shutdown();
+  });
+
+  it('forks and rolls back threads via typed thread/fork and thread/rollback RPCs', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture);
+    await client.connect();
+
+    const forking = client.forkThread({
+      threadId: 'thread-src',
+      beforeTurnId: 'turn-2',
+      cwd: '/workspace',
+      model: 'gpt-5-codex',
+      excludeTurns: true,
+      persistExtendedHistory: true,
+    });
+    const forkFrame = await waitForFrame(fixture, 'thread/fork');
+    expect(forkFrame.params).toEqual({
+      threadId: 'thread-src',
+      beforeTurnId: 'turn-2',
+      cwd: '/workspace',
+      model: 'gpt-5-codex',
+      excludeTurns: true,
+      persistExtendedHistory: true,
+    });
+    respondToFrame(fixture, forkFrame, {
+      thread: { id: 'thread-forked', forkedFromId: 'thread-src' },
+      model: 'gpt-5-codex',
+      modelProvider: 'openai',
+      cwd: '/workspace',
+      approvalPolicy: 'on-request',
+      sandbox: { type: 'workspaceWrite' },
+    });
+    await expect(forking).resolves.toMatchObject({
+      thread: { id: 'thread-forked', forkedFromId: 'thread-src' },
+      model: 'gpt-5-codex',
+      modelProvider: 'openai',
+      approvalPolicy: 'on-request',
+      sandbox: { type: 'workspaceWrite' },
+    });
+
+    const rollingBack = client.rollbackThread({ threadId: 'thread-forked', numTurns: 2 });
+    const rollbackFrame = await waitForFrame(fixture, 'thread/rollback');
+    expect(rollbackFrame.params).toEqual({ threadId: 'thread-forked', numTurns: 2 });
+    respondToFrame(fixture, rollbackFrame, {
+      thread: { id: 'thread-forked', turns: [{ id: 'turn-1' }] },
+    });
+    await expect(rollingBack).resolves.toEqual({
+      thread: { id: 'thread-forked', turns: [{ id: 'turn-1' }] },
+    });
+
     await client.shutdown();
   });
 });

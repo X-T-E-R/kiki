@@ -1,19 +1,124 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { lstat, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
-import { describe, expect, it, vi } from 'vitest';
+import { parse as parseToml } from 'smol-toml';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HostProcessLike, HostProcessServiceLike } from '@kiki/acp-client';
 import type { HarnessAccountConnection } from '@kiki/protocol';
 
 import { ILogService } from '#/_base/log/log';
 import { IAgentExecutorRegistry, type AgentExecutorContext, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { materializeExecutorInstance } from '#/app/agentExecutor/executorInstances';
 import { executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { CODEX_PRIVATE_ENTRY_NAMES, CODEX_SHARED_ASSET_DIRECTORIES, prepareCodexShadowHome, resolvePluginAccountShadowHome } from '#/agent/execution/codexHomeOverlay';
 import { openHarnessAccountBroker } from '#/agent/execution/harnessAccountBroker';
 import { harnessAccountProcess } from '#/agent/execution/harnessAccountProcess';
 
+const SHARED_CODEX_CONFIG = [
+  'approval_policy = "on-request"',
+  'sandbox_mode = "workspace-write"',
+  'model_instructions_file = "instructions.md"',
+  'model_catalog_json = "models.json"',
+  'experimental_compact_prompt_file = "compact.md"',
+  'sqlite_home = "sqlite"',
+  'log_dir = "logs"',
+  'js_repl_node_path = "node.exe"',
+  'js_repl_node_module_dirs = ["node-modules"]',
+  '',
+  '[sandbox_workspace_write]',
+  'writable_roots = ["writable"]',
+  '',
+  '[profiles.review]',
+  'model_instructions_file = "review-instructions.md"',
+  'model_catalog_json = "review-models.json"',
+  'experimental_compact_prompt_file = "review-compact.md"',
+  'js_repl_node_path = "review-node.exe"',
+  'js_repl_node_module_dirs = ["review-node-modules"]',
+  '',
+  '[agents.researcher]',
+  'description = "Research role"',
+  'config_file = "agents/researcher.toml"',
+  '',
+  '[mcp_servers.fixture]',
+  'command = "example-mcp"',
+  'args = []',
+  'cwd = "../mcp-working-dir"',
+  '',
+].join('\n');
+
+const temporaryDirectories = new Set<string>();
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) rmSync(directory, { recursive: true, force: true });
+  temporaryDirectories.clear();
+});
+
+function createTemporaryDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'kiki-harness-account-'));
+  temporaryDirectories.add(directory);
+  return directory;
+}
+
+async function createSharedCodexHome(path: string): Promise<void> {
+  await mkdir(path, { recursive: true });
+  for (const entryName of CODEX_SHARED_ASSET_DIRECTORIES) {
+    const directory = join(path, entryName);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'fixture-asset.txt'), `shared-${entryName}`);
+  }
+  await mkdir(join(path, 'agents'), { recursive: true });
+  await writeFile(join(path, 'instructions.md'), 'primary instructions fixture');
+  await writeFile(join(path, 'agents', 'researcher.toml'), 'model = "fixture-model"');
+  for (const entryName of CODEX_PRIVATE_ENTRY_NAMES) {
+    await writeFile(join(path, entryName), `shared-${entryName}`);
+  }
+  await writeFile(join(path, 'config.toml'), SHARED_CODEX_CONFIG);
+}
+
+async function expectRebasedCodexConfig(configPath: string, configDirectory: string): Promise<void> {
+  const config = parseToml(await readFile(configPath, 'utf8'));
+  expect(config).toMatchObject({
+    approval_policy: 'on-request',
+    sandbox_mode: 'workspace-write',
+    model_instructions_file: join(configDirectory, 'instructions.md'),
+    model_catalog_json: join(configDirectory, 'models.json'),
+    experimental_compact_prompt_file: join(configDirectory, 'compact.md'),
+    sqlite_home: join(configDirectory, 'sqlite'),
+    log_dir: join(configDirectory, 'logs'),
+    js_repl_node_path: join(configDirectory, 'node.exe'),
+    js_repl_node_module_dirs: [join(configDirectory, 'node-modules')],
+    sandbox_workspace_write: { writable_roots: [join(configDirectory, 'writable')] },
+    profiles: {
+      review: {
+        model_instructions_file: join(configDirectory, 'review-instructions.md'),
+        model_catalog_json: join(configDirectory, 'review-models.json'),
+        experimental_compact_prompt_file: join(configDirectory, 'review-compact.md'),
+        js_repl_node_path: join(configDirectory, 'review-node.exe'),
+        js_repl_node_module_dirs: [join(configDirectory, 'review-node-modules')],
+      },
+    },
+    agents: { researcher: { config_file: join(configDirectory, 'agents', 'researcher.toml') } },
+    mcp_servers: { fixture: { command: 'example-mcp', args: [], cwd: '../mcp-working-dir' } },
+  });
+  const instructionsPath = config['model_instructions_file'];
+  if (typeof instructionsPath !== 'string') throw new Error('Model instructions path was not serialized');
+  expect(await readFile(instructionsPath, 'utf8')).toBe('primary instructions fixture');
+}
+
 function setup(engineId = 'agy-cli') {
+  const tempRoot = createTemporaryDirectory();
+  const bootstrap = {
+    cacheDir: join(tempRoot, 'cache'),
+    osHomeDir: join(tempRoot, 'os-home'),
+    platform: process.platform,
+    getEnv: () => undefined,
+  };
   const source = 'plugin:fixture-account-source/accounts';
   const descriptor = materializeExecutorInstance('instance-fixture', {
     source_executor: engineId, label: 'Work login', configuration: { kind: 'plugin_account', source, account_id: 'work' }, proxy: { kind: 'inherit' },
@@ -25,6 +130,7 @@ function setup(engineId = 'agy-cli') {
   const record = vi.fn();
   const warn = vi.fn();
   const get = vi.fn((service: unknown) => {
+    if (service === IBootstrapService) return bootstrap;
     if (service === IPluginHostService) return { prepareHarnessAccount: prepare };
     if (service === IAgentExecutorRegistry) return { recordNegotiated: record };
     if (service === ILogService) return { warn };
@@ -37,7 +143,7 @@ function setup(engineId = 'agy-cli') {
     wait: () => exited, kill: async () => { finish(0); }, dispose: () => {} };
   const spawn = vi.fn<HostProcessServiceLike['spawn']>(async () => child);
   const launch = harnessAccountProcess({ spawn }, context, 'local');
-  return { connection, context, descriptor, source, prepare, release, spawn, launch, finish, get, warn };
+  return { bootstrap, connection, context, descriptor, source, prepare, release, spawn, launch, finish, get, warn, tempRoot };
 }
 
 describe('plugin account process ownership', () => {
@@ -70,6 +176,96 @@ describe('plugin account process ownership', () => {
     await vi.waitFor(() => { expect(f.release).toHaveBeenCalledOnce(); });
   });
 
+  it('launches a Codex plugin account from its independent shadow home', async () => {
+    const f = setup('codex-app-server');
+    const sharedHomePath = join(f.bootstrap.osHomeDir, '.codex');
+    await createSharedCodexHome(sharedHomePath);
+    const shadowHomePath = resolvePluginAccountShadowHome(f.bootstrap.cacheDir, f.descriptor.id, 'work');
+    try {
+      await f.launch.processes.spawn('engine', [], executorProcessOptions(f.descriptor));
+      const [, args, options] = f.spawn.mock.calls[0]!;
+      expect(options?.env?.['CODEX_HOME']).toBe(shadowHomePath);
+      expect((await lstat(shadowHomePath)).isDirectory()).toBe(true);
+      expect(await readFile(join(shadowHomePath, 'skills', 'fixture-asset.txt'), 'utf8')).toBe('shared-skills');
+      expect(args?.some((value) => value.includes('model_providers.kiki_harness_account'))).toBe(true);
+      const privateConfigPath = join(shadowHomePath, 'config.toml');
+      expect((await lstat(privateConfigPath)).isSymbolicLink()).toBe(false);
+      await expectRebasedCodexConfig(privateConfigPath, sharedHomePath);
+      await writeFile(privateConfigPath, 'private broker config');
+      expect(await readFile(join(sharedHomePath, 'config.toml'), 'utf8')).toBe(SHARED_CODEX_CONFIG);
+      for (const entryName of CODEX_PRIVATE_ENTRY_NAMES) {
+        const shadowEntry = join(shadowHomePath, entryName);
+        await expect(lstat(shadowEntry)).rejects.toMatchObject({ code: 'ENOENT' });
+        await writeFile(shadowEntry, `private-${entryName}`);
+        expect(await readFile(join(sharedHomePath, entryName), 'utf8')).toBe(`shared-${entryName}`);
+        expect((await lstat(shadowEntry)).isSymbolicLink()).toBe(false);
+      }
+      expect(f.get).toHaveBeenCalledWith(IBootstrapService);
+    } finally {
+      f.finish(0);
+      await vi.waitFor(() => { expect(f.release).toHaveBeenCalledOnce(); });
+    }
+  });
+
+  it.each(['process environment', 'descriptor homeDir'])('preserves an explicit %s home for a Codex plugin account', async (source) => {
+    const f = setup('codex-app-server');
+    const explicitHome = join(f.tempRoot, `explicit-${source.replaceAll(' ', '-')}`);
+    const descriptor = source === 'descriptor homeDir' ? { ...f.descriptor, homeDir: explicitHome } : f.descriptor;
+    const launch = harnessAccountProcess({ spawn: f.spawn }, { ...f.context, descriptor }, 'local');
+    const options = source === 'process environment' ? { env: { CODEX_HOME: explicitHome } } : undefined;
+    try {
+      await launch.processes.spawn('engine', [], options);
+      expect(f.spawn.mock.calls[0]?.[2]?.env?.['CODEX_HOME']).toBe(explicitHome);
+      expect((await lstat(explicitHome)).isDirectory()).toBe(true);
+    } finally {
+      f.finish(0);
+      await vi.waitFor(() => { expect(f.release).toHaveBeenCalledOnce(); });
+    }
+  });
+
+  it('requires the bootstrap service for Codex plugin accounts', async () => {
+    const f = setup('codex-app-server');
+    const context = {
+      ...f.context,
+      agent: {
+        accessor: {
+          get: (service: unknown) => service === IBootstrapService ? (() => { throw Error('missing bootstrap'); })() : f.get(service),
+        },
+      },
+    } as unknown as AgentExecutorContext;
+    const launch = harnessAccountProcess({ spawn: f.spawn }, context, 'local');
+    await expect(launch.processes.spawn('engine')).rejects.toThrow('Could not start the engine');
+    expect(f.get).toHaveBeenCalledWith(IPluginHostService);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform !== 'win32')('continues to spawn after a shared asset link fails', async () => {
+    const f = setup('codex-app-server');
+    const sharedHomePath = join(f.bootstrap.osHomeDir, '.codex');
+    const sharedSkillsPath = join(sharedHomePath, 'skills');
+    const realSkillsPath = join(sharedHomePath, 'skills-target');
+    await createSharedCodexHome(sharedHomePath);
+    await rm(sharedSkillsPath, { recursive: true, force: true });
+    await mkdir(realSkillsPath, { recursive: true });
+    await writeFile(join(realSkillsPath, 'fixture-asset.txt'), 'shared-skills');
+    await symlink(realSkillsPath, sharedSkillsPath, 'junction');
+    try {
+      await f.launch.processes.spawn('engine');
+      expect(f.warn).toHaveBeenCalledWith(
+        'Failed to link shared Codex asset into shadow home',
+        expect.objectContaining({ executorId: f.descriptor.id, entryName: 'skills' }),
+      );
+      expect(f.spawn).toHaveBeenCalledOnce();
+      const shadowHomePath = resolvePluginAccountShadowHome(f.bootstrap.cacheDir, f.descriptor.id, 'work');
+      expect(f.spawn.mock.calls[0]?.[2]?.env?.['CODEX_HOME']).toBe(shadowHomePath);
+      expect((await lstat(shadowHomePath)).isDirectory()).toBe(true);
+    } finally {
+      f.finish(0);
+      await vi.waitFor(() => { expect(f.release).toHaveBeenCalledOnce(); });
+    }
+  });
+
   it('releases an acquired connection after spawn failure without trying another source', async () => {
     const f = setup();
     f.spawn.mockRejectedValueOnce(Error('spawn failure'));
@@ -94,6 +290,81 @@ describe('plugin account process ownership', () => {
     expect(String(error)).toContain(f.source);
     expect(String(error)).not.toContain(f.connection.apiKey);
     expect(f.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('Codex shadow home overlay', () => {
+  it('idempotently shares every listed asset directory while keeping auth and broker config private', async () => {
+    const tempRoot = createTemporaryDirectory();
+    const sharedHomePath = join(tempRoot, 'shared-codex');
+    const shadowHomePath = join(tempRoot, 'shadow-codex');
+    const warn = vi.fn();
+    await createSharedCodexHome(sharedHomePath);
+    const input = { shadowHomePath, sharedHomePath, privateConfig: true, onWarn: warn } as const;
+    const first = await prepareCodexShadowHome(input);
+    const second = await prepareCodexShadowHome(input);
+    expect(first.applied).toBe(true);
+    expect(second.applied).toBe(true);
+    expect(first.linkedEntries.toSorted()).toEqual([...CODEX_SHARED_ASSET_DIRECTORIES].toSorted());
+    expect(second.linkedEntries.toSorted()).toEqual(first.linkedEntries.toSorted());
+    for (const entryName of CODEX_SHARED_ASSET_DIRECTORIES) {
+      const sharedEntry = join(sharedHomePath, entryName, 'fixture-asset.txt');
+      const shadowEntry = join(shadowHomePath, entryName);
+      expect((await lstat(shadowEntry)).isSymbolicLink()).toBe(true);
+      expect(await readFile(join(shadowEntry, 'fixture-asset.txt'), 'utf8')).toBe(`shared-${entryName}`);
+      expect(await readFile(sharedEntry, 'utf8')).toBe(`shared-${entryName}`);
+    }
+    for (const entryName of CODEX_PRIVATE_ENTRY_NAMES) {
+      const shadowEntry = join(shadowHomePath, entryName);
+      await expect(lstat(shadowEntry)).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(shadowEntry, `private-${entryName}`);
+      expect((await lstat(shadowEntry)).isSymbolicLink()).toBe(false);
+      expect(await readFile(join(sharedHomePath, entryName), 'utf8')).toBe(`shared-${entryName}`);
+    }
+    const privateConfigPath = join(shadowHomePath, 'config.toml');
+    expect((await lstat(privateConfigPath)).isSymbolicLink()).toBe(false);
+    await expectRebasedCodexConfig(privateConfigPath, sharedHomePath);
+    await writeFile(privateConfigPath, 'local private config changes');
+    const third = await prepareCodexShadowHome(input);
+    expect(third.applied).toBe(true);
+    expect(await readFile(privateConfigPath, 'utf8')).toBe('local private config changes');
+    expect(await readFile(join(sharedHomePath, 'config.toml'), 'utf8')).toBe(SHARED_CODEX_CONFIG);
+    const sharedHomeWithoutConfig = join(tempRoot, 'shared-without-config');
+    const shadowHomeWithoutConfig = join(tempRoot, 'shadow-without-config');
+    await mkdir(sharedHomeWithoutConfig, { recursive: true });
+    const withoutConfig = await prepareCodexShadowHome({
+      shadowHomePath: shadowHomeWithoutConfig,
+      sharedHomePath: sharedHomeWithoutConfig,
+      privateConfig: true,
+      onWarn: warn,
+    });
+    expect(withoutConfig.applied).toBe(true);
+    await expect(lstat(join(shadowHomeWithoutConfig, 'config.toml'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('preserves every nonempty real shadow directory, including lock directories', async () => {
+    const tempRoot = createTemporaryDirectory();
+    const sharedHomePath = join(tempRoot, 'shared-codex');
+    const shadowHomePath = join(tempRoot, 'shadow-codex');
+    await createSharedCodexHome(sharedHomePath);
+    const privateEntries = new Map([
+      ['skills', 'private-skill.txt'],
+      ['mcp-oauth-locks', 'private-lock.txt'],
+      ['thread-writer-locks', '.coordination.lock'],
+    ]);
+    for (const [entryName, markerName] of privateEntries) {
+      const shadowEntry = join(shadowHomePath, entryName);
+      await mkdir(shadowEntry, { recursive: true });
+      await writeFile(join(shadowEntry, markerName), `private-${entryName}`);
+    }
+    const result = await prepareCodexShadowHome({ shadowHomePath, sharedHomePath });
+    for (const [entryName, markerName] of privateEntries) {
+      const shadowEntry = join(shadowHomePath, entryName);
+      expect(result.linkedEntries).not.toContain(entryName);
+      expect((await lstat(shadowEntry)).isSymbolicLink()).toBe(false);
+      expect(await readFile(join(shadowEntry, markerName), 'utf8')).toBe(`private-${entryName}`);
+    }
   });
 });
 

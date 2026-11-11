@@ -40,6 +40,7 @@ import { interactionKey } from '#/session/interaction/interactionOps';
 import { todoKey } from '#/session/todo/todoOps';
 import { continuityClockKey } from '#/session/todo/continuityState';
 import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
+import { pluginConversationStateKey, pluginWorldStateKey } from '#/agent/pluginState/pluginStateKeys';
 import { hookStateKey } from '#/features/externalHooks/agent/hookState';
 
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
@@ -88,5 +89,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   todoKey,
   continuityClockKey,
   dynamicPromptKey,
+  pluginConversationStateKey,
+  pluginWorldStateKey,
   hookStateKey,
 ];

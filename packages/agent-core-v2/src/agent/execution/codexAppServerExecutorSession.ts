@@ -32,7 +32,10 @@ import {
   type AgentExecutorContext,
   type AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
+import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
+import { IAgentConversationUndoParticipantRegistry } from '#/agent/contextMemory/conversationUndoParticipants';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
@@ -56,6 +59,7 @@ import type {
 } from '#/session/subagent/subagent';
 import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IWireService } from '#/wire/wire';
 
 import { buildHandoff } from './acpAgentExecutorSession';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
@@ -73,8 +77,11 @@ import {
   resolveExternalModelProvider,
 } from './externalTurnRecorder';
 import { normalizeExternalExecutorError } from './externalUsageLimitParser';
+import { prepareCodexShadowHome, resolveSharedCodexHome } from './codexHomeOverlay';
+import { readCodexTurnHistory, rewindCodexThread, type CodexRewindClient } from './codexUndoParticipant';
+import { ILogService } from '#/_base/log/log';
 
-interface CodexClientLike {
+interface CodexClientLike extends CodexRewindClient {
   status(): ReturnType<CodexAppServerClient['status']>;
   rateLimits?(): CodexRateLimitSnapshot | undefined;
   stderrTail?(): string;
@@ -207,6 +214,71 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         });
     };
     this.#client = this.#createClient();
+    this.#undoParticipant = context.agent.accessor.get(IAgentConversationUndoParticipantRegistry).register({
+      id: 'codex-app-server',
+      reconcileAfterUndo: () => this.#reconcileAfterUndo(),
+    });
+  }
+
+  readonly #undoParticipant: IDisposable;
+
+  async #prepareHome(): Promise<void> {
+    const descriptor = this.context.descriptor;
+    if (this.#runtimeLease.runtime.identity.runtimeId !== 'local' ||
+        descriptor.instance?.configuration.kind === 'plugin_account') return;
+    const home = executorProcessOptions(descriptor).env?.['CODEX_HOME'] ?? descriptor.homeDir;
+    if (!home) return;
+    const bootstrap = this.context.agent.accessor.get(IBootstrapService);
+    await prepareCodexShadowHome({
+      shadowHomePath: home,
+      sharedHomePath: resolveSharedCodexHome(bootstrap.osHomeDir, bootstrap.getEnv('CODEX_HOME'), home),
+      onWarn: (message, details) => this.context.agent.accessor.get(ILogService).warn(message, details),
+    });
+  }
+
+  async #reconcileAfterUndo(signal?: AbortSignal): Promise<void> {
+    await this.settled();
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    const threadId = threadIdFromState(state.sessionRef);
+    if (threadId === undefined || !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return;
+    const ref = state.sessionRef!.ref;
+    const pending = ref['kikiPendingUndoCount'];
+    if (typeof pending !== 'number' || pending === 0) return;
+    const baseTurns = ref['kikiThreadBaseTurns'];
+    const savedModel = ref['kikiThreadModel'];
+    const savedProvider = ref['kikiThreadModelProvider'];
+    const rewound = await rewindCodexThread({
+      client: this.#client, threadId, recordedTurns: readCodexTurnHistory(state.sessionRef), undoCount: pending,
+      journal: () => this.context.agent.accessor.get(IWireService).readJournal({ signal }),
+      baseTurnCount: typeof baseTurns === 'number' ? baseTurns : undefined,
+      cwd: this.#roots().workDir,
+      model: this.context.binding.modelAlias ?? (typeof savedModel === 'string' ? savedModel : undefined),
+      modelProvider: this.#accountModelProvider() ?? (typeof savedProvider === 'string' ? savedProvider : undefined),
+      instructions: this.#instructions(), signal,
+    });
+    const restore = this.#approvalRestore ?? codexApprovalRestore(state.sessionRef);
+    this.#approvalRestore = rewound.threadId === undefined || restore === undefined
+      ? undefined : { ...restore, threadId: rewound.threadId };
+    const sessionRef = {
+      executorId: this.context.descriptor.id, version: 1,
+      ref: { ...ref, threadId: rewound.threadId,
+        localSource: undefined, kikiPermissionRestore: this.#approvalRestore,
+        kikiPendingUndoCount: undefined,
+        kikiTurnHistory: rewound.survivingTurns,
+        kikiThreadBaseTurns: rewound.baseTurnCount,
+        kikiThreadModel: rewound.model, kikiThreadModelProvider: rewound.modelProvider },
+    };
+    await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+      executionGeneration: this.context.binding.execution?.generation,
+      executorId: this.context.descriptor.id, descriptorRevision: this.context.descriptor.revision,
+      bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
+      sessionRef, sessionEpoch: (state.sessionEpoch ?? 0) + 1,
+      profileDeliveredSessionId: rewound.threadId,
+    }));
+    await this.#dispatcher.flush();
+    this.#threadId = rewound.threadId;
+    this.#vendorApprovalPolicy = rewound.approvalPolicy ?? this.#vendorApprovalPolicy;
+    this.#vendorSandbox = rewound.sandbox ?? this.#vendorSandbox;
   }
 
   async #alignKikiToolApproval(): Promise<void> {
@@ -262,6 +334,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const roots = this.#roots();
     this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     await this.#alignKikiToolApproval();
+    if (this.#client.status().state === 'cold') await this.#prepareHome();
     try {
       await this.#client.connect(controller.signal);
     } finally {
@@ -270,6 +343,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     await recordNegotiatedSnapshot(this.context, {
       agentVersion: this.#client.status().agentVersion,
     });
+    await this.#reconcileAfterUndo(controller.signal);
     const opened = await this.#openThread(roots, controller.signal).catch(async (error: unknown) => {
       if (this.#accountModelProvider() === undefined) throw error;
       await this.#client.shutdown(error);
@@ -299,7 +373,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     let sessionRef = { executorId: this.context.descriptor.id, version: 1,
       ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'],
         kikiLaunchHome: this.context.descriptor.homeDir ?? '',
-        kikiPermissionRestore: this.#approvalRestore } };
+        kikiPermissionRestore: this.#approvalRestore,
+        kikiThreadBaseTurns: priorThreadId === opened.threadId ? prior.sessionRef?.ref['kikiThreadBaseTurns'] : 0,
+        kikiThreadModel: opened.actualModel ?? prior.sessionRef?.ref['kikiThreadModel'],
+        kikiThreadModelProvider: opened.modelProvider ?? prior.sessionRef?.ref['kikiThreadModelProvider'],
+        kikiTurnHistory: priorThreadId === opened.threadId ? readCodexTurnHistory(prior.sessionRef) : [] } };
     const sessionEpoch = priorThreadId === opened.threadId
       ? prior.sessionEpoch ?? 1
       : (prior.sessionEpoch ?? 0) + 1;
@@ -393,6 +471,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       }, controller.signal, recorder.record.bind(recorder), () => { deliveryAttempted = true; attempt.possibleDelivery = true; });
       acknowledged = true;
       attempt.possibleDelivery = true;
+      sessionRef = { ...sessionRef, ref: { ...sessionRef.ref,
+        kikiTurnHistory: [...sessionRef.ref.kikiTurnHistory, {
+          kikiTurnId: turnId, codexTurnId: handle.turnId, isAnchor: isUndoAnchorOrigin(origin),
+        }],
+      } };
       if (override === undefined && this.#approvalRestore !== undefined) {
         this.#vendorApprovalPolicy = this.#approvalRestore.policy;
         this.#vendorSandbox = this.#approvalRestore.sandbox ?? this.#vendorSandbox;
@@ -518,6 +601,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       return;
     }
     this.#shutdown = true;
+    await this.#undoParticipant.dispose();
     this.cancel(reason);
     try {
       await Promise.all([this.settled(), this.#client.shutdown(reason)]);
