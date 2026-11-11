@@ -10,7 +10,7 @@ import {
 } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
-import { FeedbackLine, Hint, SaveStatus } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
@@ -30,7 +30,6 @@ export function SubagentLimitsSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [tick, ping] = useSavedTick();
-  const fieldsSave = useInstantSave();
   useEffect(() => {
     if (config.data === undefined || dirty) return;
     const value = subagentLimitsFromConfig(config.data);
@@ -58,13 +57,6 @@ export function SubagentLimitsSettings() {
     }
     setDirty(false); setError(undefined);
   };
-  const agentList = subagentAgentListFieldsFromConfig(config.data);
-  const updateAgentListFields = async (next: readonly AgentListTelemetryField[] | null) => {
-    await fieldsSave.run(async () => {
-      const echoed = await client.patchConfig(subagentAgentListFieldsPatch(next));
-      cache.setQueryData(['config'], echoed);
-    });
-  };
   // Units sit right of the input, never in the label.
   const field = (id: string, label: string, help: string, value: string, set: (next: string) => void, step: string, unit?: string) => (
     <SettingField label={label} htmlFor={id} help={help}>
@@ -75,7 +67,6 @@ export function SubagentLimitsSettings() {
       </span>
     </SettingField>
   );
-  const controlsDisabled = saving || fieldsSave.saving || config.isPending || config.isError;
   return <SectionCard id="st-card-subagent-limits" title={t('st.subagentLimits.title')}>
     <SettingsBox>
     <Hint>{t('st.subagentLimits.lead')}</Hint>
@@ -87,56 +78,81 @@ export function SubagentLimitsSettings() {
     <SettingsDraftFooter id="subagent-limits" dirty={dirty} saving={saving} saved={tick}
       saveLabel={t('st.boardStorage.save')} saveDisabled={config.isPending || config.isError}
       onSave={() => { void save(); }} onDiscard={discard} />
-    <div data-agent-list-fields>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span id="subagent-agent-list-fields-label" className="text-[13px] text-ink">{t('st.agentListFields.label')}</span>
-        <div className="flex items-center gap-2">
-          <SaveStatus saving={fieldsSave.saving} saved={fieldsSave.saved} />
+    {error || config.error ? <FeedbackLine feedback={{ tone: 'error', text: error ?? config.error?.message ?? '' }} /> : null}
+    </SettingsBox>
+  </SectionCard>;
+}
+
+export function SubagentAgentListFieldsCard() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const cache = useQueryClient();
+  const config = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig() });
+  const save = useInstantSave();
+  const agentList = subagentAgentListFieldsFromConfig(config.data);
+  const disabled = save.saving || config.isPending || config.isError;
+
+  const updateFields = async (next: readonly AgentListTelemetryField[] | null) => {
+    await save.run(async () => {
+      const echoed = await client.patchConfig(subagentAgentListFieldsPatch(next));
+      cache.setQueryData(['config'], echoed);
+    });
+  };
+
+  return (
+    <SectionCard
+      id="st-card-subagent-agent-list-fields"
+      title={t('st.agentListFields.label')}
+      actions={
+        <>
+          <SaveStatus saving={save.saving} saved={save.saved} />
           {agentList.isCustom ? (
             <button
               type="button"
-              disabled={controlsDisabled}
+              disabled={disabled}
               data-agent-list-fields-reset
-              onClick={() => { void updateAgentListFields(null); }}
+              onClick={() => { void updateFields(null); }}
               className="text-[12px] text-ink-soft transition-colors hover:text-ink disabled:opacity-50"
             >
               {t('st.agentListFields.reset')}
             </button>
           ) : null}
+        </>
+      }
+    >
+      <div className="space-y-3" data-agent-list-fields>
+        <Hint>{t('st.agentListFields.help')}</Hint>
+        <div
+          role="group"
+          aria-label={t('st.agentListFields.label')}
+          className="flex flex-wrap items-center gap-1.5"
+        >
+          {AGENT_LIST_UI_FIELD_ORDER.map((item) => {
+            const on = agentList.fields.includes(item);
+            return (
+              <button
+                key={item}
+                type="button"
+                aria-pressed={on}
+                disabled={disabled}
+                data-agent-list-field={item}
+                onClick={() => { void updateFields(toggleAgentListField(agentList.fields, item)); }}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 ${
+                  on
+                    ? 'border-hairline-strong bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                    : 'border-dashed border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink'
+                }`}
+              >
+                <span className={`size-1.5 shrink-0 rounded-full ${on ? 'bg-selected-ink' : 'bg-ink/20'}`} aria-hidden="true" />
+                <span>{t(`st.agentListFields.field.${item}`)}</span>
+                <code className={`font-mono text-[11px] ${on ? 'text-ink-soft' : 'text-ink-faint/80'}`}>{item}</code>
+              </button>
+            );
+          })}
         </div>
+        {config.isError ? <InlineError error={config.error} /> : null}
+        <FeedbackLine feedback={save.error} />
       </div>
-      <Hint>{t('st.agentListFields.help')}</Hint>
-      <div
-        role="group"
-        aria-labelledby="subagent-agent-list-fields-label"
-        className="mt-2 flex flex-wrap items-center gap-1.5"
-      >
-        {AGENT_LIST_UI_FIELD_ORDER.map((item) => {
-          const on = agentList.fields.includes(item);
-          return (
-            <button
-              key={item}
-              type="button"
-              aria-pressed={on}
-              disabled={controlsDisabled}
-              data-agent-list-field={item}
-              onClick={() => { void updateAgentListFields(toggleAgentListField(agentList.fields, item)); }}
-              className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 ${
-                on
-                  ? 'border-hairline-strong bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                  : 'border-dashed border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink'
-              }`}
-            >
-              <span className={`size-1.5 shrink-0 rounded-full ${on ? 'bg-selected-ink' : 'bg-ink/20'}`} aria-hidden="true" />
-              <span>{t(`st.agentListFields.field.${item}`)}</span>
-              <code className={`font-mono text-[11px] ${on ? 'text-ink-soft' : 'text-ink-faint/80'}`}>{item}</code>
-            </button>
-          );
-        })}
-      </div>
-      <FeedbackLine feedback={fieldsSave.error} />
-    </div>
-    {error || config.error ? <FeedbackLine feedback={{ tone: 'error', text: error ?? config.error?.message ?? '' }} /> : null}
-    </SettingsBox>
-  </SectionCard>;
+    </SectionCard>
+  );
 }

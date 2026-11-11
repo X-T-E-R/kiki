@@ -6,7 +6,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { BoardStorageSettings } from './BoardStorageSettings';
 import { ResourceLimitsCard } from './EngineLimitSettings';
-import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { SubagentAgentListFieldsCard, SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { TasksSection } from './TasksSection';
 import { openOptions } from './testControls';
 const { client, board } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), patchConfig: vi.fn(), listWorkspaceCatalog: vi.fn(), meta: vi.fn() }, board: { read: vi.fn(), write: vi.fn() } }));
@@ -176,7 +176,7 @@ it('keeps a subagent-limits draft when another card writes the shared config que
   expect(save.hasAttribute('disabled')).toBe(false);
 });
 
-it('toggles AgentList default fields with default 4 active and resets custom selection to null', async () => {
+it('toggles AgentList default fields on its own instant-save card and resets custom selection to null', async () => {
   client.patchConfig
     .mockResolvedValueOnce({
       subagent: {
@@ -193,7 +193,10 @@ it('toggles AgentList default fields with default 4 active and resets custom sel
         maxTotalSubagents: 0,
       },
     });
-  await render(<SubagentLimitsSettings />);
+  await render(<SubagentAgentListFieldsCard />);
+
+  expect(element.querySelector('#st-card-subagent-agent-list-fields')).not.toBeNull();
+  expect(element.querySelector('[data-settings-draft]')).toBeNull();
 
   const activeFields = () =>
     [...element.querySelectorAll<HTMLButtonElement>('[data-agent-list-field]')]
@@ -224,6 +227,88 @@ it('toggles AgentList default fields with default 4 active and resets custom sel
   });
   expect(activeFields()).toEqual(['model', 'elapsed_ms', 'idle_ms', 'tool_call_count']);
   expect(element.querySelector('[data-agent-list-fields-reset]')).toBeNull();
+});
+
+it('separates SubagentLimitsSettings draft state from SubagentAgentListFieldsCard instant saves', async () => {
+  client.patchConfig.mockResolvedValueOnce({
+    subagent: {
+      timeoutMs: 18000000,
+      maxDirectChildren: 16,
+      maxTotalSubagents: 0,
+      agentListFields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens'],
+    },
+  });
+  await render(<><SubagentLimitsSettings /><SubagentAgentListFieldsCard /></>);
+
+  expect(element.querySelector('#st-card-subagent-limits [data-agent-list-fields]')).toBeNull();
+  expect(element.querySelector('#st-card-subagent-agent-list-fields [data-agent-list-fields]')).not.toBeNull();
+
+  const hours = element.querySelector<HTMLInputElement>('#subagent-limit-hours')!;
+  expect(hours.value).toBe('5');
+  await setInputValue(hours, '8');
+
+  const contextBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-field="context_tokens"]')!;
+  await act(async () => { contextBtn.click(); });
+  await settle();
+
+  expect(hours.value).toBe('8');
+  expect(contextBtn.getAttribute('aria-pressed')).toBe('true');
+
+  const discardBtn = element.querySelector<HTMLButtonElement>('[data-settings-discard="subagent-limits"]')!;
+  await act(async () => { discardBtn.click(); });
+  await settle();
+  expect(hours.value).toBe('5');
+  expect(contextBtn.getAttribute('aria-pressed')).toBe('true');
+});
+
+it('clears the saved tick immediately when a follow-up toggle or reset starts or fails', async () => {
+  let rejectToggle!: (reason?: unknown) => void;
+  client.patchConfig
+    .mockResolvedValueOnce({
+      subagent: {
+        timeoutMs: 18000000,
+        maxDirectChildren: 16,
+        maxTotalSubagents: 0,
+        agentListFields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens'],
+      },
+    })
+    .mockImplementationOnce(() => new Promise((_, reject) => { rejectToggle = reject; }))
+    .mockRejectedValueOnce(new Error('reset refused'))
+    .mockResolvedValueOnce({
+      subagent: {
+        timeoutMs: 18000000,
+        maxDirectChildren: 16,
+        maxTotalSubagents: 0,
+      },
+    });
+
+  await render(<SubagentAgentListFieldsCard />);
+
+  const contextBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-field="context_tokens"]')!;
+  await act(async () => { contextBtn.click(); });
+  await settle();
+  expect(element.querySelector('[data-saved-tick]')).not.toBeNull();
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+
+  const effortBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-field="thinking_effort"]')!;
+  await act(async () => { effortBtn.click(); });
+  expect(element.querySelector('[data-saved-tick]')).toBeNull();
+
+  await act(async () => { rejectToggle(new Error('toggle refused')); });
+  await settle();
+  expect(element.querySelector('[role="alert"]')?.textContent).toContain('toggle refused');
+  expect(element.querySelector('[data-saved-tick]')).toBeNull();
+
+  const resetBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-fields-reset]')!;
+  await act(async () => { resetBtn.click(); });
+  await settle();
+  expect(element.querySelector('[role="alert"]')?.textContent).toContain('reset refused');
+  expect(element.querySelector('[data-saved-tick]')).toBeNull();
+
+  await act(async () => { resetBtn.click(); });
+  await settle();
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+  expect(element.querySelector('[data-saved-tick]')).not.toBeNull();
 });
 
 const resourceConfig = { workspace_instance: { idleTtlMs: 300000 }, image: { maxEdgePx: 2000, readByteBudget: 262144 } };

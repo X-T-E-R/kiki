@@ -28,11 +28,12 @@ export function useInstantSave(): InstantSave {
   const { locale } = useI18n();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<Feedback>(null);
-  const [saved, ping] = useSavedTick();
+  const [saved, ping, clearSaved] = useSavedTick();
   const inFlight = useRef(0);
 
   const run = useCallback(async (write: () => Promise<unknown>) => {
     const ticket = ++inFlight.current;
+    clearSaved();
     setSaving(true);
     setError(null);
     try {
@@ -40,12 +41,15 @@ export function useInstantSave(): InstantSave {
       if (ticket === inFlight.current) ping();
       return true;
     } catch (cause) {
-      if (ticket === inFlight.current) setError({ tone: 'error', text: errorText(locale, cause) });
+      if (ticket === inFlight.current) {
+        clearSaved();
+        setError({ tone: 'error', text: errorText(locale, cause) });
+      }
       return false;
     } finally {
       if (ticket === inFlight.current) setSaving(false);
     }
-  }, [locale, ping]);
+  }, [clearSaved, locale, ping]);
 
   const clearError = useCallback(() => { setError(null); }, []);
   return { saving, saved, error, run, clearError };

@@ -45,7 +45,7 @@ import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
-import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { SubagentAgentListFieldsCard, SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
 import { AGENT_QUERY_PARAM, UnifiedAgentManager } from './UnifiedAgentManager';
 import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
@@ -56,7 +56,7 @@ import { dispatchFieldsOf } from './profileEditor/profileDraft';
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
 export function SubagentGovernanceCard() {
-  return <><SubagentLimitsSettings /><SubagentModelGovernanceCard /></>;
+  return <><SubagentLimitsSettings /><SubagentAgentListFieldsCard /><SubagentModelGovernanceCard /></>;
 }
 
 function SubagentModelGovernanceCard() {
