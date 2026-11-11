@@ -70,6 +70,9 @@ import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
+import { resolvePluginLocalizedText, selectInspectorTabSlots } from '@kiki/session-core';
+import { PluginPanelHost } from '../capabilities/PluginPanelHost';
+import { usePluginGuiSlots } from '../plugins/PluginComposerSlots';
 
 /**
  * One section of the scrolling page: a hairline above it, no card. The page
@@ -277,11 +280,19 @@ export function Rail({
   onClose,
   className,
 }: RailProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
   const preview = useMediaPreview();
   const session = state.session;
+  const { slots: pluginGuiSlots } = usePluginGuiSlots({
+    sessionId: state.sessionId,
+    workspaceId: session?.workspace_id,
+  });
+  const pluginInspectorTabs = useMemo(
+    () => selectInspectorTabSlots(pluginGuiSlots),
+    [pluginGuiSlots],
+  );
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
   const [terminatingAll, setTerminatingAll] = useState(false);
@@ -572,6 +583,33 @@ export function Rail({
   const tailSection = (
     <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
+      {pluginInspectorTabs.map((panel) => {
+        const panelKey = `${panel.pluginId}:${panel.panelId}`;
+        const title = resolvePluginLocalizedText(panel.title, locale);
+        return (
+          <RailSection
+            key={panelKey}
+            title={title}
+            defaultOpen={false}
+            data-plugin-inspector-tab={panelKey}
+          >
+            <div className="pt-1.5">
+              <PluginPanelHost
+                pluginId={panel.pluginId}
+                panelId={panel.panelId}
+                label={title}
+                sessionId={state.sessionId}
+                target={
+                  session?.workspace_id !== undefined
+                    ? { workspace_id: session.workspace_id }
+                    : { session_id: state.sessionId }
+                }
+                className="h-64 w-full rounded-lg border border-hairline bg-paper"
+              />
+            </div>
+          </RailSection>
+        );
+      })}
       <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
       {memory !== undefined ? (
         <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">

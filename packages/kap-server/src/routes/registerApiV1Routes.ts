@@ -46,6 +46,7 @@ import type { NotificationService } from '../services/notifications/notification
 import type { ImSessionBridge } from '../services/imSession/bridge';
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
+import { registerPluginBrokerRoutes } from './pluginBroker';
 import { registerHarnessQuotaRoutes } from './harnessQuota';
 import { registerPluginUsageRoutes } from './pluginUsage';
 import { registerOptionalCapabilityRoutes } from './optionalCapabilities';
@@ -258,6 +259,7 @@ export async function registerApiV1Routes(
         marketplaceUrl: opts.pluginMarketplaceUrl,
         serverToken: opts.pluginBridgeServerToken,
       });
+      registerPluginBrokerRoutes(apiV1 as unknown as Parameters<typeof registerPluginBrokerRoutes>[0], core);
       registerHarnessQuotaRoutes(apiV1 as unknown as Parameters<typeof registerHarnessQuotaRoutes>[0], core);
       registerPluginUsageRoutes(apiV1 as unknown as Parameters<typeof registerPluginUsageRoutes>[0], core);
       registerOptionalCapabilityRoutes(apiV1 as unknown as Parameters<typeof registerOptionalCapabilityRoutes>[0], core);

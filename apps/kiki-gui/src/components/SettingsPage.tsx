@@ -39,6 +39,7 @@ import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
 import { ExtensionsSection } from './settings/ExtensionsSection';
+import { PluginSettingsSectionSlotList } from './plugins/PluginSettingsSectionCard';
 import { ConnectionServicesSection } from './settings/ConnectionServicesSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { LabsSection } from './settings/LabsSection';
@@ -625,7 +626,13 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
                 <SettingsPageScopeContext.Provider value={pageScope}>
                   <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>
-                    <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
+                    <div className="space-y-6">
+                      {pane}
+                      {(active === 'plugins' || active === 'extensions') && activePluginId === null ? (
+                        <PluginSettingsSectionSlotList workspaceId={activeWorkspaceId ?? undefined} />
+                      ) : null}
+                      {showExperimental ? <ExperimentalRows section={active} /> : null}
+                    </div>
                   </SettingsPaneBoundary>
                 </SettingsPageScopeContext.Provider>
               </div>

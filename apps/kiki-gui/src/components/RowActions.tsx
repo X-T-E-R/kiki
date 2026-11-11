@@ -28,6 +28,7 @@ import { registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
 import type { ComposerAttachment } from '@kiki/session-core/composer';
 import { Composer } from './Composer';
+import { PluginMessageActions, useRolePluginMessageActions } from './plugins/PluginMessageActions';
 import { useTranscriptTarget } from './transcriptDetail';
 
 /**
@@ -93,6 +94,10 @@ export function useMessageRowTapActions<T extends HTMLElement>() {
 }
 
 export interface MessageRowActionsProps {
+  /** Message role for filtering plugin `message-action` slot contributions. */
+  role?: 'user' | 'assistant';
+  /** Block/message identifier forwarded in plugin message-action context. */
+  messageId?: string;
   /** Copy target; the copy button renders only when this is a non-empty string. */
   copyText?: string;
   /** In-app link to this message (`/s/{id}?block={blockId}`); renders "link" when set. */
@@ -143,6 +148,8 @@ function RegenerateIcon() {
 }
 
 export function MessageRowActions({
+  role,
+  messageId,
   copyText,
   linkHref,
   canEdit = false,
@@ -155,6 +162,11 @@ export function MessageRowActions({
   onFork,
 }: MessageRowActionsProps) {
   const { t } = useI18n();
+  const transcriptTarget = useTranscriptTarget();
+  const pluginActions = useRolePluginMessageActions({
+    role,
+    sessionId: transcriptTarget?.sessionId,
+  });
   const [copied, setCopied] = useState<'text' | 'link' | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [openUp, setOpenUp] = useState(false);
@@ -167,7 +179,8 @@ export function MessageRowActions({
   const showEdit = canEdit && onEdit !== undefined;
   const showRegenerate = canRegenerate && onRegenerate !== undefined;
   const showFork = canFork && onFork !== undefined;
-  if (!showCopy && !showLink && !showEdit && !showRegenerate && !showFork) return null;
+  const showPluginActions = pluginActions.length > 0;
+  if (!showCopy && !showLink && !showEdit && !showRegenerate && !showFork && !showPluginActions) return null;
 
   const copy = (what: 'text' | 'link', text: string) => {
     void copyTextToClipboard(text)
@@ -182,10 +195,12 @@ export function MessageRowActions({
     if (!menuOpen) {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect !== undefined) {
-        // Dropdown menu height is ~160px. If space below is constrained and space above is larger, flip upward.
+        // Account for the docked composer bar at the bottom of the viewport so
+        // an expanded overflow menu (including plugin message actions) flips
+        // upward cleanly instead of slipping behind the composer card.
         const spaceBelow = window.innerHeight - rect.bottom;
         const spaceAbove = rect.top;
-        setOpenUp(spaceBelow < 180 && spaceAbove > spaceBelow);
+        setOpenUp(spaceBelow < 240 && spaceAbove > spaceBelow);
       }
       setMenuOpen(true);
     } else {
@@ -246,10 +261,10 @@ export function MessageRowActions({
   const visibility =
     'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
 
-  // Only copy-link and fork are menu-only, so the `⋯` trigger is needed at every
-  // width while one of them exists; a strip of tiled actions alone folds it away
-  // above `sm`, where those tiles are already on screen.
-  const menuOnly = showLink || showFork;
+  // Only copy-link, fork, and plugin message actions are menu-only, so the `⋯`
+  // trigger is needed at every width while one of them exists; a strip of tiled
+  // actions alone folds it away above `sm`, where those tiles are already on screen.
+  const menuOnly = showLink || showFork || showPluginActions;
 
   // `absolute top-full`: the strip hangs from the row's bottom edge into the
   // gap under the message, so it reserves no height and revealing it moves
@@ -419,6 +434,18 @@ export function MessageRowActions({
           >
             {t('transcript.fork')}
           </button>
+        ) : null}
+        {role !== undefined ? (
+          <PluginMessageActions
+            role={role}
+            messageId={messageId}
+            messageText={copyText}
+            sessionId={transcriptTarget?.sessionId}
+            disabled={disabled}
+            onSelect={() => {
+              setMenuOpen(false);
+            }}
+          />
         ) : null}
       </div>
     </span>

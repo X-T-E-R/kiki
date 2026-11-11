@@ -13,6 +13,7 @@ import type { ToolInputDisplay } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
+import { findToolCardRendererSlot, resolvePluginLocalizedText } from '@kiki/session-core';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -23,6 +24,9 @@ import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { MediaJobView, readMediaJobResult } from './media/MediaJobView';
 import { FilePathLink, MediaPartList } from './mediaParts';
 import { Icon, OutcomeMark, type IconName } from './icons';
+import { usePluginGuiSlots } from './plugins/PluginComposerSlots';
+import { PluginToolCardBody, resolvePluginToolTargetNode } from './plugins/PluginToolCardBody';
+import { useTranscriptTarget } from './transcriptDetail';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
 import { useFindReveal } from './timeline/findReveal';
 import {
@@ -517,7 +521,11 @@ export const ToolCard = memo(function ToolCard({
   /** Rendered inside a folded read run's spine. */
   nested?: boolean;
 }) {
-  const { t, tp, time } = useI18n();
+  const { t, tp, time, locale } = useI18n();
+  const transcriptTarget = useTranscriptTarget();
+  const { slots: pluginGuiSlots } = usePluginGuiSlots({
+    sessionId: transcriptTarget?.sessionId,
+  });
   const [expanded, setExpanded] = useState(false);
   useFindReveal(sourceBlock.id, expanded, setExpanded);
   // A bridged call reads as the tool it calls, from the first streamed name
@@ -694,16 +702,40 @@ ${engineError}`;
     );
   }
 
+  const pluginToolSlot = useMemo(
+    () => (external || (bridged && realName === undefined) ? undefined : findToolCardRendererSlot(pluginGuiSlots, block.name)),
+    [external, bridged, realName, pluginGuiSlots, block.name],
+  );
+  const pluginToolSources = useMemo(
+    () => ({ args: block.args, result: block.output, display: block.display }),
+    [block.args, block.output, block.display],
+  );
+  const pluginTarget = useMemo(
+    () => (pluginToolSlot === undefined ? undefined : resolvePluginToolTargetNode(pluginToolSlot, pluginToolSources)),
+    [pluginToolSlot, pluginToolSources],
+  );
+
   return (
     <ActivityRow
       nested={nested}
-      attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId, 'data-tool-name': block.name }}
+      attrs={{
+        'data-tool': true,
+        'data-tool-id': block.toolCallId,
+        'data-tool-name': block.name,
+        ...(pluginToolSlot !== undefined ? { 'data-plugin-tool-renderer': `${pluginToolSlot.pluginId}:${pluginToolSlot.id}` } : undefined),
+      }}
       glyph={<Icon name={toolIcon(block)} />}
       tone={tone}
       // Plugin and MCP tools read by their own name; the runtime id
       // (`plugin__<id>__<tool>`) stays available on hover.
-      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{external ? externalActionLabel(block, t) : toolDisplayName(block.name)}</span>}
-      detail={target}
+      label={
+        bridged && realName === undefined
+          ? t('tc.callingTool')
+          : pluginToolSlot !== undefined
+            ? <span title={block.name}>{resolvePluginLocalizedText(pluginToolSlot.actionVerb, locale)}</span>
+            : <span title={block.name}>{external ? externalActionLabel(block, t) : toolDisplayName(block.name)}</span>
+      }
+      detail={errorSummary === undefined && block.status !== 'stopped' && pluginTarget !== undefined ? pluginTarget : target}
       expanded={expanded}
       onToggle={() => { setExpanded((value) => !value); }}
       stats={
@@ -718,7 +750,13 @@ ${engineError}`;
         // Expands in place under the line; no frame of its own — the wells
         // inside carry the only surface.
         <div className="space-y-2">
-          {isCommand && block.display?.kind === 'command' ? (
+          {pluginToolSlot !== undefined ? (
+            <PluginToolCardBody
+              slot={pluginToolSlot}
+              sources={pluginToolSources}
+              rawFallback={<>{inputWell}{outputWell}</>}
+            />
+          ) : isCommand && block.display?.kind === 'command' ? (
             <>
               <CommandIsland
                 command={block.display.command}

@@ -943,6 +943,8 @@ const UserMessage = memo(function UserMessage({
       {(rowActions !== undefined || messageLink !== undefined) && !editing ? (
         <MessageRowActions
           align="right"
+          role="user"
+          messageId={block.id}
           copyText={incomplete ? undefined : typedText}
           linkHref={messageLink?.(block.id)}
           canEdit={canMutate}
@@ -1221,6 +1223,8 @@ const AssistantMessage = memo(function AssistantMessage({
       {showActions ? (
         <MessageRowActions
           align="left"
+          role="assistant"
+          messageId={block.id}
           copyText={incomplete ? undefined : (isOutputLayerActive ? readingText : block.text)}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}

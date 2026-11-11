@@ -1,4 +1,5 @@
 export * from './commands';
+export * from './plugins/guiSlots';
 export * from './discovery';
 export * from './composer';
 export * from './i18n';

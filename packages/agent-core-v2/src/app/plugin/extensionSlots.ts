@@ -414,23 +414,15 @@ export interface IPluginExtensionPortRegistry {
     descriptor: PluginHttpRouteDescriptor,
     handler: (ctx: PluginHttpRouteHandlerContext) => Promise<PluginHttpRouteResult>,
   ): IDisposable;
-
   resolveHttpRoute?(
     pluginId: string,
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     subpath: string,
   ): PluginHttpRouteDescriptor | undefined;
   invokeHttpRoute(context: PluginHttpRouteHandlerContext): Promise<PluginHttpRouteResult | undefined>;
-  resolveWsTopic(pluginId: string, topic: string): PluginWsTopicDescriptor | undefined;
-  readonly onDidPublishWsTopicEvent: Event<{
-    readonly pluginId: string;
-    readonly topic: string;
-    readonly sessionId?: string;
-    readonly spaceId?: string;
-    readonly payload: unknown;
-  }>;
 
   registerWsTopic(descriptor: PluginWsTopicDescriptor): IDisposable;
+  resolveWsTopic(pluginId: string, topic: string): PluginWsTopicDescriptor | undefined;
   publishWsTopicEvent(input: {
     readonly pluginId: string;
     readonly topic: string;
@@ -438,6 +430,13 @@ export interface IPluginExtensionPortRegistry {
     readonly spaceId?: string;
     readonly payload: unknown;
   }): void;
+  readonly onDidPublishWsTopicEvent: Event<{
+    readonly pluginId: string;
+    readonly topic: string;
+    readonly sessionId?: string;
+    readonly spaceId?: string;
+    readonly payload: unknown;
+  }>;
 
   registerGuiSlot(contribution: PluginGuiSlotContribution): IDisposable;
   listGuiSlots(filter?: {

@@ -1,27 +1,33 @@
 /**
  * Slash-command model for the composer.
  *
- * Two entry kinds, both honest about what backs them:
+ * Three entry kinds, all backed by real capabilities:
  *   - `skill` — a real catalog entry (`GET /sessions/{id}/skills` on a live
  *     session, `GET /workspaces/{id}/skills` on /new); submitting one calls
  *     `POST …/skills/{name}:activate` once a session exists.
  *   - `action` — a client-side shortcut that maps to a real GUI action
  *     (toggle plan mode, open the goal popover, a /btw side question,
  *     fork/undo/compact, /new).
+ *   - `plugin` — a declarative slash command contributed through a plugin GUI slot.
  *
  * A draft that starts with `/` but matches no entry is still just text — the
  * server never sees an invented command. The composer intercepts such sends
  * (`classifySlashSubmission`) so a typo asks before shipping as prompt text.
  */
 
-import type { SkillDescriptor } from '@kiki/protocol';
+import type { PluginGuiSlotContribution, PluginSlotAction, SkillDescriptor } from '@kiki/protocol';
 
+import {
+  resolvePluginLocalizedText,
+  selectSlashCommandSlots,
+  type PluginSlashCommandSlotContribution,
+} from '../plugins/guiSlots';
 import { isAppRouteLink } from '../composer/threadRefs';
 
 export type SlashActionId = 'plan' | 'goal' | 'new' | 'btw' | 'fork' | 'undo' | 'compact';
 
 export interface SlashItem {
-  kind: 'skill' | 'action';
+  kind: 'skill' | 'action' | 'plugin';
   /** Command name without the leading slash (`review`, `plan`). */
   name: string;
   description: string;
@@ -31,6 +37,14 @@ export interface SlashItem {
   skill?: SkillDescriptor;
   /** Actions only: the shortcut id. */
   action?: SlashActionId;
+  /** Plugin items only: the contributing plugin id. */
+  pluginId?: string;
+  /** Plugin items only: the contributed slash slot id. */
+  slotId?: string;
+  /** Plugin items only: the localized argument hint. */
+  argumentHint?: string;
+  /** Plugin items only: the declarative interaction action. */
+  pluginAction?: PluginSlotAction;
 }
 
 interface SlashActionSpec {
@@ -79,11 +93,57 @@ export function buildSkillSlashItems(
   });
 }
 
+export function buildPluginSlashItems(
+  slots: readonly PluginSlashCommandSlotContribution[],
+  options: { hasSession: boolean; locale?: string; occupiedNames?: ReadonlySet<string> },
+): SlashItem[] {
+  const occupied = new Set([
+    ...SLASH_ACTIONS.map((spec) => spec.name.toLowerCase()),
+    ...[...(options.occupiedNames ?? [])].map((name) => name.toLowerCase()),
+  ]);
+  const items: SlashItem[] = [];
+
+  for (const slot of slots) {
+    if (slot.needsSession && !options.hasSession) continue;
+
+    let name = slot.command;
+    if (occupied.has(name.toLowerCase())) {
+      name = `${slot.pluginId}:${slot.command}`;
+      if (occupied.has(name.toLowerCase())) name = `${name}:${slot.id}`;
+      while (occupied.has(name.toLowerCase())) name = `${name}:${slot.id}`;
+    }
+    occupied.add(name.toLowerCase());
+    items.push({
+      kind: 'plugin',
+      name,
+      description: resolvePluginLocalizedText(slot.description, options.locale ?? 'en'),
+      argumentHint: slot.argumentHint === undefined
+        ? undefined
+        : resolvePluginLocalizedText(slot.argumentHint, options.locale ?? 'en'),
+      pluginId: slot.pluginId,
+      slotId: slot.id,
+      pluginAction: slot.action,
+    });
+  }
+  return items;
+}
+
 export function buildSlashItems(
   skills: readonly SkillDescriptor[],
-  options: { hasSession: boolean },
+  options: { hasSession: boolean; pluginSlots?: readonly PluginGuiSlotContribution[]; locale?: string },
 ): SlashItem[] {
   const skillItems = buildSkillSlashItems(skills, SLASH_ACTIONS.map((spec) => spec.name));
+  const pluginItems = buildPluginSlashItems(
+    selectSlashCommandSlots(options.pluginSlots ?? []),
+    {
+      hasSession: options.hasSession,
+      locale: options.locale,
+      occupiedNames: new Set([
+        ...SLASH_ACTIONS.map((spec) => spec.name.toLowerCase()),
+        ...skillItems.map((item) => item.name.toLowerCase()),
+      ]),
+    },
+  );
   const actionItems: SlashItem[] = SLASH_ACTIONS.filter(
     (spec) => !spec.needsSession || options.hasSession,
   ).map((spec) => ({
@@ -92,8 +152,7 @@ export function buildSlashItems(
     description: spec.description,
     action: spec.id,
   }));
-  // Skills first (the point of the endpoint), shortcuts after.
-  return [...skillItems, ...actionItems];
+  return [...skillItems, ...pluginItems, ...actionItems];
 }
 
 /**

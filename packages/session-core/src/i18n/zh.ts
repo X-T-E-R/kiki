@@ -1554,6 +1554,13 @@ export const zh = {
   'composer.slash.btw': '顺带问一句，不打断当前会话',
   'composer.slash.undo': '撤销最后一轮',
   'composer.slash.compact': '将更早的上下文压缩为摘要',
+  'composer.slash.plugins': '插件命令',
+  'pluginSlot.toolbarAria': '插件操作',
+  'pluginSlot.statusAria': '插件状态',
+  'pluginSlot.actionFailed': '{label} 执行失败：{detail}',
+  'pluginSlot.openSettings': '配置插件',
+  'pluginSlot.inspectorGroup': '扩展面板',
+  'pluginSlot.sidebarGroup': '插件面板',
 
   // ---- transcript ----
   'transcript.bridgedOrigin': '来自 {where} · {location}',

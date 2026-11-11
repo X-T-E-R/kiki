@@ -1570,6 +1570,13 @@ export const en = {
   'composer.slash.btw': 'Ask a side question without interrupting this session',
   'composer.slash.undo': 'Undo the last turn',
   'composer.slash.compact': 'Compact older context into a summary',
+  'composer.slash.plugins': 'Plugin commands',
+  'pluginSlot.toolbarAria': 'Plugin actions',
+  'pluginSlot.statusAria': 'Plugin status',
+  'pluginSlot.actionFailed': '{label} failed: {detail}',
+  'pluginSlot.openSettings': 'Configure plugin',
+  'pluginSlot.inspectorGroup': 'Extensions',
+  'pluginSlot.sidebarGroup': 'Plugin panels',
 
   // ---- transcript ----
   'transcript.bridgedOrigin': 'From {where} · {location}',

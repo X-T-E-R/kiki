@@ -321,7 +321,8 @@ export class PluginExtensionPortRegistryService extends Disposable implements IP
   }
 
   private findHttpRoute(pluginId: string, method: PluginHttpRouteDescriptor['method'], subpath: string) {
-    return this.httpRoutes.find(({ value: { descriptor } }) => descriptor.pluginId === pluginId
+    const normalizedId = pluginId.toLowerCase();
+    return this.httpRoutes.find(({ value: { descriptor } }) => descriptor.pluginId.toLowerCase() === normalizedId
       && descriptor.method === method && descriptor.subpath === subpath);
   }
 
@@ -333,7 +334,8 @@ export class PluginExtensionPortRegistryService extends Disposable implements IP
   }
 
   resolveWsTopic(pluginId: string, topic: string): PluginWsTopicDescriptor | undefined {
-    return this.wsTopics.find(entry => entry.value.pluginId === pluginId && entry.value.topic === topic)?.value;
+    const normalizedId = pluginId.toLowerCase();
+    return this.wsTopics.find(entry => entry.value.pluginId.toLowerCase() === normalizedId && entry.value.topic === topic)?.value;
   }
 
   publishWsTopicEvent(input: Parameters<IPluginExtensionPortRegistry['publishWsTopicEvent']>[0]): void {

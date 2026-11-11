@@ -17,17 +17,30 @@ import {
   IAgentLifecycleService,
   IAgentPromptService,
   IAgentTaskService,
+  IBootstrapService,
   IEventBus,
   IEventService,
+  IInstantiationService,
+  IPluginExtensionPortRegistry,
+  IPluginService,
+  IPluginUsageService,
   ISessionActivityView,
+  ISessionContext,
   ISessionInteractionService,
   ISessionIndex,
   ISessionManager,
   IWireService,
   MAIN_AGENT_ID,
+  SyncDescriptor,
   foldLoopEvent,
   getLiveSessionById,
+  ref,
+  type LiveRef,
 } from '@kiki/agent-core-v2';
+import type {
+  PluginExtensionBrokerHostPort,
+  PluginPublishedWsTopicInput,
+} from '../../../protocol/rest-plugin-broker';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import type {
@@ -208,6 +221,31 @@ async function disposeSessionState(state: SessionState): Promise<void> {
   await state.journal.close();
 }
 
+class OptionalBroadcasterExtensionPortReader {
+  constructor(
+    @ref(IPluginExtensionPortRegistry)
+    readonly portRef: LiveRef<IPluginExtensionPortRegistry>,
+  ) {}
+}
+
+function readBroadcasterExtensionPort(core: Scope): PluginExtensionBrokerHostPort | undefined {
+  try {
+    const instantiation = core.accessor.get(IInstantiationService);
+    if (instantiation !== undefined && typeof instantiation.createInstance === 'function') {
+      const reader = instantiation.createInstance<OptionalBroadcasterExtensionPortReader>(
+        new SyncDescriptor(OptionalBroadcasterExtensionPortReader),
+      );
+      return reader.portRef.current;
+    }
+  } catch {
+  }
+  try {
+    return core.accessor.get(IPluginExtensionPortRegistry);
+  } catch {
+    return undefined;
+  }
+}
+
 export class SessionEventBroadcaster {
   private readonly sessions = new Map<string, SessionState>();
   /**
@@ -236,6 +274,9 @@ export class SessionEventBroadcaster {
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
   private readonly sessionLifecycleSubscription: IDisposable;
+  private pluginTopicSubscription?: IDisposable;
+  private attachedPluginPort?: PluginExtensionBrokerHostPort;
+  private readonly pluginGenerations = new Map<string, number>();
   private closed = false;
 
   constructor(
@@ -264,6 +305,7 @@ export class SessionEventBroadcaster {
         onArchive?.dispose();
       },
     };
+    this.syncPluginTopicSubscription();
   }
 
   /**
@@ -307,6 +349,150 @@ export class SessionEventBroadcaster {
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);
+  }
+
+  /** Publishes an ACL-scoped `event.plugin.topic` frame to authorized WebSocket targets. */
+  async publishPluginTopicEvent(input: PluginPublishedWsTopicInput): Promise<boolean> {
+    if (this.closed) return false;
+    this.syncPluginTopicSubscription();
+    const pluginKey = input.pluginId.toLowerCase();
+    const generation = this.pluginGenerations.get(pluginKey) ?? 0;
+    const port = readBroadcasterExtensionPort(this.opts.core);
+    if (port === undefined) return false;
+    const descriptor = port.resolveWsTopic?.(input.pluginId, input.topic);
+    if (descriptor === undefined || descriptor.pluginId.toLowerCase() !== pluginKey) return false;
+
+    const currentSpaceId = this.opts.core.accessor.get(IBootstrapService)?.spaceId ?? 'main';
+    if (descriptor.scopeAcl === 'space') {
+      const targetSpaceId = input.spaceId ?? currentSpaceId;
+      if (targetSpaceId !== currentSpaceId) return false;
+    }
+
+    let workspaceId: string | undefined;
+    if (descriptor.scopeAcl === 'session') {
+      if (input.sessionId === undefined || input.sessionId.trim() === '') return false;
+      if (input.spaceId !== undefined && input.spaceId !== currentSpaceId) return false;
+      const state = this.sessions.get(input.sessionId);
+      if (state === undefined || state.targets.size === 0) return false;
+      workspaceId = await this.resolveSessionWorkspaceForPlugin(input.sessionId);
+      if (workspaceId === undefined) return false;
+    } else if (input.sessionId !== undefined) {
+      workspaceId = await this.resolveSessionWorkspaceForPlugin(input.sessionId);
+    }
+
+    const allowed = await this.isPluginAllowedForTopic(input.pluginId, workspaceId, input.sessionId);
+    if (!allowed || this.closed || (this.pluginGenerations.get(pluginKey) ?? 0) !== generation) {
+      return false;
+    }
+    const rechecked = port.resolveWsTopic?.(input.pluginId, input.topic);
+    if (rechecked === undefined || rechecked.pluginId.toLowerCase() !== pluginKey) return false;
+
+    const sessionId = descriptor.scopeAcl === 'session' ? input.sessionId! : (input.sessionId ?? GLOBAL_SESSION_ID);
+    const wirePayload = {
+      type: 'event.plugin.topic' as const,
+      plugin_id: input.pluginId,
+      topic: input.topic,
+      session_id: input.sessionId,
+      space_id: descriptor.scopeAcl === 'space' ? (input.spaceId ?? currentSpaceId) : input.spaceId,
+      payload: input.payload,
+      agentId: MAIN_AGENT_ID,
+      sessionId,
+    };
+
+    if (descriptor.scopeAcl === 'session') {
+      const state = this.sessions.get(input.sessionId!);
+      if (state === undefined || state.targets.size === 0) return false;
+      const envelope: EventEnvelope = {
+        type: 'event.plugin.topic',
+        seq: state.journal.seq,
+        epoch: state.journal.epoch,
+        volatile: true,
+        session_id: state.sessionId,
+        timestamp: new Date().toISOString(),
+        payload: wirePayload,
+      };
+      for (const target of state.targets.keys()) {
+        try {
+          target.send(envelope, 'immediate');
+        } catch {}
+      }
+      return true;
+    }
+
+    const recipients = new Set<BroadcastTarget>(this.globalTargets);
+    for (const target of this.allTargets()) recipients.add(target);
+    if (recipients.size === 0) return false;
+    const envelope: EventEnvelope = {
+      type: 'event.plugin.topic',
+      seq: 0,
+      volatile: true,
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      payload: wirePayload,
+    };
+    for (const target of recipients) {
+      try {
+        target.send(envelope, 'immediate');
+      } catch {}
+    }
+    return true;
+  }
+
+  private syncPluginTopicSubscription(): void {
+    if (this.closed) return;
+    const port = readBroadcasterExtensionPort(this.opts.core);
+    if (port === this.attachedPluginPort) return;
+    this.pluginTopicSubscription?.dispose();
+    this.pluginTopicSubscription = undefined;
+    this.attachedPluginPort = port;
+    if (port?.onDidPublishWsTopicEvent !== undefined) {
+      this.pluginTopicSubscription = port.onDidPublishWsTopicEvent((event) => {
+        void this.publishPluginTopicEvent(event).catch((error: unknown) => {
+          this.logDispatchError(event.sessionId ?? GLOBAL_SESSION_ID, 'event.plugin.topic', error);
+        });
+      });
+    }
+  }
+
+  private bumpAllPluginGenerations(pluginId?: string): void {
+    if (pluginId !== undefined && pluginId !== '') {
+      const key = pluginId.toLowerCase();
+      this.pluginGenerations.set(key, (this.pluginGenerations.get(key) ?? 0) + 1);
+      return;
+    }
+    for (const [key, current] of this.pluginGenerations) {
+      this.pluginGenerations.set(key, current + 1);
+    }
+  }
+
+  private async resolveSessionWorkspaceForPlugin(sessionId: string): Promise<string | undefined> {
+    const live = getLiveSessionById(this.opts.core.accessor, sessionId);
+    if (live !== undefined) {
+      try {
+        const ctx = live.accessor.get(ISessionContext);
+        if (ctx?.workspaceId !== undefined) return ctx.workspaceId;
+      } catch {}
+    }
+    const summary = await this.opts.core.accessor.get(ISessionIndex)?.get(sessionId);
+    return summary?.workspaceId;
+  }
+
+  private async isPluginAllowedForTopic(
+    pluginId: string,
+    workspaceId: string | undefined,
+    sessionId: string | undefined,
+  ): Promise<boolean> {
+    const pluginService = this.opts.core.accessor.get(IPluginService);
+    if (pluginService !== undefined) {
+      const installed = await pluginService.listPlugins();
+      const record = installed.find((entry) => entry.id.toLowerCase() === pluginId.toLowerCase());
+      if (record === undefined || !record.enabled || record.state !== 'ok') return false;
+    }
+    const usage = this.opts.core.accessor.get(IPluginUsageService);
+    if (usage !== undefined) {
+      return usage.allows(workspaceId, pluginId, sessionId);
+    }
+    return true;
   }
 
   isSessionViewed(sessionId: string): boolean {
@@ -1145,6 +1331,9 @@ export class SessionEventBroadcaster {
     this.closed = true;
     for (const pending of this.pendingSubscriptions.values()) for (const controller of pending.values()) controller.abort();
     this.pendingSubscriptions.clear();
+    this.pluginTopicSubscription?.dispose();
+    this.pluginTopicSubscription = undefined;
+    this.attachedPluginPort = undefined;
     await this.coreEventSubscription.dispose();
     await this.sessionLifecycleSubscription.dispose();
     await Promise.allSettled([...this.evictions.values(), ...this.pendingStates.values()]);
@@ -1331,12 +1520,49 @@ export class SessionEventBroadcaster {
       return;
     }
     if (event.type === 'event.plugin.changed') {
+      const changedPluginId =
+        typeof corePayload === 'object' && corePayload !== null
+          ? (corePayload as { readonly pluginId?: unknown }).pluginId
+          : undefined;
+      this.bumpAllPluginGenerations(typeof changedPluginId === 'string' ? changedPluginId : undefined);
+      this.syncPluginTopicSubscription();
       void this.dispatchGlobal({
         type: 'event.plugin.changed',
         agentId: 'main',
         sessionId: GLOBAL_SESSION_ID,
       } as Event).catch((error: unknown) =>
         this.logDispatchError(GLOBAL_SESSION_ID, 'event.plugin.changed', error),
+      );
+      return;
+    }
+    if (event.type === 'event.plugin.topic') {
+      if (typeof corePayload !== 'object' || corePayload === null) return;
+      const candidate = corePayload as Record<string, unknown>;
+      const pluginId = typeof candidate['pluginId'] === 'string'
+        ? candidate['pluginId']
+        : typeof candidate['plugin_id'] === 'string'
+          ? candidate['plugin_id']
+          : undefined;
+      const topic = typeof candidate['topic'] === 'string' ? candidate['topic'] : undefined;
+      if (pluginId === undefined || topic === undefined) return;
+      const sessionId = typeof candidate['sessionId'] === 'string'
+        ? candidate['sessionId']
+        : typeof candidate['session_id'] === 'string'
+          ? candidate['session_id']
+          : undefined;
+      const spaceId = typeof candidate['spaceId'] === 'string'
+        ? candidate['spaceId']
+        : typeof candidate['space_id'] === 'string'
+          ? candidate['space_id']
+          : undefined;
+      void this.publishPluginTopicEvent({
+        pluginId,
+        topic,
+        sessionId,
+        spaceId,
+        payload: candidate['payload'],
+      }).catch((error: unknown) =>
+        this.logDispatchError(sessionId ?? GLOBAL_SESSION_ID, 'event.plugin.topic', error),
       );
       return;
     }
@@ -1902,7 +2128,7 @@ function isGlobalEvent(type: string): boolean {
     type.startsWith('event.session.') ||
     type.startsWith('event.workspace.') ||
     type.startsWith('event.config.') ||
-    type.startsWith('event.plugin.') ||
+    (type.startsWith('event.plugin.') && type !== 'event.plugin.topic') ||
     type.startsWith('event.capability.') ||
     type.startsWith('event.model_catalog.')
   );

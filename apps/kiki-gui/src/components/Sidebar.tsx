@@ -112,6 +112,8 @@ import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
 import { ThreadTitle } from './ThreadTitle';
 import { RequestGovernanceBadge } from './RequestGovernanceView';
+import { resolvePluginLocalizedText, selectSidebarPanelSlots } from '@kiki/session-core';
+import { buildPluginPanelHref, usePluginGuiSlots } from './plugins/PluginComposerSlots';
 
 // Re-exported for callers and tests that paged the old in-component search.
 export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
@@ -295,16 +297,30 @@ function scopedRoute(route: string, workspaceId: string | undefined): string {
 }
 
 function PrimaryNav({
+  activeSessionId,
   activeWorkspaceId,
   badges,
 }: {
+  activeSessionId?: string;
   activeWorkspaceId: string | undefined;
   badges?: Partial<Record<NavKey, { count: number; label: string }>>;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const layoutPrefs = useLayoutPreferences();
+  const { slots: pluginGuiSlots } = usePluginGuiSlots({
+    sessionId: activeSessionId,
+    workspaceId: activeWorkspaceId,
+  });
+  const pluginSidebarPanels = useMemo(
+    () => selectSidebarPanelSlots(pluginGuiSlots),
+    [pluginGuiSlots],
+  );
+  const activePanelParam = useMemo(
+    () => (location.pathname.startsWith('/capabilities') ? new URLSearchParams(location.search).get('panel') : null),
+    [location.pathname, location.search],
+  );
 
   const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
   const primaryItems = useMemo(() => NAV_ITEMS.filter((item) => pinnedSet.has(item.key)), [pinnedSet]);
@@ -412,6 +428,39 @@ function PrimaryNav({
           )}
         </div>
       ) : null}
+      {pluginSidebarPanels.length > 0 ? (
+        <ul data-plugin-sidebar-panels className="space-y-px pt-1">
+          {pluginSidebarPanels.map((panel) => {
+            const panelKey = `${panel.pluginId}:${panel.panelId}`;
+            const current = activePanelParam === panelKey;
+            const title = resolvePluginLocalizedText(panel.title, locale);
+            const href = buildPluginPanelHref({
+              pluginId: panel.pluginId,
+              panelId: panel.panelId,
+              sessionId: activeSessionId,
+              workspaceId: activeWorkspaceId,
+            });
+            return (
+              <li key={panelKey}>
+                <button
+                  type="button"
+                  data-plugin-sidebar-panel={panelKey}
+                  aria-current={current ? 'page' : undefined}
+                  onClick={() => { void navigate(href); }}
+                  className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
+                    current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+                  }`}
+                >
+                  <span className={current ? 'text-ink' : 'text-ink-faint'}>
+                    <Icon name="star" size={16} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{title}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </nav>
   );
 }
@@ -421,15 +470,29 @@ function PrimaryNav({
  * carried by tooltips. The expand toggle at its foot is the twin of the
  * expanded footer's collapse toggle; both write the same persisted override. */
 function CollapsedSidebarRail({
+  activeSessionId,
   activeWorkspaceId,
   onNewSession,
 }: {
+  activeSessionId?: string;
   activeWorkspaceId: string | undefined;
   onNewSession: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
+  const { slots: pluginGuiSlots } = usePluginGuiSlots({
+    sessionId: activeSessionId,
+    workspaceId: activeWorkspaceId,
+  });
+  const pluginSidebarPanels = useMemo(
+    () => selectSidebarPanelSlots(pluginGuiSlots),
+    [pluginGuiSlots],
+  );
+  const activePanelParam = useMemo(
+    () => (location.pathname.startsWith('/capabilities') ? new URLSearchParams(location.search).get('panel') : null),
+    [location.pathname, location.search],
+  );
   return (
     <>
       <nav aria-label={t('nav.aria')} data-sidebar-rail className="flex flex-col items-center gap-1 px-2 pt-3">
@@ -460,6 +523,31 @@ function CollapsedSidebarRail({
               className={RAIL_ICON}
             >
               <span className="relative"><ItemIcon />{item.key === 'usage' ? <RequestGovernanceBadge compact /> : null}</span>
+            </button>
+          );
+        })}
+        {pluginSidebarPanels.map((panel) => {
+          const panelKey = `${panel.pluginId}:${panel.panelId}`;
+          const current = activePanelParam === panelKey;
+          const title = resolvePluginLocalizedText(panel.title, locale);
+          const href = buildPluginPanelHref({
+            pluginId: panel.pluginId,
+            panelId: panel.panelId,
+            sessionId: activeSessionId,
+            workspaceId: activeWorkspaceId,
+          });
+          return (
+            <button
+              key={panelKey}
+              type="button"
+              data-plugin-sidebar-panel={panelKey}
+              aria-current={current ? 'page' : undefined}
+              aria-label={title}
+              title={title}
+              onClick={() => { void navigate(href); }}
+              className={RAIL_ICON}
+            >
+              <Icon name="star" size={16} />
             </button>
           );
         })}
@@ -1209,7 +1297,7 @@ export function Sidebar({
         data-sidebar-collapsed="true"
         aria-label={t('sidebar.navAria')}
       >
-        <CollapsedSidebarRail activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} />
+        <CollapsedSidebarRail activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} />
       </aside>
     );
   }
@@ -1352,7 +1440,7 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <PrimaryNav activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
+      <PrimaryNav activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
       <SidebarPersonaSection sessions={sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">

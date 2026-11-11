@@ -10,7 +10,9 @@ import type { ContextBreakdown } from '../../../protocol/context-usage';
 import type { ConfigResponse } from '../../../protocol/rest-config';
 import type { Session, SessionPendingInteraction } from '../../../protocol/session';
 import type { Workspace } from '../../../protocol/workspace';
-import type { RoomChangedEvent } from '@kiki/protocol';
+import type { PluginWsTopicEvent, RoomChangedEvent } from '@kiki/protocol';
+
+export type { PluginWsTopicEvent };
 
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
@@ -264,6 +266,7 @@ export type AgentEvent =
   | ConfigChangedEvent
   | ConfigWarningEvent
   | PluginChangedEvent
+  | PluginWsTopicEvent
   | ModelCatalogChangedEvent
   | CapabilityChangedEvent
   | PromptSubmittedEvent
@@ -289,6 +292,7 @@ export const VOLATILE_EVENT_TYPES = [
   'shell.completed',
   'agent.status.updated',
   'event.capability.changed',
+  'event.plugin.topic',
   'session.meta.updated',
 ] as const;
 

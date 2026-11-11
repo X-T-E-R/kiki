@@ -157,6 +157,17 @@ import {
 
 import { usePluginPicker } from './capabilities/usePluginPicker';
 import { useMcpPicker } from './capabilities/useMcpPicker';
+import {
+  interpolatePluginPromptText,
+  subscribePluginPromptInserts,
+  type PluginPromptInsertRequest,
+} from '@kiki/session-core';
+import {
+  PluginComposerSlots,
+  useExecutePluginSlotAction,
+  usePluginGuiSlots,
+} from './plugins/PluginComposerSlots';
+import { PluginStatusCapsules } from './plugins/PluginStatusCapsules';
 
 export interface PendingRuntimeControls {
   readonly model?: string;
@@ -1190,6 +1201,8 @@ export function Composer({
     retry: false,
   });
   const skills = skillsQuery.data?.skills ?? [];
+  const pluginGuiSlots = usePluginGuiSlots({ sessionId, workspaceId });
+  const { execute: executePluginSlotAction } = useExecutePluginSlotAction();
   const pluginPick = usePluginPicker(sessionId, workspaceId);
   const mcpPick = useMcpPicker(sessionId);
   const externalEngine = execution !== undefined && execution.executor !== undefined && execution.executor !== '' && execution.executor !== 'native'
@@ -1207,8 +1220,18 @@ export function Composer({
   }, [slashMenuOpen, skillCatalogReady, skillsQuery.isStale, skillsQuery.isFetching, skillsQuery.refetch]);
 
   const slashItems = useMemo(
-    () => withoutUnhandledActions(withoutRefusedActions(buildSlashItems(skills, { hasSession: sessionId !== undefined }), engine), onSideQuestion !== undefined),
-    [skills, sessionId, engine, onSideQuestion],
+    () => withoutUnhandledActions(
+      withoutRefusedActions(
+        buildSlashItems(skills, {
+          hasSession: sessionId !== undefined,
+          pluginSlots: pluginGuiSlots.slots,
+          locale,
+        }),
+        engine,
+      ),
+      onSideQuestion !== undefined,
+    ),
+    [skills, sessionId, pluginGuiSlots.slots, locale, engine, onSideQuestion],
   );
   const skillMenuItems = useMemo(() => slashItems.filter((item) => item.kind === 'skill'), [slashItems]);
   const filteredSlashItems = useMemo(() => {
@@ -1286,13 +1309,19 @@ export function Composer({
   }, [menuQuery, menu?.kind]);
 
   // C-2: the preview card follows the hovered row, else the keyboard-active
-  // row; actions already show their whole one-liner inline, and a skill with
-  // an empty description degrades to no card at all.
+  // row; actions already show their whole one-liner inline, and a skill/plugin
+  // with an empty description degrades to no card at all.
   const slashPreviewItem = useMemo(() => {
     if (menu?.kind !== 'slash') return null;
     const index = slashHoverIndex ?? activeIndex;
     const item = filteredSlashItems[Math.min(index, filteredSlashItems.length - 1)];
-    if (item === undefined || item.kind !== 'skill' || item.description.trim() === '') return null;
+    if (
+      item === undefined ||
+      (item.kind !== 'skill' && item.kind !== 'plugin') ||
+      item.description.trim() === ''
+    ) {
+      return null;
+    }
     return item;
   }, [menu, filteredSlashItems, slashHoverIndex, activeIndex]);
 
@@ -1556,6 +1585,35 @@ export function Composer({
     return subscribeComposerInserts(sessionId, (snippet) => insertAtCaretRef.current(snippet));
   }, [sessionId, variant]);
 
+  const pluginPromptInsertRef = useRef<(request: PluginPromptInsertRequest) => boolean>(() => false);
+  pluginPromptInsertRef.current = (request: PluginPromptInsertRequest) => {
+    if (disabled || queueEditing || messageEditing || composingRef.current) return false;
+    const interpolated = interpolatePluginPromptText(request.text, request.args);
+    if (interpolated.trim() === '') return false;
+    if (request.submit === true) {
+      if (turnInFlightRef.current || pendingAttachments || selectionBlocked || ssh.pending || slashCatalogPendingRef.current) {
+        return false;
+      }
+      setMenu(null);
+      setSlashConfirm(null);
+      pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+      historyIndexRef.current = null;
+      applyTextChange('', 0);
+      sendPrompt(interpolated);
+      return true;
+    }
+    const separator = text === '' || /\s$/.test(text) ? '' : '\n';
+    const nextText = `${text}${separator}${interpolated}`;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    applyTextChange(nextText, nextText.length);
+    return true;
+  };
+  useEffect(() => {
+    if (variant === 'subagent') return;
+    return subscribePluginPromptInserts(sessionId, (request) => pluginPromptInsertRef.current(request));
+  }, [sessionId, variant]);
+
   const undoEdit = () => {
     const entry = undoStackRef.current.pop();
     if (entry === undefined) return;
@@ -1681,6 +1739,28 @@ export function Composer({
       const completed = completeSlashTrigger(text, trigger, item.name);
       pushUndoSnapshot({ text, cursor: lastCursorRef.current });
       applyTextChange(completed.text, completed.cursor);
+      return;
+    }
+    if (item.kind === 'plugin') {
+      if (item.argumentHint !== undefined && trigger !== null) {
+        const completed = completeSlashTrigger(text, trigger, item.name);
+        pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+        applyTextChange(completed.text, completed.cursor);
+        return;
+      }
+      onChange('');
+      if (item.pluginId !== undefined && item.pluginAction !== undefined) {
+        void executePluginSlotAction(
+          {
+            pluginId: item.pluginId,
+            label: `/${item.name}`,
+            action: item.pluginAction,
+            sessionId,
+            workspaceId,
+          },
+          `${item.pluginId}:${item.slotId ?? item.name}`,
+        );
+      }
       return;
     }
     onChange('');
@@ -2056,6 +2136,22 @@ export function Composer({
           setLocalGoalArmed(false);
           return;
         }
+        if (classified.item.kind === 'plugin' && classified.item.pluginId !== undefined && classified.item.pluginAction !== undefined) {
+          recordSubmission(true);
+          onChange('');
+          void executePluginSlotAction(
+            {
+              pluginId: classified.item.pluginId,
+              label: `/${classified.item.name}`,
+              action: classified.item.pluginAction,
+              sessionId,
+              workspaceId,
+              args: classified.args,
+            },
+            `${classified.item.pluginId}:${classified.item.slotId ?? classified.item.name}`,
+          );
+          return;
+        }
         if (classified.item.kind === 'action' && classified.item.action !== undefined) {
           // `/goal <text>` sends immediately with the args as `goal_objective`.
           // A bare `/goal` arms the next message when goal mode is available.
@@ -2158,7 +2254,20 @@ export function Composer({
           return;
         }
         setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);
-        submitWithSlashItems(withoutUnhandledActions(withoutRefusedActions(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), engine), onSideQuestion !== undefined), true);
+        submitWithSlashItems(
+          withoutUnhandledActions(
+            withoutRefusedActions(
+              buildSlashItems(result.data.skills, {
+                hasSession: sessionId !== undefined,
+                pluginSlots: pluginGuiSlots.slots,
+                locale,
+              }),
+              engine,
+            ),
+            onSideQuestion !== undefined,
+          ),
+          true,
+        );
       });
       return;
     }
@@ -2868,6 +2977,19 @@ export function Composer({
         />
       ),
     });
+    if (variant !== 'subagent' && pluginGuiSlots.slots.some((slot) => slot.slot === 'status-capsule')) {
+      statusSegments.push({
+        key: 'plugin-capsules',
+        node: (
+          <PluginStatusCapsules
+            slots={pluginGuiSlots.slots}
+            sessionId={sessionId}
+            workspaceId={workspaceId}
+            disabled={disabled}
+          />
+        ),
+      });
+    }
     if (variant !== 'subagent' && sessionId !== undefined) {
       statusSegments.push({
         key: 'output-layer',
@@ -3330,6 +3452,14 @@ export function Composer({
             {slashPreviewItem !== null ? (
               <SkillPreviewCard item={slashPreviewItem} />
             ) : null}
+            {variant !== 'subagent' && !queueEditing && !messageEditing ? (
+              <PluginComposerSlots
+                slots={pluginGuiSlots.slots}
+                sessionId={sessionId}
+                workspaceId={workspaceId}
+                disabled={disabled}
+              />
+            ) : null}
             <ComposerInput
               inputRef={textareaRef}
               value={text}
@@ -3487,7 +3617,7 @@ export function Composer({
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
                       ? 'ml-auto shrink-0 pl-1'
-                      : segment.key === 'output-layer'
+                      : segment.key === 'plugin-capsules' || segment.key === 'output-layer'
                         ? 'shrink-0 pl-1'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
@@ -3795,12 +3925,18 @@ function SlashMenuBody({
 }) {
   const { t } = useI18n();
   const skills = items.filter((item) => item.kind === 'skill');
+  const plugins = items.filter((item) => item.kind === 'plugin');
   const actions = items.filter((item) => item.kind === 'action');
   let rowIndex = -1;
   const renderRow = (item: SlashItem) => {
     rowIndex += 1;
     const index = rowIndex;
     const active = index === activeIndex;
+    const argHint = item.skill?.argument_hint ?? item.argumentHint;
+    const descriptionText =
+      item.kind === 'action' && item.action !== undefined
+        ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
+        : item.description;
     return (
       <button
         key={`${item.kind}-${item.name}`}
@@ -3817,18 +3953,25 @@ function SlashMenuBody({
         <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
           /{item.name}
         </span>
-        {item.skill?.argument_hint !== undefined ? (
-          <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{item.skill.argument_hint}</span>
+        {argHint !== undefined ? (
+          <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{argHint}</span>
         ) : null}
-        <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft">
-          {item.kind === 'action' && item.action !== undefined
-            ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
-            : item.description}
+        <span
+          title={descriptionText}
+          className={`min-w-0 flex-1 text-[13px] text-ink-soft ${
+            active && item.kind === 'plugin'
+              ? 'whitespace-normal break-words max-[640px]:leading-snug min-[641px]:truncate'
+              : 'truncate'
+          }`}
+        >
+          {descriptionText}
         </span>
         {item.disabled === true ? (
           <span className="shrink-0 text-[12px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
         ) : item.kind === 'skill' ? (
           <span title={item.skill?.path} className="shrink-0 text-[12px] text-ink-faint">{item.skill?.source}</span>
+        ) : item.kind === 'plugin' && item.pluginId !== undefined ? (
+          <span className="shrink-0 font-mono text-[11.5px] text-ink-faint">{item.pluginId}</span>
         ) : null}
       </button>
     );
@@ -3841,6 +3984,14 @@ function SlashMenuBody({
             {t('composer.slash.skills')}
           </p>
           {skills.map(renderRow)}
+        </>
+      ) : null}
+      {plugins.length > 0 ? (
+        <>
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+            {t('composer.slash.plugins')}
+          </p>
+          {plugins.map(renderRow)}
         </>
       ) : null}
       {actions.length > 0 ? (
@@ -3889,6 +4040,10 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
         {skill !== undefined ? (
           <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[11px] text-ink-faint">
             {skill.source}
+          </span>
+        ) : item.pluginId !== undefined ? (
+          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px font-mono text-[11px] text-ink-faint">
+            {item.pluginId}
           </span>
         ) : null}
         {item.disabled === true ? (
