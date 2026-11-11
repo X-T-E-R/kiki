@@ -45,7 +45,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
 | `model_alias`、`effort` | 可传具体模型或 `"auto"`；省略 `model_alias` 则沿用目标默认的选模方式。两种方式都接受显式 `effort`。 |
 
-每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:agy-cli` 和 `engine:grok-acp`。把这个稳定名称作为 `AgentRun` 的 `profile`，即可用引擎自己的配置启动裸 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。如果已有注册 profile 使用相同的 `engine:<executor-id>` 名称，则保留该注册定义；虚拟投影不会覆盖它。
+每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:antigravity-acp`、`engine:agy-cli`、`engine:grok-acp`、`engine:kiro-acp`、`engine:copilot-acp`、`engine:droid-acp`、`engine:devin-acp` 和 `engine:dsh-acp`。把这个稳定名称作为 `AgentRun` 的 `profile`，即可用引擎自己的配置启动裸 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。如果已有注册 profile 使用相同的 `engine:<executor-id>` 名称，则保留该注册定义；虚拟投影不会覆盖它。
 
 裸引擎目标的模型顺序是 `AgentRun.model_alias` → `[agent_executor_overrides."<id>".defaults].model_alias` → 厂商默认值，Kiki 不会通过原生 `[models]` 或 provider 设置解析厂商模型。它没有 Kiki 职责、system prompt 或 profile 正文，也不会仅因为是 child 就获得 Kiki MCP 工具桥。显式的每引擎 defaults 仍然生效。
 
@@ -187,7 +187,7 @@ AGY 收到提示词、工具结果均已确认后遇到网络错误，Kiki 可�
 
 ### 外部 ACP profile 的投递
 
-对于对外使用的 ACP（Agent Client Protocol）执行器，只有 harness 接受 `session/new` 的 `_meta.systemPromptOverride` 扩展时，Kiki 才把冻结的 profile 作为系统提示词发送。内置 `grok-acp` 执行器启用，其他 ACP 执行器把 profile 放在第一条 User 消息的前言里。自定义 harness 支持该扩展时，可在 `config.toml` 的 `[agent_executors.<id>]` 中设 `profile_delivery = "system_prompt_override"`；会忽略该扩展的 harness 不要启用，因为 Kiki 随后就不再附加 User 消息前言作为后备。
+对于对外使用的 ACP（Agent Client Protocol）执行器，harness 支持原生建连提示词扩展时，Kiki 会直接把冻结的 profile 作为系统提示词发送：`grok-acp` 使用 `_meta.systemPromptOverride`；`antigravity-acp`（使用托管的 `1.4.5` `agy_acp_server`，或本机 `agy` `1.5.1+` 的原生 `agy acp` 传输并按实例隔离 `GEMINI_HOME`）在受支持版本上通过 `_meta.antigravity.systemPrompt.append` 追加系统提示词。其他 ACP 执行器把 profile 放在第一条 User 消息的前言里。自定义 harness 支持 `_meta.systemPromptOverride` 时，可在 `config.toml` 的 `[agent_executors.<id>]` 中设 `profile_delivery = "system_prompt_override"`；会忽略该扩展的 harness 不要启用，因为 Kiki 随后就不再附加 User 消息前言作为后备。
 
 覆写只在创建**新的远端会话**时生效，`session/resume` 和 `session/load` 不会重新发送；已有远端会话保留最初的投递方式。旧的纯 profile 派发在重建远端会话时会附上有长度限制的对话交接；main agent 的 `execution` 路径在代际切换或重新连接失败后不会发送旧 Kiki 历史。系统提示词覆写可能替换 harness 原有的默认系统提示词，因此只对适合这种替换的 harness 启用。
 
@@ -219,7 +219,7 @@ Codex app-server 的审批请求进入 Kiki 持久化审批交互，并保留厂
 
 明确设置 YOLO 还会只为附加的 `kiki-harness` MCP server 增加逐 server 工具预批准；其调用仍受 Kiki 原生能力与执行策略约束。父 Agent 继承的 YOLO 模式不会开启上述任一覆盖。清除显式模式时，遵循[上文的权限恢复行为](#外部直连执行)。
 
-外部交互取决于 harness 协商出的能力。ACP 历史 fork 在支持时使用 `session/fork`；要精确定位到 Assistant 消息，还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展，无法表达的位置会新建远端会话并附上有长度限制的对话交接，而不会继续源远端会话。Codex 与 DeepSeek 的 ACP 表单问题映射到 Kiki 持久化问题交互，不支持的复杂表单和 URL 模式请求会被拒绝；Grok 的计划审批映射到持久化计划审阅交互。
+外部交互取决于 harness 协商出的能力。ACP 历史 fork 在支持时使用 `session/fork`；要精确定位到 Assistant 消息，还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展，无法表达的位置会新建远端会话并附上有长度限制的对话交接，而不会继续源远端会话。Codex、DeepSeek（`deepseek-acp` 与 `dsh-acp`）、Factory Droid（`droid-acp`）与 Antigravity（`antigravity-acp`）的 ACP 提问交互映射到 Kiki 持久化问题交互，不支持的复杂表单和 URL 模式请求会被拒绝；Grok 的计划审批映射到持久化计划审阅交互。
 
 ### 外部 main agent 的 Kiki 上下文
 
