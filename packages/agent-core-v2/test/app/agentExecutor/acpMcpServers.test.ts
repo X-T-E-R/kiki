@@ -48,7 +48,8 @@ describe('ACP session MCP forwarding', () => {
       binding: { executorId: id, systemPrompt: '', thinkingLevel: 'off' },
       agent: { id: 'child-example', accessor: { get: <T>(token: unknown) => services.get(token) as T } },
     };
-    const supported = id !== 'openclaw-acp' && id !== 'pi-acp';
+    const supported = id !== 'openclaw-acp' && id !== 'pi-acp' &&
+      (descriptor.mcpTransports === undefined || descriptor.mcpTransports.includes('stdio'));
     expect(await acquireHarnessMcp(context, '/example')).toBe(supported ? lease : undefined);
     expect(acquired).toHaveLength(supported ? 1 : 0);
     const optedOut = { ...context, binding: { ...context.binding, injectKikiMcp: false } };
@@ -82,6 +83,19 @@ describe('ACP session MCP forwarding', () => {
       sse: { config: { transport: 'sse', url: 'https://mcp.example/events' } },
     }), '/work', () => undefined, ['stdio', 'http']);
     expect(servers.map((server) => server.name)).toEqual(['local', 'http']);
+  });
+
+  it('forwards Copilot MCP over HTTP only', () => {
+    const descriptor = BUILTIN_AGENT_EXECUTORS['copilot-acp'];
+    expect(descriptor?.mcpTransports).toEqual(['http']);
+    const servers = acpMcpServers(view({
+      stdio: { config: { transport: 'stdio', command: 'mcp' } },
+      http: { config: { transport: 'http', url: 'https://mcp.example/rpc' } },
+      sse: { config: { transport: 'sse', url: 'https://mcp.example/events' } },
+    }), '/work', () => undefined, descriptor?.mcpTransports);
+    expect(servers).toEqual([
+      { type: 'http', name: 'http', url: 'https://mcp.example/rpc', headers: [] },
+    ]);
   });
 
   it('omits disabled, filtered, unsupported-runtime and host-auth servers', () => {

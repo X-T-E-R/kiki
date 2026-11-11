@@ -10,7 +10,7 @@ async function invokeHook(payload, key = 'kiki-agy-steering-bridge', event = 'Po
   if (!definition) throw Object.assign(Error('No owned hook'), { code: 'ENOENT' });
   const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', definition.command] : ['-c', definition.command];
-  const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+  const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env, windowsVerbatimArguments: process.platform === 'win32' });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   const exit = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error('Fixture hook failed'))); });

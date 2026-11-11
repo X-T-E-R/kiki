@@ -27,6 +27,7 @@ import {
 } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates, parseModelProbeOutput, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
+import { ANTIGRAVITY_VERSION, antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
 import { executorModelProbe, withManagedAdapterSource } from '#/app/agentExecutor/managedAdapterRegistry';
 import { executorControlCapabilities, modelSelectionPass, resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
@@ -366,16 +367,18 @@ describe('AgentExecutorRegistryService', () => {
     });
   });
 
-  it('admits the six verified ACP command descriptors and excludes unsafe install families', () => {
+  it('admits verified ACP command descriptors and excludes unsafe install families', () => {
     expect(AgentExecutorsConfigSchema.safeParse(BUILTIN_AGENT_EXECUTORS).success).toBe(true);
-    expect(['openclaw-acp', 'cline-acp', 'codebuddy-acp', 'pi-acp', 'deepseek-acp', 'qoder-acp']
+    expect(['openclaw-acp', 'cline-acp', 'codebuddy-acp', 'pi-acp', 'deepseek-acp', 'qoder-acp',
+      'copilot-acp', 'devin-acp', 'droid-acp', 'dsh-acp', 'kiro-acp']
       .every((id) => BUILTIN_AGENT_EXECUTORS[id]?.protocol === 'acp-v1')).toBe(true);
+    expect(BUILTIN_AGENT_EXECUTORS['copilot-acp']?.mcpTransports).toEqual(['http']);
     expect(BUILTIN_AGENT_EXECUTORS['openclaw-acp']?.supportsMcp).toBe(false);
     expect(BUILTIN_AGENT_EXECUTORS['pi-acp']?.supportsMcp).toBe(false);
     expect(BUILTIN_AGENT_EXECUTORS['qoder-acp']?.command).toBe('qodercli');
     expect(BUILTIN_AGENT_EXECUTORS['hermes-acp']).toBeUndefined();
     expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']).toMatchObject({
-      protocol: 'acp-v1', homeEnv: 'GEMINI_HOME', args: process.platform === 'linux' ? ['--uid='] : [],
+      protocol: 'acp-v1', homeEnv: 'GEMINI_HOME', args: [],
       sources: expect.arrayContaining([{ id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' }]),
     });
     expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.sources).not.toContainEqual(expect.objectContaining({ command: 'antigravity' }));
@@ -387,6 +390,94 @@ describe('AgentExecutorRegistryService', () => {
       modelArgs: ['--model', '{model}'],
     });
     expect(BUILTIN_AGENT_EXECUTORS['agy-cli']?.command).toBeUndefined();
+  });
+
+  it('pins every verified Antigravity 1.4.5 archive asset', () => {
+    expect(ANTIGRAVITY_VERSION).toBe('1.4.5');
+    const assets = [
+      ['darwin', 'arm64', 'darwin-arm64', '886fff7767d08994ca39eb02c3d01a7532c7325a94aa33aaf52d52068733284f', 97_923_855, 178_915_920, 122_957_936],
+      ['darwin', 'x64', 'darwin-x64', 'b39f3573c03b9acb9df028853f647527f1f3133f32bd77e78b796e48a205114a', 103_577_295, 183_127_600, 127_612_208],
+      ['linux', 'x64', 'linux-x64', '923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b', 321_783_181, 826_226_766, 133_926_136],
+      ['linux', 'arm64', 'linux-arm64', '7d64246633ae094f67e3bbcd2d679e89048f91346d5339313336e7483f40f056', 307_829_008, 831_194_025, 127_512_832],
+      ['win32', 'x64', 'win32-x64', 'd24f4c73c9f96d4f44384e281c855a56c72d8eaa9c5b0fad7ccb1635c6b63f50', 100_423_655, 55_839_864, 147_843_736],
+      ['win32', 'arm64', 'win32-arm64', 'ab0a9aac8349e08ef289be6d16da8f89e3abe60eba5158032ef78c4a1220261c', 102_703_121, 62_293_488, 139_322_008],
+    ] as const;
+    for (const [platform, arch, platformKey, sha256, archiveBytes, executableBytes, harnessBytes] of assets) {
+      expect(antigravityRelease(ANTIGRAVITY_VERSION, platform, arch)).toMatchObject({
+        version: '1.4.5',
+        platform: platformKey,
+        entry: platform === 'win32' ? 'agy_acp_server.exe' : 'agy_acp_server.par',
+        requiredSibling: platform === 'win32' ? 'localharness_external.exe' : 'localharness_external',
+        sha256,
+        archiveBytes,
+        executableBytes,
+        harnessBytes,
+      });
+    }
+  });
+
+  it.each([
+    { version: '1.5.1', nativeAvailable: true, expectedSource: 'agy-cli' },
+    { version: '1.5.0', nativeAvailable: false, expectedSource: 'kiki-managed' },
+  ])('discovers the native AGY ACP source at $version and resolves $expectedSource', async ({ version, nativeAvailable, expectedSource }) => {
+    const managedRoot = '/kiki/tools/antigravity-acp/1.4.5/linux-x64';
+    const managedExecutable = `${managedRoot}/agy_acp_server.par`;
+    const managedSibling = `${managedRoot}/localharness_external`;
+    const directories: Readonly<Record<string, readonly { name: string; isFile: boolean; isDirectory: boolean }[]>> = {
+      '/kiki/tools/antigravity-acp': [{ name: '1.4.5', isFile: false, isDirectory: true }],
+      '/kiki/tools/antigravity-acp/1.4.5': [{ name: 'linux-x64', isFile: false, isDirectory: true }],
+      [managedRoot]: [{ name: 'agy_acp_server.par', isFile: true, isDirectory: false }],
+    };
+    const files = new Set([managedExecutable, managedSibling, '/usr/bin/agy']);
+    services.set(IHostFileSystem, {
+      stat: async (path: string) => {
+        if (!files.has(path)) throw new Error('missing');
+        return { isFile: true, isDirectory: false, size: 1 };
+      },
+      readdir: async (path: string) => directories[path] ?? [],
+    } as unknown as IHostFileSystem);
+    services.set(IBootstrapService, {
+      platform: 'linux', arch: 'x64', homeDir: '/kiki', osHomeDir: '/user',
+      getEnv: (name: string) => name === 'PATH' ? '/usr/bin' : undefined,
+    } as unknown as IBootstrapService);
+    const probes: string[] = [];
+    services.set(IHostProcessService, {
+      spawn: async (command: string, args: readonly string[]) => {
+        probes.push([command, ...args].join(' '));
+        return {
+          _serviceBrand: undefined,
+          pid: 1,
+          exitCode: 0,
+          stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+          stdout: Readable.from([`agy ${version}\n`]),
+          stderr: Readable.from([]),
+          wait: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return 0; },
+          kill: async () => {},
+          dispose: async () => {},
+        };
+      },
+    } as unknown as IHostProcessService);
+    services.set(IConfigService, configWith({}));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+
+    const discovered = await registry.discover('antigravity-acp');
+    expect(discovered.find((source) => source.id === 'kiki-managed')?.available).toBe(true);
+    expect(discovered.find((source) => source.id === 'agy-cli')?.available).toBe(nativeAvailable);
+    if (nativeAvailable) {
+      expect(discovered.find((source) => source.id === 'agy-cli')).toMatchObject({
+        command: '/usr/bin/agy',
+        launchArgs: ['acp', '--stdio', '--process-per-session'],
+        version: 'agy 1.5.1',
+      });
+    } else {
+      expect(discovered.find((source) => source.id === 'agy-cli')?.diagnostic).toContain('installed: 1.5.0');
+    }
+    const resolved = await registry.resolveExecutable('antigravity-acp');
+    expect(resolved.descriptor).toMatchObject({ selectedSource: expectedSource });
+    expect([...resolved.descriptor.launchArgs ?? [], ...resolved.descriptor.args]).toEqual(nativeAvailable
+      ? ['acp', '--stdio', '--process-per-session'] : ['--uid=']);
+    expect(probes).toContain('/usr/bin/agy --version');
   });
 
   it('loads a host-defined Claude settings file into only the selected ACP descriptor and its revision', () => {

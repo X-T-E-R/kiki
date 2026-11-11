@@ -103,10 +103,10 @@ export function resolvePromptDelivery(descriptor: AgentExecutorDescriptor, bindi
   readonly actual: ExecutorPromptDelivery;
   readonly downgraded: boolean;
 } {
+  const supported = executorCapabilities(descriptor).promptDeliveries;
   const explicit = binding.executorPrompt?.per_engine?.[descriptor.id]?.delivery ?? binding.executorPrompt?.delivery;
   const requested = explicit ?? (descriptor.profileDelivery === 'system_prompt_override' ? 'replace'
-    : descriptor.protocol === 'codex-app-server' ? 'append' : 'preamble');
-  const supported = executorCapabilities(descriptor).promptDeliveries;
+    : descriptor.protocol === 'codex-app-server' || supported.includes('append') ? 'append' : 'preamble');
   const actual = supported.includes(requested) ? requested : supported.includes('preamble') ? 'preamble' : supported[0];
   if (actual === undefined) throw new Error(`Executor ${descriptor.id} has no prompt delivery method`);
   return { requested, actual, downgraded: requested !== actual };

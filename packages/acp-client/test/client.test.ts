@@ -2,6 +2,16 @@ import { PassThrough, Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { RequestError, type InitializeResponse, type RequestPermissionRequest } from '@agentclientprotocol/sdk';
+import {
+  antigravityClientName, antigravityClientFileReads, antigravityCliSessionMode,
+  antigravitySessionMeta, antigravitySupportsSystemPromptAppend, legacyAntigravityModelFamily,
+  extractAntigravityUserInputQuestion, resolveAntigravityUserInputOptionId,
+  sanitizeAntigravityToolPayload, normalizeAntigravitySessionUpdate, makeAntigravityReadRepair,
+  isCopilotLostSessionError,
+} from '../src/antigravity';
+import { extractDroidElicitationForm, normalizeDevinSessionUpdate, extractClaudeSubagentUpdate, extractClaudeSubagentSessionEvent } from '../src/flavors';
+import { GrokAcpInputMerger } from '../src/events';
 import { AsyncQueue } from '../src/async-queue';
 import { AcpProcessClient } from '../src/client';
 import type { HostProcessLike, HostProcessServiceLike } from '../src/types';
@@ -478,5 +488,139 @@ describe('Grok session MCP readiness', () => {
       if (condition === 'cancel') { await vi.waitFor(() => expect(beforeOpen).toHaveBeenCalledOnce()); controller.abort(); }
       await rejected;
     } finally { await client.shutdown(); }
+  });
+});
+
+
+describe('Antigravity compatibility', () => {
+  const initialize = (version: string, append = false): InitializeResponse => ({
+    protocolVersion: 1, agentInfo: { name: 'Antigravity', version }, agentCapabilities: {},
+    _meta: { antigravity: { systemPrompt: { append } } },
+  });
+
+  it.each([
+    ['1.4.2', 'zed', true], ['1.4.5', 'zed', false], ['1.5.0', 'zed', true], ['1.5.5', 'kiki', false],
+  ] as const)('uses the %s model-visibility and native-read contract', (version, name, reads) => {
+    expect(antigravityClientName(version, 'kiki')).toBe(name);
+    expect(antigravityClientFileReads(version)).toBe(reads);
+  });
+
+  it.each(['1.4.2', '1.4.3', '1.4.4', '1.4.5'])('disables run_workflow only in affected %s runtimes', (version) => {
+    const meta = antigravitySessionMeta(initialize(version), { trace: 'keep', antigravity: { disabledTools: ['custom', 'run_workflow'] } });
+    expect(meta).toEqual({ trace: 'keep', antigravity: { disabledTools: ['custom', 'run_workflow'] } });
+  });
+
+  it.each(['1.4.1', '1.4.6', '1.5.5'])('does not disable tools in %s', (version) => {
+    const meta = { trace: 'keep' };
+    expect(antigravitySessionMeta(initialize(version), meta)).toBe(meta);
+  });
+
+  it('appends the native system prompt without replacing caller metadata', () => {
+    const meta = antigravitySessionMeta(initialize('1.4.5'), { trace: 'keep', antigravity: { systemPrompt: { other: true } } }, 'Profile');
+    expect(meta).toEqual({ trace: 'keep', antigravity: { disabledTools: ['run_workflow'], systemPrompt: { other: true, append: 'Profile' } } });
+    expect(antigravitySupportsSystemPromptAppend(initialize('1.5.5', true))).toBe(true);
+    expect(antigravitySessionMeta(initialize('1.5.0'), undefined, 'Profile')).toBeUndefined();
+  });
+
+  it.each([['yolo', 'auto'], ['auto_edit', 'accept-edits'], ['default', 'default'], ['plan', 'plan']])('maps CLI %s to %s', (mode, expected) => {
+    expect(antigravityCliSessionMode(mode)).toBe(expected);
+  });
+
+  it('resolves the longest legacy model family, not an unrelated prefix', () => {
+    const options = [{ id: 'model', name: 'Model', type: 'select' as const, currentValue: 'claude', options: [
+      { value: 'claude', name: 'Claude' }, { value: 'claude-opus', name: 'Opus' },
+    ] }];
+    expect(legacyAntigravityModelFamily(options, 'claude-opus-high')).toBe('claude-opus');
+    expect(legacyAntigravityModelFamily(options, 'gemini-high')).toBeUndefined();
+  });
+
+  it('strips image blobs, duplicated output and leaked background system messages', () => {
+    const output = 'visible<system_message>hidden</system_message>tail';
+    const sanitized = sanitizeAntigravityToolPayload({ combinedOutput: output, formattedOutput: output,
+      image: { type: 'image', data: 'x'.repeat(1_000_000), mimeType: 'image/png' },
+      embedded: 'data:image/png;base64,AAA', text: 'z'.repeat(20_000) }) as Record<string, unknown>;
+    expect(sanitized).toMatchObject({ combinedOutput: 'visibletail', image: { type: 'image', mimeType: 'image/png' } });
+    expect(sanitized).not.toHaveProperty('formattedOutput');
+    expect(sanitized).not.toHaveProperty('embedded');
+    expect(String(sanitized['text'])).toHaveLength(8_000 + '[Earlier output truncated]\n\n'.length);
+    const update = normalizeAntigravitySessionUpdate({ sessionId: 's', update: { sessionUpdate: 'tool_call', title: output, rawOutput: { image: { type: 'image', data: 'AAA' } } } });
+    expect(update.update.title).toBe('visibletail');
+    expect(update.update.rawOutput.image).not.toHaveProperty('data');
+  });
+
+  it.each([true, false])('repairs served reads regardless of request/notification order (early=%s)', (early) => {
+    const repair = makeAntigravityReadRepair();
+    const notification = { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 'read-1', title: 'Running client_view_file', rawInput: { absolute_path: '/example.txt' }, status: 'in_progress' } };
+    if (early) repair.attempted('/example.txt', true);
+    repair.repair(notification);
+    if (!early) repair.attempted('/example.txt', true);
+    expect(repair.repair(notification).update.status).toBe('completed');
+    const failed = repair.repair({ sessionId: 's', update: { sessionUpdate: 'tool_call_update', toolCallId: 'read-1', status: 'failed', rawOutput: 'stale native error' } });
+    expect(failed.update.status).toBe('completed');
+    expect(failed.update).not.toHaveProperty('rawOutput');
+    repair.reset();
+    expect(repair.repair(notification).update.status).toBe('in_progress');
+    repair.attempted('/example.txt', false);
+    expect(repair.repair(notification).update.status).toBe('in_progress');
+  });
+
+  it('routes interaction_* choices by option id or unique label and rejects ambiguous questions', () => {
+    const request: RequestPermissionRequest = { sessionId: 's', toolCall: { toolCallId: 'interaction_1', title: 'Where next?' }, options: [
+      { optionId: 'a', name: 'Alpha', kind: 'allow_once' }, { optionId: 'b', name: 'Beta', kind: 'allow_once' },
+    ] };
+    const question = extractAntigravityUserInputQuestion(request)!;
+    expect(question).toMatchObject({ question: 'Where next?', options: [{ optionId: 'a', label: 'Alpha' }, { optionId: 'b', label: 'Beta' }] });
+    expect(resolveAntigravityUserInputOptionId(question, 'Alpha')).toBe('a');
+    expect(resolveAntigravityUserInputOptionId(question, 'b')).toBe('b');
+    expect(resolveAntigravityUserInputOptionId(question, 'unknown')).toBeUndefined();
+    expect(extractAntigravityUserInputQuestion({ ...request, toolCall: { toolCallId: 'tool-1' } })).toBeUndefined();
+    expect(extractAntigravityUserInputQuestion({ ...request, options: [request.options[0]!, request.options[0]!] })).toBeUndefined();
+  });
+});
+
+describe('ACP flavor normalization', () => {
+  it('merges interleaved Grok argument fragments and waits for complete JSON', () => {
+    const merger = new GrokAcpInputMerger();
+    const vendor = '_x.ai/session_notification';
+    const fragment = (index: number, id: string, delta: string) => ({ sessionId: 's', update: { sessionUpdate: 'tool_call_delta_chunk', tool_index: index, tool_call_id: id, arguments_delta: delta } });
+    merger.normalize(fragment(0, 'a', '{"path":'), vendor);
+    merger.normalize(fragment(1, 'b', '{"query":"b"}'), vendor);
+    const done = { sessionId: 's', update: { sessionUpdate: 'tool_call_update', toolCallId: 'a', status: 'completed' } };
+    expect(merger.normalize(done, vendor)).toMatchObject({ update: { status: 'in_progress' } });
+    expect(merger.normalize({ ...done, update: { ...done.update, toolCallId: 'b' } }, vendor)).toMatchObject({ update: { status: 'completed', rawInput: { query: 'b' } } });
+    merger.normalize(fragment(0, 'a', '"file.txt"}'), vendor);
+    expect(merger.normalize(done, vendor)).toMatchObject({ update: { status: 'completed', rawInput: { path: 'file.txt' } } });
+    expect(merger.normalize(done, vendor)).toBe(done);
+  });
+
+  it('recognizes only Copilot internal lost-session errors', () => {
+    expect(isCopilotLostSessionError(new RequestError(-32603, 'session event delivery failed: session not found: s'))).toBe(true);
+    expect(isCopilotLostSessionError(new RequestError(-32603, 'Internal error', { details: 'session lock unavailable during is_session_generation_current: acquisition timed out' }))).toBe(true);
+    expect(isCopilotLostSessionError(new RequestError(-32602, 'session event delivery failed: session not found: s'))).toBe(false);
+  });
+
+  it('restores Droid form option values and free-text *_other fields', () => {
+    const request = { mode: 'form', requestedSchema: { type: 'object', required: ['question_1'], properties: {
+      question_1: { type: 'string', title: 'Target', description: 'Choose target', oneOf: [{ const: 'option_1', title: 'Web' }, { const: 'other', title: 'Other' }] },
+      question_1_other: { type: 'string' },
+    } } };
+    const form = extractDroidElicitationForm(request)!;
+    expect(form.respond({ question_1: 'Web' })).toEqual({ action: 'accept', content: { question_1: 'option_1' } });
+    expect(form.respond({ 'Choose target': 'Desktop' })).toEqual({ action: 'accept', content: { question_1: 'other', question_1_other: 'Desktop' } });
+    expect(form.respond({})).toEqual({ action: 'cancel' });
+    expect(extractDroidElicitationForm({ ...request, mode: 'url' })).toBeUndefined();
+  });
+
+  it('normalizes Devin subagent routing, message ids and tool titles', () => {
+    expect(normalizeDevinSessionUpdate({ sessionId: 'root', update: { sessionUpdate: 'agent_message_chunk', _meta: {
+      'cognition.ai/subagent_context': { parentAgentId: 'child' }, 'cognition.ai/streamingMessageId': 'm',
+    } } })).toMatchObject({ sessionId: 'child', update: { messageId: 'm' } });
+    expect(normalizeDevinSessionUpdate({ sessionId: 's', update: { sessionUpdate: 'tool_call', title: 'Tool', _meta: { 'cognition.ai/inferenceToolName': 'read_file' } } })).toMatchObject({ update: { title: 'read_file' } });
+  });
+
+  it('projects Claude background agent lifecycle and delegation messages', () => {
+    expect(extractClaudeSubagentUpdate({ toolCallId: 'task', name: 'Agent', status: 'completed', rawInput: { prompt: 'Inspect', run_in_background: true, description: 'Audit' } })).toMatchObject({ status: 'running', prompt: 'Inspect', title: 'Audit' });
+    expect(extractClaudeSubagentSessionEvent({ sessionId: 'parent', update: { sessionUpdate: 'subagent_update', sessionId: 'child', state: { state: 'idle', stopReason: 'error', error: { message: 'failed' } } } })).toMatchObject({ type: 'state', childSessionId: 'child', status: 'failed', result: 'failed' });
+    expect(extractClaudeSubagentSessionEvent({ sessionId: 'child', update: { sessionUpdate: 'session_message', messageId: 'm', senderSessionId: 'parent', content: [{ type: 'text', text: 'Inspect' }] } })).toMatchObject({ type: 'delegation', childSessionId: 'child', parentSessionId: 'parent', prompt: 'Inspect' });
   });
 });

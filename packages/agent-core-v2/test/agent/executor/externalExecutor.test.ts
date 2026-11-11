@@ -1,4 +1,7 @@
-import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { AcpClientError, antigravitySessionMeta, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -143,6 +146,8 @@ interface FakeHarnessOptions {
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
   readonly executorVersion?: string;
+  readonly initialize?: AcpOpenSessionResult['initialize'];
+  readonly availableModes?: readonly string[];
   readonly claudeSettingsFile?: string;
   readonly agentId?: string;
   readonly parentAgentId?: string;
@@ -155,6 +160,7 @@ interface FakeHarnessOptions {
   readonly args?: readonly string[];
   readonly priorBindingFingerprint?: string;
   readonly deferTurnCompletion?: boolean;
+  readonly beforePromptCompletion?: () => void;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly supportsMcp?: boolean;
   readonly hostPermissionReceipt?: (input: AcpOpenSessionOptions) => Readonly<Record<string, unknown>> | undefined;
@@ -410,14 +416,20 @@ function createHarness(options: FakeHarnessOptions = {}) {
   let configured = options.sessionConfigOptions === undefined
     ? configOptions(options.permissionSurface !== false)
     : [...options.sessionConfigOptions];
+  const initialize = options.initialize ?? { protocolVersion: 1 };
+  let currentModeId = options.availableModes?.[0];
   const openResult = (): AcpOpenSessionResult => ({
     sessionId: 'remote-2',
     mode: options.mode ?? 'new',
-    initialize: {} as AcpOpenSessionResult['initialize'],
+    initialize,
     capabilities: options.capabilities ?? {},
     configOptions: configured,
-    sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
-    sessionRequestMeta: opens.at(-1)?.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(opens.at(-1)!.sessionMeta)),
+    availableModes: options.availableModes,
+    currentModeId,
+    sessionRef: { executorId: options.executorId ?? 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+    sessionRequestMeta: options.executorId === 'antigravity-acp'
+      ? antigravitySessionMeta(initialize, opens.at(-1)?.sessionMeta, opens.at(-1)?.systemPromptAppend)
+      : opens.at(-1)?.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(opens.at(-1)!.sessionMeta)),
     sessionResponseMeta: opens.length === 0 ? undefined : options.hostPermissionReceipt?.(opens.at(-1)!),
     loadReplayObserved: options.loadReplayObserved ?? false,
     quarantinedUpdateCount: options.loadReplayObserved === true ? 2 : 0,
@@ -439,7 +451,9 @@ function createHarness(options: FakeHarnessOptions = {}) {
     },
     configureSession: async (input: {
       readonly configOptions?: readonly { configId: string; value: string | boolean }[];
+      readonly modeId?: string;
     }) => {
+      if (input.modeId !== undefined) currentModeId = input.modeId;
       for (const selection of input.configOptions ?? []) {
         if (selection.configId === options.configureFailureId) {
           throw new Error('set_config_option failed');
@@ -488,6 +502,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       }
       if (options.elicitation !== undefined) elicitationDecisions.push(await elicitationHandler!(options.elicitation, { signal: request.signal }));
       if (options.planApproval !== undefined) planDecisions.push(await planHandler!(options.planApproval, { signal: request.signal }));
+      options.beforePromptCompletion?.();
       const result: AcpTurnResult = {
         response: { stopReason: 'end_turn', usage: options.completionUsage },
         session: openResult(),
@@ -3399,6 +3414,25 @@ describe('ACP external executor', () => {
     ]]);
   });
 
+  it('records every AGY bridge turn without subtracting a previous successful turn', async () => {
+    const completionUsage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
+    const harness = createHarness({ executorId: 'agy-cli', providerName: 'kimi', completionUsage,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }) });
+    try {
+      for (const [inputTokens, outputTokens] of [[100, 10], [120, 8], [140, 12]]) {
+        Object.assign(completionUsage, { inputTokens, outputTokens, totalTokens: inputTokens! + outputTokens! });
+        const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+        await expect(run.completion).resolves.toMatchObject({ usage: { inputOther: inputTokens, output: outputTokens } });
+      }
+      expect(harness.usageRecords.map((record) => record[1])).toEqual([
+        { inputOther: 100, output: 10, inputCacheRead: 0, inputCacheCreation: 0 },
+        { inputOther: 120, output: 8, inputCacheRead: 0, inputCacheCreation: 0 },
+        { inputOther: 140, output: 12, inputCacheRead: 0, inputCacheCreation: 0 },
+      ]);
+      expect(harness.state.get(externalExecutorKey).lastCumulativeUsage).toBeUndefined();
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('reports usage unknown for a resumed session without a persisted cumulative baseline', async () => {
     const harness = createHarness({
       mode: 'resume',
@@ -3504,5 +3538,103 @@ describe('external Memory working-set delivery', () => {
         expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).not.toContainEqual(expect.objectContaining({ origin: 'memory_workset' }));
       }
     } finally { await harness.execution.shutdown(); await harness.ix.dispose(); }
+  });
+});
+
+
+describe('Antigravity native ACP execution', () => {
+  const antigravity = (version: string): AcpOpenSessionResult['initialize'] => ({
+    protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version },
+    _meta: version === '1.5.5' ? { antigravity: { systemPrompt: { append: true } } } : undefined,
+  });
+
+  it.each(['1.4.5', '1.5.5'])('delivers the frozen profile natively for %s new/resume/load sessions', async (version) => {
+    for (const mode of ['new', 'resume', 'load'] as const) {
+      const harness = createHarness({ executorId: 'antigravity-acp', initialize: antigravity(version), mode,
+        approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }) });
+      Object.assign(harness.executorContext.descriptor, { promptDeliveries: ['append', 'preamble'] });
+      try {
+        const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+        await run.completion;
+        expect(harness.opens[0]?.systemPromptAppend).toBe('Frozen profile');
+        expect(harness.starts[0]?.prompt).toBe('work');
+        expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({ profileDelivery: 'native' });
+        expect(harness.state.get(externalExecutorKey).profileDelivery).toBe('native');
+      } finally { await harness.session.shutdown(); }
+    }
+  });
+
+  it('falls back to a profile preamble when the runtime does not support append', async () => {
+    const harness = createHarness({ executorId: 'antigravity-acp', initialize: antigravity('1.4.4'), approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }) });
+    Object.assign(harness.executorContext.descriptor, { promptDeliveries: ['append', 'preamble'] });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.starts[0]?.prompt).toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+      expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({ profileDelivery: 'first_prompt_preamble', losses: expect.arrayContaining(['prompt_delivery_downgraded']) });
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('accepts the legacy model-family readback after sending a model-effort alias', async () => {
+    const sessionConfigOptions = configOptions().map((option) => option.category === 'model'
+      ? { ...option, id: 'model', type: 'select' as const, currentValue: 'claude-opus', options: [{ value: 'claude-opus', name: 'Opus' }] }
+      : option);
+    const harness = createHarness({ executorId: 'antigravity-acp', modelAlias: 'claude-opus-high', sessionConfigOptions,
+      configureReadbackFailureId: 'model', approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }) });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.selections).toContainEqual({ configId: 'model', value: 'claude-opus-high' });
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('maps yolo to the local agy CLI auto session mode', async () => {
+    const harness = createHarness({ executorId: 'antigravity-acp', permissionMapping: null, permissionMode: 'yolo',
+      availableModes: ['default', 'accept-edits', 'auto', 'plan'],
+      permission: { via: 'session_mode', manual: 'default', auto: 'auto_edit', yolo: 'yolo' },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }) });
+    Object.assign(harness.executorContext.descriptor, { selectedSource: 'agy-cli' });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.client.status().sessionId).toBe('remote-2');
+      expect((await harness.client.openSession(harness.opens[0]!)).currentModeId).toBe('auto');
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('asks interaction_* as a question rather than a tool approval', async () => {
+    const harness = createHarness({ executorId: 'antigravity-acp', questionResponse: { 'Choose target': 'Allow once' },
+      permissionToolCall: { toolCallId: 'interaction_1', title: 'Choose target' } });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.question.request).toHaveBeenCalledOnce();
+      expect(harness.approvalRequests).toEqual([]);
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'allow-once' }]);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('turns a normal end_turn into a quota failure when this turn added SQLite error step 17', async () => {
+    const scratch = join(process.cwd(), '.tmp');
+    await mkdir(scratch, { recursive: true });
+    const home = await mkdtemp(join(scratch, 'agy-outcome-'));
+    await mkdir(join(home, 'antigravity-cli', 'conversations'), { recursive: true });
+    const database = new DatabaseSync(join(home, 'antigravity-cli', 'conversations', 'remote-2.db'));
+    database.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)');
+    const resetAt = '2026-11-13T00:00:00Z';
+    const harness = createHarness({ executorId: 'antigravity-acp',
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+      beforePromptCompletion: () => database.prepare('INSERT INTO steps VALUES (?, ?, ?)').run(1, 17, Buffer.from(`Error 429, Message: rate limited, Status: RESOURCE_EXHAUSTED [reason:QUOTA_EXHAUSTED quotaResetTimeStamp:${resetAt}]`)),
+    });
+    Object.assign(harness.executorContext.descriptor, { homeEnv: 'GEMINI_HOME', homeDir: home });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await expect(run.completion).rejects.toThrow(/quota/);
+      expect(await run.turn.result).toMatchObject({ type: 'failed', error: { code: 'RESOURCE_EXHAUSTED', details: { kind: 'usage_limit', resetAt } } });
+    } finally {
+      await harness.session.shutdown();
+      database.close();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

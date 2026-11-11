@@ -61,6 +61,7 @@ export interface AcpProcessDescriptor {
   readonly stderrMaxBytes?: number;
   readonly redactDiagnostic?: (text: string) => string;
   readonly clientName?: string;
+  readonly runtimeVersion?: string;
 }
 
 export type AcpClientState =
@@ -119,6 +120,7 @@ export interface AcpOpenSessionOptions {
    * was not freshly created.
    */
   readonly systemPromptOverride?: string;
+  readonly systemPromptAppend?: string;
   readonly sessionMeta?: Record<string, unknown>;
   readonly signal?: AbortSignal;
 }

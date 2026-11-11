@@ -4,6 +4,12 @@ import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
   AcpClientError,
+  antigravitySessionMode,
+  antigravitySupportsSystemPromptAppend,
+  extractAntigravityUserInputQuestion,
+  extractDroidElicitationForm,
+  legacyAntigravityModelFamily,
+  resolveAntigravityUserInputOptionId,
   type AcpOpenSessionOptions,
   type AcpOpenSessionResult,
   type AcpPlanApprovalHandler,
@@ -25,8 +31,9 @@ import {
 
 import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
 import { CLAUDE_EXPLICIT_SETTINGS_SOURCES } from '#/app/agentExecutor/claudeCredentials';
-import { antigravityProcessService } from '#/app/agentExecutor/antigravityProcess';
+import { antigravityProcessService, antigravitySettingsHome } from '#/app/agentExecutor/antigravityProcess';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { watchAntigravityTurnOutcome, type AntigravityTurnFailure } from '#/os/backends/node-local/antigravityRuntime';
 import { acquireHarnessMcp } from './harnessMcpLease';
 import { harnessContextProcess } from './harnessContextProcess';
 import { harnessAccountError, harnessAccountProcess, HarnessAccountStartupError } from './harnessAccountProcess';
@@ -34,7 +41,7 @@ import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import { acpAuthObservation, recordExecutorAuth } from './executorAuth';
-import { executorLaunchArgs, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
+import { executorLaunchArgs, executorProcessEnv, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { executorSourceId, IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -175,9 +182,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
           clientName: 'kiki-agent-core-v2',
+          runtimeVersion: context.descriptor.version,
         },
         { permissionHandler,
-          elicitationHandler: ['codex-acp', 'deepseek-acp'].includes(executorSourceId(context.descriptor)) ? elicitationHandler : undefined,
+          elicitationHandler: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(executorSourceId(context.descriptor)) ? elicitationHandler : undefined,
           planApprovalHandler: executorSourceId(context.descriptor) === 'grok-acp' ? planApprovalHandler : undefined,
           contextHookHandler: executorSourceId(context.descriptor) === 'grok-acp' ? contextHookHandler : undefined },
       ),
@@ -319,7 +327,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       audio: opened.capabilities.promptCapabilities?.audio === true,
       fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
       nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
-      questionForm: ['codex-acp', 'deepseek-acp'].includes(executorSourceId(this.context.descriptor)),
+      questionForm: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(executorSourceId(this.context.descriptor)),
       planApproval: executorSourceId(this.context.descriptor) === 'grok-acp',
       resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
       load: opened.capabilities.loadSession === true,
@@ -339,22 +347,30 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const deliverProfile =
       !reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId;
+    const promptDeliveryResolution = resolvePromptDelivery(this.context.descriptor, this.context.binding);
+    const nativeAppendDelivered =
+      sessionOptions.systemPromptAppend !== undefined &&
+      (objectOf(objectOf(opened.sessionRequestMeta?.['antigravity'])?.['systemPrompt'])?.['append'] !== undefined ||
+        antigravitySupportsSystemPromptAppend(opened.initialize));
     const profileOverrideDelivered =
       deliverProfile &&
       opened.mode === 'new' &&
       sessionOptions.systemPromptOverride !== undefined;
-    if (deliverProfile && !profileOverrideDelivered) losses.add('profile_as_user_preamble');
-    if (resolvePromptDelivery(this.context.descriptor, this.context.binding).downgraded) {
+    const nativeProfileDelivered = nativeAppendDelivered || profileOverrideDelivered;
+    if (deliverProfile && !nativeProfileDelivered) losses.add('profile_as_user_preamble');
+    if (promptDeliveryResolution.downgraded || (sessionOptions.systemPromptAppend !== undefined && !nativeAppendDelivered)) {
       losses.add('prompt_delivery_downgraded');
     }
-    const profileDelivery: ExecutorProfileDelivery = deliverProfile
-      ? profileOverrideDelivered
-        ? 'system_prompt_override'
-        : 'first_prompt_preamble'
-      : prior.profileDelivery ?? 'first_prompt_preamble';
+    const profileDelivery: ExecutorProfileDelivery = nativeAppendDelivered
+      ? 'native'
+      : deliverProfile
+        ? profileOverrideDelivered
+          ? 'system_prompt_override'
+          : 'first_prompt_preamble'
+        : prior.profileDelivery ?? 'first_prompt_preamble';
     const remotePrompt = buildRemotePrompt({
       prompt,
-      systemPrompt: deliverProfile && !profileOverrideDelivered
+      systemPrompt: deliverProfile && !nativeProfileDelivered
         ? this.context.binding.systemPrompt
         : undefined,
       handoff: handoff?.text,
@@ -421,6 +437,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       },
     };
     this.#permissionContext = { turn, recorder };
+
+    const checkAntigravityOutcome = executorSourceId(this.context.descriptor) === 'antigravity-acp'
+      ? await watchAntigravityTurnOutcome(
+          antigravitySettingsHome(
+            executorProcessEnv(this.context.descriptor),
+            this.context.agent.accessor.get(IBootstrapService),
+            this.context.descriptor.id,
+          ),
+          configured.sessionId,
+        )
+      : undefined;
 
     let handle: AcpTurnHandle<NormalizedExecutorEvent>;
     try {
@@ -495,6 +522,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         priorCumulativeUsage: reusablePrior ? prior.lastCumulativeUsage : undefined,
         sameSession: priorSessionId !== undefined && priorSessionId === configured.sessionId,
       },
+      checkAntigravityOutcome,
     );
     const active: ActiveExternalTurn = { turn, recorder, handle, completion };
     this.#active = active;
@@ -660,6 +688,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       readonly priorCumulativeUsage: ExecutorCumulativeUsage | undefined;
       readonly sameSession: boolean;
     },
+    checkAntigravityOutcome?: (stopReason: string) => Promise<AntigravityTurnFailure | undefined>,
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     const pump = (async () => {
       try {
@@ -674,14 +703,20 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     try {
       const [completed] = await Promise.all([handle.completion, pump]);
       if (completed.response._meta?.['usage'] !== undefined) await recorder.reportedUsage(completed.response._meta['usage']);
-      const turnResult = turnResultFromAcp(completed);
+      const antigravityFailure = checkAntigravityOutcome === undefined
+        ? undefined
+        : await checkAntigravityOutcome(String(completed.response.stopReason));
+      const turnResult = antigravityFailure !== undefined
+        ? { type: 'failed' as const, steps: 1, error: antigravityTurnError(antigravityFailure) }
+        : turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
         const accounted = usageFromAcp(
           completed,
           accounting.priorCumulativeUsage,
           accounting.sameSession,
+          executorSourceId(this.context.descriptor) === 'agy-cli',
         );
-        if (accounted !== undefined) {
+        if (accounted?.cumulative !== undefined) {
           await this.#dispatcher.dispatch(
             new ExecutorSessionUpdated({
               executionGeneration: this.context.binding.execution?.generation,
@@ -798,6 +833,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
           ? systemPrompt : undefined,
+      systemPromptAppend:
+        executorSourceId(this.context.descriptor) === 'antigravity-acp' &&
+          resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'append' && systemPrompt.length > 0
+          ? systemPrompt : undefined,
       signal,
     };
   }
@@ -826,18 +865,22 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       assertConfigured(configured.configOptions, agent.selection, 'native agent');
     }
     if (modelBinding === 'session_config' && this.context.binding.modelAlias !== undefined) {
+      const legacyFamily = executorSourceId(this.context.descriptor) === 'antigravity-acp'
+        ? legacyAntigravityModelFamily(configured.configOptions, this.context.binding.modelAlias)
+        : undefined;
       const model = selectConfig(
         configured.configOptions,
         this.context.descriptor.modelConfigId,
         this.context.descriptor.modelConfigCategory ?? 'model',
         this.context.binding.modelAlias,
         'model',
+        legacyFamily !== undefined,
       );
       configured = await this.#client.configureSession({
         configOptions: [model.selection],
         signal,
       });
-      assertConfigured(configured.configOptions, model.selection, 'model');
+      assertConfigured(configured.configOptions, model.selection, 'model', legacyFamily);
     }
 
     const thinking = this.context.binding.execution === undefined
@@ -905,7 +948,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       return configured;
     }
     if (declared?.via === 'session_mode') {
-      const selected = declared[vendorMode] ?? declared.manual;
+      const rawSelected = declared[vendorMode] ?? declared.manual;
+      const selected = executorSourceId(this.context.descriptor) === 'antigravity-acp'
+        ? antigravitySessionMode(this.context.descriptor.selectedSource, rawSelected)
+        : rawSelected;
       if (opened.availableModes !== undefined && !opened.availableModes.includes(selected)) {
         throw new Error2(ErrorCodes.CONFIG_INVALID,
           `External executor "${this.context.descriptor.id}" does not advertise ${selected} permission mode`);
@@ -1006,9 +1052,27 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const active = this.#permissionContext;
     if (active === undefined || signal.aborted) return { action: 'cancel' };
     if (request.mode !== 'form' || ('sessionId' in request && request.sessionId !== this.#client.status().sessionId)) return { action: 'decline' };
+    const toolCallId = 'toolCallId' in request && typeof request.toolCallId === 'string' ? active.recorder.toolCallId(request.toolCallId) : undefined;
+    if (executorSourceId(this.context.descriptor) === 'droid-acp') {
+      const droidForm = extractDroidElicitationForm(request);
+      if (droidForm !== undefined) {
+        const result = await this.context.agent.accessor.get(ISessionQuestionService).request({
+          turnId: active.turn.id,
+          toolCallId,
+          questions: droidForm.questions.map((question) => ({
+            question: question.question,
+            header: question.header,
+            options: question.options.map((option) => ({ label: option.label })),
+            otherLabel: 'Other',
+          })),
+        }, { signal, agentId: this.context.agent.id });
+        if (signal.aborted || result === null || ('cancelled' in result && result.cancelled === true)) return { action: 'cancel' };
+        const answers = objectOf('answers' in result && typeof result.answers === 'object' ? result.answers : result) ?? {};
+        return droidForm.respond(answers);
+      }
+    }
     const fields = acpFormFields(request);
     if (fields === undefined) return { action: 'decline' };
-    const toolCallId = 'toolCallId' in request && typeof request.toolCallId === 'string' ? active.recorder.toolCallId(request.toolCallId) : undefined;
     if (fields.length === 0 || request._meta?.['codex_approval_kind'] === 'mcp_tool_call') {
       const scopes = fields.length === 0 ? [] : fields.length === 1 && fields[0]?.key === 'persist'
         ? fields[0].choices.filter((choice) => ['once', 'session', 'always'].includes(choice.value)) : undefined;
@@ -1044,6 +1108,25 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (active === undefined || context.signal.aborted) return { outcome: 'cancelled' };
     if (request.sessionId !== this.#client.status().sessionId) return { outcome: 'cancelled' };
     const toolCallId = active.recorder.toolCallId(request.toolCall.toolCallId);
+    if (executorSourceId(this.context.descriptor) === 'antigravity-acp') {
+      const userQuestion = extractAntigravityUserInputQuestion(request);
+      if (userQuestion !== undefined) {
+        const result = await this.context.agent.accessor.get(ISessionQuestionService).request({
+          turnId: active.turn.id,
+          toolCallId,
+          questions: [{
+            question: userQuestion.question,
+            header: userQuestion.header,
+            options: userQuestion.options.map((option) => ({ label: option.label })),
+          }],
+        }, { signal: context.signal, agentId: this.context.agent.id });
+        if (context.signal.aborted || result === null || ('cancelled' in result && result.cancelled === true)) return { outcome: 'cancelled' };
+        const answers = objectOf('answers' in result && typeof result.answers === 'object' ? result.answers : result) ?? {};
+        const answer = answers[userQuestion.question] ?? answers[userQuestion.header] ?? answers[userQuestion.id];
+        const optionId = resolveAntigravityUserInputOptionId(userQuestion, answer);
+        return optionId === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId };
+      }
+    }
     const vendorDefault = context.options.find((option) => option.optionId === 'kiki.vendor_default');
     if (vendorDefault !== undefined) return { outcome: 'selected', optionId: vendorDefault.optionId };
     const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
@@ -1139,9 +1222,16 @@ function usageFromAcp(
   result: AcpTurnResult,
   priorCumulative: ExecutorCumulativeUsage | undefined,
   sameSession: boolean,
-): { readonly usage: TokenUsage | undefined; readonly cumulative: ExecutorCumulativeUsage } | undefined {
+  perTurn: boolean,
+): { readonly usage: TokenUsage | undefined; readonly cumulative?: ExecutorCumulativeUsage } | undefined {
   const usage = result.response.usage;
   if (usage === undefined || usage === null) return undefined;
+  if (perTurn) return { usage: {
+    inputOther: usage.inputTokens,
+    output: usage.outputTokens,
+    inputCacheRead: usage.cachedReadTokens ?? 0,
+    inputCacheCreation: usage.cachedWriteTokens ?? 0,
+  } };
   const cumulative: ExecutorCumulativeUsage = {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
@@ -1202,8 +1292,9 @@ function selectConfig(
   category: string,
   value: string | undefined,
   label: string,
+  allowUnlistedValue = false,
 ): SelectedConfig {
-  const selected = resolveSelectConfig(options, configId, category, value, label);
+  const selected = resolveSelectConfig(options, configId, category, value, label, allowUnlistedValue);
   if (selected === undefined) {
     throw new Error2(
       ErrorCodes.MODEL_NOT_FOUND,
@@ -1229,6 +1320,7 @@ function resolveSelectConfig(
   category: string,
   value: string | undefined,
   label: string,
+  allowUnlistedValue = false,
 ): SelectedConfig | undefined {
   if (value === undefined || value.length === 0) {
     throw new Error2(ErrorCodes.MODEL_NOT_FOUND, `External ACP ${label} is not configured`);
@@ -1265,7 +1357,7 @@ function resolveSelectConfig(
   }
   const option = candidates[0]!;
   const values = selectValues(option);
-  if (!values.includes(value)) {
+  if (!allowUnlistedValue && !values.includes(value)) {
     throw new Error2(
       ErrorCodes.MODEL_NOT_FOUND,
       `External ACP ${label} "${value}" is unavailable in config "${option.id}"`,
@@ -1340,9 +1432,14 @@ function assertConfigured(
   options: readonly AcpSessionConfigOption[],
   selection: AcpSessionConfigSelection,
   label: string,
+  acceptedAlias?: string,
 ): void {
   const option = options.find((candidate) => candidate.id === selection.configId);
-  if (option === undefined || option.currentValue !== selection.value) {
+  if (
+    option === undefined ||
+    (option.currentValue !== selection.value &&
+      (acceptedAlias === undefined || option.currentValue !== acceptedAlias))
+  ) {
     throw new Error2(
       ErrorCodes.MODEL_NOT_FOUND,
       `External ACP ${label} config "${selection.configId}" did not accept the selected value`,
@@ -1605,4 +1702,19 @@ function toError(value: unknown, fallback: string): Error {
           ? value
           : JSON.stringify(value) ?? Object.prototype.toString.call(value),
     );
+}
+
+function antigravityTurnError(failure: AntigravityTurnFailure): Error {
+  const message = failure.resetAt === undefined
+    ? failure.message
+    : `${failure.message} (reset at ${failure.resetAt})`;
+  return Object.assign(new Error(message), {
+    code: failure.code ?? (failure.kind === 'usage_limit' ? 'QUOTA_EXHAUSTED' : 'PROVIDER_ERROR'),
+    details: {
+      kind: failure.kind,
+      reason_code: failure.code,
+      retryable: failure.retryable,
+      resetAt: failure.resetAt,
+    },
+  });
 }

@@ -217,7 +217,7 @@ describe('AgentExecutorPreflightService', () => {
     expect(result[0]?.diagnostics).toHaveLength(1);
     expect(result[0]?.diagnostics[0]?.message).toContain('这是 Antigravity IDE，不是 ACP CLI');
     expect(result[0]?.diagnostics[0]?.message).toContain('ANTIGRAVITY_ACP_PATH');
-    expect(result[0]?.diagnostics[0]?.message).toContain('1.2.1');
+    expect(result[0]?.diagnostics[0]?.message).toContain('1.4.5');
     expect(result[0]?.diagnostics[0]?.code).toBe('antigravity_ide_not_acp');
     expect(processService.calls.some((call) => call.includes('antigravity'))).toBe(false);
   });
@@ -251,11 +251,16 @@ describe('AgentExecutorPreflightService', () => {
       'codebuddy-acp',
       'codex-acp',
       'codex-app-server',
+      'copilot-acp',
       'cursor-acp',
       'deepseek-acp',
+      'devin-acp',
+      'droid-acp',
+      'dsh-acp',
       'gemini-acp',
       'grok-acp',
       'kimi-acp',
+      'kiro-acp',
       'openclaw-acp',
       'opencode-acp',
       'pi-acp',
@@ -296,6 +301,11 @@ describe('AgentExecutorPreflightService', () => {
       'openclaw --version',
       'cline --version',
       'codebuddy --version',
+      'copilot --version',
+      'devin --version',
+      'droid --version',
+      'dsh-acp --version',
+      'kiro-cli --version',
       'pi-acp --version',
       'deepseek-acp --version',
       'qodercli --version',

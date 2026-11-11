@@ -359,7 +359,8 @@ describe('Kiki MCP injection switch', () => {
     const supportOf = (id: keyof typeof BUILTIN_AGENT_EXECUTORS) => kikiMcpSupport({ id, ...BUILTIN_AGENT_EXECUTORS[id]! });
     const supported = Object.keys(BUILTIN_AGENT_EXECUTORS).filter((id) => supportOf(id as keyof typeof BUILTIN_AGENT_EXECUTORS).state === 'supported').sort();
     expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'claude-acp', 'cline-acp', 'codebuddy-acp', 'codex-acp',
-      'codex-app-server', 'cursor-acp', 'deepseek-acp', 'gemini-acp', 'grok-acp', 'kimi-acp', 'opencode-acp', 'qoder-acp']);
+      'codex-app-server', 'cursor-acp', 'deepseek-acp', 'devin-acp', 'droid-acp', 'dsh-acp', 'gemini-acp', 'grok-acp',
+      'kimi-acp', 'kiro-acp', 'opencode-acp', 'qoder-acp']);
     expect(supportOf('agy-cli').fact).toContain('supports_mcp is true');
     expect(supportOf('agy-cli').fact).toContain('stdio');
     expect(supportOf('codex-app-server').fact).toContain('process flags');

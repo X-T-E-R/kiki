@@ -9,6 +9,7 @@ import {
   type AgentCapabilities,
   type ClientConnection,
   type InitializeRequest,
+  type InitializeResponse,
   type NewSessionRequest,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
@@ -20,9 +21,20 @@ import { z } from 'zod';
 import { AsyncQueue, type AsyncQueueReservation } from '#/async-queue';
 import { AcpClientError, AcpClientErrorCode, AcpProtocolError } from '#/errors';
 import {
+  antigravityClientFileReads,
+  antigravityClientName,
+  antigravitySessionMeta,
+  isCopilotLostSessionError,
+  makeAntigravityReadRepair,
+  normalizeAntigravitySessionUpdate,
+  readAntigravityTextFile,
+} from '#/antigravity';
+import {
+  GrokAcpInputMerger,
   mapAcpSessionNotification,
   type NormalizedExecutorEvent,
 } from '#/events';
+import { normalizeDevinSessionUpdate } from '#/flavors';
 import { parseExecutorSessionRefEnvelope } from '#/session-ref';
 import { airSessionFailure } from '#/session-failure';
 import { StderrRingBuffer } from '#/stderr-ring';
@@ -93,6 +105,12 @@ interface OpenResponse {
   readonly currentModeId?: string;
   readonly availableModes?: readonly string[];
   readonly sessionMeta?: Readonly<Record<string, unknown>>;
+  readonly requestMeta?: Readonly<Record<string, unknown>>;
+}
+
+interface LoadReplayGate {
+  readonly sessionId: string;
+  candidateConfigOptions?: readonly SessionConfigOption[];
 }
 
 class LineBuffer {
@@ -313,8 +331,14 @@ export class AcpProcessClient {
   }> = [];
   #startupInFlight = false;
   #loadReplayCount = 0;
+  #loadReplayGate: LoadReplayGate | undefined;
+  #configOptionsWaiter: (() => void) | undefined;
+  #latestConfigOptions: readonly SessionConfigOption[] | undefined;
+  #copilotLostSession = false;
   #protocolFailure: AcpProtocolError | undefined;
   #steeringDetached = false;
+  readonly #antigravityReadRepair = makeAntigravityReadRepair();
+  readonly #grokInputMerger = new GrokAcpInputMerger();
 
   constructor(
     processService: HostProcessServiceLike,
@@ -328,6 +352,10 @@ export class AcpProcessClient {
     this.#stderr = new StderrRingBuffer(
       descriptor.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES,
     );
+  }
+
+  #isAntigravity(): boolean {
+    return (this.#descriptor.sourceId ?? this.#descriptor.id) === 'antigravity-acp';
   }
 
   status(): AcpClientStatus {
@@ -354,6 +382,11 @@ export class AcpProcessClient {
     }
     if (this.#state === 'prompting' || this.#startupInFlight) {
       throw new AcpClientError(AcpClientErrorCode.Busy, 'ACP client is busy');
+    }
+    if (this.#copilotLostSession) {
+      this.#copilotLostSession = false;
+      await this.#cleanupTransport(false);
+      this.#setState('cold');
     }
     if (
       this.#state === 'ready' &&
@@ -466,6 +499,30 @@ export class AcpProcessClient {
       }
       throw this.#decorateError(error, AcpClientErrorCode.SessionOpenFailed);
     }
+  }
+
+  async #awaitConfigOptionsReady(
+    initial: readonly SessionConfigOption[],
+    selections: readonly AcpSessionConfigSelection[] | undefined,
+    deadline: number,
+    signal: AbortSignal | undefined,
+  ): Promise<SessionConfigOption[]> {
+    let current = [...initial];
+    const missing = () => selections?.some((selection) => !current.some((option) => option.id === selection.configId)) === true;
+    while (missing()) {
+      let timer: NodeJS.Timeout | undefined;
+      const notified = new Promise<true>((resolve) => { this.#configOptionsWaiter = () => resolve(true); });
+      const quiet = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 100); });
+      try {
+        const arrived = await this.#requestDuringStartup(Promise.race([notified, quiet]), deadline, signal);
+        if (this.#latestConfigOptions !== undefined) current = [...this.#latestConfigOptions];
+        if (!arrived) break;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        this.#configOptionsWaiter = undefined;
+      }
+    }
+    return current;
   }
 
   async #configureSelection(
@@ -594,6 +651,7 @@ export class AcpProcessClient {
 
     const completion = (async (): Promise<AcpTurnResult> => {
       try {
+        if (this.#isAntigravity()) this.#antigravityReadRepair.reset();
         request.onDeliveryAttempt?.();
         const prompt = connection.agent.request(
           methods.agent.session.prompt,
@@ -626,6 +684,9 @@ export class AcpProcessClient {
         // so far; `stderrTail()` retains the live tail.
         return { response, session, stderrTail: this.stderrTail() };
       } catch (error) {
+        if ((this.#descriptor.sourceId ?? this.#descriptor.id) === 'copilot-acp' && isCopilotLostSessionError(error)) {
+          this.#copilotLostSession = true;
+        }
         const failure =
           error instanceof AcpClientError
             ? error
@@ -702,7 +763,10 @@ export class AcpProcessClient {
     active.cancellation = (async () => {
       active.requestController.abort(reason);
       try {
-        await connection.agent.notify(methods.agent.session.cancel, { sessionId });
+        await connection.agent.notify(methods.agent.session.cancel, {
+          sessionId,
+          _meta: (this.#descriptor.sourceId ?? this.#descriptor.id) === 'grok-acp' ? { cancelTrigger: 'ctrl_c' } : undefined,
+        });
       } catch (error) {
         this.#options.logger?.warn?.('Failed to send ACP session/cancel', {
           error: error instanceof Error ? error.message : String(error),
@@ -816,6 +880,26 @@ export class AcpProcessClient {
         app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params, method); });
       }
     }
+    if ((this.#descriptor.sourceId ?? this.#descriptor.id) === 'copilot-acp') {
+      app.onNotification<unknown>('github.com/copilot/sessionEvent', (params) => params, ({ params }) => {
+        const event = objectValue(params);
+        const sessionId = event?.['sessionId'];
+        const type = event?.['type'];
+        if (typeof sessionId !== 'string' || (type !== 'subagent.started' && type !== 'subagent.completed' && type !== 'subagent.failed')) {
+          this.#pendingEventReservations.shift()?.reservation.release();
+          return;
+        }
+        this.#handleSessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'subagent_update',
+            type,
+            agentId: event?.['agentId'],
+            data: event?.['data'],
+          },
+        }, 'github.com/copilot/sessionEvent');
+      });
+    }
     app.onNotification<unknown>(
       UNKNOWN_UPDATE_METHOD,
       (params) => params,
@@ -823,6 +907,19 @@ export class AcpProcessClient {
         this.#handleSessionUpdate(params);
       },
     );
+    if (this.#isAntigravity()) {
+      app.onRequest(methods.client.fs.readTextFile, async (context) => {
+        context.signal.throwIfAborted();
+        try {
+          const content = await readAntigravityTextFile(context.params);
+          this.#antigravityReadRepair.attempted(context.params.path, true);
+          return { content };
+        } catch (error) {
+          this.#antigravityReadRepair.attempted(context.params.path, false);
+          throw error;
+        }
+      });
+    }
     app.onRequest(methods.client.session.requestPermission, async (context) => {
       const handler = this.#options.permissionHandler;
       if (handler === undefined) {
@@ -902,19 +999,27 @@ export class AcpProcessClient {
     this.#observeConnection(connection);
 
     this.#setState('initializing');
+    const sourceId = this.#descriptor.sourceId ?? this.#descriptor.id;
     const initializeRequest: InitializeRequest = {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         plan: {},
         session: { configOptions: { boolean: {} } },
+        fs: this.#isAntigravity() ? { readTextFile: antigravityClientFileReads(this.#descriptor.runtimeVersion), writeTextFile: false } : undefined,
+        terminal: this.#isAntigravity() ? false : undefined,
         ...(this.#options.elicitationHandler === undefined ? {} : { elicitation: { form: {} } }),
-        _meta: { jetbrains: { air: { version: 1, capabilities: ['sessionFailure'] } } },
+        _meta: {
+          jetbrains: { air: { version: 1, capabilities: ['sessionFailure'] } },
+          'github.com/copilot': sourceId === 'copilot-acp' ? { events: ['subagent.started', 'subagent.completed', 'subagent.failed', 'assistant.message_delta', 'assistant.reasoning_delta'] } : undefined,
+          'cognition.ai/subagentSupport': sourceId === 'devin-acp' ? true : undefined,
+          'cognition.ai/messageGrouping': sourceId === 'devin-acp' ? true : undefined,
+        },
       },
       clientInfo: {
-        name: this.#descriptor.clientName ?? 'kiki-acp-client',
+        name: this.#isAntigravity() ? antigravityClientName(this.#descriptor.runtimeVersion, this.#descriptor.clientName ?? 'kiki-acp-client') : this.#descriptor.clientName ?? 'kiki-acp-client',
         version: '0.0.1',
       },
-      _meta: { steering: { supported: true } },
+      _meta: { steering: { supported: true }, clientType: sourceId === 'grok-acp' ? 'extension' : undefined },
     };
     const initialize = await this.#requestDuringStartup(
       connection.agent.request(methods.agent.initialize, initializeRequest),
@@ -927,8 +1032,9 @@ export class AcpProcessClient {
       );
     }
     this.#capabilities = initialize.agentCapabilities ?? {};
+    this.#latestConfigOptions = undefined;
 
-    const opened = await this.#openRemoteSession(options, deadline);
+    const opened = await this.#openRemoteSession(options, deadline, initialize);
     if (this.#grokMcpSetupObserved && (options.mcpServers?.length ?? 0) > 0 && !this.#grokMcpReadySessions.has(opened.sessionId)) {
       let rejectReady!: (error: Error) => void;
       const onDisconnect = (): void => rejectReady(new AcpClientError(AcpClientErrorCode.Disconnected, 'ACP disconnected before MCP initialization'));
@@ -945,27 +1051,9 @@ export class AcpProcessClient {
       }
     }
     this.#setState('configuring');
-    let configOptions = [...opened.configOptions];
+    let configOptions = await this.#awaitConfigOptionsReady(opened.configOptions, options.configOptions, deadline, options.signal);
     for (const selection of options.configOptions ?? []) {
-      const configRequest: SetSessionConfigOptionRequest =
-        typeof selection.value === 'boolean'
-          ? {
-              sessionId: opened.sessionId,
-              configId: selection.configId,
-              type: 'boolean',
-              value: selection.value,
-            }
-          : {
-              sessionId: opened.sessionId,
-              configId: selection.configId,
-              value: selection.value,
-            };
-      const response = await this.#requestDuringStartup(
-        connection.agent.request(methods.agent.session.setConfigOption, configRequest),
-        deadline,
-        options.signal,
-      );
-      configOptions = response.configOptions;
+      configOptions = await this.#configureSelection(connection, opened.sessionId, configOptions, selection, deadline, options.signal);
     }
     if (options.modeId !== undefined) {
       await this.#requestDuringStartup(
@@ -992,7 +1080,7 @@ export class AcpProcessClient {
       currentModeId: opened.currentModeId,
       availableModes: opened.availableModes,
       sessionRef,
-      sessionRequestMeta: options.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(options.sessionMeta)),
+      sessionRequestMeta: opened.requestMeta === undefined ? undefined : JSON.parse(JSON.stringify(opened.requestMeta)),
       sessionResponseMeta: opened.sessionMeta,
       loadReplayObserved: this.#loadReplayCount > 0,
       quarantinedUpdateCount: this.#loadReplayCount,
@@ -1006,15 +1094,19 @@ export class AcpProcessClient {
   async #openRemoteSession(
     options: AcpOpenSessionOptions,
     deadline: number,
+    initialize: InitializeResponse,
   ): Promise<OpenResponse> {
     const connection = this.#connection!;
+    const sessionMeta = this.#isAntigravity()
+      ? antigravitySessionMeta(initialize, options.sessionMeta, options.systemPromptAppend)
+      : options.sessionMeta;
     const common: NewSessionRequest = {
       cwd: options.cwd,
       additionalDirectories: this.#additionalDirectoriesForSession(
         options.additionalDirectories,
       ),
       mcpServers: options.mcpServers === undefined ? [] : [...options.mcpServers],
-      _meta: options.sessionMeta,
+      _meta: sessionMeta,
     };
     let priorSessionId =
       options.sessionRef === undefined
@@ -1043,6 +1135,7 @@ export class AcpProcessClient {
           configOptions: sessionConfigOptionsFromResponse(resumed),
           currentModeId: resumed.modes?.currentModeId,
           availableModes: resumed.modes?.availableModes.map((mode) => mode.id),
+          requestMeta: common._meta ?? undefined,
         };
       }
     }
@@ -1070,6 +1163,7 @@ export class AcpProcessClient {
           configOptions: sessionConfigOptionsFromResponse(response),
           currentModeId: response.modes?.currentModeId,
           availableModes: response.modes?.availableModes.map((mode) => mode.id),
+          requestMeta: common._meta ?? undefined,
           sessionMeta: response._meta ?? undefined,
         };
       } catch (error) {
@@ -1081,22 +1175,7 @@ export class AcpProcessClient {
     if (priorSessionId !== undefined && this.#capabilities.loadSession === true) {
       this.#setOpeningMode('load');
       try {
-        const response = await this.#requestDuringStartup(
-          connection.agent.request(methods.agent.session.load, {
-            ...common,
-            sessionId: priorSessionId,
-          }),
-          deadline,
-          options.signal,
-        );
-        return {
-          sessionId: priorSessionId,
-          mode: 'load',
-          configOptions: sessionConfigOptionsFromResponse(response),
-          currentModeId: response.modes?.currentModeId,
-          availableModes: response.modes?.availableModes.map((mode) => mode.id),
-          sessionMeta: response._meta ?? undefined,
-        };
+        return await this.#openLoadedSession(common, priorSessionId, deadline, options.signal);
       } catch (error) {
         if (!isFallbackSessionError(error, allowRetired)) throw error;
         if (allowRetired && isRetiredSessionError(error)) retiredSessionFallback = true;
@@ -1112,9 +1191,9 @@ export class AcpProcessClient {
       });
     }
     this.#setOpeningMode('new');
-    const newSessionRequest: NewSessionRequest = options.systemPromptOverride === undefined ? common : {
+    const newSessionRequest: NewSessionRequest = {
       ...common,
-      _meta: { ...options.sessionMeta, systemPromptOverride: options.systemPromptOverride },
+      _meta: options.systemPromptOverride === undefined ? sessionMeta : { ...sessionMeta, systemPromptOverride: options.systemPromptOverride },
     };
     const response = await this.#requestDuringStartup(
       connection.agent.request(methods.agent.session.new, newSessionRequest),
@@ -1127,8 +1206,35 @@ export class AcpProcessClient {
       configOptions: sessionConfigOptionsFromResponse(response),
       currentModeId: response.modes?.currentModeId,
       availableModes: response.modes?.availableModes.map((mode) => mode.id),
+      requestMeta: newSessionRequest._meta ?? undefined,
       sessionMeta: response._meta ?? undefined,
     };
+  }
+
+  async #openLoadedSession(
+    common: NewSessionRequest,
+    sessionId: string,
+    deadline: number,
+    signal: AbortSignal | undefined,
+  ): Promise<OpenResponse> {
+    const gate: LoadReplayGate = { sessionId };
+    this.#loadReplayGate = gate;
+    try {
+      const response = await this.#requestDuringStartup(
+        this.#connection!.agent.request(methods.agent.session.load, { ...common, sessionId }), deadline, signal,
+      );
+      return {
+        sessionId,
+        mode: 'load',
+        configOptions: sessionConfigOptionsFromResponse({ ...response, configOptions: response.configOptions ?? gate.candidateConfigOptions }),
+        currentModeId: response.modes?.currentModeId,
+        availableModes: response.modes?.availableModes.map((mode) => mode.id),
+        requestMeta: common._meta ?? undefined,
+        sessionMeta: response._meta ?? undefined,
+      };
+    } finally {
+      if (this.#loadReplayGate === gate) this.#loadReplayGate = undefined;
+    }
   }
 
   #additionalDirectoriesForSession(
@@ -1168,30 +1274,45 @@ export class AcpProcessClient {
   }
 
   #isEventMethod(method: string): boolean {
+    const sourceId = this.#descriptor.sourceId ?? this.#descriptor.id;
     return method === methods.client.session.update ||
       method === UNKNOWN_UPDATE_METHOD ||
-      (this.#descriptor.sourceId ?? this.#descriptor.id) === 'grok-acp' &&
-        (method === '_x.ai/session_notification' || method === '_x.ai/session/update');
+      (sourceId === 'grok-acp' && (method === '_x.ai/session_notification' || method === '_x.ai/session/update')) ||
+      (sourceId === 'copilot-acp' && method === 'github.com/copilot/sessionEvent');
   }
 
   #handleSessionUpdate(params: unknown, method = 'session/update'): void {
     const pending = this.#pendingEventReservations.shift();
     try {
-      const mapped = mapAcpSessionNotification(params, method);
+      const sourceId = this.#descriptor.sourceId ?? this.#descriptor.id;
+      const merged = sourceId === 'grok-acp' ? this.#grokInputMerger.normalize(params, method) : params;
+      const normalized = this.#isAntigravity()
+        ? normalizeAntigravitySessionUpdate(this.#antigravityReadRepair.repair(merged))
+        : sourceId === 'devin-acp'
+          ? normalizeDevinSessionUpdate(merged)
+          : merged;
+      const mapped = mapAcpSessionNotification(normalized, method);
+      const advertised = mapped.event.type === 'config.update'
+        ? mapped.event.configOptions as SessionConfigOption[]
+        : undefined;
+      if (advertised !== undefined) {
+        this.#latestConfigOptions = advertised;
+        this.#configOptionsWaiter?.();
+        const gate = this.#loadReplayGate;
+        if (gate !== undefined && mapped.sessionId === gate.sessionId) gate.candidateConfigOptions = advertised;
+      }
       if (this.#openResult !== undefined && mapped.sessionId === this.#openResult.sessionId) {
-        const configOptions = mapped.event.type === 'config.update'
-          ? mapped.event.configOptions as SessionConfigOption[]
-          : undefined;
-        if (configOptions !== undefined) this.#openResult = { ...this.#openResult, configOptions };
+        if (advertised !== undefined) this.#openResult = { ...this.#openResult, configOptions: advertised };
         const mode = mapped.event.type === 'mode.update'
           ? mapped.event.currentModeId
-          : configOptions?.find((option) => option.category === 'mode' && option.type === 'select')?.currentValue;
+          : advertised?.find((option) => option.category === 'mode' && option.type === 'select')?.currentValue;
         if (typeof mode === 'string') {
           this.#observedModeId = mode;
           this.#modeWaiter?.(mode);
         }
       }
-      if (this.#state === 'opening_session' && this.#openingMode === 'load') {
+      if (mapped.sessionId === this.#loadReplayGate?.sessionId ||
+          objectValue(objectValue(normalized)?.['_meta'])?.['isReplay'] === true) {
         pending?.reservation.release();
         this.#loadReplayCount += 1;
         return;

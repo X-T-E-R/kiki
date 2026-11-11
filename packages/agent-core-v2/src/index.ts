@@ -72,6 +72,7 @@ export * from '#/app/sessionManager/sessionManager';
 export * from '#/app/agentExecutor/harnessMcp';
 export * from '#/app/agentExecutor/antigravityService';
 export * from '#/app/agentExecutor/antigravityDistribution';
+export * from '#/app/agentExecutor/acpRegistryCatalog';
 export * from '#/app/sessionManager/sessionManagerService';
 export * from '#/app/git/worktreeModel';
 export * from '#/app/git/worktreeService';

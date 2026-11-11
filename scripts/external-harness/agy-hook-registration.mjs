@@ -6,7 +6,7 @@ const KEY = 'kiki-agy-permission-bridge';
 const STEERING_KEY = 'kiki-agy-steering-bridge';
 const GUIDANCE_KEY = 'kiki-agy-command-guidance';
 const OWNED = Object.freeze({
-  [KEY]: { state: '.kiki-agy-hook-ownership.json', definition: command => ({ PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command, timeout: 86400 }] }] }) },
+  [KEY]: { state: '.kiki-agy-hook-ownership.json', definition: command => ({ PreToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command, timeout: 86400 }] }] }) },
   [STEERING_KEY]: { state: '.kiki-agy-steering-ownership.json', definition: command => ({ PostInvocation: [{ type: 'command', command, timeout: 30 }] }) },
   [GUIDANCE_KEY]: { state: '.kiki-agy-command-guidance-ownership.json', definition: command => ({ SessionStart: [{ type: 'command', command, timeout: 30 }] }) },
 });
@@ -17,11 +17,8 @@ export const AGY_COMMAND_GUIDANCE_HOOK_KEY = GUIDANCE_KEY;
 
 export function hookCommand(nodePath, handlerPath, args = []) {
   if (args.some(arg => !/^--[a-z-]+$/.test(arg))) throw Error('AGY hook arguments must be fixed flags');
-  if (process.platform !== 'win32') return [`"${nodePath}"`, `"${handlerPath}"`, ...args].join(' ');
-  const literal = value => `'${value.replaceAll("'", "''")}'`;
-  const script = `$ErrorActionPreference='Stop'; $encoding=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$encoding; [Console]::OutputEncoding=$encoding; $OutputEncoding=$encoding; $json=[Console]::In.ReadToEnd(); $json | & ${[nodePath, handlerPath, ...args].map(literal).join(' ')}; exit $LASTEXITCODE`;
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  return `${join(process.env.SystemRoot ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')} -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+  const command = [`"${nodePath}"`, `"${handlerPath}"`, ...args].join(' ');
+  return process.platform === 'win32' ? `"${command}"` : command;
 }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 async function optional(path) { try { return await readFile(path); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; } }

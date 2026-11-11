@@ -22,6 +22,10 @@ export interface BinaryArchiveInstall {
   readonly onProgress?: (progress: BinaryArchiveProgress) => void;
   /** Download deadline, covering the response and its whole body; defaults to ten minutes. */
   readonly timeoutMs?: number;
+  readonly expectedSha256?: string;
+  readonly expectedArchiveBytes?: number;
+  readonly expectedEntryBytes?: number;
+  readonly expectedSiblingBytes?: number;
 }
 
 export async function installBinaryArchive(options: BinaryArchiveInstall): Promise<string> {
@@ -54,12 +58,17 @@ export async function installBinaryArchive(options: BinaryArchiveInstall): Promi
       },
     }), createWriteStream(archive, { flags: 'wx' }));
     if (reported !== downloaded) report?.({ stage: 'download', receivedBytes: downloaded, totalBytes });
+    const digest = hash.digest('hex');
+    if (options.expectedArchiveBytes !== undefined && downloaded !== options.expectedArchiveBytes) throw new Error(`Binary archive size mismatch: expected ${options.expectedArchiveBytes}, received ${downloaded}`);
+    if (options.expectedSha256 !== undefined && digest !== options.expectedSha256.toLowerCase()) throw new Error('Binary archive SHA-256 mismatch');
     report?.({ stage: 'extract' });
     await mkdir(staging);
     await extractBinaryZip(archive, staging);
-    for (const name of [options.entry, options.requiredSibling]) {
+    for (const [name, expectedBytes] of [[options.entry, options.expectedEntryBytes], [options.requiredSibling, options.expectedSiblingBytes]] as const) {
       const path = join(staging, name);
-      if (!(await stat(path)).isFile()) throw new Error(`Binary archive is missing ${name}`);
+      const info = await stat(path);
+      if (!info.isFile()) throw new Error(`Binary archive is missing ${name}`);
+      if (expectedBytes !== undefined && info.size !== expectedBytes) throw new Error(`Binary size mismatch for ${name}: expected ${expectedBytes}, received ${info.size}`);
       if (process.platform !== 'win32') await chmod(path, 0o755);
     }
     for (const name of ['node', 'localharness']) {
@@ -67,7 +76,7 @@ export async function installBinaryArchive(options: BinaryArchiveInstall): Promi
       if (process.platform !== 'win32' && await stat(path).then((value) => value.isFile(), () => false)) await chmod(path, 0o755);
     }
     await rename(staging, options.directory);
-    return hash.digest('hex');
+    return digest;
   } finally {
     await rm(staging, { recursive: true, force: true });
     await rm(archive, { force: true });

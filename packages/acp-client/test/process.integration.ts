@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -28,15 +31,23 @@ function createClient(
     readonly cancelGraceMs?: number;
     readonly shutdownGraceMs?: number;
     readonly permissionOptionId?: string;
+    readonly executorId?: string;
+    readonly runtimeVersion?: string;
+    readonly trace?: boolean;
   } = {},
 ): { readonly client: AcpProcessClient; readonly processService: NodeHostProcessService } {
   const processService = new NodeHostProcessService();
   const client = new AcpProcessClient(
     processService,
     {
-      id: 'test-acp',
+      id: options.executorId ?? 'test-acp',
       command: process.execPath,
       args: [FIXTURE, scenario],
+      runtimeVersion: options.runtimeVersion,
+      env: {
+        ACP_FIXTURE_TRACE: options.trace ? '1' : '0',
+        ACP_FIXTURE_AGY_VERSION: options.runtimeVersion ?? '1.0.0',
+      },
       startupTimeoutMs: options.startupTimeoutMs ?? 10_000,
       cancelGraceMs: options.cancelGraceMs ?? 50,
       shutdownGraceMs: options.shutdownGraceMs ?? 50,
@@ -72,9 +83,9 @@ class ForceEscalationProcessService implements HostProcessServiceLike {
   }
 }
 
-function priorSessionRef() {
+function priorSessionRef(executorId = 'test-acp') {
   return parseExecutorSessionRefEnvelope({
-    executorId: 'test-acp',
+    executorId,
     version: 1,
     ref: { sessionId: 'fake-session-1' },
   });
@@ -344,3 +355,82 @@ describe('ACP process state machine', () => {
     expect(listed.stdout).not.toContain(`"${String(pid)}"`);
   }, 10_000);
 });
+
+
+describe('ACP vendor activation over stdio', () => {
+  async function requests(client: AcpProcessClient, method: string): Promise<Array<{ method: string; params?: unknown }>> {
+    await waitFor(() => client.stderrTail().includes(`"method":"${method}"`));
+    return client.stderrTail().split('\n').filter((line) => line.startsWith('REQUEST='))
+      .map((line) => JSON.parse(line.slice('REQUEST='.length)));
+  }
+
+  it.each([
+    ['default', true, '1.5.5', ['initialize', 'session/resume']],
+    ['load-only', true, '1.4.5', ['initialize', 'session/load']],
+    ['resume-method-not-found', true, '1.5.5', ['initialize', 'session/resume', 'session/load']],
+    ['default', false, '1.4.5', ['initialize', 'session/new']],
+  ] as const)('sends session metadata on the %s activation path (%s, %s)', async (scenario, prior, version, expected) => {
+    const executorId = 'antigravity-acp';
+    const { client } = createClient(scenario, { executorId, runtimeVersion: version, trace: true });
+    const result = await client.openSession({ cwd, sessionRef: prior ? priorSessionRef(executorId) : undefined,
+      systemPromptAppend: 'Frozen profile', sessionMeta: { trace: 'preserved' } });
+    const activation = expected.at(-1)!;
+    expect(result.mode).toBe(activation.split('/')[1]);
+    const sent = await requests(client, activation);
+    expect(sent.map(({ method }) => method)).toEqual(expected);
+    expect(sent[0]?.params).toMatchObject({ clientCapabilities: { fs: { writeTextFile: false, readTextFile: false } } });
+    const antigravity = version === '1.4.5'
+      ? { systemPrompt: { append: 'Frozen profile' }, disabledTools: ['run_workflow'] }
+      : { systemPrompt: { append: 'Frozen profile' } };
+    for (const request of sent.slice(1)) expect(request.params).toMatchObject({ _meta: { trace: 'preserved', antigravity } });
+    expect(result.sessionRequestMeta).toEqual({ trace: 'preserved', antigravity });
+  });
+
+  it('propagates a delayed load failure after replay instead of sending a prompt', async () => {
+    const { client } = createClient('load-replay-idle', { trace: true });
+    const session = { cwd, sessionRef: priorSessionRef() };
+    await expect(client.startTurn({ session, signal: new AbortController().signal, prompt: 'live' }))
+      .rejects.toThrow('load rejected after replay');
+    expect(client.stderrTail()).not.toContain('session/prompt');
+  });
+
+  it('reconnects Copilot on the next explicit prompt without replaying the lost prompt', async () => {
+    const { client, processService } = createClient('copilot-lost-session', { executorId: 'copilot-acp' });
+    const session = { cwd, sessionRef: priorSessionRef('copilot-acp') };
+    const first = await client.startTurn({ session, signal: new AbortController().signal, prompt: 'first' });
+    await expect(first.completion).rejects.toThrow(/session not found/);
+    expect(processService.spawns.filter(({ command }) => command === process.execPath)).toHaveLength(1);
+    const next = await client.startTurn({ session, signal: new AbortController().signal, prompt: 'second' });
+    await expect(next.completion).resolves.toMatchObject({ session: { mode: 'resume' }, response: { stopReason: 'end_turn' } });
+    expect(processService.spawns.filter(({ command }) => command === process.execPath)).toHaveLength(2);
+  });
+});
+
+const localAgy = process.platform === 'win32' && process.env['LOCALAPPDATA'] !== undefined
+  ? join(process.env['LOCALAPPDATA'], 'agy', 'bin', 'agy.exe') : undefined;
+
+it.skipIf(localAgy === undefined || !existsSync(localAgy))('opens a local Antigravity ACP session without prompting', async () => {
+  const { stdout } = await execFileAsync(localAgy!, ['--version'], { timeout: 5_000 });
+  const version = /\b(\d+\.\d+\.\d+)\b/.exec(stdout)?.[1];
+  expect(version).toBeDefined();
+  const scratch = join(cwd, '.tmp');
+  await mkdir(scratch, { recursive: true });
+  const home = await mkdtemp(join(scratch, 'agy-smoke-'));
+  const client = new AcpProcessClient(new NodeHostProcessService(), {
+    id: 'antigravity-acp', command: localAgy!, args: ['acp', '--stdio', '--process-per-session', '--disable-telemetry'],
+    runtimeVersion: version, startupTimeoutMs: 20_000, stdinCloseGraceMs: 1_000,
+    env: { GEMINI_HOME: home, TEMP: home, TMP: home, AGY_ACP_FORCE_FILE_STORAGE: '1' },
+  });
+  try {
+    const opened = await client.openSession({ cwd: home, systemPromptAppend: 'ACP handshake smoke fixture.' });
+    expect(opened.sessionId).toBeTruthy();
+    expect(opened.initialize.agentInfo?.version).toBe(version);
+    expect(opened.capabilities.sessionCapabilities?.resume).toBeDefined();
+    expect(opened.availableModes).toEqual(expect.arrayContaining(['default', 'accept-edits', 'auto']));
+    expect(opened.configOptions.map((option) => option.category)).toEqual(expect.arrayContaining(['model', 'thought_level']));
+    expect(opened.sessionRequestMeta).toMatchObject({ antigravity: { systemPrompt: { append: 'ACP handshake smoke fixture.' } } });
+  } finally {
+    await client.shutdown();
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}, 35_000);

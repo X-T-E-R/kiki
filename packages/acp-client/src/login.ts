@@ -5,6 +5,7 @@ import { AcpProtocolError } from '#/errors';
 import type { HostProcessLike, HostProcessServiceLike } from '#/types';
 
 const AUTH_MARKER = 'Open the following link to authenticate the ACP server: ';
+const BROWSER_AUTH_MARKER = '__KIKI_ANTIGRAVITY_AUTH_URL__';
 
 export interface AcpLoginLaunch {
   readonly command: string;
@@ -98,6 +99,13 @@ export class AcpLoginHelper {
       while (newline >= 0) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
+        const browserMarker = line.indexOf(BROWSER_AUTH_MARKER);
+        if (browserMarker >= 0) {
+          try {
+            const url: unknown = JSON.parse(line.slice(browserMarker + BROWSER_AUTH_MARKER.length));
+            if (typeof url === 'string') this.resolveUrl(url);
+          } catch { }
+        }
         const marker = line.indexOf(AUTH_MARKER);
         if (marker >= 0) {
           const url = line.slice(marker + AUTH_MARKER.length).trim().split(/\s/)[0];

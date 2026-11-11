@@ -1,3 +1,5 @@
+// Denial accounting, step usage and subagent projection are adapted from Paseo (Apache-2.0).
+// Copyright (c) 2025-present Mohamed Boudra. Modified for Kiki's ACP bridge; see packages/acp-client/THIRD_PARTY_NOTICES.md.
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, open, unlink } from 'node:fs/promises';
@@ -33,6 +35,43 @@ const MAX_CONSECUTIVE_NETWORK_RECOVERIES = 5;
 const NETWORK_RECOVERY_BACKOFF_MS = [1000, 3000, 7000, 15000, 25000];
 const NETWORK_RECOVERY_EXIT_GRACE_MS = 5000;
 const ERROR_RESULT_WATCHDOG_MS = 15000;
+
+export function takeNewDenials(actions, reported) {
+  const counts = new Map();
+  const fresh = (actions ?? []).filter(action => {
+    const key = JSON.stringify([action?.action, action?.display_name]);
+    const count = (counts.get(key) ?? 0) + 1;
+    counts.set(key, count);
+    return count > (reported.get(key) ?? 0);
+  });
+  for (const [key, count] of counts) reported.set(key, Math.max(count, reported.get(key) ?? 0));
+  return fresh;
+}
+
+export function accumulateStepUsage(usageSteps, totals, step) {
+  if (step?.state !== 'DONE' || !step.usage || !Number.isSafeInteger(step.step_index) || usageSteps.has(step.step_index)) return false;
+  usageSteps.add(step.step_index);
+  totals.inputTokens += Number(step.usage.input_tokens) || 0;
+  totals.outputTokens += Number(step.usage.output_tokens) || 0;
+  totals.cachedReadTokens += Number(step.usage.cache_read_tokens) || 0;
+  totals.thoughtTokens += Number(step.usage.thinking_tokens) || 0;
+  totals.totalTokens += Number(step.usage.total_tokens) || 0;
+  return true;
+}
+
+function emptyUsage() {
+  return { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, thoughtTokens: 0, totalTokens: 0 };
+}
+
+function subagentPayload(step) {
+  if (!step?.subagent_info) return undefined;
+  return { subagents: (step.subagent_info.subagents ?? []).map(child => ({
+    type_name: child?.type_name,
+    initial_prompt: child?.initial_prompt,
+    conversation_id: child?.conversation_id,
+    log_uri: child?.log_uri,
+  })) };
+}
 
 function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
   let bytes = Buffer.from(value);
@@ -599,7 +638,7 @@ export class AgyBridge {
       modelChoices: this.modelChoices, accountBound: this.account !== undefined,
       mcpServers: structuredClone(mcpServers), mcpPlugin: undefined, mcpBound: new Set(), mcpReady: new Set(),
       permissionIdentity: permissionChannelIdentity(), permissionChannel: undefined,
-      child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map(), toolInputs: new Map() };
+      child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, denialCounts: new Map(), toolIds: new Map(), toolDetails: new Map(), toolInputs: new Map() };
     this.sessions.set(session.id, session);
     try {
       await this.recoverDeadOwnedResources(session);
@@ -980,6 +1019,7 @@ export class AgyBridge {
   }
 
   async start(session) {
+    session.denialCounts = new Map();
     await this.registerMcpPlugin(session);
     const args = [...this.cliPrefix, ...launchArgs(session)];
     const env = { ...process.env, ...session.permissionIdentity };
@@ -1052,7 +1092,7 @@ export class AgyBridge {
     });
     child.stderr.on('data', chunk => {
       const text = chunk.toString();
-      if (/auto-denied|soft.denied|permission.*denied/i.test(text)) session.denied = true;
+      if (/auto-denied|soft.denied|permission.*denied/i.test(text) && session.active) session.active.denied = true;
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       stderrTruncated ||= stderr.length + bytes.length > 8192;
       const tail = Buffer.concat([stderr, bytes.subarray(Math.max(0, bytes.length - 8192))]);
@@ -1269,6 +1309,11 @@ export class AgyBridge {
           active.finalResponseText = '';
         }
       }
+      active.usageSteps ??= new Set();
+      active.usage ??= emptyUsage();
+      if (accumulateStepUsage(active.usageSteps, active.usage, step)) {
+        await this.audit(session, 'native_usage', { stepIndex: step.step_index, usage: { ...active.usage } });
+      }
       const freshStep = active.promptConsumed && Number.isSafeInteger(step.step_index) && step.step_index > active.progressFloor;
       if (step.step_type === 'agent_response') {
         if (active.finalResponseStepIndex !== step.step_index) {
@@ -1285,22 +1330,27 @@ export class AgyBridge {
         active.finalResponseDone = step.state === 'DONE' && active.finalResponseText.length > 0;
         if (freshStep && active.finalResponseDone && active.finalResponseText.trim()) active.progressSinceRecovery = true;
       }
-      if (step.step_type === 'tool' || (step.step_type === 'subagent' && session.toolIds.has(`agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`))) {
+      if (step.step_type === 'tool' || step.step_type === 'subagent') {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
         const previousName = session.toolDetails.get(id)?.name;
-        const detail = { name: step.tool_name ?? step.tool_info?.name ?? previousName, state: step.state };
-        const rawInput = step.tool_info?.parameters ?? step.parameters;
+        const detail = { name: step.tool_name ?? step.tool_info?.name ?? previousName ?? (step.step_type === 'subagent' ? 'invoke_subagent' : undefined), state: step.state };
+        const parameters = step.tool_info?.parameters ?? step.parameters;
+        const structured = subagentPayload(step);
+        const rawInput = structured === undefined ? parameters : {
+          ...(parameters !== null && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : {}),
+          ...structured,
+        };
         const previousInput = session.toolInputs.get(id);
         if (rawInput !== undefined) session.toolInputs.set(id, rawInput);
         session.toolDetails.set(id, detail);
         if (!session.toolIds.has(id)) {
           session.toolIds.set(id, 'pending');
           await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call',
-            toolCallId: id, title: detail.name ?? 'AGY tool', name: detail.name, kind: 'other', status: 'in_progress', rawInput } });
+            toolCallId: id, title: detail.name ?? 'AGY tool', name: detail.name, kind: 'other', status: 'in_progress', rawInput, ...(structured === undefined ? {} : { _meta: structured }) } });
         } else if (session.active === active && step.state !== 'DONE' && step.state !== 'ERROR' && session.toolIds.get(id) === 'pending' &&
           (detail.name !== previousName || rawInput !== undefined && JSON.stringify(rawInput) !== JSON.stringify(previousInput))) {
           await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call_update',
-            toolCallId: id, title: detail.name, name: detail.name, status: 'in_progress', rawInput: rawInput ?? previousInput } });
+            toolCallId: id, title: detail.name, name: detail.name, status: 'in_progress', rawInput: rawInput ?? previousInput, ...(structured === undefined ? {} : { _meta: structured }) } });
         }
         await this.audit(session, 'tool_state', { toolCallId: id, ...detail });
         if (session.active === active && (step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
@@ -1317,7 +1367,7 @@ export class AgyBridge {
           const finalInput = rawInput ?? previousInput;
           await active.client.notify('session/update', { sessionId: session.id,
             update: { sessionUpdate: 'tool_call_update', toolCallId: id, title: detail.name, name: detail.name,
-              status: failed ? 'failed' : 'completed', rawInput: finalInput,
+              status: failed ? 'failed' : 'completed', rawInput: finalInput, ...(structured === undefined ? {} : { _meta: structured }),
               rawOutput: output, content: typeof output === 'string'
                 ? [{ type: 'content', content: { type: 'text', text: output } }] : undefined } });
         }
@@ -1334,6 +1384,7 @@ export class AgyBridge {
       numTurns: result.num_turns, usage: result.usage, deniedActions: result.denied_actions,
       synthesizedByWatchdog: event._watchdogSynthesized === true ? true : undefined,
       responseSha256: createHash('sha256').update(result.response ?? '').digest('hex') });
+    const newDenials = takeNewDenials(result.denied_actions, session.denialCounts);
     if (session.active !== active || session.cancelling) return;
     if (result.status === 'SUCCESS' && session.mcpServers.length !== session.mcpReady.size) {
       throw new Error('AGY did not activate and initialize the requested session MCP plugin; preserve native plugin/MCP off settings and review the connection instead of switching agents');
@@ -1379,8 +1430,8 @@ export class AgyBridge {
       && unresolved.length === 0
       && active.steering.length === 0
       && !active.steerDeliveryUnknown
-      && !session.denied
-      && !result.denied_actions?.length
+      && !active.denied
+      && newDenials.length === 0
       && !active.preToolDenied?.size;
     if (recoverableNetworkError && active.progressSinceRecovery) {
       active.networkRecoveries = 0;
@@ -1481,9 +1532,9 @@ export class AgyBridge {
       session.failure = message;
       stopAfterResult = true;
     }
-    if (session.denied || result.denied_actions?.length || active.preToolDenied?.size) {
-      session.denied = false;
-      const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
+    if (active.denied || newDenials.length > 0 || active.preToolDenied?.size) {
+      active.denied = false;
+      const actions = [...new Set(newDenials.map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
       const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; ${active.preToolDenied?.size
         ? 'a PreToolUse hook rejected a tool before execution; retain the denial; terminal SUCCESS is not evidence that the requested work ran'
         : 'the native AGY permission policy did not approve the action'}${unresolvedMessage ? `; ${unresolvedMessage}` : ''}`;
@@ -1549,7 +1600,7 @@ export class AgyBridge {
       if (!session.restarting) await session.releaseResume?.();
     }
     if (error) active.reject(error);
-    else active.resolve({ stopReason });
+    else active.resolve({ stopReason, ...(active.usageSteps?.size ? { usage: { ...active.usage } } : {}) });
   }
 
   async prompt(params, client) {
@@ -1559,7 +1610,7 @@ export class AgyBridge {
     const content = promptText(params.prompt);
     const promise = new Promise((resolveTurn, rejectTurn) => {
       const active = { client, text: '', steering: [], networkRecoveries: 0, networkRecoveriesTotal: 0, segmentStart: 0,
-        progressSinceRecovery: false, progressFloor: -1, recoveryAbort: new AbortController(),
+        progressSinceRecovery: false, progressFloor: -1, recoveryAbort: new AbortController(), usageSteps: new Set(), usage: emptyUsage(), denied: false,
         resolve: value => { this.clearErrorResultWatchdog(active); this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
         reject: error => { this.clearErrorResultWatchdog(active); this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
       session.active = active;
@@ -1613,7 +1664,7 @@ export class AgyBridge {
    * native persistence is unconfirmed and the continuation is not sent.
    */
   async continueNetworkFailure(session, active, attempt, result, { allowForcedExit = false } = {}) {
-    if (session.active !== active || session.cancelling || session.denied) return undefined;
+    if (session.active !== active || session.cancelling || active.denied) return undefined;
     const conversationId = typeof result?.conversation_id === 'string' && result.conversation_id ? result.conversation_id : undefined;
     if (!conversationId || !NATIVE_ID.test(conversationId)) return undefined;
     if (session.init?.conversation_id !== undefined && session.init.conversation_id !== conversationId) return undefined;

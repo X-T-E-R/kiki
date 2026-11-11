@@ -236,6 +236,9 @@ export function mapAcpSessionUpdate(input: unknown): NormalizedExecutorEvent {
     }
     return { type: 'usage', used, size, cost: update['cost'] };
   }
+  if (updateType === 'subagent_update') {
+    return { type: 'session.info', meta: { subagentUpdate: boundedDiagnostic(update) } };
+  }
   return { type: 'unknown', updateType, payload: update };
 }
 
@@ -285,5 +288,53 @@ export function isSessionNotification(value: unknown): value is SessionNotificat
     return true;
   } catch {
     return false;
+  }
+}
+
+
+interface GrokInputFragment {
+  readonly toolCallId?: string;
+  text: string;
+}
+
+export class GrokAcpInputMerger {
+  readonly #fragments = new Map<number, GrokInputFragment>();
+
+  normalize(input: unknown, method: string): unknown {
+    if (method !== '_x.ai/session_notification' && method !== '_x.ai/session/update') return input;
+    const notification = object(input, 'session/update params');
+    const update = object(notification['update'], 'session/update.update');
+    if (update['sessionUpdate'] === 'tool_call_delta_chunk') {
+      const toolIndex = update['tool_index'];
+      if (typeof toolIndex !== 'number' || !Number.isSafeInteger(toolIndex) || toolIndex < 0) return input;
+      const previous = this.#fragments.get(toolIndex);
+      const toolCallId = typeof update['tool_call_id'] === 'string' ? update['tool_call_id'] : previous?.toolCallId;
+      this.#fragments.set(toolIndex, {
+        toolCallId,
+        text: `${previous?.text ?? ''}${typeof update['arguments_delta'] === 'string' ? update['arguments_delta'] : ''}`,
+      });
+      return input;
+    }
+    if (update['sessionUpdate'] !== 'tool_call' && update['sessionUpdate'] !== 'tool_call_update') return input;
+    const toolCallId = typeof update['toolCallId'] === 'string' ? update['toolCallId'] : undefined;
+    const matches = [...this.#fragments.entries()].filter(([, fragment]) => fragment.toolCallId === toolCallId);
+    const match = matches[0] ?? (toolCallId === undefined && this.#fragments.size === 1 ? [...this.#fragments.entries()][0] : undefined);
+    if (match === undefined) return input;
+    const [toolIndex, fragment] = match;
+    let parsed: unknown;
+    try { parsed = JSON.parse(fragment.text); } catch { parsed = undefined; }
+    const complete = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+    if (complete) this.#fragments.delete(toolIndex);
+    const rawInput = update['rawInput'];
+    const existing = rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput as Record<string, unknown> : {};
+    const terminal = update['status'] === 'completed' || update['status'] === 'failed';
+    return {
+      ...notification,
+      update: {
+        ...update,
+        rawInput: complete ? { ...existing, ...parsed as Record<string, unknown> } : rawInput,
+        status: !complete && terminal ? 'in_progress' : update['status'],
+      },
+    };
   }
 }

@@ -1,5 +1,5 @@
 import { basename, dirname, join, normalize } from 'pathe';
-import { parse, type SemVer } from 'semver';
+import { gte, parse, type SemVer } from 'semver';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -12,6 +12,7 @@ import {
   type AgentExecutorDescriptor,
   type AgentExecutorSourceProbe,
 } from './agentExecutor';
+import { ANTIGRAVITY_CLI_ACP_ARGS, ANTIGRAVITY_CLI_MIN_VERSION } from './antigravityDistribution';
 import type { ExecutorCapabilityDimension } from '@kiki/agent-profiles/ports';
 import { executorProcessOptions, redactExecutorOutput } from './executorOverrides';
 
@@ -61,12 +62,14 @@ export async function discoverExecutorMetadata(
       const commands = (await sourceCommands(source, fs, bootstrap, true)).toSorted(compareExecutorBinaryPaths);
       for (const command of commands.toReversed()) {
         if (!await isFile(fs, command, true)) continue;
-        if (executorSourceId(descriptor) === 'antigravity-acp') {
+        if (executorSourceId(descriptor) === 'antigravity-acp' && source.id !== 'agy-cli') {
           const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
           const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
           if (ide || !await isFile(fs, sibling, true)) continue;
         }
-        return { id: source.id, kind: source.kind, available: true, command };
+        const launchArgs = executorSourceId(descriptor) !== 'antigravity-acp' ? undefined
+          : source.id === 'agy-cli' ? ANTIGRAVITY_CLI_ACP_ARGS : bootstrap.platform === 'linux' ? ['--uid='] : [];
+        return { id: source.id, kind: source.kind, available: true, command, launchArgs };
       }
       const envUnset = source.kind === 'env' && !bootstrap.getEnv(source.name)?.trim();
       return { id: source.id, kind: source.kind, available: false,
@@ -262,16 +265,27 @@ async function probeSource(
     ? [commands.toSorted(compareExecutorBinaryPaths).at(-1)!]
     : commands;
   const candidates = await Promise.all(selectedCommands.map(async (command) => {
+    if (executorSourceId(descriptor) === 'antigravity-acp' && source.id === 'agy-cli') {
+      const probe = await probeCommand(processService, command, descriptor.versionProbe?.args ?? ['--version'], descriptor);
+      const version = probeSemver(probe.output, command);
+      const supported = probe.available && probe.code === 0 && version !== null && gte(version, ANTIGRAVITY_CLI_MIN_VERSION);
+      return { command, launchArgs: ANTIGRAVITY_CLI_ACP_ARGS, probe: {
+        ...probe,
+        code: supported ? probe.code : -1,
+        output: supported ? probe.output : `Antigravity CLI ${ANTIGRAVITY_CLI_MIN_VERSION} or newer is required for native agy acp; installed: ${version?.version ?? firstLine(probe.output) ?? 'unknown'}.`,
+      } };
+    }
     if (executorSourceId(descriptor) === 'antigravity-acp') {
       const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
       const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
       if (ide || !await isFile(fs, sibling)) return { command, probe: {
         available: false, code: undefined,
-        output: ide ? '这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1）。'
+        output: ide ? '这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.4.5）。'
           : 'Antigravity ACP installation is incomplete: localharness_external is missing.',
       } };
       const cachedVersion = basename(dirname(dirname(command)));
-      return { command, probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' } };
+      return { command, launchArgs: bootstrap.platform === 'linux' ? ['--uid='] : [],
+        probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' } };
     }
     return { command, probe: await probeCommand(processService, command,
       descriptor.versionProbe?.args ?? ['--version'], descriptor) };
@@ -304,6 +318,7 @@ async function probeSource(
     kind: source.kind,
     available: true,
     command: selected.command,
+    launchArgs: selected.launchArgs,
     version: firstLine(selected.probe.output),
   };
 }

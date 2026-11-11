@@ -135,6 +135,8 @@ export class AntigravityService implements IAntigravityService {
           const directory = this.directory(release.version);
           await this.fs.remove(directory).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
           await installBinaryArchive({ url: release.url, directory, entry: release.entry, requiredSibling: release.requiredSibling,
+            expectedSha256: release.sha256, expectedArchiveBytes: release.archiveBytes,
+            expectedEntryBytes: release.executableBytes, expectedSiblingBytes: release.harnessBytes,
             timeoutMs: ANTIGRAVITY_INSTALL_TIMEOUT_MS, onProgress: (progress) => { this.publish({ ...tag, ...progress }); } });
         }
         this.publish({ ...tag, stage: 'activate' });
@@ -221,7 +223,7 @@ export class AntigravityService implements IAntigravityService {
     const { descriptor } = await this.executors.resolveExecutable('antigravity-acp');
     this.requireOpen();
     const env = executorProcessEnv(descriptor);
-    await antigravityAuthSettings(antigravitySettingsHome(env, this.bootstrap), method);
+    await antigravityAuthSettings(antigravitySettingsHome(env, this.bootstrap, descriptor.id), method);
     this.requireOpen();
     const helper = new AcpLoginHelper(antigravityProcessService(this.processes, descriptor, this.bootstrap), {
       command: descriptor.command!, args: executorLaunchArgs(descriptor, [...descriptor.launchArgs ?? [], ...descriptor.args]), env,
@@ -240,8 +242,10 @@ export class AntigravityService implements IAntigravityService {
 
   private async complete(version: string): Promise<boolean> {
     const release = antigravityRelease(version, this.bootstrap.platform, this.bootstrap.arch);
-    return (await Promise.all([release.entry, release.requiredSibling].map((name) =>
-      this.fs.stat(join(this.directory(release.version), name)).then((value) => value.isFile, () => false)))).every(Boolean);
+    const entries = [[release.entry, release.executableBytes], [release.requiredSibling, release.harnessBytes]] as const;
+    const present = await Promise.all(entries.map(([name, expectedBytes]) =>
+      this.fs.stat(join(this.directory(release.version), name)).then((value) => value.isFile && (expectedBytes === undefined || value.size === expectedBytes), () => false)));
+    return present.every(Boolean);
   }
 
   async dispose(): Promise<void> {

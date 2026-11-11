@@ -1083,7 +1083,7 @@ void test('a live legacy permission hook lease survives native launch and still 
     const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
     const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('KIKI_AGY_PERMISSION_')));
-    const child = spawn(shell, args, { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(shell, args, { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'], windowsVerbatimArguments: process.platform === 'win32' });
     let output = ''; child.stdout.on('data', chunk => { output += chunk; });
     const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
     child.stdin.end(JSON.stringify({ toolCall: { name: 'native-tool', args: {} } }));
@@ -1187,7 +1187,7 @@ void test('Windows registered hook command survives native shell quoting and ret
   const input = { conversationId: 'fixture-windows-shell', stepIdx: 3, toolCall: { name: 'native_tool', args: { Path: 'C:/example/中文材料/原稿.txt' } } };
   async function shell(command) {
     const child = spawn(process.env.ComSpec, ['/d', '/s', '/c', command], {
-      cwd: root, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('KIKI_AGY_PERMISSION_'))), stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: root, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('KIKI_AGY_PERMISSION_'))), stdio: ['pipe', 'pipe', 'pipe'], windowsVerbatimArguments: true,
     });
     let stdout = '', stderr = ''; child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', value => { stdout += value; }); child.stderr.on('data', value => { stderr += value; });
@@ -3000,6 +3000,191 @@ void test('error_message watchdog stops a wedged CLI after terminal SQLite error
   } finally {
     await b.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('hookCommand eliminates PowerShell wrappers, scopes PreToolUse to run_command, and executes UTF-8 stdin cleanly on Windows', async () => {
+  const { mkdtemp, mkdir, copyFile, readFile, rm } = await import('node:fs/promises');
+  const { hookCommand, registerProjectHook, AGY_PERMISSION_HOOK_KEY } = await import('./agy-hook-registration.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-zero-ps-hook-'));
+  const spacedDir = join(root, 'dir with spaces');
+  const handlerSource = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
+  const spacedHandler = join(spacedDir, 'agy-permission-hook.mjs');
+  try {
+    await mkdir(spacedDir, { recursive: true });
+    await copyFile(handlerSource, spacedHandler);
+    const cmd = hookCommand(process.execPath, spacedHandler, ['--command-guidance']);
+    assert.equal(/powershell|-EncodedCommand/i.test(cmd), false);
+    assert.equal(cmd.includes(spacedHandler), true);
+    const lease = await registerProjectHook({
+      cwd: root,
+      nodePath: process.execPath,
+      handlerPath: spacedHandler,
+      sessionId: 'zero-ps-session',
+      key: AGY_PERMISSION_HOOK_KEY,
+    });
+    const hooksJson = JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'));
+    assert.equal(hooksJson[AGY_PERMISSION_HOOK_KEY].PreToolUse[0].matcher, 'run_command');
+    assert.equal(/powershell/i.test(hooksJson[AGY_PERMISSION_HOOK_KEY].PreToolUse[0].hooks[0].command), false);
+    await lease.close();
+
+    const guidanceCmd = hookCommand(process.execPath, spacedHandler, ['--command-guidance']);
+    const hookEnv = { ...process.env, KIKI_AGY_PERMISSION_ENDPOINT: 'fixture-endpoint', KIKI_AGY_PERMISSION_TOKEN: 'fixture-token' };
+    const child = process.platform === 'win32'
+      ? spawn('cmd.exe', ['/d', '/s', '/c', guidanceCmd], { cwd: root, env: hookEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsVerbatimArguments: true })
+      : spawn('/bin/sh', ['-c', guidanceCmd], { cwd: root, env: hookEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); });
+    const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
+    child.stdin.end(JSON.stringify({ session_id: 'utf8-check-中文', cwd: root }) + '\n');
+    assert.equal(await closed, 0, stderr);
+    const parsed = JSON.parse(stdout.trim());
+    assert.match(parsed.injectSteps?.[0]?.systemMessage?.systemMessage ?? '', /rg file-content searches/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('takeNewDenials prevents cumulative denied_actions from poisoning subsequent successful turns and deduplicates step usage', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { takeNewDenials, accumulateStepUsage } = await import('./agy-cli-acp.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-denial-replay-'));
+  const reported = new Map();
+  assert.deepEqual(
+    takeNewDenials([{ action: 'command', display_name: 'RunCommand' }], reported),
+    [{ action: 'command', display_name: 'RunCommand' }],
+  );
+  assert.deepEqual(takeNewDenials([{ action: 'command', display_name: 'RunCommand' }], reported), []);
+  assert.deepEqual(
+    takeNewDenials([
+      { action: 'command', display_name: 'RunCommand' },
+      { action: 'command', display_name: 'RunCommand' },
+    ], reported),
+    [{ action: 'command', display_name: 'RunCommand' }],
+  );
+
+  const replayScript = `
+    const rl = require('node:readline').createInterface({ input: process.stdin });
+    const conv = '11111111-2222-4333-8444-555555555555';
+    let turns = 0;
+    process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conv, init: { cwd: process.cwd(), model: 'gemini-3.8-flash-medium' } }) + '\\n');
+    rl.on('line', () => {
+      turns += 1;
+      if (turns === 1) {
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'user_input', step_index: 0, state: 'DONE' } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'agent_response', step_index: 2, state: 'DONE', text_delta: 'Command denied.', usage: { input_tokens: 100, output_tokens: 10, cache_read_tokens: 20, thinking_tokens: 5, total_tokens: 135 } } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: 'Command denied.', denied_actions: [{ action: 'command', display_name: 'RunCommand' }] } }) + '\\n');
+        return;
+      }
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'user_input', step_index: 3, state: 'DONE' } }) + '\\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'agent_response', step_index: 4, state: 'DONE', text_delta: 'FOLLOWUP_OK\\n', usage: { input_tokens: 120, output_tokens: 8, cache_read_tokens: 30, thinking_tokens: 4, total_tokens: 162 } } }) + '\\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'agent_response', step_index: 4, state: 'DONE', text_delta: '', usage: { input_tokens: 120, output_tokens: 8, cache_read_tokens: 30, thinking_tokens: 4, total_tokens: 162 } } }) + '\\n');
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: 'FOLLOWUP_OK\\n', denied_actions: [{ action: 'command', display_name: 'RunCommand' }] } }) + '\\n');
+    });
+  `;
+  const b = new AgyBridge({
+    cliPath: process.execPath,
+    cliPrefix: ['-e', replayScript, '--'],
+    model: 'gemini-3.8-flash-medium',
+    auditDir: join(root, 'audit'),
+  });
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await assert.rejects(turn(b, id, 'run denied command', []), { code: 'AGY_PERMISSION_DENIED' });
+    const followupMessages = [];
+    const second = await turn(b, id, 'plain text followup', followupMessages);
+    assert.equal(second.stopReason, 'end_turn');
+    assert.deepEqual(second.usage, {
+      inputTokens: 120,
+      outputTokens: 8,
+      cachedReadTokens: 30,
+      thoughtTokens: 4,
+      totalTokens: 162,
+    });
+    assert.equal(
+      followupMessages.filter(m => m.update.sessionUpdate === 'agent_message_chunk').map(m => m.update.content.text).join(''),
+      'FOLLOWUP_OK\n',
+    );
+    const seen = new Set();
+    const totals = { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, thoughtTokens: 0, totalTokens: 0 };
+    assert.equal(accumulateStepUsage(seen, totals, { step_index: 7, state: 'ACTIVE', usage: { total_tokens: 99 } }), false);
+    assert.equal(accumulateStepUsage(seen, totals, { step_index: 7, state: 'DONE', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }), true);
+    assert.equal(accumulateStepUsage(seen, totals, { step_index: 7, state: 'DONE', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }), false);
+    assert.equal(totals.totalTokens, 15);
+  } finally {
+    await b.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('projects native subagent step_type metadata onto ACP tool_call and tool_call_update', async () => {
+  const b = bridge();
+  const id = await session(b);
+  const s = b.session(id);
+  const updates = [];
+  const convId = '22222222-3333-4444-8555-666666666666';
+  s.init = { conversation_id: convId };
+  s.active = {
+    promptConsumed: true,
+    progressFloor: 0,
+    progressSinceRecovery: false,
+    text: '',
+    steering: [],
+    usageSteps: new Set(),
+    usage: { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, thoughtTokens: 0, totalTokens: 0 },
+    networkRecoveries: 0,
+    networkRecoveriesTotal: 0,
+    segmentStart: 0,
+    recoveryAbort: new AbortController(),
+    client: { notify: async (_method, payload) => updates.push(payload.update) },
+    resolve: () => {},
+    reject: () => {},
+  };
+  const subagentInfo = {
+    subagents: [{
+      type_name: 'explore',
+      initial_prompt: 'Locate ACP transport handlers',
+      conversation_id: 'child-conv-001',
+      log_uri: 'file:///tmp/child-conv-001.jsonl',
+    }],
+  };
+  try {
+    await b.event(s, {
+      event: 'step_update',
+      conversation_id: convId,
+      step_update: {
+        step_type: 'subagent',
+        step_index: 5,
+        state: 'ACTIVE',
+        subagent_info: subagentInfo,
+      },
+    });
+    await b.event(s, {
+      event: 'step_update',
+      conversation_id: convId,
+      step_update: {
+        step_type: 'subagent',
+        step_index: 5,
+        state: 'DONE',
+        subagent_info: subagentInfo,
+        tool_info: { output: 'Found 3 handlers' },
+      },
+    });
+    assert.equal(updates.length, 2);
+    assert.equal(updates[0].sessionUpdate, 'tool_call');
+    assert.equal(updates[0].name, 'invoke_subagent');
+    assert.deepEqual(updates[0].rawInput, subagentInfo);
+    assert.deepEqual(updates[0]._meta, subagentInfo);
+    assert.equal(updates[1].sessionUpdate, 'tool_call_update');
+    assert.equal(updates[1].status, 'completed');
+    assert.deepEqual(updates[1].rawInput, subagentInfo);
+    assert.deepEqual(updates[1]._meta, subagentInfo);
+    assert.equal(updates[1].rawOutput, 'Found 3 handlers');
+  } finally {
+    s.active = undefined;
+    await b.close();
   }
 });
 

@@ -59,7 +59,7 @@ function requestClient(method, params) {
 
 function capabilities() {
   if (scenario === 'new-only') return {};
-  if (scenario === 'load-only' || scenario === 'load-replay') return { loadSession: true };
+  if (scenario === 'load-only' || scenario === 'load-replay' || scenario === 'load-replay-idle') return { loadSession: true };
   return {
     loadSession: true,
     sessionCapabilities: { resume: {} },
@@ -68,6 +68,12 @@ function capabilities() {
 
 async function handlePrompt(message) {
   activePromptId = message.id;
+  if (scenario === 'load-replay') send({ method: 'session/update', params: { sessionId, _meta: { isReplay: true },
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late historical replay' } } } });
+  if (scenario === 'copilot-lost-session' && message.params.prompt[0]?.text === 'first') {
+    error(message.id, -32603, `session event delivery failed: session not found: ${sessionId}`);
+    return;
+  }
   if (scenario === 'crash-after-prompt') {
     process.stderr.write('crash after prompt accepted\n');
     process.exit(41);
@@ -149,12 +155,14 @@ async function handle(message) {
     return;
   }
 
+  if (process.env.ACP_FIXTURE_TRACE === '1') process.stderr.write(`REQUEST=${JSON.stringify(message)}\n`);
   if (message.method === 'initialize') {
     if (scenario === 'hang-initialize') return;
     result(message.id, {
       protocolVersion: 1,
       agentCapabilities: capabilities(),
-      agentInfo: { name: 'spawnable-fake', version: '1.0.0' },
+      agentInfo: { name: 'spawnable-fake', version: process.env.ACP_FIXTURE_AGY_VERSION ?? '1.0.0' },
+      _meta: process.env.ACP_FIXTURE_AGY_VERSION === '1.5.5' ? { antigravity: { systemPrompt: { append: true } } } : undefined,
     });
     return;
   }
@@ -181,6 +189,13 @@ async function handle(message) {
   if (message.method === 'session/load') {
     if (scenario === 'load-method-not-found' || scenario === 'resume-load-method-not-found') {
       error(message.id, -32601, 'Method not found: session/load');
+      return;
+    }
+    if (scenario === 'load-replay-idle') {
+      update({ sessionUpdate: 'config_option_update', configOptions });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'historical replay' } });
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      error(message.id, -32603, 'load rejected after replay');
       return;
     }
     if (scenario === 'load-replay') {
