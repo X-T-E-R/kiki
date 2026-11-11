@@ -1,6 +1,8 @@
 import { resolveConfiguredProviderApiKey, type ResolvedProviderApiKey } from '@kiki/oauth';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
+import type { ProtocolBaseId } from '#/kosong/protocol/protocolBase';
+import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegistry';
 import type { Protocol, ProtocolAdapterConfig } from '#/kosong/protocol/protocol';
 import type {
   ProtocolEndpoint,
@@ -13,6 +15,7 @@ import type { ModelSource, ProviderConfig } from './provider';
 export interface ProviderDefinition {
   readonly id: string;
   readonly baseProtocol: Protocol;
+  readonly adapterBaseId?: ProtocolBaseId;
   readonly traits: readonly ProtocolTrait[];
   readonly endpoint?: ProtocolEndpoint;
   readonly hostHeaders?: 'full' | 'user-agent';
@@ -40,10 +43,8 @@ export function getProviderDefinition(
   id: string,
   protocol?: Protocol,
 ): ProviderDefinition | undefined {
-  const byProtocol = providerDefinitions.get(id);
-  if (byProtocol === undefined) return undefined;
-  if (protocol !== undefined) return byProtocol.get(protocol);
-  return byProtocol.values().next().value;
+  if (protocol !== undefined) return providerDefinitions.get(id)?.get(protocol);
+  return getProviderDefinitions(id)[0];
 }
 
 export function getProviderDefinitions(id: string): readonly ProviderDefinition[] {
@@ -52,7 +53,7 @@ export function getProviderDefinitions(id: string): readonly ProviderDefinition[
 }
 
 export function hasProviderDefinition(id: string): boolean {
-  return providerDefinitions.has(id);
+  return getProviderDefinition(id) !== undefined;
 }
 
 export function isOAuthCatalogVendor(id: string | undefined): boolean {
@@ -87,12 +88,13 @@ const TYPESAFE_ORIGIN = 'https://api.typesafe.ai';
 
 export function resolveProviderApiKey(
   provider: Pick<ProviderConfig, 'type' | 'baseUrl' | 'apiKey' | 'apiKeyEnv' | 'env'>,
+  definition?: ProviderAdapterDefinition,
 ): ResolvedProviderApiKey {
   const env = provider.type === 'system_one'
     ? { TYPESAFE_API_KEY: process.env['TYPESAFE_API_KEY'], ...provider.env }
     : provider.env ?? {};
   const fallback: ExplainedProviderEndpoint = provider.type === undefined || (provider.type === 'system_one' && !hasTypeSafeOrigin(provider.baseUrl))
-    ? {} : explainProviderEndpoint(provider.type, env);
+    ? {} : explainProviderEndpoint(provider.type, env, definition);
   return resolveConfiguredProviderApiKey(provider, { apiKey: fallback.apiKey, envName: fallback.apiKeyEnvName });
 }
 
@@ -104,13 +106,13 @@ function hasTypeSafeOrigin(baseUrl: string | undefined): boolean {
 export function explainProviderEndpoint(
   providerType: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  definition: ProviderAdapterDefinition | undefined = getProviderDefinition(providerType),
 ): ExplainedProviderEndpoint {
   if (providerType === 'system_one') {
     const apiKey = env['TYPESAFE_API_KEY'];
     return { baseUrl: `${TYPESAFE_ORIGIN}/v1`, baseUrlIsDefault: true,
       apiKey, apiKeyEnvName: apiKey ? 'TYPESAFE_API_KEY' : undefined };
   }
-  const definition = getProviderDefinition(providerType);
   if (definition === undefined) return {};
   const endpoint =
     normalizeEndpointDeclaration(definition.endpoint) ?? aggregateTraitEndpoints(definition);

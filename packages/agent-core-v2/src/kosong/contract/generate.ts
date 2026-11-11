@@ -1,5 +1,7 @@
 import { APIEmptyResponseError, createAbortError, isAbortError, noteExecutedRequestDelivery, readProviderEventErrorCode } from './errors';
-import { attachErrorDetails } from '#/_base/errors/errors';
+import { attachErrorDetails, Error2 } from '#/_base/errors/errors';
+import type { StreamTapAbortControl } from './extensionHooks';
+import { LLM_EXTENSION_ERROR_CODES } from './extensionErrors';
 import { attachStreamDiagnostics, type StreamDiagnostics } from './streamDiagnostics';
 import {
   isContentPart,
@@ -124,8 +126,7 @@ export async function generate(
   }
   let cancellation: Promise<void> | undefined;
   const onAbort = (): void => {
-    cancellation ??= cancelStream(stream);
-    void cancellation.catch(() => undefined);
+    cancellation ??= cancelStream(stream).catch(() => undefined);
   };
   options?.signal?.addEventListener('abort', onAbort, { once: true });
   if (options?.signal?.aborted) onAbort();
@@ -140,6 +141,8 @@ export async function generate(
     let clientConsumeMs = 0;
     let firstPartAt: number | undefined;
     let lastResumeAt = 0;
+    const taps = options?.streamTaps;
+    const tapControl = taps !== undefined && taps.length > 0 ? new RecoveryTapControl() : undefined;
 
     for await (const part of stream) {
       const arrivedAt = Date.now();
@@ -152,8 +155,22 @@ export async function generate(
       try {
         await throwIfAborted(options?.signal);
 
-        if (callbacks?.onMessagePart !== undefined) {
-          await callbacks.onMessagePart(deepCopyPart(part));
+        const onPart = callbacks?.onMessagePart;
+        if (tapControl !== undefined) {
+          const observed = deepCopyPart(part);
+          freezeTapPart(observed);
+          for (let index = 0; index < taps!.length; index++) {
+            taps![index]!(observed, tapControl);
+            if (tapControl.failure !== undefined) {
+              onAbort();
+              noteExecutedRequestDelivery(tapControl.failure);
+              throw tapControl.failure;
+            }
+          }
+          if (onPart !== undefined) await onPart(observed);
+          await throwIfAborted(options?.signal);
+        } else if (onPart !== undefined) {
+          await onPart(deepCopyPart(part));
           await throwIfAborted(options?.signal);
         }
 
@@ -283,6 +300,23 @@ export async function generate(
   } finally {
     options?.signal?.removeEventListener('abort', onAbort);
     await cancellation;
+  }
+}
+
+class RecoveryTapControl implements StreamTapAbortControl {
+  failure: Error2 | undefined;
+
+  abortForRecovery(reason: Parameters<StreamTapAbortControl['abortForRecovery']>[0]): void {
+    this.failure ??= new Error2(LLM_EXTENSION_ERROR_CODES.STREAM_TAP_RECOVERY_ABORT,
+      `Stream stopped for recovery by plugin '${reason.pluginId}'.`, { details: { ...reason, retry: false } });
+  }
+}
+
+function freezeTapPart(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value) || ArrayBuffer.isView(value)) return;
+  Object.freeze(value);
+  for (const key in value) {
+    if (Object.hasOwn(value, key)) freezeTapPart((value as Record<string, unknown>)[key]);
   }
 }
 

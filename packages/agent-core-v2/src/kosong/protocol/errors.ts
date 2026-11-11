@@ -11,10 +11,13 @@ import {
   throwIfAbortError,
 } from '#/kosong/contract/errors';
 
+import { LLM_EXTENSION_ERROR_CODES } from '#/kosong/contract/extensionErrors';
+
 export { sanitizeStatusErrorMessage } from '#/kosong/contract/errors';
 
 export const ProtocolErrors = {
   codes: {
+    ...LLM_EXTENSION_ERROR_CODES,
     PROVIDER_API_ERROR: PROVIDER_API_ERROR_CODE,
     PROVIDER_FILTERED: PROVIDER_FILTERED_ERROR_CODE,
     PROVIDER_RATE_LIMIT: PROVIDER_RATE_LIMIT_ERROR_CODE,

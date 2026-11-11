@@ -11,10 +11,14 @@ import { StubConfigService } from '../stubs';
 import type OpenAI from 'openai';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 
 import { isError2 } from '#/_base/errors/errors';
 import { toErrorPayload } from '#/_base/errors/serialize';
+import type { LLMStreamTapObserver } from '#/kosong/contract/extensionHooks';
 import { APIStatusError, createAbortError } from '#/kosong/contract/errors';
+import type { DynamicProviderContribution, DynamicProtocolBaseContribution } from '#/kosong/protocol/extensionRegistry';
+import type { ProtocolBaseDefinition } from '#/kosong/protocol/protocolBase';
 import type { Message, StreamedMessagePart } from '#/kosong/contract/message';
 import type {
   ChatProvider,
@@ -909,4 +913,212 @@ it('does not force-refresh or replay a production Responses 401 received after p
   expect(calls).toBe(1);
   expect(getAuth).toHaveBeenCalledTimes(1);
   expect(getAuth).not.toHaveBeenCalledWith({ force: true });
+});
+
+describe('ModelRequesterImpl extension request guards', () => {
+  it('rejects disabling thinking when the request history has a signed think part', async () => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    const signedHistory: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: 'question' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'think', think: 'private reasoning', encrypted: 'signature-fixture' }], toolCalls: [] },
+    ];
+    const patch: NonNullable<ModelRequestParams['preBaselinePatch']> = { thinkingEffort: 'off' };
+
+    await expect(collect(requester.request({ ...INPUT, messages: signedHistory }, undefined, { preBaselinePatch: patch })))
+      .rejects.toMatchObject({ code: 'THINKING_DISABLE_WITH_SIGNED_HISTORY' });
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it.each([
+    { name: 'reserved headers', patch: { extraHeaders: { 'X-Kiki-Agent-Id': 'spoofed' } }, code: 'RESERVED_HEADER_FORBIDDEN' },
+    { name: 'history replacement', patch: { messages: [] }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },
+    { name: 'tool replacement', patch: { tools: [] }, code: 'TOOL_ORDER_MUTATION_FORBIDDEN' },
+    { name: 'encrypted thinking replacement', patch: { encrypted: 'changed' }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
+    { name: 'redacted thinking replacement', patch: { redacted: 'changed' }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
+    { name: 'tool extras replacement', patch: { extras: { thought_signature_b64: 'changed' } }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
+    { name: 'vendor Gemini signature replacement', patch: { deterministicVendorFields: { extension: { thought_signature_b64: 'changed' } } }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
+    { name: 'vendor native input replacement', patch: { deterministicVendorFields: { input: [] } }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },
+    { name: 'vendor nested transport headers', patch: { deterministicVendorFields: { httpOptions: { headers: { 'X-Client-Request-Id': 'changed' } } } }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },
+  ])('rejects $name before provider execution', async ({ patch, code }) => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+
+    await expect(collect(requester.request(INPUT, undefined, {
+      preBaselinePatch: patch as unknown as NonNullable<ModelRequestParams['preBaselinePatch']>,
+    }))).rejects.toMatchObject({ code });
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it('aborts synchronously from a stream tap with plugin recovery details', async () => {
+    const provider = new FakeChatProvider();
+    provider.handler = async () => streamOf([
+      { type: 'text', text: 'intercepted' },
+      { type: 'text', text: 'must not reach the tap' },
+    ]);
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    const observed: Readonly<StreamedMessagePart>[] = [];
+    const tap: LLMStreamTapObserver = (part, control) => {
+      observed.push(part);
+      control.abortForRecovery({ pluginId: 'example.plugin', code: 'recover_request', detail: 'refresh signed context' });
+      return undefined;
+    };
+    const streamTaps: NonNullable<ModelRequestParams['streamTaps']> = [tap];
+
+    const failure = await collect(requester.request(INPUT, undefined, { streamTaps })).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: 'STREAM_TAP_RECOVERY_ABORT',
+      details: { pluginId: 'example.plugin', code: 'recover_request', detail: 'refresh signed context' },
+    });
+    expect(observed).toEqual([{ type: 'text', text: 'intercepted' }]);
+    expect(provider.calls).toHaveLength(1);
+  });
+});
+
+describe('stream tap cancellation failure', () => {
+  it('keeps the recovery abort error when provider cancellation rejects and skips finish/commit', async () => {
+    const provider = new FakeChatProvider();
+    const cancel = vi.fn(async () => { throw new Error('provider cancellation failed'); });
+    const commitMessage = vi.fn();
+    const stream: StreamedMessage = {
+      ...streamOf([{ type: 'text', text: 'intercepted' }, { type: 'text', text: 'unreachable' }]),
+      cancel,
+      commitMessage,
+    };
+    provider.handler = async () => stream;
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    const tap: LLMStreamTapObserver = (_part, control) => {
+      control.abortForRecovery({ pluginId: 'example.plugin', code: 'recover_request', detail: 'rebuild request context' });
+      return undefined;
+    };
+    const streamTaps: NonNullable<ModelRequestParams['streamTaps']> = [tap];
+    const events: ModelRequestEvent[] = [];
+    const failure = await (async () => {
+      for await (const event of requester.request(INPUT, undefined, { streamTaps })) events.push(event);
+    })().catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: 'STREAM_TAP_RECOVERY_ABORT',
+      details: { pluginId: 'example.plugin', code: 'recover_request', detail: 'rebuild request context' },
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === 'finish')).toBe(false);
+    expect(commitMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('dynamic protocol adapter generations', () => {
+  it('isolates dynamic provider and custom base registrations between registry instances', () => {
+    const appOne = new ProtocolAdapterRegistry();
+    const appTwo = new ProtocolAdapterRegistry();
+    const pluginId = 'example.plugin';
+    const providerId = 'example.isolated-provider';
+    const baseId = 'example.isolated-base';
+    const config = { protocol: 'openai' as const, providerType: providerId, modelName: 'fixture-model' };
+    const providerOne = new FakeChatProvider();
+    const providerTwo = new FakeChatProvider();
+    const register = (registry: ProtocolAdapterRegistry, provider: FakeChatProvider) => {
+      const definition: ProtocolBaseDefinition = { id: baseId, createChatProvider: () => provider };
+      registry.registerDynamicProtocolBase({ pluginId, generation: 1, definition });
+      registry.registerDynamicProvider({
+        pluginId,
+        generation: 1,
+        providerId,
+        baseProtocol: 'openai',
+        adapterBaseId: baseId,
+        traits: [],
+      });
+    };
+    try {
+      register(appOne, providerOne);
+      register(appTwo, providerTwo);
+
+      expect(appOne.generationOfProvider(providerId, 'openai')).toBe(1);
+      expect(appTwo.generationOfProvider(providerId, 'openai')).toBe(1);
+      expect(appOne.resolveAdapterIdentity('openai', providerId).baseId).toBe(baseId);
+      expect(appTwo.resolveAdapterIdentity('openai', providerId).baseId).toBe(baseId);
+      expect(appOne.createChatProvider(config)).toBe(providerOne);
+      expect(appTwo.createChatProvider(config)).toBe(providerTwo);
+    } finally {
+      appOne.dispose();
+      appTwo.dispose();
+    }
+  });
+
+  it('routes custom bases, preserves generation two after stale disposal, and requires requester rebinding on replacement or withdrawal', async () => {
+    const registry = new ProtocolAdapterRegistry();
+    const pluginId = 'example.plugin';
+    const providerId = 'example.dynamic-provider';
+    const baseId = 'example.dynamic-base';
+    const baseGenerations: number[] = [];
+    const register = (generation: number, provider: FakeChatProvider) => {
+      const definition: ProtocolBaseDefinition = {
+        id: baseId,
+        createChatProvider: ({ config }) => {
+          expect(config.providerType).toBe(providerId);
+          baseGenerations.push(generation);
+          return provider;
+        },
+      };
+      const baseContribution: DynamicProtocolBaseContribution = { pluginId, generation, definition };
+      const baseHandle = registry.registerDynamicProtocolBase(baseContribution);
+      const providerContribution: DynamicProviderContribution = {
+        pluginId,
+        generation,
+        providerId,
+        baseProtocol: 'openai',
+        adapterBaseId: baseId,
+        traits: [],
+      };
+      const providerHandle = registry.registerDynamicProvider(providerContribution);
+      return { baseHandle, providerHandle };
+    };
+    const config = { protocol: 'openai' as const, providerType: providerId, modelName: 'fixture-model' };
+    const firstProvider = new FakeChatProvider();
+    firstProvider.handler = async () => streamOf([{ type: 'text', text: 'generation one' }]);
+    const firstHandles = register(1, firstProvider);
+    try {
+      expect(registry.resolveAdapterIdentity('openai', providerId).baseId).toBe(baseId);
+      expect(registry.createChatProvider(config)).toBe(firstProvider);
+
+      const model = { ...modelWith(staticAuth()), providerType: providerId };
+      const oldRequester = new ModelRequesterImpl(model, registry);
+      const firstEvents = await collect(oldRequester.request(INPUT));
+      expect(firstEvents.find((event) => event.type === 'finish')).toMatchObject({
+        message: { content: [{ type: 'text', text: 'generation one' }] },
+      });
+
+      const secondProvider = new FakeChatProvider();
+      secondProvider.handler = async () => streamOf([{ type: 'text', text: 'generation two' }]);
+      const secondHandles = register(2, secondProvider);
+      firstHandles.providerHandle.dispose();
+      firstHandles.baseHandle.dispose();
+      expect(registry.generationOfProvider(providerId, 'openai')).toBe(2);
+      expect(registry.createChatProvider(config)).toBe(secondProvider);
+
+      const staleFailure = await collect(oldRequester.request(INPUT)).catch((error: unknown) => error);
+      expect(staleFailure).toMatchObject({ message: expect.stringMatching(/rebind required/i) });
+      expect(firstProvider.calls).toHaveLength(1);
+      expect(secondProvider.calls).toHaveLength(0);
+
+      const reboundRequester = new ModelRequesterImpl(model, registry);
+      const secondEvents = await collect(reboundRequester.request(INPUT));
+      expect(secondEvents.find((event) => event.type === 'finish')).toMatchObject({
+        message: { content: [{ type: 'text', text: 'generation two' }] },
+      });
+      expect(secondProvider.calls).toHaveLength(1);
+
+      secondHandles.providerHandle.dispose();
+      secondHandles.baseHandle.dispose();
+      expect(registry.generationOfProvider(providerId, 'openai')).toBe(0);
+      const withdrawnFailure = await collect(reboundRequester.request(INPUT)).catch((error: unknown) => error);
+      expect(withdrawnFailure).toMatchObject({ message: expect.stringMatching(/rebind required/i) });
+      expect(firstProvider.calls).toHaveLength(1);
+      expect(secondProvider.calls).toHaveLength(1);
+      expect(baseGenerations).toEqual([1, 1, 2, 2]);
+    } finally {
+      registry.dispose();
+    }
+  });
 });

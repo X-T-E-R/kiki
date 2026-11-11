@@ -2,7 +2,8 @@ import { enableMapSet, enablePatches, type Draft, type Patch } from 'immer';
 import type { z } from 'zod';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
-import type { StateKey } from '#/_base/state/stateRegistry';
+import type { IStateRegistry, StateKey } from '#/_base/state/stateRegistry';
+import type { IPluginStateRegistryService } from '#/agent/pluginState/pluginState';
 import { Event2, registerEvent2Class, type Event2Class } from '#/app/event/event2';
 import type { PartsTransformer, RecordDehydrator } from '#/wire/record';
 
@@ -21,6 +22,8 @@ export interface StateBlobCodec<S> {
 
 export interface FoldContext {
   readonly silent: boolean;
+  readonly pluginStateRegistry?: IPluginStateRegistryService;
+  readonly conversationAppendAnchor?: boolean;
   checkpoint(): void;
   clearCheckpoints(): void;
   undoToCheckpoint(count: number, afterUndo?: (state: any) => any): void;
@@ -156,7 +159,8 @@ export interface UndoableProtocol {
     readonly event: Event2Class<any, any>;
     readonly shouldClear: (event: Event2<any>) => boolean;
   }[];
-  readonly isUndoAnchor: (message: unknown) => boolean;
+  readonly anchorStateName?: string;
+  readonly isUndoAnchor: (message: unknown, previousState?: unknown) => boolean;
   readonly isValidUndoCount: (count: number) => boolean;
 }
 
@@ -171,6 +175,23 @@ export function registerUndoableProtocol(protocol: UndoableProtocol): void {
     registerEvent2Class(cls);
   }
   for (const boundary of protocol.checkpointBoundaries ?? []) registerEvent2Class(boundary.event);
+}
+
+export function conversationAppendIsAnchor(
+  event: Event2<any>,
+  keys: readonly ReplayableStateKey<any>[],
+  states: IStateRegistry,
+): boolean | undefined {
+  const protocol = undoableProtocol;
+  if (protocol === undefined || event.type !== protocol.events.appendMessage.type) return undefined;
+  let previousState: unknown;
+  for (const key of keys) {
+    if (key.name === protocol.anchorStateName) {
+      previousState = states.get(key);
+      break;
+    }
+  }
+  return protocol.isUndoAnchor((event as Event2<any> & { message: unknown }).message, previousState);
 }
 
 export function keepsUndoCheckpoints(
@@ -202,7 +223,7 @@ export function expandedStateFolds(
   const folds = new Map<Event2Class<any, any>, StateFold<any, any>>(meta.folds);
   const domainAppend = folds.get(protocol.events.appendMessage);
   folds.set(protocol.events.appendMessage, (state, event, ctx) => {
-    if (!custom && protocol.isUndoAnchor(event.message)) {
+    if (!custom && (ctx.conversationAppendAnchor ?? protocol.isUndoAnchor(event.message))) {
       ctx.checkpoint();
     }
     return domainAppend?.(state, event, ctx);

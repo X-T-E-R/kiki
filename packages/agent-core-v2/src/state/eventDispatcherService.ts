@@ -12,6 +12,9 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IPluginStateRegistryService, type PluginCheckpointInterpretationEntry } from '#/agent/pluginState/pluginState';
+import { PluginStateError } from '#/agent/pluginState/pluginStateErrors';
+import { pluginStateKeys, pluginEntryIsCurrent } from '#/agent/pluginState/pluginStateKeys';
 import { event2FromRecord, type Event2, type Event2Class } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -26,9 +29,11 @@ import { StateError, StateErrors } from './errors';
 import {
   decodeReplayCheckpointGraphAsync,
   encodeReplayCheckpointGraphAsync,
+  matchesPluginCheckpointInterpretation,
   type ReplayCheckpointGraph,
 } from './replayCheckpointCodec';
 import {
+  conversationAppendIsAnchor,
   keepsUndoCheckpoints,
   type FoldContext,
   type PatchEntry,
@@ -63,6 +68,7 @@ interface ReplayCheckpointEnvelope {
   readonly replayAbi: number;
   readonly wire: ReplayCheckpointWire;
   readonly stateNames: readonly string[];
+  readonly pluginInterpretation?: readonly PluginCheckpointInterpretationEntry[];
   readonly graph: ReplayCheckpointGraph;
 }
 
@@ -116,6 +122,8 @@ class FoldContextImpl implements FoldContext {
   constructor(
     private readonly owner: EventDispatcherService,
     readonly silent: boolean,
+    readonly pluginStateRegistry?: IPluginStateRegistryService,
+    readonly conversationAppendAnchor?: boolean,
   ) {}
 
   checkpoint(): void {
@@ -173,6 +181,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     @ref(IAtomicDocumentStore) private readonly docs: LiveRef<IAtomicDocumentStore>,
     @ref(IAgentScopeContext) private readonly scope: LiveRef<IAgentScopeContext>,
     @ref(ILogService) private readonly log: LiveRef<ILogService>,
+    @ref(IPluginStateRegistryService) private readonly pluginStates: LiveRef<IPluginStateRegistryService>,
   ) {
     super();
     this.folded = this.foldContributions(view);
@@ -261,6 +270,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       this.deferredObservable.add(event);
       try { await this.dispatch(event); }
       catch (error) {
+        this.deferredObservable.delete(event);
         this.durableDispatchFailures.set(event, { error });
         throw error;
       }
@@ -328,9 +338,11 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     const folds = this.folded.folds.get(event.type);
     const prepared: PreparedFold[] = [];
     if (folds !== undefined) {
+      const anchor = conversationAppendIsAnchor(event, this.folded.states, this.agentState);
+      const pluginRegistry = this.pluginStates.current;
       for (const { key, fold } of folds) {
         const meta = this.ensureMeta(key);
-        const ctx = new FoldContextImpl(this, silent);
+        const ctx = new FoldContextImpl(this, silent, pluginRegistry, anchor);
         let previous = this.agentState.get(key);
         let [next, patches, inversePatches] = produceWithPatches<any>(
           previous,
@@ -519,6 +531,24 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return true;
   }
 
+  private checkpointPluginInterpretation(): readonly PluginCheckpointInterpretationEntry[] {
+    const active = this.pluginStates.current?.interpretationManifest() ?? [];
+    return (['conversation', 'world'] as const).flatMap((clock) => {
+      const entries = new Map(active.filter((entry) => entry.clock === clock).map((entry) => [entry.pluginId, entry]));
+      const key = pluginStateKeys[clock];
+      if (this.agentState.has(key)) {
+        for (const [name, { slice }] of Object.entries(this.agentState.get(key))) {
+          if (slice === undefined) entries.delete(name.slice('plugin:'.length));
+          else {
+            const { pluginId, schemaVersion, reducerVersion } = slice;
+            entries.set(pluginId, { pluginId, clock, schemaVersion, reducerVersion });
+          }
+        }
+      }
+      return [...entries.values()].toSorted((a, b) => a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0);
+    });
+  }
+
   private async writeReplayCheckpoint(generation: number): Promise<boolean> {
     this.checkpointSkipReason = undefined;
     const checkpointScope = this.checkpointScope();
@@ -565,6 +595,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
           };
         }),
       };
+      const pluginInterpretation = this.checkpointPluginInterpretation();
       const graph = await encodeReplayCheckpointGraphAsync(payload);
       if (!this.checkpointStable(generation, revision)) return false;
       const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
@@ -573,6 +604,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         replayAbi: REPLAY_ABI_VERSION,
         wire: digest === undefined ? wire : small ? { ...wire, prefixSha256: digest } : { ...wire, boundarySha256: digest },
         stateNames: keys.map((key) => key.name),
+        pluginInterpretation,
         graph,
       };
       phase = 'write';
@@ -598,6 +630,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         REPLAY_CHECKPOINT_KEY,
       );
       if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
+      if (!matchesPluginCheckpointInterpretation(envelope.pluginInterpretation, this.pluginStates.current?.interpretationManifest() ?? [])) return undefined;
       const wire = await this.wire.journalIdentity();
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
@@ -628,6 +661,12 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         if (saved?.name !== key.name || !isStateMeta(saved.meta)) return undefined;
         const parsed = key.replayable.schema.safeParse(saved.value);
         if (!parsed.success) return undefined;
+        for (const clock of ['conversation', 'world'] as const) {
+          if (key !== pluginStateKeys[clock]) continue;
+          for (const [name, entry] of Object.entries(pluginStateKeys[clock].replayable.schema.parse(parsed.data))) {
+            if (!pluginEntryIsCurrent(name.slice('plugin:'.length), clock, entry, this.pluginStates.current)) return undefined;
+          }
+        }
         const meta: StateMeta = saved.meta;
         meta.history = meta.history.map((entry) => ({
           ...entry,
@@ -676,6 +715,21 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         }
       }
       await phase('state_rehydrate', () => this.rehydrateStates());
+      const unresolved = new Set<string>();
+      for (const clock of ['conversation', 'world'] as const) {
+        const key = pluginStateKeys[clock];
+        if (!this.agentState.has(key)) continue;
+        for (const [name, entry] of Object.entries(this.agentState.get(key))) {
+          const pluginId = name.slice('plugin:'.length);
+          if (entry.required && (entry.unresolved || !pluginEntryIsCurrent(pluginId, clock, entry, this.pluginStates.current))) unresolved.add(pluginId);
+        }
+      }
+      if (unresolved.size > 0) {
+        const pluginIds = [...unresolved].toSorted();
+        throw new PluginStateError('plugin_state.required_unresolved',
+          `Restore requires compatible state reducers for: ${pluginIds.join(', ')}. Enable the plugins and reopen the agent.`,
+          { details: { pluginIds } });
+      }
       this.restorePhase = 'ready';
       await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
       if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {

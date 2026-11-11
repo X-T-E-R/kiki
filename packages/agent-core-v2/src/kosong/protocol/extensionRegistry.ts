@@ -1,8 +1,18 @@
 import type { IDisposable } from '#/_base/di/lifecycle';
 
 import type { Protocol } from './protocol';
-import type { ProtocolBaseDefinition } from './protocolBase';
+import type { ProtocolBaseDefinition, ProtocolBaseId } from './protocolBase';
 import type { ProtocolEndpoint, ProtocolTrait } from './protocolTrait';
+
+export interface ProviderAdapterDefinition {
+  readonly id: string;
+  readonly baseProtocol: Protocol;
+  readonly adapterBaseId?: ProtocolBaseId;
+  readonly traits: readonly ProtocolTrait[];
+  readonly endpoint?: ProtocolEndpoint;
+  readonly hostHeaders?: 'full' | 'user-agent';
+  readonly requestIdentityDeviceHeaders?: boolean;
+}
 
 /** Dynamic provider adapter contribution registered by E1 plugins. */
 export interface DynamicProviderContribution {
@@ -10,6 +20,7 @@ export interface DynamicProviderContribution {
   readonly generation: number;
   readonly providerId: string;
   readonly baseProtocol: Protocol;
+  readonly adapterBaseId?: ProtocolBaseId;
   readonly traits: readonly ProtocolTrait[];
   readonly endpoint?: ProtocolEndpoint;
   readonly hostHeaders?: 'full' | 'user-agent';

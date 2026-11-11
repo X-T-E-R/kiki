@@ -1,4 +1,5 @@
 import type { ImageURLPart, Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
+import type { LLMStreamTapObserver, PreBaselineRequestPatch } from '#/kosong/contract/extensionHooks';
 import type {
   FinishReason,
   ResponseFormat,
@@ -51,6 +52,8 @@ export type ModelRequestEvent =
   | ({ readonly type: 'timing' } & ModelRequestTiming);
 
 export interface ModelRequestParams {
+  readonly preBaselinePatch?: PreBaselineRequestPatch;
+  readonly streamTaps?: readonly LLMStreamTapObserver[];
   readonly cacheKey?: string;
   readonly googleContinuationToken?: string;
   readonly serviceTier?: OptionalParameter<ServiceTier>;

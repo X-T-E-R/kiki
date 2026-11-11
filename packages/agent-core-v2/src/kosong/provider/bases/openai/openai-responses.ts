@@ -1597,6 +1597,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       if (options?.requestIdentity?.responsesClientMetadata !== undefined) {
         createParams['client_metadata'] = options.requestIdentity.responsesClientMetadata;
       }
+      applyMissingProperties(createParams, options?.deterministicVendorFields);
       applyMissingProperties(createParams, options?.requestParams);
       if (this._baseUrl === 'https://chatgpt.com/backend-api/codex') {
         createParams['instructions'] ??= 'You are a helpful assistant.';
@@ -1640,6 +1641,8 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             apiKey: requireProviderApiKey('OpenAIResponsesChatProvider', auth, this._apiKey),
             headers: Object.fromEntries(headers),
             signal: options?.signal,
+            forceFullInput: options?.forceFullResponsesInput,
+            baselinePolicyKey: options?.responsesBaselinePolicyKey,
             canonicalOutput: (output) => projectRepresentableResponseOutput(output, this._model, this._toolMessageConversion),
             onFullInput: (input) => { fullInput = input; },
           });

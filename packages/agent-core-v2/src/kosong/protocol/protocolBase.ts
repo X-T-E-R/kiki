@@ -5,7 +5,7 @@ import type { ChatProvider } from '#/kosong/contract/provider';
 import type { Protocol, ProtocolAdapterConfig } from './protocol';
 import type { ResolvedTrait } from './protocolTrait';
 
-export type ProtocolBaseId = Protocol;
+export type ProtocolBaseId = Protocol | (string & {});
 
 export interface ProtocolBaseContext {
   readonly config: ProtocolAdapterConfig;

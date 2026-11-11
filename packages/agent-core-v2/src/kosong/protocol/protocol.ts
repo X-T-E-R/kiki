@@ -8,6 +8,7 @@ import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 
 import type { ProtocolBaseId, ResolvedAdapterIdentity } from './protocolBase';
+import type { IDynamicProtocolExtensionRegistry, ProviderAdapterDefinition } from './extensionRegistry';
 
 export const ProtocolSchema = modelProtocolSchema;
 
@@ -44,7 +45,7 @@ export interface ExplainedCapability {
   readonly source: InspectionSource;
 }
 
-export interface IProtocolAdapterRegistry {
+export interface IProtocolAdapterRegistry extends IDynamicProtocolExtensionRegistry {
   readonly _serviceBrand: undefined;
 
   supportedProtocols(): readonly Protocol[];
@@ -66,6 +67,9 @@ export interface IProtocolAdapterRegistry {
   ): ExplainedCapability;
 
   createChatProvider(config: ProtocolAdapterConfig): ChatProvider;
+
+  providerDefinition?(id: string, protocol?: Protocol): ProviderAdapterDefinition | undefined;
+  adapterCacheKey?(protocol: Protocol, providerType?: string): string | undefined;
 }
 
 export const IProtocolAdapterRegistry: ServiceIdentifier<IProtocolAdapterRegistry> =

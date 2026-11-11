@@ -1,6 +1,7 @@
 import { Error2 } from '#/_base/errors/errors';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import type { ResolutionTrace } from '#/kosong/contract/inspection';
+import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegistry';
 
 import {
   BUDGET_THINKING_EFFORTS,
@@ -27,6 +28,7 @@ export function resolveModelAuthMaterial(
     readonly model: ModelRecord;
     readonly provider: ProviderConfig | undefined;
     readonly providerName: string;
+    readonly adapter?: ProviderAdapterDefinition;
   },
   trace?: ResolutionTrace,
 ): ResolvedModelAuthMaterial {
@@ -46,7 +48,7 @@ export function resolveModelAuthMaterial(
     };
   }
 
-  const providerKey = resolveProviderApiKey({ ...args.provider, type: args.provider?.type ?? args.model.protocol });
+  const providerKey = resolveProviderApiKey({ ...args.provider, type: args.provider?.type ?? args.model.protocol }, args.adapter);
   const providerApiKey = providerKey.apiKey;
   if (providerApiKey !== undefined && args.provider?.oauth !== undefined) {
     throw authConflictError('Provider', args.providerName);
@@ -155,6 +157,7 @@ export interface BindingOriginExplanation {
 export function explainModelEndpointOrigin(
   model: Pick<ModelRecord, 'baseUrl' | 'protocol'>,
   provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env'>,
+  adapter?: ProviderAdapterDefinition,
 ): BindingOriginExplanation {
   const fromModel = nonEmpty(model.baseUrl);
   if (fromModel !== undefined) return { source: 'model', baseUrl: fromModel };
@@ -162,7 +165,7 @@ export function explainModelEndpointOrigin(
   if (fromProvider !== undefined) return { source: 'provider', baseUrl: fromProvider };
   const endpointType = provider?.type ?? model.protocol;
   if (endpointType === undefined) return { source: 'none' };
-  const explained = explainProviderEndpoint(endpointType, provider?.env ?? {});
+  const explained = explainProviderEndpoint(endpointType, provider?.env ?? {}, adapter);
   const fromBag = nonEmpty(explained.baseUrl);
   if (fromBag === undefined) return { source: 'none' };
   if (explained.baseUrlIsDefault === true) return { source: 'vendor', baseUrl: fromBag };
@@ -187,8 +190,9 @@ export function explainModelAuthOrigin(
 export function resolveConfiguredModelBaseUrl(
   model: Pick<ModelRecord, 'baseUrl' | 'protocol'>,
   provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env'>,
+  adapter?: ProviderAdapterDefinition,
 ): string | undefined {
-  return explainModelEndpointOrigin(model, provider).baseUrl;
+  return explainModelEndpointOrigin(model, provider, adapter).baseUrl;
 }
 
 export function nonEmpty(value: string | undefined): string | undefined {

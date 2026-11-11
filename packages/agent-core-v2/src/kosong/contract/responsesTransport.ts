@@ -39,6 +39,8 @@ export interface ResponsesRequestTransport {
     apiKey: string;
     headers: Readonly<Record<string, string>>;
     signal?: AbortSignal;
+    forceFullInput?: boolean;
+    baselinePolicyKey?: string;
     canonicalOutput?: (nativeOutput: readonly unknown[]) => ResponsesOutputProjection | undefined;
     onFullInput?: (input: readonly unknown[]) => void;
   }): Promise<AsyncIterable<unknown>>;

@@ -1168,6 +1168,7 @@ export class AnthropicChatProvider implements ChatProvider {
     }
 
     const createParams: Record<string, unknown> = {
+      ...options?.deterministicVendorFields,
       model: this._model,
       messages,
       ...requestKwargs,

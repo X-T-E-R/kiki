@@ -36,8 +36,13 @@ import {
   responsesWebSocketToWire,
   resolveResponsesWebSocket,
 } from '#/kosong/provider/requestCompression';
+import type { PreBaselineRequestPatch } from '#/kosong/contract/extensionHooks';
 import type { Message } from '#/kosong/contract/message';
+import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import type { Tool } from '#/kosong/contract/tool';
+import type { Model } from '#/kosong/model/catalog';
+import { ModelRequesterImpl as ProductionModelRequester } from '#/kosong/model/modelRequesterImpl';
+import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { project } from '#/agent/contextProjector/projection';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -640,6 +645,68 @@ function productionProvider(baseUrl: string): OpenAIResponsesChatProvider {
   });
 }
 
+function requesterModel(): Model {
+  return {
+    id: 'responses-requester-fixture',
+    name: 'synthetic',
+    aliases: [],
+    protocol: 'openai_responses',
+    headers: {},
+    capabilities: {
+      image_in: false,
+      video_in: false,
+      audio_in: false,
+      thinking: true,
+      tool_use: true,
+      max_context_tokens: 128_000,
+    },
+    maxContextSize: 128_000,
+    alwaysThinking: false,
+    providerType: 'fixture',
+    providerName: 'fixture',
+    imagePolicy: {
+      acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+      convertUnsupported: 'off',
+    },
+    authProvider: { canRefresh: false, getAuth: () => Promise.resolve({ apiKey: 'YOUR_API_KEY' }) },
+  };
+}
+
+function requesterRegistry(provider: OpenAIResponsesChatProvider): IProtocolAdapterRegistry {
+  return {
+    _serviceBrand: undefined,
+    supportedProtocols: () => [],
+    resolveAdapterIdentity: () => { throw new Error('not needed'); },
+    resolveProviderBaseId: () => { throw new Error('not needed'); },
+    resolveCapability: () => { throw new Error('not needed'); },
+    createChatProvider: () => provider,
+  } as unknown as IProtocolAdapterRegistry;
+}
+
+async function requestWithPatch(
+  requester: ProductionModelRequester,
+  history: readonly Message[],
+  transport: ResponsesRequestTransport,
+  logicalRequestId: string,
+  patch: PreBaselineRequestPatch,
+): Promise<Message> {
+  const events = await collect(requester.request({ systemPrompt: 'system instructions', tools: [], messages: history }, undefined, {
+    cacheKey: 'responses-requester-fixture',
+    responsesTransport: transport,
+    preBaselinePatch: patch,
+    attribution: {
+      logicalRequestId,
+      sessionId: 'session-fixture',
+      agentId: 'main',
+      purpose: 'turn',
+      waitBudget: { waitedMs: 0 },
+    },
+  }));
+  const finish = events.map(object).find((event) => event['type'] === 'finish');
+  if (finish?.['message'] === undefined) throw new Error('ModelRequesterImpl did not emit a finish event');
+  return finish['message'] as Message;
+}
+
 function user(text: string): Message {
   return { role: 'user', content: [{ type: 'text', text }], toolCalls: [] };
 }
@@ -1060,26 +1127,132 @@ describe('production Responses lineage commitment', () => {
   });
 });
 
+describe('ModelRequesterImpl Responses WebSocket request patches', () => {
+  it('keeps an unchanged patch across full then two delta requests and rebases changed reasoning/vendor fields without a stale id', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      const index = gateway.frames.length - 1;
+      sendCompleted(socket, `resp_patch_${index}`, `answer ${index}`);
+    }, v2Capabilities());
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const requester = new ProductionModelRequester(requesterModel(), requesterRegistry(provider));
+      const stablePatch: PreBaselineRequestPatch = {
+        thinkingEffort: 'high',
+        deterministicVendorFields: { vendor_patch: { mode: 'stable', flags: [1, true] } },
+      };
+      const changedReasoningPatch: PreBaselineRequestPatch = {
+        thinkingEffort: 'low',
+        deterministicVendorFields: { vendor_patch: { mode: 'stable', flags: [1, true] } },
+      };
+      const changedVendorPatch: PreBaselineRequestPatch = {
+        thinkingEffort: 'low',
+        deterministicVendorFields: { vendor_patch: { mode: 'changed', flags: [1, true] } },
+      };
+      let history = [user('question one')];
+      let answer = await requestWithPatch(requester, history, transport, 'logical-patch-1', stablePatch);
+      history = [...history, answer, user('question two')];
+      answer = await requestWithPatch(requester, history, transport, 'logical-patch-2', stablePatch);
+      history = [...history, answer, user('question three')];
+      answer = await requestWithPatch(requester, history, transport, 'logical-patch-3', changedReasoningPatch);
+      history = [...history, answer, user('question four')];
+      answer = await requestWithPatch(requester, history, transport, 'logical-patch-4', changedReasoningPatch);
+      history = [...history, answer, user('question five')];
+      answer = await requestWithPatch(requester, history, transport, 'logical-patch-5', changedVendorPatch);
+      history = [...history, answer, user('question six')];
+      await requestWithPatch(requester, history, transport, 'logical-patch-6', changedVendorPatch);
+
+      expect(gateway.frames).toHaveLength(6);
+      expect(gateway.frames[0]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_patch_0');
+      expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[3]?.body['previous_response_id']).toBe('resp_patch_2');
+      expect(gateway.frames[4]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[5]?.body['previous_response_id']).toBe('resp_patch_4');
+      expect(gateway.frames[0]?.body).toMatchObject({
+        reasoning: { effort: 'high', summary: 'auto' },
+        vendor_patch: { mode: 'stable', flags: [1, true] },
+      });
+      expect(gateway.frames[1]?.body['input']).toEqual([
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question two' }] },
+      ]);
+      expect(gateway.frames[2]?.body['input']).toHaveLength((gateway.frames[0]?.body['input'] as unknown[]).length + 4);
+      expect(gateway.frames[2]?.body).toMatchObject({
+        reasoning: { effort: 'low', summary: 'auto' },
+        vendor_patch: { mode: 'stable', flags: [1, true] },
+      });
+      expect(gateway.frames[3]?.body['input']).toEqual([
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question four' }] },
+      ]);
+      expect(gateway.frames[4]?.body['input']).toHaveLength((gateway.frames[0]?.body['input'] as unknown[]).length + 8);
+      expect(gateway.frames[4]?.body).toMatchObject({
+        reasoning: { effort: 'low', summary: 'auto' },
+        vendor_patch: { mode: 'changed', flags: [1, true] },
+      });
+      expect(gateway.frames[5]?.body['input']).toEqual([
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question six' }] },
+      ]);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+});
+
 describe('opaque native Responses rebase', () => {
-  it('sends full native items without rounding opaque integers or dropping unknown signatures', async () => {
+  it('retains full native items when forceFull or a vendor policy change disables delta', async () => {
     const opaque = '{"type":"function_call","id":"fc_opaque","status":"completed","call_id":"call_1","name":"synthetic_echo","arguments":"{}","future":{"integer":9007199254740993,"signature":"opaque-future-signature"}}';
     const gateway = await createGateway((_body, socket) => {
-      sendCreated(socket, 'resp_opaque');
-      socket.send(`{"type":"response.output_item.added","output_index":0,"item":${opaque}}`);
-      socket.send(`{"type":"response.output_item.done","output_index":0,"item":${opaque}}`);
-      socket.send(`{"type":"response.completed","response":{"id":"resp_opaque","status":"completed","output":[${opaque}]}}`);
+      const index = gateway.frames.length - 1;
+      if (index === 0) {
+        sendCreated(socket, 'resp_opaque');
+        socket.send(`{"type":"response.output_item.added","output_index":0,"item":${opaque}}`);
+        socket.send(`{"type":"response.output_item.done","output_index":0,"item":${opaque}}`);
+        socket.send(`{"type":"response.completed","response":{"id":"resp_opaque","status":"completed","output":[${opaque}]}}`);
+      } else {
+        sendNativeOutput(socket, `resp_policy_${index}`, responseOutput(`answer ${index}`));
+      }
     });
     const transport = new ResponsesWebSocketTransport();
     try {
       const provider = productionProvider(gateway.baseUrl);
+      const stablePolicy = {
+        responsesTransport: transport,
+        responsesBaselinePolicyKey: 'vendor-policy-one',
+        deterministicVendorFields: { vendor_patch: 'stable' },
+      };
       const history = [user('question')];
-      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      const first = await generate(provider, '', [], history, undefined, stablePolicy);
       history.push(first.message, { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: 'result' }], toolCalls: [] });
-      await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      const second = await generate(provider, '', [], history, undefined, { ...stablePolicy, forceFullResponsesInput: true });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'answer 1' }]);
       expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[1]?.body['vendor_patch']).toBe('stable');
       expect(gateway.frames[1]?.wire).toContain('9007199254740993');
       expect(gateway.frames[1]?.wire).toContain('opaque-future-signature');
       expect((gateway.frames[1]?.body['input'] as RawObject[])[1]?.['id']).toBe('fc_opaque');
+
+      history.push(second.message, user('question after forceFull'));
+      const changedVendorPolicy = {
+        ...stablePolicy,
+        responsesBaselinePolicyKey: 'vendor-policy-two',
+        deterministicVendorFields: { vendor_patch: 'changed' },
+      };
+      const third = await generate(provider, '', [], history, undefined, changedVendorPolicy);
+      expect(third.message.content).toEqual([{ type: 'text', text: 'answer 2' }]);
+      expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[2]?.body['vendor_patch']).toBe('changed');
+      expect(gateway.frames[2]?.wire).toContain('9007199254740993');
+      expect(gateway.frames[2]?.wire).toContain('opaque-future-signature');
+      expect((gateway.frames[2]?.body['input'] as RawObject[])[1]?.['id']).toBe('fc_opaque');
+
+      history.push(third.message, user('question after vendor rebase'));
+      await generate(provider, '', [], history, undefined, changedVendorPolicy);
+      expect(gateway.frames).toHaveLength(4);
+      expect(gateway.frames[3]?.body['previous_response_id']).toBe('resp_policy_2');
+      expect(gateway.frames[3]?.body['input']).toEqual([
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question after vendor rebase' }] },
+      ]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
     } finally { transport.dispose(); }
   });
 });

@@ -6,6 +6,9 @@ export const StateErrors = {
     STATE_DUPLICATE_FOLD: 'state.duplicate_fold',
     STATE_DURABILITY_MISMATCH: 'state.durability_mismatch',
     STATE_CYCLE: 'state.cycle',
+    PLUGIN_STATE_INVALID_FACT: 'plugin_state.invalid_fact',
+    PLUGIN_STATE_REPLAY_REQUIRED: 'plugin_state.replay_required',
+    PLUGIN_STATE_REQUIRED_UNRESOLVED: 'plugin_state.required_unresolved',
   },
   info: {
     'state.duplicate_fold': {

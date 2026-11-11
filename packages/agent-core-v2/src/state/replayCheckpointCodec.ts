@@ -1,3 +1,17 @@
+import type { PluginCheckpointInterpretationEntry } from '#/agent/pluginState/pluginState';
+
+export function matchesPluginCheckpointInterpretation(
+  saved: readonly PluginCheckpointInterpretationEntry[] | undefined,
+  current: readonly PluginCheckpointInterpretationEntry[],
+): boolean {
+  if (saved === undefined) return current.length === 0;
+  return Array.isArray(saved) && saved.length === current.length && current.every((entry, index) => {
+    const candidate = saved[index];
+    return candidate?.pluginId === entry.pluginId && candidate.clock === entry.clock &&
+      candidate.schemaVersion === entry.schemaVersion && candidate.reducerVersion === entry.reducerVersion;
+  });
+}
+
 type EncodedScalar = null | boolean | number | string;
 type EncodedValue = EncodedScalar | { readonly type: 'undefined' | 'bigint'; readonly value?: string } | { readonly ref: number };
 type EncodedNode =

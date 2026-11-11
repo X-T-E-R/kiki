@@ -6,6 +6,7 @@ import {
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
+import { generate } from '#/kosong/contract/generate';
 import type { Message } from '#/kosong/contract/message';
 import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/google-genai';
 
@@ -514,6 +515,30 @@ describe('google-genai trailing model turn', () => {
       parts: [{ text: 'earlier reasoning', thought: true, thoughtSignature: THINK_SIGNATURE }],
     });
     expect(contents.at(-1)?.['role']).toBe('user');
+  });
+
+  it('roundtrips signed thinking across sequential model requests without losing the signature', async () => {
+    const seen = installFetchSequence([
+      () => responseSse({ candidates: [{ content: { role: 'model', parts: [{ text: 'private reasoning', thought: true, thoughtSignature: THINK_SIGNATURE }] }, finishReason: 'STOP' }] }),
+      () => responseSse({ candidates: [{ content: { role: 'model', parts: [{ text: 'continued reasoning', thought: true, thoughtSignature: 'sig-next' }, { text: 'answer' }] }, finishReason: 'STOP' }] }),
+    ]);
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: true });
+    const first = await generate(provider, 'system instructions', [], [user('first question')]);
+    const history = [user('first question'), first.message, user('follow-up')];
+    const second = await generate(provider, 'system instructions', [], history);
+
+    expect(first.message.content).toEqual([{ type: 'think', think: 'private reasoning', encrypted: THINK_SIGNATURE }]);
+    expect(signaturesOfRequest(seen[1]!)).toContain(THINK_SIGNATURE);
+    expect(contentsOf(seen[1]!)).toMatchObject([
+      { role: 'user' },
+      { role: 'model', parts: [{ thoughtSignature: THINK_SIGNATURE }] },
+      { role: 'user' },
+    ]);
+    expect(second.message.content).toEqual([
+      { type: 'think', think: 'continued reasoning', encrypted: 'sig-next' },
+      { type: 'text', text: 'answer' },
+    ]);
+    expect(history[1]).toEqual(first.message);
   });
 
   it('refuses a compaction-like summary followed by an assistant tail', async () => {

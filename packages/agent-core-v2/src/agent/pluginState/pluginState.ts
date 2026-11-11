@@ -36,7 +36,11 @@ export interface PluginFactRecordedPayload {
   readonly payload: PluginStateJsonValue;
 }
 
-/** Deterministic pure reducer specification registered by an E11 plugin for one state clock. */
+/**
+ * Deterministic pure reducer specification for one clock. A version pair identifies an immutable interpretation.
+ * New versions must reduce every historical factType and payload from canonical wire, starting from initial().
+ * migrate converts existing slice data, not historical fact payloads.
+ */
 export interface PluginStateReducerSpec<S extends PluginStateJsonObject = PluginStateJsonObject> {
   readonly pluginId: string;
   readonly clock: PluginStateClockKind;

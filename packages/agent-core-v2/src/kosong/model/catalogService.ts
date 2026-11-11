@@ -4,7 +4,8 @@ import { decisionProtocolForProviderType } from '@kiki/protocol';
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
 import { applyModelSettings } from './modelSettings';
-import { explainModelProtocol, resolveModelProtocol } from './modelProtocol';
+import { explainModelProtocol, type ExplainedModelProtocol } from './modelProtocol';
+import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegistry';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -81,6 +82,7 @@ type MutableProtocolProviderOptions = {
 };
 
 interface CatalogEntry {
+  readonly adapterKey?: string;
   readonly model: Model;
   readonly credentials: readonly string[];
   readonly requester: ModelRequester;
@@ -128,12 +130,13 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   getConnectionEndpoint(providerId: string): ConnectionEndpoint {
     const provider = this.providers.get(providerId);
     if (provider === undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
-    const auth = resolveModelAuthMaterial({ modelId: `connection:${providerId}`, model: { provider: providerId }, provider, providerName: providerId });
-    const headers = resolveOutboundHeaders(provider.type, provider.customHeaders, this.hostRequestHeaders);
-    const key = resolveProviderApiKey(provider);
+    const adapter = provider.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type);
+    const auth = resolveModelAuthMaterial({ modelId: `connection:${providerId}`, model: { provider: providerId }, provider, providerName: providerId, adapter });
+    const headers = resolveOutboundHeaders(provider.type, provider.customHeaders, this.hostRequestHeaders, adapter);
+    const key = resolveProviderApiKey(provider, adapter);
     return {
       providerName: providerId,
-      baseUrl: resolveConfiguredModelBaseUrl({}, provider),
+      baseUrl: resolveConfiguredModelBaseUrl({}, provider, adapter),
       defaultModel: provider.defaultModel,
       protocol: decisionProtocolForProviderType(provider.type),
       decisionEndpoint: provider.decisionEndpoint,
@@ -170,10 +173,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const canonicalId = this.models.resolveId(id) ?? id;
     const key = recipeSettings === undefined ? canonicalId : `${canonicalId}\0${JSON.stringify(recipeSettings)}`;
     const cached = this.cache.get(key);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && cached.adapterKey === this.protocolRegistry.adapterCacheKey?.(cached.model.protocol, cached.model.providerType)) return cached;
     const trace = new ResolutionTraceCollector();
     const built = this.buildModel(canonicalId, trace, recipeSettings);
     const entry: CatalogEntry = {
+      adapterKey: this.protocolRegistry.adapterCacheKey?.(built.model.protocol, built.model.providerType),
       model: built.model,
       credentials: built.credentials,
       requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission),
@@ -352,7 +356,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     models: Readonly<Record<string, ModelRecord>>,
     globalDefaultModel: string | undefined,
   ): Promise<ProviderCatalogItem> {
-    const credential = await resolveProviderCredentialState(providerId, provider, this.oauth);
+    const adapter = provider.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type);
+    const credential = await resolveProviderCredentialState(providerId, provider, this.oauth, adapter);
     return toProtocolProvider(providerId, provider, models, globalDefaultModel, credential);
   }
 
@@ -394,7 +399,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     trace.capture(TRACE.providerName, providerName);
     trace.capture(TRACE.rawBaseUrl, rawBaseUrl);
 
-    const protocol = this.resolveProtocol(id, routingModel, providerConfig, trace);
+    const resolvedProtocol = this.resolveProtocol(id, routingModel, providerConfig, trace);
+    const protocol = resolvedProtocol.protocol;
+    const adapter = providerConfig?.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(providerConfig.type, protocol);
     const model = effectiveModelConfig(
       configuredModel,
       providerConfig?.type ?? configuredModel.protocol,
@@ -423,6 +430,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         model,
         provider: providerConfig,
         providerName,
+        adapter,
       },
       trace,
     );
@@ -479,14 +487,14 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     trace.capture(TRACE.hostHeaders, this.hostRequestHeaders.headers);
     trace.capture(TRACE.thirdPartyHeaders, this.hostRequestHeaders.thirdPartyHeaders);
     trace.capture(TRACE.identitySlug, this.hostRequestHeaders.identitySlug);
-    const headers = resolveOutboundHeaders(providerConfig?.type, providerConfig?.customHeaders, this.hostRequestHeaders);
+    const headers = resolveOutboundHeaders(providerConfig?.type, providerConfig?.customHeaders, this.hostRequestHeaders, adapter);
     return {
       model: {
         id,
         name: wireName,
         aliases: model.aliases ?? [],
         protocol,
-        protocolSource: explainModelProtocol(routingModel, providerConfig)?.source,
+        protocolSource: resolvedProtocol.source,
         baseUrl: resolvedBaseUrl,
         requestCompression: resolveRequestCompression(
           this.providers.transportDefaults().requestCompression,
@@ -526,7 +534,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         imagePolicy,
         authProvider,
         credentialSource: auth.apiKey !== undefined ? (model.apiKey !== undefined ? 'model' : providerConfig?.apiKey?.trim() ? 'provider' : 'env') : auth.oauth !== undefined ? 'oauth' : Object.values(providerConfig?.customHeaders ?? {}).some(Boolean) || Object.keys(headers).some((name) => /^(authorization|x-api-key)$/i.test(name) && headers[name]) ? 'headers' : 'none',
-        credentialEnv: model.apiKey === undefined ? resolveProviderApiKey({ ...providerConfig, type: providerType }).envName : undefined,
+        credentialEnv: model.apiKey === undefined ? resolveProviderApiKey({ ...providerConfig, type: providerType }, adapter).envName : undefined,
         providerOptions,
       },
       credentials: probeCredentials(auth),
@@ -561,7 +569,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           `Provider "${providerId}" referenced by model "${id}" is not configured.`,
         );
       }
-      const baseUrl = resolveConfiguredModelBaseUrl(model, providerConfig);
+      const adapter = providerConfig.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(providerConfig.type, model.protocol);
+      const baseUrl = resolveConfiguredModelBaseUrl(model, providerConfig, adapter);
       if (nonEmpty(model.baseUrl) !== undefined) {
         trace.record('resolved.baseUrl', { kind: 'config', detail: 'model.baseUrl' });
       } else if (nonEmpty(providerConfig.baseUrl) !== undefined) {
@@ -574,7 +583,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         const endpoint =
           endpointType === undefined
             ? {}
-            : explainProviderEndpoint(endpointType, providerConfig.env ?? {});
+            : explainProviderEndpoint(endpointType, providerConfig.env ?? {}, adapter);
         if (endpoint.baseUrlEnvName !== undefined) {
           trace.record('resolved.baseUrl', {
             kind: 'env',
@@ -616,8 +625,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     model: ModelRecord,
     provider: ProviderConfig | undefined,
     trace: ResolutionTraceCollector,
-  ): Protocol {
-    const protocol = resolveModelProtocol(model, provider, trace);
+  ): ExplainedModelProtocol {
+    const adapter = provider?.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type, model.protocol);
+    const protocol = explainModelProtocol(model, provider, trace, adapter);
     if (protocol !== undefined) return protocol;
     throw new Error2(
       CONFIG_INVALID_ERROR_CODE,
@@ -651,10 +661,9 @@ export function resolveOutboundHeaders(
   providerType: string | undefined,
   customHeaders: Readonly<Record<string, string>> | undefined,
   host: Pick<IHostRequestHeaders, 'headers' | 'thirdPartyHeaders'>,
+  adapter: ProviderAdapterDefinition | undefined = providerType === undefined ? undefined : getProviderDefinition(providerType),
 ): Readonly<Record<string, string>> {
-  const forwardsAll =
-    providerType !== undefined &&
-    getProviderDefinition(providerType)?.hostHeaders === 'full';
+  const forwardsAll = adapter?.hostHeaders === 'full';
   const hostLayer = forwardsAll ? host.headers : host.thirdPartyHeaders;
   return { ...parseKimiCodeCustomHeaders(), ...hostLayer, ...customHeaders };
 }
@@ -668,8 +677,9 @@ export async function resolveProviderCredentialState(
   providerId: string,
   provider: ProviderConfig,
   oauth: Pick<IModelOAuthTokens, 'hasCachedAccessToken'>,
+  adapter?: ProviderAdapterDefinition,
 ): Promise<ProviderCredentialState> {
-  const key = resolveProviderApiKey(provider);
+  const key = resolveProviderApiKey(provider, adapter);
   return {
     hasApiKey: key.apiKey !== undefined,
     hasOAuthToken:

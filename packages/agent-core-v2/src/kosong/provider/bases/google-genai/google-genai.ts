@@ -1083,6 +1083,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     }
 
     const config: Record<string, unknown> = {
+      ...options?.deterministicVendorFields,
       ...kwargs,
       automaticContinuation: false,
       continuationToken: options?.googleContinuationToken,

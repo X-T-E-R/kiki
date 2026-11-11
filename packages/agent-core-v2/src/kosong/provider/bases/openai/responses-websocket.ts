@@ -33,6 +33,8 @@ type CodexTurnMetadataStableIdentity = Readonly<
 >;
 
 type Baseline = {
+  baselinePolicyKey: string | undefined;
+  model: unknown;
   responseId: string;
   prefix: readonly unknown[];
   canonicalInput: readonly unknown[];
@@ -53,6 +55,7 @@ type Baseline = {
 type OutputProjection = (output: readonly unknown[]) => ResponsesOutputProjection | undefined;
 
 type PreparedCanonical = {
+  baselinePolicyKey?: string;
   input: readonly unknown[] | undefined;
   inputFingerprint: readonly string[] | undefined;
   identityKey: string;
@@ -711,6 +714,8 @@ export interface ResponsesWebSocketCreateOptions {
   readonly signal?: AbortSignal;
   readonly headers?: Headers | Readonly<Record<string, string>>;
   readonly canonical?: ResponsesWebSocketCanonical | readonly unknown[] | string;
+  readonly forceFullInput?: boolean;
+  readonly baselinePolicyKey?: string;
   readonly canonicalOutput?: OutputProjection;
   readonly onFullInput?: (input: readonly unknown[]) => void;
 }
@@ -845,6 +850,8 @@ export class ResponsesWebSocketTransport {
       readonly apiKey: string;
       readonly headers: Readonly<Record<string, string>>;
       readonly signal?: AbortSignal;
+      readonly forceFullInput?: boolean;
+      readonly baselinePolicyKey?: string;
       readonly canonicalOutput?: OutputProjection;
       readonly onFullInput?: (input: readonly unknown[]) => void;
     },
@@ -855,12 +862,7 @@ export class ResponsesWebSocketTransport {
       defaultHeaders: options.headers,
       maxRetries: 0,
     });
-    return this.create(client, fullParams, {
-      headers: options.headers,
-      signal: options.signal,
-      canonicalOutput: options.canonicalOutput,
-      onFullInput: options.onFullInput,
-    });
+    return this.create(client, fullParams, options);
   }
 
   commitResponse(responseId: string, canonicalOutput: readonly unknown[]): void {
@@ -895,7 +897,10 @@ export class ResponsesWebSocketTransport {
     if (options.signal?.aborted) throw createAbortError();
 
     const params = prepareParams(fullParams);
-    const canonical = prepareCanonical(options.canonical, params);
+    const prior = this._baseline ?? this._fullRebase;
+    const forceFullInput = options.forceFullInput === true ||
+      (prior !== null && prior.baselinePolicyKey !== options.baselinePolicyKey);
+    const canonical = { ...prepareCanonical(options.canonical, params), baselinePolicyKey: options.baselinePolicyKey };
     const headers = headerRecord(options.headers);
     const connectionKey = connectionFingerprint(client, headers);
     const baseConnectionKey = baseConnectionFingerprint(client, headers);
@@ -912,9 +917,8 @@ export class ResponsesWebSocketTransport {
       const rebaseMatchesIdentity = (allowPerFrameTurnMetadata: boolean): boolean => {
         if (rebase === null) return false;
         if (
-          rebase.connectionKey === connectionKey &&
-          rebase.identityKey === canonical.identityKey &&
-          rebase.wireIdentityKey === canonical.wireIdentityKey
+          rebase.connectionKey === connectionKey && rebase.model === params['model'] &&
+          (forceFullInput || (rebase.identityKey === canonical.identityKey && rebase.wireIdentityKey === canonical.wireIdentityKey))
         ) {
           return true;
         }
@@ -972,10 +976,11 @@ export class ResponsesWebSocketTransport {
         perFrameTurnMetadataSupported,
         hadBaselineBeforeConnect,
       );
-      const useDelta = deltaDecision.useDelta;
-      this._lastFullInputReason = deltaDecision.fullInputReason;
+      const useDelta = !forceFullInput && deltaDecision.useDelta;
+      this._lastFullInputReason = forceFullInput ? 'forced_full' : deltaDecision.fullInputReason;
       const baseline = this._baseline;
       if (baseline?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&
+        baseline.connectionKey === connectionKey && baseline.model === params['model'] &&
         canonical.input !== undefined && isPrefix(baseline.canonicalFingerprint, canonical.inputFingerprint)) {
         params['input'] = [...baseline.prefix, ...canonical.input.slice(baseline.canonicalPrefix!.length)];
       } else if (this._capabilities?.version === 2 && fullRebaseInput !== undefined) {
@@ -1428,6 +1433,8 @@ export class ResponsesWebSocketTransport {
               stateBytes <= capabilities.max_state_bytes
             ) {
               const baseline: Baseline = {
+                baselinePolicyKey: canonical.baselinePolicyKey,
+                model: fullParams['model'],
                 responseId: completion.responseId,
                 prefix,
                 canonicalInput: canonical.input.slice(),

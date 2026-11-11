@@ -333,17 +333,23 @@ function createImmutableFoldSink(initial: readonly ContextMessage[]): ImmutableF
   };
 }
 
-export function findProviderMessageRevision<T>(state: readonly T[], message: ContextMessage, readMessage: (entry: T) => ContextMessage): { index: number; message: ContextMessage } | undefined {
-  if (message.role !== 'user' || message.id === undefined || message.providerMessageId === undefined) return undefined;
+export function findProviderMessageIndex<T>(state: readonly T[], message: ContextMessage, readMessage: (entry: T) => ContextMessage): number {
+  if (message.role !== 'user' || message.id === undefined || message.providerMessageId === undefined) return -1;
   for (let index = state.length - 1; index >= 0; index--) {
     const previous = readMessage(state[index]!);
-    if (previous.role !== 'user' || previous.id !== message.id || previous.providerMessageId !== message.providerMessageId) continue;
-    const before = previous.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
-    const incoming = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
-    const content = before.length > 0 && !incoming.startsWith(before) ? [...previous.content, ...message.content] : message.content;
-    return { index, message: { ...previous, content, origin: message.origin ?? previous.origin } };
+    if (previous.role === 'user' && previous.id === message.id && previous.providerMessageId === message.providerMessageId) return index;
   }
-  return undefined;
+  return -1;
+}
+
+export function findProviderMessageRevision<T>(state: readonly T[], message: ContextMessage, readMessage: (entry: T) => ContextMessage): { index: number; message: ContextMessage } | undefined {
+  const index = findProviderMessageIndex(state, message, readMessage);
+  if (index < 0) return undefined;
+  const previous = readMessage(state[index]!);
+  const before = previous.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+  const incoming = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+  const content = before.length > 0 && !incoming.startsWith(before) ? [...previous.content, ...message.content] : message.content;
+  return { index, message: { ...previous, content, origin: message.origin ?? previous.origin } };
 }
 
 function findOpenAssistantIndex(state: readonly ContextMessage[]): number {

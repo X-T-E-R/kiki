@@ -2153,6 +2153,63 @@ describe('reasoning-only assistant history projection', () => {
   });
 });
 
+describe('Anthropic signed reasoning multi-turn round trip', () => {
+  it('returns a signed thinking block and resends it unchanged on the follow-up request', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const responses = [
+      {
+        id: 'msg_signed_first', type: 'message', role: 'assistant', model: 'example-model',
+        content: [
+          { type: 'thinking', thinking: 'private reasoning', signature: 'signature-fixture' },
+          { type: 'text', text: 'first answer' },
+        ],
+        stop_reason: 'end_turn', usage: { input_tokens: 4, output_tokens: 3 },
+      },
+      {
+        id: 'msg_signed_second', type: 'message', role: 'assistant', model: 'example-model',
+        content: [{ type: 'text', text: 'follow-up answer' }],
+        stop_reason: 'end_turn', usage: { input_tokens: 7, output_tokens: 2 },
+      },
+    ];
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'YOUR_API_KEY',
+      stream: false,
+      clientFactory: () => new Anthropic({
+        apiKey: 'YOUR_API_KEY',
+        maxRetries: 0,
+        fetch: async (input, init) => {
+          const requestIndex = requests.length;
+          requests.push(JSON.parse(await new Request(input, init).text()) as Record<string, unknown>);
+          return new Response(JSON.stringify(responses[requestIndex]), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      }),
+    });
+    const history: Message[] = [{ role: 'user', content: [{ type: 'text', text: 'first question' }], toolCalls: [] }];
+    const first = await generate(provider, 'system instructions', [], history, undefined, { maxCompletionTokens: 1024 });
+    history.push(first.message, { role: 'user', content: [{ type: 'text', text: 'follow-up' }], toolCalls: [] });
+    const second = await generate(provider, 'system instructions', [], history, undefined, { maxCompletionTokens: 1024 });
+
+    expect(first.message.content).toEqual([
+      { type: 'think', think: 'private reasoning', encrypted: 'signature-fixture' },
+      { type: 'text', text: 'first answer' },
+    ]);
+    const turns = requests[1]?.['messages'] as Array<Record<string, unknown>>;
+    expect(turns[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'private reasoning', signature: 'signature-fixture' },
+        { type: 'text', text: 'first answer' },
+      ],
+    });
+    expect(second.message.content).toEqual([{ type: 'text', text: 'follow-up answer' }]);
+    expect(history[1]).toEqual(first.message);
+  });
+});
+
 describe('tool-call-only assistant history projection (issue #3017)', () => {
   it('emits content: null for an assistant message carrying only tool_calls', async () => {
     const provider = new OpenAILegacyChatProvider({

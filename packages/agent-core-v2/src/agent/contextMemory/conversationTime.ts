@@ -7,6 +7,7 @@ import {
   ContextClear,
   ContextUndo,
 } from './contextEvents';
+import { findProviderMessageIndex } from './loopEventFold';
 import type { ContextMessage } from './types';
 
 export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
@@ -56,6 +57,8 @@ registerUndoableProtocol({
     undo: ContextUndo,
   },
   checkpointBoundaries: [{ event: AgentModelSwitch, shouldClear: (event) => (event as AgentModelSwitch).context !== undefined }],
-  isUndoAnchor: (message) => isUndoAnchor(message as ContextMessage),
+  anchorStateName: 'contextMemory',
+  isUndoAnchor: (message, previous) => isUndoAnchor(message as ContextMessage) &&
+    (previous === undefined || findProviderMessageIndex(previous as readonly ContextMessage[], message as ContextMessage, (entry) => entry) < 0),
   isValidUndoCount,
 });

@@ -340,13 +340,10 @@ class TypeRenderer {
       const element = type.getArrayElementType();
       if (element === undefined) return this.fallback(type, location, 'array without element');
       const rendered = this.renderType(element, location, depth + 1);
-      const text =
-        element.isUnion() || element.isIntersection() ? `(${rendered})[]` : `${rendered}[]`;
-      if (type.getSymbol()?.getName() !== 'ReadonlyArray') return text;
-      const elementText = rendered.startsWith('readonly ') || element.isUnion() || element.isIntersection()
-        ? `(${rendered})`
-        : rendered;
-      return `readonly ${elementText}[]`;
+      const needsParens = element.isUnion() || element.isIntersection() || element.getCallSignatures().length > 0;
+      const elementText = needsParens || rendered.startsWith('readonly ') ? `(${rendered})` : rendered;
+      const prefix = type.getSymbol()?.getName() === 'ReadonlyArray' ? 'readonly ' : '';
+      return `${prefix}${elementText}[]`;
     }
 
     if (type.isObject()) {

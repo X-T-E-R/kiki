@@ -122,6 +122,32 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('rebinds a dynamic provider generation as one endpoint, auth, and adapter binding', async () => {
+    const { host, catalog } = createHost({
+      providers: { edge: { type: 'plugin-edge', env: { KEY_ONE: 'fixture-one', KEY_TWO: 'fixture-two' } } },
+      models: { edge: { provider: 'edge', model: 'example-model', maxContextSize: 4096 } },
+    });
+    try {
+      const registry = host.app.accessor.get(IProtocolAdapterRegistry);
+      const register = (generation: number, apiKeyEnv: string) => registry.registerDynamicProvider({
+        pluginId: 'test-plugin', providerId: 'plugin-edge', generation, baseProtocol: 'openai', traits: [],
+        endpoint: { defaultBaseUrl: `https://generation-${generation}.example.test/v1`, apiKeyEnv },
+      });
+      const firstHandle = register(1, 'KEY_ONE');
+      const first = catalog.getRequester('edge');
+      expect(first.model.baseUrl).toBe('https://generation-1.example.test/v1');
+      expect(await first.model.authProvider.getAuth()).toEqual({ apiKey: 'fixture-one' });
+      const secondHandle = register(2, 'KEY_TWO');
+      await firstHandle.dispose();
+      const second = catalog.getRequester('edge');
+      expect(second).not.toBe(first);
+      expect(second.model.baseUrl).toBe('https://generation-2.example.test/v1');
+      expect(await second.model.authProvider.getAuth()).toEqual({ apiKey: 'fixture-two' });
+      await expect(first.uploadImage!({ data: new Uint8Array(), mimeType: 'image/png' })).rejects.toThrow('rebind required');
+      await secondHandle.dispose();
+      expect(() => catalog.getRequester('edge')).toThrow('must declare a wire protocol');
+    } finally { await host.dispose(); }
+  });
   it('resolves decision connections without chat records and blocks even hand-written chat aliases', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-env-key');
     const { host, catalog, providers } = createHost({ providers: { judgment: { type: 'system_one', defaultModel: 'arbitrary-remote-name' } },

@@ -3,6 +3,7 @@ import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
 import type { StreamDiagnostics } from './streamDiagnostics';
 import type { ResponsesRequestTransport, ResponsesWebSocketConfig } from './responsesTransport';
+import type { LLMStreamTapObserver, TransportJsonValue } from './extensionHooks';
 
 export type ThinkingEffort = 'off' | 'on' | (string & {});
 
@@ -109,6 +110,10 @@ export interface RawResponseObserver {
 
 export interface GenerateOptions {
   rawResponseObserver?: RawResponseObserver;
+  streamTaps?: readonly LLMStreamTapObserver[];
+  deterministicVendorFields?: Readonly<Record<string, TransportJsonValue>>;
+  forceFullResponsesInput?: boolean;
+  responsesBaselinePolicyKey?: string;
   signal?: AbortSignal;
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;

@@ -33,6 +33,7 @@ import {
   type ModelRequestTiming,
 } from './modelRequester';
 import { isApiDefault } from './parameters';
+import { verifyAndApplyPreBaselinePatch } from './requestInvariantGuard';
 
 /** The request executor — the only production code that calls
  *  `IProtocolAdapterRegistry.createChatProvider`: it lazily composes exactly one immutable
@@ -45,16 +46,27 @@ import { isApiDefault } from './parameters';
  *  the provider's message. Constructed by `ModelCatalog` with plain constructor args, no DI. */
 export class ModelRequesterImpl implements ModelRequester {
   private cachedChatProvider: ChatProvider | undefined;
+  private readonly adapterBindingKey: string | undefined;
 
   constructor(
     readonly model: Model,
     private readonly protocolRegistry: IProtocolAdapterRegistry,
     private readonly admission?: RequestAdmissionPort,
-  ) {}
+  ) {
+    this.adapterBindingKey = protocolRegistry.adapterCacheKey?.(model.protocol, model.providerType);
+  }
+
+  private assertAdapterBinding(): void {
+    const { protocol, providerType, id } = this.model;
+    if (this.protocolRegistry.adapterCacheKey?.(protocol, providerType) !== this.adapterBindingKey) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model '${id}' adapter generation changed; rebind required.`);
+    }
+  }
 
   private resolveChatProvider(): ChatProvider {
-    if (this.cachedChatProvider !== undefined) return this.cachedChatProvider;
+    this.assertAdapterBinding();
     const model = this.model;
+    if (this.cachedChatProvider !== undefined) return this.cachedChatProvider;
     this.cachedChatProvider = this.protocolRegistry.createChatProvider({
       protocol: model.protocol,
       providerType: model.providerType,
@@ -152,6 +164,7 @@ export class ModelRequesterImpl implements ModelRequester {
     params: ModelRequestParams & { readonly attribution: RequestAttribution },
   ): Promise<void> {
     signal?.throwIfAborted();
+    this.assertAdapterBinding();
     const configured = this.model.generationParameters;
     const preferredTokens = this.model.maxCompletionTokens;
     const requestedTokens = params?.maxCompletionTokens;
@@ -171,16 +184,15 @@ export class ModelRequesterImpl implements ModelRequester {
     const rawRequestParams = { ...modelRequestParams, ...params?.requestParams };
     const serviceTier = params?.serviceTier ?? configured?.serviceTier ?? this.model.serviceTier;
     if (isApiDefault(serviceTier)) delete rawRequestParams['service_tier'];
-    const provider = this.resolveChatProvider();
-
     let requestStartedAt = Date.now();
     let requestSentAt: number | undefined;
     let firstChunkAt: number | undefined;
     let streamEndedAt: number | undefined;
     let decodeStats: StreamDecodeStats | undefined;
 
-    const options: GenerateOptions = {
+    const baseOptions: GenerateOptions = {
       signal,
+      streamTaps: params.streamTaps,
       cacheKey: params?.cacheKey,
       googleContinuationToken: params?.googleContinuationToken,
       serviceTier: isApiDefault(serviceTier) ? undefined : serviceTier,
@@ -213,6 +225,21 @@ export class ModelRequesterImpl implements ModelRequester {
       responseFormat: input.responseFormat,
     };
 
+    const options = verifyAndApplyPreBaselinePatch({
+      ...input,
+      logicalRequestId: params.attribution.logicalRequestId,
+      sessionId: params.attribution.sessionId,
+      agentId: params.attribution.agentId,
+      modelId: this.model.id,
+      modelName: this.model.name,
+      protocol: this.model.protocol,
+      providerType: this.model.providerType,
+      thinkingEffort: baseOptions.thinking?.effort,
+      maxCompletionTokens: baseOptions.maxCompletionTokens,
+      sampling: baseOptions.sampling,
+      serviceTier: baseOptions.serviceTier,
+      headers: baseOptions.headers,
+    }, baseOptions, params.preBaselinePatch);
     const attribution = params.attribution;
     let attemptId: string | undefined;
     let result: GenerateResult;
@@ -230,6 +257,9 @@ export class ModelRequesterImpl implements ModelRequester {
             const responsesTransport = params.resolveResponsesTransport === undefined ? params.responsesTransport : selection?.transport;
             params.onRequestAttempt?.();
             requestStartedAt = Date.now();
+            const provider = this.resolveChatProvider();
+            const responsesBaselinePolicyKey = this.adapterBindingKey === undefined ? options.responsesBaselinePolicyKey :
+              JSON.stringify([this.adapterBindingKey, options.responsesBaselinePolicyKey]);
             return await generate(
               provider,
               input.systemPrompt,
@@ -241,7 +271,7 @@ export class ModelRequesterImpl implements ModelRequester {
                   queue.push({ type: 'part', part, responseInstanceId });
                 },
               },
-              { ...options, signal: requestSignal, auth, responsesTransport, responsesWebSocket: selection?.config },
+              { ...options, signal: requestSignal, auth, responsesTransport, responsesWebSocket: selection?.config, responsesBaselinePolicyKey },
             );
           } finally {
             permit?.release();

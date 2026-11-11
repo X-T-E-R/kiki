@@ -661,6 +661,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
 
     const builtParams = this._hooks?.buildParams?.(createParams);
     const finalParams = builtParams ?? createParams;
+    applyMissingProperties(finalParams, options?.deterministicVendorFields);
     if (this._hooks?.withRequestParams === undefined) {
       applyMissingProperties(finalParams, options?.requestParams);
     }
