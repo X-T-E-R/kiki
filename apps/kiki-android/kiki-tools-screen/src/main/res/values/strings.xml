@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="kiki_a11y_service_label">Kiki Screen Helper</string>
+    <string name="kiki_a11y_service_description">Optional screen inspection and gesture helper for Kiki sessions. Kiki works normally when this service is turned off.</string>
+</resources>

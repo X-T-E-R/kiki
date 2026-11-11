@@ -1,0 +1,1010 @@
+[
+  {
+    "name": "phone_observe",
+    "description": "Look at the phone's current screen (the virtual display). Returns the foreground app, all visible elements, and the full accessibility tree grouped by window, with parent-child relationships and control states. Use the tree to identify which item or dialog owns a control, then pass that control's ref and snapshotId to phone_tap. When the tree is missing much of the screen, treeQuality says so and visibleText adds on-device OCR text with tap centers (a screenshot too, if you can view images); if the target is still missing or ambiguous, request phone_screenshot or phone_find_visually.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_list_elements",
+    "description": "List what is on this screen as text, without a screenshot. Each element comes with a ref (@eN); to act on one, pass its ref together with the snapshotId of this list. Positions use the same 0-999 grid as phone_tap. When an action answers ref_expired, the screen has moved on: call phone_observe or phone_list_elements again and use the new refs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_screenshot",
+    "description": "Capture the current screen as an image. To give a screenshot to the user, set savePath to a new .png path under /workspace, then call share_file on the returned path. Saving does not overwrite an existing file. Models that cannot view images must set savePath; they can still capture and deliver the screenshot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "savePath": {
+          "type": "string",
+          "description": "Optional new PNG path under /workspace. Save the screenshot there, then use share_file to give it to the user."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_tap",
+    "description": "Tap an element with ref plus snapshotId (@eN from phone_observe/phone_list_elements, or @vN from phone_find_visually), or name the element in element (its text or accessible name exactly as listed, plus role if several share it) when you have no fresh ref, or tap normalized x/y coordinates from the latest screen. element is matched against the screen as it is now and must hit exactly one element, preferring ones that can be tapped. A full-name match is used first; failing that, a name that starts with it, then (for tappable elements only) one that contains it, and then the result shows resolvedFrom and matched so you can check it was the one you meant. If several match, the result lists them (ref, place, nearby text) to pick from; if none, observe first. For a coordinate tap, say in target what you are tapping. Do not repeat an unchanged coordinate tap. clicks=2 double-taps (for things that open or zoom only on a double tap). The result's effect says what the action did to the interface: done (a clear change), small_change (only focus, a toggle or one or two elements changed, or it may still be loading: check it), no_effect (nothing in the interface changed: try another way instead of repeating) or place_changed (now somewhere else, given in effect.to).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "Element ref such as @e3 from the latest read of this screen; must be paired with its snapshotId."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "snapshotId of the screen read that produced the ref. A mismatch returns ref_expired."
+        },
+        "x": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "y": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "target": {
+          "type": "string",
+          "description": "Short label of what is being tapped (coordinate taps)."
+        },
+        "element": {
+          "type": "string",
+          "description": "Instead of ref+snapshotId: the element's visible text or accessible name, as shown on the screen. It must match exactly one element on the screen right now."
+        },
+        "role": {
+          "type": "string",
+          "description": "Optional with element: the element's role as shown in the element list (e.g. button, link, textbox), to tell same-named elements apart."
+        },
+        "clicks": {
+          "type": "integer",
+          "description": "1 taps once (default), 2 double-taps.",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_scroll",
+    "description": "Scroll in the Android app. direction=down shows content further down (the finger moves up for a gesture); up shows content further up (the finger moves down). With the default amount and no x/y, Mika first asks the scrollable accessibility node to move and falls back to a gesture if no such node is available. Give another amount (1-20) or x/y when you need a specific gesture or scroll region. Repeating a scroll can be correct when it reveals new content. Stop at the end only when the page state confirms there is no new content; effect.kind no_effect with atEnd is one signal.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "type": "string",
+          "description": "Where the content you want to see is: down = further down the page, up = further up.",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "description": "How far, 1-20 (default 3).",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "x": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "y": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_swipe",
+    "description": "Swipe between two normalized 0-999 points. To scroll a page down, swipe upward (from a larger y to a smaller y). For ordinary scrolling use phone_scroll. For a carousel, use a short sideways swipe; a long sideways swipe on a list row may delete it, so inspect the result. The result's effect says what the action did to the interface: done (a clear change), small_change (only focus, a toggle or one or two elements changed, or it may still be loading: check it), no_effect (nothing in the interface changed: try another way instead of repeating) or place_changed (now somewhere else, given in effect.to).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startX": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "startY": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "endX": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "endY": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Gesture duration 50-5000 ms (default 400).",
+          "minimum": 50,
+          "maximum": 5000
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "startX",
+        "startY",
+        "endX",
+        "endY"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_type_text",
+    "description": "Type the whole text into the focused field in one call; tap the field first, pass ref+snapshotId to target it, or name the field in element (its label, accessible name or placeholder as listed; it must match exactly one input field on the screen now, otherwise the result says which ones match or asks you to observe; a partial match is reported as resolvedFrom and matched). pressEnter submits after the text was entered. The result's effect reads the field back: readback is what the field shows now (hidden for password fields) and readbackMatches whether it is the intended text; text that did not land is retried once automatically. effect.kind is done, small_change, no_effect or place_changed as for other actions. On a screen the element list cannot read (an app that draws its own screen), give the input box's point instead of a ref: x+y (a visibleText center) or the @vN ref from phone_find_visually. The point is tapped and the text pasted into the box there, keyboard showing or not, then checked against the screen text: verification match means it went in; point_not_typed means that point did not take the text, so find the box again instead of repeating it. Without a ref or point, the text goes into whichever box holds focus the same way; no_focus means give the box's point. Without its point, name the box in element in a few words (e.g. the message box at the bottom): when the element list cannot read this screen and has no matching field, the box is found by sight (with phone_find_visually's checks) and typed into at its point the same way; foundBySight and seen say what was used.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to enter, 1-10000 characters.",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "pressEnter": {
+          "type": "boolean",
+          "description": "Press Enter after typing (default false)."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Element ref such as @e3 from the latest read of this screen; must be paired with its snapshotId."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "snapshotId of the screen read that produced the ref. A mismatch returns ref_expired."
+        },
+        "element": {
+          "type": "string",
+          "description": "Instead of ref+snapshotId: the input field's label, accessible name or placeholder, as shown on the screen. It must match exactly one input field on the screen right now."
+        },
+        "role": {
+          "type": "string",
+          "description": "Optional with element: the element's role as shown in the element list (e.g. button, link, textbox), to tell same-named elements apart."
+        },
+        "x": {
+          "type": "integer",
+          "description": "Instead of a ref: the input box's point (e.g. a visibleText center), tapped before typing. Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "y": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_clear_text",
+    "description": "Clear the focused text field, or the one given by ref+snapshotId. The result's effect reads the field back (readback, readbackMatches) so you can see it is empty. On a screen the element list cannot read, give the box's point instead (x+y, or the @vN ref from phone_find_visually): it is tapped, then cleared with select-all and delete; point_not_typed means nothing changed there.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "Element ref such as @e3 from the latest read of this screen; must be paired with its snapshotId."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "snapshotId of the screen read that produced the ref. A mismatch returns ref_expired."
+        },
+        "x": {
+          "type": "integer",
+          "description": "Instead of a ref: the input box's point (e.g. a visibleText center), tapped before typing. Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "y": {
+          "type": "integer",
+          "description": "Normalized 0-999 (0,0 is top-left, 999,999 is bottom-right) over the latest screen.",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_back",
+    "description": "Press Back on the phone's virtual display. If nothing changes, use the app's visible back control instead of repeating. effect.kind is place_changed (the app in effect.to) when back left the app, no_effect when nothing changed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_press_key",
+    "description": "Press a navigation or editing key on the current screen. Allowed: KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT, KEYCODE_DPAD_CENTER, KEYCODE_ENTER, KEYCODE_NUMPAD_ENTER, KEYCODE_DEL, KEYCODE_FORWARD_DEL, KEYCODE_TAB, KEYCODE_SPACE, KEYCODE_ESCAPE, KEYCODE_PAGE_UP, KEYCODE_PAGE_DOWN, KEYCODE_MOVE_HOME, KEYCODE_MOVE_END, KEYCODE_BACK, KEYCODE_MENU (by name or numeric keycode). Volume, power, home, recents, search, assistant, camera and media keys are rejected. The result's effect says what the action did to the interface: done (a clear change), small_change (only focus, a toggle or one or two elements changed, or it may still be loading: check it), no_effect (nothing in the interface changed: try another way instead of repeating) or place_changed (now somewhere else, given in effect.to).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "One of the allowed KEYCODE_* names, or its numeric keycode string."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_diagnose",
+    "description": "Find out why this screen is unusable: blank, still loading, locked or protected. Look at usable, state and hint in the result. When needsHuman is true, hand the step to the user instead of tapping around.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_query",
+    "description": "Find controls in the current Android accessibility tree by text, resource ID, or role. Returns matching nodes with their parent labels, bounds, and usable refs. You may combine filters; with no filter it lists the first nodes up to limit. This reads text only and does not capture a screenshot. Use the returned snapshotId together with a ref for a later action. If the tree lacks enough information, request a screenshot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Case-insensitive text or accessibility description to find."
+        },
+        "resourceId": {
+          "type": "string",
+          "description": "Full or partial Android resource ID to find."
+        },
+        "role": {
+          "type": "string",
+          "description": "Full or partial accessibility class or role to find."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum results, default 30.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_find",
+    "description": "Scroll the current phone app until text, a resource ID, or a role is found in its accessibility tree. Check each resulting screen, stop if the app changes or content stops moving, and return the current ref and parent context. Use for a target further up or down a long list. maxScrolls is a limit, not a fixed action plan.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text or accessibility description to find."
+        },
+        "resourceId": {
+          "type": "string",
+          "description": "Full or partial Android resource ID."
+        },
+        "role": {
+          "type": "string",
+          "description": "Full or partial role or class."
+        },
+        "direction": {
+          "type": "string",
+          "description": "Where the target is: up or down.",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "maxScrolls": {
+          "type": "integer",
+          "description": "Maximum scrolls before returning, 1-200 (default 30).",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_extract",
+    "description": "Extract visible accessibility data without a screenshot: text nodes, list rows grouped by their scrollable parent, or editable form fields with labels and parent context. Secret field values are omitted. This reads one screen; use phone_collect for content across screens.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "description": "text, list, or form.",
+          "enum": [
+            "text",
+            "list",
+            "form"
+          ]
+        },
+        "maxItems": {
+          "type": "integer",
+          "description": "Maximum records, 1-200 (default 100).",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_collect",
+    "description": "Read text across successive screens in the current Android app, scrolling locally between reads. Use for chat history, feeds, lists, and other long content. Choose the direction toward content you need. The tool merges overlapping lines and stops when no new text appears twice, the app changes, an action fails, or a resource limit is reached. Set fromY and toY to exclude fixed headers or bottom navigation when needed. Inspect the collected text and continue with another call if stopped by a limit. Each scroll is recorded as its own action. The app screen moves while collecting.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "type": "string",
+          "description": "Direction of newer content: up or down.",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "pages": {
+          "type": "integer",
+          "description": "Maximum screens to inspect, 1-30 (default 10).",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "maxItems": {
+          "type": "integer",
+          "description": "Maximum lines to return, 1-1000 (default 300).",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "fromY": {
+          "type": "integer",
+          "description": "Top of the content area, normalized 0-999 (default 50).",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "toY": {
+          "type": "integer",
+          "description": "Bottom of the content area, normalized 0-999 (default 950).",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_wait",
+    "description": "Wait for text to appear or disappear, an activity class to open, or the phone screen to become stable. The Android port wakes on accessibility events. Use this after an action that starts loading instead of repeatedly observing at a fixed interval.\n\nPrefer appear/disappear/activity conditions for the result you actually need. A stability timeout does not prove the screen is unusable: animation, video and timers may never stop. After a bounded wait, observe and continue if the intended target is identifiable; do not loop on stable waits for decorative motion.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "description": "appear, disappear, activity, or stable.",
+          "enum": [
+            "appear",
+            "disappear",
+            "activity",
+            "stable"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "description": "Text for appear/disappear; activity class name for activity."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "Maximum wait in milliseconds, 0-30000 (default 10000).",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "condition"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_event",
+    "description": "Wait for accessibility window/content events on this task's virtual display, or for device notifications from an optional package. once returns the next event; watch collects multiple events during the timeout without gaps between subscriptions. Returns each event's package and short text. The listener exists only during this call; it does not return past events.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "window, content, notification, or any.",
+          "enum": [
+            "window",
+            "content",
+            "notification",
+            "any"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "description": "once returns the next event; watch collects events during the timeout.",
+          "enum": [
+            "once",
+            "watch"
+          ]
+        },
+        "packageName": {
+          "type": "string",
+          "description": "Optional package name filter."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "Maximum wait in milliseconds, 1-30000 (default 10000).",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "maxEvents": {
+          "type": "integer",
+          "description": "Maximum events in watch mode, 1-100 (default 30).",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_dialog",
+    "description": "Inspect the top dialog's text and visible buttons. Leave buttonText empty to inspect. Give an exact button label to click it through the normal phone action path. If no dialog or a nonunique button is found, no click occurs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "buttonText": {
+          "type": "string",
+          "description": "Optional exact visible button label to dismiss the dialog."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_gesture",
+    "description": "Draw a one-finger path or two simultaneous paths on the task's virtual display. Each path is a sequence of normalized [x,y] points (0-999); two paths can pinch or spread. Prefer accessibility refs or ordinary scroll/swipe when they can express the action.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "description": "One or two simultaneous finger paths. Each path is 2-32 [x,y] points in normalized 0-999 coordinates.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 32,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999
+              }
+            }
+          }
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Gesture duration, 50-5000 ms (default 500).",
+          "minimum": 50,
+          "maximum": 5000
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_set_wheel",
+    "description": "Turn a wheel picker (the drums of a time, date, number or region picker; marked wheel:true in the tree when recognised) to a value in one call: pass the wheel's ref (or the ref of the item it shows now) and the value as written on it, e.g. 9, 40, 2026 or a name. The tool types the value when the wheel accepts text, otherwise steps or drags it there and reads it back itself, so do not swipe a wheel step by step. Call it once per wheel (hour, then minute); refs of the other wheels stay valid. The result gives value (what the wheel shows now), from, attempts and method. If ok is false, value is what it shows now: observe once and decide; an at-end error means the value is not on this wheel. A not-moving error means dragging the wheel had no effect: turn it yourself with phone_swipe on that wheel's column, a few items at a time, and read it back.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "Element ref such as @e3 from the latest read of this screen; must be paired with its snapshotId. The wheel itself, or the item it currently shows."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "snapshotId of the screen read that produced the ref. A mismatch returns ref_expired."
+        },
+        "value": {
+          "type": "string",
+          "description": "The value the wheel should show, as written on it, e.g. 9, 40, 2026, PM, Beijing."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "ref",
+        "snapshotId",
+        "value"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_list_apps",
+    "description": "List apps installed for the current user as package + label. Use an exact returned package with phone_launch_app. blocked and screenShareAllowed are present only when true; omission means false. An app also installed in another user or profile (such as an app clone or a work profile) gets one more entry per copy, with the same package, a label naming the copy, and user: pass that user to phone_launch_app to open that copy.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_launch_app",
+    "description": "Open an installed app on the phone's virtual display by exact package name, and wait until it is in the foreground. To open another copy of the app (a clone or work-profile copy), also pass user from that copy's phone_list_apps entry; leave it out for the main app. Set cold=true to restart it from its initial screen. If the app does not reach the foreground, it returns ok:false with what is there instead; if it is in the foreground but its window cannot be read, the result says so: do not launch it again. If the system asks which one to open (an app installed twice, as main and clone), it returns ok:true with chooser: tap the option the user meant, otherwise the main one, and do not launch again. If another task is using the app, it returns app_in_use_by_other_task; to wait for it instead of doing something else, call again with wait (seconds): it opens the app as soon as the other task lets go.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "Exact package name, e.g. com.example.app."
+        },
+        "cold": {
+          "type": "boolean",
+          "description": "Restart the app first (default false)."
+        },
+        "user": {
+          "type": "integer",
+          "description": "Only to open another copy of the app (a clone or work-profile copy): the user value of that copy's phone_list_apps entry. Leave out for the main app.",
+          "minimum": 0,
+          "maximum": 99999
+        },
+        "wait": {
+          "type": "integer",
+          "description": "Only when another task is using this app: seconds to wait for it to be free, then open it (at most 180). Leave out to get the in-use result at once.",
+          "minimum": 1,
+          "maximum": 180
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "package"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_app_after_task",
+    "description": "Choose what happens to an app on your display when this task ends. By default every app you opened stays open in the background on the phone, on the page where you left it (the user finds it in recent apps, and the next task continues from there), except an app that is playing sound or video at that moment, which is closed. Mark keep when the user wants the app to keep running after you are done (keep playing the music or the video), even while it plays. Mark close when the user asks you to close it, or when leaving it open makes no sense (a one-time sign-in or a page you opened only to check something). It only marks the app; nothing changes now. Marking the same app again replaces the earlier mark.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "Exact package name of the app, e.g. com.example.app."
+        },
+        "action": {
+          "type": "string",
+          "description": "keep: leave it running in the background after the task (even if it is playing sound). close: close it when the task ends.",
+          "enum": [
+            "keep",
+            "close"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why, in a few words (e.g. the user wants the music to keep playing; a one-time sign-in)."
+        },
+        "user": {
+          "type": "integer",
+          "description": "Only for another copy of the app (a clone or work-profile copy): the user value of that copy's phone_list_apps entry. Leave out for the main app.",
+          "minimum": 0,
+          "maximum": 99999
+        }
+      },
+      "required": [
+        "package",
+        "action",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_share_text",
+    "description": "Share a piece of text to an installed app by exact package name: opens that app's share screen on the phone's virtual display with the text filled in (an Android text share). Use it to send or post text into an app (a message to a contact, a note), especially when the app's screen cannot be read or typed into. It does not send anything: on the share screen, pick the recipient or destination and tap its send or confirm button yourself, then check the result. If the app cannot receive shared text, it returns cannot_share: open the app and type instead. If the system asks which one to use (an app installed twice, or several share targets), it returns ok:true with that question on screen: pick the option the task needs, and do not share again.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "Exact package name of the app to share the text to, e.g. com.example.app."
+        },
+        "text": {
+          "type": "string",
+          "description": "The text to share, 1-10000 characters.",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional: why you share it, e.g. the message the user asked to send to a contact."
+        }
+      },
+      "required": [
+        "package",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_open_link",
+    "description": "Open a page directly on the virtual display instead of tapping through the app. Give action for an Android settings page (one of: android.settings.SETTINGS, android.settings.WIFI_SETTINGS, android.settings.BLUETOOTH_SETTINGS, android.settings.DISPLAY_SETTINGS, android.settings.SOUND_SETTINGS, android.settings.BATTERY_SAVER_SETTINGS, android.settings.APPLICATION_DETAILS_SETTINGS, android.settings.APPLICATION_SETTINGS, android.settings.DATE_SETTINGS, android.settings.LOCALE_SETTINGS, android.settings.DEVICE_INFO_SETTINGS, android.settings.LOCATION_SOURCE_SETTINGS, android.settings.INTERNAL_STORAGE_SETTINGS, android.settings.ACCESSIBILITY_SETTINGS; android.settings.APPLICATION_DETAILS_SETTINGS also needs uri package:<package name>), or uri for a link listed in the reference notes (a web link also needs package, the app that should open it). File, content, intent and javascript links are unsupported; phone, SMS and mail links can open their apps when listed in the reference notes. If it returns link_unresolved, use phone_launch_app and navigate instead. Actions on the opened page are checked as usual.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "description": "The link to open, e.g. a link from the reference notes, or package:<name> for app details."
+        },
+        "action": {
+          "type": "string",
+          "description": "An Android settings action from the list above."
+        },
+        "package": {
+          "type": "string",
+          "description": "Exact package name of the app that should open the link; required for http(s) links."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_set_alarm",
+    "description": "Set an alarm in the phone's clock app through the standard Android alarm action, without opening its screens: one call per alarm (for several alarms, call it once for each time). The time is the 24-hour local hour and minute; days makes it repeat on those weekdays. The result says which app took it (handledBy) and check: verified means the system now reports this as the next alarm, so it is set; earlier_alarm_first means an earlier alarm comes first, so this one cannot be seen from here; not_seen or unknown means it could not be confirmed. Only when the user needs certainty and check is not verified, call phone_show_alarms once and observe the list. If it returns not_supported, set the alarm in the clock app's own screens instead. This is a phone alarm; schedule_task is for Mika's own scheduled tasks and reminders.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "hour": {
+          "type": "integer",
+          "description": "Hour of day, 0-23 (24-hour clock).",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "minute": {
+          "type": "integer",
+          "description": "Minute, 0-59.",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional label shown with the alarm."
+        },
+        "days": {
+          "type": "array",
+          "description": "Optional repeat days: MON, TUE, WED, THU, FRI, SAT, SUN. Omit for a one-time alarm.",
+          "maxItems": 7,
+          "items": {
+            "type": "string"
+          }
+        },
+        "vibrate": {
+          "type": "boolean",
+          "description": "Optional: vibrate when it rings."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "hour",
+        "minute"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_set_timer",
+    "description": "Start a countdown timer in the phone's clock app through the standard Android timer action, without opening its screens. Give the length in seconds (10 minutes = 600). The result says which app took it (handledBy). If it returns not_supported, start the timer in the clock app's own screens instead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "description": "Length of the timer in seconds, 1-86400.",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional label shown with the timer."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "seconds"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_show_alarms",
+    "description": "Open the clock app's alarm list on the phone's virtual display through the standard Android action. Use it to check alarms you set, or to change, switch off or delete an alarm: do that on the list with the screen tools. If it returns not_supported, open the clock app with phone_launch_app instead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_add_calendar_event",
+    "description": "Open the calendar app's new-event screen on the phone's virtual display with the title, time, place and notes filled in (the standard Android insert-event action; no calendar permission is used). Nothing is saved yet: observe the screen, check the fields, and tap its save button yourself, then check the result. Use this for a single event, or as the no-calendar-permission fallback when phone_calendar_bulk_insert cannot write directly; for 3 or more events prefer phone_calendar_bulk_insert. start and end are local times like 2026-11-02T14:30; for an all-day event give the date like 2026-11-02 with allDay=true. If it returns not_supported, open the calendar app with phone_launch_app and add the event there.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Event title."
+        },
+        "start": {
+          "type": "string",
+          "description": "Start as local date-time yyyy-MM-ddTHH:mm (e.g. 2026-11-02T14:30), or a date yyyy-MM-dd with allDay=true."
+        },
+        "end": {
+          "type": "string",
+          "description": "Optional end, same format as start. Defaults to one hour after start (one day for all-day events)."
+        },
+        "allDay": {
+          "type": "boolean",
+          "description": "All-day event (default false)."
+        },
+        "location": {
+          "type": "string",
+          "description": "Optional location."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional notes."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "title",
+        "start"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "phone_calendar_bulk_insert",
+    "description": "Insert 1-100 events into a visible writable Android calendar in one provider batch, without opening a calendar screen. Prefer this over repeated phone_add_calendar_event calls for 3 or more events. Every item has the same fields as phone_add_calendar_event: title and start are required; end, allDay, location and description are optional. start and end are local date-times like 2026-11-02T14:30; for an all-day event give dates like 2026-11-02 with allDay=true. All items are validated before any write. Success means the provider returned one valid event id per item.\n\nIf calendar_permission_required is returned, nothing was written: use phone_add_calendar_event and save through the calendar UI, or ask the user to grant calendar access in Android settings. If no_writable_calendar is returned, use the calendar UI or ask the user to enable a writable calendar. If calendar_write_unconfirmed is returned, some events may already exist: do not retry the batch or insert them through another path until the calendar has been checked for duplicates.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "description": "Events to insert, 1-100 items. All items are validated before anything is written.",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Event title."
+              },
+              "start": {
+                "type": "string",
+                "description": "Start as local date-time yyyy-MM-ddTHH:mm (e.g. 2026-11-02T14:30), or a date yyyy-MM-dd with allDay=true."
+              },
+              "end": {
+                "type": "string",
+                "description": "Optional end, same format as start. Defaults to one hour after start (one day for all-day events)."
+              },
+              "allDay": {
+                "type": "boolean",
+                "description": "All-day event (default false)."
+              },
+              "location": {
+                "type": "string",
+                "description": "Optional location."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional notes."
+              }
+            },
+            "required": [
+              "title",
+              "start"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short note on why you are calling this, in the user's language; shown to the user as the step label."
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

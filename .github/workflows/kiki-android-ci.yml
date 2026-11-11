@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/kiki-android-ci.yml'
+      - 'apps/kiki-android/**'
       - '.github/workflows/kiki-android-signing-check.yml'
       - '.github/workflows/kiki-desktop-release.yml'
       - 'apps/kiki-gui/mobile/**'
@@ -16,6 +17,7 @@ on:
     branches: ['**']
     paths:
       - '.github/workflows/kiki-android-ci.yml'
+      - 'apps/kiki-android/**'
       - '.github/workflows/kiki-android-signing-check.yml'
       - '.github/workflows/kiki-desktop-release.yml'
       - 'apps/kiki-gui/mobile/**'
@@ -34,8 +36,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changed paths
+    runs-on: ubuntu-24.04
+    outputs:
+      mobile: ${{ steps.filter.outputs.mobile }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mobile=false
+          android=false
+
+          classify_paths() {
+            while IFS= read -r path; do
+              case "$path" in
+                '.github/workflows/kiki-android-ci.yml'|'.github/workflows/kiki-android-signing-check.yml'|'.github/workflows/kiki-desktop-release.yml'|'apps/kiki-gui/mobile/'*|'apps/kiki-gui/package.json'|'apps/kiki-gui/scripts/desktop-version.mjs'|'apps/kiki-gui/scripts/verify-updater-signature.mjs'|'apps/kimi-code/scripts/native/'*|'.nvmrc')
+                  mobile=true
+                  ;;
+              esac
+              case "$path" in
+                '.github/workflows/kiki-android-ci.yml'|'apps/kiki-android/'*|'.nvmrc')
+                  android=true
+                  ;;
+              esac
+            done
+          }
+
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            mobile=true
+            android=true
+          else
+            if [[ "$BASE_SHA" == '0000000000000000000000000000000000000000' ]]; then
+              git ls-tree -r --name-only "$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+            else
+              git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+            fi
+            classify_paths < "$RUNNER_TEMP/changed-paths"
+          fi
+
+          {
+            echo "mobile=$mobile"
+            echo "android=$android"
+          } >> "$GITHUB_OUTPUT"
+
   debug-apk:
     name: Build installable debug APK
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -83,3 +140,29 @@ jobs:
           path: ${{ runner.temp }}/kiki-android-debug/
           if-no-files-found: error
           retention-days: 14
+
+  android-unit-tests:
+    name: Run Gradle debug unit tests
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            apps/kiki-android/**/*.gradle*
+            apps/kiki-android/gradle/libs.versions.toml
+            apps/kiki-android/gradle/wrapper/gradle-wrapper.properties
+      - name: Install Android SDK API 36
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
+      - name: Test Android Gradle modules
+        working-directory: apps/kiki-android
+        run: ./gradlew testDebugUnitTest

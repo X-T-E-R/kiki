@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path
+        name="kiki_workspace"
+        path="kiki/workspace/" />
+    <files-path
+        name="kiki_inbox"
+        path="kiki/inbox/" />
+</paths>

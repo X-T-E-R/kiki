@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Left vertical stem of 'K' -->
+    <path
+        android:fillColor="#1B1A17"
+        android:pathData="M34,31h9.5v46h-9.5z" />
+    <!-- Upper-right diagonal arm + lower-right diagonal leg -->
+    <path
+        android:fillColor="#1B1A17"
+        android:pathData="M62.5,31h11.5L53.5,53.5L75,77H63L44.5,56.5L44.5,51.5Z" />
+    <!-- Vermilion focal dot -->
+    <path
+        android:fillColor="#C8401A"
+        android:pathData="M73,35m-4.2,0a4.2,4.2 0,1 1,8.4 0a4.2,4.2 0,1 1,-8.4 0" />
+</vector>

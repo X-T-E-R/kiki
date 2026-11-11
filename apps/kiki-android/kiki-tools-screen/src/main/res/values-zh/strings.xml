@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="kiki_a11y_service_label">Kiki 屏幕辅助</string>
+    <string name="kiki_a11y_service_description">可选的跨应用读屏与手势辅助能力；未开启时 Kiki 对话与本机工具照常工作。</string>
+</resources>

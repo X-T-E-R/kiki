@@ -7,6 +7,25 @@ dist-single/
 dist-native/
 dist-android/
 dist-npm/
+
+# Android Gradle and native build output
+/apps/kiki-android/.gradle/
+/apps/kiki-android/**/.gradle/
+/apps/kiki-android/build/
+/apps/kiki-android/**/build/
+/apps/kiki-android/local.properties
+/apps/kiki-android/.externalNativeBuild/
+/apps/kiki-android/**/.externalNativeBuild/
+/apps/kiki-android/.cxx/
+/apps/kiki-android/**/.cxx/
+/apps/kiki-android/**/*.apk
+/apps/kiki-android/**/*.aab
+/apps/kiki-android/**/*.aar
+/apps/kiki-android/**/*.ap_
+/apps/kiki-android/**/*.dex
+/apps/kiki-android/**/*.so
+/apps/kiki-android/**/*.tar.xz
+
 .tmp-api-extractor/
 .contract-types-tmp/
 .local/
