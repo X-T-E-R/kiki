@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'pathe';
+import type { CordisPluginContext } from '@kiki/cordis-runtime';
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
+import { CordisRuntimeService } from '#/app/cordisRuntime/cordisRuntimeService';
 import { Error2, ErrorCodes } from '#/errors';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -10,6 +12,7 @@ import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { IWireService } from '#/wire/wire';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
+import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { overrideScopedService, ScopeActivation, type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
@@ -1033,33 +1036,72 @@ describe('AgentLifecycleService', () => {
     expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
   });
 
-  it('drains accepted cross-agent writes before the final flush and transcript seal', async () => {
+  it('fires removal synchronously and drains Cordis before the final flush and transcript seal', async () => {
     const svc = ix.get(IAgentLifecycleService);
+    const metadata = ix.get(ISessionMetadata);
+    const cordis = disposables.add(ix.createInstance(CordisRuntimeService));
+    let disposeCordisSession: (() => void | Promise<void>) | undefined;
+    const sessionEvent = {
+      sessionId: 'sess_test',
+      readSeed<T>(id: ServiceIdentifier<T>) { return ix.get(id); },
+      contributeSeed<T>(id: ServiceIdentifier<T>, value: T) { ix.set(id, value); },
+      onSessionDispose: (dispose: () => void | Promise<void>) => { disposeCordisSession = dispose; },
+      onSessionDrain: (_revoke: () => void, dispose: () => void | Promise<void>) => { disposeCordisSession = dispose; },
+    } satisfies Parameters<typeof cordis.attachSession>[0];
+    cordis.attachSession(sessionEvent);
+    disposables.add({ dispose: () => disposeCordisSession?.() });
+    disposables.add(cordis.attachAgentLifecycle('sess_test', svc));
     const handle = await svc.create({ agentId: 'main' });
+    const events: string[] = [];
     let release!: () => void;
     let started!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
     const entered = new Promise<void>((resolve) => { started = resolve; });
-    const flush = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush');
+    let sessionMetadataAlive = false;
+    const mounted = cordis.mountInProcessPlugin({
+      pluginId: 'cordis-agent-cleanup',
+      declaredSlots: [],
+      scope: { sessionId: 'sess_test', agentId: 'main' },
+      plugin: (context: CordisPluginContext) => {
+        context.effect(() => async () => {
+          sessionMetadataAlive = ix.get(ISessionMetadata) === metadata;
+          await metadata.read();
+          events.push('cordis cleanup start');
+          started();
+          await pending;
+          events.push('cordis cleanup end');
+        });
+      },
+    });
+    await mounted.ready;
+    const flush = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush').mockImplementation(async () => { events.push('flush'); });
     const wire = handle.accessor.get(IWireService);
-    const seal = vi.fn(async () => {});
+    const seal = vi.fn(async () => { events.push('seal'); });
     wire.sealTranscriptEpoch = seal;
-    disposables.add(svc.onWillSealTranscript!((event) => {
-      expect(event.handle).toBe(handle);
-      event.waitUntil(pending);
-      started();
-    }));
+    const agentGate = cordis.admissionGateForAgent('sess_test', 'main');
+    const onWillRemove = vi.fn((agentId: string) => {
+      events.push('will-remove');
+      expect(agentId).toBe('main');
+      expect(agentGate?.revoked).toBe(true);
+    });
+    disposables.add(svc.onWillRemove!(onWillRemove));
     const removal = svc.remove('main');
     try {
+      expect(onWillRemove).toHaveBeenCalledOnce();
+      expect(promptDrain).not.toHaveBeenCalled();
+      expect(agentGate?.revoked).toBe(true);
       await entered;
+      expect(sessionMetadataAlive).toBe(true);
       expect(flush).not.toHaveBeenCalled();
       expect(seal).not.toHaveBeenCalled();
+      expect(events).toEqual(['will-remove', 'cordis cleanup start']);
     } finally {
       release();
       await removal;
     }
     expect(flush).toHaveBeenCalledOnce();
     expect(seal).toHaveBeenCalledOnce();
+    expect(events).toEqual(['will-remove', 'cordis cleanup start', 'cordis cleanup end', 'flush', 'seal']);
   });
 
   it('publishes a settled cleanup receipt after the agent owner closes its scope', async () => {

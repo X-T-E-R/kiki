@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
+import { CordisRuntimeService } from '#/app/cordisRuntime/cordisRuntimeService';
 import { noopTelemetryService } from '#/app/telemetry/telemetry';
+import type { CordisPluginContext } from '@kiki/cordis-runtime';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IWireService } from '#/wire/wire';
@@ -526,6 +528,207 @@ describe('SessionLifecycleService factory ownership', () => {
       }
     },
   );
+
+  it.each(['close', 'unload'] as const)('drains session Cordis after final lifecycle checks during %s', async (operation) => {
+    const events: string[] = [];
+    const sessionServiceAlive = { value: false };
+    let sessionServiceAliveDuringCleanup = false;
+    let releaseCleanup!: () => void;
+    let markCleanupStarted!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const cleanupStarted = new Promise<void>((resolve) => { markCleanupStarted = resolve; });
+    class SessionLifetime extends Service {
+      constructor() {
+        super();
+        sessionServiceAlive.value = true;
+        this.effect(() => () => {
+          sessionServiceAlive.value = false;
+          events.push('session service disposed');
+        });
+      }
+    }
+    class Pack extends Service {
+      constructor() {
+        super();
+        this.provide(ScopeUnits('session'), SessionLifetime);
+      }
+    }
+    const parent = new InstantiationService();
+    const packId = createDecorator<Pack>('session-cordis-drain-pack');
+    parent.provide(packId, new SyncDescriptor(Pack));
+    parent.invokeFunction((accessor) => accessor.get(packId));
+    const cordisOwner = new TestInstantiationService();
+    const cordis = cordisOwner.createInstance(CordisRuntimeService);
+    let pluginReady: Promise<void> | undefined;
+    const fx = fixture(undefined, undefined, {
+      instantiation: parent,
+      acquireLock: async () => ({ release: async () => { events.push('session lock released'); } }),
+      acquireWorkspaceReference: () => ({ dispose: () => { events.push('workspace reference released'); } }),
+    });
+    const sessionMetadata: ISessionMetadata = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
+      read: async () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false }),
+      drain: async () => { events.push('session metadata drained'); },
+      snapshot: () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false }),
+      getAgentExecutor: async () => undefined,
+      usage: () => undefined,
+      recordUsage: () => {},
+      update: async () => {},
+      setTitle: async () => {},
+      setGeneratedTitleIfUncustomized: async () => false,
+      setArchived: async () => {},
+      registerAgent: async () => {},
+      updateAgent: async () => {},
+    };
+    const sessionActivity: ISessionActivityView = {
+      _serviceBrand: undefined,
+      state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }),
+      onDidChange: Event.None as ISessionActivityView['onDidChange'],
+    };
+    let terminalChecks = 0;
+    const sessionTerminals: ISessionTerminalService = {
+      _serviceBrand: undefined,
+      create: async () => { throw new Error('unexpected terminal creation'); },
+      list: async () => [],
+      countLiveTerminals: () => {
+        terminalChecks += 1;
+        if (operation === 'unload') events.push('terminal blocker check');
+        return 0;
+      },
+      get: async () => { throw new Error('unexpected terminal lookup'); },
+      attach: async () => { throw new Error('unexpected terminal attach'); },
+      detach: () => {},
+      detachAllForSink: () => {},
+      write: async () => {},
+      resize: async () => {},
+      close: async () => ({ closed: true }),
+    };
+    const sessionAgents: IAgentLifecycleService = {
+      _serviceBrand: undefined,
+      onWillCreate: Event.None as IAgentLifecycleService['onWillCreate'],
+      onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
+      onDidDispose: Event.None as IAgentLifecycleService['onDidDispose'],
+      onWillRemove: Event.None as NonNullable<IAgentLifecycleService['onWillRemove']>,
+      onDidCleanup: Event.None as NonNullable<IAgentLifecycleService['onDidCleanup']>,
+      onWillSealTranscript: Event.None as NonNullable<IAgentLifecycleService['onWillSealTranscript']>,
+      create: async () => { throw new Error('unexpected agent creation'); },
+      commitCreate: () => {},
+      discard: async () => {},
+      fork: async () => { throw new Error('unexpected agent fork'); },
+      get: () => undefined,
+      list: () => [],
+      broadcastPermissionMode: () => {},
+      countPendingBackgroundTasks: () => 0,
+      drainBackgroundTasks: async () => {},
+      remove: async () => {},
+    };
+    const createChild = parent.createChild.bind(parent);
+    const childSpy = vi.spyOn(parent, 'createChild').mockImplementation((collection, store) => {
+      for (const entry of getScopedServiceDescriptors('session')) {
+        if (collection.get(entry.id) !== undefined) continue;
+        collection.set(entry.id, {
+          ready: Promise.resolve(),
+          usage: () => undefined,
+          drain: async () => {},
+          update: async () => {},
+          read: async () => ({ agents: {} }),
+          list: () => [],
+          countPendingBackgroundTasks: () => 0,
+          countLiveTerminals: () => 0,
+          state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }),
+          onDidChange: Event.None,
+        });
+      }
+      collection.set(ISessionMetadata, sessionMetadata);
+      collection.set(ISessionActivityView, sessionActivity);
+      collection.set(ISessionTerminalService, sessionTerminals);
+      collection.set(IAgentLifecycleService, sessionAgents);
+      return createChild(collection, store);
+    });
+    const willCreate = fx.service.onWillCreateSession((event) => {
+      cordis.attachSession(event);
+      pluginReady = cordis.mountInProcessPlugin({
+        pluginId: 'session-cordis-cleanup',
+        declaredSlots: [],
+        scope: { sessionId: event.sessionId },
+        plugin: (context: CordisPluginContext) => {
+          context.effect(() => async () => {
+            sessionServiceAliveDuringCleanup = sessionServiceAlive.value;
+            events.push('cordis session cleanup start');
+            markCleanupStarted();
+            await cleanupGate;
+            events.push('cordis session cleanup end');
+          });
+        },
+      }).ready;
+    });
+    let handle: ISessionScopeHandle | undefined;
+    let closing: Promise<void | boolean> | undefined;
+    const canCommit = vi.fn(() => {
+      events.push('canCommit');
+      expect(cordis.admissionGateForSession('session-1')?.revoked).toBe(false);
+      return true;
+    });
+    try {
+      handle = await (fx.service as unknown as {
+        materializeSession(opts: { sessionId: string; workDir: string; rollbackOnMaterializationFailure: boolean }): Promise<ISessionScopeHandle>;
+      }).materializeSession({ sessionId: 'session-1', workDir: '/workspace', rollbackOnMaterializationFailure: false });
+      if (pluginReady === undefined) throw new Error('Session Cordis plugin was not mounted');
+      await pluginReady;
+      const gate = cordis.admissionGateForSession('session-1');
+      expect(gate?.revoked).toBe(false);
+      const dispose = vi.spyOn(handle, 'dispose');
+      closing = operation === 'close'
+        ? fx.service.close('session-1')
+        : fx.service.unload('session-1', canCommit);
+      expect(gate?.revoked).toBe(operation === 'close');
+      await cleanupStarted;
+      expect(sessionServiceAliveDuringCleanup).toBe(true);
+      expect(sessionServiceAlive.value).toBe(true);
+      expect(fx.service.get('session-1')).toBe(handle);
+      expect(dispose).not.toHaveBeenCalled();
+      expect(gate?.revoked).toBe(true);
+      if (operation === 'close') {
+        expect(events).not.toContain('session metadata drained');
+        expect(fx.cleanupStages.at(-1)?.stage).toBe('scope_producers');
+        expect(events).toEqual(['cordis session cleanup start']);
+      } else {
+        expect(canCommit).toHaveBeenCalledOnce();
+        expect(terminalChecks).toBe(2);
+        expect(events.indexOf('canCommit')).toBeLessThan(events.indexOf('cordis session cleanup start'));
+        expect(events.lastIndexOf('terminal blocker check')).toBeLessThan(events.indexOf('cordis session cleanup start'));
+      }
+
+      releaseCleanup();
+      await closing;
+
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(events.indexOf('cordis session cleanup end')).toBeLessThan(events.lastIndexOf('session metadata drained'));
+      expect(events.lastIndexOf('session metadata drained')).toBeLessThan(events.indexOf('session service disposed'));
+      expect(events.indexOf('session service disposed')).toBeLessThan(events.indexOf('session lock released'));
+      expect(sessionServiceAlive.value).toBe(false);
+      expect(cordis.sessionScopeKey('session-1')).toBeUndefined();
+      expect(await closing).toBe(operation === 'close' ? undefined : true);
+      if (operation === 'close') {
+        expect(fx.cleanupStages.map((stage) => stage.stage)).toEqual([
+          'will_close', 'replay_checkpoints', 'checkpoint_scheduling', 'usage_snapshot', 'agents',
+          'scope_producers', 'usage_persistence', 'append_retirements', 'metadata_writes',
+          'session_scope', 'log_closes', 'session_lock',
+        ]);
+      }
+    } finally {
+      releaseCleanup();
+      await closing?.catch(() => undefined);
+      willCreate.dispose();
+      await cordis.dispose();
+      await cordisOwner.dispose();
+      childSpy.mockRestore();
+      await fx.service.dispose();
+      await parent.dispose();
+    }
+  });
 });
 
 describe('SessionLifecycleService unload', () => {
@@ -674,7 +877,7 @@ describe('SessionLifecycleService unload', () => {
       expect(fx.cleanupStages.every((stage) => stage.operationId === operationId && stage.sessionId === 'session-1')).toBe(true);
       expect(fx.cleanupStages.map((entry) => entry.stage)).toEqual([
         'will_close', 'replay_checkpoints', 'checkpoint_scheduling', 'usage_snapshot',
-        'agents', 'usage_persistence', 'append_retirements', 'metadata_writes',
+        'agents', 'scope_producers', 'usage_persistence', 'append_retirements', 'metadata_writes',
         'session_scope', 'log_closes', 'session_lock',
       ]);
       expect(receipts).toContainEqual(expect.objectContaining({ operationId, callerOutcome: 'resolved', resourcesAfter: 0 }));

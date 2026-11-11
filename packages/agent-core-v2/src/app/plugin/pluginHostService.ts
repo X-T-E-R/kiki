@@ -20,6 +20,8 @@ import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
+import { ICordisRuntimeService, IPluginIsolationPoolService, type IsolatedPluginInvocation, type IsolatedPluginResult } from '#/app/cordisRuntime/cordisRuntime';
+import type { ExtensionSlotId } from './extensionSlots';
 import { pluginAppLifecycleFlag } from './flag';
 import { REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -128,6 +130,7 @@ export interface IPluginHostService {
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined;
   attachOutboundIm(bridge: PluginImBridge | undefined): void;
   attachImAdapters(sink: PluginImAdapterSink): Promise<void>;
+  invokeSlot?<TPayload, TResult>(invocation: Omit<IsolatedPluginInvocation<TPayload>, 'generation'>): Promise<IsolatedPluginResult<TResult>>;
 }
 
 export const IPluginHostService = createDecorator<IPluginHostService>('pluginHostService');
@@ -136,6 +139,8 @@ export class PluginHostService extends Service implements IPluginHostService {
   declare readonly _serviceBrand: undefined;
   private readonly hosts = new Map<string, PluginHost>();
   private readonly hostSignatures = new Map<string, string>();
+  private readonly slotRegistrations = new Map<string, { readonly signature: string; readonly registration: Promise<{ readonly generation: number; dispose(): Promise<void> }> }>();
+  private slotGeneration = 0;
   private readonly active = new Map<string, Set<Promise<unknown>>>();
   private readonly gates = new Map<string, Promise<void>>();
   private globalGate: Promise<void> | undefined;
@@ -221,6 +226,8 @@ export class PluginHostService extends Service implements IPluginHostService {
     @ISessionManager private readonly sessions?: ISessionManager,
     @IPluginUsageService usage?: IPluginUsageService,
     @ref(ILogService) private readonly logger?: LiveRef<ILogService>,
+    @ref(IPluginIsolationPoolService) private readonly isolates?: LiveRef<IPluginIsolationPoolService>,
+    @ref(ICordisRuntimeService) private readonly cordis?: LiveRef<ICordisRuntimeService>,
   ) {
     super();
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
@@ -257,7 +264,8 @@ export class PluginHostService extends Service implements IPluginHostService {
         await Promise.allSettled(this.residentLifecycle);
         const affected = this.affectedPlugins(event.affected);
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
-        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
+        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys()])];
+        await Promise.allSettled(ids.map(id => this.withdrawSlot(id)));
         await Promise.all(ids.map((id) => Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>())));
         const preserved = affected === undefined
           ? new Set([...this.hosts].filter(([, host]) => host.running && host.hasActiveLeases).map(([id]) => id))
@@ -329,6 +337,7 @@ export class PluginHostService extends Service implements IPluginHostService {
   }
 
   private async shutdownHosts(): Promise<void> {
+    await Promise.allSettled([...this.slotRegistrations.keys()].map(id => this.withdrawSlot(id)));
     await this.imAdaptersSink?.withdraw();
     await Promise.allSettled(this.residentWork);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
@@ -756,6 +765,51 @@ export class PluginHostService extends Service implements IPluginHostService {
         if (requests.size === 0) this.active.delete(id);
       }
     }
+  }
+
+  invokeSlot<TPayload, TResult>(invocation: Omit<IsolatedPluginInvocation<TPayload>, 'generation'>): Promise<IsolatedPluginResult<TResult>> {
+    return this.runRequest(invocation.pluginId, async (info, settings) => {
+      const plugin = info.manifest?.kiki;
+      if (!info.enabled || info.state !== 'ok' || !plugin?.entry || !plugin.slots?.includes(invocation.slot as ExtensionSlotId)) {
+        throw new Error(`Plugin ${info.id} does not expose slot ${invocation.slot}`);
+      }
+      if (plugin.tier === 'in-process') throw new Error('In-process plugin slots use the Cordis runtime');
+      if (invocation.agentId && !invocation.sessionId) throw new Error('Agent plugin invocation requires a session');
+      const runtime = this.cordis?.current;
+      const gate = invocation.sessionId
+        ? invocation.agentId ? runtime?.admissionGateForAgent(invocation.sessionId, invocation.agentId)
+          : runtime?.admissionGateForSession(invocation.sessionId)
+        : undefined;
+      if (invocation.sessionId && (!gate || gate.revoked)) throw new Error('Plugin invocation scope is unavailable');
+      const signature = JSON.stringify([hostSignature(info), settings]);
+      const prior = this.slotRegistrations.get(info.id);
+      const pool = plugin.tier === 'worker-isolate' ? this.isolates?.current : undefined;
+      if (plugin.tier === 'worker-isolate' && !pool) throw new Error('Plugin isolate pool is unavailable');
+      const record = prior?.signature === signature ? prior : {
+        signature,
+        registration: pool
+          ? pool.registerWorkerPlugin({ pluginId: info.id, entryPath: plugin.entry, settings })
+          : Promise.resolve({ generation: ++this.slotGeneration, dispose: async () => { await this.hosts.get(info.id)?.terminateSlotRealm(); } }),
+      };
+      this.slotRegistrations.set(info.id, record);
+      const { generation } = await record.registration;
+      const assertAdmitted = () => {
+        if (gate?.revoked || this.closing || this.slotRegistrations.get(info.id) !== record) throw new Error('Plugin invocation was withdrawn');
+      };
+      assertAdmitted();
+      const request = { ...invocation, pluginId: info.id, generation };
+      const result = pool
+        ? await pool.invoke<TPayload, TResult>(request)
+        : await this.getHost(info).invokeSlot<TPayload, TResult>(request, settings);
+      assertAdmitted();
+      return result;
+    }, invocation.signal);
+  }
+
+  private async withdrawSlot(pluginId: string): Promise<void> {
+    const record = this.slotRegistrations.get(pluginId);
+    this.slotRegistrations.delete(pluginId);
+    if (record) await (await record.registration).dispose();
   }
 
   running(pluginId: string): boolean {

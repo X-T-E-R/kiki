@@ -1,6 +1,7 @@
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { abortable } from '#/_base/utils/abort';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, withoutRestoreAttempt, type RestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
@@ -55,6 +56,8 @@ interface SessionResidencyEntry {
   lastAccess: number;
   generation: number;
   activitySubscription?: IDisposable;
+  closing?: Promise<void | boolean>;
+  evictionCommitted?: boolean;
 }
 
 interface SessionControllerEntry {
@@ -145,6 +148,8 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    const closing = this.finishCommittedEviction(sessionId);
+    if (closing) return closing.then(() => this.resume(sessionId, options));
     this.touchResidency(sessionId);
     const inflight = this.pendingResumes.get(sessionId);
     if (inflight !== undefined) {
@@ -194,6 +199,10 @@ export class SessionManager implements ISessionManager {
     signal?: AbortSignal,
   ): Promise<SessionLease | undefined> {
     signal?.throwIfAborted();
+    for (let closing = this.finishCommittedEviction(sessionId); closing; closing = this.finishCommittedEviction(sessionId)) {
+      if (signal) await abortable(closing, signal);
+      else await closing;
+    }
     const entry = this.ensureResidency(sessionId);
     this.addPin(entry, reason);
     let released = false;
@@ -225,7 +234,7 @@ export class SessionManager implements ISessionManager {
 
   acquireLive(sessionId: string, reason: string): Promise<SessionLease | undefined> {
     return this.serializeLifecycle(sessionId, async () => {
-      const handle = this.sessions.get(sessionId);
+      const handle = this.get(sessionId);
       if (handle === undefined) return undefined;
       const entry = this.ensureResidency(sessionId);
       this.addPin(entry, reason);
@@ -242,6 +251,7 @@ export class SessionManager implements ISessionManager {
   }
 
   get(sessionId: string): ISessionScopeHandle | undefined {
+    if (this.residency.get(sessionId)?.evictionCommitted) return undefined;
     const handle = this.sessions.get(sessionId);
     if (handle !== undefined) {
       const entry = this.residency.get(sessionId);
@@ -294,22 +304,38 @@ export class SessionManager implements ISessionManager {
         if (entry.generation !== generation || entry.pins > 0) return this.skipEviction('pinned');
         const workspaceId = this.controllerWorkspaces.get(controller);
         if (workspaceId === undefined || controller.unload === undefined) return this.skipEviction('no_controller');
-        const unloaded = await this.runWorkspaceOperation(
+        const unloading: Promise<boolean> = Promise.resolve().then(() => this.runWorkspaceOperation(
           workspaceId,
           () => controller.unload!(
             sessionId,
-            () => entry.generation === generation && entry.pins === 0,
+            () => {
+              if (entry.generation !== generation || entry.pins > 0) return false;
+              entry.closing = unloading;
+              entry.evictionCommitted = true;
+              return true;
+            },
             (reason) => { this.unloadRefusals.set(reason, (this.unloadRefusals.get(reason) ?? 0) + 1); },
           ),
-        );
-        if (unloaded) this.evictionSuccesses += 1;
-        return unloaded;
+        ));
+        try {
+          const unloaded = await unloading;
+          if (unloaded) this.evictionSuccesses += 1;
+          return unloaded;
+        } finally {
+          if (entry.closing === unloading && this.residency.get(sessionId) === entry) entry.closing = undefined;
+        }
       } catch (error) {
         this.evictionFailures += 1;
         if (this.residency.get(sessionId) === entry) entry.idleSince = Date.now();
         throw error;
       }
     });
+  }
+
+  private finishCommittedEviction(sessionId: string): Promise<void | boolean> | undefined {
+    const entry = this.residency.get(sessionId);
+    if (!entry?.evictionCommitted) return undefined;
+    return entry.closing ??= this.close(sessionId).finally(() => { entry.closing = undefined; });
   }
 
   async whenResumeSettled(sessionId: string): Promise<void> {

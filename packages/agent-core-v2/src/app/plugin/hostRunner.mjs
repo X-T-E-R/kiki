@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const [entry] = process.argv.slice(2);
 const tools = new Map();
+let cordisSlots;
 const sources = new Map();
 const providers = new Map();
 const harnessAccountSources = new Map();
@@ -295,12 +296,13 @@ for await (const line of input) {
     send({ id: message.id, result: { version: 1 } });
     try {
       const plugin = await import(pathToFileURL(entry).href);
-      if (typeof plugin.register !== 'function') throw new Error('Plugin must export register(api)');
+      cordisSlots = plugin.slots ?? plugin.default?.slots;
+      if (typeof plugin.register !== 'function' && (typeof cordisSlots !== 'object' || cordisSlots === null)) throw new Error('Plugin must export register(api) or a slots map');
       installPrerequisite = plugin.installPrerequisite;
       handlePanelRequest = plugin.handlePanelRequest;
       activate = plugin.activate;
       deactivate = plugin.deactivate;
-      await plugin.register({
+      if (typeof plugin.register === 'function') await plugin.register({
         registerTool(definition, execute) {
           if (typeof execute !== 'function' || typeof definition?.name !== 'string' || tools.has(definition.name)) {
             throw new Error('Invalid or duplicate plugin tool');
@@ -345,6 +347,23 @@ for await (const line of input) {
       break;
     }
     send({ method: 'ready', params: { version: 1 } });
+    continue;
+  }
+  if (message.method === 'cordis-slot') {
+    const { pluginId, generation, attemptId, conversationRevision, payload, settings, ...context } = message.params ?? {};
+    const startedAt = performance.now();
+    const identity = () => ({ pluginId, generation, attemptId, conversationRevision, durationMs: performance.now() - startedAt });
+    void Promise.resolve().then(async () => {
+      if (typeof pluginId !== 'string' || !Number.isSafeInteger(generation) || generation < 1 ||
+        (attemptId !== undefined && typeof attemptId !== 'string') ||
+        (conversationRevision !== undefined && (!Number.isSafeInteger(conversationRevision) || conversationRevision < 0))) throw new Error('Invalid plugin invocation identity');
+      const handler = cordisSlots && Object.hasOwn(cordisSlots, context.slot) ? cordisSlots[context.slot] : undefined;
+      if (typeof handler !== 'function') throw new Error('Plugin did not register the requested slot');
+      const value = await handler(payload, { ...context, pluginId, generation, attemptId, conversationRevision, settings });
+      const result = { ...identity(), ok: true, value };
+      if (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 * 1024 - 1024) throw new Error('Plugin slot response exceeds RPC limit');
+      send({ id: message.id, result });
+    }).catch(error => send({ id: message.id, result: { ...identity(), ok: false, message: String(error).slice(0, 1024) } }));
     continue;
   }
   if (message.method === 'settings-result') {

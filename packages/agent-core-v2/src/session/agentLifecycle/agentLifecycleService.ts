@@ -98,6 +98,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onWillCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
+  private readonly onWillRemoveEmitter = this._register(new Emitter<string>());
+  readonly onWillRemove = this.onWillRemoveEmitter.event;
   private readonly onDidCleanupEmitter = this._register(new Emitter<AgentCleanupReceipt>());
   private readonly onWillSealTranscriptEmitter = this._register(new AsyncEmitter<AgentWillSealTranscriptEvent>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
@@ -790,11 +792,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const handle = slot.handle;
     const creating = slot.creating?.pending;
     slot.handle = undefined;
-    const removal = this.finishRemoval(agentId, handle, creating, mode).finally(() => {
+    const removal = Promise.resolve().then(() => this.finishRemoval(agentId, handle, creating, mode)).finally(() => {
       if (slot.removing === removal) slot.removing = undefined;
       this.releaseSlot(agentId, slot);
     });
     slot.removing = removal;
+    this.onWillRemoveEmitter.fire(agentId);
     return removal;
   }
 

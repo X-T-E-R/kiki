@@ -466,3 +466,25 @@ describe('plugin host lifecycle', () => {
     } finally { host.stop(); }
   });
 });
+
+it('runs an async Cordis slot in the existing process host and preserves the invocation cut', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'plugin-host-cordis-'));
+  const entry = join(root, 'entry.mjs');
+  await writeFile(entry, `export const slots = {
+    'E8:tool-pipeline': async (payload, { settings, attemptId }) => ({ payload, label: settings.label, attemptId, pid: process.pid }),
+    'E9:subagent-dispatch': async () => undefined,
+  };`);
+  const host = new PluginHost('fixture-slots', entry, []);
+  const invocation = { pluginId: 'fixture-slots', generation: 7, conversationRevision: 19, attemptId: 'a-19', slot: 'E8:tool-pipeline', payload: { name: 'tool' } };
+  try {
+    const result = await host.invokeSlot<typeof invocation.payload, { pid: number }>(invocation, { label: 'test' });
+    expect(result).toMatchObject({ pluginId: 'fixture-slots', generation: 7, conversationRevision: 19, attemptId: 'a-19',
+      value: { payload: { name: 'tool' }, label: 'test', attemptId: 'a-19' } });
+    expect(result.value.pid).not.toBe(process.pid);
+    await expect(host.invokeSlot({ ...invocation, slot: 'E9:subagent-dispatch' }, {})).resolves.toMatchObject({ value: undefined });
+    await expect(host.invokeSlot({ ...invocation, slot: 'E5:prompt-context' }, {})).rejects.toThrow('did not register');
+  } finally {
+    await host.stopAndWait();
+    await rm(root, { recursive: true, force: true });
+  }
+});

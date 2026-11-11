@@ -4,6 +4,7 @@ import { join } from 'pathe';
 
 import type { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
+import type { LedgerEntry } from '#/_base/lifecycle/ledger';
 import {
   createScopedChildHandle,
   type ISessionScopeHandle,
@@ -12,6 +13,7 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { IWireService } from '#/wire/wire';
 import { restoreSignal, timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
@@ -242,6 +244,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly checkpointSubscriptions = new Map<string, IDisposable>();
   private readonly resumePrunes = new Map<string, { at: number; running?: Promise<void> }>();
   private readonly receiptDiscoveries = new WeakMap<ISessionScopeHandle, ISessionSubagentService>();
+  private readonly prePersistence = new WeakMap<ISessionScopeHandle, { revoke(): void; entry: LedgerEntry }[]>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -291,6 +294,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   override async dispose(): Promise<void> {
     const sessions = [...this.sessions].reverse();
+    for (const [, handle] of sessions) this.revokePrePersistence(handle);
     this.sessions.clear();
     for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
     this.checkpointTimers.clear();
@@ -461,6 +465,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     };
     let sessionContainer: IInstantiationService | undefined;
     let handle: ISessionScopeHandle;
+    const prePersistence: { revoke(): void; entry: LedgerEntry }[] = [];
     try {
       await phase('materialize_lock', () => this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs));
       if (opts.rollbackOnMaterializationFailure === true) await this.assertNewSession(opts.sessionId);
@@ -518,6 +523,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           configureContainer: (container) => {
             sessionContainer = container;
             container.onWillDispose(() => {
+              for (const participant of prePersistence) participant.revoke();
               if (this.sessions.get(opts.sessionId) !== handle) return;
               this.sessions.delete(opts.sessionId);
               this.disposeCheckpointScheduling(opts.sessionId);
@@ -540,10 +546,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               onSessionDispose: (dispose) => {
                 container.anchorKernelEntry(dispose, 'sessionLifecycle:willCreateParticipant');
               },
+              onSessionDrain: (revoke, dispose) => {
+                prePersistence.push({ revoke, entry: container.anchorKernelEntry(dispose, 'sessionLifecycle:prePersistence') });
+              },
             });
           },
         },
       ) as ISessionScopeHandle;
+      if (prePersistence.length > 0) this.prePersistence.set(handle, prePersistence);
     } catch (error) {
       try {
         await sessionContainer?.dispose();
@@ -822,6 +832,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           domain: isPersistenceFailure(failure.error) ? 'persistence' : 'cleanup',
         };
       }
+      await collect('scope_producers', () => this.drainPrePersistence(handle), 'cleanup');
       await collect('usage_persistence', () => this.persistUsage(handle, usageFallback), 'persistence');
       await collect('append_retirements', () => this.appendLogStore.drainRetirements(), 'persistence');
       await collect('metadata_writes', () => handle.accessor.get(ISessionMetadata).drain(), 'persistence');
@@ -898,9 +909,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
     await handle.accessor.get(ISessionMetadata).drain();
-    if (!canCommit()) return refuse('superseded');
     const final = residentReason();
     if (final !== undefined) return refuse(final);
+    if (!canCommit()) return refuse('superseded');
+    if (this.prePersistence.has(handle)) {
+      await this.drainPrePersistence(handle);
+      for (const agent of agents.list()) {
+        await agent.accessor.get(IEventDispatcher).flush();
+        await agent.accessor.get(IWireService).sealTranscriptEpoch?.();
+      }
+      await this.appendLogStore.drainRetirements();
+      await handle.accessor.get(ISessionMetadata).drain();
+    }
     this.sessions.delete(sessionId);
     await handle.dispose();
     await drainLogCloses();
@@ -990,10 +1010,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
+    this.revokePrePersistence(handle);
     await this.saveReplayCheckpoints(sessionId, handle);
     this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
+    await this.drainPrePersistence(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
     await meta.setArchived(true);
@@ -1118,7 +1140,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     });
   }
 
+  private revokePrePersistence(handle: ISessionScopeHandle): void {
+    for (const participant of this.prePersistence.get(handle) ?? []) participant.revoke();
+  }
+
+  private async drainPrePersistence(handle: ISessionScopeHandle): Promise<void> {
+    this.revokePrePersistence(handle);
+    for (const participant of [...this.prePersistence.get(handle) ?? []].reverse()) await participant.entry.dispose();
+  }
+
   private async announceWillClose(event: SessionWillCloseEvent): Promise<void> {
+    this.revokePrePersistence(event.handle);
     await this._onWillCloseSession.fireAsync(event, NO_ABORT);
   }
 

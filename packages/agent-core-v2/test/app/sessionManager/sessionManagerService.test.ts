@@ -1026,6 +1026,72 @@ describe('SessionManager', () => {
     await manager.dispose();
   });
 
+  it.each([false, true])('waits for committed eviction and recovers after a post-commit failure: %s', async (failAfterCommit) => {
+    const fake = controller();
+    let releaseDrain!: () => void;
+    const drain = new Promise<void>(resolve => { releaseDrain = resolve; });
+    const unloadOriginal = fake.service.unload!.bind(fake.service);
+    const events: string[] = [];
+    vi.spyOn(fake.service, 'unload').mockImplementation(async (id, commit) => {
+      if (commit?.() === false) return false;
+      events.push('drain-start');
+      await drain;
+      events.push('drain-end');
+      if (failAfterCommit) throw new Error('final flush failed');
+      return unloadOriginal(id);
+    });
+    const closeOriginal = fake.service.close.bind(fake.service);
+    vi.spyOn(fake.service, 'close').mockImplementation(async (id) => {
+      events.push('close-recovery');
+      await closeOriginal(id);
+    });
+    const resume = vi.spyOn(fake.service, 'resume').mockImplementation(async () => {
+      events.push('restore');
+      return fake.service.create({ sessionId: fake.handle.id, workDir: '/workspace' });
+    });
+    const workspace = { id: 'workspace-1', program: {
+      sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service,
+    } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { strict: true, additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose() {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ idleTtlMs: 0, minIdleMs: 0, maxLiveSessions: 8, sweepIntervalMs: 300_000 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    try {
+      await manager.create({ workDir: '/workspace' });
+      const eviction = manager.evictIfIdle!('session-1');
+      await drainMicrotasks();
+      expect(events).toEqual(['drain-start']);
+      expect(manager.get('session-1')).toBeUndefined();
+      const waiting = manager.acquire!('session-1', 'late-acquire');
+      await drainMicrotasks();
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.residencyReport!().pinsByReason).toEqual({});
+      const settled = waiting.then(lease => ({ lease }), error => ({ error }));
+      releaseDrain();
+      let lease;
+      if (failAfterCommit) {
+        await expect(eviction).rejects.toThrow('final flush failed');
+        expect(await settled).toMatchObject({ error: { message: 'final flush failed' } });
+        lease = await manager.acquire!('session-1', 'recovery-acquire');
+        expect(events).toEqual(['drain-start', 'drain-end', 'close-recovery', 'restore']);
+      } else {
+        await expect(eviction).resolves.toBe(true);
+        lease = await waiting;
+        expect(events).toEqual(['drain-start', 'drain-end', 'restore']);
+      }
+      expect(lease?.handle).toBe(fake.handle);
+      lease?.dispose();
+    } finally {
+      releaseDrain();
+      await disposables.dispose();
+    }
+  });
+
   it('ages an idle session out even while read-only lookups keep reaching it', async () => {
     vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
     try {

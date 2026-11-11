@@ -7,6 +7,7 @@ import type { PluginModelsApi, PluginCredentialsApi } from './models.js';
 export * from './models.js';
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 
+export type * from './cordis.js';
 export * from './harness-account.js';
 export * from './harness-quota.js';
 export * from './im.js';

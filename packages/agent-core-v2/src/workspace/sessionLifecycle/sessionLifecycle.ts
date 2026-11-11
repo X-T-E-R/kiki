@@ -150,6 +150,7 @@ export interface SessionWillCreateEvent {
   readSeed<T>(id: ServiceIdentifier<T>): T;
   contributeSeed<T>(id: ServiceIdentifier<T>, value: T): void;
   onSessionDispose(dispose: () => void | Promise<void>): void;
+  onSessionDrain?(revoke: () => void, dispose: () => void | Promise<void>): void;
 }
 
 /** Why `unload` kept a session resident. */

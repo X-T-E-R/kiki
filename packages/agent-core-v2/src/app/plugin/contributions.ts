@@ -10,6 +10,9 @@ import { z } from 'zod';
 
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
+import type { PluginExecutionTier } from '#/app/cordisRuntime/cordisRuntime';
+import type { ExtensionSlotId } from '#/app/plugin/extensionSlots';
+
 import type { PluginDiagnostic } from './types';
 
 export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.3';
@@ -20,6 +23,22 @@ function checkAborted(signal?: AbortSignal): void {
 }
 
 const schemaVersion = z.literal(PLUGIN_EXTENSION_VERSION);
+const executionTierSchema = z.enum(['in-process', 'worker-isolate', 'process-isolated']);
+const extensionSlotIds = {
+  'E1:llm-adapter': true,
+  'E2:llm-request': true,
+  'E3:llm-stream': true,
+  'E4:llm-error-recovery': true,
+  'E5:prompt-context': true,
+  'E6:context-compaction': true,
+  'E7:agent-loop': true,
+  'E8:tool-pipeline': true,
+  'E9:subagent-dispatch': true,
+  'E10:executor-registry': true,
+  'E11:session-state': true,
+  'E12:server-gui-slots': true,
+} satisfies Record<ExtensionSlotId, true>;
+const extensionSlotSchema = z.enum(Object.keys(extensionSlotIds) as [ExtensionSlotId, ...ExtensionSlotId[]]);
 const slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 const permissionSchema = z.object({
   fs: z.enum(['workspace', 'outside']).optional(),
@@ -176,6 +195,8 @@ export type PluginMediaSourceGroup = z.infer<typeof mediaSourceGroupSchema>;
 
 export interface PluginExtension {
   readonly engines?: { readonly kiki: string };
+  readonly tier?: PluginExecutionTier;
+  readonly slots?: readonly ExtensionSlotId[];
   readonly permissions?: PluginPermissions;
   readonly themes?: readonly PluginTheme[];
   readonly providerPresets?: readonly PluginProviderPreset[];
@@ -212,6 +233,8 @@ export async function parsePluginExtension(
   if (raw === undefined) return undefined;
   const envelope = z.object({
     engines: z.object({ kiki: z.string().min(1) }).strict().optional(),
+    tier: executionTierSchema.optional(),
+    slots: z.array(extensionSlotSchema).optional(),
     permissions: permissionSchema.optional(),
     themes: z.array(themeContributionSchema).optional(),
     providerPresets: z.array(providerPresetSchema).optional(),
@@ -240,7 +263,7 @@ export async function parsePluginExtension(
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
     value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
-    value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
+    value.slots !== undefined || value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
   }
@@ -248,7 +271,7 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.activation !== undefined) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
   for (const definitions of [value.sessionSources, value.mediaProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters]) {
@@ -342,6 +365,8 @@ export async function parsePluginExtension(
   checkAborted(signal);
   return {
     engines: value.engines,
+    tier: value.tier,
+    slots: value.slots,
     permissions: value.permissions,
     themes,
     providerPresets: value.providerPresets,

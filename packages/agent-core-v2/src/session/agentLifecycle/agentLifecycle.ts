@@ -78,6 +78,7 @@ export interface IAgentLifecycleService {
   /** Fires after restore, binding, activation, and durable identity registration complete. */
   readonly onDidCreate: Event<IAgentScopeHandle>;
   readonly onDidDispose: Event<string>;
+  readonly onWillRemove?: Event<string>;
   readonly onDidCleanup?: Event<AgentCleanupReceipt>;
   /** Drains accepted cross-agent writes after execution settles and before the final flush and transcript seal. */
   readonly onWillSealTranscript?: Event<AgentWillSealTranscriptEvent>;

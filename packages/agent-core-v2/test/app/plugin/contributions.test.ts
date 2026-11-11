@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +67,55 @@ describe('plugin extension compatibility and consent', () => {
     try {
       await expect(host.execute('echo', {}, new AbortController().signal)).rejects.toThrow('changed tool definition');
     } finally { host.stop(); }
+  });
+
+  it('accepts each plugin tier and all canonical extension slots', async () => {
+    const root = await temp();
+    const data = manifest();
+    const slots = [
+      'E1:llm-adapter', 'E2:llm-request', 'E3:llm-stream', 'E4:llm-error-recovery',
+      'E5:prompt-context', 'E6:context-compaction', 'E7:agent-loop', 'E8:tool-pipeline',
+      'E9:subagent-dispatch', 'E10:executor-registry', 'E11:session-state', 'E12:server-gui-slots',
+    ];
+    for (const tier of ['in-process', 'worker-isolate', 'process-isolated']) {
+      await makeSource(root, { ...data, 'x-kiki': { ...data['x-kiki'], tier, slots } });
+      const parsed = await parseManifest(root);
+      expect(parsed.diagnostics).toEqual([]);
+      expect(parsed.manifest?.kiki).toMatchObject({ tier, slots });
+    }
+  });
+
+  it('keeps tier and slots optional for existing Kiki manifests', async () => {
+    const root = await temp();
+    await makeSource(root, manifest());
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.tier).toBeUndefined();
+    expect(parsed.manifest?.kiki?.slots).toBeUndefined();
+    expect(parsed.manifest?.kiki?.entry).toBe(path.join(await realpath(root), 'entry.mjs'));
+  });
+
+  it('rejects unknown tiers and extension slots', async () => {
+    const root = await temp();
+    const data = manifest();
+    for (const extension of [
+      { ...data['x-kiki'], tier: 'sandboxed' },
+      { ...data['x-kiki'], slots: ['E13:unknown'] },
+    ]) {
+      await makeSource(root, { ...data, 'x-kiki': extension });
+      const parsed = await parseManifest(root);
+      expect(parsed.diagnostics.map((item) => item.message).join(' ')).toContain('Invalid x-kiki extension');
+    }
+  });
+
+  it('requires engines.kiki and an executable entry for declared slots', async () => {
+    const root = await temp();
+    const data = manifest();
+    await makeSource(root, { ...data, 'x-kiki': { ...data['x-kiki'], engines: undefined, entry: undefined, slots: ['E1:llm-adapter'] } });
+    const parsed = await parseManifest(root);
+    const message = parsed.diagnostics.map((item) => item.message).join(' ');
+    expect(message).toContain('x-kiki.engines.kiki is required for Kiki contributions');
+    expect(message).toContain('x-kiki.entry is required for executable contributions');
   });
 
   it('validates harness account source declarations, including required engine and entry', async () => {

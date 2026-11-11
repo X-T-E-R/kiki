@@ -146,3 +146,26 @@ export interface CordisCanonicalAbi {
     scopeTarget<T extends object>(subject: T, key: CordisScopeKey | undefined): CordisScopedTarget<T>;
   };
 }
+
+export * from './runtime.ts';
+export * from './waterfall.ts';
+export * from './volatileConfig.ts';
+import { getCordisCanonicalAbi } from './runtime.ts';
+
+const canonical = getCordisCanonicalAbi();
+export const cordis = canonical.cordisNamespace;
+export const cosmokit = canonical.cosmokitNamespace;
+export const schemastery = canonical.schemasteryNamespace;
+export const scope = canonical.rawScopeNamespace;
+export const Context = cordis.Context;
+export type Context = import('./vendor/cordis/index.ts').Context;
+export const Service = cordis.Service;
+export type Service<T = unknown> = import('./vendor/cordis/index.ts').Service<T>;
+export const Fiber = cordis.Fiber;
+export type Fiber = import('./vendor/cordis/index.ts').Fiber;
+export { FiberState } from './vendor/cordis/index.ts';
+export const ValidationError = cordis.ValidationError;
+export const resolveConfig = cordis.resolveConfig;
+export const Inject = cordis.Inject;
+export const Schema = schemastery.default;
+export type Schema<S = unknown, T = S> = import('./vendor/schemastery/index.ts').default<S, T>;

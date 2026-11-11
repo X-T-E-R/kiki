@@ -19,6 +19,8 @@ import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { PluginToolOutput } from './toolOutput';
+import type { IsolatedPluginInvocation, IsolatedPluginResult } from '#/app/cordisRuntime/cordisRuntime';
+import { matchesInvocation } from '#/app/cordisRuntime/isolationProtocol';
 import {
   parsePluginImRequest, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
   type PluginImBridge,
@@ -294,7 +296,7 @@ export class PluginHost {
     this.activitySubscription = this.lifecycle?.observeActivity?.((activity) => this.send({ method: 'app-activity', params: { activity } }));
   }
 
-  private lifecycleRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private lifecycleRequest(method: string, params: Record<string, unknown>, timeoutMs = 15_000): Promise<unknown> {
     const id = ++this.nextId;
     this.clearIdle();
     return new Promise((resolve, reject) => {
@@ -302,7 +304,7 @@ export class PluginHost {
         this.pending.delete(id);
         this.scheduleIdle();
         reject(new Error(`Plugin ${this.id} lifecycle timed out`));
-      }, 15_000);
+      }, timeoutMs);
       timer.unref();
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); this.scheduleIdle(); resolve(value); },
@@ -445,6 +447,47 @@ export class PluginHost {
       });
       this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome } });
     });
+  }
+
+  async invokeSlot<TPayload, TResult>(invocation: IsolatedPluginInvocation<TPayload>, settings: Readonly<Record<string, unknown>>): Promise<IsolatedPluginResult<TResult>> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    invocation.signal?.throwIfAborted();
+    if (invocation.pluginId !== this.id) throw new Error('Plugin invocation identity mismatch');
+    const { signal, timeoutMs = 30_000, ...request } = invocation;
+    const params = { ...request, settings };
+    if (Buffer.byteLength(JSON.stringify(params)) > MAX_RPC_LINE_CHARS - 1024) throw new RangeError('Plugin slot invocation exceeds RPC limit');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Invalid plugin invocation timeout');
+    let rejectInterrupted!: (reason: Error) => void;
+    const interrupted = new Promise<never>((_, reject) => { rejectInterrupted = reject; });
+    const interrupt = (reason: Error) => {
+      rejectInterrupted(reason);
+      this.child?.kill('SIGKILL');
+      this.terminate(reason);
+    };
+    const abort = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError('Plugin slot invocation cancelled'));
+    const timer = setTimeout(() => interrupt(new Error('Plugin slot invocation timed out; its side effects were not replayed')), timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      await Promise.race([this.start(), interrupted]);
+      signal?.throwIfAborted();
+      if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+      const response = await Promise.race([this.lifecycleRequest('cordis-slot', params, timeoutMs), interrupted]);
+      signal?.throwIfAborted();
+      if (!matchesInvocation(response, request)) throw new Error('Plugin returned an obsolete invocation identity');
+      if (!response.ok) throw new Error(response.message);
+      return { pluginId: response.pluginId, generation: response.generation, attemptId: response.attemptId,
+        conversationRevision: response.conversationRevision, durationMs: response.durationMs, value: response.value as TResult };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (!this.child) await this.exited;
+    }
+  }
+
+  async terminateSlotRealm(): Promise<void> {
+    this.child?.kill('SIGKILL');
+    this.terminate(new Error(`Plugin ${this.id} slot realm was withdrawn; side effects were not replayed`));
+    await this.exited;
   }
 
   stopAndWait(): Promise<void> {
