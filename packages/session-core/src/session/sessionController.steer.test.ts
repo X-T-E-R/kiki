@@ -474,7 +474,11 @@ describe('send now (steer) — main agent', () => {
       const blockedRow = () => {
         expect(controller.getPendingSteers()).toEqual([]);
         expect(controller.getState().queuedPromptIds).not.toContain(promptId);
-        expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ promptId, promptStatus: 'blocked' })]);
+        expect(steerRows(controller.getState())).toEqual([expect.objectContaining({
+          promptId,
+          promptStatus: undefined,
+          promptOutcome: expect.objectContaining({ status: 'blocked', delivered: false }),
+        })]);
         expect(steerRows(controller.getState())[0]?.steerStatus).toBeUndefined();
       };
       blockedRow();
