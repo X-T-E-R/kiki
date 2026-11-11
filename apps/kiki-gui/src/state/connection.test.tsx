@@ -2081,4 +2081,100 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     expect(mocks.meta.mock.calls.length).toBe(callsAfterInitialReject);
     await revokedMounted.unmount();
   });
+
+  it('renders AndroidPermissionsCard in ConnectionSection when KikiAndroid bridge is present and dispatches permission actions', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-android',
+      server_home_id: 'home-android',
+      server_version: '0.5.1',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'android-local-owner-token')).toBe(true);
+
+    let shouldFailSettings = false;
+    const openPermission = vi.fn();
+    const openNativeSettings = vi.fn(() => {
+      if (shouldFailSettings) throw new Error('Settings activity unavailable');
+    });
+    (window as unknown as { KikiAndroid?: unknown }).KikiAndroid = {
+      getCapabilities: () =>
+        JSON.stringify({
+          permissions: { accessibility: true, overlay: false, notifications: true, battery: false },
+          abi: 'arm64-v8a',
+        }),
+      openPermission,
+      openNativeSettings,
+    };
+
+    try {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mounted.push({ container, root });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const router = createMemoryRouter(
+        [{ path: '/settings/connection', element: <ConnectionSection /> }],
+        { initialEntries: ['/settings/connection'] },
+      );
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <ConnectionProvider>
+                  <RouterProvider router={router} />
+                </ConnectionProvider>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+
+      expect(container.querySelector('#st-card-conn-android')).not.toBeNull();
+      expect(container.querySelector('[data-android-perm-ready="accessibility"]')).not.toBeNull();
+      expect(container.querySelector('[data-android-perm-ready="tools"]')).toBeNull();
+
+      const overlayBtn = container.querySelector<HTMLButtonElement>('[data-android-perm-enable="overlay"]');
+      expect(overlayBtn).not.toBeNull();
+      await act(async () => {
+        overlayBtn!.click();
+      });
+      expect(openPermission).toHaveBeenCalledWith('overlay');
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('kiki:android', {
+            detail: {
+              type: 'permissions',
+              data: {
+                permissions: { accessibility: true, overlay: true, notifications: true, battery: true },
+                abi: 'arm64-v8a',
+              },
+            },
+          }),
+        );
+      });
+      await flush();
+      expect(container.querySelector('[data-android-perm-ready="overlay"]')?.textContent).toContain('Ready');
+      expect(container.querySelector('[data-android-perm-ready="battery"]')?.textContent).toContain('Ready');
+
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-android-open-settings]')!.click();
+      });
+      expect(openNativeSettings).toHaveBeenCalledOnce();
+
+      shouldFailSettings = true;
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-android-open-settings]')!.click();
+      });
+      await flush();
+      expect(container.querySelector('#st-card-conn-android [role="alert"]')?.textContent).toContain(
+        'Settings activity unavailable',
+      );
+    } finally {
+      delete (window as unknown as { KikiAndroid?: unknown }).KikiAndroid;
+    }
+  });
 });

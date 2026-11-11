@@ -182,6 +182,14 @@ export async function startStorageMaintenance(input: StorageMaintenanceInput): P
     localOwnerToken: input.localOwnerToken,
     get admission() { return normal?.admission ?? input.admission; },
     get remoteConnections() { return normal?.remoteConnections ?? input.remoteConnections; },
-    serverId: registration.serverId, host, get port() { return normal?.port ?? boundPort; }, closed, exitReceipt, close,
+    serverId: registration.serverId, host, get port() { return normal?.port ?? boundPort; }, closed, exitReceipt,
+    notifyNetworkChange: (state) => { normal?.notifyNetworkChange(state); },
+    subscribeTurnSummary: (listener) => {
+      if (normal !== undefined) return normal.subscribeTurnSummary(listener);
+      listener({ active: 0, executing: false, pendingInteraction: false });
+      return () => {};
+    },
+    cancelActiveTurns: () => normal?.cancelActiveTurns() ?? 0,
+    close,
   };
 }

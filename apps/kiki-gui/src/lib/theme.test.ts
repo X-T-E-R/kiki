@@ -88,6 +88,23 @@ describe('startThemeSync', () => {
     media.flip(false);
     expect(document.documentElement.dataset['theme']).toBe('dark');
   });
+
+  it('notifies KikiAndroid bridge via setAppearance when theme mounts and switches', () => {
+    const setAppearance = vi.fn();
+    (window as unknown as { KikiAndroid?: unknown }).KikiAndroid = { setAppearance };
+    try {
+      stubMatchMedia(false);
+      writeSettings({ theme: 'light' });
+      const stop = startThemeSync(browserHost);
+      expect(setAppearance).toHaveBeenLastCalledWith(false);
+
+      writeSettings({ theme: 'dark' });
+      expect(setAppearance).toHaveBeenLastCalledWith(true);
+      stop();
+    } finally {
+      delete (window as unknown as { KikiAndroid?: unknown }).KikiAndroid;
+    }
+  });
 });
 
 describe('onThemeChange', () => {

@@ -3873,6 +3873,13 @@ export const en = {
   'st.conn.restart': 'Restart server',
   'st.conn.restarting': 'Restarting server…',
   'st.conn.restarted': 'The desktop server restarted and passed its authenticated health check.',
+  'st.conn.androidTitle': 'Phone permissions',
+  'st.conn.androidAccessibility': 'Accessibility',
+  'st.conn.androidOverlay': 'Overlay',
+  'st.conn.androidBattery': 'Unrestricted battery',
+  'st.conn.androidOn': 'Ready',
+  'st.conn.androidEnable': 'Enable',
+  'st.conn.androidMore': 'Settings',
   'st.conn.disconnectTitle': 'Disconnect',
   'st.conn.disconnectBody':
     'Clear the saved URL and token on this device and return to the connect screen; sessions stay on the server.',

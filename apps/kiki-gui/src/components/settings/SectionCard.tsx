@@ -64,7 +64,7 @@ const DEVICE_CARD_IDS = new Set([
   'st-card-language', 'st-card-appearance', 'st-card-appearance-type', 'st-card-appearance-layout',
   'st-card-skin-files', 'st-card-composer', 'st-card-desktop',
   'st-card-subagent-open-mode', 'st-card-append-timing', 'st-card-conn-server',
-  'st-card-conn-timeout', 'st-card-conn-owned', 'st-card-conn-disconnect', 'st-card-conn-ssh',
+  'st-card-conn-timeout', 'st-card-conn-owned', 'st-card-conn-android', 'st-card-conn-disconnect', 'st-card-conn-ssh',
 ]);
 
 export function SectionCard({

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { connectionIdentitySchema } from './connections';
+import { bridgeOperationsSchema, connectionIdentitySchema } from './connections';
 import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from '@kiki/transcript';
 
 export const bridgeThreadRefSchema = z.object({ hostId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256) }).strict();
@@ -7,7 +7,7 @@ export const bridgeScopeSchema = z.object({ workspaceId: z.string().min(1).max(5
 export const bridgePolicySchema = z.object({
   source: connectionIdentitySchema, target: connectionIdentitySchema,
   sourceScope: bridgeScopeSchema, targetScope: bridgeScopeSchema,
-  operations: z.array(z.enum(['read', 'send', 'wait', 'wake'])).min(1).max(4),
+  operations: bridgeOperationsSchema,
   expiresAt: z.number().int().positive(), pendingLimit: z.number().int().min(1).max(100).default(20),
   messagesPerMinute: z.number().int().min(1).max(600).default(10),
   location: z.enum(['local', 'network']), label: z.string().min(1).max(128),
@@ -40,3 +40,18 @@ export const localBridgePolicySchema = bridgePolicySchema.omit({ source: true, t
 export type LocalBridgePolicy = z.infer<typeof localBridgePolicySchema>;
 export const bridgeTargetInputSchema = z.object({ label: z.string().min(1).max(128), endpoint: z.string().url().max(2048), target: connectionIdentitySchema }).strict();
 export type BridgeTargetInput = z.infer<typeof bridgeTargetInputSchema>;
+export const peerBridgeInstallSchema = z.object({
+  grant: bridgeGrantSchema,
+  credential: z.string().min(32).max(128),
+  endpoint: z.string().url().max(2048).optional(),
+}).strict();
+export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
+export const peerBridgeAttachPayloadSchema = z.object({
+  operations: z.array(z.enum(['list', 'read', 'send', 'wait'])).min(1).max(4).optional(),
+}).strict();
+export type PeerBridgeAttachPayload = z.infer<typeof peerBridgeAttachPayloadSchema>;
+export const peerBridgeResponsePayloadSchema = z.object({
+  status: z.number().int().min(200).max(599),
+  envelope: z.object({ code: z.number().int(), msg: z.string(), data: z.unknown().optional() }).passthrough(),
+}).strict();
+export type PeerBridgeResponsePayload = z.infer<typeof peerBridgeResponsePayloadSchema>;

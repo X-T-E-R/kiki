@@ -130,7 +130,7 @@ export function isPeerProcedureAllowed(procedure: Pick<KlientProcedure, 'service
  * than to the call grants above; a `subscribe` frame is not a procedure.
  */
 export function isPeerFrameAllowed(frame: KlientFrame): boolean {
-  if (['ping', 'pong', 'view_attach', 'view_detach', 'unsubscribe', 'stream_cancel'].includes(frame.type)) return true;
+  if (['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'unsubscribe', 'stream_cancel'].includes(frame.type)) return true;
   if (frame.type === 'subscribe') {
     if (frame.service === undefined && frame.event === 'events') return frame.workspaceId === undefined && (
       (frame.scope === 'core' && frame.sessionId === undefined && frame.agentId === undefined) ||
@@ -205,7 +205,8 @@ export class ConnectionAudience {
       if (presented === undefined || presented.id !== peer.id) throw new AdmissionError(401, 'connection_not_approved');
     }
     if (path === '/api/remote-connections/handshake' && request.method === 'GET') return true;
-    if (request.method === 'POST' && (path === `/api/remote-connections/inbound/grants/${peer.id}/revoke` || path === '/api/remote-connections/pair/cancel')) {
+    const isPeerBridgeRoute = path === '/api/thread-bridges/peer/outbound' || /^\/api\/thread-bridges\/peer\/outbound\/[0-9a-f-]{36}\/revoke$/.test(path);
+    if (request.method === 'POST' && (path === `/api/remote-connections/inbound/grants/${peer.id}/revoke` || path === '/api/remote-connections/pair/cancel' || isPeerBridgeRoute)) {
       const audience = { grantId: peer.id, revision: peer.revision };
       peers.set(request, audience); peers.set(request.raw, audience);
       return true;

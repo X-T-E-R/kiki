@@ -2,6 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createAndroidBridge, subscribeAndroidHostEvents } from './androidBridge';
+import { appShellConnectUrl, isEmbeddedAndroidHost } from './appShell';
 import { copyTextToClipboard } from './clipboard';
 
 function mockExecCommand(result: boolean) {
@@ -146,5 +148,118 @@ describe('copyImageToClipboard', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     const { copyImageToClipboard } = await import('./clipboard');
     await expect(copyImageToClipboard(Promise.reject(new Error('source failed')))).rejects.toThrow('Clipboard image write is unavailable');
+  });
+});
+
+describe('embedded Android host detection and androidBridge', () => {
+  afterEach(() => {
+    delete (window as unknown as { KikiAndroid?: unknown }).KikiAndroid;
+  });
+
+  it('detects KikiEmbedded Android user agents and routes appShellConnectUrl', () => {
+    const embeddedUa = 'Mozilla/5.0 (Linux; Android 15) KikiApp/android KikiEmbedded/1';
+    const remoteShellUa = 'Mozilla/5.0 (Linux; Android 15) KikiApp/android';
+    const browserUa = 'Mozilla/5.0 (Linux; Android 15) Chrome/131.0';
+
+    expect(isEmbeddedAndroidHost(embeddedUa)).toBe(true);
+    expect(isEmbeddedAndroidHost(remoteShellUa)).toBe(false);
+    expect(isEmbeddedAndroidHost(browserUa)).toBe(false);
+
+    expect(appShellConnectUrl(embeddedUa)).toBe('kiki-shell://connect');
+    expect(appShellConnectUrl(remoteShellUa)).toBe('https://localhost/index.html#change');
+    expect(appShellConnectUrl(browserUa)).toBeNull();
+  });
+
+  it('calls window.KikiAndroid over WebMessage RPC, aligns openNativeSettings, and falls back to clipboard bridge', async () => {
+    const listeners = new Set<(event: MessageEvent<unknown>) => void>();
+    const sent: Array<{ id: string; method: string; params: Record<string, unknown> }> = [];
+    (window as unknown as { KikiAndroid?: unknown }).KikiAndroid = {
+      addEventListener: (_type: 'message', fn: (event: MessageEvent<unknown>) => void) => {
+        listeners.add(fn);
+      },
+      postMessage: (raw: string) => {
+        const frame = JSON.parse(raw) as { id: string; method: string; params: Record<string, unknown> };
+        sent.push(frame);
+        queueMicrotask(() => {
+          const result = frame.method === 'capabilities'
+            ? { permissions: { accessibility: true, overlay: false, notifications: true, battery: true } }
+            : frame.method === 'readClipboard'
+              ? 'hello-from-android'
+              : true;
+          const reply = new MessageEvent('message', {
+            data: JSON.stringify({ id: frame.id, ok: true, result }),
+          });
+          for (const listener of listeners) listener(reply);
+        });
+      },
+    };
+
+    const bridge = createAndroidBridge(window);
+    const caps = await bridge.capabilities();
+    expect(caps?.permissions.accessibility).toBe(true);
+    expect(caps?.permissions.overlay).toBe(false);
+
+    expect(await bridge.readClipboard()).toBe('hello-from-android');
+    await bridge.openPermission('overlay');
+    await bridge.openPhoneSettings();
+    await bridge.setAppearance({ dark: false });
+    expect(sent.map((item) => item.method)).toEqual([
+      'capabilities',
+      'readClipboard',
+      'openPermission',
+      'openNativeSettings',
+      'setAppearance',
+    ]);
+    expect(sent[2]!.params).toEqual({ kind: 'overlay' });
+    expect(sent[4]!.params).toEqual({ dark: false });
+
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(() => Promise.reject(new Error('denied'))) },
+    });
+    await copyTextToClipboard('via-android-bridge');
+    expect(sent.at(-1)).toMatchObject({ method: 'writeClipboard', params: { text: 'via-android-bridge' } });
+  });
+
+  it('unwraps AndroidBridgeHandler { type, data } host event envelopes', () => {
+    const received: unknown[] = [];
+    const unsubscribe = subscribeAndroidHostEvents((detail) => { received.push(detail); }, window);
+    window.dispatchEvent(new CustomEvent('kiki:android', {
+      detail: {
+        type: 'permissions',
+        data: {
+          permissions: { accessibility: true, overlay: true, notifications: true, battery: false },
+          abi: 'arm64-v8a',
+          sdk: 35,
+        },
+      },
+    }));
+    window.dispatchEvent(new CustomEvent('kiki:android', {
+      detail: {
+        type: 'navigate',
+        data: { route: '/settings/connection' },
+      },
+    }));
+    window.dispatchEvent(new CustomEvent('kiki:android', {
+      detail: {
+        type: 'share-intake',
+        data: { id: 'intake-42' },
+      },
+    }));
+    unsubscribe();
+    expect(received).toEqual([
+      {
+        type: 'permissions',
+        permissions: {
+          accessibility: true,
+          overlay: true,
+          notifications: true,
+          battery: false,
+          oemAutostart: undefined,
+        },
+      },
+      { type: 'navigate', route: '/settings/connection' },
+      { type: 'share-intake', id: 'intake-42' },
+    ]);
   });
 });

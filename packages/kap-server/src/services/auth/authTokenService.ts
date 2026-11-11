@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { createDecorator } from '@kiki/agent-core-v2';
 
 import { verifyPassword } from './password';
@@ -38,5 +39,18 @@ export function createAuthTokenService(deps: {
     isValid: async (candidate) =>
       deps.tokenStore.isValid(candidate) ||
       (await verifyPassword(candidate, deps.passwordHash)),
+  };
+}
+
+export function createInMemoryAuthTokenService(token: string): IAuthTokenService {
+  const expected = Buffer.from(token);
+  return {
+    _serviceBrand: undefined,
+    getToken: () => token,
+    isValid: async (candidate) => {
+      const actual = Buffer.from(candidate);
+      if (expected.length === 0 || actual.length !== expected.length) return false;
+      return timingSafeEqual(expected, actual);
+    },
   };
 }

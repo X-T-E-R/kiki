@@ -504,4 +504,15 @@ describe('HostTerminalService (App scope)', () => {
     proc.kill();
     expect(mockPty.kill).toHaveBeenCalled();
   });
+
+  it('rejects with a clear error when KIKI_PTY=off without crashing the service', async () => {
+    vi.stubEnv('KIKI_PTY', 'off');
+    try {
+      const svc = ix.get(IHostTerminalService);
+      await expect(svc.spawn({ cwd: '/ws', shell: '/system/bin/sh', cols: 80, rows: 24 }))
+        .rejects.toThrow('Interactive PTY terminals are disabled in this host runtime (KIKI_PTY=off).');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

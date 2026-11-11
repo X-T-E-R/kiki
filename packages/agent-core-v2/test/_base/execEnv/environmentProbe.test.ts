@@ -95,4 +95,41 @@ describe('probeHostEnvironment', () => {
     expect(probeError.message).not.toContain('Checked:');
     expect(probeError.checked.length).toBeGreaterThan(0);
   });
+
+  it('honors KIKI_SHELL_PATH on POSIX and Android before standard candidates', async () => {
+    const customShell = '/data/data/com.kiki.app/files/usr/bin/bash';
+    const env = await probeHostEnvironment(
+      stubDeps({
+        platform: 'android',
+        env: { KIKI_SHELL_PATH: customShell },
+        existingPaths: [customShell, '/system/bin/sh'],
+      }),
+    );
+    expect(env.osKind).toBe('Android');
+    expect(env.pathClass).toBe('posix');
+    expect(env.shellName).toBe('bash');
+    expect(env.shellPath).toBe(customShell);
+  });
+
+  it('falls back cleanly to /system/bin/sh on Android when /bin/bash is absent', async () => {
+    const env = await probeHostEnvironment(
+      stubDeps({
+        platform: 'android',
+        existingPaths: ['/system/bin/sh'],
+      }),
+    );
+    expect(env.osKind).toBe('Android');
+    expect(env.shellName).toBe('sh');
+    expect(env.shellPath).toBe('/system/bin/sh');
+
+    const viaEnv = await probeHostEnvironment(
+      stubDeps({
+        platform: 'linux',
+        env: { KIKI_PLATFORM: 'android' },
+        existingPaths: [],
+      }),
+    );
+    expect(viaEnv.shellName).toBe('sh');
+    expect(viaEnv.shellPath).toBe('/system/bin/sh');
+  });
 });

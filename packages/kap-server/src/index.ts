@@ -1,5 +1,7 @@
 export { startServer } from './start';
-export type { ServerHostIdentity, ServerStartOptions, RunningServer } from './start';
+export type { ServerHostIdentity, ServerStartOptions, ServerTurnSummary, RunningServer } from './start';
+export { createInMemoryAuthTokenService } from './services/auth/authTokenService';
+export type { IAuthTokenService } from './services/auth/authTokenService';
 export { okEnvelope, errEnvelope } from './envelope';
 export type { Envelope } from './envelope';
 export { classify } from './security/bindClassify';

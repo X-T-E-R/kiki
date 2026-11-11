@@ -23,6 +23,7 @@ import {
   resolveKimiCodeOAuthRef,
   resolveKimiCodeRuntimeAuth,
   resolveKimiRegion,
+  resolveTokenStorage,
   type AuthManagedUserInfoResult,
   type AuthManagedUsageResult,
   type BearerTokenProvider,
@@ -36,8 +37,8 @@ import {
 } from '@kiki/oauth';
 import { connectOriginalOAuthRequestSchema, originalOAuthRequestSchema, type ConnectOriginalOAuthRequest, type OriginalOAuthProbe, type OriginalOAuthRequest } from '@kiki/protocol';
 import { parse as parseToml } from 'smol-toml';
-import { originalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
-import { kimiOAuthKeyring } from '#/persistence/backends/node-fs/kimiOAuthKeyring';
+import { createOriginalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
+import { createKimiOAuthKeyring } from '#/persistence/backends/node-fs/kimiOAuthKeyring';
 import type {
   OAuthFlowSnapshot,
   OAuthFlowStart,
@@ -1204,18 +1205,29 @@ class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
   readonly deviceMethods: OAuthDeviceMethods;
   readonly originalSources: LocalOriginalOAuthService;
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
-    const originalKimi = new KimiOriginalOAuthService({ storageDeps: { loadKeyring: () => kimiOAuthKeyring } });
+    const keyring = createKimiOAuthKeyring({ homeDir: bootstrap.credentialsHomeDir });
+    const originalKeyring = createOriginalOAuthKeyring({ homeDir: bootstrap.credentialsHomeDir });
+    const originalKimi = new KimiOriginalOAuthService({ storageDeps: { loadKeyring: () => keyring } });
+    const credentialsDir = `${bootstrap.modelAccountHomeDir}/credentials`;
+    const useBrokerStorage = bootstrap.getEnv('KIKI_SECRET_BACKEND') === 'android-broker' &&
+      Boolean(bootstrap.getEnv('KIKI_SECRET_BROKER_URL')) &&
+      Boolean(bootstrap.getEnv('KIKI_SECRET_BROKER_TOKEN'));
+    const brokerStorage = useBrokerStorage
+      ? resolveTokenStorage(credentialsDir, { mode: 'keyring', loadKeyring: () => keyring })
+      : undefined;
     super({
       homeDir: bootstrap.modelAccountHomeDir,
-      credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
+      credentialsDir,
+      storage: brokerStorage,
       identity: bootstrap.clientIdentity,
       originalKimi,
     });
-    this.originalSources = new LocalOriginalOAuthService({ keyring: originalOAuthKeyring, parseConfig: parseToml, kimi: originalKimi });
+    this.originalSources = new LocalOriginalOAuthService({ keyring: originalKeyring, parseConfig: parseToml, kimi: originalKimi });
     this.deviceMethods = new OAuthDeviceMethods({
       homeDir: bootstrap.modelAccountHomeDir,
-      credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
+      credentialsDir,
       grokHomeDir: bootstrap.credentialsHomeDir,
+      storage: brokerStorage,
     });
   }
 }

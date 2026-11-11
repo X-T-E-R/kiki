@@ -4,7 +4,7 @@ import type { Socket } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type BridgeGrant, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { validateEndpoint, type RemoteConnectionManager } from './manager';
@@ -15,7 +15,7 @@ const claimedSchema = z.object({
 }).strict();
 export interface PairingHooks {
   workspaces(): Promise<readonly string[]>;
-  issueBridges(input: { grantId: string; source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[] }): Promise<{ grant: BridgeGrant; credential: string }[]>;
+  issueBridges(input: { grantId: string; source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[]; approvedOperations?: readonly BridgeOperation[]; requestedOperations?: readonly BridgeOperation[] }): Promise<{ grant: BridgeGrant; credential: string }[]>;
   installBridge(connectionId: string, grant: BridgeGrant, credential: string): Promise<void>;
   revokeBridge(id: string, source: ConnectionIdentity): Promise<void>;
   enableThreads(): Promise<void>;

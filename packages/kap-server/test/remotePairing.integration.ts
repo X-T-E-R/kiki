@@ -53,7 +53,7 @@ describe('short-code pairing on two real servers', () => {
       const targetConfig = target.core.accessor.get(IConfigService);
       expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
       expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
-      const created = await targetClient.rest!.connections.createPairCode({});
+      const created = await targetClient.rest!.connections.createPairCode({ bridgeOperations: ['read', 'send', 'wait', 'wake'] });
       expect(created.code).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$/);
       expect(target.admission.status().enabled).toBe(true);
       expect(created.suggestedEndpoints.length).toBeGreaterThan(0);
@@ -90,6 +90,7 @@ describe('short-code pairing on two real servers', () => {
       expect(peerShutdownAttempt.status).toBe(403);
       const targetBridgesBefore = await targetClient.rest!.threadBridges.status();
       expect(targetBridgesBefore.inbound).toHaveLength(1);
+      expect(targetBridgesBefore.inbound[0]!.operations).toEqual(['read', 'send', 'wait', 'wake']);
       expect((await sourceClient.rest!.threadBridges.status()).outbound).toHaveLength(1);
       const mobileCreated = await targetClient.rest!.connections.createPairCode({});
       const mobileScanned = parsePairingUri(formatPairingUri({ endpoint: nonLoopback, code: mobileCreated.code }))!;
@@ -276,6 +277,412 @@ describe('short-code pairing on two real servers', () => {
     expect((await refused.json() as { msg: string }).msg).toBe('dangerous_auth_bypass');
     const open = await claim(dangerous, { code: 'K9F2-7X4M', source: stranger, sourceLabel: 'Stranger' });
     expect(open.status).toBe(403);
+  }, 120_000);
+
+  it('narrows bridgeOperations on pair claim without escalating beyond server-approved operations, and routes reverse peer WS bridges with offline pending delivery', async () => {
+    const target = await boot();
+    const targetClient = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    const targetWorkDir = join(homes[0]!, 'workspace');
+    const phoneIdentity = { homeId: '33333333-3333-4333-8333-333333333333', hostId: 'mika-phone', protocol: 1 as const };
+    const openSockets: WebSocket[] = [];
+    try {
+      await targetClient.global.sessions.create({ sessionId: 'desktop-main', workDir: targetWorkDir });
+      const workspaces = await target.core.accessor.get(IWorkspaceService).list();
+      const targetWorkspace = workspaces[0]!;
+
+      const narrowCreated = await targetClient.rest!.connections.createPairCode({});
+      const escalateClaim = await claim(target, {
+        code: narrowCreated.code,
+        source: phoneIdentity,
+        sourceLabel: 'Mika Phone',
+        requestBridge: true,
+        bridgeOperations: ['read', 'send', 'wait', 'wake'],
+        sourceWorkspaces: ['phone'],
+      });
+      expect(escalateClaim.status).toBe(200);
+      const claimedData = (await escalateClaim.json() as {
+        data: { peerToken: string; grantId: string; bridge?: { grant: { id: string; operations: string[] }; credential: string }[] };
+      }).data;
+      expect(claimedData.bridge).toHaveLength(1);
+      expect(claimedData.bridge![0]!.grant.operations).toEqual(['read', 'send', 'wait']);
+      expect(claimedData.bridge![0]!.grant.operations).not.toContain('wake');
+
+      const wakeOnlyCode = await targetClient.rest!.connections.createPairCode({ bridgeOperations: ['read', 'send'] });
+      const wakeOnlyClaim = await claim(target, {
+        code: wakeOnlyCode.code,
+        source: { homeId: '44444444-4444-4444-8444-444444444444', hostId: 'wake-attacker', protocol: 1 },
+        sourceLabel: 'Wake Only',
+        requestBridge: true,
+        bridgeOperations: ['wake'],
+        sourceWorkspaces: ['phone'],
+      });
+      expect(wakeOnlyClaim.status).toBe(403);
+      expect((await wakeOnlyClaim.json() as { msg: string }).msg).toBe('bridge_operation_denied');
+
+      const reverseCredential = 'reverse-credential-secret-at-least-32-chars-long';
+      const reverseGrantId = '55555555-5555-4555-8555-555555555555';
+      const forgedInstall = await fetch(endpoint(target) + '/api/thread-bridges/peer/outbound', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${claimedData.peerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          grant: {
+            id: reverseGrantId,
+            revision: 1,
+            enabled: true,
+            revoked: false,
+            createdAt: Date.now(),
+            source: target.admission.identity,
+            target: { homeId: '66666666-6666-4666-8666-666666666666', hostId: 'forged-phone', protocol: 1 },
+            sourceScope: { workspaceId: targetWorkspace.id },
+            targetScope: { workspaceId: 'phone' },
+            operations: ['read', 'send', 'wait'],
+            expiresAt: Date.now() + 600_000,
+            pendingLimit: 20,
+            messagesPerMinute: 60,
+            location: 'network',
+            label: 'Forged Phone Bridge',
+          },
+          credential: reverseCredential,
+        }),
+      });
+      expect(forgedInstall.status).toBe(403);
+      expect((await forgedInstall.json() as { msg: string }).msg).toBe('bridge_identity_mismatch');
+
+      const installRes = await fetch(endpoint(target) + '/api/thread-bridges/peer/outbound', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${claimedData.peerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          grant: {
+            id: reverseGrantId,
+            revision: 1,
+            enabled: true,
+            revoked: false,
+            createdAt: Date.now(),
+            source: target.admission.identity,
+            target: phoneIdentity,
+            sourceScope: { workspaceId: targetWorkspace.id },
+            targetScope: { workspaceId: 'phone' },
+            operations: ['read', 'send', 'wait'],
+            expiresAt: Date.now() + 600_000,
+            pendingLimit: 20,
+            messagesPerMinute: 60,
+            location: 'network',
+            label: 'Mika Phone Reverse',
+          },
+          credential: reverseCredential,
+        }),
+      });
+      expect(installRes.status).toBe(200);
+      const installedLink = (await installRes.json() as { data: { connectionId: string; grant: { id: string } } }).data;
+      expect(installedLink.grant.id).toBe(reverseGrantId);
+
+      const wsUrl = `${endpoint(target).replace(/^http/, 'ws')}/api/klient/events`;
+      const legacySocket = new WebSocket(wsUrl, `${WS_BEARER_PROTOCOL_PREFIX}${claimedData.peerToken}`);
+      openSockets.push(legacySocket);
+      await new Promise<void>((resolve, reject) => {
+        legacySocket.once('open', () => resolve());
+        legacySocket.once('error', reject);
+      });
+
+      const threads = target.core.accessor.get(IThreadCommunicationService);
+      const peerSend = threads as unknown as IThreadPeerSendCapability;
+      const phoneThreadRef = {
+        hostId: phoneIdentity.hostId,
+        workspaceId: 'phone',
+        sessionId: 'phone-conv-1',
+        bridgeId: reverseGrantId,
+        connectionId: installedLink.connectionId,
+      };
+      const offlineQueued = await peerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: target.admission.identity.hostId, workspaceId: targetWorkspace.id, sessionId: 'desktop-main' },
+        target: phoneThreadRef,
+        content: 'Message while phone bridge not attached.',
+        idempotencyKey: 'reverse-msg-1',
+      });
+      expect(offlineQueued.delivery).toBe('pending');
+      const receiptsWhileOffline = await targetClient.rest!.threadBridges.receipts();
+      expect(receiptsWhileOffline.items[0]).toMatchObject({ bridgeId: reverseGrantId, delivery: 'pending', reason: 'target_temporarily_unavailable' });
+
+      const seenIdempotency = new Map<string, { content: string; messageId: string; targetSeq: number; acceptedAt: number }>();
+      let seq = 0;
+      const bridgeSocket = new WebSocket(wsUrl, `${WS_BEARER_PROTOCOL_PREFIX}${claimedData.peerToken}`);
+      openSockets.push(bridgeSocket);
+      const attached = new Promise<void>((resolve, reject) => {
+        bridgeSocket.on('message', (raw) => {
+          const frame = JSON.parse(String(raw)) as { type: string; id?: string; data?: Record<string, unknown> };
+          if (frame.type === 'ping') {
+            bridgeSocket.send(JSON.stringify({ type: 'pong', data: frame.data }));
+            return;
+          }
+          if (frame.type === 'bridge_attached') {
+            resolve();
+            return;
+          }
+          if (frame.type === 'bridge_request' && typeof frame.id === 'string' && frame.data !== undefined) {
+            const auth = frame.data['authorization'];
+            const op = frame.data['operation'];
+            const body = frame.data['body'] as Record<string, unknown>;
+            if (auth !== `Bearer ${reverseCredential}`) {
+              bridgeSocket.send(JSON.stringify({ type: 'bridge_response', id: frame.id, data: { status: 401, envelope: { code: 40101, msg: 'invalid_bridge_credential' } } }));
+              return;
+            }
+            if (op === 'list') {
+              bridgeSocket.send(JSON.stringify({
+                type: 'bridge_response',
+                id: frame.id,
+                data: {
+                  status: 200,
+                  envelope: {
+                    code: 0,
+                    msg: 'OK',
+                    data: {
+                      identity: phoneIdentity,
+                      result: {
+                        threads: [{
+                          ref: { hostId: phoneIdentity.hostId, workspaceId: 'phone', sessionId: 'phone-conv-1' },
+                          title: 'Phone Daily Thread',
+                          createdAt: 1000,
+                          updatedAt: 2000,
+                          state: 'idle',
+                        }],
+                      },
+                    },
+                  },
+                },
+              }));
+              return;
+            }
+            if (op === 'send') {
+              const key = String(body['idempotencyKey']);
+              const content = String(body['content']);
+              const prev = seenIdempotency.get(key);
+              if (prev !== undefined && prev.content !== content) {
+                bridgeSocket.send(JSON.stringify({ type: 'bridge_response', id: frame.id, data: { status: 409, envelope: { code: 40101, msg: 'bridge_idempotency_conflict' } } }));
+                return;
+              }
+              const entry = prev ?? { content, messageId: `phone-msg-${++seq}`, targetSeq: seq, acceptedAt: Date.now() };
+              seenIdempotency.set(key, entry);
+              bridgeSocket.send(JSON.stringify({
+                type: 'bridge_response',
+                id: frame.id,
+                data: {
+                  status: 200,
+                  envelope: {
+                    code: 0,
+                    msg: 'OK',
+                    data: {
+                      identity: phoneIdentity,
+                      result: {
+                        messageId: entry.messageId,
+                        targetSeq: entry.targetSeq,
+                        acceptedAt: entry.acceptedAt,
+                        deduplicated: prev !== undefined,
+                        delivery: 'pending',
+                      },
+                    },
+                  },
+                },
+              }));
+            }
+          }
+        });
+        bridgeSocket.once('open', () => {
+          bridgeSocket.send(JSON.stringify({ type: 'bridge_attach', id: 'attach-1', data: { operations: ['list', 'read', 'send', 'wait'] } }));
+        });
+        bridgeSocket.once('error', reject);
+      });
+      await attached;
+
+      const listed = await threads.listThreads({ caller: { workspaceId: targetWorkspace.id, sessionId: 'desktop-main' }, bridgeId: reverseGrantId });
+      expect(listed.threads.map((item) => item.title)).toEqual(['Phone Daily Thread']);
+
+      const waitAccepted = async () => {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const page = await targetClient.rest!.threadBridges.receipts();
+          const item = page.items.find((entry) => entry.bridgeId === reverseGrantId);
+          if (item?.delivery === 'accepted') return item;
+          if (Date.now() >= deadline) throw new Error(`expected accepted receipt, got ${JSON.stringify(page.items)}`);
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      };
+      const acceptedReceipt = await waitAccepted();
+      expect(acceptedReceipt.messageId).toBe('phone-msg-1');
+      expect(seenIdempotency.get('reverse-msg-1')?.content).toBe('Message while phone bridge not attached.');
+
+      const duplicate = await peerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: target.admission.identity.hostId, workspaceId: targetWorkspace.id, sessionId: 'desktop-main' },
+        target: phoneThreadRef,
+        content: 'Message while phone bridge not attached.',
+        idempotencyKey: 'reverse-msg-1',
+      });
+      expect(duplicate).toMatchObject({ deduplicated: true, messageId: 'phone-msg-1', delivery: 'pending' });
+      await expect(peerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: target.admission.identity.hostId, workspaceId: targetWorkspace.id, sessionId: 'desktop-main' },
+        target: phoneThreadRef,
+        content: 'Changed payload.',
+        idempotencyKey: 'reverse-msg-1',
+      })).rejects.toThrow('bridge_idempotency_conflict');
+
+      const revokeRes = await fetch(endpoint(target) + `/api/thread-bridges/peer/outbound/${reverseGrantId}/revoke`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${claimedData.peerToken}` },
+      });
+      expect(revokeRes.status).toBe(200);
+      await expect(threads.listThreads({ caller: { workspaceId: targetWorkspace.id, sessionId: 'desktop-main' }, bridgeId: reverseGrantId })).rejects.toThrow('bridge_operation_denied');
+    } finally {
+      for (const ws of openSockets) ws.terminate();
+      await targetClient.close();
+    }
+  }, 120_000);
+
+  it('automatically establishes bidirectional Kiki Space bridges via OutboundPeerBridgeClient for a loopback-only mobile Kiki, supporting list/read/send/wait without implicit wake and reconnecting on notifyNetworkChange', async () => {
+    const mobile = await boot();
+    const desktop = await boot();
+    const mobileClient = createKlient({ endpoint: endpoint(mobile), token: mobile.localOwnerToken });
+    const desktopClient = createKlient({ endpoint: endpoint(desktop), token: desktop.localOwnerToken });
+    const mobileWorkDir = join(homes[0]!, 'workspace');
+    const desktopWorkDir = join(homes[1]!, 'workspace');
+    try {
+      await mobileClient.global.sessions.create({ sessionId: 'mobile-main', workDir: mobileWorkDir });
+      await desktopClient.global.sessions.create({ sessionId: 'desktop-main', workDir: desktopWorkDir });
+      await mobile.core.accessor.get(ISessionManager).close('mobile-main');
+      await desktop.core.accessor.get(ISessionManager).close('desktop-main');
+
+      const pairCode = await desktopClient.rest!.connections.createPairCode({});
+      const nonLoopback = pairCode.suggestedEndpoints[0]!;
+      const pairedRecord = await mobileClient.rest!.connections.pair({
+        endpoint: formatPairingUri({ endpoint: nonLoopback, code: pairCode.code }),
+        code: pairCode.code,
+        backgroundSummary: true,
+      });
+      expect(pairedRecord.purposes).toEqual(['gui', 'bridge']);
+
+      const waitForReverseBridge = async () => {
+        const deadline = Date.now() + 15_000;
+        for (;;) {
+          const status = await desktopClient.rest!.threadBridges.status();
+          const reverse = status.outbound.find((link) => link.grant.target.homeId === mobile.admission.identity.homeId && link.enabled && !link.grant.revoked);
+          if (reverse !== undefined) return reverse;
+          if (Date.now() >= deadline) throw new Error(`expected desktop outbound reverse bridge, got ${JSON.stringify(status)}`);
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      };
+      const reverseLink = await waitForReverseBridge();
+      expect(reverseLink.grant.operations).toEqual(['read', 'send', 'wait']);
+      expect(reverseLink.grant.operations).not.toContain('wake');
+
+      const desktopStatus = await desktopClient.rest!.threadBridges.status();
+      expect(desktopStatus.inbound[0]?.operations).toEqual(['read', 'send', 'wait']);
+      expect(desktopStatus.inbound[0]?.operations).not.toContain('wake');
+
+      const mobileWorkspaces = await mobile.core.accessor.get(IWorkspaceService).list();
+      const desktopWorkspaces = await desktop.core.accessor.get(IWorkspaceService).list();
+      const mobileWorkspace = mobileWorkspaces[0]!;
+      const desktopWorkspace = desktopWorkspaces[0]!;
+
+      const desktopThreads = desktop.core.accessor.get(IThreadCommunicationService);
+      const mobileThreads = mobile.core.accessor.get(IThreadCommunicationService);
+      const desktopPeerSend = desktopThreads as unknown as IThreadPeerSendCapability;
+      const mobilePeerSend = mobileThreads as unknown as IThreadPeerSendCapability;
+
+      const waitMobileThreadsListed = async () => {
+        const deadline = Date.now() + 15_000;
+        for (;;) {
+          try {
+            const listed = await desktopThreads.listThreads({
+              caller: { workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+              bridgeId: reverseLink.grant.id,
+            });
+            if (listed.threads.some((t) => t.ref.sessionId === 'mobile-main')) return listed;
+          } catch {
+          }
+          if (Date.now() >= deadline) throw new Error('timed out waiting for reverse WS bridge_attach to serve listThreads');
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      };
+      const mobileListed = await waitMobileThreadsListed();
+      const mobileThreadRef = mobileListed.threads.find((t) => t.ref.sessionId === 'mobile-main')!.ref;
+      expect(mobileThreadRef).toMatchObject({
+        hostId: mobile.admission.identity.hostId,
+        workspaceId: mobileWorkspace.id,
+        sessionId: 'mobile-main',
+        bridgeId: reverseLink.grant.id,
+      });
+
+      const readMobile = await desktopThreads.readThread({
+        caller: { workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+        thread: mobileThreadRef,
+        limit: 10,
+      });
+      expect(readMobile.thread.sessionId).toBe('mobile-main');
+
+      const waitBeforeSend = await desktopThreads.waitThreads({
+        caller: { workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+        threads: [{ thread: mobileThreadRef }],
+        timeoutMs: 0,
+      });
+      expect(waitBeforeSend.threads).toHaveLength(1);
+      expect(waitBeforeSend.timedOut).toBe(true);
+      const baselineCursor = waitBeforeSend.threads[0]!.cursor;
+
+      const toMobile = await desktopPeerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: desktop.admission.identity.hostId, workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+        target: mobileThreadRef,
+        content: 'Ping from desktop to NAT-ed phone over reverse WS',
+        idempotencyKey: 'desk-to-phone-1',
+      });
+      expect(toMobile.delivery).toBe('pending');
+      expect(mobile.core.accessor.get(ISessionManager).get('mobile-main')).toBeUndefined();
+      const mobileMailbox = mobile.core.accessor.get(IThreadMailboxStore);
+      const mobileInbox = await mobileMailbox.readMessages({ group: 'session:mobile-main', limit: 10 });
+      expect(mobileInbox.items).toHaveLength(1);
+      expect(mobileInbox.items[0]!.message.content).toBe('Ping from desktop to NAT-ed phone over reverse WS');
+
+      await mobileMailbox.appendActivity({
+        target: { hostId: mobile.admission.identity.hostId, workspaceId: mobileWorkspace.id, sessionId: 'mobile-main' },
+        kind: 'terminal',
+        reason: 'completed',
+      });
+      const waitAfterActivity = await desktopThreads.waitThreads({
+        caller: { workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+        threads: [{ thread: mobileThreadRef, cursor: baselineCursor }],
+        timeoutMs: 2_000,
+      });
+      expect(waitAfterActivity.timedOut).toBe(false);
+      expect(waitAfterActivity.threads[0]!.activities).toHaveLength(1);
+      expect(waitAfterActivity.threads[0]!.activities[0]!.kind).toBe('terminal');
+
+      const desktopListed = await mobileThreads.listThreads({
+        caller: { workspaceId: mobileWorkspace.id, sessionId: 'mobile-main' },
+        connectionId: pairedRecord.id,
+      });
+      const desktopThreadRef = desktopListed.threads.find((t) => t.ref.sessionId === 'desktop-main')!.ref;
+      const toDesktop = await mobilePeerSend[SEND_PEER_THREAD_MESSAGE]({
+        source: { hostId: mobile.admission.identity.hostId, workspaceId: mobileWorkspace.id, sessionId: 'mobile-main' },
+        target: desktopThreadRef,
+        content: 'Reply from phone to desktop',
+        idempotencyKey: 'phone-to-desk-1',
+      });
+      expect(toDesktop.delivery).toBe('pending');
+      expect(desktop.core.accessor.get(ISessionManager).get('desktop-main')).toBeUndefined();
+      const desktopInbox = await desktop.core.accessor.get(IThreadMailboxStore).readMessages({ group: 'session:desktop-main', limit: 10 });
+      expect(desktopInbox.items).toHaveLength(1);
+      expect(desktopInbox.items[0]!.message.content).toBe('Reply from phone to desktop');
+
+      mobile.notifyNetworkChange('lost');
+      await expect(desktopThreads.listThreads({
+        caller: { workspaceId: desktopWorkspace.id, sessionId: 'desktop-main' },
+        bridgeId: reverseLink.grant.id,
+      })).rejects.toThrow('peer_bridge_offline');
+
+      mobile.notifyNetworkChange('available');
+      const recoveredListed = await waitMobileThreadsListed();
+      expect(recoveredListed.threads.some((t) => t.ref.sessionId === 'mobile-main')).toBe(true);
+    } finally {
+      await mobileClient.close();
+      await desktopClient.close();
+    }
   }, 120_000);
 });
 

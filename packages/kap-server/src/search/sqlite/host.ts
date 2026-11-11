@@ -290,8 +290,8 @@ export class SqliteSearchHost {
     const child = spawn(process.execPath, args, {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
       env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${RESOURCE_DEFAULTS.workerHeapMb}`,
-        KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 3 + 256),
-        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 2 + 256),
+        KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.searchIndexerHardMb),
+        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? RESOURCE_DEFAULTS.searchIndexerSoftMb),
         KIKI_SEARCH_INDEX_SUBAGENTS: this.options.indexSubagents ? '1' : '0' },
     });
     this.child = child;
@@ -334,7 +334,7 @@ export class SqliteSearchHost {
         if (message.status.state === 'wal_stuck') this.reason = 'wal_stuck';
         else if (this.reason === 'wal_stuck' ||
           (this.pending.size === 0 && !message.inflight && message.rss <=
-            Number(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 3 + 256) * 1048576 &&
+            Number(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.searchIndexerHardMb) * 1048576 &&
             (this.reason === 'indexer_backoff' || this.reason === 'memory_budget'))) {
           this.reason = undefined;
           this.failures = 0;

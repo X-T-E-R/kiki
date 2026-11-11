@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
+import { androidBridge, hasAndroidBridge } from '../lib/androidBridge';
 import { composerInputElement, type ComposerInputHandle } from '../lib/composerInput';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
@@ -163,6 +164,10 @@ export function useComposerContextMenu({
       } catch {
         // denied / no activation — fall through to the native command.
       }
+    }
+    if (hasAndroidBridge()) {
+      const bridged = await androidBridge.readClipboard();
+      if (bridged !== null) return bridged;
     }
     return fallbackReadClipboard();
   };

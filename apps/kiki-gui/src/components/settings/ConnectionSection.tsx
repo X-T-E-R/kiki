@@ -12,7 +12,14 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { appShellConnectUrl } from '../../lib/appShell';
+import {
+  androidBridge,
+  hasAndroidBridge,
+  subscribeAndroidHostEvents,
+  type AndroidCapabilities,
+  type AndroidPermissionKind,
+} from '../../lib/androidBridge';
+import { appShellConnectUrl, isEmbeddedAndroidHost } from '../../lib/appShell';
 import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
 import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
@@ -353,6 +360,8 @@ function CurrentConnectionContent() {
 
       <ConnectionLogCard />
 
+      {!isSsh && (isEmbeddedAndroidHost() || hasAndroidBridge()) ? <AndroidPermissionsCard /> : null}
+
       {/* The browser cannot restart the desktop's own server, so the card is
           simply absent there rather than a "desktop only" shell. */}
       {!isSsh && isDesktop ? (
@@ -426,6 +435,135 @@ function ConnectionLogCard() {
               {t('st.conn.logCopy')}
             </button>
           </SettingField>
+        </SettingsBox>
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function AndroidPermissionsCard() {
+  const { t } = useI18n();
+  const [caps, setCaps] = useState<AndroidCapabilities | null>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+
+  const refresh = useCallback(async () => {
+    const next = await androidBridge.capabilities();
+    if (next !== null) setCaps(next);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const unsubscribe = subscribeAndroidHostEvents((detail) => {
+      if (detail.type === 'permissions') {
+        setFeedback(null);
+        setCaps((prev) =>
+          prev === null
+            ? {
+                permissions: {
+                  accessibility: detail.permissions.accessibility === true,
+                  overlay: detail.permissions.overlay === true,
+                  notifications: detail.permissions.notifications ?? true,
+                  battery: detail.permissions.battery === true,
+                  oemAutostart: detail.permissions.oemAutostart,
+                },
+              }
+            : { ...prev, permissions: { ...prev.permissions, ...detail.permissions } },
+        );
+      }
+    });
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      unsubscribe();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refresh]);
+
+  const runBridgeAction = async (action: () => Promise<void>) => {
+    setFeedback(null);
+    try {
+      await action();
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const rows: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly ready: boolean;
+    readonly permission: AndroidPermissionKind;
+  }> = [
+    {
+      id: 'accessibility',
+      label: t('st.conn.androidAccessibility'),
+      ready: caps?.permissions.accessibility === true,
+      permission: 'accessibility',
+    },
+    {
+      id: 'overlay',
+      label: t('st.conn.androidOverlay'),
+      ready: caps?.permissions.overlay === true,
+      permission: 'overlay',
+    },
+    {
+      id: 'battery',
+      label: t('st.conn.androidBattery'),
+      ready: caps?.permissions.battery === true,
+      permission: 'battery',
+    },
+  ];
+
+  return (
+    <SectionCard
+      id="st-card-conn-android"
+      title={t('st.conn.androidTitle')}
+      scope="app"
+      actions={
+        <button
+          type="button"
+          className={SECONDARY_BUTTON}
+          data-android-open-settings
+          onClick={() => {
+            void runBridgeAction(() => androidBridge.openPhoneSettings());
+          }}
+        >
+          {t('st.conn.androidMore')}
+        </button>
+      }
+    >
+      <div data-android-permissions>
+        <SettingsBox>
+          {rows.map((row) => (
+            <SettingField key={row.id} label={row.label}>
+              {row.ready ? (
+                <span
+                  data-android-perm-ready={row.id}
+                  className="inline-flex items-center gap-1.5 text-[12px] text-ink-faint"
+                >
+                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+                  {t('st.conn.androidOn')}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-android-perm-enable={row.id}
+                  onClick={() => {
+                    void runBridgeAction(() => androidBridge.openPermission(row.permission));
+                  }}
+                >
+                  {t('st.conn.androidEnable')}
+                </button>
+              )}
+            </SettingField>
+          ))}
         </SettingsBox>
         <FeedbackLine feedback={feedback} />
       </div>

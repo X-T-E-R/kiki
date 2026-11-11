@@ -18,6 +18,7 @@ import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { TerminalHttpConnection } from './terminalHttp';
+import { PeerBridgeConnection, type PeerBridgeRegistry } from './peerBridgeSocket';
 import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent } from '../../services/connections/audience';
 import { webPrincipal } from '../../services/webAccess';
 import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES } from '../../services/connections/manager';
@@ -33,6 +34,7 @@ export const KLIENT_CALL_BODY_LIMIT_BYTES = HTTP_REQUEST_BODY_LIMIT_BYTES;
 export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
   readonly enableTerminals?: boolean;
+  readonly peerBridgeRegistry?: PeerBridgeRegistry;
 }
 
 interface KlientFailureTarget {
@@ -104,7 +106,8 @@ export function registerKlientHttp(
   const peerServer = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol, maxPayload: BROKER_WS_MESSAGE_BYTES, perMessageDeflate: false });
   const connections = new Set<KlientHttpConnection>();
   for (const server of [wss, peerServer]) server.on('connection', (socket, request) => {
-    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope, peerAudience(request) !== undefined, webPrincipal(request) !== undefined);
+    const audience = peerAudience(request);
+    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope, audience !== undefined, webPrincipal(request) !== undefined, audience?.grantId);
     connections.add(connection);
     const dispose = (): void => {
       connection.dispose();
@@ -126,6 +129,7 @@ class KlientHttpConnection {
   private readonly streams = new Map<string, ActiveStream>();
   private readonly sessionViews: SessionViewHttpConnection;
   private readonly terminals: TerminalHttpConnection;
+  private readonly peerBridge: PeerBridgeConnection;
   private readonly heartbeat: ReturnType<typeof setInterval>;
   private lastInboundAt = Date.now();
   private closed = false;
@@ -138,11 +142,13 @@ class KlientHttpConnection {
     scope: Scope,
     private readonly peer = false,
     private readonly browser = false,
+    peerGrantId?: string,
   ) {
     this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true && !peer, (frame) => this.send(frame));
     this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
       (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
       { core: scope, service: opts.sessionViewTranscriptService, logger: app.log });
+    this.peerBridge = new PeerBridgeConnection(peer ? peerGrantId : undefined, opts.peerBridgeRegistry, (frame) => this.sendChecked(frame));
     this.heartbeat = setInterval(() => {
       if (Date.now() - this.lastInboundAt > 30_000) { socket.terminate(); this.dispose(); return; }
       this.send({ type: 'ping', data: { nonce: String(Date.now()), heartbeatMs: 10_000 } });
@@ -158,7 +164,7 @@ class KlientHttpConnection {
     const frame = decodeJsonFrame(rawDataToString(data));
     if (frame === undefined) return;
     if ((this.peer && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
-    if (this.sessionViews.receive(frame) || this.terminals.receive(frame)) return;
+    if (this.sessionViews.receive(frame) || this.terminals.receive(frame) || this.peerBridge.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {
       case 'subscribe':
@@ -300,12 +306,18 @@ class KlientHttpConnection {
   }
 
   private send(frame: KlientFrame): void {
-    if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
+    void this.sendChecked(frame);
+  }
+
+  private sendChecked(frame: KlientFrame): boolean {
+    if (this.closed || this.socket.readyState !== this.socket.OPEN) return false;
     try {
       const encoded = encodeJsonFrame(frame);
-      if (this.peer && this.socket.bufferedAmount + Buffer.byteLength(encoded) > BROKER_WS_BUFFER_BYTES) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return; }
+      if (this.peer && this.socket.bufferedAmount + Buffer.byteLength(encoded) > BROKER_WS_BUFFER_BYTES) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
       this.socket.send(encoded);
+      return true;
     } catch {
+      return false;
     }
   }
 
@@ -318,6 +330,7 @@ class KlientHttpConnection {
     this.streams.clear();
     this.sessionViews.dispose();
     this.terminals.dispose();
+    this.peerBridge.dispose();
     clearInterval(this.heartbeat);
   }
 }

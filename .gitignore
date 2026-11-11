@@ -5,6 +5,7 @@ dist/
 !/plugins/official/kiki-documents/vendor/nb-extract/dist/index.mjs
 dist-single/
 dist-native/
+dist-android/
 dist-npm/
 .tmp-api-extractor/
 .contract-types-tmp/

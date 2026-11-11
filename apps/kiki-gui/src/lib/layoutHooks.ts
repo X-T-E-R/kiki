@@ -41,10 +41,12 @@ export function useCoarsePointer(): boolean {
 /**
  * Software-keyboard fallback. `interactive-widget=resizes-content` (see
  * index.html) lets Chromium shrink the layout viewport itself; elsewhere
- * (iOS Safari) the layout viewport never shrinks for the keyboard, so this
- * mirrors visualViewport.height into `--kiki-visual-height` on :root. CSS
- * opts in per surface with `height: var(--kiki-visual-height, 100%)` — where
- * the API is absent nothing is set and every rule keeps its 100% fallback.
+ * (iOS Safari, embedded Android WebView under edge-to-edge WindowInsets) the
+ * layout viewport may stay full-screen while `visualViewport` shrinks or shifts,
+ * so this mirrors `visualViewport.height` into `--kiki-visual-height` and any
+ * positive keyboard inset into `--kiki-ime-offset` on `:root`. CSS opts in per
+ * surface with `height: var(--kiki-visual-height, 100%)` — where the API is
+ * absent nothing is set and every rule keeps its 100% fallback.
  */
 export function useVisualViewportHeightVar(): void {
   useEffect(() => {
@@ -54,19 +56,25 @@ export function useVisualViewportHeightVar(): void {
     let frame = 0;
     const write = () => {
       frame = 0;
-      root.style.setProperty('--kiki-visual-height', `${Math.round(viewport.height)}px`);
+      const height = Math.max(0, Math.round(viewport.height));
+      const imeInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      root.style.setProperty('--kiki-visual-height', `${height}px`);
+      root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };
     const schedule = () => {
       if (frame === 0) frame = requestAnimationFrame(write);
     };
     write();
     viewport.addEventListener('resize', schedule);
+    viewport.addEventListener('scroll', schedule);
     window.addEventListener('orientationchange', schedule);
     return () => {
       if (frame !== 0) cancelAnimationFrame(frame);
       viewport.removeEventListener('resize', schedule);
+      viewport.removeEventListener('scroll', schedule);
       window.removeEventListener('orientationchange', schedule);
       root.style.removeProperty('--kiki-visual-height');
+      root.style.removeProperty('--kiki-ime-offset');
     };
   }, []);
 }

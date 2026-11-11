@@ -61,8 +61,11 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const input = pairClaimInputSchema.parse(req.body);
       const claimed = await admission.claimPair(input.code, input.source, input.sourceLabel);
       try {
-        const bridge = claimed.allowBridge && input.requestBridge !== false && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
-        return { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, ...bridge.length > 0 ? { bridge } : {} };
+        const bridge = claimed.allowBridge && input.requestBridge !== false && hooks.current !== undefined
+          ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations })
+          : [];
+        const result = { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, bridge: bridge.length > 0 ? bridge : undefined };
+        return result;
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
   });

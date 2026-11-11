@@ -38,6 +38,23 @@ it.each([
   expect(value.cpuWorkers * heap * 1024 ** 2).toBeLessThanOrEqual(gib * GiB / 4);
 });
 
+it('caps worker heap, CPU workers, and search indexer budgets on Android and mobile profiles', () => {
+  for (const hardware of [
+    { parallelism: 8, memoryBytes: 12 * GiB, platform: 'android', env: {} },
+    { parallelism: 8, memoryBytes: 8 * GiB, platform: 'linux', env: { KIKI_PLATFORM: 'android' } },
+    { parallelism: 6, memoryBytes: 6 * GiB, platform: 'linux', env: { KIKI_RUNTIME_PROFILE: 'mobile' } },
+  ]) {
+    const value = resourceDefaults(hardware);
+    expect(value.workerHeapMb).toBe(96);
+    expect(value.cpuWorkers).toBe(2);
+    expect(value.searchIndexerSoftMb).toBe(160);
+    expect(value.searchIndexerHardMb).toBe(256);
+  }
+  const dualCoreMobile = resourceDefaults({ parallelism: 2, memoryBytes: 4 * GiB, platform: 'android', env: {} });
+  expect(dualCoreMobile.cpuWorkers).toBe(1);
+  expect(dualCoreMobile.workerHeapMb).toBe(96);
+});
+
 it('keeps explicit resource choices above old schema caps and preserves uncapped provider rules', () => {
   expect(CpuWorkersConfigSchema.parse({ maxWorkers: 200, maxQueue: 5000, maxQueuedBytes: GiB })).toMatchObject({ maxWorkers: 200, maxQueue: 5000, maxQueuedBytes: GiB, timeoutMs: 30_000 });
   expect(SessionResidencyConfigSchema.parse({ maxLiveSessions: 1000, maxConcurrentRestores: 100, maxQueuedRestores: 5000, idleTtlMs: 172_800_000 })).toMatchObject({ maxLiveSessions: 1000, maxConcurrentRestores: 100, maxQueuedRestores: 5000 });

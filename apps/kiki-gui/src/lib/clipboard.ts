@@ -4,6 +4,7 @@
  */
 
 import { isVscodeWebview, vscodeHost } from '../host/vscode';
+import { androidBridge, hasAndroidBridge } from './androidBridge';
 
 export async function copyTextToClipboard(text: string): Promise<void> {
   if (isVscodeWebview()) {
@@ -15,6 +16,9 @@ export async function copyTextToClipboard(text: string): Promise<void> {
     return;
   } catch {
     // clipboard API denied (permissions policy, insecure context) — fall back.
+  }
+  if (hasAndroidBridge() && (await androidBridge.writeClipboard(text))) {
+    return;
   }
   const area = document.createElement('textarea');
   area.value = text;

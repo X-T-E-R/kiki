@@ -1,17 +1,20 @@
 import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { mkdir, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { createKeyringOrBrokerAsyncEntry } from '@kiki/agent-core-v2/persistence/backends/node-fs/secretBackend';
 import { readPrivateFile, writePrivateFile } from '../../services/auth/privateFiles';
 
 interface SecretEntry { setPassword(value: string): Promise<void>; getPassword(): Promise<string | undefined>; deleteCredential(): Promise<boolean> }
 export type ExportKeyring = (account: string) => Promise<SecretEntry>;
 const keyring: ExportKeyring = async (account) => {
-  const require = createRequire(import.meta.resolve('@kiki/agent-core-v2'));
-  const { AsyncEntry } = require('@napi-rs/keyring') as { AsyncEntry: new (service: string, account: string, options?: unknown) => SecretEntry };
-  return new AsyncEntry('Kiki Usage Export', account, process.platform === 'linux' ? { linux: { store: 'secret-service' } } : undefined);
+  const entry = await createKeyringOrBrokerAsyncEntry('Kiki Usage Export', account);
+  return {
+    setPassword: (value) => entry.setPassword(value),
+    getPassword: async () => (await entry.getPassword()) ?? undefined,
+    deleteCredential: () => entry.deleteCredential(),
+  };
 };
 async function restrictAcl(path: string, directory = false): Promise<void> {
   if (process.platform === 'win32') await promisify(execFile)('icacls', [path, '/inheritance:r', '/grant:r', `${userInfo().username}:${directory ? '(OI)(CI)' : ''}F`], { windowsHide: true });

@@ -12,6 +12,8 @@
 import { readSettings, subscribeSettings, type ThemePreference } from '@kiki/session-core/settings';
 
 import type { HostAdapter } from '../host/host';
+import { androidBridge, hasAndroidBridge } from './androidBridge';
+import { isEmbeddedAndroidHost } from './appShell';
 
 export type ResolvedTheme = 'light' | 'dark';
 
@@ -58,6 +60,9 @@ export function startThemeSync(host: HostAdapter): () => void {
     const resolved = resolveTheme(readSettings().theme, prefersDark());
     applyTheme(resolved);
     void host.setTheme?.(resolved);
+    if (hasAndroidBridge() || isEmbeddedAndroidHost()) {
+      void androidBridge.setAppearance({ dark: resolved === 'dark' });
+    }
   };
   sync();
 

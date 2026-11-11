@@ -9,11 +9,17 @@ import { CONNECTION_STORAGE_KEY } from '../state/connectionConfig';
 import { webAccessBootstrap } from './webAccess';
 
 const SHELL_AGENT = /\bKikiApp\/(android|ios)\b/;
+const EMBEDDED_AGENT = /\bKikiEmbedded\/(\d+)\b/;
 export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
 export const SHELL_PEER_TOKEN_KEY = 'kiki.peer.token';
 export const SHELL_DOCUMENT_STAGED_PROP = '__kikiShellStagedCredential';
 export const SHELL_DOCUMENT_NAV_NONCE_PROP = '__kikiShellNavNonce';
 export const SHELL_TOKEN_EVENT = 'kiki:shell-token';
+
+/** True when running inside the embedded Kiki Android WebView host (`KikiApp/android` + `KikiEmbedded/1`). */
+export function isEmbeddedAndroidHost(userAgent: string = globalThis.navigator?.userAgent ?? ''): boolean {
+  return SHELL_AGENT.exec(userAgent)?.[1] === 'android' && EMBEDDED_AGENT.test(userAgent);
+}
 
 interface WindowShellChannel {
   adopted: { documentRef: object | null; origin: string; token: string } | null;
@@ -38,6 +44,7 @@ function getWindowChannel(win: object): WindowShellChannel {
 
 /** The shell's connect screen, opened to enter a new server address or link. */
 export function appShellConnectUrl(userAgent: string = globalThis.navigator?.userAgent ?? ''): string | null {
+  if (isEmbeddedAndroidHost(userAgent)) return 'kiki-shell://connect';
   const platform = SHELL_AGENT.exec(userAgent)?.[1];
   if (platform === 'android') return 'https://localhost/index.html#change';
   if (platform === 'ios') return 'capacitor://localhost/index.html#change';

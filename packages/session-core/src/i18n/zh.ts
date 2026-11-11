@@ -3841,6 +3841,13 @@ export const zh = {
   'st.conn.restart': '重启服务器',
   'st.conn.restarting': '正在重启服务器…',
   'st.conn.restarted': '桌面服务器已重启，并通过认证健康检查。',
+  'st.conn.androidTitle': '手机权限',
+  'st.conn.androidAccessibility': '无障碍',
+  'st.conn.androidOverlay': '悬浮窗',
+  'st.conn.androidBattery': '后台省电豁免',
+  'st.conn.androidOn': '已就绪',
+  'st.conn.androidEnable': '开启',
+  'st.conn.androidMore': '更多设置',
   'st.conn.disconnectTitle': '断开连接',
   'st.conn.disconnectBody':
     '清除本地保存的地址与令牌，回到连接页；会话仍留在服务器上。',

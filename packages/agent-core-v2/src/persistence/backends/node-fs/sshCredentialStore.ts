@@ -1,17 +1,16 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'pathe';
 
 import { SPACE_ID_PATTERN } from '@kiki/protocol';
-
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { TomlAtomicDocumentStore } from './atomicDocumentStore';
 import { FileStorageService } from './fileStorageService';
+import { createKeyringOrBrokerAsyncEntry } from './secretBackend';
 import { LifecycleScope } from '#/app/scopes';
 import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore';
 
@@ -31,10 +30,7 @@ interface SecretEntry {
 export type SecretEntryFactory = (account: string) => Promise<SecretEntry>;
 
 async function systemKeyring(account: string): Promise<SecretEntry> {
-  const { AsyncEntry } = createRequire(import.meta.url)('@napi-rs/keyring') as typeof import('@napi-rs/keyring');
-  return new AsyncEntry('Kiki SSH', account, process.platform === 'linux'
-    ? { linux: { store: 'secret-service' } }
-    : undefined);
+  return createKeyringOrBrokerAsyncEntry('Kiki SSH', account);
 }
 
 export class SshCredentialStore {

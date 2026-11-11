@@ -37,6 +37,11 @@ export class RemoteConnectionManager {
   private stopped = false;
   private readonly lastSummaryAttempt = new Map<string, number>();
   private readonly summaryLeases = new Map<string, ConnectionLease>();
+  private readonly changeListeners = new Set<() => void>();
+  onDidChange(listener: () => void): { dispose(): void } {
+    this.changeListeners.add(listener);
+    return { dispose: () => { this.changeListeners.delete(listener); } };
+  }
   private stopSummary(id: string): void { const lease = this.summaryLeases.get(id); this.summaryLeases.delete(id); lease?.release(); }
   start(): void {
     this.summaryTimer = setInterval(() => { void this.pollSummaries().catch(() => {}); }, 5000);
@@ -87,6 +92,26 @@ export class RemoteConnectionManager {
     const id = randomUUID();
     const record: RemoteConnection = { id, label: input.label, endpoint, target: { ...input.target }, transport: input.transport, credentialRef: id, purposes: ['bridge'], enabled: true, backgroundSummary: false, state: 'offline', activeLeases: 0 };
     return this.change(async () => { this.records.push(record); return { ...record }; });
+  }
+  async ensurePeerBridgeTarget(input: { grantId: string; label: string; target: ConnectionIdentity; endpoint?: string }): Promise<RemoteConnection> {
+    const transport: RemoteConnection['transport'] = input.endpoint === undefined ? { kind: 'peer_socket', grantId: input.grantId } : undefined;
+    const endpoint = transport === undefined ? validateEndpoint(input.endpoint!) : descriptorEndpoint(transport);
+    return this.change(async () => {
+      const existing = this.records.find((entry) => entry.transport?.kind === 'peer_socket' && entry.transport.grantId === input.grantId
+        || entry.transport === undefined && entry.purposes.length === 1 && entry.purposes[0] === 'bridge' && entry.endpoint === endpoint && sameIdentity(entry.target, input.target));
+      if (existing !== undefined) {
+        existing.label = input.label;
+        existing.endpoint = endpoint;
+        existing.transport = transport;
+        existing.enabled = true;
+        if (existing.state === 'disabled') existing.state = 'offline';
+        return { ...existing };
+      }
+      const id = randomUUID();
+      const record: RemoteConnection = { id, label: input.label, endpoint, target: { ...input.target }, transport, credentialRef: id, purposes: ['bridge'], enabled: true, backgroundSummary: false, state: 'offline', activeLeases: 0 };
+      this.records.push(record);
+      return { ...record };
+    });
   }
   async registerSsh(input: SshConnectionRegisterInput, signal: AbortSignal, bridge?: SshPairBridge): Promise<RemoteConnection> {
     if (this.ssh === undefined) throw new AdmissionError(503, 'ssh_transport_unavailable');
@@ -175,7 +200,7 @@ export class RemoteConnectionManager {
     let acquired = pending.get(key);
     if (acquired === undefined) {
       acquired = (async () => {
-        if (record.transport === undefined) return this.resolveTransport(id);
+        if (record.transport === undefined || record.transport.kind === 'peer_socket') return this.resolveTransport(id);
         try {
           let transport: Omit<ConnectionTransport, 'id'>;
           if (record.transport.kind === 'local_space') {
@@ -288,9 +313,13 @@ export class RemoteConnectionManager {
     }
     return readBoundedJsonBody(response, bytes);
   }
-  private change<T>(work: () => Promise<T>): Promise<T> { const result = this.tail.then(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); return value; }); this.tail = result.catch(() => undefined); return result; }
+  private change<T>(work: () => Promise<T>): Promise<T> { const result = this.tail.then(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); for (const listener of this.changeListeners) listener(); return value; }); this.tail = result.catch(() => undefined); return result; }
 }
-function descriptorEndpoint(transport: NonNullable<RemoteConnection['transport']>): string { return transport.kind === 'ssh' ? sshEndpoint(transport.profile) : `space://${encodeURIComponent(transport.localSpaceId)}`; }
+function descriptorEndpoint(transport: NonNullable<RemoteConnection['transport']>): string {
+  if (transport.kind === 'ssh') return sshEndpoint(transport.profile);
+  if (transport.kind === 'peer_socket') return `peer://${encodeURIComponent(transport.grantId)}`;
+  return `space://${encodeURIComponent(transport.localSpaceId)}`;
+}
 function sshEndpoint(profile: SshRemoteProfile): string { return `ssh://${encodeURIComponent(profile.id)}`; }
 export function validateEndpoint(raw: string): string {
   const url = new URL(raw);

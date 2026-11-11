@@ -6,6 +6,8 @@ import {
   drainLogCloses,
   ConfigWarning,
   CapabilityChanged,
+  IAgentLifecycleService,
+  IAgentLoopService,
   IAppendLogStore,
   IConfigService,
   IEventService,
@@ -77,6 +79,7 @@ import {
   KLIENT_EVENTS_PATH,
   registerKlientHttp,
 } from './transport/klient/registerKlientHttp';
+import { PeerBridgeRegistry } from './transport/klient/peerBridgeSocket';
 import {
   ConnectionRegistry,
   type IConnectionRegistry,
@@ -106,6 +109,7 @@ import { registerWebAccessRoutes } from './routes/webAccess';
 import { IBootstrapService } from '@kiki/agent-core-v2';
 import { IWorkspacePersistence } from '@kiki/agent-core-v2/app/workspace/workspacePersistence';
 import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpaceThreadBridgeRequest, type SpaceThreadBridge } from './services/threadBridge/bridge';
+import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBridgeClient';
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
@@ -219,6 +223,7 @@ export interface ServerStartOptions {
   readonly insecureNoTls?: boolean;
   readonly allowRemoteShutdown?: boolean;
   readonly authTokenService?: IAuthTokenService;
+  readonly localOwnerToken?: string;
   readonly disableAuth?: boolean;
   readonly sshRemoteConnector?: SshRemoteConnector;
   /**
@@ -366,6 +371,12 @@ export async function cleanupServerSessions(
   return failures;
 }
 
+export interface ServerTurnSummary {
+  readonly active: number;
+  readonly executing: boolean;
+  readonly pendingInteraction: boolean;
+}
+
 export interface RunningServer {
   readonly app: FastifyInstance;
   readonly core: Scope;
@@ -379,6 +390,9 @@ export interface RunningServer {
   readonly port: number;
   readonly closed: Promise<void>;
   readonly exitReceipt: Promise<ServerExitReceipt>;
+  notifyNetworkChange(state: 'available' | 'lost'): void;
+  subscribeTurnSummary(listener: (summary: ServerTurnSummary) => void): () => void;
+  cancelActiveTurns(): number;
   close(): Promise<void>;
 }
 
@@ -453,7 +467,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     throw new Error('SSH-managed servers require loopback, persistent bearer authentication, and no debug or idle shutdown');
   }
   const serverHomeId = await loadOrCreateServerHomeId(homeDir, opts.sshManaged === true);
-  const localOwnerToken = await loadOrCreateLocalOwnerToken(homeDir);
+  const localOwnerToken = opts.localOwnerToken !== undefined && opts.localOwnerToken.trim() !== ''
+    ? opts.localOwnerToken.trim()
+    : await loadOrCreateLocalOwnerToken(homeDir);
   const connectionIdentity = { homeId: serverHomeId, hostId: createKimiDeviceId(homeDir), protocol: CONNECTION_PROTOCOL } as const;
   const admission = new ConnectionAdmission(homeDir, connectionIdentity, opts.disableAuth === true ? 'dangerous_auth_bypass' : undefined);
   const serverVersion = opts.serverVersion ?? getServerVersion();
@@ -550,6 +566,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   const audience = new ConnectionAudience(admission, localOwnerToken, validateCredential, () => core.accessor.get(IBootstrapService).spaceId ?? 'main');
   let threadBridge: SpaceThreadBridge | undefined;
+  let outboundPeerBridge: OutboundPeerBridgeClient | undefined;
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
   const navigationDb = HistoryNavigationDb.lazy(join(homeDir, 'server', 'history-navigation.sqlite'));
   let locator: HistoryLocatorStore | undefined;
@@ -811,6 +828,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     if (idleTimer !== undefined) clearInterval(idleTimer);
     if (authMonitor !== undefined) clearInterval(authMonitor);
     const steps: ServerCleanupStep[] = [
+      { run: () => outboundPeerBridge?.close() },
       { run: () => { peerAdmissionHook?.dispose(); return peerListeners?.close(); } },
       { run: () => web.close() },
       { run: () => externalClientListener.close() },
@@ -1196,10 +1214,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     });
   }
 
+  const peerBridgeRegistry = new PeerBridgeRegistry();
   const wssKlient = registerKlientHttp(app, core, {
     enableTerminals,
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
+    peerBridgeRegistry,
   });
   if (opts.disableAuth !== true) {
     const { baseHomeDir } = core.accessor.get(IBootstrapService);
@@ -1214,7 +1234,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   const pairingHooks: { current?: PairingHooks } = {};
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web);
-  threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
+  threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
   pairingHooks.current = {
     workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
@@ -1408,6 +1428,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   catch (error) { if (startup === undefined) await close(); throw error; }
   remoteConnections.start();
+  if (threadBridge !== undefined) {
+    outboundPeerBridge = new OutboundPeerBridgeClient(remoteConnections, threadBridge, shutdownController.signal);
+    outboundPeerBridge.start();
+  }
   usageExport.start();
   try {
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService, navigation());
@@ -1449,6 +1473,71 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     idleTimer.unref();
   }
 
+  const computeTurnSummary = (): ServerTurnSummary => {
+    let active = 0;
+    let executing = false;
+    let pendingInteraction = false;
+    for (const session of core.accessor.get(ISessionManager).list()) {
+      const state = session.accessor.get(ISessionActivityView).state();
+      if (state.busy) active += 1;
+      if (state.executing === true) executing = true;
+      if (state.pendingInteraction !== 'none') pendingInteraction = true;
+    }
+    return { active, executing, pendingInteraction };
+  };
+
+  const subscribeTurnSummary = (listener: (summary: ServerTurnSummary) => void): (() => void) => {
+    const manager = core.accessor.get(ISessionManager);
+    const sessionWatchers = new Map<string, { dispose(): void | Promise<void> }>();
+    let lastKey = '';
+    const emit = (): void => {
+      if (shutdownController.signal.aborted) return;
+      const summary = computeTurnSummary();
+      const key = `${summary.active}:${Number(summary.executing)}:${Number(summary.pendingInteraction)}`;
+      if (key === lastKey) return;
+      lastKey = key;
+      listener(summary);
+    };
+    const watch = (session: { readonly id: string; readonly accessor: Scope['accessor'] }): void => {
+      void sessionWatchers.get(session.id)?.dispose();
+      sessionWatchers.set(session.id, session.accessor.get(ISessionActivityView).onDidChange(() => { emit(); }));
+    };
+    const unwatch = (sessionId: string): void => {
+      void sessionWatchers.get(sessionId)?.dispose();
+      sessionWatchers.delete(sessionId);
+    };
+    for (const session of manager.list()) watch(session);
+    const created = manager.onDidCreateSession?.(({ sessionId }) => {
+      const session = manager.get(sessionId);
+      if (session !== undefined) watch(session);
+      emit();
+    });
+    const closedSub = manager.onDidCloseSession?.(({ sessionId }) => { unwatch(sessionId); emit(); });
+    const archivedSub = manager.onDidArchiveSession?.(({ sessionId }) => { unwatch(sessionId); emit(); });
+    emit();
+    return () => {
+      for (const watcher of sessionWatchers.values()) void watcher.dispose();
+      sessionWatchers.clear();
+      void created?.dispose();
+      void closedSub?.dispose();
+      void archivedSub?.dispose();
+    };
+  };
+
+  const cancelActiveTurns = (): number => {
+    let cancelled = 0;
+    for (const session of core.accessor.get(ISessionManager).list()) {
+      for (const agent of session.accessor.get(IAgentLifecycleService).list()) {
+        const loop = agent.accessor.get(IAgentLoopService);
+        if (loop.status().state === 'running') {
+          loop.cancelFromUser();
+          cancelled += 1;
+        }
+      }
+    }
+    return cancelled;
+  };
+
   startupComplete = true;
   return {
     app,
@@ -1463,6 +1552,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     port: boundPort,
     closed,
     exitReceipt,
+    notifyNetworkChange: (state) => { outboundPeerBridge?.notifyNetworkChange(state); },
+    subscribeTurnSummary,
+    cancelActiveTurns,
     close,
   };
 }

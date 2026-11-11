@@ -1,25 +1,20 @@
-import { createRequire } from 'node:module';
+import type { KeyringApi } from '@kiki/oauth';
 
-import type { KeyringApi, KeyringEntry } from '@kiki/oauth';
+import {
+  createSyncSecretEntry,
+  listSyncSecretAccounts,
+  type SecretBackendConfig,
+} from './secretBackend';
 
-interface NativeKeyring {
-  Entry: new (service: string, account: string, options?: unknown) => KeyringEntry;
-  findCredentials(service: string): Array<{ readonly account: string }>;
+export function createKimiOAuthKeyring(config: SecretBackendConfig = {}): KeyringApi {
+  return {
+    createEntry(service, account) {
+      return createSyncSecretEntry(service, account, config);
+    },
+    findAccounts(service) {
+      return listSyncSecretAccounts(service, config);
+    },
+  };
 }
 
-function native(): NativeKeyring {
-  return createRequire(import.meta.url)('@napi-rs/keyring') as NativeKeyring;
-}
-
-function linuxOptions(): unknown {
-  return process.platform === 'linux' ? { linux: { store: 'secret-service' } } : undefined;
-}
-
-export const kimiOAuthKeyring: KeyringApi = {
-  createEntry(service, account) {
-    return new (native().Entry)(service, account, linuxOptions());
-  },
-  findAccounts(service) {
-    return native().findCredentials(service).map(({ account }) => account);
-  },
-};
+export const kimiOAuthKeyring: KeyringApi = createKimiOAuthKeyring();

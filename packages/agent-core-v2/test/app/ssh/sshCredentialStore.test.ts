@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { Worker } from 'node:worker_threads';
 import { join } from 'pathe';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createKimiOAuthKeyring } from '#/persistence/backends/node-fs/kimiOAuthKeyring';
+import { createOriginalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
 import { SshCredentialStore, type SecretEntryFactory } from '#/persistence/backends/node-fs/sshCredentialStore';
 
 const directories: string[] = [];
@@ -131,6 +134,130 @@ describe('SSH credentials', () => {
       expect(await store.read(hostId, 'password')).toBe('temporary probe');
     } finally {
       await store.forget(hostId, 'password');
+    }
+  });
+
+  it('routes SSH, Kimi OAuth, and original OAuth secrets through the loopback Android broker and falls back to 0o600 files when unconfigured', async () => {
+    const brokerToken = `broker-${randomUUID()}`;
+    const brokerWorkerCode = `
+      const { createServer } = require('node:http');
+      const { parentPort, workerData } = require('node:worker_threads');
+      const brokerSecrets = new Map();
+      const server = createServer(async (req, res) => {
+        if (req.headers.authorization !== 'Bearer ' + workerData.brokerToken) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        const url = new URL(req.url || '/', 'http://127.0.0.1');
+        if (req.method === 'GET' && url.pathname === '/v1/secret/list') {
+          const service = url.searchParams.get('service') || '';
+          const bucket = brokerSecrets.get(service);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ accounts: bucket ? [...bucket.keys()] : [] }));
+          return;
+        }
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        if (req.method === 'POST' && url.pathname === '/v1/secret/put') {
+          const bucket = brokerSecrets.get(body.service) || new Map();
+          bucket.set(body.account, body.value ?? '');
+          brokerSecrets.set(body.service, bucket);
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/secret/get') {
+          const bucket = brokerSecrets.get(body.service);
+          const value = bucket ? bucket.get(body.account) : undefined;
+          if (value === undefined) {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ value }));
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/secret/delete') {
+          const bucket = brokerSecrets.get(body.service);
+          const deleted = bucket ? bucket.delete(body.account) : false;
+          res.writeHead(deleted ? 204 : 404);
+          res.end();
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        parentPort.postMessage({ type: 'listening', port: server.address().port });
+      });
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'close') {
+          server.close(() => process.exit(0));
+        }
+      });
+    `;
+    const brokerWorker = new Worker(brokerWorkerCode, { eval: true, workerData: { brokerToken } });
+    const port = await new Promise<number>((resolve, reject) => {
+      brokerWorker.once('message', (msg: { port: number }) => resolve(msg.port));
+      brokerWorker.once('error', reject);
+    });
+    const brokerUrl = `http://127.0.0.1:${port}`;
+    const home = await temporaryHome();
+    try {
+      vi.stubEnv('KIKI_SECRET_BACKEND', 'android-broker');
+      vi.stubEnv('KIKI_SECRET_BROKER_URL', brokerUrl);
+      vi.stubEnv('KIKI_SECRET_BROKER_TOKEN', brokerToken);
+
+      const sshStore = new SshCredentialStore(home);
+      expect(await sshStore.save('phone-ssh', 'password', 'broker-ssh-pass')).toBe('keyring');
+      expect(await sshStore.read('phone-ssh', 'password')).toBe('broker-ssh-pass');
+      const listSshRes = await fetch(`${brokerUrl}/v1/secret/list?service=${encodeURIComponent('Kiki SSH')}`, {
+        headers: { authorization: `Bearer ${brokerToken}` },
+      });
+      expect(((await listSshRes.json()) as { accounts: string[] }).accounts.length).toBe(1);
+      await sshStore.forget('phone-ssh', 'password');
+      expect(await sshStore.read('phone-ssh', 'password')).toBeUndefined();
+
+      const syncKeyring = createKimiOAuthKeyring({ homeDir: home });
+      const syncEntry = syncKeyring.createEntry('kimi-code', 'primary');
+      expect(syncEntry.getPassword()).toBeNull();
+      syncEntry.setPassword('{"access_token":"tok-1"}');
+      expect(syncEntry.getPassword()).toBe('{"access_token":"tok-1"}');
+      expect(syncKeyring.findAccounts('kimi-code')).toEqual(['primary']);
+      expect(syncEntry.deleteCredential()).toBe(true);
+      expect(syncEntry.getPassword()).toBeNull();
+      expect(syncKeyring.findAccounts('kimi-code')).toEqual([]);
+
+      const asyncKeyring = createOriginalOAuthKeyring({ homeDir: home });
+      expect(await asyncKeyring.load('grok-build', 'acct-1')).toBeUndefined();
+      await asyncKeyring.save('grok-build', 'acct-1', 'secret-refresh-token');
+      expect(await asyncKeyring.load('grok-build', 'acct-1')).toBe('secret-refresh-token');
+
+      vi.stubEnv('KIKI_SECRET_BROKER_URL', '');
+      vi.stubEnv('KIKI_SECRET_BROKER_TOKEN', '');
+      const fallbackHome = await temporaryHome();
+      const fallbackSsh = new SshCredentialStore(fallbackHome);
+      expect(await fallbackSsh.save('cli-smoke', 'password', 'file-ssh-pass')).toBe('file');
+      expect(await fallbackSsh.read('cli-smoke', 'password')).toBe('file-ssh-pass');
+
+      const fallbackSync = createKimiOAuthKeyring({ homeDir: fallbackHome });
+      const fallbackEntry = fallbackSync.createEntry('kimi-code', 'smoke-acct');
+      fallbackEntry.setPassword('smoke-secret');
+      expect(fallbackEntry.getPassword()).toBe('smoke-secret');
+      expect(fallbackSync.findAccounts('kimi-code')).toEqual(['smoke-acct']);
+      expect(fallbackEntry.deleteCredential()).toBe(true);
+      expect(fallbackSync.findAccounts('kimi-code')).toEqual([]);
+
+      const fallbackAsync = createOriginalOAuthKeyring({ homeDir: fallbackHome });
+      await fallbackAsync.save('openai-codex', 'smoke', 'codex-secret');
+      expect(await fallbackAsync.load('openai-codex', 'smoke')).toBe('codex-secret');
+    } finally {
+      vi.unstubAllEnvs();
+      brokerWorker.postMessage({ type: 'close' });
+      await brokerWorker.terminate().catch(() => undefined);
     }
   });
 });

@@ -58,11 +58,18 @@ function resolveOsKind(platform: string): OsKind {
       return 'macOS';
     case 'linux':
       return 'Linux';
+    case 'android':
+      return 'Android';
     case 'win32':
       return 'Windows';
     default:
       return platform;
   }
+}
+
+function inferPosixShellName(shellPath: string): 'bash' | 'sh' {
+  const base = nodePath.posix.basename(shellPath).toLowerCase();
+  return base === 'bash' || base.endsWith('-bash') ? 'bash' : 'sh';
 }
 
 export async function probeHostEnvironment(
@@ -81,6 +88,19 @@ export async function probeHostEnvironment(
       osVersion,
       shellName: 'bash',
       shellPath,
+      pathClass,
+      homeDir: deps.homeDir,
+    };
+  }
+
+  const override = deps.env['KIKI_SHELL_PATH']?.trim();
+  if (override !== undefined && override.length > 0 && await deps.isFile(override)) {
+    return {
+      osKind,
+      osArch,
+      osVersion,
+      shellName: inferPosixShellName(override),
+      shellPath: override,
       pathClass,
       homeDir: deps.homeDir,
     };
@@ -105,12 +125,36 @@ export async function probeHostEnvironment(
       homeDir: deps.homeDir,
     };
   }
+
+  const isAndroid = deps.platform === 'android' || deps.env['KIKI_PLATFORM'] === 'android';
+  if (!isAndroid && await deps.isFile('/bin/sh')) {
+    return {
+      osKind,
+      osArch,
+      osVersion,
+      shellName: 'sh',
+      shellPath: '/bin/sh',
+      pathClass,
+      homeDir: deps.homeDir,
+    };
+  }
+  if (await deps.isFile('/system/bin/sh')) {
+    return {
+      osKind,
+      osArch,
+      osVersion,
+      shellName: 'sh',
+      shellPath: '/system/bin/sh',
+      pathClass,
+      homeDir: deps.homeDir,
+    };
+  }
   return {
     osKind,
     osArch,
     osVersion,
     shellName: 'sh',
-    shellPath: '/bin/sh',
+    shellPath: isAndroid ? '/system/bin/sh' : '/bin/sh',
     pathClass,
     homeDir: deps.homeDir,
   };

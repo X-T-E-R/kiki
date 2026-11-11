@@ -1,12 +1,12 @@
-import { createRequire } from 'node:module';
 import type { OriginalOAuthKeyring } from '@kiki/oauth';
 
-function entry(service: string, account: string): import('@napi-rs/keyring').AsyncEntry {
-  const { AsyncEntry } = createRequire(import.meta.url)('@napi-rs/keyring') as typeof import('@napi-rs/keyring');
-  return new AsyncEntry(service, account, process.platform === 'linux' ? { linux: { store: 'secret-service' } } : undefined);
+import { createAsyncSecretEntry, type SecretBackendConfig } from './secretBackend';
+
+export function createOriginalOAuthKeyring(config: SecretBackendConfig = {}): OriginalOAuthKeyring {
+  return {
+    load: async (service, account) => (await (await createAsyncSecretEntry(service, account, config)).getPassword()) ?? undefined,
+    save: async (service, account, value) => (await createAsyncSecretEntry(service, account, config)).setPassword(value),
+  };
 }
 
-export const originalOAuthKeyring: OriginalOAuthKeyring = {
-  load: (service, account) => entry(service, account).getPassword(),
-  save: (service, account, value) => entry(service, account).setPassword(value),
-};
+export const originalOAuthKeyring: OriginalOAuthKeyring = createOriginalOAuthKeyring();

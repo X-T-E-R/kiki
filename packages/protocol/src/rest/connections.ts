@@ -13,10 +13,13 @@ export const sshRemoteProfileSchema = z.object({
   remoteShell: z.enum(['posix', 'powershell']).default('posix'),
 }).strict();
 export type SshRemoteProfile = z.infer<typeof sshRemoteProfileSchema>;
+export const bridgeOperationSchema = z.enum(['read', 'send', 'wait', 'wake']);
+export const bridgeOperationsSchema = z.array(bridgeOperationSchema).min(1).max(4);
 export const sshRemoteTransportSchema = z.object({ kind: z.literal('ssh'), profile: sshRemoteProfileSchema }).strict();
 export type SshRemoteTransport = z.infer<typeof sshRemoteTransportSchema>;
 export const localSpaceTransportSchema = z.object({ kind: z.literal('local_space'), localSpaceId: z.string().min(1).max(128) }).strict();
-export const connectionTransportSchema = z.discriminatedUnion('kind', [sshRemoteTransportSchema, localSpaceTransportSchema]);
+export const peerSocketTransportSchema = z.object({ kind: z.literal('peer_socket'), grantId: z.string().uuid() }).strict();
+export const connectionTransportSchema = z.discriminatedUnion('kind', [sshRemoteTransportSchema, localSpaceTransportSchema, peerSocketTransportSchema]);
 export type ConnectionTransportDescriptor = z.infer<typeof connectionTransportSchema>;
 export const connectionIdentitySchema = z.object({
   homeId: z.string().uuid(), hostId: z.string().min(1).max(128),
@@ -92,6 +95,7 @@ export const pairCodeCreateInputSchema = z.object({
   label: z.string().max(128).optional(),
   expiresInMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
   allowBridge: z.boolean().default(true),
+  bridgeOperations: bridgeOperationsSchema.optional(),
 }).strict();
 export type PairCodeCreateInput = z.infer<typeof pairCodeCreateInputSchema>;
 export const pairCodeCreateOutputSchema = z.object({
@@ -113,6 +117,7 @@ export const pairClaimInputSchema = z.object({
   source: connectionIdentitySchema,
   sourceLabel: z.string().min(1).max(128),
   requestBridge: z.boolean().optional(),
+  bridgeOperations: bridgeOperationsSchema.optional(),
   sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(),
 }).strict();
 export type PairClaimInput = z.infer<typeof pairClaimInputSchema>;

@@ -13,7 +13,18 @@ export class HostTerminalService extends Service implements IHostTerminalService
   constructor(private readonly childDefaults: Readonly<Record<string, string>> = {}) { super(); }
 
   async spawn(options: TerminalSpawnOptions): Promise<TerminalProcess> {
-    const pty = await import('node-pty');
+    if (globalThis.process.env['KIKI_PTY'] === 'off') {
+      throw new Error('Interactive PTY terminals are disabled in this host runtime (KIKI_PTY=off).');
+    }
+    let pty: typeof import('node-pty');
+    try {
+      pty = await import('node-pty');
+    } catch (error) {
+      throw new Error(
+        'Interactive PTY terminals are unavailable because node-pty could not be loaded on this platform.',
+        { cause: error },
+      );
+    }
     const proc: IPty = pty.spawn(options.shell, [], {
       name: 'xterm-256color',
       cwd: options.cwd,

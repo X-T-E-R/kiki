@@ -206,6 +206,8 @@ body {
  * token so a skin can thicken it (High contrast: 3px); 2px everywhere else. */
 :root {
   --focus-ring-width: 2px;
+  --kiki-safe-top-inset: max(var(--kiki-safe-top, 0px), env(safe-area-inset-top, 0px));
+  --kiki-safe-bottom-inset: max(var(--kiki-safe-bottom, 0px), env(safe-area-inset-bottom, 0px));
 }
 :root[data-skin='contrast'] {
   --focus-ring-width: 3px;
@@ -468,7 +470,7 @@ body {
    * shell): the stage keeps the page header out from under the status bar
    * and a landscape notch. The seat already pads the bottom home strip. */
   .app-stage {
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    padding: var(--kiki-safe-top-inset) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     gap: 0;
     background-color: var(--color-paper);
   }
@@ -614,8 +616,8 @@ body[data-pane-resizing='true'] {
      * phone keyboard never shrinks — follow the visual viewport mirror. */
     height: var(--kiki-visual-height, 100%);
     max-width: calc(100vw - 3rem);
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-top: var(--kiki-safe-top-inset);
+    padding-bottom: var(--kiki-safe-bottom-inset);
     padding-left: env(safe-area-inset-left, 0px);
     transform: translateX(-100%);
     transition: transform 200ms ease-out, box-shadow 200ms ease-out;
@@ -648,9 +650,9 @@ body[data-pane-resizing='true'] {
     z-index: 30;
     height: var(--kiki-visual-height, 100%);
     max-width: calc(100vw - 3rem);
-    padding-top: env(safe-area-inset-top, 0px);
+    padding-top: var(--kiki-safe-top-inset);
     padding-right: env(safe-area-inset-right, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: var(--kiki-safe-bottom-inset);
     transform: translateX(100%);
     transition: transform 200ms ease-out;
   }
@@ -1026,7 +1028,7 @@ body[data-pane-resizing='true'] {
     z-index: 30;
     height: var(--kiki-visual-height, 100%);
     max-width: 94vw;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: var(--kiki-safe-bottom-inset);
     box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
   }
 }
@@ -1340,7 +1342,7 @@ body[data-pane-resizing='true'] {
   .composer-header-panel[data-header-panel] .composer-header-scroll {
     max-height: min(70vh, calc(var(--kiki-visual-height, 100vh) - 96px));
     margin: 0;
-    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(4px + var(--kiki-safe-bottom-inset));
     border-radius: 12px 12px 0 0;
     box-shadow: var(--kiki-sheet-shadow), 0 -12px 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
   }
@@ -1485,7 +1487,7 @@ input[data-add-search]:focus-visible {
  * composer card never docks against it. */
 @media (max-width: 767px) {
   .conversation-shell[data-phase='active'] .conversation-seat {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: max(var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
   }
 }
 
@@ -1520,7 +1522,7 @@ input[data-add-search]:focus-visible {
 
 .conversation-shell[data-phase='hero'] .conversation-seat {
   /* Foot inside the centered box floats the stack a bit above true center. */
-  padding-bottom: max(32px, env(safe-area-inset-bottom, 0px));
+  padding-bottom: max(32px, var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
 }
 
 /* Warm glow centered on the hero input card: the card's resting center sits
