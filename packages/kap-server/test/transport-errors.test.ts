@@ -18,6 +18,7 @@ describe('/api/debug transport mapError', () => {
     [ErrorCodes.CONFIG_INVALID, ErrorCode.VALIDATION_FAILED],
     [ErrorCodes.GOAL_UNSUPPORTED_AGENT, ErrorCode.GOAL_UNSUPPORTED_AGENT],
     [ErrorCodes.PROMPT_ID_CONFLICT, ErrorCode.PROMPT_ID_CONFLICT],
+    [ErrorCodes.WORK_ADMISSION_FENCED, ErrorCode.WORK_ADMISSION_FENCED],
   ])('maps domain code %s to its wire equivalent', (code, wire) => {
     const env = mapError(new Error2(code, 'boom'), 'req-1');
     expect(env.code).toBe(wire);
@@ -79,6 +80,12 @@ describe('installErrorHandler (catch-all)', () => {
     const env = run(new Error2(ErrorCodes.STORAGE_LOCKED, 'held by pid 1234'));
     expect(env.code).toBe(ErrorCode.SESSION_LOCKED);
     expect(env.msg).toContain('held by pid 1234');
+  });
+
+  it('maps an escaped work.admission_fenced to WORK_ADMISSION_FENCED with details', () => {
+    const env = run(new Error2(ErrorCodes.WORK_ADMISSION_FENCED, 'fenced for switch', { details: { operationId: 'op-1' } }));
+    expect(env.code).toBe(ErrorCode.WORK_ADMISSION_FENCED);
+    expect(env.details).toEqual({ operationId: 'op-1' });
   });
 
   it('replaces binary response framing and its success serializer when sending an error', async () => {

@@ -2394,7 +2394,7 @@ export function SessionView({
       setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
       return;
     }
-    const serverState = admission === 'restoring' || admission === 'admitted' || admission === 'held'
+    const serverState = admission === 'restoring' || admission === 'waiting_switch' || admission === 'admitted' || admission === 'held'
       ? { status: 'server' as const, retryable: admission === 'held' }
       : undefined;
     if (serverState !== undefined && (pending.status !== serverState.status || pending.retryable !== serverState.retryable)) {

@@ -36,6 +36,7 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService, SUBAGENT_RELEASE_GRACE_MS, isReleasable } from '#/session/subagent/subagentService';
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
@@ -122,6 +123,7 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(ILogService, ctx.get(ILogService));
   ix.set(IBootstrapService, ctx.get(IBootstrapService));
   ix.set(IFlagService, ctx.get(IFlagService));
+  ix.set(IWorkAdmissionService, ctx.get(IWorkAdmissionService));
   ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
   ix.set(ISessionContext, ctx.get(ISessionContext));
   ix.set(IAppendLogStore, ctx.get(IAppendLogStore));

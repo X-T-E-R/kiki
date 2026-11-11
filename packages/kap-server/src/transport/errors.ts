@@ -37,6 +37,7 @@ const KIMI_TO_PROTOCOL: Record<string, ErrorCode> = {
   [ErrorCodes.SESSION_BUSY]: ErrorCode.SESSION_BUSY,
   [ErrorCodes.PROMPT_ALREADY_COMPLETED]: ErrorCode.PROMPT_ALREADY_COMPLETED,
   [ErrorCodes.PROMPT_ID_CONFLICT]: ErrorCode.PROMPT_ID_CONFLICT,
+  [ErrorCodes.WORK_ADMISSION_FENCED]: ErrorCode.WORK_ADMISSION_FENCED,
   [ErrorCodes.GOAL_ALREADY_EXISTS]: ErrorCode.GOAL_ALREADY_EXISTS,
   [ErrorCodes.GOAL_NOT_FOUND]: ErrorCode.GOAL_NOT_FOUND,
   [ErrorCodes.GOAL_STATUS_INVALID]: ErrorCode.GOAL_STATUS_INVALID,
@@ -72,7 +73,7 @@ export function mapError(err: unknown, requestId: string): ReturnType<typeof err
   if (err instanceof Error2) {
     const code = KIMI_TO_PROTOCOL[err.code] ?? ErrorCode.INTERNAL_ERROR;
     const envelope = errEnvelope(code, err.message, requestId, err.stack);
-    return err.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED
+    return err.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED || err.code === ErrorCodes.WORK_ADMISSION_FENCED
       ? { ...envelope, details: err.details }
       : envelope;
   }

@@ -1313,4 +1313,20 @@ describe('admission line on the message', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
     expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
   });
+
+  it('shows waiting_switch immediately, polls for switch completion, and supports cancellation', async () => {
+    vi.useFakeTimers();
+    const { calls, controller } = makeController();
+    try {
+      await mount([{ ...item, admission: 'waiting_switch', restore_progress: undefined }], controller);
+      const line = container.querySelector('[data-admission="switching"]')!;
+      expect(line.textContent).toContain('Waiting for server switch…');
+      expect(line.querySelector('[data-admission-retry]')).toBeNull();
+      expect(calls.refreshDurablePrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+      await act(async () => { await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS); });
+      expect(calls.refreshDurablePrompt).toHaveBeenCalledTimes(2);
+      await act(async () => { line.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
+      expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+    } finally { vi.useRealTimers(); }
+  });
 });

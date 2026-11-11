@@ -40,6 +40,13 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
       reply.status(200).send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
       return;
     }
+    if (isError2(err) && err.code === ErrorCodes.WORK_ADMISSION_FENCED) {
+      reply.status(200).send({
+        ...errEnvelope(ErrorCode.WORK_ADMISSION_FENCED, err.message, requestId, err.stack),
+        details: err.details,
+      });
+      return;
+    }
     if (isError2(err) && err.code === ErrorCodes.SESSION_INDEX_BUILDING) {
       reply
         .status(200)

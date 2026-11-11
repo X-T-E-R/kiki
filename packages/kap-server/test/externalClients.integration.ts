@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ISessionManager, ISessionMetadata, ISessionInteractionService, IModelCatalogMutationService, IAgentLifecycleService, IAgentProfileService, IAgentLoopService, IAgentContextMemoryService } from '@kiki/agent-core-v2';
+import { ISessionManager, ISessionMetadata, ISessionInteractionService, IModelCatalogMutationService, IAgentLifecycleService, IAgentProfileService, IAgentLoopService, IAgentContextMemoryService, IWorkAdmissionService } from '@kiki/agent-core-v2';
 import { createServer } from 'node:http';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
 import { IMemoryStore } from '@kiki/agent-core-v2/app/memory/memoryStore';
@@ -87,6 +87,32 @@ describe('native external clients',()=>{
     expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('Read');
     await owner(`/${created.connection.id}`, undefined, 'DELETE');
     await expect(client.listTools()).rejects.toThrow();
+  });
+
+  it('finishes admitted MCP work after a fence while keeping operation reads and approvals usable', async () => {
+    const { connection } = await owner('', { name: 'Fence client', workspace, mode: 'manual' });
+    const { client } = await connect(connection.id);
+    const external = await call(client, 'kiki_session', { action: 'new', _kiki: { idempotency_key: 'fence-session' } });
+    const session = server.core.accessor.get(ISessionManager).get(external.sessionId)!;
+    const interaction = session.accessor.get(ISessionInteractionService);
+    interaction.acquireConsumer('fence-client');
+    try {
+      const args = { path: join(workspace, 'before-fence.txt'), content: 'completed once', _kiki: { session_ref: external.session_ref, idempotency_key: 'before-fence-write' } };
+      const pending = await waiting(client, await call(client, 'Write', args));
+      expect(pending.state).toBe('waiting_approval');
+      const admission = server.core.accessor.get(IWorkAdmissionService);
+      admission.fence('mcp-switch');
+      const rejected = await client.callTool({ name: 'Write', arguments: { ...args, _kiki: { ...args._kiki, idempotency_key: 'after-fence-write' } } });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.structuredContent).toMatchObject({ code: 'work.admission_fenced', details: { operationId: 'mcp-switch' } });
+      expect((await call(client, 'kiki_operation', { operation_id: pending.operation_id })).state).toBe('waiting_approval');
+      expect((await call(client, 'kiki_session', { action: 'list' })).sessions).toHaveLength(1);
+      const approval = interaction.listPending('approval')[0]!;
+      session.accessor.get(ISessionApprovalService).decide(approval.id, { decision: 'approved' });
+      expect((await terminal(client, await call(client, 'kiki_operation', { operation_id: pending.operation_id }))).state).toBe('completed');
+      await admission.joined();
+      expect(await readFile(args.path, 'utf8')).toBe('completed once');
+    } finally { interaction.releaseConsumer('fence-client'); }
   });
 
   it('resumes the same external identity after a real MCP disconnect and isolates concurrent clients', async () => {

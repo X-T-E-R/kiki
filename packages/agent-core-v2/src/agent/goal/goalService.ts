@@ -9,6 +9,8 @@ import { TurnEnded } from '#/agent/loop/turnOps';
 import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
+import { IWorkAdmissionService, type WorkAdmission } from '#/app/workAdmission/workAdmission';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import { abortError } from '#/_base/utils/abort';
@@ -248,6 +250,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   declare readonly _serviceBrand: undefined;
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
+  private readonly goalAdmission = this._register(new MutableDisposable<WorkAdmission>());
   private readonly independentScheduledTurns = new Set<number>();
   private readonly notificationTurns = new Set<number>();
   private pendingContinuation?: PendingContinuation;
@@ -273,6 +276,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     @IGoalDeadlineScheduler private readonly deadlineScheduler: IGoalDeadlineScheduler,
     @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
     @IAgentStateService private readonly states: IAgentStateService,
+    @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     super();
     this.states.contributeState(goalKey);
@@ -392,10 +397,15 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     );
     this._register(this.eventBus.subscribe(TaskSettlementReady, () => {
       const state = this.goalState;
-      if (state === null || state.status !== 'active') return;
-      if (!this.canLaunchContinuation()) return;
-      this.launchContinuationTurn(state.goalId);
+      if (state !== null && state.status === 'active' && this.canLaunchContinuation()) {
+        this.launchContinuationTurn(state.goalId);
+      }
+      this.syncGoalAdmission();
     }));
+    if (this.tasks.onDidChangeWork !== undefined) {
+      this._register(this.tasks.onDidChangeWork(() => this.syncGoalAdmission()));
+    }
+    this._register(this.executionControl.onDidChange(() => this.syncGoalAdmission()));
     this._register(this.eventBus.subscribe(PromptCompleted, (event) => {
       if (event.reason === 'completed' || this.yieldedGoalId === undefined) return;
       const goalId = this.yieldedGoalId;
@@ -406,6 +416,24 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         : this.pauseActiveGoal({ reason: 'User prompt failed before goal continuation' }, 'runtime');
       void settlement.catch((error) => this.settleGoalAfterContinuationFailure(error, goalId));
     }));
+  }
+
+  private syncGoalAdmission(): void {
+    const state = this.goalState;
+    if (state?.status !== 'active' || this.executionControl.isDurablyPaused()) {
+      this.goalAdmission.clear();
+      return;
+    }
+    const busy = this.liveTurnId !== undefined || this.pendingContinuation !== undefined ||
+      this.tasks.list(true).some(isGoalBlockingFiniteTask);
+    if (!busy) {
+      this.goalAdmission.clear();
+      return;
+    }
+    if (this.goalAdmission.value === undefined) {
+      try { this.goalAdmission.value = this.workAdmission.acquire('goal'); }
+      catch {}
+    }
   }
 
   private get liveTurnId(): number | undefined {
@@ -500,7 +528,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     return this.goalTurnTargets.get(turnId) === goalId;
   }
 
-  async createGoal(input: CreateGoalInput, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
+  createGoal(input: CreateGoalInput, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
+    return this.workAdmission.run('goal-create', () => this.createGoalAdmitted(input, actor));
+  }
+
+  private async createGoalAdmitted(input: CreateGoalInput, actor: GoalActor): Promise<GoalSnapshot> {
     this.assertSupportedAgent();
     const objective = this.validateObjective(input.objective);
     this.prepareForGoalCreation(input.replace === true);
@@ -670,7 +702,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     });
   }
 
-  async resumeGoal(input: ResumeGoalInput = {}, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
+  resumeGoal(input: ResumeGoalInput = {}, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
+    return this.workAdmission.run('goal-resume', () => this.resumeGoalAdmitted(input, actor));
+  }
+
+  private async resumeGoalAdmitted(input: ResumeGoalInput = {}, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
     this.assertSupportedAgent();
     const state = this.requireState();
     if (state.status === 'active') return this.toSnapshot(state);
@@ -862,6 +898,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.pendingContinuationGoals.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);
     this.goalOutcomeContinuationTurns.delete(turnId);
+    this.syncGoalAdmission();
   }
 
   private adoptStarterTurn(actor: GoalActor): void {
@@ -959,44 +996,48 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     turnId: number,
     result: Pick<TurnEnded, 'reason' | 'error'>,
   ): Promise<void> {
-    const notificationTurn = this.notificationTurns.has(turnId);
-    const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
-    const resumeContinuation = this.resumeContinuation;
-    if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
-    if (resumeContinuation?.turnId === turnId && result.reason === 'cancelled') {
-      const state = this.goalState;
-      if (state === null || state.status !== 'active' || state.goalId !== resumeContinuation.goalId) {
+    try {
+      const notificationTurn = this.notificationTurns.has(turnId);
+      const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
+      const resumeContinuation = this.resumeContinuation;
+      if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
+      if (resumeContinuation?.turnId === turnId && result.reason === 'cancelled') {
+        const state = this.goalState;
+        if (state === null || state.status !== 'active' || state.goalId !== resumeContinuation.goalId) {
+          return;
+        }
+        if (this.blockIfBudgetReached(state) !== null) return;
+        this.launchContinuationTurn(resumeContinuation.goalId);
         return;
       }
-      if (this.blockIfBudgetReached(state) !== null) return;
-      this.launchContinuationTurn(resumeContinuation.goalId);
-      return;
-    }
-    if (goalId === undefined || lifecycleGoalId === undefined) {
-      if (notificationTurn && result.reason === 'completed') {
-        const state = this.goalState;
-        if (state !== null && state.status === 'active' && this.blockIfBudgetReached(state) === null) {
-          this.launchContinuationTurn(state.goalId);
+      if (goalId === undefined || lifecycleGoalId === undefined) {
+        if (notificationTurn && result.reason === 'completed') {
+          const state = this.goalState;
+          if (state !== null && state.status === 'active' && this.blockIfBudgetReached(state) === null) {
+            this.launchContinuationTurn(state.goalId);
+          }
         }
+        return;
       }
-      return;
-    }
-    const stepCapped = isMaxStepsTurnFailure(result);
-    if (
-      !stepCapped &&
-      (result.reason === 'blocked' ||
-        result.reason === 'cancelled' ||
-        result.reason === 'failed')
-    ) {
-      await this.settleAbnormalTurn(result, lifecycleGoalId);
-      return;
-    }
-    if (starterTurn) this.incrementGoalTurn(goalId);
+      const stepCapped = isMaxStepsTurnFailure(result);
+      if (
+        !stepCapped &&
+        (result.reason === 'blocked' ||
+          result.reason === 'cancelled' ||
+          result.reason === 'failed')
+      ) {
+        await this.settleAbnormalTurn(result, lifecycleGoalId);
+        return;
+      }
+      if (starterTurn) this.incrementGoalTurn(goalId);
 
-    const state = this.goalState;
-    if (state === null || state.status !== 'active' || state.goalId !== lifecycleGoalId) return;
-    if (this.blockIfBudgetReached(state) !== null) return;
-    this.launchContinuationTurn(lifecycleGoalId, stepCapped);
+      const state = this.goalState;
+      if (state === null || state.status !== 'active' || state.goalId !== lifecycleGoalId) return;
+      if (this.blockIfBudgetReached(state) !== null) return;
+      this.launchContinuationTurn(lifecycleGoalId, stepCapped);
+    } finally {
+      this.syncGoalAdmission();
+    }
   }
 
   private clearTurnTracking(
@@ -1097,9 +1138,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       kind: 'goal_continuation',
       admission: 'newTurn',
     });
-    const receipt = this.loopService.enqueue(request);
+    this.goalAdmission.value ??= this.workAdmission.acquire('goal');
+    const receipt = this.goalAdmission.value.run(() => this.loopService.enqueue(request));
     const pending: PendingContinuation = { receipt, goalId };
     this.pendingContinuation = pending;
+    this.syncGoalAdmission();
     void receipt.assigned
       .then(({ turn }) => {
         pending.turnId = turn.id;
@@ -1115,6 +1158,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       .finally(() => {
         if (pending.turnId !== undefined) this.pendingContinuationGoals.delete(pending.turnId);
         if (this.pendingContinuation === pending) this.pendingContinuation = undefined;
+        this.syncGoalAdmission();
       });
   }
 
@@ -1281,6 +1325,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   }
 
   private emitGoalUpdated(snapshot: GoalSnapshot | null, change?: GoalChange): void {
+    this.syncGoalAdmission();
     void this.dispatcher.dispatch(new GoalUpdated({ snapshot, change }));
   }
 

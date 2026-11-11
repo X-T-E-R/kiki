@@ -273,17 +273,17 @@ describe('send now (steer) — main agent', () => {
     } finally { controller.close(); }
   });
 
-  it.each(['restoring', 'held', 'admitted'] as const)('persists the steer intent for a saved session and never duplicates server delivery after %s', async (admission) => {
+  it.each(['restoring', 'waiting_switch', 'held', 'admitted'] as const)('persists the steer intent for a saved session and never duplicates server delivery after %s', async (admission) => {
     const { controller, client } = await open();
     controller.setEphemeralHint(false);
     client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
       ...queuedReceipt(body.prompt_id), admission, delivery_state: admission === 'admitted' ? 'steered' : undefined,
     }));
     const sent = await controller.sendPromptNow({ promptId: 'saved-now', text: STEER_TEXT });
-    expect(sent).toEqual({ promptId: 'saved-now', outcome: admission === 'admitted' ? 'steered' : admission });
+    expect(sent).toEqual({ promptId: 'saved-now', outcome: admission === 'admitted' ? 'steered' : admission === 'waiting_switch' ? 'restoring' : admission });
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({ admission: 'durable', delivery_mode: 'steer', prompt_id: 'saved-now' }));
     expect(client.steerPrompt).not.toHaveBeenCalled();
-    const phase = admission === 'restoring' ? 'preparing' : admission === 'held' ? 'held' : 'waiting';
+    const phase = admission === 'restoring' || admission === 'waiting_switch' ? 'preparing' : admission === 'held' ? 'held' : 'waiting';
     expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'saved-now', phase })]);
     controller.close();
   });

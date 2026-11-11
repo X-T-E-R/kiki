@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { IBootstrapService, ISessionManager, ISessionMetadata, IAgentLifecycleService,
   IAgentToolRegistryService, IAgentToolPolicyService, IAgentToolExecutorService, IAgentPermissionModeService,
-  ISessionContext, ISessionInteractionService, ensureMainAgent, type Scope, type IAgentScopeHandle,
+  ISessionContext, ISessionInteractionService, IWorkAdmissionService, WorkAdmissionErrors, isError2, ensureMainAgent, type Scope, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
 import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
@@ -168,6 +168,16 @@ export class ExternalClientHost {
     for (const listener of this.catalogListeners) listener(connection.id);
   }
   async call(grant:ExternalClientGrant,name:string,raw:Record<string,unknown>,meta:ExternalClientCallMeta,_signal:AbortSignal):Promise<import('@modelcontextprotocol/sdk/types.js').CallToolResult>{
+    const call=()=>this.callAdmitted(grant,name,raw,meta);
+    try {
+      return await (name==='kiki_operation'||name==='kiki_session'&&['list','close'].includes(String(raw['action']))
+        ?call():this.core.accessor.get(IWorkAdmissionService).run('mcp-call',call));
+    } catch(error) {
+      if(isError2(error)&&error.code===WorkAdmissionErrors.codes.WORK_ADMISSION_FENCED) throw new ExternalClientError(error.code,error.message,error.details);
+      throw error;
+    }
+  }
+  private async callAdmitted(grant:ExternalClientGrant,name:string,raw:Record<string,unknown>,meta:ExternalClientCallMeta):Promise<import('@modelcontextprotocol/sdk/types.js').CallToolResult>{
     const result=await this.dispatch(grant,name,raw,meta);
     if(typeof result==='object'&&result!==null&&'content' in result) return result as import('@modelcontextprotocol/sdk/types.js').CallToolResult;
     const structuredContent=result as Record<string,unknown>;
@@ -271,8 +281,10 @@ export class ExternalClientHost {
   }
   private launch(session:ExternalClientSession,operation:ExternalClientOperation):void{
     const controller=new AbortController();
+    const admission=this.core.accessor.get(IWorkAdmissionService).acquire('mcp-tool');
     const prior=this.queues.get(session.sessionId)??Promise.resolve();
-    const done=prior.catch(()=>undefined).then(()=>this.execute(session,operation,controller.signal)).finally(()=>this.running.delete(operation.id));
+    const done=admission.run(()=>prior.catch(()=>undefined).then(()=>this.execute(session,operation,controller.signal)))
+      .finally(()=>{admission.dispose();this.running.delete(operation.id);});
     this.running.set(operation.id,{controller,done});this.queues.set(session.sessionId,done);
     void done.catch(()=>undefined);
   }

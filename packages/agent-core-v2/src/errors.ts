@@ -1,3 +1,4 @@
+import { WorkAdmissionErrors } from '#/app/workAdmission/errors';
 import { RequestGovernanceErrors } from '#/app/requestGovernance/errors';
 import { CoreErrors } from '#/_base/errors/codes';
 import { DispatchErrors } from '#/session/dispatch/errors';
@@ -84,8 +85,10 @@ export { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader
 export { EventErrors } from '#/app/event/errors';
 export { StateErrors } from '#/state/errors';
 export { RequestGovernanceErrors } from '#/app/requestGovernance/errors';
+export { WorkAdmissionErrors } from '#/app/workAdmission/errors';
 
 export const ErrorCodes = {
+  ...WorkAdmissionErrors.codes,
   ...RequestGovernanceErrors.codes,
   ...CoreErrors.codes,
   ...DispatchErrors.codes,

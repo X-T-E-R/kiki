@@ -27,6 +27,7 @@ import {
   ISessionMetadata,
   ISessionQuestionService,
   ITelemetryService,
+  IWorkAdmissionService,
   applyPromptMetadataUpdate,
   ensureMainAgent,
   isError2,
@@ -354,7 +355,11 @@ class NotificationSessionPorts implements ImSessionPorts {
     }, signal);
   }
 
-  private async submit(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
+  private submit(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
+    return this.core.accessor.get(IWorkAdmissionService).run('im-prompt', () => this.submitAdmitted(input));
+  }
+
+  private async submitAdmitted(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
     const isSteer = input.delivery !== 'queue';
     const live = isSteer ? this.core.accessor.get(ISessionManager).get(input.sessionId) : undefined;
     const liveAgent = isSteer ? live?.accessor.get(IAgentLifecycleService).get('main') : undefined;

@@ -47,6 +47,7 @@ import { APIConnectionError, APIStatusError } from '#/kosong/contract/errors';
 import type { ToolCall } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { ErrorCodes, Error2, errorInfo, toKimiErrorPayload } from '#/errors';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { ExecutableTool, RunnableToolExecution } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
@@ -516,6 +517,17 @@ describe('AgentGoalService', () => {
 
       await goals.createGoal({ objective: 'finish the task' });
       await goals.markBlocked({ reason: 'need credentials' });
+      const admission = ctx.get(IWorkAdmissionService);
+      let drained = false;
+      ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('fence-after-first-continuation', async (_stepCtx, next) => {
+        if (admission.state().operationId === undefined) {
+          admission.fence('goal-switch');
+          void admission.joined().then(() => {
+            drained = true;
+          });
+        }
+        await next();
+      });
       const [resumed, repeated] = await Promise.all([
         goals.resumeGoal({ continueIfBlocked: true }),
         goals.resumeGoal({ continueIfBlocked: true }),
@@ -526,10 +538,23 @@ describe('AgentGoalService', () => {
       await vi.waitFor(() => {
         expect(endedTurnIds).toHaveLength(2);
       });
+      await admission.joined();
+      expect(drained).toBe(true);
       expect(ctx.llmCalls).toHaveLength(3);
       expect(continuationTurnIds).toEqual(endedTurnIds);
       expect(endedTurnReasons).toEqual(['completed', 'completed']);
       expect(goals.getGoal().goal).toBeNull();
+    });
+
+    it('does not block workAdmission.joined() when an active goal is idle without an in-flight turn', async () => {
+      await goals.createGoal({ objective: 'idle active goal' });
+      const admission = ctx.get(IWorkAdmissionService);
+      admission.fence('idle-goal-switch');
+      await expect(admission.joined()).resolves.toBeUndefined();
+      expect(goals.getGoal().goal?.status).toBe('active');
+      await expect(goals.createGoal({ objective: 'blocked by fence' })).rejects.toMatchObject({
+        code: ErrorCodes.WORK_ADMISSION_FENCED,
+      });
     });
 
     it('pauseOnInterrupt parks active goals and no-ops for stopped goals', async () => {

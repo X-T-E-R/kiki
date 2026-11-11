@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ISessionActivityView, ISessionInteractionService, ISessionManager } from '@kiki/agent-core-v2';
+import { ISessionActivityView, ISessionInteractionService, ISessionManager, IWorkAdmissionService } from '@kiki/agent-core-v2';
+import { RuntimeStore } from '../src/runtime/runtimeStore';
+import { createServerLogger } from '../src/services/pinoLoggerService';
 
 import {
   createInstanceRegistry,
@@ -377,6 +379,43 @@ describe('startServer — instance registry wiring', () => {
       rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
+  });
+
+  it('keeps unmanaged peers visible but permits only one managed writer and naturally drains admitted work', async () => {
+    home = mkdtempSync(join(tmpdir(), 'kimi-server-managed-'));
+    const external = await startServer({ hostIdentity: TEST_HOST_IDENTITY, port: 0, homeDir: home, logLevel: 'silent', runtimeManaged: false });
+    servers.push(external);
+    const logger = createServerLogger({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    const managed = await startServer({ hostIdentity: TEST_HOST_IDENTITY, port: 0, homeDir: home, logger, runtimeManaged: true });
+    servers.push(managed);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ server_ids: [external.serverId] }), expect.stringContaining('recent heartbeat'));
+    await expect(startServer({ hostIdentity: TEST_HOST_IDENTITY, port: 0, homeDir: home, runtimeManaged: true })).rejects.toThrow('already owned');
+    const admission = managed.core.accessor.get(IWorkAdmissionService);
+    const accepted = admission.acquire('example-tool-preparation');
+    const call = async (body?: object) => {
+      const response = await managed.app.inject({ method: body === undefined ? 'GET' : 'POST', url: '/api/runtime-switch',
+        headers: { authorization: `Bearer ${managed.localOwnerToken}` }, payload: body });
+      return response.json() as { code: number; data: { writer: { phase: string; warnings: unknown[] } } };
+    };
+    try {
+      expect((await call()).data.writer.warnings).toEqual([{ code: 'other_home_instances', serverIds: [external.serverId] }]);
+      const request = { operationId: 'example-switch', serverId: managed.serverId, action: 'prepare' };
+      expect((await call({ ...request, serverId: 'stale-example' })).code).not.toBe(0);
+      expect((await call(request)).data.writer.phase).toBe('draining');
+      expect(() => admission.acquire('after-fence')).toThrow();
+      expect((await managed.app.inject({ url: '/api/meta', headers: { authorization: `Bearer ${managed.localOwnerToken}` } })).statusCode).toBe(200);
+      expect((await call({ ...request, action: 'cancel' })).data.writer.phase).toBe('ready');
+      const later = admission.acquire('after-cancel'); later.dispose();
+      expect((await call(request)).data.writer.phase).toBe('draining');
+      accepted.dispose();
+      await managed.closed;
+      expect(await managed.exitReceipt).toMatchObject({ callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0 });
+      const store = new RuntimeStore(home);
+      try { expect(store.writer()).toMatchObject({ phase: 'exited', operationId: 'example-switch', exitReceipt: { cleanupOutcome: 'closed' } }); }
+      finally { store.close(); }
+      expect((await external.app.inject({ url: '/api/meta', headers: { authorization: `Bearer ${external.localOwnerToken}` } })).statusCode).toBe(200);
+    } finally { accepted.dispose(); }
   });
 
   it('lets two servers share one homeDir, each registering a distinct instance and port', async () => {

@@ -29,6 +29,8 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventService } from '#/app/event/event';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { AgentSkillService } from '#/agent/skill/skillService';
 import {
   MAX_SKILL_QUERY_DEPTH,
@@ -118,6 +120,7 @@ describe('AgentSkillService', () => {
         reg.definePartialInstance(IEventService, { publish: () => {} });
         reg.defineInstance(ISessionContext, stubSessionContext());
         reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
+        reg.define(IWorkAdmissionService, WorkAdmissionService);
       },
     });
     skills = new InMemorySkillCatalog();
@@ -262,6 +265,7 @@ describe('SkillTool', () => {
         reg.definePartialInstance(IEventService, { publish: () => {} });
         reg.defineInstance(ISessionContext, stubSessionContext());
         reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
+        reg.define(IWorkAdmissionService, WorkAdmissionService);
       },
     });
     skills = new InMemorySkillCatalog();

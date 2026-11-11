@@ -20,6 +20,11 @@ import {
   IModelCatalogMutationService,
   ISessionMetadata,
   ISessionDispatchService,
+  ISessionManager,
+  ISessionInteractionService,
+  ISessionApprovalService,
+  ISessionQuestionService,
+  IWorkAdmissionService,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
@@ -29,6 +34,9 @@ import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { IAgentLLMRequesterService } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
+import { createImSessionHost } from '../src/services/imSession/host';
+import { FakeImAdapter, fakeAdapterFactory } from '../src/services/imSession/fakeAdapter';
+import { NotificationService } from '../src/services/notifications/notificationService';
 import { projectPromptSnapshot, watchPromptSettlements } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
@@ -40,6 +48,125 @@ vi.mock('../../../apps/kiki-gui/src/components/preview/DocumentTabView', () => (
 describe('server-v2 /api prompts', () => {
   const fixture = usePromptFixture();
   const { call, createSession, createMainAgent, createHeldMainAgent, createHeldChild, uploadFile } = fixture;
+
+  it('joins IM preparation before a fence without admitting another IM prompt', async () => {
+    const id = await createSession(fixture.home as string);
+    const firstStep = promiseGate<void>();
+    const preparing = promiseGate<void>();
+    const releasePreparation = promiseGate<void>();
+    await createHeldMainAgent(id, firstStep.promise);
+    const core = fixture.server!.core;
+    const admission = core.accessor.get(IWorkAdmissionService);
+    const notifications = new NotificationService(core, fixture.home!, () => false, () => undefined);
+    await notifications.start();
+    const adapter = new FakeImAdapter('wechat_bridge', 'example-account');
+    const bridge = await createImSessionHost({ core, homeDir: fixture.home!, notifications, logger: { info() {} }, factories: [fakeAdapterFactory(adapter)] });
+    const manager = core.accessor.get(ISessionManager);
+    const acquire = manager.acquire!.bind(manager);
+    const blocked = vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+      if (admission.state().pending.some(item => item.kind === 'im-prompt')) {
+        preparing.resolve();
+        await releasePreparation.promise;
+      }
+      return acquire(...args);
+    });
+    try {
+      const pasted = await bridge.paste({ text: 'wechat_token=example-token\nwechat_account=example-account' });
+      await bridge.setListening(pasted.provider_instance_id, true);
+      const identity = { chatId: 'example-chat', senderId: 'example-sender', topicId: '0', chatKind: 'private' as const };
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'Find the session.' });
+      await bridge.confirm((await bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: id } });
+      const submitted = adapter.emit({ eventId: 'before-fence', identity, kind: 'text', text: 'Accepted before the switch.' });
+      await preparing.promise;
+      admission.fence('im-switch');
+      expect(admission.state().pending).toContainEqual(expect.objectContaining({ kind: 'im-prompt' }));
+      releasePreparation.resolve();
+      await submitted;
+      await expect(adapter.emit({ eventId: 'after-fence', identity, kind: 'text', text: 'Send on the new server.' }))
+        .rejects.toMatchObject({ code: 'work.admission_fenced', details: { operationId: 'im-switch' } });
+      firstStep.resolve();
+      await admission.joined();
+      const prompts = getLiveSessionById(core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
+      expect(prompts.lookup(`im:${pasted.provider_instance_id}:before-fence`)).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+      expect(prompts.lookup(`im:${pasted.provider_instance_id}:after-fence`)).toBeUndefined();
+    } finally {
+      releasePreparation.resolve();
+      firstStep.resolve();
+      blocked.mockRestore();
+      await bridge.close();
+      await notifications.close();
+    }
+  });
+
+  it('joins REST preparation accepted before the fence and rejects new REST and Klient work', async () => {
+    const id = await createSession(fixture.home as string);
+    const firstStep = promiseGate<void>();
+    const preparing = promiseGate<void>();
+    const releasePreparation = promiseGate<void>();
+    await createHeldMainAgent(id, firstStep.promise);
+    const manager = fixture.server!.core.accessor.get(ISessionManager);
+    const acquire = manager.acquire!.bind(manager);
+    const blocked = vi.spyOn(manager, 'acquire').mockImplementationOnce(async (...args) => {
+      preparing.resolve();
+      await releasePreparation.promise;
+      return acquire(...args);
+    });
+    const klient = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!) });
+    try {
+      const submitted = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts?receipt=true`, {
+        prompt_id: 'before-fence', content: [{ type: 'text', text: 'Accepted before the switch.' }],
+      });
+      await preparing.promise;
+      const admission = fixture.server!.core.accessor.get(IWorkAdmissionService);
+      admission.fence('rest-switch');
+      expect(admission.state().pending).toContainEqual(expect.objectContaining({ kind: 'rest-prompt' }));
+      const rejected = await call('POST', `/api/sessions/${id}/prompts`, {
+        prompt_id: 'after-fence', content: [{ type: 'text', text: 'Send on the new server.' }],
+      });
+      expect(rejected.body).toMatchObject({ code: 40950, details: { operationId: 'rest-switch' } });
+      await expect(klient.session(id).agent('main').prompt({ input: [{ type: 'text', text: 'New RPC work.' }] }))
+        .rejects.toMatchObject({ code: 40950, details: { operationId: 'rest-switch' } });
+      releasePreparation.resolve();
+      expect((await submitted).body).toMatchObject({ code: 0, data: { prompt_id: 'before-fence' } });
+      const listed = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>('GET', `/api/sessions/${id}/prompts`);
+      expect(listed.body.code).toBe(0);
+      const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+      const prompts = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
+      const handle = prompts.list().active!;
+      expect(handle.id).toBe('before-fence');
+      expect(prompts.lookup('after-fence')).toBeUndefined();
+      firstStep.resolve();
+      await admission.joined();
+      expect(prompts.lookup(handle.id)).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+    } finally { releasePreparation.resolve(); firstStep.resolve(); blocked.mockRestore(); await klient.close(); }
+  });
+
+  it('keeps approval, answer, cancellation and reads available while admission is fenced', async () => {
+    const id = await createSession(fixture.home as string);
+    await createHeldMainAgent(id);
+    const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    const interactions = session.accessor.get(ISessionInteractionService);
+    interactions.acquireConsumer('fenced-interactions');
+    const approvals = session.accessor.get(ISessionApprovalService);
+    const questions = session.accessor.get(ISessionQuestionService);
+    const approval = approvals.request({ id: 'fenced-approval', toolName: 'Bash', action: 'run', display: { kind: 'command', command: 'echo example' } });
+    const question = questions.request({ id: 'fenced-question', questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] });
+    const klient = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!) });
+    try {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts?receipt=true`, { prompt_id: 'cancel-after-fence', content: [{ type: 'text', text: 'Wait for the user.' }] });
+      expect(submitted.body.code).toBe(0);
+      const admission = fixture.server!.core.accessor.get(IWorkAdmissionService);
+      admission.fence('interaction-switch');
+      expect((await call('GET', `/api/sessions/${id}/snapshot`)).body.code).toBe(0);
+      expect((await call('POST', `/api/sessions/${id}/approvals/fenced-approval`, { decision: 'approved' })).body.code).toBe(0);
+      await expect(approval).resolves.toMatchObject({ decision: 'approved' });
+      expect((await call('POST', `/api/sessions/${id}/questions/fenced-question`, { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } }, method: 'click' })).body.code).toBe(0);
+      await expect(question).resolves.toMatchObject({ answers: { 'Continue?': 'Yes' } });
+      await klient.session(id).agent('main').cancel();
+      await admission.joined();
+      expect(session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', lastTurnResult: 'cancelled' });
+    } finally { interactions.releaseConsumer('fenced-interactions'); await klient.close(); }
+  });
 
   it('submits a prompt and lists it as active', async () => {
     const id = await createSession(fixture.home as string);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema, promptDeliveryReasonSchema, promptDeliveryStateSchema } from '@kiki/protocol';
+import { executionSelectionSchema, promptAdmissionStateSchema, promptDeliveryReasonSchema, promptDeliveryStateSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
@@ -76,7 +76,7 @@ export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
-  admission: z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']).optional(),
+  admission: promptAdmissionStateSchema.optional(),
   delivery_state: promptDeliveryStateSchema.optional(),
   delivery_reason: promptDeliveryReasonSchema.optional(),
   admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),

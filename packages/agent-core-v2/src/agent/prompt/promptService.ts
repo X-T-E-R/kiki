@@ -10,7 +10,8 @@ import { findAgentRefs } from '@kiki/protocol';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
-import { RefCountedDisposable, toDisposable } from '#/_base/di/lifecycle';
+import { IWorkAdmissionService, type WorkAdmission } from '#/app/workAdmission/workAdmission';
+import { RefCountedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { renderCronFireXml } from '#/app/cron/format';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -616,6 +617,8 @@ interface Record extends PromptSnapshot {
   readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
   readonly historyMutationLease?: PromptInput['historyMutationLease'];
+  workAdmission?: WorkAdmission;
+  workHold?: IDisposable;
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
@@ -874,11 +877,18 @@ export class AgentPromptService implements IAgentPromptService {
     @IBlobStore private readonly blobs: IBlobStore,
     @ILogService private readonly log: ILogService,
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     let executionWasHeld = false;
     const executionSubscription = executionControl.onDidChange((state) => {
       const held = state.phase !== 'running';
-      if (executionWasHeld && !held) this.resumeRecoveredQueue();
+      if (executionControl.isDurablyPaused()) this.releaseDurablyPausedAdmissions();
+      if (state.phase === 'resuming' || (executionWasHeld && !held)) {
+        this.ensurePendingWorkAdmissions();
+      }
+      if (executionWasHeld && !held) {
+        this.resumeRecoveredQueue();
+      }
       executionWasHeld = held;
       if (!executionControl.isHeld()) void this.startNext();
     });
@@ -914,6 +924,80 @@ export class AgentPromptService implements IAgentPromptService {
 
   private switchFlight?: { operationId: string; controller: AbortController; receipt: ModelSwitchReceipt; summarizing?: boolean; promise?: Promise<ModelSwitchReceipt> };
   private readonly immediateModelSwitchIds = new Set<string>();
+  private readonly modelSwitchAdmissions = new Map<string, WorkAdmission>();
+
+  private admitModelSwitch(operationId: string, allowWhilePaused = false): void {
+    if (!allowWhilePaused && this.executionControl.isDurablyPaused()) return;
+    if (!this.modelSwitchAdmissions.has(operationId)) this.modelSwitchAdmissions.set(operationId, this.workAdmission.acquire('model-switch'));
+  }
+
+  private attachRecordWorkAdmission(record: Record, kind: string, allowWhilePaused = false): void {
+    if ((!allowWhilePaused && this.executionControl.isDurablyPaused()) || record.workAdmission !== undefined) return;
+    record.workAdmission = this.workAdmission.acquire(kind);
+    record.workHold = record.workAdmission.hold(record.completionDeferred.promise);
+    void record.completionDeferred.promise.then(
+      () => this.releaseRecordWorkAdmission(record),
+      () => this.releaseRecordWorkAdmission(record),
+    );
+  }
+
+  private releaseRecordWorkAdmission(record: Record): void {
+    record.workHold?.dispose();
+    record.workHold = undefined;
+    record.workAdmission?.dispose();
+    record.workAdmission = undefined;
+  }
+
+  private releaseDurablyPausedAdmissions(): void {
+    if (this.active !== undefined && this.executionControl.resumePoint(this.scopeContext.agentId)?.turnId === this.active.turn.id) {
+      this.releaseRecordWorkAdmission(this.active);
+      for (const steered of this.steered.get(this.active.id) ?? []) this.releaseRecordWorkAdmission(steered);
+    }
+    for (const record of this.pending) this.releaseRecordWorkAdmission(record);
+    for (const [operationId, admission] of [...this.modelSwitchAdmissions]) {
+      if (this.switchFlight?.operationId === operationId) continue;
+      this.modelSwitchAdmissions.delete(operationId);
+      admission.dispose();
+    }
+  }
+
+  private ensurePendingWorkAdmissions(): void {
+    if (this.active !== undefined && this.active.workAdmission === undefined) {
+      try {
+        this.attachRecordWorkAdmission(this.active, 'resumed-prompt', true);
+        for (const steered of this.steered.get(this.active.id) ?? []) {
+          this.attachRecordWorkAdmission(steered, 'resumed-steer', true);
+        }
+      } catch { return; }
+    }
+    if (this.recoveryHold) return;
+    for (const record of this.pending) {
+      if (record.workAdmission !== undefined) continue;
+      try { this.attachRecordWorkAdmission(record, 'restored-prompt', true); }
+      catch { return; }
+    }
+    for (const entry of this.states.get(modelSwitchQueueKey).values()) {
+      if (entry.receipt.state !== 'pending' && entry.receipt.state !== 'preparing') continue;
+      try { this.admitModelSwitch(entry.input.operationId, true); }
+      catch { return; }
+    }
+  }
+
+  private releaseFinishedModelSwitches(): void {
+    const finished = [...this.modelSwitchAdmissions].filter(([operationId]) => {
+      const state = this.getModelSwitch(operationId)?.state;
+      return state !== 'pending' && state !== 'preparing';
+    });
+    if (finished.length === 0) return;
+    void this.wire.flush().then(() => {
+      for (const [operationId, admission] of finished) {
+        const state = this.getModelSwitch(operationId)?.state;
+        if (this.modelSwitchAdmissions.get(operationId) !== admission || state === 'pending' || state === 'preparing') continue;
+        this.modelSwitchAdmissions.delete(operationId);
+        admission.dispose();
+      }
+    }, onUnexpectedError);
+  }
   private readonly boundaryPromptIds = new Set<string>();
   private readonly acceptedBoundaryPromptIds = new Set<string>();
   private readonly boundarySteeringIds = new Set<string>();
@@ -942,7 +1026,11 @@ export class AgentPromptService implements IAgentPromptService {
     }));
   }
 
-  async switchModel(input: ModelSwitchInput): Promise<ModelSwitchReceipt> {
+  switchModel(input: ModelSwitchInput): Promise<ModelSwitchReceipt> {
+    return this.workAdmission.run('model-switch', () => this.switchModelAdmitted(input));
+  }
+
+  private async switchModelAdmitted(input: ModelSwitchInput): Promise<ModelSwitchReceipt> {
     await this.historyMutation.runAdmission(undefined, async () => {
       if (!input.operationId.trim() || !input.model.trim() || !['direct', 'compact', 'fresh'].includes(input.mode)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model switching requires an operationId, model and explicit mode.');
@@ -969,9 +1057,11 @@ export class AgentPromptService implements IAgentPromptService {
       const receipt: ModelSwitchReceipt = { operationId: input.operationId, agentId: this.scopeContext.agentId,
         state: 'pending', fromModel: originalBinding.model, toModel: input.model, mode: input.mode };
       if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
+      this.admitModelSwitch(input.operationId);
       await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { input: { ...input }, receipt, revision: 0, originalBinding, placement }, queueIndex: this.queueOrder.length }));
       await this.wire.flush();
     });
+    this.releaseFinishedModelSwitches();
     if (this.getModelSwitch(input.operationId)?.state === 'preparing' && this.switchFlight?.operationId !== input.operationId
       && !this.queueOrder.includes(modelSwitchQueueId(input.operationId))) {
       return this.recoverModelSwitch(input.operationId, 'retry');
@@ -1047,12 +1137,19 @@ export class AgentPromptService implements IAgentPromptService {
     const receipt: ModelSwitchReceipt = { ...entry.receipt, state: 'cancelled' };
     await this.dispatcher.dispatch(new ModelSwitchQueueStatus({ operationId, receipt }));
     await this.wire.flush();
+    this.releaseFinishedModelSwitches();
     this.syncRecoveryHold();
     void this.startNext();
     return receipt;
   }
 
-  async recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<ModelSwitchReceipt> {
+  recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<ModelSwitchReceipt> {
+    const run = () => this.recoverModelSwitchAdmitted(operationId, action, mode);
+    const admitted = this.modelSwitchAdmissions.get(operationId);
+    return action === 'keep_original' ? run() : admitted === undefined ? this.workAdmission.run('model-switch-retry', run) : admitted.run(run);
+  }
+
+  private async recoverModelSwitchAdmitted(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<ModelSwitchReceipt> {
     let retained: ModelSwitchReceipt | undefined;
     let joinFlight = false;
     await this.historyMutation.runAdmission(undefined, async () => {
@@ -1092,6 +1189,7 @@ export class AgentPromptService implements IAgentPromptService {
       const input = changedMode ? { ...entry.input, mode: mode!, intent: undefined } : entry.input;
       const receipt: ModelSwitchReceipt = { ...current, mode: input.mode, state: current.state === 'preparing' ? 'preparing' : 'pending', error: undefined };
       const oldIndex = this.queueOrder.indexOf(modelSwitchQueueId(operationId));
+      this.admitModelSwitch(operationId);
       await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input, receipt, placement: changedMode ? undefined : entry.placement, revision: entry.revision + (changedMode ? 1 : 0) }, queueIndex: oldIndex < 0 ? this.queueOrder.length : oldIndex }));
       await this.wire.flush();
       this.immediateModelSwitchIds.add(operationId);
@@ -1114,7 +1212,13 @@ export class AgentPromptService implements IAgentPromptService {
     return this.getModelSwitch(operationId)!;
   }
 
-  private async runModelSwitch(operationId: string, boundary?: import('#/agent/loop/loop').StepBoundary): Promise<ModelSwitchReceipt> {
+  private runModelSwitch(operationId: string, boundary?: import('#/agent/loop/loop').StepBoundary): Promise<ModelSwitchReceipt> {
+    const run = () => this.runModelSwitchAdmitted(operationId, boundary);
+    const admission = this.modelSwitchAdmissions.get(operationId);
+    return admission === undefined ? this.workAdmission.run('model-switch-execute', run) : admission.run(run);
+  }
+
+  private async runModelSwitchAdmitted(operationId: string, boundary?: import('#/agent/loop/loop').StepBoundary): Promise<ModelSwitchReceipt> {
     if (this.switchFlight?.promise !== undefined) {
       return boundary === undefined && this.switchFlight.operationId === operationId && this.switchFlight.summarizing === true
         ? this.switchFlight.receipt
@@ -1173,6 +1277,7 @@ export class AgentPromptService implements IAgentPromptService {
     }).finally(() => {
       flight.summarizing = false;
       flight.promise = undefined;
+      this.releaseFinishedModelSwitches();
       this.syncRecoveryHold();
       if (this.switchFlight === undefined) void this.startNext();
     });
@@ -1289,10 +1394,13 @@ export class AgentPromptService implements IAgentPromptService {
     if (reservation.kind !== 'reserved') {
       throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' is already in use`);
     }
+    let work: WorkAdmission;
+    try { work = this.workAdmission.acquire('prompt-reservation'); }
+    catch (error) { reservation.release(); throw error; }
     let submitted = false;
     return {
       id,
-      submit: async (message, execution, deferredDisabledTools, appendTiming, signal) => {
+      submit: (message, execution, deferredDisabledTools, appendTiming, signal) => work.run(async () => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
         this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, execution));
         submitted = true;
@@ -1308,9 +1416,10 @@ export class AgentPromptService implements IAgentPromptService {
           parentReceiptManaged: options?.parentReceiptManaged });
         if (durableAcceptance) await this.wire.flush();
         return handle;
-      },
+      }),
       dispose: () => {
         reservation.release();
+        work.dispose();
       },
     };
   }
@@ -1338,7 +1447,11 @@ export class AgentPromptService implements IAgentPromptService {
       steerAccepted: persisted.steerAccepted, steered: persisted.steered };
   }
 
-  async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string; readonly scriptOutput?: string; readonly canAdmit?: () => boolean }): Promise<PromptHandle> {
+  enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string; readonly scriptOutput?: string; readonly canAdmit?: () => boolean }): Promise<PromptHandle> {
+    return this.workAdmission.run('cron', () => this.enqueueCronAdmitted(input));
+  }
+
+  private async enqueueCronAdmitted(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string; readonly scriptOutput?: string; readonly canAdmit?: () => boolean }): Promise<PromptHandle> {
     const handle = await this.historyMutation.runAdmission(undefined, async () => {
       if (input.canAdmit?.() === false) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cron trigger authorization changed before admission.');
       let origin = input.origin;
@@ -1370,7 +1483,11 @@ export class AgentPromptService implements IAgentPromptService {
     return this.awaitAdmission(handle);
   }
 
-  async enqueue(input: PromptInput): Promise<PromptHandle> {
+  enqueue(input: PromptInput): Promise<PromptHandle> {
+    return this.workAdmission.run('prompt', () => this.enqueueAdmitted(input));
+  }
+
+  private async enqueueAdmitted(input: PromptInput): Promise<PromptHandle> {
     if (this.loop.status().persistenceFailure !== undefined) void this.loop.recoverPersistence();
     if (input.execution?.afterModelSwitch !== undefined && this.getModelSwitch(input.execution.afterModelSwitch) === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown model switch dependency.');
@@ -1497,6 +1614,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.cancelUnlaunched(record, true);
       throw submissionCancelled(record.id);
     }
+    this.attachRecordWorkAdmission(record, 'prompt');
     this.pending.push(record);
     this.bindSubmissionSignal(record, signal);
     this.publishSubmitted(record, queued ? 'queued' : 'running');
@@ -1595,7 +1713,11 @@ export class AgentPromptService implements IAgentPromptService {
     };
   }
 
-  private async submitPrompt(payload: PromptPayload): Promise<PromptHandle> {
+  private submitPrompt(payload: PromptPayload): Promise<PromptHandle> {
+    return this.workAdmission.run('prompt-submit', () => this.submitPromptAdmitted(payload));
+  }
+
+  private async submitPromptAdmitted(payload: PromptPayload): Promise<PromptHandle> {
     const message: ContextMessage = { role: 'user', content: [...payload.input], toolCalls: [], origin: { kind: 'user' } };
     const fingerprint = payload.promptId === undefined ? undefined : promptFingerprint({ message,
       execution: payload.execution, deferredDisabledTools: payload.disabledTools, appendTiming: payload.appendTiming });
@@ -1630,7 +1752,11 @@ export class AgentPromptService implements IAgentPromptService {
       : this[promptRetry].run(payload.promptId, fingerprint, submit);
   }
 
-  async submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {
+  submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {
+    return this.workAdmission.run('steer', () => this.submitSteerAdmitted(payload));
+  }
+
+  private async submitSteerAdmitted(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {
     this.telemetry.track2('input_steer', { parts: payload.input.length });
     await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
     const queued = await this.enqueue({ message: {
@@ -1770,9 +1896,18 @@ export class AgentPromptService implements IAgentPromptService {
       return;
     }
     if (!this.recoveryHold) return;
-    this.recoveryHold = false;
-    this.publishQueueHoldChanged();
-    void this.startNext();
+    const admission = this.workAdmission.acquire('recovered-queue');
+    try {
+      admission.run(() => {
+        for (const record of this.pending) this.attachRecordWorkAdmission(record, 'restored-prompt');
+        for (const entry of this.states.get(modelSwitchQueueKey).values()) {
+          if (entry.receipt.state === 'pending' || entry.receipt.state === 'preparing') this.admitModelSwitch(entry.input.operationId);
+        }
+        this.recoveryHold = false;
+        this.publishQueueHoldChanged();
+        void this.startNext();
+      });
+    } finally { admission.dispose(); }
   }
 
   private isQueuedModelSwitch(id: string): boolean {
@@ -2567,6 +2702,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private syncRecoveryHold(): void {
+    this.releaseFinishedModelSwitches();
     this.syncEditHold();
     if (!this.recoveryHold) return;
     if (this.recoveryQueueCount() === 0 && this.recoveryFlight === undefined) this.recoveryHold = false;
@@ -2574,6 +2710,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private cancelUnlaunched(item: Record, beforeStart: boolean): void {
+    this.releaseRecordWorkAdmission(item);
     this.immediatePromptIds.delete(item.id);
     this.recoveryPendingIds.delete(item.id);
     if (this.queuedExternalSteerIds.delete(item.id)) void this.dispatcher.dispatch(new ExecutorHintDelivery({
@@ -2591,7 +2728,11 @@ export class AgentPromptService implements IAgentPromptService {
 
   preservePendingForClose(): void {
     this.closing = 'preserve-pending';
-    for (const item of this.pending) item.releaseSubmissionSignal?.();
+    for (const item of this.pending) {
+      item.releaseSubmissionSignal?.();
+      this.releaseRecordWorkAdmission(item);
+    }
+    this.releaseDurablyPausedAdmissions();
     const launching = this.launchingPrompt;
     if (launching !== undefined && !this.launchingCommitStarted) {
       for (const item of this.launchingBatch) item.releaseSubmissionSignal?.();
@@ -2603,6 +2744,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private detachPendingForClose(item: Record): void {
+    this.releaseRecordWorkAdmission(item);
     item.detachedForClose = true;
     item.state = 'cancelled';
     this.immediatePromptIds.delete(item.id);
@@ -2652,7 +2794,11 @@ export class AgentPromptService implements IAgentPromptService {
     await this.recoveryFlight;
   }
 
-  async inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
+  inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
+    return this.workAdmission.run('prompt-inject', () => this.injectAdmitted(message, options));
+  }
+
+  private async injectAdmitted(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
     const { message: rerouted, captions } = this.extractCompressionCaptions(message);
     await this.materializeDaemonRefs(rerouted);
     const managed = options?.promptId !== undefined && options.retryFingerprint !== undefined;
@@ -2713,6 +2859,24 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async startNext(): Promise<void> {
+    if (this.executionControl.isHeld()) {
+      await this.executionControl.ready();
+      if (this.executionControl.isHeld() && !this.executionControl.isPausing()) return;
+    }
+    if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
+    if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
+    const candidateId = this.nextReadyQueueId();
+    if (candidateId === undefined) return;
+    const work = this.pending.find(item => item.id === candidateId)?.workAdmission
+      ?? (candidateId.startsWith(MODEL_SWITCH_QUEUE_PREFIX) ? this.modelSwitchAdmissions.get(candidateId.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) : undefined);
+    if (work !== undefined) {
+      await work.run(() => this.startNextAdmitted());
+      return;
+    }
+    await this.startNextAdmitted();
+  }
+
+  private async startNextAdmitted(): Promise<void> {
     await this.executionControl.ready();
     if (this.executionControl.isHeld() && !this.executionControl.isPausing()) return;
     if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;

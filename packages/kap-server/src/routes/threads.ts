@@ -86,6 +86,7 @@ const threadErrors = {
   [ErrorCode.THREAD_IDEMPOTENCY_CONFLICT]: {},
   [ErrorCode.THREAD_LIMIT_EXCEEDED]: {},
   [ErrorCode.THREAD_DELIVERY_FAILED]: {},
+  [ErrorCode.WORK_ADMISSION_FENCED]: {},
 } as const;
 
 /** Registers the `/threads` routes — host-qualified peer-thread coordination over REST. List/read/send

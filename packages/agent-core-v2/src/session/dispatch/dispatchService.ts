@@ -18,6 +18,7 @@ import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLa
 import { abortable } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isCodedError } from '#/errors';
 import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
@@ -128,6 +129,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @ref(IHostProcessService) private readonly hostProcess: LiveRef<IHostProcessService>,
     @ref(IPluginHostService) private readonly pluginHost: LiveRef<IPluginHostService>,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {}
 
   private readonly capacity = new DispatchCapacity();
@@ -152,7 +154,11 @@ export class SessionDispatchService implements ISessionDispatchService {
     return this.capacity.retain(agentId) ?? this.reserveExecution(agentId, parentAgentId);
   }
 
-  async launch(input: DispatchLaunchInput): Promise<DispatchRun> {
+  launch(input: DispatchLaunchInput): Promise<DispatchRun> {
+    return this.workAdmission.run('dispatch-launch', () => this.launchAdmitted(input));
+  }
+
+  private async launchAdmitted(input: DispatchLaunchInput): Promise<DispatchRun> {
     input.signal.throwIfAborted();
     const release = this.capacity.reserve(input.requesterAgentId, resolveDispatchCapacityLimits(this.config));
     try {
@@ -432,7 +438,11 @@ export class SessionDispatchService implements ISessionDispatchService {
     );
   }
 
-  async runOnExisting(
+  runOnExisting(child: DispatchChild, requestInput: string | AgentRunRequest, options: DispatchRunOptions): Promise<DispatchRun> {
+    return this.workAdmission.run('dispatch-resume', () => this.runOnExistingAdmitted(child, requestInput, options));
+  }
+
+  private async runOnExistingAdmitted(
     child: DispatchChild,
     requestInput: string | AgentRunRequest,
     options: DispatchRunOptions,

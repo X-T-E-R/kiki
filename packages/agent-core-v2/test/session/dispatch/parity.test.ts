@@ -91,6 +91,8 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
@@ -1205,6 +1207,7 @@ function createLane(
     { items: [] },
   );
   ix.set(ISessionStateService, new SessionStateService());
+  ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
   ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
   ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
   ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));

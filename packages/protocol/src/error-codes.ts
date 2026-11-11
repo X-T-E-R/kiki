@@ -185,6 +185,7 @@ export const ErrorCode = {
   /** a session creation id was reused with a different request body */
   SESSION_CREATE_IDEMPOTENCY_CONFLICT: 40948,
   IM_IDENTITY_ALREADY_BOUND: 40949,
+  WORK_ADMISSION_FENCED: 40950,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -335,6 +336,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.REQUEST_IDENTITY_CONFLICT]: 'request_identity.conflict',
   [ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT]: 'session.create_idempotency_conflict',
   [ErrorCode.IM_IDENTITY_ALREADY_BOUND]: 'im.identity_already_bound',
+  [ErrorCode.WORK_ADMISSION_FENCED]: 'work.admission_fenced',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

@@ -73,11 +73,12 @@ export async function regenerateMessage(
 export async function replayMessageOperation(
   agent: IAgentScopeHandle,
   targetMessageId: string,
-  body: EditMessageRequest,
+  body: EditMessageRequest | RegenerateMessageRequest,
+  action: 'edit_resend' | 'regenerate' = 'edit_resend',
 ): Promise<PromptHandle | undefined> {
   if (body.operation_id === undefined) return undefined;
   const prompt = agent.accessor.get(IAgentPromptService);
-  const receipt = await promptRetryFor(prompt).lookup(body.operation_id, actionFingerprint('edit_resend', targetMessageId, body));
+  const receipt = await promptRetryFor(prompt).lookup(body.operation_id, actionFingerprint(action, targetMessageId, body));
   return receipt === undefined ? undefined : replayHandle(prompt, body.operation_id, receipt);
 }
 

@@ -269,6 +269,12 @@ describe('desktop-managed shared lifecycle', () => {
           params: [{ operationId: `blocked-${method}`, pauseOperationId: 'prepare-pause' }] })).code).not.toBe(0);
       }
       expect((await call(server, '/api/sessions', { metadata: { cwd: root } })).code).not.toBe(0);
+      const outboxPrompt = await call(server, `/api/sessions/${sessionId}/prompts`, {
+        prompt_id: 'desktop-prepared-outbox',
+        content: [{ type: 'text', text: 'Saved while desktop hot switch is prepared.' }],
+      });
+      expect(outboxPrompt).toMatchObject({ code: 0, data: { prompt_id: 'desktop-prepared-outbox', admission: 'waiting_switch' } });
+      expect((await call(server, `/api/sessions/${sessionId}/prompts/desktop-prepared-outbox:abort?admission=durable`, {})).code).toBe(0);
       expect((await control.read()).phase).toBe('paused');
       expect((await call(server, '/api/desktop-lifecycle', { ...prepare, action: 'cancel-update' })).code).toBe(0);
       expect((await call(server, '/api/desktop-lifecycle')).data).toMatchObject({ hot_switch_prepared: false });

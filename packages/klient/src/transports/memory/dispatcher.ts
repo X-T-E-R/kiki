@@ -17,6 +17,7 @@
 import { IInstantiationService, type ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
+import { IWorkAdmissionService } from '@kiki/agent-core-v2/app/workAdmission/workAdmission';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
@@ -406,7 +407,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     return subscription;
   }
 
-  return {
+  const dispatcher: MemoryDispatcher = {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
       if (service === 'agentContextRebuildService' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
@@ -828,6 +829,22 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           inner?.dispose();
         },
       };
+    },
+  };
+  return {
+    ...dispatcher,
+    async call(scope, service, method, args, options) {
+      const startsWork = service === 'agentPromptService' && ['submit', 'submitAndWait', 'submitSteer', 'resumeRecoveredQueue', 'switchModel', 'updateModelSwitch'].includes(method)
+        || service === 'agentPromptService' && method === 'recoverModelSwitch' && args[1] === 'retry'
+        || service === 'agentSkillService' && ['activate', 'promptWithSkills'].includes(method)
+        || service === 'agentGoalService' && ['createGoal', 'resumeGoal'].includes(method)
+        || service === 'agentContextRebuildService' && method === 'rebuild'
+        || service === 'agentShellCommandService' && method === 'run'
+        || service === 'agentCommandService' && method === 'run';
+      try {
+        const call = () => dispatcher.call(scope, service, method, args, options);
+        return startsWork ? await root.accessor.get(IWorkAdmissionService).run(`klient:${service}.${method}`, call) : await call();
+      } catch (error) { throw toRPCError(error); }
     },
   };
 }

@@ -1,6 +1,7 @@
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { markAsDisposed, trackDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import {
   registerScopedService,
   ScopeActivation,
@@ -108,6 +109,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     @IAgentStateService states: IAgentStateService,
     @IAgentLoopService private readonly loop: IAgentLoopService,
     @IAgentPromptService private readonly prompt: IAgentPromptService,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     trackDisposable(this);
     states.contributeState(externalExecutorKey);
@@ -117,7 +119,16 @@ export class AgentExecutionService implements IAgentExecutionService {
     this.agent = { id: scope.agentId, accessor };
   }
 
-  async run(
+  async run(request: AgentRunRequest, options: AgentExecutionRunOptions): Promise<AgentRunHandle> {
+    const admission = this.workAdmission.acquire('agent-run');
+    try {
+      const handle = await admission.run(() => this.runAdmitted(request, options));
+      admission.hold(handle.completion);
+      return handle;
+    } finally { admission.dispose(); }
+  }
+
+  private async runAdmitted(
     request: AgentRunRequest,
     { promptAdmissionSignal, ...options }: AgentExecutionRunOptions,
   ): Promise<AgentRunHandle> {

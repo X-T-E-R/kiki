@@ -78,12 +78,15 @@ import { IWireService } from '#/wire/wire';
 import { IFileService } from '#/app/file/fileService';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 
 import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire, type StubLoopOptions } from '../loop/stubs';
 import { registerStateServices } from '../../state/stubs';
 import { registerLogServices } from '../../_base/log/stubs';
 import { createTestAgent, permissionModeServices } from '../../harness';
+import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { PromptStepRequest, SteerStepRequest } from '#/agent/prompt/promptStepRequests';
 
 function message(text: string): ContextMessage {
@@ -293,6 +296,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
       reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
       reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
+      reg.define(IWorkAdmissionService, WorkAdmissionService);
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer, waitForPromptRun: async () => {} });
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
@@ -474,9 +478,18 @@ describe('AgentPromptService', () => {
     for (let index = 0; index < 4; index++) local.mockNextResponse({ type: 'text', text: `reply ${index}` });
     try {
       const prompts = local.get(IAgentPromptService);
+      const admission = local.get(IWorkAdmissionService);
       const active = await prompts.enqueue({ id: 'active', message: message('active') });
       const queued = [];
       for (const id of ['first', 'second', 'third']) queued.push(await prompts.enqueue({ id, message: message(id) }));
+      admission.fence('prompt-queue-switch');
+      let drained = false;
+      void admission.joined().then(() => {
+        drained = true;
+      });
+      await expect(prompts.enqueue({ id: 'blocked', message: message('blocked') })).rejects.toMatchObject({
+        code: ErrorCodes.WORK_ADMISSION_FENCED,
+      });
       gates[0]!.resolve();
       await active.completion;
       for (let index = 0; index < queued.length; index++) {
@@ -484,9 +497,12 @@ describe('AgentPromptService', () => {
         const turn = await current.launched;
         expect(turn?.id).toBe(index + 1);
         expect(queued.slice(index + 1).map((handle) => handle.state)).toEqual(Array(queued.length - index - 1).fill('pending'));
+        expect(drained).toBe(false);
         gates[index + 1]!.resolve();
         await current.completion;
       }
+      await admission.joined();
+      expect(drained).toBe(true);
       const records = await local.persistedWireRecords();
       const turns = records.filter((record) => record.type === 'turn.prompt');
       expect(turns.map((record) => record['promptId'])).toEqual(['active', 'first', 'second', 'third']);
@@ -499,6 +515,62 @@ describe('AgentPromptService', () => {
       expect(local.llmCalls).toHaveLength(4);
     } finally {
       for (const gate of gates) gate.resolve();
+      await local.dispose();
+    }
+  });
+
+  it('releases workAdmission join leases when a session durably pauses and restores them if resumed locally', async () => {
+    const local = createTestAgent(permissionModeServices('manual'));
+    const stepEntered = deferred<void>();
+    const stepHeld = deferred<void>();
+    let pausedOnce = false;
+    local.get(IAgentProfileService).update({ activeToolNames: [] });
+    local.get(IAgentLoopService).hooks.onDidFinishStep.register('pause-join-lease-test', async (step, next) => {
+      await next();
+      if (step.step === 1 && !pausedOnce) {
+        pausedOnce = true;
+        local.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
+        stepEntered.resolve();
+        await stepHeld.promise;
+      }
+    });
+    local.mockNextResponse({ type: 'text', text: 'first step' });
+    local.mockNextResponse({ type: 'text', text: 'resumed step' });
+    local.mockNextResponse({ type: 'text', text: 'queued prompt' });
+    try {
+      const prompts = local.get(IAgentPromptService);
+      const control = local.get(ISessionExecutionControl);
+      const admission = local.get(IWorkAdmissionService);
+
+      const active = await prompts.enqueue({ id: 'active-paused', message: message('active') });
+      const pending = await prompts.enqueue({ id: 'pending-paused', message: message('pending') });
+      await stepEntered.promise;
+
+      await control.pause({ operationId: 'pause-hot-switch' });
+      stepHeld.resolve();
+      await vi.waitFor(async () => {
+        expect(await control.read()).toMatchObject({ phase: 'paused' });
+      });
+
+      admission.fence('pause-hot-switch-fence');
+      await expect(admission.joined()).resolves.toBeUndefined();
+      expect(pending.state).toBe('pending');
+
+      admission.reopen('pause-hot-switch-fence');
+      await control.resume({ operationId: 'resume-hot-switch', pauseOperationId: 'pause-hot-switch' });
+      admission.fence('post-resume-fence');
+      let postResumeDrained = false;
+      void admission.joined().then(() => { postResumeDrained = true; });
+      await Promise.resolve();
+      expect(postResumeDrained).toBe(false);
+      const activeDone = await active.completion;
+      const pendingDone = await pending.completion;
+      await admission.joined();
+      expect(postResumeDrained).toBe(true);
+      expect(activeDone).toMatchObject({ state: 'completed' });
+      expect(pendingDone).toMatchObject({ state: 'completed' });
+    } finally {
+      stepHeld.resolve();
       await local.dispose();
     }
   });

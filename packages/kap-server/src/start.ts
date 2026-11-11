@@ -167,6 +167,8 @@ import { createMailboxMigrationService } from '@kiki/agent-core-v2/persistence/b
 import { startStorageMaintenance } from './storageMaintenance';
 import { StorageMigrationController, registerStorageMigrationRoutes } from './routes/storageMigration';
 import { StorageStartupCleanupError } from './storageStartupCleanup';
+import { ManagedWriterOwner } from './runtime/runtimeStore';
+import { registerRuntimeSwitchRoutes } from './routes/runtimeSwitch';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -180,6 +182,7 @@ export interface ServerStartOptions {
   readonly port?: number;
   readonly homeDir?: string;
   readonly sshManaged?: boolean;
+  readonly runtimeManaged?: boolean;
   /**
    * Environment bag handed to the engine bootstrap (`IBootstrapService.getEnv`).
    * Defaults to `process.env`; hosts that need to override engine-level env
@@ -382,7 +385,47 @@ export interface RunningServer {
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
 
-export function startServer(opts: ServerStartOptions): Promise<RunningServer> { return startServerRuntime(opts); }
+export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
+  const env = opts.env ?? process.env;
+  if (!(opts.runtimeManaged ?? (env['KIKI_DESKTOP_BUNDLED'] === '1' || env['KIKI_RUNTIME_MANAGED'] === '1'))) return startServerRuntime(opts);
+  const homeDir = resolveKikiHome(opts.homeDir);
+  const owner = ManagedWriterOwner.acquire(homeDir, { serverId: randomUUID(), homeId: await loadOrCreateServerHomeId(homeDir),
+    pid: process.pid, startedAt: Date.now(), host: opts.host ?? DEFAULT_HOST, port: opts.port ?? DEFAULT_PORT,
+    serverVersion: opts.serverVersion ?? getServerVersion(), buildId: opts.buildId ?? env['KIKI_BUILD_ID'], buildChannel: opts.buildChannel ?? env['KIKI_BUILD_CHANNEL'] });
+  const attempt: StartupAttempt = {};
+  try {
+    const running = await startServerRuntime(opts, undefined, attempt, owner);
+    owner.update({ serverId: running.serverId, port: running.port, phase: 'ready' });
+    const receipt = running.exitReceipt.then(value => { owner.finish(value); return value; });
+    void receipt.catch(() => undefined);
+    return { ...running, exitReceipt: receipt,
+      close: async () => { try { await running.close(); } finally { await receipt; } } };
+  } catch (error) {
+    const completed = new Set<number>();
+    const cleanup = async (): Promise<void> => {
+      if (attempt.close !== undefined) await attempt.close();
+      else {
+        const partial = attempt.core;
+        const failures = await cleanupStartupSteps([
+          { run: () => partial?.accessor.get(IThreadMailboxStore).close() },
+          { run: () => partial?.accessor.get(IHomeRuntimeService).close() },
+          { run: () => partial?.accessor.get(IPluginHostService).stopAll() },
+          { run: () => partial?.dispose() }, { run: () => attempt.release?.() },
+        ], completed);
+        if (failures.length > 0) throw selectServerCleanupError(failures);
+      }
+      owner.finish({ operationId: randomUUID(), owner: 'backend', exitReason: 'cleanup_failed', callerOutcome: 'rejected',
+        cleanupOutcome: 'closed', resourcesAfter: 0, errorMessage: error instanceof Error ? error.message : String(error), settledAt: Date.now() });
+    };
+    try { await cleanup(); }
+    catch (cleanupError) {
+      owner.finish({ operationId: randomUUID(), owner: 'backend', exitReason: 'cleanup_failed', callerOutcome: 'rejected',
+        cleanupOutcome: 'cleanup_failed', errorMessage: cleanupError instanceof Error ? cleanupError.message : String(cleanupError), settledAt: Date.now() });
+      throw new StorageStartupCleanupError(error, cleanupError, cleanup);
+    }
+    throw error;
+  }
+}
 
 interface StartupAttempt { core?: Scope; close?: () => Promise<void>; release?: () => Promise<void>; }
 
@@ -395,7 +438,7 @@ async function cleanupStartupSteps(steps: readonly ServerCleanupStep[], complete
   return [];
 }
 
-async function startServerRuntime(opts: ServerStartOptions, continuation?: { readonly registration: InstanceRegistration; readonly startedAt: number; readonly releaseListener: () => Promise<void>; readonly signal: AbortSignal }, startup?: StartupAttempt): Promise<RunningServer> {
+async function startServerRuntime(opts: ServerStartOptions, continuation?: { readonly registration: InstanceRegistration; readonly startedAt: number; readonly releaseListener: () => Promise<void>; readonly signal: AbortSignal }, startup?: StartupAttempt, managedOwner?: ManagedWriterOwner): Promise<RunningServer> {
   const preparing = <T>(promise: Promise<T>): Promise<T> => continuation === undefined ? promise : abortable(promise, continuation.signal);
   continuation?.signal.throwIfAborted();
   const host = opts.host ?? DEFAULT_HOST;
@@ -439,6 +482,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     buildId,
     buildChannel,
   });
+  if (startup !== undefined) startup.release = async () => { await remoteConnections.close(); await registration.release(); };
+  if (managedOwner !== undefined) {
+    const others = (await registry.listLive()).filter(item => item.serverId !== registration.serverId && Date.now() - item.heartbeatAt < 45_000);
+    managedOwner.update({ serverId: registration.serverId, warnings: others.length === 0 ? [] : [{ code: 'other_home_instances', serverIds: others.map(item => item.serverId) }] });
+    if (others.length > 0) logger.warn({ server_ids: others.map(item => item.serverId), home_dir: homeDir }, 'other servers in this home still have a recent heartbeat');
+  }
   const exposureClass = classify(host, { bindClass: opts.bindClass });
   if (exposureClass !== 'loopback' && opts.insecureNoTls !== true) {
     await registration.release();
@@ -477,7 +526,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       service: createMailboxMigrationService(homeDir),
       startNormal: async (boundPort, sharedRegistration, releaseListener, signal) => {
         const attempt: StartupAttempt = {};
-        try { return await startServerRuntime({ ...opts, port: boundPort }, { registration: sharedRegistration, startedAt, releaseListener, signal }, attempt); }
+        try { return await startServerRuntime({ ...opts, port: boundPort }, { registration: sharedRegistration, startedAt, releaseListener, signal }, attempt, managedOwner); }
         catch (error) {
           const startupError = signal.aborted ? signal.reason : error instanceof StorageStartupCleanupError ? error.startupError : error;
           const completed = new Set<number>();
@@ -514,7 +563,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       modelAccountHomeDir: opts.modelAccountHomeDir,
       configReadOnly: opts.configReadOnly,
       userAgentProfileHomeDir: opts.userAgentProfileHomeDir,
-      env: opts.env,
+      env: managedOwner === undefined ? opts.env : { ...(opts.env ?? process.env), KIKI_RUNTIME_MANAGED: '1' },
       clientIdentity: opts.hostIdentity,
       args: {
         requestHeaders: createKimiDefaultHeaders({
@@ -863,7 +912,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       void closeFlight.then(
         () => {
           const resourcesAfter = resourceCount();
-          resolveExitReceipt({
+          const receipt: ServerExitReceipt = {
             operationId,
             owner: 'backend',
             exitReason: closeReason,
@@ -872,7 +921,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
             resourcesBefore,
             resourcesAfter,
             settledAt: Date.now(),
-          });
+          };
+          if (startupComplete) managedOwner?.finish(receipt);
+          resolveExitReceipt(receipt);
           resolveClosed();
         },
         (error: unknown) => {
@@ -880,7 +931,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
           const normalized = error instanceof Error ? error : new Error(String(error));
           const errorCode = (normalized as { readonly code?: unknown }).code;
           const resourcesAfter = resourceCount();
-          resolveExitReceipt({
+          const receipt: ServerExitReceipt = {
             operationId,
             owner: 'backend',
             exitReason: 'cleanup_failed',
@@ -893,7 +944,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
             errorName: normalized.name,
             errorMessage: normalized.message,
             settledAt: Date.now(),
-          });
+          };
+          if (startupComplete) managedOwner?.finish(receipt);
+          resolveExitReceipt(receipt);
           resolveClosed();
         },
       );
@@ -1057,6 +1110,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID));
   }, { prefix: '/api' });
 
+  if (managedOwner !== undefined) registerRuntimeSwitchRoutes(app, core, managedOwner,
+    () => { void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed')); }, shutdownController.signal);
   await registerApiV1Routes(app, core, {
     serverVersion,
     buildId,

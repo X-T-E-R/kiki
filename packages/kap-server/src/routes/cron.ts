@@ -7,6 +7,7 @@ import {
   ISessionCronService,
   ISessionManager,
   ISessionIndex,
+  IWorkAdmissionService,
   computeNextCronRun,
   cronToHuman,
   cronScheduleBase,
@@ -295,6 +296,7 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.TASK_NOT_FOUND]: {},
+        [ErrorCode.WORK_ADMISSION_FENCED]: {},
       },
       description: 'Pause, resume, or immediately trigger a cron task',
       tags: ['cron'],
@@ -354,7 +356,10 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
             reply.send(taskNotFound(parsed.id, req.id));
             return;
           }
-          const result = await cron.fireTaskNow(parsed.id);
+          const result = await core.accessor.get(IWorkAdmissionService).run(
+            'http:cron.run',
+            () => cron.fireTaskNow(parsed.id),
+          );
           if (result === undefined) throw new Error(`cron task ${parsed.id} could not be triggered`);
           requestLog(req)?.info({ task_id: parsed.id, session_id: resolved.task.sessionId, triggered: result.triggered }, 'cron task checked');
           reply.send(okEnvelope(result, req.id));

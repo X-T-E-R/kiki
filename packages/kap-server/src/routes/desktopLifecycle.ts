@@ -1,10 +1,13 @@
 import { z } from 'zod';
-import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, ISessionExecutionControl, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, ISessionExecutionControl, IWorkAdmissionService, type Scope } from '@kiki/agent-core-v2';
 import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, type DesktopLifecycleState } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
 import { writePrivateFile } from '../services/auth/privateFiles';
+
+const PREPARED_PROMPT_SUBMIT_RE = /^\/api\/sessions\/[^/]+\/prompts$/;
+const PREPARED_CONTROL_RE = /^\/api\/sessions\/[^/]+\/(?:approvals\/[^/]+|questions\/[^/]+|prompts\/[^/]+:abort|agents\/[^/]+\/model-switches\/[^/]+)$/;
 
 export function desktopPendingWork(core: Scope): string[] {
   const sessions = core.accessor.get(ISessionManager);
@@ -40,12 +43,18 @@ export function registerDesktopLifecycleRoutes(app: {
   addHook: (name: 'onRequest' | 'preHandler', handler: (...args: never[]) => unknown) => unknown;
 }, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string; explicitExitPath: string; pid: number; startedAt: number }): void {
   const bootstrap = core.accessor.get(IBootstrapService);
+  const admission = core.accessor.get(IWorkAdmissionService);
+  const prepareOperationId = `desktop-prepare:${opts.serverId}`;
   let draining = false;
   let prepared = false;
-  const state = (): DesktopLifecycleState => ({ server_id: opts.serverId, home_id: bootstrap.spaceId ?? 'main', managed: bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1', draining, hot_switch_prepared: prepared, work_pending: desktopPendingWork(core), impact: 'all-windows-in-this-space' });
+  let ownedFence = false;
+  const isManaged = () => bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1' || bootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1';
+  const state = (): DesktopLifecycleState => ({ server_id: opts.serverId, home_id: bootstrap.spaceId ?? 'main', managed: isManaged(), draining, hot_switch_prepared: prepared, work_pending: desktopPendingWork(core), impact: 'all-windows-in-this-space' });
   app.addHook('preHandler', ((req: { id: string; method: string; url: string; body?: { procedure?: { scope?: string; service?: string; method?: string } } }, reply: { send: (value: unknown) => unknown }, done: () => void) => {
     const procedure = req.body?.procedure;
-    if (prepared && req.method !== 'GET' && req.url.split('?')[0] !== '/api/desktop-lifecycle' &&
+    const pathname = req.url.split('?')[0] ?? '';
+    if (prepared && req.method !== 'GET' && pathname !== '/api/desktop-lifecycle' && pathname !== '/api/runtime-switch' &&
+      !PREPARED_PROMPT_SUBMIT_RE.test(pathname) && !PREPARED_CONTROL_RE.test(pathname) &&
       !(procedure?.scope === 'session' && procedure.service === 'sessionExecutionControl' &&
         ['read', 'pause'].includes(procedure.method ?? ''))) {
       reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This space is preparing a version switch; finish or cancel it before starting new work', req.id));
@@ -65,6 +74,10 @@ export function registerDesktopLifecycleRoutes(app: {
     if (req.body.server_id !== opts.serverId) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'The service changed; review the affected space again', req.id)); return; }
     if (req.body.action === 'cancel-update') {
       prepared = false;
+      if (ownedFence) {
+        ownedFence = false;
+        if (admission.state().operationId === prepareOperationId) admission.reopen(prepareOperationId);
+      }
       reply.send(okEnvelope({ ok: true }, req.id));
       return;
     }
@@ -74,6 +87,10 @@ export function registerDesktopLifecycleRoutes(app: {
     }
     if (req.body.action === 'prepare-update') {
       prepared = true;
+      if (admission.state().operationId === undefined) {
+        admission.fence(prepareOperationId);
+        ownedFence = true;
+      }
       reply.send(okEnvelope({ ok: true }, req.id));
       return;
     }

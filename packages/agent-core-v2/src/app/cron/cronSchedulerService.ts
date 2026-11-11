@@ -8,6 +8,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { ISessionManager, type SessionLease } from '#/app/sessionManager/sessionManager';
 import { LifecycleScope } from '#/app/scopes';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
@@ -42,6 +43,7 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
     @ISessionManager private readonly sessions: ISessionManager,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     super();
     this._register(
@@ -181,7 +183,11 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
     }, delay);
   }
 
-  private async fireSession(sessionId: string): Promise<void> {
+  private fireSession(sessionId: string): Promise<void> {
+    return this.workAdmission.run('cron-fire', () => this.fireSessionAdmitted(sessionId));
+  }
+
+  private async fireSessionAdmitted(sessionId: string): Promise<void> {
     let lease: SessionLease | undefined;
     try {
       if (this.bootstrap.interactive === false) {

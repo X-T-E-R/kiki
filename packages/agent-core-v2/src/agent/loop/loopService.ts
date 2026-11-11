@@ -8,6 +8,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { ResumeStepRequest } from './stepRequest';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { acquireAgentActivityPermit } from '#/agent/execution/agentActivityPermit';
 import type { RequestPermit } from '#/kosong/model/requestAdmission';
@@ -86,6 +87,7 @@ import {
   type TurnResult,
 } from './loop';
 import {
+  ContinuationStepRequest,
   ThinkingOnlyContinuationStepRequest,
   type StepRequest,
   type TurnSeed,
@@ -165,6 +167,34 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private pauseWake?: ReturnType<typeof createControlledPromise<void>>;
   private pausedRuntime?: LoopRuntime;
   private parkedForExit = false;
+  private readonly turnHolds = new Map<Turn, Set<IDisposable>>();
+
+  private releaseTurnHolds(turn: Turn | undefined): void {
+    if (turn === undefined) return;
+    const holds = this.turnHolds.get(turn);
+    if (holds === undefined) return;
+    this.turnHolds.delete(turn);
+    for (const hold of holds) hold.dispose();
+  }
+
+  private holdTurnAdmission(turn: Turn): void {
+    const admission = this.workAdmission.acquire('step:resume');
+    try {
+      const hold = admission.hold(turn.durableResult ?? turn.result);
+      let holds = this.turnHolds.get(turn);
+      if (holds === undefined) {
+        holds = new Set();
+        this.turnHolds.set(turn, holds);
+        void (turn.durableResult ?? turn.result).then(
+          () => this.turnHolds.delete(turn),
+          () => this.turnHolds.delete(turn),
+        );
+      }
+      holds.add(hold);
+    } finally {
+      admission.dispose();
+    }
+  }
 
   private async pauseExecution(signal: AbortSignal): Promise<ExecutionResumePoint | undefined> {
     signal.throwIfAborted();
@@ -256,6 +286,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
     }
     const job = this.createPendingTurn(new ResumeStepRequest(point.seed), point.seed, point);
+    this.holdTurnAdmission(job.turn);
     this.pendingTurns.unshift(job);
     return job.turn;
   }
@@ -264,6 +295,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (this.parkedForExit) return true;
     if (this.pausedRuntime === undefined || this.pausedRuntime.turnSignal.aborted || this.executionControl.resumePoint(this.scope.agentId)?.turnId !== this.pausedRuntime.turnId) return false;
     this.parkedForExit = true;
+    this.releaseTurnHolds(this.pausedRuntime.job?.turn);
     this.executionControl.park(this.scope.agentId);
     this.pauseWake?.resolve();
     return true;
@@ -284,6 +316,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @IAppendLogStore appendLog: IAppendLogStore,
     @ILogService private readonly log: ILogService,
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     super();
     this._register(executionControl.register(scope.agentId, {
@@ -292,7 +325,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       resume: point => this.resumeExecution(point),
     }));
     this._register(executionControl.onDidChange(() => {
+      if (executionControl.isDurablyPaused()) {
+        if (this.pausedRuntime !== undefined && executionControl.resumePoint(this.scope.agentId)?.turnId === this.pausedRuntime.turnId) {
+          this.releaseTurnHolds(this.pausedRuntime.job?.turn);
+        }
+        return;
+      }
       if (!executionControl.isHeld()) {
+        if (this.pausedRuntime?.job !== undefined && !this.parkedForExit && !this.turnHolds.has(this.pausedRuntime.job.turn)) {
+          this.holdTurnAdmission(this.pausedRuntime.job.turn);
+        }
         this.pauseReady?.resolve(undefined);
         this.pauseReady = undefined;
         this.pauseWake?.resolve();
@@ -360,6 +402,34 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   enqueue(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt {
+    if (this.activeTurnJob !== undefined && (request.admission === 'activeTurnOnly' || request instanceof ContinuationStepRequest)) return this.enqueueAdmitted(request, options);
+    const admission = this.workAdmission.acquire(`step:${request.kind}`);
+    try {
+      return admission.run(() => {
+        const receipt = this.enqueueAdmitted(request, options);
+        const hold = admission.hold(receipt.assigned.then(({ turn }) => turn.durableResult ?? turn.result));
+        void receipt.assigned.then(({ turn }) => {
+          let holds = this.turnHolds.get(turn);
+          if (holds === undefined) {
+            holds = new Set();
+            this.turnHolds.set(turn, holds);
+            void (turn.durableResult ?? turn.result).then(
+              () => this.turnHolds.delete(turn),
+              () => this.turnHolds.delete(turn),
+            );
+          }
+          holds.add(hold);
+          if (this.executionControl.isDurablyPaused() && this.pausedRuntime?.job?.turn === turn &&
+              this.executionControl.resumePoint(this.scope.agentId)?.turnId === turn.id) {
+            this.releaseTurnHolds(turn);
+          }
+        }, () => hold.dispose());
+        return receipt;
+      });
+    } finally { admission.dispose(); }
+  }
+
+  private enqueueAdmitted(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt {
     if (this.disposing) throw abortError('Agent loop disposed');
     const assignment = createControlledPromise<import('./loop').StepAssignment>();
     void assignment.catch(() => undefined);
@@ -729,7 +799,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       this.maybeSettle();
       return;
     }
-    this.startTurn(job);
+    this.workAdmission.detach(() => this.startTurn(job));
   }
 
   private startTurn(job: TurnJob): void {
@@ -986,7 +1056,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return false;
   }
 
-  async run(options: LoopRunOptions): Promise<LoopRunResult> {
+  run(options: LoopRunOptions): Promise<LoopRunResult> {
+    if (this.activeTurnJob?.turn.id === options.turnId) return this.runAdmitted(options);
+    const admission = this.workAdmission.acquire('loop');
+    return this.workAdmission.detach(() => this.runAdmitted(options)).finally(() => admission.dispose());
+  }
+
+  private async runAdmitted(options: LoopRunOptions): Promise<LoopRunResult> {
     const runtime = this.createLoopRuntime(options);
     try {
       while (true) {

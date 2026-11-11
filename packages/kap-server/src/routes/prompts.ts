@@ -42,6 +42,7 @@ import {
   bundledSkillActivations,
   ISessionContext,
   ISessionManager,
+  IWorkAdmissionService,
   ITelemetryService,
   applyPromptMetadataUpdate,
   isError2,
@@ -107,7 +108,7 @@ import { PromptIngress, type PromptIngressExecution, type PromptIngressResult } 
 export const PROMPT_BODY_LIMIT_BYTES = KLIENT_CALL_BODY_LIMIT_BYTES;
 
 interface PromptRouteHost {
-  addHook?(name: 'preClose', hook: () => Promise<void>): unknown;
+  addHook?(name: 'preClose' | 'onListen', hook: () => Promise<void>): unknown;
   get(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
@@ -424,6 +425,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     },
   });
   app.addHook?.('preClose', () => ingress.close());
+  app.addHook?.('onListen', async () => { ingress.start(); });
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
   const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
@@ -439,7 +441,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.get(switchList.path, switchList.options, switchList.handler as Parameters<PromptRouteHost['get']>[2]);
   const switchSubmit = defineRoute({ method: 'POST', path: switchPath, params: switchParams, body: modelSwitchInputSchema,
-    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.WORK_ADMISSION_FENCED]: {} },
     description: 'Queue a native model and context switch before the next model request', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
     try {
       await withSessionOperation(core, req.params.session_id, async (handle) => {
@@ -461,7 +463,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.get(switchRead.path, switchRead.options, switchRead.handler as Parameters<PromptRouteHost['get']>[2]);
   const switchAction = defineRoute({ method: 'POST', path: `${switchPath}/{operation_id}`, params: operationParams, body: modelSwitchActionSchema,
-    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.WORK_ADMISSION_FENCED]: {} },
     description: 'Edit, cancel, reorder, hold or recover a model switch operation', tags: ['prompts'], operationId: 'recoverModelSwitch' }, async (req, reply) => {
     try {
       await withSessionOperation(core, req.params.session_id, async (handle) => {
@@ -546,6 +548,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
+        [ErrorCode.WORK_ADMISSION_FENCED]: {},
       },
       description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
@@ -554,6 +557,37 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], signal => executeSubmit(req, reply, undefined, signal)),
   );
   async function executeSubmit(
+    req: { id: string; params: { session_id: string }; body: z.infer<typeof promptSubmissionSchema>; query: { receipt?: 'true' } },
+    reply: { send(payload: unknown): unknown },
+    ingressExecution?: PromptIngressExecution,
+    requestSignal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await core.accessor.get(IWorkAdmissionService).run('rest-prompt', () => executeSubmitAdmitted(req, reply, ingressExecution, requestSignal));
+    } catch (error) {
+      if (ingressExecution !== undefined) throw error;
+      const bootstrap = core.accessor.get(IBootstrapService);
+      const outboxManaged = bootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1' || bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1';
+      if (isError2(error) && error.code === ErrorCodes.WORK_ADMISSION_FENCED && req.body.prompt_id !== undefined && outboxManaged) {
+        try {
+          const body = { ...req.body, admission: undefined };
+          const live = core.accessor.get(ISessionManager).get(req.params.session_id);
+          const liveAgent = req.body.delivery_mode === 'steer'
+            ? live?.accessor.get(IAgentLifecycleService).get(req.body.agent_id ?? MAIN_AGENT_ID) : undefined;
+          const steerTarget = req.body.delivery_mode === 'steer'
+            ? { turnId: liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId,
+              promptId: liveAgent?.accessor.get(IAgentPromptService).list().active?.id }
+            : undefined;
+          const item = await ingress.submitWaitingSwitch(req.params.session_id, body, promptPayloadFingerprint(body), steerTarget);
+          reply.send(okEnvelope(req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse(item) : item, req.id));
+        } catch (outboxError) { sendMappedError(reply, req, outboxError); }
+        return;
+      }
+      sendMappedError(reply, req, error);
+    }
+  }
+
+  async function executeSubmitAdmitted(
     req: { id: string; params: { session_id: string }; body: z.infer<typeof promptSubmissionSchema>; query: { receipt?: 'true' } },
     reply: { send(payload: unknown): unknown },
     ingressExecution?: PromptIngressExecution,
@@ -804,7 +838,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         sendResult(result);
       } catch (error) {
         if (!enqueued) await preparedMedia?.discard();
-        if (ingressExecution !== undefined) throw error;
+        if (ingressExecution !== undefined || (isError2(error) && error.code === ErrorCodes.WORK_ADMISSION_FENCED)) throw error;
         sendMappedError(reply, req, error);
       } finally {
         await reservation?.dispose();
@@ -828,6 +862,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.PROMPT_NOT_FOUND]: {},
+        [ErrorCode.WORK_ADMISSION_FENCED]: {},
       },
       description: 'Steer queued prompts into the active turn',
       tags: ['prompts'],
@@ -875,6 +910,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.PROMPT_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
+        [ErrorCode.WORK_ADMISSION_FENCED]: {},
       },
       description: 'Abort, move, replace, retime, hold for editing, or steer a prompt',
       tags: ['prompts'],
@@ -1237,6 +1273,9 @@ function sendMappedError(
   const log = requestLog(req);
   if (isError2(err)) {
     switch (err.code) {
+      case ErrorCodes.WORK_ADMISSION_FENCED:
+        reply.send({ ...errEnvelope(ErrorCode.WORK_ADMISSION_FENCED, err.message, requestId, err.stack), details: err.details });
+        return;
       case 'session.not_found':
       case 'agent.not_found':
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));

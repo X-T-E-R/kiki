@@ -1805,6 +1805,7 @@ export const en = {
   'transcript.serverHeldTitle': 'The server kept this message for recovery. Confirm queue recovery or retry it with the same message identity.',
   'transcript.admission.loading': 'Loading session…',
   'transcript.admission.queued': 'In line, #{position}',
+  'transcript.admission.switching': 'Waiting for server switch…',
   'transcript.admission.held': 'Held',
   'transcript.admission.heldTitle': 'Saved on the server and not sent yet.',
   'transcript.admission.failed': 'Not sent',

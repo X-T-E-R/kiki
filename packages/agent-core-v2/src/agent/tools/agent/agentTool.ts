@@ -1,4 +1,5 @@
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
@@ -147,6 +148,7 @@ export class SubagentTool implements ISubagentTool {
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly models: IModelService,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
@@ -594,7 +596,18 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
-  private async execution(
+  private execution(
+    args: SubagentToolInput,
+    context: ExecutableToolContext,
+    snapshot: AgentProfileCatalogSnapshot | undefined,
+    capturedLaunchPolicy: DispatchLaunchPolicy,
+    runInBackground: boolean,
+    workspaceRoots: RuntimeWorkspaceRoots | undefined,
+  ): Promise<ExecutableToolResult> {
+    return this.workAdmission.run('agent-run-prepare', () => this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots));
+  }
+
+  private async executionAdmitted(
     args: SubagentToolInput,
     context: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,

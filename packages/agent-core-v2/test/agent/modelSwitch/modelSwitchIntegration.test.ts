@@ -21,6 +21,7 @@ import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 import { Error2, ErrorCodes } from '#/errors';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { createTestAgent, agentServices, homeDirServices, sessionServices, type TestAgentContext } from '../../harness';
 
 const OLD = 'mock-model';
@@ -356,6 +357,49 @@ describe('model switch integration with current prompt projections', () => {
     expect(await prompts.enqueue(input)).toBe(handle);
     expect((await journal(ctx)).filter((record) => record.type === 'prompt.outcome_committed' && record['terminal'] !== undefined)).toHaveLength(1);
     expect(ctx.llmCalls).toHaveLength(1);
+  });
+
+  it('finishes an admitted model switch and its dependent prompt across a work admission fence', async () => {
+    const { ctx } = await createHost();
+    const prompts = ctx.get(IAgentPromptService);
+    const admission = ctx.get(IWorkAdmissionService);
+    let releaseFirstTurn!: () => void;
+    const firstTurnGate = new Promise<void>((resolve) => {
+      releaseFirstTurn = resolve;
+    });
+    ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-before-switch', async (stepCtx, next) => {
+      if (stepCtx.turnId === 0) await firstTurnGate;
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'first reply' });
+    ctx.mockNextResponse({ type: 'text', text: 'switched reply' });
+
+    const first = await prompts.enqueue({
+      id: 'before-switch',
+      message: { role: 'user', content: [{ type: 'text', text: 'run first' }], toolCalls: [] },
+    });
+    await first.launched;
+    const switchReceipt = await prompts.switchModel({ operationId: 'fenced-switch', model: NEW, mode: 'direct' });
+    expect(switchReceipt).toMatchObject({ state: 'pending' });
+    const afterSwitch = await prompts.enqueue({
+      id: 'after-switch',
+      execution: { afterModelSwitch: 'fenced-switch' },
+      message: { role: 'user', content: [{ type: 'text', text: 'run after switch' }], toolCalls: [] },
+    });
+
+    admission.fence('model-switch-fence');
+    let drained = false;
+    void admission.joined().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    releaseFirstTurn();
+    expect((await afterSwitch.completion).state).toBe('completed');
+    expect(prompts.getModelSwitch('fenced-switch')).toMatchObject({ state: 'completed', binding: { model: NEW } });
+    await admission.joined();
+    expect(drained).toBe(true);
   });
 });
 

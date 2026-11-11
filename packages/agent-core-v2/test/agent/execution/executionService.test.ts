@@ -50,6 +50,8 @@ import { IModelCatalog } from '#/kosong/model/catalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { stubExecutionControl } from '../../session/executionControl/stubs';
 
 const IMarker = createDecorator<string>('executionTestMarker');
@@ -91,6 +93,7 @@ function activityDependencies(ix: TestInstantiationService): void {
   ix.stub(ISessionContext, { sessionId: 'session-test' });
   ix.stub(ISessionMetadata, { read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }) });
   ix.stub(ISessionExecutionControl, stubExecutionControl());
+  ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
 }
 
 function executionService(
@@ -764,6 +767,7 @@ describe('AgentExecutionService', () => {
     ix.stub(IAgentLoopService, {});
     ix.stub(IAgentPromptService, {});
     ix.stub(ISessionExecutionControl, stubExecutionControl());
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
     const service = ix.get(IAgentExecutionService);
     await expect(service.run({ kind: 'prompt', prompt: 'resume research' }, {

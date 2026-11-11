@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import {
   Error2, ErrorCodes, IAtomicDocumentStore, IBootstrapService, IFileService, IFileSystemStorageService,
-  IBlobStore, ILogService, ISessionIndex, ISessionManager, isError2, type Scope,
+  IBlobStore, ILogService, ISessionIndex, ISessionManager, IWorkAdmissionService, isError2, type Scope,
 } from '@kiki/agent-core-v2';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
@@ -63,8 +63,69 @@ export class PromptIngress {
   private readonly progress = new Map<string, NonNullable<PromptItem['restore_progress']>>();
   private readonly pendingContent = new Map<string, { readonly key: string; readonly promptId: string }>();
   private closed = false;
+  private outboxFlight?: Promise<void>;
+  private readonly admissionListener: { dispose(): void };
 
-  constructor(private readonly core: Scope, private readonly consumer: Consumer) {}
+  constructor(private readonly core: Scope, private readonly consumer: Consumer) {
+    const admission = core.accessor.get(IWorkAdmissionService);
+    let previous = admission.state().operationId;
+    this.admissionListener = admission.onDidChange(() => {
+      const current = admission.state().operationId;
+      const reopened = previous !== undefined && current === undefined;
+      previous = current;
+      if (!this.closed && reopened) this.start();
+    });
+  }
+
+  private isSwitchOutboxEnabled(): boolean {
+    const bootstrap = this.core.accessor.get(IBootstrapService);
+    return bootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1' || bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1';
+  }
+
+  start(): void {
+    if (this.closed || this.outboxFlight !== undefined || !this.isSwitchOutboxEnabled()) return;
+    this.outboxFlight = this.drainSwitchOutbox().catch(error => {
+      this.core.accessor.get(ILogService).warn('switch outbox recovery failed; saved messages remain available', { error: error instanceof Error ? error.message : String(error) });
+    }).finally(() => { this.outboxFlight = undefined; });
+  }
+
+  private async registerSwitchEntry(target: Target, key: string): Promise<void> {
+    const scope = 'runtime/switch-outbox';
+    const lock = await this.core.accessor.get(IFileSystemStorageService).acquireLock(scope, 'mutation.lock', { waitForMs: 5000 });
+    try {
+      const index = await this.documents().get<Index>(scope, INDEX_KEY);
+      const ordinal = index?.next ?? 0;
+      await this.documents().update<{ entries: { target: Target; key: string }[] }>(scope, `${Math.floor(ordinal / PAGE_SIZE)}.json`, page =>
+        ({ entries: [...(page?.entries ?? []), { target, key }] }));
+      await this.documents().set(scope, INDEX_KEY, { next: ordinal + 1 });
+    } finally { await lock.release(); }
+  }
+
+  private async drainSwitchOutbox(): Promise<void> {
+    const scope = 'runtime/switch-outbox';
+    const index = await this.documents().get<Index>(scope, INDEX_KEY);
+    for (let page = 0; page * PAGE_SIZE < (index?.next ?? 0); page++) {
+      const entries = await this.documents().get<{ entries: { target: Target; key: string }[] }>(scope, `${page}.json`);
+      for (const { target, key } of entries?.entries ?? []) {
+        if (this.closed || this.core.accessor.get(IWorkAdmissionService).state().operationId !== undefined) return;
+        await this.core.accessor.get(IWorkAdmissionService).run('switch-outbox-prepare', async () => {
+          const entry = await this.locked(target, async () => {
+            const current = await this.read(target, key);
+            if (current?.admission !== 'waiting_switch') return undefined;
+            const next: Entry = { ...current, admission: 'restoring', owner: this.owner };
+            await this.publish(target, next);
+            return next;
+          });
+          if (entry !== undefined) this.schedule(target, entry);
+        });
+      }
+    }
+  }
+
+  submitWaitingSwitch(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {
+    if (!this.isSwitchOutboxEnabled()) throw new Error2(ErrorCodes.WORK_ADMISSION_FENCED, 'Waiting to send after the server switch.');
+    return this.submitAdmitted(sessionId, body, fingerprint, steerTarget, true);
+  }
 
   private async target(sessionId: string, agentId: string): Promise<Target> {
     const summary = await this.core.accessor.get(ISessionIndex).get(sessionId);
@@ -138,7 +199,11 @@ export class PromptIngress {
     return entry.admission === 'admitted' ? this.consumer.projectDelivery?.(target.sessionId, entry.agentId, item) ?? item : item;
   }
 
-  async submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {
+  submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {
+    return this.core.accessor.get(IWorkAdmissionService).run('durable-prompt', () => this.submitAdmitted(sessionId, body, fingerprint, steerTarget));
+  }
+
+  private async submitAdmitted(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget'], waitingSwitch = false): Promise<PromptItem> {
     if (this.closed) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The server is stopping. Retry this request after reconnecting.');
     if (body.prompt_id === undefined || body.prompt_id.length > 256) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Durable admission requires a prompt_id of 1–256 characters.');
     if (body.content.every(part => part.type === 'text' && part.text.trim() === '')) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A prompt must contain text or an attachment.');
@@ -154,7 +219,7 @@ export class PromptIngress {
         await this.publish(target, current);
         return current;
       });
-      if (recovered.owner === this.owner && recovered.admission === 'restoring') this.schedule(target, recovered);
+      if (recovered.owner === this.owner && recovered.admission === 'restoring' && !waitingSwitch) this.schedule(target, recovered);
       return this.item(target, recovered);
     }
     const content = await this.retainMedia(target, body.content);
@@ -171,15 +236,17 @@ export class PromptIngress {
       const contentIdentity = `${target.scope}/${agentId}/${createHash('sha256').update(JSON.stringify({ ...body, prompt_id: undefined, admission: undefined })).digest('hex')}`;
       const duplicate = this.pendingContent.get(contentIdentity);
       const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
-        createdAt: new Date().toISOString(), owner: this.owner, admission: duplicate === undefined ? 'restoring' : 'held', stage: 'restoring',
+        createdAt: new Date().toISOString(), owner: this.owner, admission: duplicate !== undefined ? 'held' : waitingSwitch ? 'waiting_switch' : 'restoring', stage: 'restoring',
         contentIdentity, duplicateOf: duplicate?.promptId,
         error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
         steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
+      if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
       await this.publish(target, created);
       if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
       return created;
     });
     if (entry.owner === this.owner && entry.admission === 'restoring') this.schedule(target, entry);
+    if (entry.admission === 'waiting_switch' && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined) this.start();
     return this.item(target, entry);
   }
 
@@ -206,7 +273,11 @@ export class PromptIngress {
     return { items, nextCursor: (pageNumber + 1) * PAGE_SIZE < (index?.next ?? 0) ? String(pageNumber + 1) : undefined };
   }
 
-  async resume(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
+  resume(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
+    return this.core.accessor.get(IWorkAdmissionService).run('durable-prompt-resume', () => this.resumeAdmitted(sessionId, agentId, promptId));
+  }
+
+  private async resumeAdmitted(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
     let entry = await this.read(target, key);
@@ -261,6 +332,7 @@ export class PromptIngress {
   private schedule(target: Target, entry: Entry): void {
     const key = `${target.scope}/${entry.key}`;
     if (this.closed || this.workers.has(key)) return;
+    const admission = entry.cancelRequested ? undefined : this.core.accessor.get(IWorkAdmissionService).acquire('durable-prompt-prepare');
     if (entry.contentIdentity !== undefined && !this.pendingContent.has(entry.contentIdentity)) {
       this.pendingContent.set(entry.contentIdentity, { key: entry.key, promptId: entry.body.prompt_id! });
     }
@@ -273,9 +345,11 @@ export class PromptIngress {
       controller.abort(new Error2(ErrorCodes.SESSION_BUSY, `Message restoration timed out after 120s during ${phase}. Retry this saved message or cancel it.`));
     }, 120_000);
     timeout.unref?.();
-    const promise = this.run(target, entry.key, controller, timeout, previous).catch(error => {
+    const run = () => this.run(target, entry.key, controller, timeout, previous);
+    const promise = (admission === undefined ? run() : admission.run(run)).catch(error => {
       this.core.accessor.get(ILogService).warn('durable prompt admission stopped', { error: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
+      admission?.dispose();
       clearTimeout(timeout);
       this.workers.delete(key);
       this.progress.delete(key);
@@ -343,6 +417,8 @@ export class PromptIngress {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.admissionListener.dispose();
+    await this.outboxFlight;
     for (const worker of this.workers.values()) worker.controller.abort(new Error('Server stopped during prompt admission'));
     await Promise.all([...this.workers.values()].map(worker => worker.promise));
   }

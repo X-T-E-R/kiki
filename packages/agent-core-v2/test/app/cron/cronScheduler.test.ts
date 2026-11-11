@@ -37,86 +37,123 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWatch';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 
 describe('CronSchedulerService wakeups', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('keeps a task table in memory, wakes at its due minute, and reloads on changes', async () => {
-    vi.useFakeTimers();
-    const now = Date.UTC(2025, 0, 1, 0, 0, 59);
-    vi.setSystemTime(now);
-    const changed = new Emitter<void>();
-    const files = new Emitter<HostFsChange>();
-    const task: CronTask = {
-      id: '01234567', cron: '* * * * *', prompt: 'scheduled', createdAt: now,
-      recurring: false, tags: { sessionId: 'session-1' },
-    };
-    const tasks: CronTask[] = [task];
-    let reads = 0;
-    let fires = 0;
-    const store = {
-      _serviceBrand: undefined,
-      onDidChange: changed.event,
-      get: async (_workspaceId: string, id: string) => tasks.find((item) => item.id === id),
-      listWorkspaceIds: async () => ['workspace-1'],
-      list: async () => { reads += 1; return [...tasks]; },
-      save: async (_workspaceId: string, next: CronTask) => { tasks.push(next); changed.fire(); },
-      delete: async (_workspaceId: string, id: string) => {
-        tasks.splice(tasks.findIndex((item) => item.id === id), 1);
-        changed.fire();
-      },
-    } satisfies ICronTaskPersistence;
-    const cron = {
-      tick: async () => { fires += 1; await store.delete('workspace-1', task.id); },
-      flushPersist: async () => {},
-    } as unknown as ISessionCronService;
-    const manager = {
-      _serviceBrand: undefined,
-      acquire: async () => ({ dispose: () => {} }),
-      withLifecycleSerialization: async (_id: string, action: () => Promise<void>) => action(),
-      get: () => ({ accessor: { get: () => cron } }),
-    } as unknown as ISessionManager;
-    const disposables = new DisposableStore();
-    const services = createServices(disposables, {
-      additionalServices: (reg) => {
-        reg.defineInstance(IConfigService, {
-          ready: Promise.resolve(),
-          get: () => ({ disabled: false, debug: false, noJitter: true, manualTick: false }),
-          onDidSectionChange: Event.None,
-        } as unknown as IConfigService);
-        reg.defineInstance(IBootstrapService, {
-          homeDir: '/tmp/cron-scheduler-test', scope: () => 'cron',
-        } as unknown as IBootstrapService);
-        reg.defineInstance(IHostFsWatchService, {
-          _serviceBrand: undefined,
-          watch: () => ({ ready: Promise.resolve(), onDidChange: files.event, dispose: () => {} }),
-        });
-        reg.defineInstance(ICronTaskPersistence, store);
-        reg.defineInstance(ISessionManager, manager);
-        reg.define(ICronScheduler, CronSchedulerService);
-      },
-    });
-    try {
-      services.get(ICronScheduler);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(reads).toBe(1);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(fires).toBe(1);
-      await vi.advanceTimersByTimeAsync(500);
-      const afterFire = reads;
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(reads).toBe(afterFire);
-      expect(fires).toBe(1);
-      tasks.push({ ...task, id: '76543210', createdAt: Date.now(), paused: true });
-      files.fire({ path: '/tmp/cron-scheduler-test/cron/workspace-1/76543210.json', action: 'created', kind: 'file' });
-      await vi.advanceTimersByTimeAsync(250);
-      expect(reads).toBeGreaterThan(afterFire);
-    } finally {
-      await disposables.dispose();
-      changed.dispose();
-      files.dispose();
-    }
-  });
+  it.each(['open', 'fenced', 'preparing'] as const)(
+    'keeps a task table in memory, wakes at its due minute, and honors %s work admission',
+    async (mode) => {
+      vi.useFakeTimers();
+      const now = Date.UTC(2025, 0, 1, 0, 0, 59);
+      vi.setSystemTime(now);
+      const changed = new Emitter<void>();
+      const files = new Emitter<HostFsChange>();
+      const task: CronTask = {
+        id: '01234567', cron: '* * * * *', prompt: 'scheduled', createdAt: now,
+        recurring: false, tags: { sessionId: 'session-1' },
+      };
+      const tasks: CronTask[] = [task];
+      let reads = 0;
+      let fires = 0;
+      const store = {
+        _serviceBrand: undefined,
+        onDidChange: changed.event,
+        get: async (_workspaceId: string, id: string) => tasks.find((item) => item.id === id),
+        listWorkspaceIds: async () => ['workspace-1'],
+        list: async () => { reads += 1; return [...tasks]; },
+        save: async (_workspaceId: string, next: CronTask) => { tasks.push(next); changed.fire(); },
+        delete: async (_workspaceId: string, id: string) => {
+          tasks.splice(tasks.findIndex((item) => item.id === id), 1);
+          changed.fire();
+        },
+      } satisfies ICronTaskPersistence;
+      let finishFire!: () => void;
+      const fireGate = new Promise<void>((resolve) => {
+        finishFire = resolve;
+      });
+      const cron = {
+        tick: async () => {
+          fires += 1;
+          if (mode === 'preparing') await fireGate;
+          await store.delete('workspace-1', task.id);
+        },
+        flushPersist: async () => {},
+      } as unknown as ISessionCronService;
+      const manager = {
+        _serviceBrand: undefined,
+        acquire: async () => ({ dispose: () => {} }),
+        withLifecycleSerialization: async (_id: string, action: () => Promise<void>) => action(),
+        get: () => ({ accessor: { get: () => cron } }),
+      } as unknown as ISessionManager;
+      const disposables = new DisposableStore();
+      const services = createServices(disposables, {
+        additionalServices: (reg) => {
+          reg.defineInstance(IConfigService, {
+            ready: Promise.resolve(),
+            get: () => ({ disabled: false, debug: false, noJitter: true, manualTick: false }),
+            onDidSectionChange: Event.None,
+          } as unknown as IConfigService);
+          reg.defineInstance(IBootstrapService, {
+            homeDir: '/tmp/cron-scheduler-test', scope: () => 'cron',
+          } as unknown as IBootstrapService);
+          reg.defineInstance(IHostFsWatchService, {
+            _serviceBrand: undefined,
+            watch: () => ({ ready: Promise.resolve(), onDidChange: files.event, dispose: () => {} }),
+          });
+          reg.defineInstance(ICronTaskPersistence, store);
+          reg.defineInstance(ISessionManager, manager);
+          reg.define(IWorkAdmissionService, WorkAdmissionService);
+          reg.define(ICronScheduler, CronSchedulerService);
+        },
+      });
+      try {
+        const admission = services.get(IWorkAdmissionService);
+        if (mode === 'fenced') admission.fence('cron-switch');
+        services.get(ICronScheduler);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(reads).toBe(1);
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (mode === 'fenced') {
+          expect(fires).toBe(0);
+          expect(tasks).toEqual([task]);
+          admission.reopen('cron-switch');
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(fires).toBe(1);
+          return;
+        }
+        expect(fires).toBe(1);
+        if (mode === 'preparing') {
+          admission.fence('cron-switch');
+          let drained = false;
+          void admission.joined().then(() => {
+            drained = true;
+          });
+          await Promise.resolve();
+          expect(drained).toBe(false);
+          finishFire();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(drained).toBe(true);
+        }
+        await vi.advanceTimersByTimeAsync(500);
+        const afterFire = reads;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(reads).toBe(afterFire);
+        expect(fires).toBe(1);
+        tasks.push({ ...task, id: '76543210', createdAt: Date.now(), paused: true });
+        files.fire({ path: '/tmp/cron-scheduler-test/cron/workspace-1/76543210.json', action: 'created', kind: 'file' });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(reads).toBeGreaterThan(afterFire);
+      } finally {
+        finishFire();
+        await disposables.dispose();
+        changed.dispose();
+        files.dispose();
+      }
+    },
+  );
 });
 
 
@@ -134,6 +171,7 @@ describe('print bootstrap scoped Cron scheduling', () => {
     _clearScopedRegistryForTests();
     registerScopedService(LifecycleScope.App, IBootstrapService, BootstrapService, ScopeActivation.OnScopeCreated, 'bootstrap');
     registerScopedService(LifecycleScope.App, IAtomicDocumentStore, JsonAtomicDocumentStore, ScopeActivation.OnScopeCreated, 'storage');
+    registerScopedService(LifecycleScope.App, IWorkAdmissionService, WorkAdmissionService, ScopeActivation.OnDemand, 'workAdmission');
     registerScopedService(LifecycleScope.App, ICronTaskPersistence, CronTaskPersistenceService, ScopeActivation.OnScopeCreated, 'cron');
     registerScopedService(LifecycleScope.App, ICronScheduler, CronSchedulerService, ScopeActivation.OnScopeCreated, 'cron');
     registerScopedService(LifecycleScope.Session, ISessionStateService, SessionStateService, ScopeActivation.OnScopeCreated, 'state');

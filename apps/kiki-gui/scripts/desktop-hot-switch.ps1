@@ -46,6 +46,15 @@ function Lifecycle([object]$Server, [string]$Action) {
     Call-Local $Server 'desktop-lifecycle' $body
 }
 
+function Try-RuntimeSwitch([object]$Server, [string]$OperationId, [string]$Action) {
+    if (!$OperationId) { return }
+    try {
+        Call-Local $Server 'runtime-switch' @{ operationId = $OperationId; serverId = $Server.server_id; action = $Action } | Out-Null
+    } catch {
+        if ($_.Exception.Response.StatusCode.value__ -ne 404) { Write-Verbose "runtime-switch ($Action) skipped: $($_.Exception.Message)" }
+    }
+}
+
 function Find-Server {
     $matches = @(
         foreach ($file in Get-ChildItem -LiteralPath $instances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
@@ -191,6 +200,7 @@ try {
         }
         if ($target.releaseId -ceq $state.oldReleaseId -and $state.phase -in @('stopping', 'promoting', 'starting', 'resuming')) { Restore-OriginalRelease }
         if ((Get-ObjectProperty (Lifecycle $target.instance '') 'hot_switch_prepared') -eq $true) { Lifecycle $target.instance 'cancel-update' | Out-Null }
+        Try-RuntimeSwitch $target.instance (Get-ObjectProperty $state 'fenceOperationId') 'cancel'
         Release-OurPauses $target $true
         $state.phase = 'complete'; Save-State
         Write-Host "Recovery complete: $($target.releaseId)"
@@ -215,16 +225,22 @@ try {
         if ($state.kikiHome -ine $homePath -or $state.oldServerId -cne $old.meta.server_id -or $state.targetReleaseId -cne $targetRelease) {
             throw 'The pending switch belongs to another service or candidate. Recover it first.'
         }
+        if (-not (Get-ObjectProperty $state 'fenceOperationId')) {
+            $state | Add-Member -NotePropertyName fenceOperationId -NotePropertyValue ('hot-switch:' + [guid]::NewGuid().ToString('N')) -Force
+            Save-State
+        }
     } else {
         $state = [pscustomobject]@{
             schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
             oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
             priorPointerReleaseId = $current.releaseId; targetReleaseId = $targetRelease; targetBuildId = $commit; hadDesktop = $shells.Count -gt 0
+            fenceOperationId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
             sessions = @()
         }
         Save-State
     }
     $pauseOwner = $old
+    Try-RuntimeSwitch $old.instance $state.fenceOperationId 'fence'
     $deadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
     do {
         $lifecycle = Lifecycle $old.instance ''
@@ -261,6 +277,7 @@ try {
     $failure = $_
     if ($null -ne $pauseOwner -and $state.phase -eq 'pausing') {
         try {
+            Try-RuntimeSwitch $pauseOwner.instance (Get-ObjectProperty $state 'fenceOperationId') 'cancel'
             Release-OurPauses $pauseOwner $true
             $state.phase = 'complete'; Save-State
             Write-Warning 'The version was not switched. This attempt has released its pauses.'

@@ -30,6 +30,7 @@ import {
   IModelCatalogMutationService,
   ISessionContext,
   ISessionManager,
+  IWorkAdmissionService,
   closeSessionById,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
@@ -59,6 +60,67 @@ vi.mock('../../../apps/kiki-gui/src/components/preview/DocumentTabView', () => (
 describe('server-v2 /api prompts', () => {
   const fixture = usePromptFixture();
   const { call, createSession, createMainAgent, createHeldMainAgent } = fixture;
+
+  it.each(['activate', 'cancel'] as const)('saves fenced input with its original fingerprint and sends it once after switch %s', async action => {
+    let requests = 0;
+    const provider = createHttpServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        requests++;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'switch-response', choices: [{ index: 0, delta: { content: 'Saved message received.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    let accepted: { dispose(): void } | undefined;
+    try {
+      await fixture.server!.close();
+      fixture.server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, port: 0, homeDir: fixture.home, runtimeManaged: true, logLevel: 'silent' });
+      fixture.base = `http://127.0.0.1:${fixture.server.port}`;
+      await fixture.server.core.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await fixture.server.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(fixture.home!);
+      await createMainAgent(id);
+      accepted = fixture.server.core.accessor.get(IWorkAdmissionService).acquire('example-in-flight');
+      const switchBody = { operationId: 'example-switch', serverId: fixture.server.serverId, action: 'prepare' };
+      expect((await call('POST', '/api/runtime-switch', switchBody)).body.code).toBe(0);
+      const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server) });
+      const body = { prompt_id: 'example-switch-input', admission: 'durable' as const, content: [{ type: 'text' as const, text: 'Keep the original switch input.' }] };
+      expect(await client.submitPrompt(id, body)).toMatchObject({ prompt_id: body.prompt_id, admission: 'waiting_switch' });
+      expect(await client.submitPrompt(id, body)).toMatchObject({ prompt_id: body.prompt_id, admission: 'waiting_switch' });
+      await expect(client.submitPrompt(id, { ...body, content: [{ type: 'text', text: 'Conflicting input.' }] })).rejects.toMatchObject({ code: 40938 });
+      expect(requests).toBe(0);
+      const cancelled = { ...body, prompt_id: 'example-cancelled-switch-input', content: [{ type: 'text' as const, text: 'Cancel this saved input.' }] };
+      expect(await client.submitPrompt(id, cancelled)).toMatchObject({ admission: 'waiting_switch' });
+      await client.abortPrompt(id, cancelled.prompt_id);
+      if (action === 'cancel') {
+        expect((await call('POST', '/api/runtime-switch', { ...switchBody, action: 'cancel' })).body.code).toBe(0);
+        accepted.dispose();
+      } else {
+        accepted.dispose();
+        await fixture.server.closed;
+        expect(await fixture.server.exitReceipt).toMatchObject({ cleanupOutcome: 'closed', resourcesAfter: 0 });
+        fixture.server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, port: 0, homeDir: fixture.home, runtimeManaged: true, logLevel: 'silent' });
+        fixture.base = `http://127.0.0.1:${fixture.server.port}`;
+      }
+      const recovered = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server) });
+      await vi.waitFor(async () => {
+        const item = await recovered.sessions.getDurableIngress!(id, body.prompt_id);
+        expect(item).toMatchObject({ admission: 'admitted', prompt_id: body.prompt_id });
+        expect(requests).toBe(1);
+      }, { timeout: 15_000 });
+      expect(await recovered.submitPrompt(id, body)).toMatchObject({ prompt_id: body.prompt_id, admission: 'admitted' });
+      expect(requests).toBe(1);
+      expect(await recovered.sessions.getDurableIngress!(id, cancelled.prompt_id)).toMatchObject({ admission: 'cancelled' });
+      await recovered.klient.close();
+      await client.klient.close();
+    } finally {
+      accepted?.dispose();
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
+  }, 30_000);
 
   it('a dispatched native child consumes Send now once at its next safe step while its ordinary queue stays parked', async () => {
     const entered = promiseGate<void>();

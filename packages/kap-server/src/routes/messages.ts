@@ -7,6 +7,7 @@ import {
   IAgentProfileService,
   ISessionContext,
   ITelemetryService,
+  IWorkAdmissionService,
   ensureMainAgent,
   isError2,
   ISessionMediaStore,
@@ -191,6 +192,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: {},
         [ErrorCode.SESSION_CURSOR_MISMATCH]: {},
         [ErrorCode.PROMPT_ID_CONFLICT]: {},
+        [ErrorCode.WORK_ADMISSION_FENCED]: {},
       },
       description: 'Edit-resend or regenerate a message',
       tags: ['messages'],
@@ -246,13 +248,16 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
                 join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
             },
           );
-          const handle = await editAndResendMessage(
-            deps,
-            session,
-            agent,
-            parsed.id,
-            body,
-            preparedMedia.content,
+          const handle = await core.accessor.get(IWorkAdmissionService).run(
+            'http:messages.edit',
+            () => editAndResendMessage(
+              deps,
+              session,
+              agent,
+              parsed.id,
+              body,
+              preparedMedia!.content,
+            ),
           );
           enqueued = true;
           const staging = preparedMedia;
@@ -264,7 +269,15 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
           return;
         }
         const body = regenerateMessageRequestSchema.parse(req.body);
-        const handle = await regenerateMessage(deps, session, agent, parsed.id, body);
+        const replay = await replayMessageOperation(agent, parsed.id, body);
+        if (replay !== undefined) {
+          reply.send(okEnvelope(projectPromptHandle(replay), req.id));
+          return;
+        }
+        const handle = await core.accessor.get(IWorkAdmissionService).run(
+          'http:messages.regenerate',
+          () => regenerateMessage(deps, session, agent, parsed.id, body),
+        );
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (err) {
         if (!enqueued) await preparedMedia?.discard();
@@ -310,6 +323,7 @@ function sendMappedError(
         case 'message.action_unavailable': return ErrorCode.MESSAGE_ACTION_UNAVAILABLE;
         case 'session.cursor_mismatch': return ErrorCode.SESSION_CURSOR_MISMATCH;
         case 'prompt.id_conflict': return ErrorCode.PROMPT_ID_CONFLICT;
+        case 'work.admission_fenced': return ErrorCode.WORK_ADMISSION_FENCED;
         case 'request.invalid':
         case 'validation.failed': return ErrorCode.VALIDATION_FAILED;
         default: return undefined;

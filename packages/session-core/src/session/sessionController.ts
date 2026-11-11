@@ -1407,7 +1407,7 @@ export class SessionController {
       if (pending === undefined) continue;
       const phase = record.admission === 'held' ? 'held'
         : record.admission === 'admitted' ? 'waiting'
-        : record.admission === 'restoring' && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
+        : (record.admission === 'restoring' || record.admission === 'waiting_switch') && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
       if (phase !== pending.phase) this.setPendingSteer(agentId, { ...pending, phase });
       if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id);
     }
@@ -1458,7 +1458,7 @@ export class SessionController {
       const result = await this.client.getDurableIngress!(this.sessionId, target.promptId, target.agentId);
       if (this.closed || this.isSuspended || generation !== this.durableSteerReadGeneration) return;
       this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== result.prompt_id), result], target.agentId);
-      if (result.admission !== 'restoring') this.durableSteerReads.delete(key);
+      if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') this.durableSteerReads.delete(key);
     } catch {
       // Retry only the receipt read; a missing response never replays the submission.
     } finally {
@@ -1534,7 +1534,7 @@ export class SessionController {
         result,
       ]);
     }
-    if (admissionRejected || result.admission === 'restoring' || result.admission === 'held') return result;
+    if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return result;
     if (!this.state.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
       const projection = projectMessageContent(result.content);
       this.setState(appendLocalUserMessage(this.state, {
@@ -4211,9 +4211,9 @@ export class SessionController {
       this.clearPendingSteer(agentId, promptId);
       return { promptId: result.prompt_id, outcome: admission };
     }
-    if (admission === 'restoring' || admission === 'held') {
-      if (admission === 'restoring') this.observeDurableSteer(agentId, promptId);
-      return { promptId: result.prompt_id, outcome: admission };
+    if (admission === 'restoring' || admission === 'waiting_switch' || admission === 'held') {
+      if (admission !== 'held') this.observeDurableSteer(agentId, promptId);
+      return { promptId: result.prompt_id, outcome: admission === 'waiting_switch' ? 'restoring' : admission };
     }
     if (durable || result.delivery_state !== undefined) {
       const outcome = result.delivery_state ?? (result.status === 'queued' ? 'queued' : 'started');

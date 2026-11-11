@@ -120,7 +120,7 @@ export type PromptExecutionOverrides = z.infer<typeof promptExecutionOverridesSc
 export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
-export const promptAdmissionStateSchema = z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']);
+export const promptAdmissionStateSchema = z.enum(['restoring', 'waiting_switch', 'admitted', 'failed', 'cancelled', 'held']);
 export type PromptAdmissionState = z.infer<typeof promptAdmissionStateSchema>;
 
 export const promptDeliveryReasonSchema = z.enum([

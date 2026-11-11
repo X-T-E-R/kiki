@@ -1,5 +1,5 @@
 import { Error2, ErrorCodes, type ErrorCode as EngineErrorCode } from '@kiki/agent-core-v2/errors';
-import { ErrorCode } from '@kiki/protocol';
+import { ErrorCode, ErrorCodeReason } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { RPCError, toRPCError } from '../src/core/errors.js';
@@ -19,6 +19,7 @@ const NAMED_BY_REST: [EngineErrorCode, number][] = [
   [ErrorCodes.TERMINAL_NOT_FOUND, ErrorCode.TERMINAL_NOT_FOUND],
   [ErrorCodes.WORKSPACE_NOT_FOUND, ErrorCode.WORKSPACE_NOT_FOUND],
   [ErrorCodes.PROMPT_NOT_FOUND, ErrorCode.PROMPT_NOT_FOUND],
+  [ErrorCodes.WORK_ADMISSION_FENCED, ErrorCode.WORK_ADMISSION_FENCED],
 ];
 
 describe('toRPCError', () => {
@@ -28,6 +29,14 @@ describe('toRPCError', () => {
     expect(mapped).toBeInstanceOf(RPCError);
     expect((mapped as RPCError).code).toBe(wireCode);
     expect((mapped as RPCError).reason).toBe(engineCode);
+  });
+
+  it('preserves the admission fence identity and stable protocol reason', () => {
+    const details = { operationId: 'switch-example' };
+    const mapped = toRPCError(new Error2(ErrorCodes.WORK_ADMISSION_FENCED, 'Waiting to send.', { details }));
+    expect(mapped).toBeInstanceOf(RPCError);
+    expect(mapped).toMatchObject({ code: 40950, reason: 'work.admission_fenced', details });
+    expect(ErrorCodeReason[ErrorCode.WORK_ADMISSION_FENCED]).toBe('work.admission_fenced');
   });
 
   it('still falls back to INTERNAL_ERROR for an unmapped engine code', () => {

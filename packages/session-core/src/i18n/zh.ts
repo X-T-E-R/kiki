@@ -1788,6 +1788,7 @@ export const zh = {
   'transcript.serverHeldTitle': '服务器已保留这条消息等待恢复。请确认队列恢复，或用相同消息身份重试。',
   'transcript.admission.loading': '正在载入会话…',
   'transcript.admission.queued': '排队中，第 {position} 位',
+  'transcript.admission.switching': '等待服务切换后发送…',
   'transcript.admission.held': '已暂存',
   'transcript.admission.heldTitle': '已保存在服务器上，尚未发出。',
   'transcript.admission.failed': '未发出',

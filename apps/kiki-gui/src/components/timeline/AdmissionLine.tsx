@@ -27,7 +27,7 @@ export const RESTORE_NOTICE_MS = 4000;
 /** Progress read cadence while a slow restore is shown. */
 export const RESTORE_POLL_MS = 3000;
 
-export type AdmissionKind = 'loading' | 'queued' | 'held' | 'failed' | 'duplicate';
+export type AdmissionKind = 'loading' | 'queued' | 'switching' | 'held' | 'failed' | 'duplicate';
 
 export interface AdmissionView {
   readonly promptId: string;
@@ -71,6 +71,9 @@ export function admissionViews(
       if (settled.has(promptId) || !slow.has(promptId)) continue;
       const position = item.restore_progress?.queue_position;
       views.set(promptId, position === undefined ? { promptId, kind: 'loading' } : { promptId, kind: 'queued', position });
+    } else if (item.admission === 'waiting_switch') {
+      if (settled.has(promptId)) continue;
+      views.set(promptId, { promptId, kind: 'switching' });
     } else if (item.admission === 'held') {
       views.set(promptId, { promptId, kind: item.admission_duplicate_of === undefined ? 'held' : 'duplicate' });
     } else if (item.admission === 'failed') {
@@ -91,7 +94,7 @@ export function withAdmissionUserBlocks(blocks: readonly Block[], ingress: reado
   for (const block of blocks) if (block.kind === 'user' && block.promptId !== undefined) present.add(block.promptId);
   const extra: Block[] = [];
   for (const item of ingress) {
-    if (item.admission !== 'restoring' && item.admission !== 'held' && item.admission !== 'failed') continue;
+    if (item.admission !== 'restoring' && item.admission !== 'waiting_switch' && item.admission !== 'held' && item.admission !== 'failed') continue;
     if (present.has(item.prompt_id)) continue;
     const projection = projectMessageContent(item.content);
     extra.push({
@@ -101,7 +104,7 @@ export function withAdmissionUserBlocks(blocks: readonly Block[], ingress: reado
       text: projection.text,
       media: projection.media.length > 0 ? projection.media : undefined,
       createdAt: item.created_at,
-      optimisticStatus: item.admission === 'restoring' ? 'sending' : undefined,
+      optimisticStatus: item.admission === 'restoring' || item.admission === 'waiting_switch' ? 'sending' : undefined,
     });
   }
   return extra.length === 0 ? blocks : [...blocks, ...extra];
@@ -194,7 +197,7 @@ export function useAdmissionScope({ ingress, blocks, controller, retryPending }:
   const signature = JSON.stringify([...computed.values()]);
   const views = useMemo(() => computed, [signature]); // eslint-disable-line react-hooks/exhaustive-deps
   const [busyId, setBusyId] = useState<string>();
-  const polled = JSON.stringify([...views.values()].filter((view) => view.kind === 'loading' || view.kind === 'queued').map((view) => view.promptId));
+  const polled = JSON.stringify([...views.values()].filter((view) => view.kind === 'loading' || view.kind === 'queued' || view.kind === 'switching').map((view) => view.promptId));
   useEffect(() => {
     const ids = JSON.parse(polled) as string[];
     if (ids.length === 0 || controller === null) return;
@@ -253,9 +256,10 @@ export function AdmissionLine({ view }: { readonly view: AdmissionView }) {
   const { t } = useI18n();
   const { busyId, onRetry, onCancel } = useContext(AdmissionContext);
   const busy = busyId !== undefined;
-  const waiting = view.kind === 'loading' || view.kind === 'queued';
+  const waiting = view.kind === 'loading' || view.kind === 'queued' || view.kind === 'switching';
   const label = view.kind === 'loading' ? t('transcript.admission.loading')
     : view.kind === 'queued' ? t('transcript.admission.queued', { position: view.position ?? 1 })
+    : view.kind === 'switching' ? t('transcript.admission.switching')
     : view.kind === 'duplicate' ? t('transcript.admission.duplicate')
     : view.kind === 'held' ? t('transcript.admission.held')
     : t('transcript.admission.failed');

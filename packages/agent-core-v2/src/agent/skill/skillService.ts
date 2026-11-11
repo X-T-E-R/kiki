@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { validatePromptRuntimeControls } from '#/agent/prompt/runtimeControls';
 import { LifecycleScope } from '#/app/scopes';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import type { ContentPart } from '#/kosong/contract/message';
@@ -98,12 +99,17 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     @IEventService private readonly eventService: IEventService,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentStateService agentState: IAgentStateService,
+    @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
     super();
     agentState.contributeState(skillKey);
   }
 
-  async activate(input: SkillActivationInput): Promise<SkillActivationResult> {
+  activate(input: SkillActivationInput): Promise<SkillActivationResult> {
+    return this.workAdmission.run('skill', () => this.activateAdmitted(input));
+  }
+
+  private async activateAdmitted(input: SkillActivationInput): Promise<SkillActivationResult> {
     const binding = this.profile.data();
     const executorId = binding.executorId ?? 'native';
     const executorProtocol = binding.executorProtocol ?? 'native';

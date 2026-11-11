@@ -58,6 +58,7 @@ const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
   [ErrorCodes.THREAD_CURSOR_INVALID]: 40931,
   [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT]: 40932,
   [ErrorCodes.PROMPT_ID_CONFLICT]: 40938,
+  [ErrorCodes.WORK_ADMISSION_FENCED]: 40950,
   [ErrorCodes.THREAD_LIMIT_EXCEEDED]: 42903,
   'dispatch.limit_exceeded': 42904,
   [ErrorCodes.THREAD_DELIVERY_FAILED]: 50005,
