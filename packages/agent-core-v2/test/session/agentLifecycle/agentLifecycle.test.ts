@@ -64,6 +64,8 @@ import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleSe
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { McpOAuthService } from '#/mcpCore/oauth/service';
@@ -1531,6 +1533,7 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
     ix.stub(ISessionSubagentService, { retain: () => ({ dispose() {} }), run });
     ix.stub(IAgentContextMemoryService, { get: () => [] });
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     const lifecycle = ix.get(IAgentLifecycleService);
     await lifecycle.create({ agentId: 'main' });
@@ -1594,6 +1597,7 @@ describe('AgentLifecycleService', () => {
     const runFailure = new Error('Start fixture stops after admission');
     ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
     ix.stub(ISessionSubagentService, { retain: () => ({ dispose() {} }), run: async () => { throw runFailure; } });
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     await ix.get(IAgentLifecycleService).create({ agentId: 'main' });
     const dispatch = ix.get(ISessionDispatchService);
@@ -1658,8 +1662,11 @@ describe('AgentLifecycleService', () => {
       personaId: 'example-persona',
       model: 'provider/child-model',
       thinkingEffort: 'high',
+      thinkingEffortExplicit: undefined,
+      parentSteering: null,
       executor: 'native',
       executorProtocol: 'native',
+      negotiated: undefined,
     });
   });
 

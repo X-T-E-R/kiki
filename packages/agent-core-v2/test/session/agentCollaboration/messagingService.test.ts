@@ -71,6 +71,9 @@ import {
   type DispatchRun,
 } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
@@ -864,6 +867,8 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     ix.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     ix.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
+    ix.stub(IAgentSystemReminderService, senderCtx.get(IAgentSystemReminderService));
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const store = mailboxStore(tempDir());
@@ -1571,6 +1576,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     ix.stub(IModelCatalog, {});
     ix.stub(IModelService, {});
     ix.stub(ILogService, { warn: () => {} });
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     const tasks = ctx.get(IAgentTaskService);
     const service = messagingService(

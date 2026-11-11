@@ -55,6 +55,8 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
@@ -493,6 +495,7 @@ describe('recoverable ACP broken resume', () => {
     });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
+    toolIx.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const fingerprint = () => (harness.ix.get(IAgentStateService).get(externalExecutorKey) as { bindingFingerprint?: string; sessionRef?: { ref: { sessionId?: string } } }).bindingFingerprint;
@@ -617,6 +620,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(IAgentToolPolicyService, { isToolActive: () => true, isToolActiveForDisclosure: () => true, isToolActiveForProfile: () => true, setSessionDisabledTools: async () => {} });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
+    toolIx.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
@@ -1059,6 +1063,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.stub(IAgentExecutorRegistry, registry);
+    toolIx.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
@@ -1778,6 +1783,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.stub(IAgentExecutorRegistry, registry);
+    toolIx.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {

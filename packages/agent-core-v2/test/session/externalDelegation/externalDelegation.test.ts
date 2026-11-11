@@ -48,6 +48,8 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
@@ -545,6 +547,7 @@ describe('SessionExternalDelegationService', () => {
       },
     });
     ix.set(ISessionStateService, new SessionStateService());
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
     ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
     ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
     ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));

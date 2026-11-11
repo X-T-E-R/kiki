@@ -736,7 +736,13 @@ export class SubagentTool implements ISubagentTool {
             handle.name === undefined
               ? undefined
               : { taskName: handle.name, agentType: handle.profileName },
-            () => this.lifecycle.get(handle.agentId)?.accessor.get(IAgentProfileService).getParentSteering?.(),
+            () => {
+              try {
+                return this.lifecycle.get(handle.agentId)?.accessor.get(IAgentProfileService).getParentSteering?.();
+              } catch {
+                return undefined;
+              }
+            },
           ),
           registerOptions,
         );

@@ -25,6 +25,8 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { stubExecutionControl } from '../../session/executionControl/stubs';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -505,6 +507,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}) });
   ix.stub(IAgentGoalService, { getGoal: () => ({ goal: null }) });
   ix.stub(ISessionExecutionControl, stubExecutionControl());
+  ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
   ix.set(IAgentExecutorRegistry, {
     resolveExecutable: async () => ({
