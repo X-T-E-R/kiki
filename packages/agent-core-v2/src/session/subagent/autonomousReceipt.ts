@@ -9,6 +9,7 @@ import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { AgentTaskPersistence } from '#/agent/task/persist';
 import { IAgentTaskService } from '#/agent/task/task';
@@ -93,8 +94,12 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const requester = parent ?? child;
   const usage = child.accessor.get(IAgentUsageService).status().total;
   const contextTokens = child.accessor.get(IAgentTokenCountingService)?.statusSize();
+  const toolCallCount = child.accessor.get(IAgentActivityView)?.telemetry?.().toolCallCount;
   await retry(() => metadata.updateAgent(child.id, (current) => acknowledgeResumeOutcome({
-    ...current, status: 'completed', taskId, completedAt: receipt.endedAt, resultSummary: receipt.summary, usage, contextTokens, error: undefined,
+    ...current, status: 'completed', taskId, completedAt: receipt.endedAt, resultSummary: receipt.summary, usage,
+    contextTokens: contextTokens ?? current.contextTokens,
+    toolCallCount: toolCallCount ?? current.toolCallCount,
+    error: undefined,
     parentSteering: parentSteering ?? null,
     labels: { ...current.labels, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
   }, taskId, receipt.endedAt)));
@@ -110,6 +115,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     agentId: child.id, profile: profileName,
     model: profile.modelAlias,
     thinkingEffort: profile.effectiveThinkingLevel,
+    thinkingEffortExplicit: profile.thinkingEffortExplicit,
     parentSteering,
     executorId: profile.executorId,
     executorProtocol: profile.executorProtocol,

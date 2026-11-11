@@ -184,26 +184,58 @@ describe('GoalInjection content', () => {
     for (const value of absent) expect(text).not.toContain(value);
   });
 
-  it('does not claim a live within-budget band below 75 percent', async () => {
+  it('does not claim a budget warning band below 50 percent', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
       await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'user');
+      await goals.incrementTurn();
+      await goals.incrementTurn();
+      await goals.incrementTurn();
+      await goals.incrementTurn();
     }))!;
     expect(text).not.toContain('within budget');
+    expect(text).not.toContain('past halfway');
     expect(text).not.toContain('nearing its limit');
   });
 
-  it('uses the convergence band at or above 75 percent', async () => {
-    const text = (await readGoalReminder(async (goals) => {
-      await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 4 } }, 'user');
+  it('uses the midway review band from 50 percent through 84 percent without repeating inside the same band', async () => {
+    await goals.createGoal({ objective: 'work' });
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'user');
+    for (let i = 0; i < 5; i += 1) {
       await goals.incrementTurn();
+    }
+    await injectDynamic(injector, true);
+    const midwayText = lastGoalReminder(context)!;
+    expect(midwayText).toContain('past halfway');
+    expect(midwayText).toContain('Review branch progress');
+    expect(midwayText).not.toContain('nearing its limit');
+
+    const countAt50 = context.get().length;
+    await goals.incrementTurn();
+    await goals.incrementTurn();
+    await goals.incrementTurn();
+    await injectDynamic(injector, false);
+    expect(context.get()).toHaveLength(countAt50);
+  });
+
+  it('uses the closing convergence band at or above 85 percent and re-injects across the threshold', async () => {
+    await goals.createGoal({ objective: 'work' });
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 20 } }, 'user');
+    for (let i = 0; i < 10; i += 1) {
       await goals.incrementTurn();
+    }
+    await injectDynamic(injector, true);
+    expect(lastGoalReminder(context)).toContain('past halfway');
+
+    for (let i = 0; i < 7; i += 1) {
       await goals.incrementTurn();
-    }))!;
-    expect(text).toContain('nearing its limit');
-    expect(text).toContain('essential verification');
-    expect(text).toContain('Report partial work honestly');
+    }
+    await injectDynamic(injector, false);
+    const closingText = lastGoalReminder(context)!;
+    expect(closingText).toContain('nearing its limit');
+    expect(closingText).toContain('Enter closing mode');
+    expect(closingText).toContain('essential verification');
+    expect(closingText).toContain('report any budget-constrained gaps honestly');
   });
 
   it('shows a blocked note once a budget is reached', async () => {

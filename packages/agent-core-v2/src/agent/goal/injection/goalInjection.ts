@@ -22,6 +22,8 @@ export function buildGoalFollowUpGuidance(goal: Pick<GoalSnapshot, 'followUpTimi
     : guidance;
 }
 
+export type GoalBudgetBand = 'under_50' | 'midway_50' | 'closing_85';
+
 export class GoalInjection extends Service {
   constructor(
     private readonly options: GoalInjectionOptions,
@@ -33,7 +35,7 @@ export class GoalInjection extends Service {
         const goal = this.options.getGoal();
         if (goal === null) return undefined;
         const signature = JSON.stringify([goal.goalId, goal.objective, goal.completionCriterion, goal.status, goal.terminalReason,
-          goal.budget.turnBudget, goal.budget.tokenBudget, goal.budget.wallClockBudgetMs, isNearingBudget(goal),
+          goal.budget.turnBudget, goal.budget.tokenBudget, goal.budget.wallClockBudgetMs, goalBudgetBand(goal),
           goal.followUpTiming, this.options.isTaskWaitEnabled?.() === true]);
         if ((lastDisclosure as { signature?: string } | undefined)?.signature === signature) return undefined;
         const content = this.reminder();
@@ -73,12 +75,13 @@ function buildPausedNote(goal: GoalSnapshot): string {
 
 function buildGoalReminder(goal: GoalSnapshot, taskWaitEnabled: boolean): string {
   const budgets = formatBudgets(goal);
+  const bandGuidance = budgetBandGuidance(goalBudgetBand(goal));
   return renderPrompt(GOAL_ACTIVE_REMINDER, {
     objective: escapeUntrustedText(goal.objective),
     completion_criterion_block: completionCriterionBlock(goal),
     status: goal.status,
     budgets_block: budgets.length > 0
-      ? `Budgets as of this reminder: ${budgets}.\nUse Goal({action:"get"}) when a decision needs the latest remaining amount.\n${goal.budget.tokenBudget !== null ? "Goal output tokens count this agent's goal-driven output only, not context size, total billed tokens, or the agent tree.\n" : ''}${isNearingBudget(goal) ? 'A configured budget is nearing its limit. Prioritize the required outcome and essential verification; avoid optional expansion. Report partial work honestly if the limit prevents completion.\n' : ''}`
+      ? `Budgets as of this reminder: ${budgets}.\nUse Goal({action:"get"}) when a decision needs the latest remaining amount.\n${goal.budget.tokenBudget !== null ? "Goal output tokens count this agent's goal-driven output only, not context size, total billed tokens, or the agent tree.\n" : ''}${bandGuidance}`
       : '',
     follow_up_guidance: buildGoalFollowUpGuidance(goal, taskWaitEnabled),
   });
@@ -114,8 +117,21 @@ function formatBudgets(goal: GoalSnapshot): string {
   return budgetLines.join('; ');
 }
 
-function isNearingBudget(goal: GoalSnapshot): boolean {
-  return maxBudgetFraction(goal) >= 0.75;
+function goalBudgetBand(goal: GoalSnapshot): GoalBudgetBand {
+  const fraction = maxBudgetFraction(goal);
+  if (fraction >= 0.85) return 'closing_85';
+  if (fraction >= 0.5) return 'midway_50';
+  return 'under_50';
+}
+
+function budgetBandGuidance(band: GoalBudgetBand): string {
+  if (band === 'midway_50') {
+    return 'A configured budget is past halfway. Review branch progress and costly work allocation; pivot or park stalled side branches and secure verified deliverables first.\n';
+  }
+  if (band === 'closing_85') {
+    return 'A configured budget is nearing its limit. Enter closing mode: do not open new optional branches; finish essential verification and delivery reconciliation for completed work, and report any budget-constrained gaps honestly.\n';
+  }
+  return '';
 }
 
 function maxBudgetFraction(goal: GoalSnapshot): number {

@@ -245,8 +245,8 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
               delete patch['connection'];
             }
             if (Object.keys(patch).length > 0) await config.set(domain, patch);
-          } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
-            await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
+          } else if (domain === SUBAGENT_SECTION && hasSubagentNullClear(camelPatch[domain])) {
+            await applySubagentPatchWithClears(config, camelPatch[domain] as Record<string, unknown>);
           } else if (domain === THREAD_COMMUNICATION_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['enabled'] === null) {
             await config.removeOverride(THREAD_COMMUNICATION_SECTION, ['enabled']);
           } else if (domain === SEND_MESSAGE_SECTION && isPlainObject(camelPatch[domain])) {
@@ -436,20 +436,24 @@ async function patchReviewer(config: IConfigService, patch: Record<string, unkno
   delete patch['permission'];
 }
 
-function isSubagentDefaultModelClear(value: unknown): value is Record<string, unknown> {
-  return isPlainObject(value) && value['defaultModel'] === null;
+function hasSubagentNullClear(value: unknown): value is Record<string, unknown> {
+  return (
+    isPlainObject(value) &&
+    (value['defaultModel'] === null || value['agentListFields'] === null)
+  );
 }
 
-async function clearSubagentDefaultModel(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
-  const current = config.inspect<Record<string, unknown>>(SUBAGENT_SECTION).userValue;
-  const next: Record<string, unknown> = isPlainObject(current) ? { ...current } : {};
-  delete next['defaultModel'];
+async function applySubagentPatchWithClears(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+  const rest: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(patch)) {
-    if (key !== 'defaultModel') next[key] = value;
+    if ((key === 'defaultModel' || key === 'agentListFields') && value === null) {
+      await config.removeOverride(SUBAGENT_SECTION, [key]);
+    } else {
+      rest[key] = value;
+    }
   }
-  await config.replace(SUBAGENT_SECTION, null, ConfigTarget.User);
-  if (Object.keys(next).length > 0) {
-    await config.replace(SUBAGENT_SECTION, next, ConfigTarget.User);
+  if (Object.keys(rest).length > 0) {
+    await config.set(SUBAGENT_SECTION, rest);
   }
 }
 

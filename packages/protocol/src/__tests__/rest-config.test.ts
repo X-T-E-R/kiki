@@ -41,6 +41,19 @@ describe('config REST protocol', () => {
     }
   });
 
+  it('validates subagent agent_list_fields arrays, empty disables, and null resets', () => {
+    for (const fields of [['model', 'context_tokens'] as const, [] as const]) {
+      expect(patchConfigRequestSchema.parse({ subagent: { agent_list_fields: [...fields] } }))
+        .toEqual({ subagent: { agent_list_fields: [...fields] } });
+      expect(configResponseSchema.parse({ subagent: { agentListFields: [...fields] } }).subagent)
+        .toEqual({ agentListFields: [...fields] });
+    }
+    expect(patchConfigRequestSchema.parse({ subagent: { agent_list_fields: null } }))
+      .toEqual({ subagent: { agent_list_fields: null } });
+    expect(patchConfigRequestSchema.safeParse({ subagent: { agent_list_fields: ['unknown_field'] } }).success)
+      .toBe(false);
+  });
+
   it('keeps system transport sections, explicit off, partial fields, and null clears', () => {
     const request_compression = {
       encoding: 'zstd' as const,

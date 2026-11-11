@@ -124,6 +124,25 @@ export const providerConfigResponseSchema = z.object({
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
+export const AGENT_LIST_TELEMETRY_FIELDS = [
+  'model',
+  'thinking_effort',
+  'elapsed_ms',
+  'idle_ms',
+  'tool_call_count',
+  'context_tokens',
+] as const;
+
+export const DEFAULT_AGENT_LIST_TELEMETRY_FIELDS = [
+  'model',
+  'elapsed_ms',
+  'idle_ms',
+  'tool_call_count',
+] as const;
+
+export const agentListFieldSchema = z.enum(AGENT_LIST_TELEMETRY_FIELDS);
+export type AgentListTelemetryField = z.infer<typeof agentListFieldSchema>;
+
 export const subagentConfigResponseSchema = z.object({
   timeoutMs: z.number().int().nonnegative().optional(),
   defaultModel: z.string().optional(),
@@ -131,6 +150,7 @@ export const subagentConfigResponseSchema = z.object({
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
   allowedTools: z.array(z.string()).optional(),
+  agentListFields: z.array(agentListFieldSchema).optional(),
 });
 
 export const agentsDelegationConfigSchema = z.object({
@@ -458,6 +478,7 @@ export const patchConfigRequestSchema = z.object({
     default_profile: z.string().optional(),
 
     allowed_tools: z.array(z.string()).optional(),
+    agent_list_fields: z.array(agentListFieldSchema).nullable().optional(),
   }).optional(),
   agents: z.object({
     enabled: z.boolean().optional(),

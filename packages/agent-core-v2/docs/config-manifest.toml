@@ -1080,6 +1080,7 @@ max_direct_children = 16
 max_total_subagents = 0
 default_profile = "general"
 allowed_tools = []
+# agent_list_fields: "model" | "thinking_effort" | "elapsed_ms" | "idle_ms" | "tool_call_count" | "context_tokens"[]
 
 # ##########################################################################
 # task

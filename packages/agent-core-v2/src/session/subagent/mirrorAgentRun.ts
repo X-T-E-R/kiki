@@ -8,6 +8,7 @@ import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
@@ -242,6 +243,7 @@ export async function mirrorAgentRun(
     }
     const result = await run.completion;
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
+    const toolCallCount = childToolCallCount(agentLifecycle, run.agentId);
     const parentSteering = agentLifecycle?.get(run.agentId)?.accessor.get(IAgentProfileService)?.getParentSteering?.();
     const taskId = await options.resolveTaskId?.();
     await recordAgentOutcome(requester, run.agentId, taskId, {
@@ -250,6 +252,7 @@ export async function mirrorAgentRun(
       resultSummary: result.summary,
       usage: result.usage,
       contextTokens,
+      toolCallCount,
       error: undefined,
       parentSteering: parentSteering ?? null,
     });
@@ -279,6 +282,7 @@ export async function mirrorAgentRun(
         resultSummary: undefined,
         usage: undefined,
         contextTokens: childContextTokens(agentLifecycle, run.agentId),
+        toolCallCount: childToolCallCount(agentLifecycle, run.agentId),
         error: reason,
       });
       await dispatcher?.dispatch(
@@ -297,13 +301,17 @@ async function recordAgentOutcome(
   requester: IAgentScopeHandle,
   agentId: string,
   taskId: string | undefined,
-  outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'error' | 'parentSteering'>,
+  outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'toolCallCount' | 'error' | 'parentSteering'>,
 ): Promise<void> {
   try {
     const metadata = requester.accessor.get(ISessionMetadata);
-    await metadata.updateAgent(agentId, (current) => acknowledgeResumeOutcome(
-      { ...current, ...outcome, taskId }, taskId, outcome.completedAt ?? Date.now(),
-    ));
+    await metadata.updateAgent(agentId, (current) => acknowledgeResumeOutcome({
+      ...current,
+      ...outcome,
+      contextTokens: outcome.contextTokens ?? current.contextTokens,
+      toolCallCount: outcome.toolCallCount ?? current.toolCallCount,
+      taskId,
+    }, taskId, outcome.completedAt ?? Date.now()));
   } catch (error) {
     requester.accessor.get(ILogService)?.warn('subagent outcome metadata write failed', {
       agentId,
@@ -326,4 +334,12 @@ function childContextTokens(
 ): number | undefined {
   const child = agentLifecycle?.get(agentId);
   return child?.accessor.get(IAgentTokenCountingService)?.statusSize();
+}
+
+function childToolCallCount(
+  agentLifecycle: IAgentLifecycleService | undefined,
+  agentId: string,
+): number | undefined {
+  const child = agentLifecycle?.get(agentId);
+  return child?.accessor.get(IAgentActivityView)?.telemetry?.().toolCallCount;
 }

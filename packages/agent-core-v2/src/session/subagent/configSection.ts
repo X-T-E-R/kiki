@@ -28,6 +28,24 @@ export const SUBAGENT_SECTION = 'subagent';
 
 export const AUTO_MODEL_ALIAS = 'auto';
 
+export const AGENT_LIST_TELEMETRY_FIELDS = [
+  'model',
+  'thinking_effort',
+  'elapsed_ms',
+  'idle_ms',
+  'tool_call_count',
+  'context_tokens',
+] as const;
+
+export type AgentListTelemetryField = (typeof AGENT_LIST_TELEMETRY_FIELDS)[number];
+
+export const DEFAULT_AGENT_LIST_TELEMETRY_FIELDS: readonly AgentListTelemetryField[] = [
+  'model',
+  'elapsed_ms',
+  'idle_ms',
+  'tool_call_count',
+];
+
 export const autoModelScriptSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
   command: z.string().min(1).refine(isAbsolute, 'command must be an absolute executable path'),
@@ -52,6 +70,7 @@ export const SubagentConfigSchema = z.object({
   defaultProfile: z.string().optional(),
 
   allowedTools: z.array(z.string()).optional(),
+  agentListFields: z.array(z.enum(AGENT_LIST_TELEMETRY_FIELDS)).optional(),
 });
 
 export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
@@ -133,6 +152,15 @@ export function resolveSubagentTimeoutMs(config: IConfigService): number {
   return (
     config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.timeoutMs ??
     DEFAULT_SUBAGENT_TIMEOUT_MS
+  );
+}
+
+export function resolveAgentListTelemetryFields(
+  config: IConfigService | undefined,
+): readonly AgentListTelemetryField[] {
+  return (
+    config?.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.agentListFields ??
+    DEFAULT_AGENT_LIST_TELEMETRY_FIELDS
   );
 }
 

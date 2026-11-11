@@ -814,6 +814,7 @@ timeout = 10
 | `auto_model` | 表 | 等权抽选 | 自动选择器配置：相对 `weights`、所有者登记的 `script` ID，或 `plugin = { id, tool }`。`script` 和 `plugin` 互斥 |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
 | `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的内置工具（`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
+| `agent_list_fields` | `string[]` | `["model", "elapsed_ms", "idle_ms", "tool_call_count"]` | [`AgentList`](../reference/tools.md#协作类) 未传 `raw` 时默认附带的可选只读观测字段（可选值：`"model"`、`"thinking_effort"`、`"elapsed_ms"`、`"idle_ms"`、`"tool_call_count"`、`"context_tokens"`）。设为 `[]` 可在紧凑调用中省略全部可选观测字段；显式传 `raw = true` 时始终返回全部可用字段 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |

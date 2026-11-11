@@ -176,6 +176,56 @@ it('keeps a subagent-limits draft when another card writes the shared config que
   expect(save.hasAttribute('disabled')).toBe(false);
 });
 
+it('toggles AgentList default fields with default 4 active and resets custom selection to null', async () => {
+  client.patchConfig
+    .mockResolvedValueOnce({
+      subagent: {
+        timeoutMs: 18000000,
+        maxDirectChildren: 16,
+        maxTotalSubagents: 0,
+        agentListFields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens'],
+      },
+    })
+    .mockResolvedValueOnce({
+      subagent: {
+        timeoutMs: 18000000,
+        maxDirectChildren: 16,
+        maxTotalSubagents: 0,
+      },
+    });
+  await render(<SubagentLimitsSettings />);
+
+  const activeFields = () =>
+    [...element.querySelectorAll<HTMLButtonElement>('[data-agent-list-field]')]
+      .filter((btn) => btn.getAttribute('aria-pressed') === 'true')
+      .map((btn) => btn.getAttribute('data-agent-list-field'));
+
+  expect(activeFields()).toEqual(['model', 'elapsed_ms', 'idle_ms', 'tool_call_count']);
+  expect(element.querySelector('[data-agent-list-fields-reset]')).toBeNull();
+
+  const contextBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-field="context_tokens"]')!;
+  await act(async () => { contextBtn.click(); });
+  await settle();
+
+  expect(client.patchConfig).toHaveBeenCalledWith({
+    subagent: {
+      agent_list_fields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens'],
+    },
+  });
+  expect(activeFields()).toEqual(['model', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens']);
+
+  const resetBtn = element.querySelector<HTMLButtonElement>('[data-agent-list-fields-reset]')!;
+  expect(resetBtn).not.toBeNull();
+  await act(async () => { resetBtn.click(); });
+  await settle();
+
+  expect(client.patchConfig).toHaveBeenLastCalledWith({
+    subagent: { agent_list_fields: null },
+  });
+  expect(activeFields()).toEqual(['model', 'elapsed_ms', 'idle_ms', 'tool_call_count']);
+  expect(element.querySelector('[data-agent-list-fields-reset]')).toBeNull();
+});
+
 const resourceConfig = { workspace_instance: { idleTtlMs: 300000 }, image: { maxEdgePx: 2000, readByteBudget: 262144 } };
 it('calls a resource-limit draft clean once the stored value is put back', async () => {
   client.getConfig.mockResolvedValue(resourceConfig);

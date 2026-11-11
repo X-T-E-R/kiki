@@ -198,6 +198,7 @@ export const SubagentConfigSchema = z.object({
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
   allowedTools: z.array(z.string()).optional(),
+  agentListFields: z.array(z.enum(['model', 'thinking_effort', 'elapsed_ms', 'idle_ms', 'tool_call_count', 'context_tokens'])).optional(),
 });
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;

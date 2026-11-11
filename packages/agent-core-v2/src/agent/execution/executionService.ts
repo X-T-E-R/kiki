@@ -60,6 +60,7 @@ interface ActiveRun {
   readonly unlink: () => void;
   readonly settled: Promise<void>;
   readonly resolveSettled: () => void;
+  readonly startedAt: number;
   readonly admission?: boolean;
   admissionClaimed?: boolean;
   external?: boolean;
@@ -167,6 +168,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       unlink: linkAbortSignal(options.signal, controller),
       settled,
       resolveSettled: () => { activityPermit?.release(); release(); resolveSettled(); },
+      startedAt: admission?.startedAt ?? Date.now(),
     };
     this.runs.add(active);
     this.cancelling = false;
@@ -295,6 +297,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       unlink: linkAbortSignal(signal, controller),
       settled,
       resolveSettled: () => { release(); resolveSettled(); },
+      startedAt: Date.now(),
       get turnId() { return loop.status().activeTurnId; },
     };
     this.runs.add(active);
@@ -308,10 +311,11 @@ export class AgentExecutionService implements IAgentExecutionService {
     if (this.runs.size > 0) {
       const runs = [...this.runs];
       const turnId = runs.find((run) => run.turnId !== undefined)?.turnId;
+      const startedAt = Math.min(...runs.map((run) => run.startedAt));
       if (this.cancelling || runs.every((run) => run.controller.signal.aborted)) {
-        return { state: 'cancelling', turnId };
+        return { state: 'cancelling', turnId, startedAt };
       }
-      return turnId === undefined ? { state: 'starting' } : { state: 'running', turnId };
+      return turnId === undefined ? { state: 'starting', startedAt } : { state: 'running', turnId, startedAt };
     }
     if (this.shuttingDown) {
       if (this.shutdownCompleted) return { state: 'closed' };

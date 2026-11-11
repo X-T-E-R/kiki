@@ -1,3 +1,4 @@
+export * from './agentCapabilitiesSettings';
 export * from './agentSettings';
 export * from './browserControl';
 export * from './computerControl';

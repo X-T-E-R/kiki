@@ -1595,6 +1595,33 @@ include = ["memory_snapshot"]
     expect(after.experimental).toEqual({ alpha: false });
   });
 
+  it('round-trips subagent agent_list_fields across custom list, empty list, and null reset while preserving sibling keys', async () => {
+    await boot([
+      '[subagent]',
+      'max_direct_children = 12',
+      '',
+    ].join('\n'));
+
+    const customized = await patchConfig({
+      subagent: { agent_list_fields: ['model', 'thinking_effort', 'context_tokens'] },
+    });
+    expect(customized.subagent?.agentListFields).toEqual(['model', 'thinking_effort', 'context_tokens']);
+    expect(customized.subagent?.maxDirectChildren).toBe(12);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('agent_list_fields');
+
+    const disabledAll = await patchConfig({
+      subagent: { agent_list_fields: [] },
+    });
+    expect(disabledAll.subagent?.agentListFields).toEqual([]);
+
+    const reset = await patchConfig({
+      subagent: { agent_list_fields: null },
+    });
+    expect(reset.subagent?.agentListFields).toBeUndefined();
+    expect(reset.subagent?.maxDirectChildren).toBe(12);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('agent_list_fields');
+  });
+
   it('POST { providers } converts fields of a provider id colliding with a map-valued key', async () => {
     await boot();
     await patchConfig({

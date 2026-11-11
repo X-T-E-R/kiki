@@ -799,12 +799,14 @@ export class SessionDispatchService implements ISessionDispatchService {
           cancel: (reason) => { controller.abort(reason); },
         });
         const childProfileService = run.child.agent.accessor.get(IAgentProfileService);
+        const childProfile = childProfileService.data();
         const handle: SubagentHandle = {
           agentId: run.child.agentId,
           profileName: run.child.profileName,
           name: run.child.name,
           model: run.child.modelAlias,
           thinkingEffort: run.child.thinkingEffort,
+          thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
           parentSteering: childProfileService.getParentSteering?.(),
           completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
         };

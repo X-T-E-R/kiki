@@ -228,6 +228,7 @@ export interface AgentExecutionStatus {
     | 'broken'
     | 'closed';
   readonly turnId?: number;
+  readonly startedAt?: number;
 }
 
 export interface AgentExecutorSession {

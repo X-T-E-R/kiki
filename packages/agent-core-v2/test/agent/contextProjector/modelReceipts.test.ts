@@ -191,6 +191,25 @@ describe('model receipt projection', () => {
 
   it('renders task logs, memory units and todo changes without losing recovery fields', async () => {
     await run(ix.get(IAgentListTool), {}, 'empty');
+    expect(
+      renderModelReceipt(
+        'AgentList',
+        JSON.stringify({
+          agents: [
+            {
+              agent_id: 'agent-1',
+              name: 'worker',
+              profile: 'implementer',
+              status: 'running',
+              model: 'kimi-for-coding',
+              elapsed_ms: 4200,
+              idle_ms: 300,
+              tool_call_count: 5,
+            },
+          ],
+        }),
+      ),
+    ).toContain('agent_id: agent-1 · profile: implementer · model: kimi-for-coding · elapsed_ms: 4200 · idle_ms: 300 · tool_call_count: 5');
     await run(ix.get(ITaskListTool), { active_only: false }, 'completed');
     const output = await run(ix.get(ITaskOutputTool), { task_id: 'task-a' }, 'tail');
     expect(output.after).toContain('exit_code: 0');

@@ -730,3 +730,32 @@ it('attributes only proven menu exclusions and does not mislabel another hard-do
   expect(projectedProfileModelRuleSource(projection, models, 'inside', 'example')).toBe('profile:example');
   expect(projectedProfileModelRuleSource({ restrict_models_to_menu: true }, models, 'outside', 'example')).toBe('profile:example');
 });
+
+describe('subagent AgentList default fields helpers', async () => {
+  const {
+    subagentAgentListFieldsFromConfig,
+    subagentAgentListFieldsPatch,
+    toggleAgentListField,
+  } = await import('./agentCapabilitiesSettings');
+
+  it('defaults to the 4 autonomous-friendly telemetry fields when unset and marks non-default lists custom', () => {
+    expect(subagentAgentListFieldsFromConfig({})).toEqual({
+      fields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count'],
+      isCustom: false,
+    });
+    expect(subagentAgentListFieldsFromConfig({ subagent: { agentListFields: ['tool_call_count', 'idle_ms', 'elapsed_ms', 'model'] } })).toEqual({
+      fields: ['model', 'elapsed_ms', 'idle_ms', 'tool_call_count'],
+      isCustom: false,
+    });
+    expect(subagentAgentListFieldsFromConfig({ subagent: { agentListFields: [] } })).toEqual({
+      fields: [],
+      isCustom: true,
+    });
+    expect(toggleAgentListField(['model', 'elapsed_ms'], 'context_tokens')).toEqual([
+      'model',
+      'elapsed_ms',
+      'context_tokens',
+    ]);
+    expect(subagentAgentListFieldsPatch(null)).toEqual({ subagent: { agent_list_fields: null } });
+  });
+});

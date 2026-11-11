@@ -32,6 +32,12 @@ export interface AgentListEntry {
   readonly name?: string;
   readonly profile?: string;
   readonly status: AgentListStatus;
+  readonly model?: string;
+  readonly thinking_effort?: string;
+  readonly elapsed_ms?: number;
+  readonly idle_ms?: number;
+  readonly tool_call_count?: number;
+  readonly context_tokens?: number;
   readonly persistence_failure?: {
     readonly turn_id?: number;
     readonly execution_outcome: 'completed' | 'failed' | 'cancelled';

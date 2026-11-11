@@ -65,10 +65,17 @@ export interface AgentActivityState {
   readonly background: readonly BackgroundRef[];
 }
 
+export interface AgentActivityTelemetry {
+  readonly lastActivityAt?: number;
+  readonly activeTurnStartedAt?: number;
+  readonly toolCallCount: number;
+}
+
 export interface IAgentActivityView {
   readonly _serviceBrand: undefined;
 
   state(): AgentActivityState;
+  telemetry(): AgentActivityTelemetry;
 }
 
 export const IAgentActivityView: ServiceIdentifier<IAgentActivityView> =

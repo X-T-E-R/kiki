@@ -105,7 +105,16 @@ export function renderCollaborationReceipt(name: string, value: Receipt, input: 
   if (name === 'AgentList' && Array.isArray(value['agents'])) return join([
     'Direct child agents',
     ...rows(value['agents']).map((agent) => join([
-      `- ${text(agent['name']) || text(agent['agent_id'])} · ${text(agent['status'])} · ${details({ agent_id: agent['agent_id'], profile: agent['profile'] })}`,
+      `- ${text(agent['name']) || text(agent['agent_id'])} · ${text(agent['status'])} · ${details({
+        agent_id: agent['agent_id'],
+        profile: agent['profile'],
+        model: agent['model'],
+        thinking_effort: agent['thinking_effort'],
+        elapsed_ms: agent['elapsed_ms'],
+        idle_ms: agent['idle_ms'],
+        tool_call_count: agent['tool_call_count'],
+        context_tokens: agent['context_tokens'],
+      })}`,
       agent['persistence_failure'] === undefined ? '' : `  Save failed: ${details(record(agent['persistence_failure']))}`,
     ])),
     rows(value['agents']).length === 0 ? 'No matching children.' : '',

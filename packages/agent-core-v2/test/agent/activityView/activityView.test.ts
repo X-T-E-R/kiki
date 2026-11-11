@@ -24,6 +24,9 @@ import {
   PermissionApprovalRequested,
   PermissionApprovalResolved,
 } from '#/agent/toolApproval/toolApprovalService';
+import { ToolCallStarted } from '#/agent/toolExecutor/toolExecutorEvents';
+import { ContextAppendLoopEvent } from '#/agent/contextMemory/contextEvents';
+import { ExecutorRuntimeUpdate } from '#/agent/execution/externalExecutorOps';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import type { FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
 import { ContextUndone } from '#/agent/undo/undoService';
@@ -346,5 +349,28 @@ describe('AgentActivityView', () => {
     expect(view.state().turn?.pendingApprovals).toEqual([
       { approvalId: 'tc-1', toolCallId: 'tc-1', since: expect.any(Number) },
     ]);
+  });
+
+  it('tracks live lastActivityAt and deduplicated toolCallCount across native and external events', () => {
+    const { bus, view } = harness();
+    expect(view.telemetry()).toEqual({
+      lastActivityAt: undefined,
+      activeTurnStartedAt: undefined,
+      toolCallCount: 0,
+    });
+
+    bus.publish(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+    expect(view.telemetry().lastActivityAt).toEqual(expect.any(Number));
+    expect(view.telemetry().activeTurnStartedAt).toEqual(expect.any(Number));
+
+    bus.publish(new ToolCallStarted({ turnId: 1, toolCallId: 'call-1', name: 'Read', args: {} }));
+    bus.publish(new ContextAppendLoopEvent({ event: { type: 'tool.call', stepUuid: 's1', toolCallId: 'call-1', name: 'Read', args: {} } }));
+    bus.publish(new ContextAppendLoopEvent({ event: { type: 'tool.call', stepUuid: 's1', toolCallId: 'ext-call-2', name: 'Bash', args: {} } }));
+    bus.publish(new ExecutorRuntimeUpdate({ turnId: 1, kind: 'tool_progress', value: 'streaming', executorId: 'claude-acp' }));
+    expect(view.telemetry().toolCallCount).toBe(2);
+
+    bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+    expect(view.telemetry().activeTurnStartedAt).toBeUndefined();
+    expect(view.telemetry().toolCallCount).toBe(2);
   });
 });

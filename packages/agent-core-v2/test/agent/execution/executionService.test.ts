@@ -362,9 +362,9 @@ describe('AgentExecutionService', () => {
     const firstController = new AbortController();
     const firstSignal = service.trackPromptRun(first.promise, firstController.signal);
     const secondSignal = service.trackPromptRun(second.promise, new AbortController().signal);
-    expect(service.status()).toEqual({ state: 'starting' });
+    expect(service.status()).toEqual({ state: 'starting', startedAt: expect.any(Number) });
     activeTurnId = 42;
-    expect(service.status()).toEqual({ state: 'running', turnId: 42 });
+    expect(service.status()).toEqual({ state: 'running', turnId: 42, startedAt: expect.any(Number) });
     firstController.abort(new Error('stop first'));
     expect(firstSignal.aborted).toBe(true);
     expect(secondSignal.aborted).toBe(false);
@@ -393,7 +393,7 @@ describe('AgentExecutionService', () => {
     service.trackPromptRun(completion.promise, controller.signal);
     try {
       controller.abort(new Error('stop this task'));
-      expect(service.status()).toEqual({ state: 'cancelling', turnId });
+      expect(service.status()).toEqual({ state: 'cancelling', turnId, startedAt: expect.any(Number) });
       expect(release).not.toHaveBeenCalled();
     } finally {
       completion.resolve();
@@ -414,7 +414,7 @@ describe('AgentExecutionService', () => {
     service.trackPromptRun(completion.promise, new AbortController().signal);
     try {
       const closing = service.shutdown('close');
-      expect(service.status()).toEqual({ state: 'cancelling', turnId: undefined });
+      expect(service.status()).toEqual({ state: 'cancelling', turnId: undefined, startedAt: expect.any(Number) });
       completion.resolve();
       await closing;
       expect(service.status()).toEqual({ state: 'closed' });
@@ -860,7 +860,7 @@ describe('AgentExecutionService', () => {
     );
 
     expect(order).toEqual(['hook', 'provider:prepared work', 'after-start']);
-    expect(service.status()).toEqual({ state: 'running', turnId: 41 });
+    expect(service.status()).toEqual({ state: 'running', turnId: 41, startedAt: expect.any(Number) });
     await expect(service.steer({
       role: 'user',
       content: [{ type: 'text', text: 'queued for next external resume' }],
@@ -869,7 +869,7 @@ describe('AgentExecutionService', () => {
     })).resolves.toBe(false);
     expect(service.cancel('stop')).toBe(true);
     expect(cancel).toHaveBeenCalledWith('stop');
-    expect(service.status()).toEqual({ state: 'cancelling', turnId: 41 });
+    expect(service.status()).toEqual({ state: 'cancelling', turnId: 41, startedAt: expect.any(Number) });
     finish({ summary: 'done' });
     await expect(run.completion).resolves.toEqual({ summary: 'done' });
     await service.settled();

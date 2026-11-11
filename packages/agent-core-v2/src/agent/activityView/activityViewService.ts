@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -15,7 +16,7 @@ import {
 } from '#/agent/loop/turnEvents';
 import { TurnEnded, turnKey } from '#/agent/loop/turnOps';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
-import { ToolCallStarted, ToolResultEvent } from '#/agent/toolExecutor/toolExecutorEvents';
+import { ToolCallStarted, ToolProgress, ToolResultEvent } from '#/agent/toolExecutor/toolExecutorEvents';
 import {
   PermissionApprovalRequested,
   PermissionApprovalResolved,
@@ -26,12 +27,23 @@ import {
   CompactionCompleted,
   CompactionStarted,
 } from '#/agent/fullCompaction/compactionOps';
+import {
+  ExecutorPlanRemove,
+  ExecutorPlanUpdate,
+  ExecutorRuntimeUpdate,
+  ExecutorToolDisplay,
+} from '#/agent/execution/externalExecutorOps';
+import { ExternalActivity } from '#/agent/execution/externalClientEvents';
+import { ContextAppendLoopEvent, ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import type { TurnEndReason } from '#/agent/loop/turnEvents';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ContextUndone } from '#/agent/undo/undoService';
 
@@ -41,6 +53,7 @@ import type {
   ActivityTurnState,
   ActivityViewLifecycle,
   AgentActivityState,
+  AgentActivityTelemetry,
   ApprovalRef,
   BackgroundRef,
   ToolCallRef,
@@ -75,6 +88,13 @@ export const activityViewCurrentKey = defineState<AgentActivityState>('activityV
 export class AgentActivityView extends Disposable implements IAgentActivityView {
   declare readonly _serviceBrand: undefined;
 
+  private lastActivityMs: number | undefined;
+  private activeTurnStartMs: number | undefined;
+  private baseToolCalls = 0;
+  private baselineInitialized = false;
+  private readonly baselineToolCallIds = new Set<string>();
+  private readonly liveToolCallIds = new Set<string>();
+
   constructor(
     @IEventBus private readonly eventBus: IEventBus,
     @IAgentLoopService private readonly loop: IAgentLoopService,
@@ -82,6 +102,9 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     @IAgentFullCompactionService private readonly fullCompaction: IAgentFullCompactionService,
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @ref(ISessionMetadata) private readonly sessionMetadata?: LiveRef<ISessionMetadata>,
+    @ref(IAgentContextMemoryService) private readonly contextMemory?: LiveRef<IAgentContextMemoryService>,
+    @ref(IAgentScopeContext) private readonly scopeContext?: LiveRef<IAgentScopeContext>,
   ) {
     super();
     this.states.contributeState(activityViewLifecycleKey);
@@ -98,6 +121,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     this._register(
       this.dispatcher.hooks.onDidRestore.register('activityView', async (_ctx, next) => {
         this.seedLastTurnFromWire();
+        this.seedToolCallBaseline();
         await next();
       }),
     );
@@ -110,9 +134,30 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     this._register(
       this.eventBus.subscribe(ToolCallStarted, (e) => this.onToolCallStarted(e.toolCallId, e.name)),
     );
+    this._register(this.eventBus.subscribe(ToolProgress, () => this.touchActivity()));
     this._register(this.eventBus.subscribe(ToolResultEvent, (e) => this.onToolResult(e.toolCallId)));
     this._register(
+      this.eventBus.subscribe(ContextAppendLoopEvent, (e) => {
+        this.touchActivity();
+        if (e.event.type === 'tool.call') this.recordToolCallId(e.event.toolCallId);
+      }),
+    );
+    this._register(
+      this.eventBus.subscribe(ContextAppendMessage, (e) => {
+        this.touchActivity();
+        if (e.message.role === 'assistant') {
+          for (const call of e.message.toolCalls) this.recordToolCallId(call.id);
+        }
+      }),
+    );
+    this._register(this.eventBus.subscribe(ExecutorRuntimeUpdate, () => this.touchActivity()));
+    this._register(this.eventBus.subscribe(ExecutorToolDisplay, () => this.touchActivity()));
+    this._register(this.eventBus.subscribe(ExecutorPlanUpdate, () => this.touchActivity()));
+    this._register(this.eventBus.subscribe(ExecutorPlanRemove, () => this.touchActivity()));
+    this._register(this.eventBus.subscribe(ExternalActivity, () => this.touchActivity()));
+    this._register(
       this.eventBus.subscribe(TurnStepRetrying, (e) => {
+        this.touchActivity();
         this.mutateTurn((t) => {
           t.phase = 'retrying';
           t.stream = undefined;
@@ -129,6 +174,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     );
     this._register(
       this.eventBus.subscribe(TurnStepCompleted, () => {
+        this.touchActivity();
         this.mutateTurn((t) => {
           t.phase = 'running';
           t.stream = undefined;
@@ -159,6 +205,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     );
     this._register(
       this.eventBus.subscribe(TaskStarted, (e) => {
+        this.touchActivity();
         this.background.set(e.info.taskId, {
           kind: e.info.kind,
           id: e.info.taskId,
@@ -169,11 +216,13 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     );
     this._register(
       this.eventBus.subscribe(TaskTerminatedNotice, (e) => {
+        this.touchActivity();
         if (this.background.delete(e.info.taskId)) this.publish();
       }),
     );
     this._register(
       this.eventBus.subscribe(CompactionStarted, () => {
+        this.touchActivity();
         this.background.set(FULL_COMPACTION_BACKGROUND_ID, {
           kind: 'compaction',
           id: FULL_COMPACTION_BACKGROUND_ID,
@@ -184,11 +233,13 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     );
     this._register(
       this.eventBus.subscribe(CompactionCompleted, () => {
+        this.touchActivity();
         this.onFullCompactionEnded();
       }),
     );
     this._register(
       this.eventBus.subscribe(CompactionCancelled, () => {
+        this.touchActivity();
         this.onFullCompactionEnded();
       }),
     );
@@ -234,16 +285,72 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     return this.current;
   }
 
+  telemetry(): AgentActivityTelemetry {
+    this.ensureToolCallBaseline();
+    const activeTurnStartedAt = this.turn?.since ?? (this.loop.status().state === 'running' ? this.activeTurnStartMs : undefined);
+    return {
+      lastActivityAt: this.lastActivityMs,
+      activeTurnStartedAt,
+      toolCallCount: this.baseToolCalls + this.liveToolCallIds.size,
+    };
+  }
+
   override dispose(): void | Promise<void> {
     this.lifecycle = 'disposed';
     this.publish();
     return super.dispose();
   }
 
+  private touchActivity(): void {
+    this.lastActivityMs = Date.now();
+  }
+
+  private recordToolCallId(toolCallId: string): void {
+    if (toolCallId.length === 0) return;
+    this.ensureToolCallBaseline();
+    if (this.baselineToolCallIds.has(toolCallId)) return;
+    this.liveToolCallIds.add(toolCallId);
+  }
+
+  private ensureToolCallBaseline(): void {
+    if (!this.baselineInitialized) this.seedToolCallBaseline();
+  }
+
+  private seedToolCallBaseline(): void {
+    const agentId = this.scopeContext?.current?.agentId;
+    let persistedCount = 0;
+    const metadata = this.sessionMetadata?.current;
+    if (metadata !== undefined && agentId !== undefined) {
+      try {
+        const count = metadata.snapshot().agents?.[agentId]?.toolCallCount;
+        if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) {
+          persistedCount = count;
+        }
+      } catch {
+      }
+    }
+    const messages = this.contextMemory?.current?.get();
+    let contextCount = 0;
+    if (messages !== undefined) {
+      for (const message of messages) {
+        if (message.role !== 'assistant') continue;
+        for (const call of message.toolCalls) {
+          if (call.id.length > 0 && !this.liveToolCallIds.has(call.id)) {
+            this.baselineToolCallIds.add(call.id);
+            contextCount++;
+          }
+        }
+      }
+    }
+    this.baseToolCalls = Math.max(this.baseToolCalls, persistedCount, contextCount);
+    this.baselineInitialized = true;
+  }
+
   private seedFromLoop(): void {
     const status = this.loop.status();
     if (status.state === 'running' && status.activeTurnId !== undefined) {
       this.turn = new MutableTurn(status.activeTurnId, USER_PROMPT_ORIGIN);
+      this.activeTurnStartMs = this.turn.since;
       this.publish();
       return;
     }
@@ -285,12 +392,15 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onTurnStarted(turnId: number, origin?: PromptOrigin): void {
+    this.touchActivity();
     this.turn = new MutableTurn(turnId, origin ?? USER_PROMPT_ORIGIN);
+    this.activeTurnStartMs = this.turn.since;
     this.lastTurn = undefined;
     this.publish();
   }
 
   private onTurnEnded(turnId: number, reason: TurnEndReason): void {
+    this.touchActivity();
     if (this.turn === undefined || this.turn.turnId !== turnId) {
       this.lastTurn = { turnId, reason, at: Date.now() };
       this.publish();
@@ -310,6 +420,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onStepStarted(step: number): void {
+    this.touchActivity();
     this.mutateTurn((t) => {
       t.step = step;
       t.phase = 'running';
@@ -319,6 +430,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onStepInterrupted(turnId: number, reason: string): void {
+    this.touchActivity();
     if (reason !== 'aborted' && reason !== 'max_steps' && reason !== 'error') return;
     this.mutateTurn((t) => {
       if (t.turnId !== turnId) return;
@@ -328,6 +440,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onDelta(stream: 'assistant' | 'thinking' | 'tool_call'): void {
+    this.touchActivity();
     this.mutateTurn((t) => {
       t.phase = 'streaming';
       t.stream = stream;
@@ -336,6 +449,8 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onToolCallStarted(toolCallId: string, name: string): void {
+    this.touchActivity();
+    this.recordToolCallId(toolCallId);
     this.mutateTurn((t) => {
       t.phase = 'tool_call';
       t.stream = undefined;
@@ -345,6 +460,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onToolResult(toolCallId: string): void {
+    this.touchActivity();
     this.mutateTurn((t) => {
       t.activeToolCalls.delete(toolCallId);
       t.phase = t.activeToolCalls.size === 0 ? 'running' : 'tool_call';
@@ -354,12 +470,14 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
   }
 
   private onApprovalRequested(approvalId: string, toolCallId: string): void {
+    this.touchActivity();
     this.mutateTurn((t) => {
       t.pendingApprovals.set(approvalId, { approvalId, toolCallId, since: Date.now() });
     });
   }
 
   private onApprovalResolved(approvalId: string): void {
+    this.touchActivity();
     this.mutateTurn((t) => {
       t.pendingApprovals.delete(approvalId);
     });

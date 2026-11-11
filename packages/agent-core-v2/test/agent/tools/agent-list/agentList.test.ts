@@ -1,11 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { IConfigService } from '#/app/config/config';
+import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
+import { IAgentActivityView, type AgentActivityState, type AgentActivityTelemetry } from '#/agent/activityView/activityView';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
+import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import type { AgentExecutionStatus } from '#/app/agentExecutor/agentExecutor';
 import { AgentListTool } from '#/agent/tools/agent-list/agentListTool';
 import { IAgentListTool, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
@@ -17,11 +22,15 @@ import {
   COLLABORATION_AGENT_TYPE_LABEL,
   COLLABORATION_TASK_NAME_LABEL,
 } from '#/session/agentCollaboration/registry';
+import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
 const disposables = new DisposableStore();
-afterEach(() => disposables.clear());
+afterEach(() => {
+  vi.useRealTimers();
+  disposables.clear();
+});
 
 function childMeta(options: {
   readonly parent?: string;
@@ -36,19 +45,42 @@ function childMeta(options: {
   return { type: 'sub', labels };
 }
 
+interface LiveChildStub {
+  readonly execution?: AgentExecutionStatus['state'] | AgentExecutionStatus;
+  readonly loop?: AgentLoopStatus;
+  readonly profile?: Partial<ProfileData>;
+  readonly activity?: {
+    readonly state?: Partial<AgentActivityState>;
+    readonly telemetry?: AgentActivityTelemetry;
+  };
+  readonly statusTokens?: number;
+}
+
 function makeTool(options: {
   readonly callerAgentId?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly execution?: Readonly<Record<string, AgentExecutionStatus['state']>>;
   readonly loops?: Readonly<Record<string, AgentLoopStatus>>;
+  readonly liveChildren?: Readonly<Record<string, LiveChildStub>>;
+  readonly subagentConfig?: SubagentConfig;
   readonly tasks?: readonly {
+    readonly taskId?: string;
     readonly agentId: string;
     readonly status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
     readonly startedAt?: number;
+    readonly endedAt?: number | null;
+    readonly model?: string;
+    readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
   }[];
 }): IAgentListTool {
   const services = disposables.add(new TestInstantiationService());
   services.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
+  if (options.subagentConfig !== undefined) {
+    services.stub(IConfigService, {
+      get: (section: string) => (section === SUBAGENT_SECTION ? options.subagentConfig : undefined),
+    } as unknown as IConfigService);
+  }
   services.stub(ISessionMetadata, {
     read: async () => ({ agents: options.agents ?? {} }),
     getAgentExecutor: async (agentId: string) => options.agents?.[agentId]?.executor,
@@ -56,21 +88,56 @@ function makeTool(options: {
   services.stub(IAgentTaskService, {
     list: () => (options.tasks ?? []).map((task, index) => ({
       kind: 'agent',
-      taskId: `task-${String(index + 1)}`,
+      taskId: task.taskId ?? `task-${String(index + 1)}`,
       description: '',
       agentId: task.agentId,
       status: task.status,
       startedAt: task.startedAt ?? index,
-      endedAt: task.status === 'running' ? null : index,
+      endedAt: task.endedAt !== undefined ? task.endedAt : task.status === 'running' ? null : index,
+      model: task.model,
+      thinkingEffort: task.thinkingEffort,
+      thinkingEffortExplicit: task.thinkingEffortExplicit,
     })),
   } as unknown as IAgentTaskService);
   services.stub(IAgentLifecycleService, {
     get: (agentId) => {
-      const state = options.execution?.[agentId];
-      if (state === undefined) return undefined;
+      const liveSpec = options.liveChildren?.[agentId];
+      const stateOrStatus = liveSpec?.execution ?? options.execution?.[agentId];
+      if (liveSpec === undefined && stateOrStatus === undefined) return undefined;
       const child = disposables.add(new TestInstantiationService());
-      child.stub(IAgentExecutionService, { status: () => ({ state }) });
-      child.stub(IAgentLoopService, { status: () => options.loops?.[agentId] ?? { state: 'idle', pendingTurnIds: [], hasPendingRequests: false } });
+      if (stateOrStatus !== undefined) {
+        const execStatus: AgentExecutionStatus =
+          typeof stateOrStatus === 'string' ? { state: stateOrStatus } : stateOrStatus;
+        child.stub(IAgentExecutionService, { status: () => execStatus });
+      }
+      child.stub(IAgentLoopService, {
+        status: () => liveSpec?.loop ?? options.loops?.[agentId] ?? { state: 'idle', pendingTurnIds: [], hasPendingRequests: false },
+      });
+      if (liveSpec?.profile !== undefined) {
+        child.stub(IAgentProfileService, {
+          data: () => ({
+            modelCapabilities: UNKNOWN_CAPABILITY,
+            thinkingLevel: 'off',
+            systemPrompt: '',
+            ...liveSpec.profile,
+          }),
+        } as unknown as IAgentProfileService);
+      }
+      if (liveSpec?.activity !== undefined) {
+        child.stub(IAgentActivityView, {
+          state: () => ({
+            lifecycle: 'ready',
+            background: [],
+            ...liveSpec.activity?.state,
+          }),
+          telemetry: () => liveSpec.activity?.telemetry ?? { toolCallCount: 0 },
+        } as IAgentActivityView);
+      }
+      if (liveSpec?.statusTokens !== undefined) {
+        child.stub(IAgentTokenCountingService, {
+          statusSize: () => liveSpec.statusTokens!,
+        } as unknown as IAgentTokenCountingService);
+      }
       return {
         id: agentId,
         kind: 'agent',
@@ -85,7 +152,7 @@ function makeTool(options: {
 
 async function listAgents(
   tool: IAgentListTool,
-  args: { include_finished?: boolean } = {},
+  args: { include_finished?: boolean; raw?: boolean } = {},
 ): Promise<AgentListOutput> {
   const result = await executeTool(tool, {
     turnId: 1,
@@ -299,6 +366,7 @@ describe('AgentListTool', () => {
           name: 'live',
           profile: 'coder',
           status: 'running',
+          elapsed_ms: expect.any(Number),
         },
       ],
     });
@@ -309,12 +377,14 @@ describe('AgentListTool', () => {
           name: 'live',
           profile: 'coder',
           status: 'running',
+          elapsed_ms: expect.any(Number),
         },
         {
           agent_id: 'agent-done',
           name: 'done',
           profile: 'coder',
           status: 'completed',
+          elapsed_ms: 0,
         },
       ],
     });
@@ -341,6 +411,7 @@ describe('AgentListTool', () => {
           name: 'worker',
           profile: 'coder',
           status: 'running',
+          elapsed_ms: expect.any(Number),
         },
       ],
     });
@@ -361,6 +432,7 @@ describe('AgentListTool', () => {
           agent_id: 'zzz',
           profile: 'coder',
           status: 'running',
+          elapsed_ms: expect.any(Number),
         },
         {
           agent_id: 'aaa',
@@ -369,5 +441,220 @@ describe('AgentListTool', () => {
         },
       ],
     });
+  });
+
+  it('projects default 4 telemetry fields on compact calls and all 6 available fields on raw=true', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const tool = makeTool({
+      agents: {
+        worker: childMeta({ name: 'worker', profile: 'implementer' }),
+      },
+      tasks: [
+        {
+          agentId: 'worker',
+          status: 'running',
+          startedAt: 4_000,
+        },
+      ],
+      liveChildren: {
+        worker: {
+          execution: { state: 'running', startedAt: 4_000 },
+          profile: {
+            modelAlias: 'kimi-for-coding',
+            modelCapabilities: {
+              image_in: false,
+              video_in: false,
+              audio_in: false,
+              thinking: true,
+              tool_use: true,
+              max_context_tokens: 128_000,
+            } satisfies ModelCapability,
+            thinkingLevel: 'high',
+            effectiveThinkingLevel: 'high',
+            thinkingEffortExplicit: true,
+          },
+          activity: {
+            telemetry: {
+              lastActivityAt: 8_500,
+              activeTurnStartedAt: 4_100,
+              toolCallCount: 7,
+            },
+          },
+          statusTokens: 42_000,
+        },
+      },
+    });
+
+    expect(await listAgents(tool)).toEqual({
+      agents: [
+        {
+          agent_id: 'worker',
+          name: 'worker',
+          profile: 'implementer',
+          status: 'running',
+          model: 'kimi-for-coding',
+          elapsed_ms: 6_000,
+          idle_ms: 1_500,
+          tool_call_count: 7,
+        },
+      ],
+    });
+
+    expect(await listAgents(tool, { raw: true })).toEqual({
+      agents: [
+        {
+          agent_id: 'worker',
+          name: 'worker',
+          profile: 'implementer',
+          status: 'running',
+          model: 'kimi-for-coding',
+          thinking_effort: 'high',
+          elapsed_ms: 6_000,
+          idle_ms: 1_500,
+          tool_call_count: 7,
+          context_tokens: 42_000,
+        },
+      ],
+    });
+  });
+
+  it('respects custom [subagent].agent_list_fields including [] while keeping raw=true unfiltered', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(20_000);
+    const baseOptions = {
+      agents: {
+        cold: {
+          ...childMeta({ name: 'cold', profile: 'researcher' }),
+          status: 'completed' as const,
+          taskId: 'task-1',
+          createdAt: 5_000,
+          completedAt: 12_000,
+          model: 'gpt-test',
+          thinkingEffort: 'medium',
+          thinkingEffortExplicit: true,
+          contextTokens: 18_500,
+          toolCallCount: 4,
+        },
+      },
+      tasks: [
+        {
+          taskId: 'task-1',
+          agentId: 'cold',
+          status: 'completed' as const,
+          startedAt: 5_000,
+          endedAt: 12_000,
+        },
+      ],
+    };
+
+    const customTool = makeTool({
+      ...baseOptions,
+      subagentConfig: { agentListFields: ['thinking_effort', 'context_tokens'] },
+    });
+    expect(await listAgents(customTool, { include_finished: true })).toEqual({
+      agents: [
+        {
+          agent_id: 'cold',
+          name: 'cold',
+          profile: 'researcher',
+          status: 'completed',
+          thinking_effort: 'medium',
+          context_tokens: 18_500,
+        },
+      ],
+    });
+
+    const emptyTool = makeTool({
+      ...baseOptions,
+      subagentConfig: { agentListFields: [] },
+    });
+    expect(await listAgents(emptyTool, { include_finished: true })).toEqual({
+      agents: [
+        {
+          agent_id: 'cold',
+          name: 'cold',
+          profile: 'researcher',
+          status: 'completed',
+        },
+      ],
+    });
+    expect(await listAgents(emptyTool, { include_finished: true, raw: true })).toEqual({
+      agents: [
+        {
+          agent_id: 'cold',
+          name: 'cold',
+          profile: 'researcher',
+          status: 'completed',
+          model: 'gpt-test',
+          thinking_effort: 'medium',
+          elapsed_ms: 7_000,
+          tool_call_count: 4,
+          context_tokens: 18_500,
+        },
+      ],
+    });
+  });
+
+  it('uses current run start on resumed turns instead of historical createdAt and omits non-applicable thinking_effort', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(50_000);
+    const tool = makeTool({
+      agents: {
+        resumed: {
+          ...childMeta({ name: 'resumed', profile: 'worker' }),
+          createdAt: 1_000,
+          completedAt: 10_000,
+          status: 'completed',
+          taskId: 'old-task',
+          model: 'fast-non-thinking',
+          thinkingEffort: 'off',
+          thinkingEffortExplicit: false,
+        },
+      },
+      liveChildren: {
+        resumed: {
+          execution: { state: 'running', startedAt: 47_000 },
+          profile: {
+            modelAlias: 'fast-non-thinking',
+            modelCapabilities: {
+              image_in: false,
+              video_in: false,
+              audio_in: false,
+              thinking: false,
+              tool_use: true,
+              max_context_tokens: 128_000,
+            } satisfies ModelCapability,
+            thinkingLevel: 'off',
+            effectiveThinkingLevel: 'off',
+            thinkingEffortExplicit: false,
+          },
+          activity: {
+            telemetry: {
+              lastActivityAt: 49_200,
+              activeTurnStartedAt: 47_000,
+              toolCallCount: 2,
+            },
+          },
+          statusTokens: 0,
+        },
+      },
+    });
+
+    const raw = await listAgents(tool, { raw: true });
+    expect(raw.agents).toEqual([
+      {
+        agent_id: 'resumed',
+        name: 'resumed',
+        profile: 'worker',
+        status: 'running',
+        model: 'fast-non-thinking',
+        elapsed_ms: 3_000,
+        idle_ms: 800,
+        tool_call_count: 2,
+      },
+    ]);
+    expect(raw.agents[0]).not.toHaveProperty('thinking_effort');
+    expect(raw.agents[0]).not.toHaveProperty('context_tokens');
   });
 });

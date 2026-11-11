@@ -577,7 +577,11 @@ function createLane(
       get: ((serviceId: unknown) => {
         if (serviceId === IAgentMemorySnapshot) return { getPersona: () => profileByAgent.get(agentId)?.memoryReadContext };
         if (serviceId === IAgentActivityView) {
-          return { _serviceBrand: undefined, state: () => ({ lifecycle: 'ready', background: [] }) } satisfies IAgentActivityView;
+          return {
+            _serviceBrand: undefined,
+            state: () => ({ lifecycle: 'ready', background: [] }),
+            telemetry: () => ({ toolCallCount: 0 }),
+          } satisfies IAgentActivityView;
         }
         if (serviceId === IAgentLifecycleService) return lifecycle;
         if (serviceId === ISessionSubagentService) return subagents;
