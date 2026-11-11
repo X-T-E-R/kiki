@@ -1,10 +1,11 @@
 /**
  * The thinking effort a model switch preselects for its target. A hand-picked
- * effort carries over only when the target offers it; otherwise the nearest
- * level the target does offer stands in (the next lower one first, so a switch
- * never quietly raises cost), and the target's default when the effort has no
- * known rank. An automatic effort stays automatic: the target resolves its own
- * default, which is what the panel shows.
+ * effort carries over only when the target offers it; otherwise a supported
+ * level stands in (the next lower one first, so a switch never quietly raises
+ * cost, then the next higher, and the target's default when the effort has no
+ * known rank). When the target offers no effort levels at all, a hand-picked
+ * effort drops to undefined while recording `adjustedFrom` so the dialog can
+ * note it. An automatic effort stays automatic without adjustment.
  */
 
 const EFFORT_RANK = new Map([
@@ -15,7 +16,7 @@ const EFFORT_RANK = new Map([
 export interface SwitchEffortSelection {
   /** Concrete level to send; undefined keeps the target's own default. */
   readonly effort: string | undefined;
-  /** The carried effort the target lacks, when a stand-in was chosen. */
+  /** The carried effort the target lacks or ignores, when not carried verbatim. */
   readonly adjustedFrom?: string;
 }
 
@@ -28,7 +29,8 @@ export function resolveSwitchEffort(input: {
   readonly targetDefault?: string;
 }): SwitchEffortSelection {
   const { targetEfforts, carried, targetDefault } = input;
-  if (carried === undefined || targetEfforts.length === 0) return { effort: undefined };
+  if (carried === undefined) return { effort: undefined };
+  if (targetEfforts.length === 0) return { effort: undefined, adjustedFrom: carried };
   if (targetEfforts.includes(carried)) return { effort: carried };
   const rank = EFFORT_RANK.get(carried);
   const ranked = targetEfforts.filter((level) => EFFORT_RANK.has(level));

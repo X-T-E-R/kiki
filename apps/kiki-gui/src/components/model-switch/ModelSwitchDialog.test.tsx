@@ -142,14 +142,18 @@ describe('ModelSwitchDialog', () => {
   it('preselects the nearest supported effort, shows adjustment notice, and submits the chosen target effort', async () => {
     expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: undefined, targetDefault: 'medium' }))
       .toEqual({ effort: undefined });
+    expect(resolveSwitchEffort({ targetEfforts: [], carried: undefined }))
+      .toEqual({ effort: undefined });
     expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'high', targetDefault: 'medium' }))
       .toEqual({ effort: 'high' });
     expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'xhigh', targetDefault: 'medium' }))
       .toEqual({ effort: 'high', adjustedFrom: 'xhigh' });
+    expect(resolveSwitchEffort({ targetEfforts: ['low', 'xhigh'], carried: 'high', targetDefault: 'xhigh' }))
+      .toEqual({ effort: 'low', adjustedFrom: 'high' });
     expect(resolveSwitchEffort({ targetEfforts: ['medium', 'high'], carried: 'low', targetDefault: 'medium' }))
       .toEqual({ effort: 'medium', adjustedFrom: 'low' });
     expect(resolveSwitchEffort({ targetEfforts: [], carried: 'high' }))
-      .toEqual({ effort: undefined });
+      .toEqual({ effort: undefined, adjustedFrom: 'high' });
 
     const resolved = resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'xhigh', targetDefault: 'medium' });
     const { container, onConfirm } = await renderDialog({
@@ -160,7 +164,9 @@ describe('ModelSwitchDialog', () => {
     });
     expect(container.querySelector('[data-model-switch-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
     expect(container.querySelector('[data-model-switch-effort=""]')?.textContent).toContain('Default');
-    expect(container.querySelector('[data-model-switch-effort-adjusted]')?.textContent).toContain('example/new');
+    const adjustedNote = container.querySelector('[data-model-switch-effort-adjusted]')?.textContent;
+    expect(adjustedNote).toBe('Very high isn’t available; preselected High.');
+    expect(adjustedNote).not.toContain('example/new');
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-model-switch-effort="low"]')!.click();
     });
@@ -169,7 +175,13 @@ describe('ModelSwitchDialog', () => {
     });
     expect(onConfirm).toHaveBeenCalledWith({ mode: 'direct', remember: false, effort: 'low' });
 
-    const none = await renderDialog({ efforts: [] });
-    expect(none.container.querySelector('[data-model-switch-effort-none]')?.textContent).toContain('thinking effort');
+    const silentNone = await renderDialog({ efforts: [] });
+    expect(silentNone.container.querySelector('[data-model-switch-effort-none]')).toBeNull();
+    expect(silentNone.container.querySelector('[data-model-switch-effort-row]')).toBeNull();
+
+    const droppedManual = await renderDialog({ efforts: [], effortAdjustedFrom: 'high' });
+    const droppedNote = droppedManual.container.querySelector('[data-model-switch-effort-none]')?.textContent;
+    expect(droppedNote).toBe('Thinking effort isn’t used here; High won’t apply.');
+    expect(droppedNote).not.toContain('example/new');
   });
 });

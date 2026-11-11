@@ -221,7 +221,7 @@ export function ModelSwitchDialog({
                     tabIndex={checked ? 0 : -1}
                     disabled={submitting}
                     onClick={() => { setEffort(level); }}
-                    className={`rounded px-2 py-0.5 text-[11.5px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:py-1.5 ${
+                    className={`rounded px-2 py-0.5 text-[11.5px] max-sm:px-1.5 max-sm:text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:py-1.5 ${
                       checked ? EFFORT_SELECTED_CLASS : EFFORT_IDLE_CLASS
                     }`}
                   >
@@ -237,13 +237,20 @@ export function ModelSwitchDialog({
           </div>
           {effortAdjustedFrom !== undefined ? (
             <p data-model-switch-effort-adjusted className="mt-1 text-[11.5px] leading-snug text-ink-faint">
-              {t('modelSwitch.dialog.effortUnsupported', { model: toModel, effort: effortLabel(effortAdjustedFrom) })}
+              {t('modelSwitch.dialog.effortUnsupported', {
+                effort: effortLabel(effortAdjustedFrom),
+                selected: initialLevel !== undefined
+                  ? effortLabel(initialLevel)
+                  : defaultEffort !== undefined
+                    ? t('modelSwitch.dialog.effortDefault', { effort: effortLabel(defaultEffort) })
+                    : t('composer.execution.defaultEffort'),
+              })}
             </p>
           ) : null}
         </div>
-      ) : efforts !== undefined ? (
-        <p data-model-switch-effort-none className="mt-2 px-1.5 text-[12px] leading-snug text-ink-faint">
-          {t('modelSwitch.dialog.effortNone', { model: toModel })}
+      ) : efforts !== undefined && effortAdjustedFrom !== undefined ? (
+        <p data-model-switch-effort-none className="mt-2 px-1.5 text-[11.5px] leading-snug text-ink-faint">
+          {t('modelSwitch.dialog.effortNone', { effort: effortLabel(effortAdjustedFrom) })}
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3">

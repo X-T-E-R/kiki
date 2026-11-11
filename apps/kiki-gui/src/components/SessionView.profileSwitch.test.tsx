@@ -959,7 +959,7 @@ describe('live manual effort provenance across model switches', () => {
     const { container } = await mount();
     await pickModel(container);
     const note = await waitForElement(container, '[data-model-switch-effort-adjusted]');
-    expect(note.textContent).toContain('Very high');
+    expect(note.textContent).toBe('Very high isn’t available; preselected Medium.');
     expect(container.querySelector('[data-model-switch-effort="medium"]')?.getAttribute('aria-checked')).toBe('true');
     await click(container.querySelector('[data-model-switch-effort="low"]'));
     await click(dialogButton(container, 'Switch at next step'));
