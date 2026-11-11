@@ -952,3 +952,133 @@ describe('Codex turn settlement', () => {
     await client.shutdown();
   });
 });
+
+describe('Codex thread history pagination and rate limit tracking', () => {
+  it('reads paginated thread history via thread/items/list and guards against repeated cursors', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture);
+    await client.connect();
+
+    const firstPromise = client.readThreadHistoryPage({ threadId: 'thread-hist', limit: 2 });
+    const modeFrame = await waitForFrame(fixture, 'thread/read');
+    expect(modeFrame.params).toEqual({ threadId: 'thread-hist', includeTurns: false });
+    respondToFrame(fixture, modeFrame, { thread: { id: 'thread-hist', historyMode: 'paginated' } });
+
+    const page1Frame = await waitForFrame(fixture, 'thread/items/list', 1);
+    expect(page1Frame.params).toEqual({
+      threadId: 'thread-hist',
+      limit: 2,
+      sortDirection: 'asc',
+      cursor: undefined,
+    });
+    respondToFrame(fixture, page1Frame, {
+      data: [
+        { turnId: 't-1', item: { id: 'i-1', type: 'userMessage' }, startedAtMs: 10, completedAtMs: 11 },
+        { turnId: 't-1', item: { id: 'i-2', type: 'agentMessage' }, startedAtMs: 12, completedAtMs: 15 },
+      ],
+      nextCursor: 'cur-2',
+    });
+
+    const page1 = await firstPromise;
+    expect(page1).toEqual({
+      mode: 'paginated',
+      data: [
+        { turnId: 't-1', item: { id: 'i-1', type: 'userMessage' }, startedAt: 10, completedAt: 11 },
+        { turnId: 't-1', item: { id: 'i-2', type: 'agentMessage' }, startedAt: 12, completedAt: 15 },
+      ],
+      nextCursor: 'cur-2',
+    });
+
+    const dupPromise = client.readThreadHistoryPage({
+      threadId: 'thread-hist',
+      limit: 2,
+      cursor: 'cur-2',
+      mode: 'paginated',
+    });
+    const page2Frame = await waitForFrame(fixture, 'thread/items/list', 2);
+    respondToFrame(fixture, page2Frame, { data: [], nextCursor: 'cur-2' });
+    await expect(dupPromise).rejects.toMatchObject({ code: 'protocol' });
+
+    await client.shutdown();
+  });
+
+  it('falls back to legacy thread/read turn flattening with local offset cursors when historyMode is absent', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture);
+    await client.connect();
+
+    const genPromise = (async () => {
+      const rows = [];
+      for await (const row of client.readThreadHistory('thread-legacy')) {
+        rows.push(row);
+      }
+      return rows;
+    })();
+
+    const modeFrame = await waitForFrame(fixture, 'thread/read', 1);
+    respondToFrame(fixture, modeFrame, { thread: { id: 'thread-legacy' } });
+
+    const readFrame = await waitForFrame(fixture, 'thread/read', 2);
+    expect(readFrame.params).toEqual({ threadId: 'thread-legacy', includeTurns: true });
+    respondToFrame(fixture, readFrame, {
+      thread: {
+        id: 'thread-legacy',
+        turns: [
+          { id: 'turn-a', startedAt: 1, completedAt: 2, items: [{ id: 'a1' }, { id: 'a2' }] },
+          { id: 'turn-b', startedAt: 3, completedAt: 4, items: [{ id: 'b1' }] },
+        ],
+      },
+    });
+
+    await expect(genPromise).resolves.toEqual([
+      { turnId: 'turn-a', item: { id: 'a1' }, startedAt: 1, completedAt: 2 },
+      { turnId: 'turn-a', item: { id: 'a2' }, startedAt: 1, completedAt: 2 },
+      { turnId: 'turn-b', item: { id: 'b1' }, startedAt: 3, completedAt: 4 },
+    ]);
+
+    await client.shutdown();
+  });
+
+  it('merges session rateLimits notifications into failed turn outcome usageLimit resetAt', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture);
+    await client.connect();
+
+    fixture.stdout.write(`${JSON.stringify({
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          limitId: 'codex',
+          primary: { usedPercent: 100, resetsAt: 1_850_000_000 },
+        },
+      },
+    })}\n`);
+
+    const handle = await client.startTurn(
+      { threadId: 'thread-1' },
+      new AbortController().signal,
+      async () => {},
+    );
+    fixture.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: 'Usage limit exceeded', codexErrorInfo: 'usageLimitExceeded' },
+        },
+      },
+    })}\n`);
+
+    const completion = await handle.completion;
+    expect(completion.outcome?.usageLimit).toMatchObject({
+      code: 'usageLimitExceeded',
+      httpStatusCode: 429,
+      resetAt: new Date(1_850_000_000 * 1000).toISOString(),
+      resetAtMs: 1_850_000_000 * 1000,
+    });
+    expect(client.rateLimits()?.primary?.resetsAt).toBe(1_850_000_000);
+    await client.shutdown();
+  });
+});

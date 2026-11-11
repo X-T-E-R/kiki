@@ -45,6 +45,10 @@ import { IWireService } from '#/wire/wire';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 import { acpToolDisplay, acpToolOutput, mergeAcpToolState, type AcpToolState } from './acpToolDisplay';
+import {
+  extractStreamingRateLimitResetAt,
+  normalizeExternalExecutorError,
+} from './externalUsageLimitParser';
 
 import {
   ExecutorToolDisplay,
@@ -158,6 +162,7 @@ export class ExternalTurnRecorder {
   #partOrdinal = 0;
   #ended = false;
   #lastAssistantText = '';
+  #observedResetAt: string | undefined;
   readonly #settledWaiters = new Set<(settled: boolean) => void>();
 
   constructor(
@@ -319,7 +324,9 @@ export class ExternalTurnRecorder {
       case 'config.update':
         await this.#runtimeUpdate('config', boundedUnknown(event.configOptions));
         return;
-      case 'session.info':
+      case 'session.info': {
+        const resetAt = extractStreamingRateLimitResetAt(event.meta);
+        if (resetAt !== undefined) this.#observedResetAt = resetAt;
         if (this.agent.id === 'main' && event.title?.trim()) {
           await this.agent.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(sliceUtf16(event.title.trim(), 0, 100));
         }
@@ -328,6 +335,7 @@ export class ExternalTurnRecorder {
           boundedUnknown({ title: event.title, meta: event.meta }),
         );
         return;
+      }
       case 'usage':
         this.losses.add('usage_context_only');
         await this.#runtimeUpdate('usage', boundedUnknown(event));
@@ -356,7 +364,11 @@ export class ExternalTurnRecorder {
   }
 
   async fail(error: unknown): Promise<void> {
-    await this.#end('failed', 'error', error);
+    const normalized = normalizeExternalExecutorError(error, {
+      executorId: this.metadata.executorId,
+      observedResetAt: this.#observedResetAt,
+    });
+    await this.#end('failed', 'error', normalized);
   }
 
   async cancel(reason: unknown): Promise<void> {
@@ -385,6 +397,7 @@ export class ExternalTurnRecorder {
       return;
     }
     if (part.type === 'text' && part.attachment === undefined && part.resourceLink === undefined) {
+      if (part.text.length === 0) return;
       const segment = this.#appendSegment('text', event.messageId, part.text);
       this.#lastAssistantText += part.text;
       await this.#dispatcher.dispatch(
@@ -425,6 +438,7 @@ export class ExternalTurnRecorder {
       this.losses.add('unknown_update_dropped');
       return;
     }
+    if (event.content.text.length === 0) return;
     if (event.messageId === undefined) this.losses.add('message_id_missing');
     const segment = this.#appendSegment('think', event.messageId, event.content.text);
     await this.#dispatcher.dispatch(

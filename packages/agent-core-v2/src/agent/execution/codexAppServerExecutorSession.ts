@@ -3,7 +3,9 @@ import {
   CodexAppServerClient,
   CodexClientError,
   CodexRemoteError,
+  codexUsageLimitResetAt,
   type CodexNotification,
+  type CodexRateLimitSnapshot,
   type CodexServerRequest,
   type CodexServerRequestResponder,
   type CodexThreadResult,
@@ -18,7 +20,7 @@ import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import { codexAuthObservation, recordExecutorAuth } from './executorAuth';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
-import { CODEX_ACCOUNT_MODEL_PROVIDER, harnessAccountError, harnessAccountProcess } from './harnessAccountProcess';
+import { CODEX_ACCOUNT_MODEL_PROVIDER, harnessAccountProcess } from './harnessAccountProcess';
 import { codexAttachments, externalAttachments } from './externalAttachments';
 import { executorLaunchArgs, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
@@ -70,9 +72,12 @@ import {
   ExternalTurnRecorder,
   resolveExternalModelProvider,
 } from './externalTurnRecorder';
+import { normalizeExternalExecutorError } from './externalUsageLimitParser';
 
 interface CodexClientLike {
   status(): ReturnType<CodexAppServerClient['status']>;
+  rateLimits?(): CodexRateLimitSnapshot | undefined;
+  stderrTail?(): string;
   connect(signal?: AbortSignal): Promise<void>;
   startThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
   resumeThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
@@ -269,7 +274,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       if (this.#accountModelProvider() === undefined) throw error;
       await this.#client.shutdown(error);
       controller.signal.throwIfAborted();
-      throw harnessAccountError(this.context.descriptor, error);
+      throw this.#normalizeCodexFailure(error);
     });
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const priorThreadId = threadIdFromState(prior.sessionRef);
@@ -412,7 +417,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         ? new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED,
             'Codex may have received this prompt, but its start could not be confirmed. Inspect the external session before starting another run.',
             { cause, details: { executorId: this.context.descriptor.id, threadId: opened.threadId, deliveryOutcome: 'unknown' } })
-        : cause;
+        : this.#normalizeCodexFailure(cause);
       const failure = classify(await this.#authUpdates.then(() => error, (authError: unknown) => authError));
       turn.state = controller.signal.aborted ? 'cancelled' : 'failed';
       ready.reject(toError(failure, 'Codex turn failed to start'));
@@ -552,7 +557,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         throw toError(turnResult.reason, 'Codex turn was interrupted');
       }
       turn.state = 'failed';
-      const error = harnessAccountError(this.context.descriptor, turnResult.error);
+      const error = this.#normalizeCodexFailure(turnResult.error, completed);
       await recorder.fail(error);
       result.resolve({ ...turnResult, error });
       throw toError(error, 'Codex turn failed');
@@ -563,9 +568,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         await recorder.cancel(reason);
         result.resolve({ type: 'cancelled', steps: 1, reason });
       } else if (!isTerminalTurnState(turn.state)) {
+        const normalized = this.#normalizeCodexFailure(error);
         turn.state = 'failed';
-        await recorder.fail(error);
-        result.resolve({ type: 'failed', steps: 1, error });
+        await recorder.fail(normalized);
+        result.resolve({ type: 'failed', steps: 1, error: normalized });
+        throw normalized;
       }
       throw error;
     } finally {
@@ -678,6 +685,29 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
   #accountModelProvider(): string | undefined {
     return this.context.descriptor.instance?.configuration.kind === 'plugin_account' ? CODEX_ACCOUNT_MODEL_PROVIDER : undefined;
+  }
+
+  #normalizeCodexFailure(error: unknown, completed?: CodexTurnCompletion): unknown {
+    const configuration = this.context.descriptor.instance?.configuration;
+    const rateLimits = completed?.rateLimits ?? this.#client.rateLimits?.();
+    const observedResetAt = completed?.outcome?.usageLimit?.resetAt ?? (codexUsageLimitResetAt(rateLimits) ?? undefined);
+    const stderrTail = completed?.stderrTail ?? this.#client.stderrTail?.();
+    const enriched = completed?.outcome !== undefined && !(error instanceof Error && 'outcome' in error)
+      ? {
+          message: error instanceof Error ? error.message : completed.outcome.errorMessage,
+          cause: error,
+          outcome: completed.outcome,
+          stderrTail,
+        }
+      : error;
+    const normalized = normalizeExternalExecutorError(enriched, {
+      executorId: this.context.descriptor.id,
+      stderrTail,
+      observedResetAt,
+      accountLabel: configuration?.kind === 'plugin_account' ? (this.context.descriptor.label ?? this.context.descriptor.id) : undefined,
+      accountSource: configuration?.kind === 'plugin_account' ? configuration.source : undefined,
+    });
+    return normalized === enriched ? error : normalized;
   }
 
   #assertAccountThread(thread: CodexThreadResult): void {
@@ -1021,10 +1051,11 @@ function turnResultFromCodex(completed: CodexTurnCompletion): TurnResult {
   if (completed.status === 'interrupted') {
     return { type: 'cancelled', steps: 1, reason: new Error('Codex turn interrupted') };
   }
+  const fallback = completed.outcome?.errorMessage ?? `Codex turn completed with status ${completed.status}`;
   return {
     type: 'failed',
     steps: 1,
-    error: toError(completed.error, `Codex turn completed with status ${completed.status}`),
+    error: toError(completed.error, fallback),
   };
 }
 

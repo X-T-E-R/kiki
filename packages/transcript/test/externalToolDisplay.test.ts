@@ -114,6 +114,159 @@ describe('projectExternalToolDisplay', () => {
       name: 'view_file', kind: 'other', rawInput: viewInput,
     })).toBe(stored);
   });
+
+  it('projects Codex apply_patch, OpenCode patch/lsp/codesearch, Cursor, Kiro, Pi, Claude, and Grok tools', () => {
+    const multiPatch = [
+      '*** Begin Patch',
+      '*** Update File: src/a.ts',
+      '@@',
+      '-const a = 1;',
+      '+const a = 2;',
+      '*** Add File: src/b.ts',
+      '+export const b = true;',
+      '*** End Patch',
+    ].join('\n');
+    expect(projectExternalToolDisplay({
+      name: 'apply_patch',
+      kind: 'other',
+      rawInput: { patch: multiPatch },
+    })).toEqual({
+      kind: 'generic',
+      summary: 'src/a.ts, src/b.ts',
+      detail: {
+        diffs: [
+          { path: 'src/a.ts', before: 'const a = 1;', after: 'const a = 2;' },
+          { path: 'src/b.ts', before: '', after: 'export const b = true;' },
+        ],
+      },
+    });
+
+    const singlePatch = [
+      '*** Begin Patch',
+      '*** Update File: src/only.ts',
+      '@@',
+      '-oldLine',
+      '+newLine',
+      '*** End Patch',
+    ].join('\n');
+    expect(projectExternalToolDisplay({
+      name: 'patch',
+      kind: 'other',
+      rawInput: { patchText: singlePatch },
+    })).toEqual({
+      kind: 'file_io',
+      operation: 'edit',
+      path: 'src/only.ts',
+      before: 'oldLine',
+      after: 'newLine',
+    });
+
+    expect(projectExternalToolDisplay({
+      name: 'codesearch',
+      kind: 'other',
+      rawInput: { query: 'NormalizedExecutorEvent' },
+    })).toEqual({ kind: 'search', query: 'NormalizedExecutorEvent' });
+
+    expect(projectExternalToolDisplay({
+      name: 'lsp',
+      kind: 'other',
+      rawInput: { operation: 'goToDefinition', filePath: 'src/index.ts' },
+    })).toEqual({ kind: 'search', query: 'goToDefinition', scope: 'src/index.ts' });
+
+    expect(projectExternalToolDisplay({
+      name: 'semSearch',
+      kind: 'other',
+      rawInput: { query: 'rate limit parser', targetDirectory: 'packages/agent-core-v2' },
+    })).toEqual({ kind: 'search', query: 'rate limit parser', scope: 'packages/agent-core-v2' });
+
+    expect(projectExternalToolDisplay({
+      name: 'glob',
+      kind: 'other',
+      rawInput: { globPattern: '**/*.test.ts', targetDirectory: 'packages' },
+    })).toEqual({ kind: 'search', query: '**/*.test.ts', scope: 'packages' });
+
+    expect(projectExternalToolDisplay({
+      name: 'readLints',
+      kind: 'other',
+      rawInput: { paths: ['src/a.ts', 'src/b.ts'] },
+    })).toEqual({
+      kind: 'generic',
+      summary: 'src/a.ts, src/b.ts',
+      detail: { paths: ['src/a.ts', 'src/b.ts'], operation: 'read' },
+    });
+
+    expect(projectExternalToolDisplay({
+      name: 'delete',
+      kind: 'delete',
+      rawInput: { path: 'src/obsolete.ts' },
+    })).toEqual({ kind: 'file_io', operation: 'edit', path: 'src/obsolete.ts' });
+
+    expect(projectExternalToolDisplay({
+      name: 'fs_read',
+      kind: 'other',
+      rawInput: { path: '/repo/README.md' },
+    })).toEqual({ kind: 'file_io', operation: 'read', path: '/repo/README.md' });
+
+    expect(projectExternalToolDisplay({
+      name: 'fs_write',
+      kind: 'other',
+      rawInput: { path: '/repo/out.txt', file_text: 'hello' },
+    })).toEqual({ kind: 'file_io', operation: 'write', path: '/repo/out.txt', content: 'hello' });
+
+    expect(projectExternalToolDisplay({
+      name: 'execute_bash',
+      kind: 'other',
+      rawInput: { command: 'cargo test', cwd: '/repo' },
+    })).toEqual({ kind: 'command', command: 'cargo test', cwd: '/repo' });
+
+    expect(projectExternalToolDisplay({
+      name: 'invoke_sub_agent',
+      kind: 'other',
+      rawInput: { name: 'architect', prompt: 'Review boundaries' },
+    })).toEqual({ kind: 'agent_call', agent_name: 'architect', prompt: 'Review boundaries' });
+
+    expect(projectExternalToolDisplay({
+      name: 'spawn_subagent',
+      kind: 'other',
+      rawInput: { subagent_type: 'explore', description: 'Find usages' },
+    })).toEqual({ kind: 'agent_call', agent_name: 'explore', prompt: 'Find usages' });
+
+    expect(projectExternalToolDisplay({
+      title: 'Tool',
+      kind: 'other',
+      rawInput: { variant: 'CursorTask', description: 'Run subtask', subagent_type: 'worker' },
+    })).toEqual({ kind: 'agent_call', agent_name: 'worker', prompt: 'Run subtask' });
+
+    expect(projectExternalToolDisplay({
+      name: 'get_command_or_subagent_output',
+      kind: 'other',
+      rawInput: { id: 'sub-42' },
+    })).toEqual({ kind: 'task', task_id: 'sub-42', status: 'status', description: 'sub-42' });
+
+    expect(projectExternalToolDisplay({
+      name: 'kill_command_or_subagent',
+      kind: 'other',
+      rawInput: { id: 'sub-42', reason: 'timeout' },
+    })).toEqual({ kind: 'task_stop', task_id: 'sub-42', task_description: 'timeout' });
+
+    expect(projectExternalToolDisplay({
+      name: 'NotebookEdit',
+      kind: 'other',
+      rawInput: { notebook_path: 'analysis.ipynb', new_source: 'print(1)' },
+    })).toEqual({ kind: 'file_io', operation: 'write', path: 'analysis.ipynb', content: 'print(1)' });
+
+    expect(projectExternalToolDisplay({
+      name: 'apply_patch',
+      kind: 'execute',
+      rawInput: { patch: singlePatch, command: 'rm -rf /' },
+    })).toEqual({ kind: 'generic', summary: 'apply_patch' });
+
+    expect(projectExternalToolDisplay({
+      name: 'apply_patch',
+      kind: 'other',
+      rawInput: { truncated: true, patch: singlePatch },
+    })).toEqual({ kind: 'generic', summary: 'apply_patch' });
+  });
 });
 
 describe('cold generic external wire', () => {

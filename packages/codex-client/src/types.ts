@@ -128,6 +128,64 @@ export interface CodexModelListResult {
   readonly nextCursor?: string | null;
 }
 
+export type CodexThreadHistoryMode = 'legacy' | 'paginated';
+
+export interface CodexHistoryRow {
+  readonly item: unknown;
+  readonly turnId?: string;
+  readonly startedAt?: unknown;
+  readonly completedAt?: unknown;
+}
+
+export interface CodexThreadHistoryPageParams {
+  readonly threadId: string;
+  readonly limit?: number;
+  readonly cursor?: string | null;
+  readonly mode?: CodexThreadHistoryMode;
+}
+
+export interface CodexThreadHistoryPage {
+  readonly mode: CodexThreadHistoryMode;
+  readonly data: readonly CodexHistoryRow[];
+  readonly nextCursor: string | null;
+}
+
+export interface CodexRateLimitWindow {
+  readonly usedPercent: number;
+  readonly resetsAt?: number | null;
+  readonly windowDurationMins?: number | null;
+}
+
+export interface CodexRateLimitSnapshot {
+  readonly limitId?: string | null;
+  readonly planType?: string | null;
+  readonly rateLimitReachedType?: string | null;
+  readonly primary?: CodexRateLimitWindow | null;
+  readonly secondary?: CodexRateLimitWindow | null;
+  readonly individualLimit?: {
+    readonly remainingPercent: number;
+    readonly resetsAt: number;
+  } | null;
+}
+
+export interface CodexUsageLimitOutcome {
+  readonly code?: string;
+  readonly message: string;
+  readonly httpStatusCode?: number;
+  readonly resetAt?: string;
+  readonly resetAtMs?: number;
+}
+
+export interface CodexTurnOutcome {
+  readonly status: 'completed' | 'interrupted' | 'failed';
+  readonly rawStatus: string;
+  readonly errorCode?: string;
+  readonly errorMessage?: string;
+  readonly additionalDetails?: string;
+  readonly httpStatusCode?: number;
+  readonly usageLimit?: CodexUsageLimitOutcome;
+}
+
 export interface CodexThreadResult {
   readonly approvalPolicy?: string | Readonly<Record<string, unknown>>;
   readonly sandbox?: Readonly<Record<string, unknown>>;
@@ -153,6 +211,8 @@ export interface CodexTurnCompletion {
     readonly outputTokens: number;
     readonly contextWindow?: number;
   };
+  readonly outcome?: CodexTurnOutcome;
+  readonly rateLimits?: CodexRateLimitSnapshot;
 }
 
 export interface CodexTurnHandle {

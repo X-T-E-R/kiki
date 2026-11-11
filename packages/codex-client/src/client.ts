@@ -3,17 +3,27 @@ import type { Readable } from 'node:stream';
 import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
 import { CodexClientError, CodexRemoteError } from '#/errors';
-import { mapCodexNotification } from '#/events';
+import {
+  mapCodexNotification,
+  mergeCodexRateLimits,
+  parseCodexRateLimitSnapshot,
+  parseCodexTurnOutcome,
+} from '#/events';
 import { StderrRing } from '#/stderrRing';
 import type {
   CodexClientOptions,
   CodexClientStatus,
+  CodexHistoryRow,
   CodexModelListResult,
   CodexNotification,
   CodexProcessDescriptor,
+  CodexRateLimitSnapshot,
   CodexRequestId,
   CodexServerRequest,
   CodexServerRequestResponder,
+  CodexThreadHistoryMode,
+  CodexThreadHistoryPage,
+  CodexThreadHistoryPageParams,
   CodexThreadResult,
   CodexTurnCompletion,
   CodexTurnHandle,
@@ -23,6 +33,9 @@ import type {
 } from '#/types';
 
 type JsonObject = Record<string, unknown>;
+
+const CODEX_HISTORY_PAGE_SIZE = 100;
+const LEGACY_CURSOR_PREFIX = 'legacy:';
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -64,6 +77,7 @@ export class CodexAppServerClient {
   #exitDrainTimer: NodeJS.Timeout | undefined;
   #activeTurn: ActiveTurn | undefined;
   #turnSignal: AbortSignal | undefined;
+  #rateLimits: CodexRateLimitSnapshot | undefined;
   readonly #transportEnded = new AbortController();
 
   constructor(
@@ -83,6 +97,10 @@ export class CodexAppServerClient {
       threadId: this.#activeTurn?.threadId,
       turnId: this.#activeTurn?.turnId,
     };
+  }
+
+  rateLimits(): CodexRateLimitSnapshot | undefined {
+    return this.#rateLimits;
   }
 
   stderrTail(): string {
@@ -179,6 +197,118 @@ export class CodexAppServerClient {
       }
     } while (cursor !== undefined && cursor !== null);
     return { data: models, nextCursor: null };
+  }
+
+  /** Codex builds before 0.143 omit `historyMode` and serve legacy inline turns. */
+  async readThreadHistoryMode(threadId: string, signal?: AbortSignal): Promise<CodexThreadHistoryMode> {
+    const response = object(
+      await this.request('thread/read', { threadId, includeTurns: false }, signal),
+      'thread/read result',
+    );
+    const thread = object(response['thread'], 'thread/read result.thread');
+    const mode = thread['historyMode'];
+    if (mode === 'paginated' || mode === 'legacy') return mode;
+    if (mode !== undefined) {
+      throw new CodexClientError('protocol', 'thread/read result.thread.historyMode must be legacy or paginated', mode);
+    }
+    return 'legacy';
+  }
+
+  /**
+   * Reads a single page of persisted thread items in ascending order. Supports
+   * both Codex 0.143+ `thread/items/list` pagination and legacy `thread/read`
+   * turn flattening with a local offset cursor.
+   */
+  async readThreadHistoryPage(
+    params: CodexThreadHistoryPageParams,
+    signal?: AbortSignal,
+  ): Promise<CodexThreadHistoryPage> {
+    const threadId = requiredString(params.threadId, 'readThreadHistoryPage params.threadId');
+    const limit = clampHistoryPageLimit(params.limit);
+    const cursor = params.cursor ?? undefined;
+    const mode = params.mode ?? (
+      cursor?.startsWith(LEGACY_CURSOR_PREFIX)
+        ? 'legacy'
+        : await this.readThreadHistoryMode(threadId, signal)
+    );
+    if (mode === 'paginated') {
+      const response = object(
+        await this.request('thread/items/list', {
+          threadId,
+          limit,
+          sortDirection: 'asc',
+          cursor,
+        }, signal),
+        'thread/items/list result',
+      );
+      if (!Array.isArray(response['data'])) {
+        throw new CodexClientError('protocol', 'thread/items/list result.data must be an array', response);
+      }
+      const data: CodexHistoryRow[] = response['data'].map((rawRow) => {
+        const row = object(rawRow, 'thread/items/list row');
+        return {
+          turnId: requiredString(row['turnId'], 'thread/items/list row.turnId'),
+          item: row['item'],
+          startedAt: row['startedAtMs'],
+          completedAt: row['completedAtMs'],
+        };
+      });
+      const nextCursor = response['nextCursor'] === null || response['nextCursor'] === undefined
+        ? null
+        : requiredString(response['nextCursor'], 'thread/items/list result.nextCursor');
+      if (nextCursor !== null && nextCursor === cursor) {
+        throw new CodexClientError('protocol', `Codex repeated history cursor for thread ${threadId}`);
+      }
+      return { mode: 'paginated', data, nextCursor };
+    }
+
+    const offset = parseLegacyHistoryCursor(cursor);
+    const response = object(
+      await this.request('thread/read', { threadId, includeTurns: true }, signal),
+      'thread/read result',
+    );
+    const thread = isObject(response['thread']) ? response['thread'] : {};
+    const turns = Array.isArray(thread['turns']) ? thread['turns'] : [];
+    const flattened: CodexHistoryRow[] = [];
+    for (const rawTurn of turns) {
+      const turn = object(rawTurn, 'thread/read turn');
+      const turnId = optionalString(turn['id']);
+      const items = Array.isArray(turn['items']) ? turn['items'] : [];
+      for (const item of items) {
+        flattened.push({
+          item,
+          turnId,
+          startedAt: turn['startedAt'],
+          completedAt: turn['completedAt'],
+        });
+      }
+    }
+    const slice = flattened.slice(offset, offset + limit);
+    const nextOffset = offset + slice.length;
+    const nextCursor = nextOffset < flattened.length ? `${LEGACY_CURSOR_PREFIX}${nextOffset}` : null;
+    return { mode: 'legacy', data: slice, nextCursor };
+  }
+
+  async *readThreadHistory(threadId: string, signal?: AbortSignal): AsyncGenerator<CodexHistoryRow> {
+    const mode = await this.readThreadHistoryMode(threadId, signal);
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      signal?.throwIfAborted();
+      const page = await this.readThreadHistoryPage({
+        threadId,
+        limit: CODEX_HISTORY_PAGE_SIZE,
+        cursor,
+        mode,
+      }, signal);
+      for (const row of page.data) yield row;
+      if (page.nextCursor === null) return;
+      if (seenCursors.has(page.nextCursor)) {
+        throw new CodexClientError('protocol', `Codex repeated history cursor for thread ${threadId}`);
+      }
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
   }
 
   async startThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult> {
@@ -491,6 +621,14 @@ export class CodexAppServerClient {
   }
 
   async #handleNotification(notification: CodexNotification): Promise<void> {
+    if (notification.method === 'account/rateLimits/updated' && isObject(notification.params)) {
+      const observed = parseCodexRateLimitSnapshot(
+        isObject(notification.params['rateLimitsByLimitId'])
+          ? notification.params['rateLimitsByLimitId']['codex']
+          : notification.params['rateLimits'] ?? notification.params,
+      );
+      this.#rateLimits = mergeCodexRateLimits(this.#rateLimits, observed);
+    }
     try {
       void Promise.resolve(this.options.onNotification?.(notification)).catch(() => undefined);
     } catch {}
@@ -513,6 +651,9 @@ export class CodexAppServerClient {
     } catch (error) {
       void this.#break(error);
       return;
+    }
+    if (mapped.rateLimits !== undefined) {
+      this.#rateLimits = mergeCodexRateLimits(this.#rateLimits, mapped.rateLimits);
     }
     for (const event of mapped.events) {
       if (event.type === 'message.delta' && event.messageId !== undefined) {
@@ -543,12 +684,18 @@ export class CodexAppServerClient {
       mapped.completion.threadId === active.threadId &&
       (active.turnId === undefined || mapped.completion.turnId === active.turnId)
     ) {
+      const effectiveStatus = active.terminalError === undefined ? mapped.completion.status : 'failed';
+      const effectiveError = active.terminalError ?? mapped.completion.error;
+      const outcome = parseCodexTurnOutcome(effectiveStatus, effectiveError, this.#rateLimits);
       active.terminal = {
-        ...mapped.completion,
-        status: active.terminalError === undefined ? mapped.completion.status : 'failed',
-        error: active.terminalError ?? mapped.completion.error,
+        threadId: mapped.completion.threadId,
+        turnId: mapped.completion.turnId,
+        status: effectiveStatus,
+        error: effectiveError,
         stderrTail: this.stderrTail(),
         usage: active.usage,
+        outcome,
+        rateLimits: this.#rateLimits,
       };
       if (active.turnId !== undefined) this.#finishActiveTurn(active.terminal);
     }
@@ -801,6 +948,26 @@ async function waitWithinGrace(process: HostProcessLike, grace: number): Promise
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+function clampHistoryPageLimit(limit: number | undefined): number {
+  if (limit === undefined) return CODEX_HISTORY_PAGE_SIZE;
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new CodexClientError('protocol', 'readThreadHistoryPage limit must be a positive integer', limit);
+  }
+  return Math.min(CODEX_HISTORY_PAGE_SIZE, limit);
+}
+
+function parseLegacyHistoryCursor(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  if (!cursor.startsWith(LEGACY_CURSOR_PREFIX)) {
+    throw new CodexClientError('protocol', 'Invalid legacy history cursor', cursor);
+  }
+  const offset = Number(cursor.slice(LEGACY_CURSOR_PREFIX.length));
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new CodexClientError('protocol', 'Invalid legacy history cursor offset', cursor);
+  }
+  return offset;
 }
 
 function threadResult(value: unknown, method: string): CodexThreadResult {
