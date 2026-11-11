@@ -1,4 +1,4 @@
-import type { AnyCordisPlugin, CordisPluginContext, CordisScopeKey } from '@kiki/cordis-runtime';
+import type { AnyCordisPlugin, CordisScopeKey } from '@kiki/cordis-runtime';
 
 /** Machine-readable reason codes emitted when a DSH plugin exceeds the supported capability shim boundary. */
 export type DshCompatIncompatibilityCode =
@@ -87,12 +87,15 @@ export interface DshBridgedToolDefinition<TArgs = unknown, TOutput = unknown> {
   readonly outputJsonSchema?: Readonly<Record<string, unknown>>;
   readonly timeoutMs?: number | null;
   readonly concurrencySafe?: boolean;
+  /** Run only the tool body; the host invokes the E8 pre, approved-wrapper, and post slots. */
   execute(
     args: Readonly<TArgs>,
     exec: {
       readonly agent: DshLiveAgentFacade;
       readonly toolCallId: string;
       readonly signal: AbortSignal;
+      deferContext?(context: { readonly text: string; readonly variant?: string }): void;
+      concludeTurn?(): void;
     },
   ): Promise<TOutput>;
   renderOutput?(args: Readonly<TArgs>, value: TOutput): readonly DshRenderedContentBlock[] | string;
@@ -128,7 +131,7 @@ export interface DshModuleHookOptions {
 export interface DshCompatController {
   installModuleHooks(options: DshModuleHookOptions): void;
   inspectPlugin(
-    plugin: AnyCordisPlugin<unknown, CordisPluginContext>,
+    plugin: AnyCordisPlugin,
     packageMeta?: { readonly name: string; readonly version?: string },
   ): DshPluginCompatibilityReport;
   withAgentInitiator<T>(agent: DshLiveAgentFacade, operation: () => Promise<T> | T): Promise<T>;
@@ -136,3 +139,90 @@ export interface DshCompatController {
   requireInitiator(): DshLiveAgentFacade;
   dispose(): Promise<void>;
 }
+
+export { canonicalCordisAbi, cordisNamespace, cosmokitNamespace, schemasteryNamespace } from './canonicalAbi';
+export {
+  createDshCompatEnvironment,
+  DshCompatEnvironment,
+  type CreateDshCompatEnvironmentOptions,
+  type MountedDshPluginHandle,
+} from './controller';
+export {
+  createMissingExternalDependencyDiagnostic,
+  DshCompatError,
+  inspectDshPlugin,
+  inspectDshPluginSource,
+  matchUnsupportedSeamSpecifier,
+  UNSUPPORTED_SEAMS,
+  type DshCompatLoadDiagnostic,
+  type UnsupportedSeamRule,
+} from './diagnostics';
+export {
+  defineTool,
+  parameterSchemaSpecToJsonSchema,
+  standardSchemaToJsonSchema,
+  ToolArgsError,
+  validateArgs,
+  valueSchemaSpecToJsonSchema,
+  type DefineStandardSchemaToolOptions,
+  type DefineToolOptions,
+} from './dshToolsSurface';
+export {
+  bindDshCompatToExtensionSlots,
+  dshBlocksToHostOutput,
+  hostResultToDshResult,
+  type HostApprovedToolExecutionWrapperContextLike,
+  type HostContentPart,
+  type HostExecutableToolResult,
+  type HostExtensionPortRegistryLike,
+  type HostLoopBoundaryProposalLike,
+  type HostLoopBoundarySnapshotLike,
+  type HostToolPostExecuteContextLike,
+  type HostToolPostExecuteProposalLike,
+  type HostToolPreExecuteProposalLike,
+} from './extensionSlotBridge';
+export {
+  DshHostServicesBridge,
+  isImageAdmissionError,
+  type DshAttachmentsPort,
+  type DshCredentialsPort,
+  type DshFileSystemPort,
+  type DshFsInfo,
+  type DshFsTarget,
+  type DshHostPorts,
+  type DshImageAttachmentRef,
+  type DshLlmPort,
+  type DshStorageDomainPort,
+  type DshSubprocessHandle,
+  type DshSubprocessOutputReader,
+  type DshSubprocessPort,
+  type DshSubprocessSpawnSpec,
+  type DshTypertBroker,
+} from './hostServicesBridge';
+export { DshAgentIdentityRegistry, type DshAgentInit } from './initiatorAls';
+export { installDshModuleHooks, normalizeFsRootPath, type InstalledDshModuleHooks } from './moduleHooks';
+export {
+  createNodeFileSystemPort,
+  createNodeHostPorts,
+  createNodeSubprocessPort,
+  HostBackedAttachmentStore,
+  InMemorySettingsService,
+  parseImageRasterHeader,
+} from './nodeHostPorts';
+export { importDshPluginModule } from './pluginModuleLoader';
+export {
+  DshSystemPromptBridge,
+  type DshPromptAssembleOptions,
+  type RenderedDshPromptResult,
+} from './systemPromptBridge';
+export {
+  extractAdditionalContexts,
+  ToolNotFoundError,
+  ToolOutputError,
+  ToolRuntimeBridge,
+  type DshContentBlock,
+  type DshToolDefinition,
+  type DshToolDispatchExecution,
+  type DshToolExecution,
+  type DshToolResult,
+} from './toolsBridge';

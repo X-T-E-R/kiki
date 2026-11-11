@@ -1,5 +1,28 @@
 {
   "extends": "../../tsconfig.json",
-  "compilerOptions": {},
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": false,
+    "noPropertyAccessFromIndexSignature": false,
+    "paths": {
+      "@deepseek-ai/cordis": ["../cordis-runtime/src/vendor/cordis/index.ts"],
+      "@deepseek-ai/cosmokit": ["../cordis-runtime/src/vendor/cosmokit/index.ts"],
+      "@deepseek-ai/schemastery": ["../cordis-runtime/src/vendor/schemastery/index.ts"],
+      "@deepseek-ai/dsh-scope": ["../cordis-runtime/src/vendor/scope/index.ts"],
+      "@deepseek-ai/dsh-system-prompt": ["./src/vendor/system-prompt/src/index.ts"],
+      "@deepseek-ai/dsh-brand": ["./src/vendor/brand/src/index.ts"],
+      "@deepseek-ai/dsh-util-crypto": ["./src/vendor/util-crypto/src/index.ts"],
+      "@deepseek-ai/dsh-util-values": ["./src/vendor/util-values/src/index.ts"],
+      "@deepseek-ai/dsh-timeout": ["./src/vendor/timeout/src/index.ts"],
+      "@deepseek-ai/dsh-attachment": ["./src/vendor/attachment/src/index.ts"],
+      "@deepseek-ai/dsh-lsp": ["./src/vendor/lsp/src/index.ts"],
+      "@deepseek-ai/dsh-llm": ["./src/dshLlmSurface.ts"],
+      "@deepseek-ai/dsh-tools": ["./src/dshToolsSurface.ts"],
+      "@standard-schema/spec": ["../cordis-runtime/node_modules/@standard-schema/spec/dist/index.d.ts"]
+    }
+  },
   "include": ["src", "test"]
 }
