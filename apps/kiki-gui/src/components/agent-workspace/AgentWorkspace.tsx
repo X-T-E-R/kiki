@@ -543,15 +543,17 @@ function AgentWorkspaceHeader({
                     {t('inspector.locate')}
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-agent-fresh-context
-                  className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
-                  onClick={() => { setMenuOpen(false); onFreshContext(); }}
-                >
-                  {t('modelSwitch.menuFreshContext')}
-                </button>
+                {freshContextAvailable ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-agent-fresh-context
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                    onClick={() => { setMenuOpen(false); onFreshContext(); }}
+                  >
+                    {t('modelSwitch.menuFreshContext')}
+                  </button>
+                ) : null}
                 {promote !== undefined ? (
                   <button
                     type="button"

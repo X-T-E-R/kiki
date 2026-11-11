@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createRef, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -57,6 +57,7 @@ const harness = vi.hoisted(() => ({
   pushToast: vi.fn(),
   promoteAgent: vi.fn(),
   promoteAvailable: false,
+  mountRealRail: false,
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
   host: { kind: 'browser' } as {
     kind: string;
@@ -100,7 +101,11 @@ vi.mock('../../state/connection', () => {
       },
     },
   });
-  return { useConnection: connection, useOptionalConnection: connection };
+  return {
+    useConnection: connection,
+    useOptionalConnection: connection,
+    useOptionalControllerRegistry: () => null,
+  };
 });
 
 vi.mock('../ConversationShell', () => ({
@@ -135,7 +140,22 @@ vi.mock('../mediaPreview', () => ({
   },
 }));
 vi.mock('../PreviewToggleButton', () => ({ PreviewToggleButton: () => <div data-preview-toggle-probe /> }));
-vi.mock('../RightRail', () => ({ RightRail: () => null }));
+vi.mock('../rail-variants/DefaultSections', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../rail-variants/DefaultSections')>()),
+  ProfileHead: ({ label }: { label: string }) => <div data-rail-profile-head>{label}</div>,
+  CapabilitiesBlock: () => null,
+}));
+vi.mock('../rail-variants/SessionCronSection', () => ({ SessionCronSection: () => null }));
+vi.mock('../persona/PersonaSettingsUpdate', () => ({ PersonaSettingsUpdate: () => null }));
+vi.mock('../AgentPanelContainer', () => ({ AgentPanelContainer: () => null }));
+vi.mock('../RightRail', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../RightRail')>();
+  return {
+    ...actual,
+    RightRail: (props: ComponentProps<typeof actual.RightRail>) =>
+      harness.mountRealRail ? <actual.RightRail {...props} /> : null,
+  };
+});
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
 vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) =>
@@ -182,6 +202,7 @@ beforeEach(() => {
   });
   harness.shellEnabled = true;
   harness.promoteAvailable = false;
+  harness.mountRealRail = false;
   harness.isNativeAgent.mockResolvedValue(true);
   harness.scopeId = 'direct:one';
   harness.host = { kind: 'browser' };
@@ -2331,8 +2352,163 @@ it('opens a child as its own thread from the header menu', async () => {
   await act(async () => { trigger?.click(); });
   const item = document.body.querySelector<HTMLButtonElement>('[data-agent-promote]');
   expect(item?.textContent).toBe(translate('en', 'agent.promote'));
+  expect(document.body.querySelector('[data-agent-fresh-context]')).toBeNull();
   await act(async () => { item?.click(); });
   expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'child');
+});
+
+it.each(['menu-to-rail', 'rail-to-menu'] as const)(
+  'shares one promotion flight and pending state across header menu and rail (%s)',
+  async (order) => {
+    harness.promoteAvailable = true;
+    harness.mountRealRail = true;
+    let resolvePromote!: (session: { id: string }) => void;
+    harness.promoteAgent.mockImplementation(
+      () => new Promise<{ id: string }>((resolve) => { resolvePromote = resolve; }),
+    );
+    const railSlot = document.createElement('div');
+    document.body.append(railSlot);
+    const navigations: string[] = [];
+    function LocationProbe() {
+      const location = useLocation();
+      const fullPath = `${location.pathname}${location.search}`;
+      if (navigations[navigations.length - 1] !== fullPath) navigations.push(fullPath);
+      return null;
+    }
+    const forest = testForest();
+    const childState = { ...createViewState('session'), loaded: true, transcriptReady: true };
+    const controller = controllerStub({ forest, agentStates: { child: childState } });
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={queries}>
+          <I18nProvider>
+            <MemoryRouter initialEntries={['/s/session/agent/child']}>
+              <LocationProbe />
+              <AgentWorkspace
+                target={{ sessionId: 'session', agentId: 'child' }}
+                controller={controller}
+                sessionState={{ ...createViewState('session'), loaded: true }}
+                forest={forest}
+                navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+                railOpen
+                railIsOverlay={false}
+                onToggleRail={vi.fn()}
+                onCloseRail={vi.fn()}
+                onCancelTask={vi.fn()}
+                onStopAgentTask={vi.fn().mockResolvedValue(undefined)}
+                slots={{ header, dock, rail: railSlot, heroFooter: null, footer: null, preview: null }}
+                previewApiRef={createRef<MediaPreviewApi>()}
+              />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      ));
+      await settle();
+
+      const openMenu = async () => {
+        const trigger = header.querySelector<HTMLButtonElement>('[data-agent-actions] button');
+        expect(trigger).not.toBeNull();
+        if (trigger?.getAttribute('aria-expanded') !== 'true') {
+          await act(async () => { trigger?.click(); });
+        }
+        const item = header.querySelector<HTMLButtonElement>('[data-agent-promote]');
+        expect(item).not.toBeNull();
+        return item!;
+      };
+      const railButton = () => {
+        const button = railSlot.querySelector<HTMLButtonElement>('[data-rail-promote]');
+        expect(button).not.toBeNull();
+        return button!;
+      };
+
+      expect(railButton().disabled).toBe(false);
+      expect(railButton().textContent).toBe(translate('en', 'agent.promote'));
+
+      if (order === 'menu-to-rail') {
+        const menuItem = await openMenu();
+        expect(menuItem.disabled).toBe(false);
+        expect(menuItem.textContent).toBe(translate('en', 'agent.promote'));
+        await act(async () => { menuItem.click(); });
+
+        expect(railButton().disabled).toBe(true);
+        expect(railButton().textContent).toBe(translate('en', 'agent.promotePending'));
+        await act(async () => { railButton().click(); });
+        const pendingMenuItem = await openMenu();
+        expect(pendingMenuItem.disabled).toBe(true);
+        expect(pendingMenuItem.textContent).toBe(translate('en', 'agent.promotePending'));
+        await act(async () => { pendingMenuItem.click(); });
+      } else {
+        await act(async () => { railButton().click(); });
+
+        expect(railButton().disabled).toBe(true);
+        expect(railButton().textContent).toBe(translate('en', 'agent.promotePending'));
+        const pendingMenuItem = await openMenu();
+        expect(pendingMenuItem.disabled).toBe(true);
+        expect(pendingMenuItem.textContent).toBe(translate('en', 'agent.promotePending'));
+        await act(async () => {
+          pendingMenuItem.click();
+          railButton().click();
+        });
+      }
+
+      expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'child');
+      expect(navigations).toEqual(['/s/session/agent/child']);
+
+      await act(async () => { resolvePromote({ id: 'promoted-thread' }); });
+      await settle();
+
+      expect(harness.promoteAgent).toHaveBeenCalledTimes(1);
+      expect(navigations).toEqual(['/s/session/agent/child', '/s/promoted-thread']);
+      expect(railButton().disabled).toBe(false);
+      expect(railButton().textContent).toBe(translate('en', 'agent.promote'));
+      const settledMenuItem = await openMenu();
+      expect(settledMenuItem.disabled).toBe(false);
+      expect(settledMenuItem.textContent).toBe(translate('en', 'agent.promote'));
+    } finally {
+      railSlot.remove();
+    }
+  },
+);
+
+it('clears the shared promotion pending state across both entries after a failure so retry works', async () => {
+  harness.promoteAvailable = true;
+  harness.mountRealRail = true;
+  let rejectPromote!: (error: Error) => void;
+  harness.promoteAgent.mockImplementationOnce(
+    () => new Promise<never>((_resolve, reject) => { rejectPromote = reject; }),
+  );
+  const railSlot = document.createElement('div');
+  document.body.append(railSlot);
+  const forest = testForest();
+  const childState = { ...createViewState('session'), loaded: true, transcriptReady: true };
+  try {
+    await renderWorkspace({
+      controller: controllerStub({ forest, agentStates: { child: childState } }),
+      forest,
+      railOpen: true,
+      slots: { header, dock, rail: railSlot, heroFooter: null, footer: null, preview: null },
+    });
+    await settle();
+
+    const railButton = () => railSlot.querySelector<HTMLButtonElement>('[data-rail-promote]')!;
+    await act(async () => { railButton().click(); });
+    expect(railButton().disabled).toBe(true);
+    await act(async () => { header.querySelector<HTMLButtonElement>('[data-agent-actions] button')?.click(); });
+    expect(header.querySelector<HTMLButtonElement>('[data-agent-promote]')?.disabled).toBe(true);
+
+    await act(async () => { rejectPromote(new Error('disk full')); });
+    await settle();
+
+    expect(harness.promoteAgent).toHaveBeenCalledTimes(1);
+    expect(harness.pushToast).toHaveBeenCalledExactlyOnceWith({
+      tone: 'error',
+      text: translate('en', 'agent.promoteFailed', { detail: 'disk full' }),
+    });
+    expect(railButton().disabled).toBe(false);
+    expect(header.querySelector<HTMLButtonElement>('[data-agent-promote]')?.disabled).toBe(false);
+  } finally {
+    railSlot.remove();
+  }
 });
 
 it('keeps no child menu when the child has no conversation to renew and promotion is unavailable', async () => {

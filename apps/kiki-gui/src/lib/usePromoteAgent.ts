@@ -1,4 +1,4 @@
-import { useCallback, useContext, useRef, useState } from 'react';
+import { useCallback, useContext, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { QueryClientContext } from '@tanstack/react-query';
 
@@ -9,6 +9,54 @@ import { useI18n } from '../i18n';
 import { useOptionalConnection } from '../state/connection';
 import { pushToast } from './toasts';
 
+const promotionFlights = new WeakMap<object, Set<string>>();
+const promotionListeners = new WeakMap<object, Map<string, Set<() => void>>>();
+
+function notifyPromotion(client: object, key: string): void {
+  for (const listener of promotionListeners.get(client)?.get(key) ?? []) listener();
+}
+
+function subscribePromotion(client: object, key: string, listener: () => void): () => void {
+  let byTarget = promotionListeners.get(client);
+  if (byTarget === undefined) {
+    byTarget = new Map();
+    promotionListeners.set(client, byTarget);
+  }
+  let listeners = byTarget.get(key);
+  if (listeners === undefined) {
+    listeners = new Set();
+    byTarget.set(key, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      byTarget.delete(key);
+      if (byTarget.size === 0) promotionListeners.delete(client);
+    }
+  };
+}
+
+function beginPromotion(client: object, key: string): boolean {
+  let flights = promotionFlights.get(client);
+  if (flights?.has(key) === true) return false;
+  if (flights === undefined) {
+    flights = new Set();
+    promotionFlights.set(client, flights);
+  }
+  flights.add(key);
+  notifyPromotion(client, key);
+  return true;
+}
+
+function endPromotion(client: object, key: string): void {
+  const flights = promotionFlights.get(client);
+  if (flights === undefined) return;
+  flights.delete(key);
+  if (flights.size === 0) promotionFlights.delete(client);
+  notifyPromotion(client, key);
+}
+
 export interface PromoteAgentAction {
   readonly pending: boolean;
   readonly promote: () => void;
@@ -16,21 +64,28 @@ export interface PromoteAgentAction {
 
 /**
  * "Open as thread" for one subagent: copies its conversation into a new
- * top-level session and navigates there. Undefined for the main agent and on
- * transports without the promote route, so callers render no entry at all.
+ * top-level session and navigates there. All mounted actions for the same
+ * client and agent share their pending state and a single in-flight request.
  */
 export function usePromoteAgent(sessionId: string | undefined, agentId: string | undefined): PromoteAgentAction | undefined {
   const connection = useOptionalConnection();
   const queryClient = useContext(QueryClientContext);
   const navigate = useNavigate();
   const { t, locale } = useI18n();
-  const [pending, setPending] = useState(false);
-  const inflight = useRef(false);
   const client = connection?.client;
+  const targetKey = sessionId === undefined || agentId === undefined ? undefined : JSON.stringify([sessionId, agentId]);
+  const subscribe = useCallback((listener: () => void) => {
+    if (client === undefined || targetKey === undefined) return () => undefined;
+    return subscribePromotion(client, targetKey, listener);
+  }, [client, targetKey]);
+  const getSnapshot = useCallback(() => {
+    if (client === undefined || targetKey === undefined) return false;
+    return promotionFlights.get(client)?.has(targetKey) ?? false;
+  }, [client, targetKey]);
+  const pending = useSyncExternalStore(subscribe, getSnapshot, () => false);
   const promote = useCallback(() => {
-    if (client === undefined || sessionId === undefined || agentId === undefined || inflight.current) return;
-    inflight.current = true;
-    setPending(true);
+    if (client === undefined || sessionId === undefined || agentId === undefined || targetKey === undefined) return;
+    if (!beginPromotion(client, targetKey)) return;
     void promoteAgentToThread({
       client,
       host: {},
@@ -41,10 +96,9 @@ export function usePromoteAgent(sessionId: string | undefined, agentId: string |
         pushToast({ tone: 'error', text: t('agent.promoteFailed', { detail: sessionActionErrorText(locale, error) }) });
       })
       .finally(() => {
-        inflight.current = false;
-        setPending(false);
+        endPromotion(client, targetKey);
       });
-  }, [agentId, client, locale, navigate, queryClient, sessionId, t]);
+  }, [agentId, client, locale, navigate, queryClient, sessionId, t, targetKey]);
   if (
     client === undefined ||
     client.sessions.promoteAgent === undefined ||
